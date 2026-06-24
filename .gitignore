@@ -1,0 +1,9 @@
+node_modules/
+.nuxt/
+.output/
+.env
+.env.local
+runner/.env
+__pycache__/
+*.pyc
+.DS_Store
