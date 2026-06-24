@@ -1,22 +1,29 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- TEMPLATE — run scripts/setup-scheduler.sh to install with real env vars. -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
     <string>com.claudeorchestrator.anomaly</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/bash</string>
-        <string>-c</string>
-        <string>set -a; . /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/.env; set +a; python3 /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/anomaly.py</string>
+        <string>/usr/bin/python3</string>
+        <string>REPO_PATH/runner/anomaly.py</string>
     </array>
-    <key>WorkingDirectory</key>
-    <string>/Users/kpasch/Documents/beethoven/claude-orchestrator/runner</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SUPABASE_URL</key>
+        <string>SUPABASE_URL_PLACEHOLDER</string>
+        <key>SUPABASE_SERVICE_KEY</key>
+        <string>SUPABASE_SERVICE_KEY_PLACEHOLDER</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
     <key>StartInterval</key>
     <integer>3600</integer>
     <key>StandardOutPath</key>
-    <string>/Users/kpasch/Library/Logs/claude-orchestrator/anomaly.log</string>
+    <string>LOG_DIR/anomaly.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/kpasch/Library/Logs/claude-orchestrator/anomaly.err</string>
+    <string>LOG_DIR/anomaly.err</string>
 </dict>
 </plist>

@@ -23,10 +23,12 @@ import db, bandit, verify, caching, account_pool, cost_ledger
 import knowledge_embed as kb
 import regression, budget, speculative, pr_integrate
 import context_retrieval, result_cache
+import confidence, blast_radius, replay
 
 INTEGRATION_MODE = os.environ.get("INTEGRATION_MODE", "local")  # local | pr
 USE_CACHE = os.environ.get("RESULT_CACHE", "true").lower() == "true"
 USE_RETRIEVAL = os.environ.get("SCOPED_CONTEXT", "true").lower() == "true"
+USE_CONFIDENCE = os.environ.get("CONFIDENCE_GATE", "true").lower() == "true"
 
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 RUNNER_ID = os.environ.get("RUNNER_ID", socket.gethostname() + "-" + str(os.getpid()))
@@ -100,10 +102,11 @@ def run_task(t):
                 record(t, name, slug, kind, "cache", POOL.current(), 0, True, False, "", time.time())
                 return
 
-        # context prefix + scoped file focus + semantic reuse + "avoid these mistakes"
+        # context prefix + scoped file focus + blast radius + semantic reuse + lessons
         prefix = caching.load_prefix(repo)
         focus = context_retrieval.focus_note(repo, t["prompt"]) if USE_RETRIEVAL else ""
-        prompt = prefix + focus + regression.inject(kb.inject(t["prompt"]))
+        blast = blast_radius.note_for_task(repo, t["prompt"]) if USE_RETRIEVAL else ""
+        prompt = prefix + focus + blast + regression.inject(kb.inject(t["prompt"]))
         t0 = time.time()
 
         # speculative N-best: race a few approaches, keep the cheapest that passes
@@ -163,6 +166,23 @@ def run_task(t):
                          why=v["notes"], risk="cheap-model review wants a human look",
                          detail=out[-3000:])
                 regression.record(name, slug, kind, t["prompt"][:500], "verify: " + v["notes"], v["notes"])
+                record(t, name, slug, kind, model, acct, attempt, True, False, out, t0); return
+
+            # confidence-gated autonomy: high -> auto-merge; low -> human; high-risk -> two-key
+            conf = {"confidence": None}
+            if USE_CONFIDENCE:
+                decision, conf = confidence.gate(wt, base)
+            replay.capture(t["id"], name, slug, kind, model, (acct or {}).get("name"),
+                           repo, base, prompt, conf.get("confidence"))
+            if USE_CONFIDENCE and decision != "auto":
+                req = 2 if decision == "two_key" else 1
+                set_state(t["id"], state="BLOCKED",
+                          note=f"awaiting {'two-key ' if req == 2 else ''}approval (confidence {conf.get('confidence')})")
+                approval(name, "material" if decision == "two_key" else "verify",
+                         f"Approve merge of {slug}", why=conf.get("reason"),
+                         value="agent work passed tests + verification",
+                         risk=("HIGH-RISK path — needs two approvers" if req == 2 else "below auto-merge confidence"),
+                         detail=out[-2000:], approvals_required=req)
                 record(t, name, slug, kind, model, acct, attempt, True, False, out, t0); return
 
             result = integrate(repo, f"agent/{slug}", base, test_cmd, slug, v["notes"], "passed")

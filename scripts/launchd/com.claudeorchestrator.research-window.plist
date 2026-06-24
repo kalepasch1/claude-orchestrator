@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Runs research tasks 2-5 AM. Sets TASK_KIND_FILTER so runner only picks up
-     kind=research during this window; the always-on runner ignores that filter. -->
+<!-- TEMPLATE — run scripts/setup-scheduler.sh to install with real env vars.
+     Runs 2-5 AM with TASK_KIND_FILTER=research so the runner only picks up
+     kind=research tasks during this window. -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
@@ -10,10 +11,19 @@
     <array>
         <string>/bin/bash</string>
         <string>-c</string>
-        <string>set -a; . /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/.env; TASK_KIND_FILTER=research; set +a; timeout 10800 python3 /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/runner.py</string>
+        <string>exec timeout 10800 /usr/bin/python3 REPO_PATH/runner/runner.py</string>
     </array>
-    <key>WorkingDirectory</key>
-    <string>/Users/kpasch/Documents/beethoven/claude-orchestrator/runner</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SUPABASE_URL</key>
+        <string>SUPABASE_URL_PLACEHOLDER</string>
+        <key>SUPABASE_SERVICE_KEY</key>
+        <string>SUPABASE_SERVICE_KEY_PLACEHOLDER</string>
+        <key>TASK_KIND_FILTER</key>
+        <string>research</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
@@ -22,8 +32,8 @@
         <integer>0</integer>
     </dict>
     <key>StandardOutPath</key>
-    <string>/Users/kpasch/Library/Logs/claude-orchestrator/research-window.log</string>
+    <string>LOG_DIR/research-window.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/kpasch/Library/Logs/claude-orchestrator/research-window.err</string>
+    <string>LOG_DIR/research-window.err</string>
 </dict>
 </plist>

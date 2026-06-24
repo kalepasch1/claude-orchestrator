@@ -1,19 +1,28 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Runs 11 PM - 6 AM overnight deploy window. Sets INTEGRATION_MODE=pr so the
-     runner opens GitHub PRs and lets CI gate; stops at 6 AM via timeout. -->
+<!-- TEMPLATE — run scripts/setup-scheduler.sh to install with real env vars.
+     Runs 11 PM - 6 AM with INTEGRATION_MODE=pr so the runner opens GitHub PRs
+     and lets CI gate merges. Times out after 7 hours. -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
     <string>com.claudeorchestrator.overnight-deploy</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/bash</string>
-        <string>-c</string>
-        <string>set -a; . /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/.env; INTEGRATION_MODE=pr; set +a; timeout 25200 python3 /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/runner.py</string>
+        <string>/usr/bin/python3</string>
+        <string>REPO_PATH/runner/runner.py</string>
     </array>
-    <key>WorkingDirectory</key>
-    <string>/Users/kpasch/Documents/beethoven/claude-orchestrator/runner</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SUPABASE_URL</key>
+        <string>SUPABASE_URL_PLACEHOLDER</string>
+        <key>SUPABASE_SERVICE_KEY</key>
+        <string>SUPABASE_SERVICE_KEY_PLACEHOLDER</string>
+        <key>INTEGRATION_MODE</key>
+        <string>pr</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
     <key>StartCalendarInterval</key>
     <dict>
         <key>Hour</key>
@@ -22,8 +31,8 @@
         <integer>0</integer>
     </dict>
     <key>StandardOutPath</key>
-    <string>/Users/kpasch/Library/Logs/claude-orchestrator/overnight-deploy.log</string>
+    <string>LOG_DIR/overnight-deploy.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/kpasch/Library/Logs/claude-orchestrator/overnight-deploy.err</string>
+    <string>LOG_DIR/overnight-deploy.err</string>
 </dict>
 </plist>

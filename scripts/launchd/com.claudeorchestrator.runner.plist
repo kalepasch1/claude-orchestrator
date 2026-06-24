@@ -1,17 +1,33 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- TEMPLATE — do not edit the installed copy directly. Re-run setup-scheduler.sh
+     which fills in secrets from runner/.env at install time.
+     To activate on macOS: grant Full Disk Access to Terminal.app in
+     System Settings → Privacy & Security → Full Disk Access, then re-run setup-scheduler.sh. -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
     <string>com.claudeorchestrator.runner</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/bin/bash</string>
-        <string>-c</string>
-        <string>set -a; . /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/.env; set +a; exec python3 /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/runner.py</string>
+        <string>/usr/bin/python3</string>
+        <string>REPO_PATH/runner/runner.py</string>
     </array>
-    <key>WorkingDirectory</key>
-    <string>/Users/kpasch/Documents/beethoven/claude-orchestrator/runner</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SUPABASE_URL</key>
+        <string>SUPABASE_URL_PLACEHOLDER</string>
+        <key>SUPABASE_SERVICE_KEY</key>
+        <string>SUPABASE_SERVICE_KEY_PLACEHOLDER</string>
+        <key>MAX_PARALLEL</key>
+        <string>MAX_PARALLEL_PLACEHOLDER</string>
+        <key>POLL_SECONDS</key>
+        <string>POLL_SECONDS_PLACEHOLDER</string>
+        <key>TEST_CMD</key>
+        <string>TEST_CMD_PLACEHOLDER</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
     <key>KeepAlive</key>
     <true/>
     <key>RunAtLoad</key>
@@ -19,8 +35,8 @@
     <key>ThrottleInterval</key>
     <integer>30</integer>
     <key>StandardOutPath</key>
-    <string>/Users/kpasch/Library/Logs/claude-orchestrator/runner.log</string>
+    <string>LOG_DIR/runner.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/kpasch/Library/Logs/claude-orchestrator/runner.err</string>
+    <string>LOG_DIR/runner.err</string>
 </dict>
 </plist>
