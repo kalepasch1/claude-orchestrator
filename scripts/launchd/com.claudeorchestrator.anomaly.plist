@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.claudeorchestrator.anomaly</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>set -a; . /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/.env; set +a; python3 /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/anomaly.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/kpasch/Documents/beethoven/claude-orchestrator/runner</string>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/kpasch/Library/Logs/claude-orchestrator/anomaly.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/kpasch/Library/Logs/claude-orchestrator/anomaly.err</string>
+</dict>
+</plist>

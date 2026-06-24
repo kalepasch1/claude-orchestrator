@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Runs research tasks 2-5 AM. Sets TASK_KIND_FILTER so runner only picks up
+     kind=research during this window; the always-on runner ignores that filter. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.claudeorchestrator.research-window</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-c</string>
+        <string>set -a; . /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/.env; TASK_KIND_FILTER=research; set +a; timeout 10800 python3 /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/runner.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/kpasch/Documents/beethoven/claude-orchestrator/runner</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>2</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/Users/kpasch/Library/Logs/claude-orchestrator/research-window.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/kpasch/Library/Logs/claude-orchestrator/research-window.err</string>
+</dict>
+</plist>

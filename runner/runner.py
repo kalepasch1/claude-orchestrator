@@ -22,8 +22,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db, bandit, verify, caching, account_pool, cost_ledger
 import knowledge_embed as kb
 import regression, budget, speculative, pr_integrate
+import context_retrieval, result_cache
 
 INTEGRATION_MODE = os.environ.get("INTEGRATION_MODE", "local")  # local | pr
+USE_CACHE = os.environ.get("RESULT_CACHE", "true").lower() == "true"
+USE_RETRIEVAL = os.environ.get("SCOPED_CONTEXT", "true").lower() == "true"
 
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 RUNNER_ID = os.environ.get("RUNNER_ID", socket.gethostname() + "-" + str(os.getpid()))
@@ -88,9 +91,19 @@ def run_task(t):
             set_state(t["id"], state="BLOCKED", note="budget cap reached")
             return
 
-        # context prefix + semantic reuse + "avoid these mistakes" lessons
+        # result cache: identical (repo+prompt+commit) work is reused, not re-run
+        sig = result_cache.signature(name, t["prompt"], repo, base) if USE_CACHE else None
+        if sig:
+            hit = result_cache.lookup(sig)
+            if hit:
+                set_state(t["id"], state="DONE", note=f"cache hit: reused {hit.get('branch')}")
+                record(t, name, slug, kind, "cache", POOL.current(), 0, True, False, "", time.time())
+                return
+
+        # context prefix + scoped file focus + semantic reuse + "avoid these mistakes"
         prefix = caching.load_prefix(repo)
-        prompt = prefix + regression.inject(kb.inject(t["prompt"]))
+        focus = context_retrieval.focus_note(repo, t["prompt"]) if USE_RETRIEVAL else ""
+        prompt = prefix + focus + regression.inject(kb.inject(t["prompt"]))
         t0 = time.time()
 
         # speculative N-best: race a few approaches, keep the cheapest that passes
@@ -155,6 +168,8 @@ def run_task(t):
             result = integrate(repo, f"agent/{slug}", base, test_cmd, slug, v["notes"], "passed")
             POOL.mark_ok(acct)
             integrated = result == "MERGED"
+            if integrated and sig:
+                result_cache.store(sig, name, slug, f"agent/{slug}", v["notes"])
             set_state(t["id"], state=result, note=f"verify pass; integrate={result} ({INTEGRATION_MODE})")
             if result in ("CONFLICT", "TESTFAIL"):
                 approval(name, "integrate", f"{slug} {result.lower()} on integrate",
