@@ -46,7 +46,7 @@ async function renderChart() {
   if (!process.client || !outcomes.value.length) return
   const el = document.getElementById('spendChart') as HTMLCanvasElement | null
   if (!el) return
-  const Chart = (await import('https://cdn.jsdelivr.net/npm/chart.js@4.4.3/+esm')).default
+  const { Chart } = await import('chart.js/auto')
   let cum = 0
   const pts = outcomes.value.map(o => ({ x: new Date(o.created_at).getTime(), y: (cum += Number(o.usd || 0)) }))
   if (chart) chart.destroy()
