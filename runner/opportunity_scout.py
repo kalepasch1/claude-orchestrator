@@ -7,7 +7,7 @@ ideas keep arriving for you to approve. Schedule weekly.
 """
 import os, sys, json, subprocess, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import db
+import db, preference
 
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 MODEL = os.environ.get("SCOUT_MODEL", "claude-haiku-4-5-20251001")
@@ -47,10 +47,19 @@ def run():
                 except Exception:
                     pass
         for o in sorted(ideas, key=rice, reverse=True)[:3]:
-            db.insert("approvals", {"project": p["name"], "kind": "proposal",
-                                    "title": f"[RICE {rice(o)}] {o.get('title')}",
-                                    "why": o.get("why"), "value": o.get("value"), "risk": o.get("risk"),
-                                    "command": ""})
+            title = f"[RICE {rice(o)}] {o.get('title')}"
+            why = o.get("why", "")
+            kind = "proposal"
+            # preference gate: suppress low-approval-likelihood proposals
+            pref = preference.score(title, why, kind)
+            if preference.should_suppress(title, why, kind):
+                print(f"  suppressed (pref={pref:.2f}): {o.get('title')}")
+                continue
+            db.insert("approvals", {"project": p["name"], "kind": kind,
+                                    "title": title, "why": why,
+                                    "value": o.get("value"), "risk": o.get("risk"),
+                                    "command": "",
+                                    "detail": f"predicted approval likelihood: {pref:.0%}"})
             made += 1
     print(f"opportunity scout: filed {made} scored proposals")
 

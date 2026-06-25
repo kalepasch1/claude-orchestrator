@@ -1,33 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- TEMPLATE — run scripts/setup-scheduler.sh to install.
-     FDA required: System Settings → Privacy & Security → Full Disk Access → add /usr/bin/python3 -->
+     One-time setup to make this survive reboot (5 min total):
+       1. System Settings → Privacy & Security → Full Disk Access → + → ~/Applications/ClaudeRunner.app
+       2. System Settings → General → Login Items → + → ~/Applications/ClaudeRunner.app
+       3. bash scripts/setup-scheduler.sh   (re-runs setup with the app's FDA)
+     The KeepAlive=true here auto-restarts on crash. Login Items ensures it starts at boot. -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
     <string>com.claudeorchestrator.runner</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
-        <string>REPO_PATH/runner/runner.py</string>
+        <string>HOME_DIR/Applications/ClaudeRunner.app/Contents/MacOS/run</string>
     </array>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>SUPABASE_URL</key>
-        <string>SUPABASE_URL_PLACEHOLDER</string>
-        <key>SUPABASE_SERVICE_KEY</key>
-        <string>SUPABASE_SERVICE_KEY_PLACEHOLDER</string>
-        <key>MAX_PARALLEL</key>
-        <string>MAX_PARALLEL_PLACEHOLDER</string>
-        <key>POLL_SECONDS</key>
-        <string>POLL_SECONDS_PLACEHOLDER</string>
-        <key>TEST_CMD</key>
-        <string>TEST_CMD_PLACEHOLDER</string>
-        <key>PATH</key>
-        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
-    </dict>
-    <key>WorkingDirectory</key>
-    <string>REPO_PATH/runner</string>
     <key>KeepAlive</key>
     <true/>
     <key>RunAtLoad</key>

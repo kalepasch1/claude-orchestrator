@@ -20,7 +20,33 @@ const health = ref<any[]>([])
 const goals = ref<any[]>([])
 const inbox = ref<any[]>([])
 const txns = ref<any[]>([])
+const capabilities = ref<any[]>([])
+const capInstances = ref<any[]>([])
+const capProvenance = ref<any[]>([])
+const radarProposals = ref<any[]>([])
 let chart: any = null
+
+// ── Capabilities productize ────────────────────────────────────────────────
+const gtmLoading = ref<Record<string, boolean>>({})
+async function productize(proposal: any) {
+  const detail = proposal.detail ? JSON.parse(proposal.detail) : {}
+  const slug = detail.capability || ''
+  const target = detail.target_app || proposal.project || ''
+  const product = detail.product || slug
+  if (!slug || !target) { alert('Missing capability slug or target app'); return }
+  gtmLoading.value[proposal.id] = true
+  try {
+    await $fetch('/api/go-to-market', {
+      method: 'POST',
+      body: { slug, target_project: target, product_name: product },
+    })
+    await loadAll()
+  } catch (e: any) {
+    alert('go-to-market failed: ' + e.message)
+  } finally {
+    gtmLoading.value[proposal.id] = false
+  }
+}
 
 const newTask = reactive({ project_id: '', slug: '', prompt: '', kind: 'build' })
 const newTxn = reactive({ id: '', name: '', description: '' })
@@ -41,7 +67,7 @@ async function askNL() {
 
 // ── load ──────────────────────────────────────────────────────────────────
 async function loadAll() {
-  const [t, a, o, r, p, b, r2, h, g, i, tx] = await Promise.all([
+  const [t, a, o, r, p, b, r2, h, g, i, tx, caps, cinst, cprov, rprops] = await Promise.all([
     supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(200),
     supabase.from('approvals').select('*').eq('status', 'pending').order('created_at'),
     supabase.from('outcomes').select('model,usd,project,tests_passed,integrated,created_at').order('created_at').limit(2000),
@@ -53,11 +79,19 @@ async function loadAll() {
     supabase.from('goals').select('*').eq('status', 'active').order('priority'),
     supabase.from('v_action_inbox').select('*').limit(20),
     supabase.from('txns').select('*').order('created_at', { ascending: false }).limit(50),
+    supabase.from('capabilities').select('*').order('maturity', { ascending: false }),
+    supabase.from('capability_instances').select('*').eq('status', 'active'),
+    supabase.from('capability_provenance').select('*'),
+    supabase.from('approvals').select('*').eq('kind', 'proposal').eq('status', 'pending').order('created_at', { ascending: false }).limit(20),
   ])
   tasks.value = t.data || []; approvals.value = a.data || []
   outcomes.value = o.data || []; runners.value = r.data || []; projects.value = p.data || []
   budgets.value = b.data || []; runs.value = r2.data || []; health.value = h.data || []
   goals.value = g.data || []; inbox.value = i.data || []; txns.value = tx.data || []
+  capabilities.value = caps.data || []
+  capInstances.value = cinst.data || []
+  capProvenance.value = cprov.data || []
+  radarProposals.value = rprops.data || []
   if (!newTask.project_id && projects.value[0]) newTask.project_id = projects.value[0].id
   renderChart()
 }
@@ -184,6 +218,30 @@ const txnColor: Record<string, string> = {
   pending: 'bg-amber-500/20 text-amber-300', merged: 'bg-green-500/20 text-green-300',
   aborted: 'bg-red-500/20 text-red-300',
 }
+const capStatusColor: Record<string, string> = {
+  experimental: 'bg-slate-500/20 text-slate-300',
+  trusted: 'bg-blue-500/20 text-blue-300',
+  productizable: 'bg-green-500/20 text-green-300',
+  retired: 'bg-red-500/20 text-red-300',
+}
+function instancesFor(capId: string) {
+  return capInstances.value.filter((i: any) => i.capability_id === capId)
+}
+function provFor(capId: string) {
+  return capProvenance.value.find((p: any) => p.capability_id === capId)
+}
+// radar proposals keyed by capability slug parsed from detail JSON
+const radarBySlug = computed(() => {
+  const m: Record<string, any[]> = {}
+  for (const p of radarProposals.value) {
+    try {
+      const d = p.detail ? JSON.parse(p.detail) : {}
+      const key = d.capability || 'unknown'
+      ;(m[key] ??= []).push({ ...p, _detail: d })
+    } catch { /* ignore */ }
+  }
+  return m
+})
 
 onMounted(() => {
   if (user.value) {
@@ -325,6 +383,96 @@ watch(user, u => { if (u) loadAll() })
         </div>
       </div>
       <div v-else class="text-slate-600 italic text-sm mb-6">No transactions yet. Tag tasks with <code>txn:&lt;id&gt;</code> in their note to join one.</div>
+
+      <!-- ── Capabilities ── -->
+      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Capabilities</h2>
+      <div v-if="!capabilities.length" class="text-slate-600 italic text-sm mb-6">No capabilities published yet. Run distill.py to extract one.</div>
+      <div v-else class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-3 text-sm overflow-x-auto">
+        <table class="w-full text-xs">
+          <thead>
+            <tr class="text-slate-500 text-left border-b border-slate-800">
+              <th class="pb-2 pr-3">Capability</th>
+              <th class="pb-2 pr-3">Status</th>
+              <th class="pb-2 pr-3">Maturity</th>
+              <th class="pb-2 pr-3">Domain</th>
+              <th class="pb-2 pr-3">Source / consent</th>
+              <th class="pb-2">Instances</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="c in capabilities" :key="c.id" class="border-b border-slate-800/60 last:border-0">
+              <td class="py-1.5 pr-3">
+                <span class="text-slate-300 font-medium">{{ c.name }}</span>
+                <span class="text-slate-600 ml-1 text-[10px]">{{ c.slug }}</span>
+              </td>
+              <td class="py-1.5 pr-3">
+                <span class="text-[10px] px-2 py-0.5 rounded-full font-semibold"
+                      :class="capStatusColor[c.status] || 'bg-slate-700'">{{ c.status }}</span>
+              </td>
+              <td class="py-1.5 pr-3">
+                <span :class="Number(c.maturity) >= 80 ? 'text-green-400' : Number(c.maturity) >= 40 ? 'text-amber-400' : 'text-slate-400'">
+                  {{ c.maturity }}
+                </span>
+              </td>
+              <td class="py-1.5 pr-3 text-slate-400">{{ c.domain }}</td>
+              <td class="py-1.5 pr-3">
+                <template v-if="provFor(c.id)">
+                  <span class="text-slate-400">{{ provFor(c.id).source_project }}</span>
+                  <span :class="provFor(c.id).consent ? 'text-green-400 ml-1' : 'text-red-400 ml-1'" class="text-[10px]">
+                    {{ provFor(c.id).consent ? '✓ consent' : '✗ no consent' }}
+                  </span>
+                </template>
+                <span v-else class="text-slate-600">—</span>
+              </td>
+              <td class="py-1.5">
+                <span v-if="instancesFor(c.id).length" class="text-slate-400">
+                  {{ instancesFor(c.id).map((i: any) => i.project).join(', ') }}
+                </span>
+                <span v-else class="text-slate-600">none</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p v-if="capabilities.length" class="text-slate-600 text-[10px] mt-2">
+          Maturity score = eval_pass_rate × 60 + active_instances × 20. Recomputed daily by maturity.py.
+        </p>
+      </div>
+
+      <!-- ── Capability Radar ── -->
+      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Capability radar</h2>
+      <div v-if="!Object.keys(radarBySlug).length" class="text-slate-600 italic text-sm mb-6">
+        No cross-app proposals yet. Radar runs weekly once capabilities reach trusted/productizable status.
+      </div>
+      <div v-else class="mb-6">
+        <div v-for="(proposals, slug) in radarBySlug" :key="slug"
+             class="bg-slate-900 border border-slate-700 rounded-xl p-4 mb-3">
+          <h3 class="text-sm font-semibold text-slate-200 mb-2">
+            <span class="text-indigo-400">{{ slug }}</span>
+            <span class="text-slate-500 font-normal ml-2">capability proposals</span>
+          </h3>
+          <div v-for="p in proposals" :key="p.id"
+               class="border border-slate-800 rounded-lg px-3 py-2 mb-2 last:mb-0">
+            <div class="flex items-start gap-2">
+              <div class="flex-1">
+                <p class="text-sm text-slate-300">{{ p.title }}</p>
+                <p v-if="p.why" class="text-xs text-slate-500 mt-0.5">{{ p.why }}</p>
+                <div v-if="p._detail" class="flex gap-3 mt-1 text-[10px] text-slate-500">
+                  <span>reach {{ p._detail.reach }}</span>
+                  <span>impact {{ p._detail.impact }}</span>
+                  <span>conf {{ p._detail.confidence }}</span>
+                  <span>{{ p._detail.effort_days }}d</span>
+                  <span class="text-indigo-400 font-semibold">→ {{ p._detail.target_app }}</span>
+                </div>
+              </div>
+              <button @click="productize(p)"
+                      :disabled="gtmLoading[p.id]"
+                      class="text-[10px] bg-green-900/50 hover:bg-green-800/70 disabled:opacity-40 text-green-300 rounded px-2 py-1 font-semibold whitespace-nowrap">
+                {{ gtmLoading[p.id] ? '…' : 'Productize' }}
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <!-- ── Queue a task ── -->
       <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Queue a task</h2>

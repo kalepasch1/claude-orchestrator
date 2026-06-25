@@ -33,10 +33,17 @@ REQUEST:
 """
 
 
-def plan(master: str) -> list:
+def plan(master: str, repo: str = None) -> list:
+    spec = ""
+    if repo:
+        spec_path = os.path.join(repo, "SPEC.md")
+        if os.path.isfile(spec_path):
+            with open(spec_path) as f:
+                spec_content = f.read()[:12000]
+            spec = f"\n\n# Project Specification (SPEC.md — every task MUST satisfy these invariants):\n{spec_content}\n\n"
     try:
         out = subprocess.check_output(
-            [CLAUDE_BIN, "-p", META + master, "--model", PLAN_MODEL, "--output-format", "text"],
+            [CLAUDE_BIN, "-p", META + spec + master, "--model", PLAN_MODEL, "--output-format", "text"],
             text=True, timeout=int(os.environ.get("PLAN_TIMEOUT", "300")))
         m = re.search(r"\[.*\]", out, re.S)
         tasks = json.loads(m.group(0)) if m else []
@@ -65,7 +72,12 @@ def to_yaml(tasks: list) -> str:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("prompt", nargs="?", default="-")
+    ap.add_argument("--repo", default=None, help="repo path to read SPEC.md from")
+    args = ap.parse_args()
+    master = sys.stdin.read() if args.prompt == "-" else args.prompt
+    if not master:
         sys.exit("usage: planner.py \"<master prompt>\"  (or - to read stdin)")
-    master = sys.stdin.read() if sys.argv[1] == "-" else sys.argv[1]
-    print(to_yaml(plan(master)))
+    print(to_yaml(plan(master, repo=args.repo)))

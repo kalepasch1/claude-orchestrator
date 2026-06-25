@@ -11,6 +11,7 @@ import os, sys, subprocess, re
 from collections import Counter
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import knowledge as kw
+import context_embed as ce
 
 CODE_EXT = (".ts", ".tsx", ".js", ".vue", ".py", ".go", ".rs", ".java", ".sql", ".md")
 MAX_FILES = int(os.environ.get("CONTEXT_MAX_FILES", "12"))
@@ -41,8 +42,15 @@ def _grep_hits(repo, terms):
 
 
 def select_files(repo, prompt):
-    terms = [t for t in kw.toks(prompt) if len(t) > 3]
     files = _tracked(repo)
+
+    # embedding-based ranking (when EMBED_PROVIDER is set) — more semantic, less brittle
+    embed_ranked = ce.rank(repo, prompt, files, k=MAX_FILES)
+    if embed_ranked:
+        return embed_ranked
+
+    # keyword/ripgrep fallback
+    terms = [t for t in kw.toks(prompt) if len(t) > 3]
     score = _grep_hits(repo, terms)                     # content matches (strong)
     tset = set(terms)
     for f in files:                                     # path matches (weak)

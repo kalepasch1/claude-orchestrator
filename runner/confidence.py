@@ -39,9 +39,10 @@ def assess(worktree, base="main", max_chars=50000):
     return {"confidence": round(c, 3), "reason": d.get("reason", ""), "high_risk": high_risk}
 
 
-def gate(worktree, base="main"):
-    """Return ('auto'|'review'|'two_key', confidence_dict)."""
+def gate(worktree, base="main", threshold=None):
+    """Return ('auto'|'review'|'two_key', confidence_dict). threshold overrides env."""
     a = assess(worktree, base)
+    t = threshold if threshold is not None else THRESHOLD
     if a["high_risk"]:
         return "two_key", a
-    return ("auto" if a["confidence"] >= THRESHOLD else "review"), a
+    return ("auto" if a["confidence"] >= t else "review"), a
