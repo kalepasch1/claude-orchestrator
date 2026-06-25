@@ -23,7 +23,7 @@ import db, bandit, verify, caching, account_pool, cost_ledger
 import knowledge_embed as kb
 import regression, budget, speculative, pr_integrate
 import context_retrieval, result_cache
-import confidence, blast_radius, replay
+import confidence, blast_radius, replay, quality_gate
 
 INTEGRATION_MODE = os.environ.get("INTEGRATION_MODE", "local")  # local | pr
 USE_CACHE = os.environ.get("RESULT_CACHE", "true").lower() == "true"
@@ -41,11 +41,10 @@ _sem = threading.Semaphore(MAX_PARALLEL)
 _projects = {}
 
 
-def projects():
+def projects(project_id=None):
     global _projects
-    if not _projects:
-        for p in db.select("projects") or []:
-            _projects[p["id"]] = p
+    if not _projects or (project_id and project_id not in _projects):
+        _projects = {p["id"]: p for p in db.select("projects") or []}
     return _projects
 
 
@@ -80,7 +79,7 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
 
 def run_task(t):
     with _sem:
-        proj = projects().get(t["project_id"], {})
+        proj = projects(t["project_id"]).get(t["project_id"], {})
         repo = proj.get("repo_path", os.getcwd())
         name = proj.get("name", "repo")
         base = t.get("base_branch", "main")
@@ -108,6 +107,17 @@ def run_task(t):
         blast = blast_radius.note_for_task(repo, t["prompt"]) if USE_RETRIEVAL else ""
         prompt = prefix + focus + blast + regression.inject(kb.inject(t["prompt"]))
         t0 = time.time()
+
+        # deterministic replay: re-run a captured run snapshot
+        if kind == "replay" and t["prompt"].startswith("REPLAY:"):
+            run_id = t["prompt"].split(":", 1)[1].strip()
+            set_state(t["id"], state="RUNNING", note=f"replaying run {run_id}")
+            try:
+                replay.replay(run_id, repo)
+                set_state(t["id"], state="DONE", note=f"replay complete: run {run_id}")
+            except Exception as e:
+                set_state(t["id"], state="BLOCKED", note=f"replay error: {e}")
+            return
 
         # speculative N-best: race a few approaches, keep the cheapest that passes
         if kind == "speculative":
@@ -158,8 +168,12 @@ def run_task(t):
                 regression.record(name, slug, kind, t["prompt"][:500], out[-500:], "agent run failed; re-scope or escalate model")
                 record(t, name, slug, kind, model, acct, attempt, False, False, out, t0); return
 
-            # verification swarm BEFORE integrate
-            v = verify.review_diff(wt, base)
+            # blast radius: find dependents of changed files, pass to verifier
+            radius = blast_radius.radius_after(wt, base)
+            deps = radius.get("dependents", [])
+
+            # verification swarm BEFORE integrate (blast-radius-aware)
+            v = verify.review_diff(wt, base, dependents=deps if deps else None)
             if v["verdict"] == "fail":
                 set_state(t["id"], state="BLOCKED", note="verify: " + v["notes"])
                 approval(name, "verify", f"Verification flagged {slug}",
@@ -168,16 +182,29 @@ def run_task(t):
                 regression.record(name, slug, kind, t["prompt"][:500], "verify: " + v["notes"], v["notes"])
                 record(t, name, slug, kind, model, acct, attempt, True, False, out, t0); return
 
+            # quality gate: mutation + property tests (blocking if MUTATION_CMD/PROPERTY_CMD set)
+            qg = quality_gate.run(wt)
+            if not qg["pass"]:
+                set_state(t["id"], state="BLOCKED", note="quality gate: " + qg["notes"])
+                approval(name, "verify", f"Quality gate failed: {slug}",
+                         why=qg["notes"], risk="mutation or property test score below threshold",
+                         detail=out[-2000:])
+                regression.record(name, slug, kind, t["prompt"][:500],
+                                  "quality gate: " + qg["notes"], qg["notes"])
+                record(t, name, slug, kind, model, acct, attempt, True, False, out, t0); return
+
             # confidence-gated autonomy: high -> auto-merge; low -> human; high-risk -> two-key
             conf = {"confidence": None}
             if USE_CONFIDENCE:
-                decision, conf = confidence.gate(wt, base)
+                proj_thresh = proj.get("confidence_threshold")
+                decision, conf = confidence.gate(wt, base, threshold=proj_thresh)
+            conf_score = conf.get("confidence")
             replay.capture(t["id"], name, slug, kind, model, (acct or {}).get("name"),
-                           repo, base, prompt, conf.get("confidence"))
+                           repo, base, prompt, conf_score)
             if USE_CONFIDENCE and decision != "auto":
                 req = 2 if decision == "two_key" else 1
-                set_state(t["id"], state="BLOCKED",
-                          note=f"awaiting {'two-key ' if req == 2 else ''}approval (confidence {conf.get('confidence')})")
+                set_state(t["id"], state="BLOCKED", confidence=conf_score,
+                          note=f"awaiting {'two-key ' if req == 2 else ''}approval (confidence {conf_score})")
                 approval(name, "material" if decision == "two_key" else "verify",
                          f"Approve merge of {slug}", why=conf.get("reason"),
                          value="agent work passed tests + verification",
@@ -190,7 +217,8 @@ def run_task(t):
             integrated = result == "MERGED"
             if integrated and sig:
                 result_cache.store(sig, name, slug, f"agent/{slug}", v["notes"])
-            set_state(t["id"], state=result, note=f"verify pass; integrate={result} ({INTEGRATION_MODE})")
+            set_state(t["id"], state=result, confidence=conf_score,
+                      note=f"verify pass (conf={conf_score}); integrate={result} ({INTEGRATION_MODE})")
             if result in ("CONFLICT", "TESTFAIL"):
                 approval(name, "integrate", f"{slug} {result.lower()} on integrate",
                          why=f"could not auto-integrate ({result})", detail=out[-2000:])
@@ -198,6 +226,31 @@ def run_task(t):
             record(t, name, slug, kind, model, acct, attempt, True, integrated, out, t0)
             return
         set_state(t["id"], state="BLOCKED", note="exhausted retries")
+
+
+def _update_capability_eval(cap_slug, passed):
+    """Write the real-world outcome back to capability_evals and recompute eval_pass_rate."""
+    try:
+        cap_rows = db.select("capabilities", {"select": "id", "slug": f"eq.{cap_slug}"}) or []
+        if not cap_rows:
+            return
+        cap_id = cap_rows[0]["id"]
+        # record a real-world eval (last_pass = whether tests+integrate succeeded)
+        db.insert("capability_evals", {"capability_id": cap_id, "name": "real-world",
+                                       "last_pass": passed, "updated_at": "now()"})
+        # recompute pass-rate across all evals for this capability
+        evals = db.select("capability_evals", {"select": "last_pass",
+                                               "capability_id": f"eq.{cap_id}"}) or []
+        scored = [e for e in evals if e.get("last_pass") is not None]
+        if scored:
+            rate = round(sum(1 for e in scored if e["last_pass"]) / len(scored), 3)
+            vers = db.select("capability_versions",
+                             {"select": "id", "capability_id": f"eq.{cap_id}",
+                              "order": "created_at.desc", "limit": "1"}) or []
+            if vers:
+                db.update("capability_versions", {"id": vers[0]["id"]}, {"eval_pass_rate": rate})
+    except Exception as e:
+        print(f"capability eval update failed for {cap_slug}: {e}")
 
 
 def record(t, project, slug, kind, model, acct, attempt, tests_ok, integrated, out, t0):
@@ -209,6 +262,10 @@ def record(t, project, slug, kind, model, acct, attempt, tests_ok, integrated, o
         "tests_passed": tests_ok, "integrated": integrated,
         "input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"],
         "usd": row["usd"], "wall_ms": int((time.time() - t0) * 1000)})
+    # federated capability feedback: real-world outcomes flow back to capability_evals
+    cap_slug = t.get("capability_slug")
+    if cap_slug:
+        _update_capability_eval(cap_slug, tests_ok and integrated)
 
 
 def cost_ledger_row(project, slug, model, out):

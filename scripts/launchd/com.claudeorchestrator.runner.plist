@@ -1,9 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- TEMPLATE — do not edit the installed copy directly. Re-run setup-scheduler.sh
-     which fills in secrets from runner/.env at install time.
-     To activate on macOS: grant Full Disk Access to Terminal.app in
-     System Settings → Privacy & Security → Full Disk Access, then re-run setup-scheduler.sh. -->
+<!-- TEMPLATE — run scripts/setup-scheduler.sh to install.
+     FDA required: System Settings → Privacy & Security → Full Disk Access → add /usr/bin/python3 -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
@@ -26,8 +24,10 @@
         <key>TEST_CMD</key>
         <string>TEST_CMD_PLACEHOLDER</string>
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
+    <key>WorkingDirectory</key>
+    <string>REPO_PATH/runner</string>
     <key>KeepAlive</key>
     <true/>
     <key>RunAtLoad</key>

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- TEMPLATE — run scripts/setup-scheduler.sh to install with real env vars. -->
+<!-- TEMPLATE — run scripts/setup-scheduler.sh to install. -->
 <plist version="1.0">
 <dict>
     <key>Label</key>
@@ -17,8 +17,10 @@
         <key>SUPABASE_SERVICE_KEY</key>
         <string>SUPABASE_SERVICE_KEY_PLACEHOLDER</string>
         <key>PATH</key>
-        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
+    <key>WorkingDirectory</key>
+    <string>REPO_PATH/runner</string>
     <key>StartInterval</key>
     <integer>3600</integer>
     <key>StandardOutPath</key>
