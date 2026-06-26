@@ -34,7 +34,9 @@ import db, bandit, verify, caching, account_pool, cost_ledger
 import knowledge_embed as kb
 import regression, budget, speculative, pr_integrate
 import context_retrieval, result_cache
-import confidence, blast_radius, replay, quality_gate
+import confidence, blast_radius, replay
+import feedback
+import kill_switch, secrets_manager, credential_broker, quality_gate
 
 INTEGRATION_MODE = os.environ.get("INTEGRATION_MODE", "local")  # local | pr
 USE_CACHE = os.environ.get("RESULT_CACHE", "true").lower() == "true"
@@ -98,6 +100,11 @@ def run_task(t):
         kind = t.get("kind", "build")
         test_cmd = os.environ.get("TEST_CMD", "npm test")
 
+        # kill switch: stop all spend on this project (or globally) at a click
+        if kill_switch.is_paused(name):
+            set_state(t["id"], state="QUEUED", note="paused by kill switch")
+            time.sleep(5); return
+
         # budget guardrail: hold the task if the project hit its monthly cap
         if not budget.allow(name):
             set_state(t["id"], state="BLOCKED", note="budget cap reached")
@@ -116,7 +123,7 @@ def run_task(t):
         prefix = caching.load_prefix(repo)
         focus = context_retrieval.focus_note(repo, t["prompt"]) if USE_RETRIEVAL else ""
         blast = blast_radius.note_for_task(repo, t["prompt"]) if USE_RETRIEVAL else ""
-        prompt = prefix + focus + blast + regression.inject(kb.inject(t["prompt"]))
+        prompt = prefix + focus + blast + regression.inject(kb.inject(t["prompt"])) + feedback.INSTRUCTION
         t0 = time.time()
 
         # deterministic replay: re-run a captured run snapshot
@@ -128,6 +135,36 @@ def run_task(t):
                 set_state(t["id"], state="DONE", note=f"replay complete: run {run_id}")
             except Exception as e:
                 set_state(t["id"], state="BLOCKED", note=f"replay error: {e}")
+            return
+
+        # key rotation: ROTATE_KEY:<provider>:<name>  (enqueued by dashboard "Rotate" button)
+        if t["prompt"].startswith("ROTATE_KEY:"):
+            import rotate_keys
+            parts = t["prompt"].split(":", 2)
+            prov, kname = (parts[1] if len(parts) > 1 else ""), (parts[2] if len(parts) > 2 else "")
+            set_state(t["id"], state="RUNNING", note=f"rotating {prov}/{kname}")
+            result = rotate_keys.rotate(prov, kname, name)
+            if result.get("ok"):
+                set_state(t["id"], state="DONE", note=result.get("note", "rotated"))
+            else:
+                set_state(t["id"], state="BLOCKED", note=result.get("note", "manual rotation needed"))
+            return
+
+        # security panic: REVOKE_AND_STOP:<provider>  (dashboard "Stop + Revoke" button)
+        if t["prompt"].startswith("REVOKE_AND_STOP:"):
+            import rotate_keys, kill_switch
+            prov = t["prompt"].split(":", 1)[1].strip()
+            set_state(t["id"], state="RUNNING", note=f"revoking {prov} keys + stopping runner")
+            try:
+                # revoke all active secrets for this provider
+                secrets = db.select("secrets", {"select": "*", "provider": f"eq.{prov}",
+                                                "status": "eq.active"}) or []
+                for s in secrets:
+                    rotate_keys.rotate(prov, s["name"], s.get("project"))
+                kill_switch.pause(scope="global", reason=f"security panic: {prov} keys revoked", by="runner")
+                set_state(t["id"], state="DONE", note=f"revoked {len(secrets)} {prov} key(s), runner paused")
+            except Exception as e:
+                set_state(t["id"], state="BLOCKED", note=f"panic revoke error: {e}")
             return
 
         # speculative N-best: race a few approaches, keep the cheapest that passes
@@ -153,6 +190,11 @@ def run_task(t):
                            cwd=repo, capture_output=True)
             wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", slug)
             env = dict(os.environ); env.update(POOL.env_for(acct))
+            # inject this project's external-provider secrets (values never logged)
+            try:
+                env.update(secrets_manager.inject_env(name))
+            except Exception:
+                pass
             log = subprocess.run(
                 [CLAUDE_BIN, "-p", prompt, "--model", model, "--permission-mode", "acceptEdits",
                  "--max-turns", "60", "--output-format", "text"],
@@ -161,6 +203,16 @@ def run_task(t):
             out = (log.stdout + log.stderr)
             low = out.lower()
             set_state(t["id"], log_tail=out[-2000:])
+            # bidirectional learning: harvest the agent's feedback about the orchestration
+            try:
+                feedback.extract_and_store(out, project=name, slug=slug, task_id=t["id"])
+            except Exception:
+                pass
+            # auto-resolve missing credentials (prompts you only if payment/manual is needed)
+            try:
+                credential_broker.detect_from_output(out, name)
+            except Exception:
+                pass
 
             if any(s in low for s in EXHAUST):
                 nxt = POOL.mark_exhausted(acct)
@@ -309,6 +361,12 @@ _SCHEDULE = [
     ("chaos-weekly",  "chaos",              "weekly",   (6, 2, 0)),
     ("demand-weekly", "demand_mining.py",   "weekly",   (1, 4, 0)),
     ("radar-weekly",  "capability_radar.py","weekly",   (1, 3, 0)),
+    ("governor-180",  "resource_governor.py","interval",180),   # keep the Mac alive
+    ("sessions-120",  "session_watcher.py", "interval", 120),   # read paused/finished sessions
+    ("loops-300",     "loops.py",           "interval", 300),   # per-app learning/remediation loops
+    ("metaloop-daily","meta_loop.py",       "daily",    (4, 0)),# loop on a loop
+    ("feedback-daily","feedback_review.py", "daily",    (5, 0)),# agent->orchestrator improvements
+    ("usage-daily",   "usage_meter.py",     "daily",    (6, 0)),# external API/subscription spend
 ]
 _sched_last: dict = {}
 
@@ -349,11 +407,17 @@ def main():
     print(f"runner {RUNNER_ID} online -> {os.environ.get('SUPABASE_URL','(set SUPABASE_URL)')}")
     active = []
     _sched_t = 0.0
+    import resource_governor
     while True:
         active = [th for th in active if th.is_alive()]
         try:
             db.heartbeat(RUNNER_ID, socket.gethostname(), len(active))
-            if len(active) < MAX_PARALLEL:
+            # live throttle: the resource governor lowers this under disk/RAM pressure
+            eff_limit = min(MAX_PARALLEL, resource_governor.current_limit())
+            # global kill switch: halt all task claiming instantly
+            if kill_switch.is_paused():
+                eff_limit = 0
+            if len(active) < eff_limit:
                 t = db.claim_task(RUNNER_ID)
                 if t:
                     th = threading.Thread(target=run_task, args=(t,), daemon=True)
