@@ -7,3 +7,4 @@ runner/.env
 __pycache__/
 *.pyc
 .DS_Store
+supabase/.temp/
