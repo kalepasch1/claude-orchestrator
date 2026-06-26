@@ -18,7 +18,7 @@ Provider split (from .env):
   EMBED_PROVIDER=voyage           → quality path used by knowledge_embed.py
 Falls back to empty list (keyword mode in context_retrieval.py) if neither set.
 """
-import os, json, math, re, urllib.request
+import os, json, math, re, time, urllib.request, urllib.error
 import knowledge_embed as ke
 
 CACHE_FILE = ".orch-context-cache.json"
@@ -58,19 +58,36 @@ def _batch_embed(texts):
     """
     if not texts:
         return []
+
+    def _post(url, body, headers, retries=4):
+        """POST with exponential backoff on 429/5xx."""
+        delay = 2.0
+        for attempt in range(retries):
+            try:
+                req = urllib.request.Request(url, data=body, headers=headers)
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    return json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                if e.code in (429, 500, 502, 503, 529) and attempt < retries - 1:
+                    retry_after = float(e.headers.get("Retry-After", delay))
+                    print(f"[context_embed] {e.code} — retrying in {retry_after:.1f}s")
+                    time.sleep(retry_after)
+                    delay = min(delay * 2, 60)
+                else:
+                    raise
+        return None
+
     try:
         if _CTX_PROVIDER == "openai" and os.environ.get("OPENAI_API_KEY"):
             results = []
             for i in range(0, len(texts), BATCH_SIZE):
                 chunk = texts[i:i + BATCH_SIZE]
-                req = urllib.request.Request(
+                data = _post(
                     "https://api.openai.com/v1/embeddings",
-                    data=json.dumps({"model": _OPENAI_MODEL, "input": chunk}).encode(),
-                    headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
-                             "Content-Type": "application/json"})
-                with urllib.request.urlopen(req, timeout=60) as r:
-                    items = json.loads(r.read())["data"]
-                # API returns items sorted by index
+                    json.dumps({"model": _OPENAI_MODEL, "input": chunk}).encode(),
+                    {"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
+                     "Content-Type": "application/json"})
+                items = data["data"]
                 results.extend(x["embedding"] for x in sorted(items, key=lambda x: x["index"]))
             return results
 
@@ -78,14 +95,12 @@ def _batch_embed(texts):
             results = []
             for i in range(0, len(texts), BATCH_SIZE):
                 chunk = texts[i:i + BATCH_SIZE]
-                req = urllib.request.Request(
+                data = _post(
                     "https://api.voyageai.com/v1/embeddings",
-                    data=json.dumps({"model": _VOYAGE_MODEL, "input": chunk}).encode(),
-                    headers={"Authorization": f"Bearer {os.environ['VOYAGE_API_KEY']}",
-                             "Content-Type": "application/json"})
-                with urllib.request.urlopen(req, timeout=60) as r:
-                    items = json.loads(r.read())["data"]
-                for x in sorted(items, key=lambda x: x["index"]):
+                    json.dumps({"model": _VOYAGE_MODEL, "input": chunk}).encode(),
+                    {"Authorization": f"Bearer {os.environ['VOYAGE_API_KEY']}",
+                     "Content-Type": "application/json"})
+                for x in sorted(data["data"], key=lambda x: x["index"]):
                     v = x["embedding"]
                     results.append((v + [0.0] * 1536)[:1536])
             return results
