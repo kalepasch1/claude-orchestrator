@@ -7,6 +7,25 @@ The runner uses the SERVICE ROLE key so it bypasses RLS. Set:
 """
 import os, json, urllib.request, urllib.parse
 
+# Load runner/.env directly from Python so launchd agents pick up all env vars
+# (EMBED_PROVIDER, ANTHROPIC_API_KEY, etc.) even when the shell wrapper can't
+# source the file due to macOS TCC restrictions.
+def _load_env():
+    env = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    try:
+        for raw in open(env):
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, _, v = line.partition("=")
+            k = k.strip()
+            v = v.split("#")[0].strip().strip('"').strip("'")
+            os.environ.setdefault(k, v)
+    except OSError:
+        pass  # silently skip if FDA not yet granted; plist env vars are the fallback
+
+_load_env()
+
 URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 

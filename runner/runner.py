@@ -17,7 +17,7 @@ Run on your Mac:
 
 It NEVER force-merges: verify-fail or test-fail creates an approval card and stops.
 """
-import os, sys, time, json, socket, subprocess, threading
+import os, sys, time, json, socket, subprocess, threading, datetime
 
 # Auto-load .env from the runner's own directory (works regardless of CWD)
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -289,9 +289,66 @@ def cost_ledger_row(project, slug, model, out):
             "usd": round(itok / 1e6 * pin + otok / 1e6 * pout, 4)}
 
 
+# ── Built-in periodic scheduler ───────────────────────────────────────────────
+# Runs all periodic jobs as subprocesses of this process, which inherits the
+# Terminal FDA grant (bypassing launchd TCC restrictions on ~/Documents/).
+#
+# job: if ends in .py → python3 runner/<job>; else → python3 periodic.py <job>
+# schedule_type: 'interval' (seconds) | 'daily' (H,M) | 'weekly' (weekday,H,M)
+_SCHEDULE = [
+    ("txn-300",       "txn",                "interval", 300),
+    ("anomaly-3600",  "anomaly.py",         "interval", 3600),
+    ("roi-daily",     "roi",                "daily",    (0, 15)),
+    ("deploy-daily",  "deploy",             "daily",    (2, 30)),
+    ("maturity-daily","maturity.py",        "daily",    (2, 30)),
+    ("selfrev-daily", "self_review.py",     "daily",    (3, 0)),
+    ("batch-night",   "batch",              "daily",    (23, 30)),
+    ("batch-morning", "batch",              "daily",    (8, 0)),
+    ("spec-weekly",   "spec",               "weekly",   (0, 2, 0)),
+    ("scout-weekly",  "scout",              "weekly",   (0, 3, 0)),
+    ("chaos-weekly",  "chaos",              "weekly",   (6, 2, 0)),
+    ("demand-weekly", "demand_mining.py",   "weekly",   (1, 4, 0)),
+    ("radar-weekly",  "capability_radar.py","weekly",   (1, 3, 0)),
+]
+_sched_last: dict = {}
+
+def _fire_periodic(job: str) -> None:
+    _dir = os.path.dirname(os.path.abspath(__file__))
+    _log = os.path.expanduser(f"~/Library/Logs/claude-orchestrator/{job.replace('.py','').replace('_','-')}")
+    os.makedirs(os.path.dirname(_log + ".log"), exist_ok=True)
+    cmd = ([sys.executable, os.path.join(_dir, job)] if job.endswith(".py")
+           else [sys.executable, os.path.join(_dir, "periodic.py"), job])
+    with open(_log + ".log", "a") as lf, open(_log + ".err", "a") as ef:
+        subprocess.Popen(cmd, stdout=lf, stderr=ef, cwd=_dir, env=os.environ.copy())
+
+def _scheduler_tick() -> None:
+    now = time.time()
+    dt = datetime.datetime.now()
+    for key, job, stype, args in _SCHEDULE:
+        last = _sched_last.get(key, 0)
+        if stype == "interval":
+            fire = (now - last) >= args
+        elif stype == "daily":
+            h, m = args
+            fire = (dt.hour == h and dt.minute == m and now - last > 3600)
+        else:  # weekly
+            wd, h, m = args
+            fire = (dt.weekday() == wd and dt.hour == h and dt.minute == m
+                    and now - last > 3600 * 24)
+        if fire:
+            _sched_last[key] = now
+            try:
+                _fire_periodic(job)
+                print(f"[sched] {job}", flush=True)
+            except Exception as e:
+                print(f"[sched] {job} error: {e}", flush=True)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 def main():
     print(f"runner {RUNNER_ID} online -> {os.environ.get('SUPABASE_URL','(set SUPABASE_URL)')}")
     active = []
+    _sched_t = 0.0
     while True:
         active = [th for th in active if th.is_alive()]
         try:
@@ -303,6 +360,9 @@ def main():
                     th.start(); active.append(th); continue
         except Exception as e:
             print("poll error:", e)
+        if time.time() - _sched_t >= 60:
+            _sched_t = time.time()
+            _scheduler_tick()
         time.sleep(POLL)
 
 
