@@ -1,90 +1,201 @@
 #!/usr/bin/env python3
 """
 context_embed.py - embedding-based semantic file ranking for context retrieval.
-Upgrades context_retrieval.py from keyword/ripgrep to cosine-similarity ranking so
-the agent gets pointed to the files most semantically relevant to the task, not just
-files whose path/content contain the same keywords.
 
-Uses the same EMBED_PROVIDER as knowledge_embed.py (openai or voyage). Falls back
-gracefully to returning an empty list so context_retrieval.py uses keyword mode.
+Optimizations over the naive implementation:
+  1. Batch API  - all uncached files embedded in 1-3 round-trips (not 1/file).
+                  OpenAI allows 2048 inputs/batch; Voyage allows 128.
+  2. Smart text - extracts import lines + function/class signatures + 300-char
+                  head instead of raw first-N chars. Code structure beats raw prose.
+  3. Hybrid     - final score = 0.7*cosine + 0.3*keyword_tf. Catches exact
+                  identifiers the embedding model may miss.
+  4. MMR        - Maximal Marginal Relevance selection: maximise relevance AND
+                  diversity so the agent sees 12 varied files, not a cluster of
+                  nearly identical test/util files.
 
-Embeddings are cached per-repo in .orch-context-cache.json keyed by path+mtime so
-unchanged files are never re-embedded. A cold repo with 200 files = ~200 API calls
-once; subsequent runs are cache hits.
+Provider split (from .env):
+  CONTEXT_EMBED_PROVIDER=openai  → bulk repo-file calls (cheap, fast, good dim)
+  EMBED_PROVIDER=voyage           → quality path used by knowledge_embed.py
+Falls back to empty list (keyword mode in context_retrieval.py) if neither set.
 """
-import os, json, math, urllib.request
+import os, json, math, re, urllib.request
 import knowledge_embed as ke
 
 CACHE_FILE = ".orch-context-cache.json"
-MAX_CHARS = 1500          # chars of file content to embed (header/imports)
+MAX_CHARS   = 8000    # hard cap sent to API per file (tokens ~= chars/4)
+BATCH_SIZE  = 96      # stay well under Voyage's 128 limit
+MMR_LAMBDA  = float(os.environ.get("CONTEXT_MMR_LAMBDA", "0.7"))   # relevance weight
+HYBRID_ALPHA= float(os.environ.get("CONTEXT_HYBRID_ALPHA", "0.7")) # cosine weight
 
-# context_embed uses CONTEXT_EMBED_PROVIDER when set (default: EMBED_PROVIDER).
-# Typically openai (cheaper for bulk repo-file calls); voyager for quality paths.
-_CTX_PROVIDER = (os.environ.get("CONTEXT_EMBED_PROVIDER") or
-                 os.environ.get("EMBED_PROVIDER", "")).lower()
-ENABLED = bool(_CTX_PROVIDER)
-_OPENAI_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-_VOYAGE_MODEL = os.environ.get("VOYAGE_EMBEDDING_MODEL", "voyage-3")
+_CTX_PROVIDER   = (os.environ.get("CONTEXT_EMBED_PROVIDER") or
+                   os.environ.get("EMBED_PROVIDER", "")).lower()
+ENABLED         = bool(_CTX_PROVIDER)
+_OPENAI_MODEL   = os.environ.get("OPENAI_EMBEDDING_MODEL",  "text-embedding-3-small")
+_VOYAGE_MODEL   = os.environ.get("VOYAGE_EMBEDDING_MODEL",  "voyage-3")
+_SIG_RE = re.compile(
+    r"^(import |from |export |def |class |function |async function |"
+    r"const |let |var |type |interface |enum |fn |pub fn |func )",
+)
 
 
-def _embed_ctx(text):
-    """Embed using CONTEXT_EMBED_PROVIDER (may differ from the main EMBED_PROVIDER)."""
+# ── content extraction ────────────────────────────────────────────────────────
+
+def _extract(filepath, content):
+    """Return a compact, semantically rich representation of a source file."""
+    lines = content.split("\n")
+    sigs  = [l.rstrip() for l in lines if _SIG_RE.match(l)][:40]
+    head  = content[:300]
+    body  = "\n".join(sigs) if sigs else head
+    return f"{filepath}\n{body}\n{head}"[:MAX_CHARS]
+
+
+# ── batch embedding ───────────────────────────────────────────────────────────
+
+def _batch_embed(texts):
+    """
+    Embed a list of strings in one or a few API calls.
+    Returns a list of vectors (same length as `texts`), or [] on error.
+    """
+    if not texts:
+        return []
     try:
         if _CTX_PROVIDER == "openai" and os.environ.get("OPENAI_API_KEY"):
-            req = urllib.request.Request(
-                "https://api.openai.com/v1/embeddings",
-                data=json.dumps({"model": _OPENAI_MODEL, "input": text[:8000]}).encode(),
-                headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
-                         "Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=30) as r:
-                return json.loads(r.read())["data"][0]["embedding"]
-        if _CTX_PROVIDER == "voyage" and os.environ.get("VOYAGE_API_KEY"):
-            req = urllib.request.Request(
-                "https://api.voyageai.com/v1/embeddings",
-                data=json.dumps({"model": _VOYAGE_MODEL, "input": [text[:8000]]}).encode(),
-                headers={"Authorization": f"Bearer {os.environ['VOYAGE_API_KEY']}",
-                         "Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=30) as r:
-                v = json.loads(r.read())["data"][0]["embedding"]
-                return (v + [0.0] * 1536)[:1536]
-    except Exception:
-        pass
-    # fall back to the main ke.embed() path
-    return ke.embed(text)
+            results = []
+            for i in range(0, len(texts), BATCH_SIZE):
+                chunk = texts[i:i + BATCH_SIZE]
+                req = urllib.request.Request(
+                    "https://api.openai.com/v1/embeddings",
+                    data=json.dumps({"model": _OPENAI_MODEL, "input": chunk}).encode(),
+                    headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}",
+                             "Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    items = json.loads(r.read())["data"]
+                # API returns items sorted by index
+                results.extend(x["embedding"] for x in sorted(items, key=lambda x: x["index"]))
+            return results
 
+        if _CTX_PROVIDER == "voyage" and os.environ.get("VOYAGE_API_KEY"):
+            results = []
+            for i in range(0, len(texts), BATCH_SIZE):
+                chunk = texts[i:i + BATCH_SIZE]
+                req = urllib.request.Request(
+                    "https://api.voyageai.com/v1/embeddings",
+                    data=json.dumps({"model": _VOYAGE_MODEL, "input": chunk}).encode(),
+                    headers={"Authorization": f"Bearer {os.environ['VOYAGE_API_KEY']}",
+                             "Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    items = json.loads(r.read())["data"]
+                for x in sorted(items, key=lambda x: x["index"]):
+                    v = x["embedding"]
+                    results.append((v + [0.0] * 1536)[:1536])
+            return results
+    except Exception as exc:
+        print(f"[context_embed] batch embed error: {exc}")
+    # single-vector fallback via knowledge_embed (covers any provider it supports)
+    out = []
+    for t in texts:
+        v = ke.embed(t)
+        out.append(v if v else [])
+    return out
+
+
+def _embed_one(text):
+    vecs = _batch_embed([text])
+    return vecs[0] if vecs and vecs[0] else None
+
+
+# ── cache helpers ─────────────────────────────────────────────────────────────
 
 def _load_cache(repo):
-    path = os.path.join(repo, CACHE_FILE)
     try:
-        with open(path) as f:
+        with open(os.path.join(repo, CACHE_FILE)) as f:
             return json.load(f)
     except Exception:
         return {}
 
 
 def _save_cache(repo, cache):
-    path = os.path.join(repo, CACHE_FILE)
     try:
-        with open(path, "w") as f:
+        with open(os.path.join(repo, CACHE_FILE), "w") as f:
             json.dump(cache, f)
     except Exception:
         pass
 
 
+# ── cosine / keyword helpers ──────────────────────────────────────────────────
+
 def _cosine(a, b):
     dot = sum(x * y for x, y in zip(a, b))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(x * x for x in b))
+    na  = math.sqrt(sum(x * x for x in a))
+    nb  = math.sqrt(sum(x * x for x in b))
     return dot / (na * nb + 1e-9)
 
 
+def _keyword_score(prompt, repo, files):
+    """
+    Simple TF-overlap score: fraction of prompt tokens found in the file's
+    first 3000 chars. Returns {filepath: 0..1} with no external calls.
+    """
+    terms = set(re.findall(r"[a-z][a-z0-9_]{2,}", prompt.lower()))
+    scores = {}
+    for f in files:
+        try:
+            with open(os.path.join(repo, f), errors="replace") as fh:
+                text = fh.read(3000).lower()
+        except OSError:
+            scores[f] = 0.0
+            continue
+        hit = sum(1 for t in terms if t in text)
+        scores[f] = hit / (len(terms) + 1e-9)
+    # also fold in path-token overlap
+    for f in files:
+        path_toks = set(re.split(r"[/_.\-]", f.lower()))
+        path_hit  = len(terms & path_toks) / (len(terms) + 1e-9)
+        scores[f] = scores.get(f, 0.0) + 0.3 * path_hit
+    # normalise to 0..1
+    mx = max(scores.values()) if scores else 1.0
+    return {f: v / (mx + 1e-9) for f, v in scores.items()}
+
+
+# ── MMR selection ─────────────────────────────────────────────────────────────
+
+def _mmr_select(file_vecs, hybrid_scores, k):
+    """
+    Maximal Marginal Relevance: greedily pick files that maximise
+    MMR_LAMBDA * relevance - (1-MMR_LAMBDA) * max_redundancy_to_selected.
+    Returns ordered list of up to k filepaths.
+    """
+    remaining  = list(hybrid_scores.keys())
+    selected   = []
+    sel_vecs   = []
+
+    while remaining and len(selected) < k:
+        if not sel_vecs:
+            # first pick: pure relevance
+            best = max(remaining, key=lambda f: hybrid_scores[f])
+        else:
+            def _mmr(f):
+                rel = hybrid_scores[f]
+                red = max(_cosine(file_vecs[f], sv) for sv in sel_vecs) if sel_vecs else 0.0
+                return MMR_LAMBDA * rel - (1 - MMR_LAMBDA) * red
+            best = max(remaining, key=_mmr)
+        selected.append(best)
+        if best in file_vecs:
+            sel_vecs.append(file_vecs[best])
+        remaining.remove(best)
+    return selected
+
+
+# ── public API ────────────────────────────────────────────────────────────────
+
 def embed_files(repo, files):
-    """Return {filepath: vector} for each file, using cache where possible."""
+    """Return {filepath: vector} using batched API + per-repo mtime cache."""
     if not ENABLED:
         return {}
-    cache = _load_cache(repo)
+    cache  = _load_cache(repo)
     result = {}
-    dirty = False
+    to_embed = []    # (filepath, mtime_key, text)
+
     for f in files:
         abs_path = os.path.join(repo, f)
         try:
@@ -92,7 +203,7 @@ def embed_files(repo, files):
         except OSError:
             continue
         key = f"{f}:{mtime}"
-        if key in cache:
+        if key in cache and cache[key]:
             result[f] = cache[key]
             continue
         try:
@@ -102,39 +213,67 @@ def embed_files(repo, files):
             continue
         if not content.strip():
             continue
-        vec = _embed_ctx(f"{f}\n{content}")
-        if vec:
-            cache[key] = vec
-            result[f] = vec
-            dirty = True
-    if dirty:
-        _save_cache(repo, cache)
+        to_embed.append((f, key, _extract(f, content)))
+
+    if to_embed:
+        texts = [t for _, _, t in to_embed]
+        vecs  = _batch_embed(texts)
+        dirty = False
+        for (f, key, _), vec in zip(to_embed, vecs):
+            if vec:
+                cache[key] = vec
+                result[f]  = vec
+                dirty = True
+        if dirty:
+            _save_cache(repo, cache)
+
     return result
 
 
 def rank(repo, prompt, files, k=12):
     """
-    Return `files` re-ranked by semantic similarity to `prompt`.
-    Returns empty list if embeddings are unavailable (caller falls back to keywords).
+    Return up to k files from `files` ranked by hybrid semantic+keyword
+    relevance to `prompt`, with MMR diversity applied.
+    Returns [] if embeddings are unavailable (caller falls back to keywords).
     """
     if not ENABLED or not files:
         return []
-    prompt_vec = _embed_ctx(prompt)
+
+    prompt_vec = _embed_one(prompt)
     if not prompt_vec:
         return []
+
     file_vecs = embed_files(repo, files)
     if not file_vecs:
         return []
-    scored = [(f, _cosine(prompt_vec, file_vecs[f])) for f in files if f in file_vecs]
-    scored.sort(key=lambda x: -x[1])
-    return [f for f, _ in scored[:k]]
+
+    # cosine similarity scores
+    cos_scores = {f: _cosine(prompt_vec, file_vecs[f])
+                  for f in files if f in file_vecs}
+
+    # keyword overlap scores (free - no API call)
+    kw_scores  = _keyword_score(prompt, repo, list(cos_scores.keys()))
+
+    # hybrid: weighted blend
+    hybrid = {
+        f: HYBRID_ALPHA * cos_scores[f] + (1 - HYBRID_ALPHA) * kw_scores.get(f, 0.0)
+        for f in cos_scores
+    }
+
+    # MMR diversity selection
+    return _mmr_select(file_vecs, hybrid, k)
 
 
 if __name__ == "__main__":
     import sys
-    repo = sys.argv[1] if len(sys.argv) > 1 else "."
+    repo   = sys.argv[1] if len(sys.argv) > 1 else "."
     prompt = sys.argv[2] if len(sys.argv) > 2 else "fix the auth allowlist"
     import context_retrieval as cr
-    files = cr._tracked(repo)[:50]
+    files  = cr._tracked(repo)[:200]
+    print(f"Ranking {len(files)} files via {_CTX_PROVIDER or '(none)'}…")
     ranked = rank(repo, prompt, files)
-    print("embedding-ranked:", ranked or "(no EMBED_PROVIDER set)")
+    if ranked:
+        for i, f in enumerate(ranked, 1):
+            print(f"  {i:2d}. {f}")
+    else:
+        print("(no EMBED_PROVIDER set — keyword fallback active)")
