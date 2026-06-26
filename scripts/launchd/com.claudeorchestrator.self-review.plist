@@ -7,8 +7,8 @@
     <string>com.claudeorchestrator.self-review</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
-        <string>REPO_PATH/runner/self_review.py</string>
+        <string>HOME_DIR/Applications/ClaudeRunner.app/Contents/MacOS/run</string>
+        <string>self_review.py</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>

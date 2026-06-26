@@ -8,8 +8,8 @@
     <string>com.claudeorchestrator.research-window</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
-        <string>REPO_PATH/runner/runner.py</string>
+        <string>HOME_DIR/Applications/ClaudeRunner.app/Contents/MacOS/run</string>
+        <string>runner.py</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>

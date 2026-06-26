@@ -7,8 +7,8 @@
     <string>com.claudeorchestrator.maturity</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
-        <string>REPO_PATH/runner/maturity.py</string>
+        <string>HOME_DIR/Applications/ClaudeRunner.app/Contents/MacOS/run</string>
+        <string>maturity.py</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>

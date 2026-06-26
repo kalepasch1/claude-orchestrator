@@ -8,8 +8,7 @@
     <string>com.claudeorchestrator.deploy</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
-        <string>REPO_PATH/runner/periodic.py</string>
+        <string>HOME_DIR/Applications/ClaudeRunner.app/Contents/MacOS/run</string>
         <string>deploy</string>
     </array>
     <key>EnvironmentVariables</key>
