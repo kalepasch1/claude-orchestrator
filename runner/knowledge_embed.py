@@ -18,6 +18,8 @@ import db
 import knowledge as kw_fallback
 
 PROVIDER = os.environ.get("EMBED_PROVIDER", "").lower()
+VOYAGE_MODEL = os.environ.get("VOYAGE_EMBEDDING_MODEL", "voyage-3")
+OPENAI_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 DIM = 1536
 
 
@@ -33,15 +35,15 @@ def embed(text):
     try:
         if PROVIDER == "openai" and os.environ.get("OPENAI_API_KEY"):
             d = _http_json("https://api.openai.com/v1/embeddings",
-                           {"model": "text-embedding-3-small", "input": text[:8000]},
+                           {"model": OPENAI_MODEL, "input": text[:8000]},
                            {"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"})
             return d["data"][0]["embedding"]
         if PROVIDER == "voyage" and os.environ.get("VOYAGE_API_KEY"):
             d = _http_json("https://api.voyageai.com/v1/embeddings",
-                           {"model": "voyage-3", "input": [text[:8000]]},
+                           {"model": VOYAGE_MODEL, "input": [text[:8000]]},
                            {"Authorization": f"Bearer {os.environ['VOYAGE_API_KEY']}"})
             v = d["data"][0]["embedding"]
-            return (v + [0.0] * DIM)[:DIM]           # pad to table dim
+            return (v + [0.0] * DIM)[:DIM]           # pad/truncate to table dim
     except Exception:
         pass
     return None

@@ -28,12 +28,25 @@ def _cosine(a, b):
 
 
 def _near_duplicate(text):
-    """Return slug of existing capability with cosine similarity ≥ threshold, or None."""
+    """Return slug of existing capability with cosine similarity ≥ threshold, or None.
+    Uses pgvector match_capabilities RPC when an embedding is available — O(1) vs O(n).
+    Falls back to pairwise cosine when no embedding is stored yet."""
     if not _EMBED_OK or not _ke:
         return None
     vec = _ke.embed(text)
     if not vec:
         return None
+    # fast path: pgvector ANN search
+    try:
+        hits = db.rpc("match_capabilities",
+                      {"query_embedding": vec, "match_threshold": _DEDUP_THRESHOLD,
+                       "match_count": 1}) or []
+        if hits:
+            return hits[0]["slug"]
+        return None
+    except Exception:
+        pass
+    # fallback: pairwise (no stored embeddings yet or RPC unavailable)
     existing = db.select("capabilities", {"select": "slug,summary"}) or []
     for cap in existing:
         ev = _ke.embed(cap.get("summary") or "")
@@ -52,9 +65,14 @@ def publish(name, slug, domain, summary, contract, spec, source_project,
     if near and near != slug:
         print(f"WARNING: capability '{slug}' is semantically near-duplicate of '{near}' "
               f"(cosine ≥ {_DEDUP_THRESHOLD}). Consider reusing or versioning that one.")
-    cap = db.insert("capabilities", {"name": name, "slug": slug, "domain": domain,
-                                     "summary": s_summary, "contract": contract or {},
-                                     "regulated": regulated, "status": "experimental"})
+    row = {"name": name, "slug": slug, "domain": domain, "summary": s_summary,
+           "contract": contract or {}, "regulated": regulated, "status": "experimental"}
+    # store embedding for future pgvector dedup (best-effort; non-blocking if provider absent)
+    if _EMBED_OK and _ke:
+        vec = _ke.embed(f"{name} {domain} {s_summary}")
+        if vec:
+            row["embedding"] = vec
+    cap = db.insert("capabilities", row)
     cap_id = cap[0]["id"] if isinstance(cap, list) else cap["id"]
     db.insert("capability_versions", {"capability_id": cap_id, "semver": semver, "spec": s_spec})
     provenance.record(cap_id, source_project, "published", consent=consent, residency=residency)
