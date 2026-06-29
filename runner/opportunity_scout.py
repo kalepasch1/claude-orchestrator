@@ -7,9 +7,8 @@ ideas keep arriving for you to approve. Schedule weekly.
 """
 import os, sys, json, subprocess, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import db, preference
+import db, preference, claude_cli
 
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 MODEL = os.environ.get("SCOUT_MODEL", "claude-haiku-4-5-20251001")
 
 PROMPT = """WITHOUT editing files, scan this repo and propose the TOP 3 highest-leverage
@@ -34,8 +33,8 @@ def run():
         if not os.path.isdir(repo):
             continue
         try:
-            out = subprocess.check_output([CLAUDE_BIN, "-p", PROMPT, "--model", MODEL,
-                                           "--output-format", "text"], cwd=repo, text=True, timeout=200)
+            r = claude_cli.run(PROMPT, MODEL, cwd=repo, timeout=200)
+            out = r["text"]
         except Exception:
             continue
         ideas = []

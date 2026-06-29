@@ -7,7 +7,7 @@ Respects preference suppression so only likely-valuable ideas surface. Schedule 
 """
 import os, sys, json, subprocess, re, math
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import db, preference
+import db, preference, claude_cli
 
 try:
     import knowledge_embed as _ke
@@ -23,7 +23,6 @@ def _cosine(a, b):
     nb = math.sqrt(sum(x * x for x in b))
     return dot / (na * nb + 1e-9)
 
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 MODEL = os.environ.get("RADAR_MODEL", "claude-sonnet-4-6")
 
 
@@ -93,8 +92,8 @@ def run():
     if not ideas:
         prompt = PROMPT.replace("{caps}", json.dumps(caps)).replace("{apps}", json.dumps([a["name"] for a in apps]))
         try:
-            out = subprocess.check_output([CLAUDE_BIN, "-p", prompt, "--model", MODEL,
-                                           "--output-format", "text"], text=True, timeout=200)
+            r = claude_cli.run(prompt, MODEL, timeout=200)
+            out = r["text"]
         except Exception as e:
             print("radar failed:", e); return 0
         for line in out.splitlines():

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- TEMPLATE — run scripts/setup-scheduler.sh to install.
+     One-time setup to make this survive reboot (5 min total):
+       1. System Settings → Privacy & Security → Full Disk Access → + → ~/Applications/ClaudeRunner.app
+       2. System Settings → General → Login Items → + → ~/Applications/ClaudeRunner.app
+       3. bash scripts/setup-scheduler.sh   (re-runs setup with the app's FDA)
+     The KeepAlive=true here auto-restarts on crash. Login Items ensures it starts at boot. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.claudeorchestrator.runner</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>HOME_DIR/Applications/ClaudeRunner.app/Contents/MacOS/run</string>
+    </array>
+    <key>KeepAlive</key>
+    <true/>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>StandardOutPath</key>
+    <string>LOG_DIR/runner.log</string>
+    <key>StandardErrorPath</key>
+    <string>LOG_DIR/runner.err</string>
+</dict>
+</plist>

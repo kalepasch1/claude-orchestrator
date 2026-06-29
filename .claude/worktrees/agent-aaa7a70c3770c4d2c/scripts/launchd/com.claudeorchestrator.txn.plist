@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Cross-repo transaction coordinator — runs every 5 minutes.
+     TEMPLATE — run scripts/setup-scheduler.sh to install with real env vars. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.claudeorchestrator.txn</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>HOME_DIR/Applications/ClaudeRunner.app/Contents/MacOS/run</string>
+        <string>txn</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SUPABASE_URL</key>
+        <string>SUPABASE_URL_PLACEHOLDER</string>
+        <key>SUPABASE_SERVICE_KEY</key>
+        <string>SUPABASE_SERVICE_KEY_PLACEHOLDER</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StartInterval</key>
+    <integer>300</integer>
+    <key>StandardOutPath</key>
+    <string>LOG_DIR/txn.log</string>
+    <key>StandardErrorPath</key>
+    <string>LOG_DIR/txn.err</string>
+</dict>
+</plist>

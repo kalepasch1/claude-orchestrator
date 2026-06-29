@@ -10,9 +10,9 @@ gates still apply).
 """
 import os, sys, json, subprocess, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import claude_cli
 import db
 
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 PLAN_MODEL = os.environ.get("GOAL_MODEL", "claude-opus-4-8")
 MAX_TASKS_PER_GOAL = int(os.environ.get("GOAL_MAX_TASKS", "3"))
 
@@ -46,9 +46,8 @@ def advance():
             continue
         prompt = META.format(n=MAX_TASKS_PER_GOAL, goal=f"{g['objective']} (metric: {g.get('metric')} target {g.get('target')})", repo=repo)
         try:
-            out = subprocess.check_output([CLAUDE_BIN, "-p", prompt, "--model", PLAN_MODEL,
-                                           "--output-format", "text"], text=True, timeout=240)
-            tasks = json.loads(re.search(r"\[.*\]", out, re.S).group(0))
+            r = claude_cli.run(prompt, PLAN_MODEL, timeout=240)
+            tasks = json.loads(re.search(r"\[.*\]", r["text"], re.S).group(0))
         except Exception as e:
             sys.stderr.write(f"[goals] {g['objective'][:40]}: {e}\n"); continue
         hint = {"haiku": "claude-haiku-4-5-20251001", "sonnet": "claude-sonnet-4-6", "opus": "claude-opus-4-8"}

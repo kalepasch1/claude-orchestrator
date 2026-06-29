@@ -9,9 +9,8 @@ distill(process_text, name, slug, domain, source_project, regulated=False)
 """
 import os, sys, json, subprocess, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import privacy, capability, db
+import privacy, capability, db, claude_cli
 
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 MODEL = os.environ.get("DISTILL_MODEL", "claude-sonnet-4-6")
 
 PROMPT = """Generalize the PROCESS below into a reusable, productizable capability. Output ONE
@@ -28,9 +27,8 @@ def distill(process_text, name, slug, domain, source_project, consent=True,
     if findings:
         print(f"distill: scrubbed {findings} from input before processing")
     try:
-        out = subprocess.check_output([CLAUDE_BIN, "-p", PROMPT + clean_in, "--model", MODEL,
-                                       "--output-format", "text"], text=True, timeout=200)
-        d = json.loads(re.search(r"\{.*\}", out, re.S).group(0))
+        r = claude_cli.run(PROMPT + clean_in, MODEL, timeout=200)
+        d = json.loads(re.search(r"\{.*\}", r["text"], re.S).group(0))
     except Exception as e:
         return {"ok": False, "error": f"distillation failed: {e}"}
     spec = json.dumps({"steps": d.get("steps", []), "examples": d.get("synthetic_examples", [])}, indent=2)

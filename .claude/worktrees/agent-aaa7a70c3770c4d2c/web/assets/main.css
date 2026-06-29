@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+body { background: #0b0e14; color: #e6edf3; }
+
+/* Soft "breathing" pulse for live-status dots — calmer than animate-ping. */
+@keyframes breathe {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: .45; transform: scale(.88); }
+}
+.dot-breathe { animation: breathe 1.8s ease-in-out infinite; }
+
+/* Respect reduced-motion: stop the dot pulse and any ping ring. */
+@media (prefers-reduced-motion: reduce) {
+  .dot-breathe { animation: none; }
+  .motion-safe\:animate-ping { animation: none; }
+}

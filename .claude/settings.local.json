@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": ["Edit","Write","Read","Grep","Glob","Bash","WebFetch","WebSearch"],
+    "deny": [
+      "Bash(git push --force:*)",
+      "Bash(git push -f:*)",
+      "Bash(git reset --hard:*)",
+      "Bash(git clean -fdx:*)",
+      "Bash(rm -rf:*)",
+      "Bash(sudo:*)",
+      "Bash(supabase db reset:*)",
+      "Bash(npx supabase db reset:*)",
+      "Bash(vercel --prod:*)",
+      "Bash(vercel deploy --prod:*)"
+    ]
+  }
+}

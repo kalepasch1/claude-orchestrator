@@ -24,6 +24,8 @@ const capabilities = ref<any[]>([])
 const capInstances = ref<any[]>([])
 const capProvenance = ref<any[]>([])
 const radarProposals = ref<any[]>([])
+// Mission Control: epoch ms of the last realtime event observed (header live-strip).
+const lastEventAt = ref<number | null>(null)
 let chart: any = null
 
 // Chart accents — mirror the `chart-line` / `chart-axis` tailwind tokens
@@ -365,6 +367,42 @@ const byModel = computed(() => {
   return Object.entries(m).sort((a, b) => b[1] - a[1])
 })
 
+// ── live log lines for LogView ──────────────────────────────────────────────
+// Flattens the most recent tasks' `log_tail` text blobs into typed LogLine[].
+// Level is inferred from a leading token (ERROR/WARN/DEBUG); default info.
+// TODO(bind-stream): replace with a dedicated run_logs table + realtime channel
+// for true per-line streaming instead of polling the task log_tail snapshot.
+const logLines = computed(() => {
+  type LL = { ts?: number; level: 'debug' | 'info' | 'warn' | 'error'; message: string; source?: string }
+  const out: LL[] = []
+  const recent = [...tasks.value]
+    .filter(t => t.log_tail)
+    .slice(0, 12)
+    .reverse() // oldest first so the tail reads top→bottom
+  for (const t of recent) {
+    const base = t.updated_at || t.created_at
+    const baseMs = base ? new Date(base).getTime() : undefined
+    for (const raw of String(t.log_tail).split('\n')) {
+      const line = raw.trimEnd()
+      if (!line) continue
+      const m = line.match(/^\s*(ERROR|ERR|WARN|WARNING|DEBUG|DBG|INFO)\b[:\s-]*/i)
+      let level: LL['level'] = 'info'
+      let message = line
+      if (m) {
+        const tok = m[1].toUpperCase()
+        level = tok.startsWith('ERR') ? 'error'
+              : tok.startsWith('WARN') ? 'warn'
+              : (tok === 'DEBUG' || tok === 'DBG') ? 'debug' : 'info'
+        message = line.slice(m[0].length) || line
+      } else if (/\b(fail|failed|exception|traceback|429|rate.?limit)\b/i.test(line)) {
+        level = 'error'
+      }
+      out.push({ ts: baseMs, level, message, source: t.slug })
+    }
+  }
+  return out
+})
+
 const stateColor: Record<string, string> = {
   RUNNING: 'bg-blue-500/20 text-blue-300', DONE: 'bg-green-500/20 text-green-300',
   MERGED: 'bg-green-500/20 text-green-300', QUEUED: 'bg-slate-500/20 text-slate-300',
@@ -401,15 +439,18 @@ const radarBySlug = computed(() => {
   return m
 })
 
+// Wraps loadAll so every realtime event also stamps the Mission Control clock.
+function onRealtime() { lastEventAt.value = Date.now(); loadAll() }
+
 onMounted(() => {
   if (user.value) {
     loadAll()
     supabase.channel('orch')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, loadAll)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'approvals' }, loadAll)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'runner_heartbeats' }, loadAll)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'runs' }, loadAll)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'txns' }, loadAll)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, onRealtime)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'approvals' }, onRealtime)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'runner_heartbeats' }, onRealtime)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'runs' }, onRealtime)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'txns' }, onRealtime)
       .subscribe()
   }
 })
@@ -451,6 +492,15 @@ watch(user, u => { if (u) loadAll() })
         <span class="flex-1"></span>
         <button @click="signOut" class="text-slate-400 text-sm hover:text-white">Sign out</button>
       </header>
+
+      <!-- ── Mission Control live strip ── -->
+      <MissionControl
+        :tasks="tasks"
+        :runners="runners"
+        :approvals="approvals"
+        :outcomes="outcomes"
+        :spend="spend"
+        :last-event-at="lastEventAt" />
 
       <!-- ── NL analytics search ── -->
       <div class="bg-slate-900 border border-slate-700 rounded-xl p-4 mb-6">
@@ -650,6 +700,12 @@ watch(user, u => { if (u) loadAll() })
         <textarea v-model="newTask.prompt" placeholder="scoped task prompt…" rows="2"
                   class="sm:col-span-3 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm"></textarea>
         <button @click="queueTask" class="sm:col-span-3 bg-blue-600 hover:bg-blue-500 rounded-lg py-2 font-semibold text-sm">Queue</button>
+      </div>
+
+      <!-- ── Live activity log ── -->
+      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Live activity</h2>
+      <div class="mb-6">
+        <LogView title="Runner activity" :lines="logLines" height="18rem" />
       </div>
 
       <!-- ── Tasks ── -->
@@ -930,7 +986,7 @@ watch(user, u => { if (u) loadAll() })
       </div>
 
       <!-- ═══ Spend & Keys ══════════════════════════════════════════════════ -->
-      <div class="flex items-center gap-3 mt-10 mb-2">
+      <div class="flex items-center gap-3 mt-10 mb-2 flex-wrap">
         <h2 class="text-xs uppercase tracking-wider text-slate-500">Spend &amp; Keys</h2>
         <span class="flex-1"></span>
         <button v-if="!globalPaused" @click="stopAll" :disabled="stopLoading"
@@ -956,7 +1012,7 @@ watch(user, u => { if (u) loadAll() })
               <th class="pb-2 pr-3">Provider</th>
               <th class="pb-2 pr-3">Project</th>
               <th class="pb-2 pr-3">Spent MTD</th>
-              <th class="pb-2">Action</th>
+              <th class="pb-2 pr-8">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -970,11 +1026,19 @@ watch(user, u => { if (u) loadAll() })
                 </span>
               </td>
               <td class="py-1.5">
-                <button @click="rotateKey(s.provider, s.provider.toUpperCase() + '_API_KEY', s.project)"
-                        :disabled="rotateLoading[`${s.provider}/${s.provider.toUpperCase()}_API_KEY`]"
-                        class="text-xs bg-slate-700 hover:bg-amber-900/60 disabled:opacity-40 text-slate-300 hover:text-amber-300 rounded px-2 py-0.5">
-                  Rotate key
-                </button>
+                <div class="flex items-center gap-2">
+                  <button @click="rotateKey(s.provider, s.provider.toUpperCase() + '_API_KEY', s.project)"
+                          :disabled="rotateLoading[`${s.provider}/${s.provider.toUpperCase()}_API_KEY`]"
+                          class="text-[10px] bg-slate-700 hover:bg-amber-900/60 disabled:opacity-40 text-slate-300 hover:text-amber-300 rounded px-2 py-0.5 whitespace-nowrap">
+                    Rotate key
+                  </button>
+                  <button @click="panicStopAndRevoke(s.provider)"
+                          :disabled="panicLoading"
+                          class="text-[10px] bg-red-950/80 hover:bg-red-900/80 border border-red-800/60 disabled:opacity-40 text-red-400 hover:text-red-300 rounded px-2 py-0.5 whitespace-nowrap"
+                          title="Security panic: stop runner + revoke all active keys for this provider">
+                    ☠ Revoke
+                  </button>
+                </div>
               </td>
             </tr>
           </tbody>

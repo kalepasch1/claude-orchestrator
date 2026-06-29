@@ -6,9 +6,8 @@ bisectable. replay(run_id) re-runs that exact prompt in a fresh worktree.
 """
 import os, sys, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import db
+import db, claude_cli
 
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 
 
 def capture(task_id, project, slug, kind, model, account, repo, base, prompt, confidence=None):
@@ -33,9 +32,8 @@ def replay(run_id, repo):
     subprocess.run([os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"),
                     f"replay-{r['slug']}", r.get("base_commit", "main")], cwd=repo, capture_output=True)
     print(f"replaying run {run_id} ({r['model']}) at {r.get('base_commit')} ...")
-    subprocess.run([CLAUDE_BIN, "-p", r["prompt"], "--model", r["model"],
-                    "--permission-mode", "acceptEdits", "--max-turns", "60", "--output-format", "text"],
-                   cwd=wt if os.path.isdir(wt) else repo)
+    claude_cli.run(r["prompt"], r["model"], cwd=wt if os.path.isdir(wt) else repo,
+                   max_turns=60, permission="acceptEdits")
 
 
 if __name__ == "__main__":

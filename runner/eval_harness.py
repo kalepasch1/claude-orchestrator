@@ -10,8 +10,9 @@ Run: python3 eval_harness.py --candidate candidate_prefix.txt [--current current
 Exits 0 (adopt) or 1 (reject). Use the exit code to gate adoption in CI.
 """
 import os, sys, json, subprocess, argparse, tempfile
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import claude_cli
 
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 MODEL = os.environ.get("EVAL_MODEL", "claude-haiku-4-5-20251001")
 
 
@@ -19,13 +20,12 @@ def run_variant(prefix, evals):
     passed = 0
     for e in evals:
         with tempfile.TemporaryDirectory() as d:
-            r = subprocess.run([CLAUDE_BIN, "-p", prefix + e["prompt"], "--model", MODEL,
-                                "--permission-mode", "acceptEdits", "--max-turns", "20",
-                                "--output-format", "text"], cwd=d, capture_output=True, text=True)
+            r = claude_cli.run(prefix + e["prompt"], MODEL, cwd=d,
+                               permission="acceptEdits", max_turns=20)
             if e.get("check"):
                 ok = subprocess.run(e["check"], cwd=d, shell=True).returncode == 0
             else:
-                ok = r.returncode == 0
+                ok = r["returncode"] == 0
             passed += 1 if ok else 0
     return passed / max(1, len(evals))
 

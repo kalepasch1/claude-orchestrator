@@ -9,9 +9,8 @@ Schedule daily.
 """
 import os, sys, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import db, feedback
+import db, feedback, claude_cli
 
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 MODEL = os.environ.get("METALOOP_MODEL", "claude-sonnet-4-6")
 
 # Cadence bounds (seconds) per loop type
@@ -81,10 +80,9 @@ def _ask_improvement(project, loop_type):
         f'{{\"category\":\"strategy\",\"severity\":\"med\",\"observation\":\"...\",\"suggestion\":\"...\"}}'
     )
     try:
-        r = subprocess.check_output([CLAUDE_BIN, "-p", prompt, "--model", MODEL,
-                                     "--output-format", "text"], text=True, timeout=90)
+        resp = claude_cli.run(prompt, MODEL, permission=None, max_turns=1, timeout=90)
         import re, json
-        m = re.search(r"\{.*\}", r, re.S)
+        m = re.search(r"\{.*\}", resp["text"] or "", re.S)
         if m:
             it = json.loads(m.group(0))
             feedback.submit(

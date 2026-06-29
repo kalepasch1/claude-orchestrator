@@ -6,9 +6,8 @@ Pulls a compact telemetry snapshot and lets a model answer in plain English.
 """
 import os, sys, json, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import db, health, roi
+import db, health, roi, claude_cli
 
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 MODEL = os.environ.get("ASK_MODEL", "claude-sonnet-4-6")
 
 
@@ -28,8 +27,7 @@ def answer(question):
               f"this telemetry JSON, answer the question concisely with specific projects/"
               f"numbers.\nQUESTION: {question}\nTELEMETRY: {snap}")
     try:
-        return subprocess.check_output([CLAUDE_BIN, "-p", prompt, "--model", MODEL,
-                                        "--output-format", "text"], text=True, timeout=120)
+        return claude_cli.run(prompt, MODEL, timeout=120)["text"]
     except Exception as e:
         return f"(ask failed: {e})"
 

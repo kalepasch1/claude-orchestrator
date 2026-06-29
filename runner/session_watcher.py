@@ -12,9 +12,8 @@ confirms all phases are done.
 """
 import os, sys, json, glob, time, subprocess, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import db, feedback
+import db, feedback, claude_cli
 
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 MODEL = os.environ.get("NEXTSTEP_MODEL", "claude-sonnet-4-6")
 PROJECTS_DIR = os.environ.get("CLAUDE_PROJECTS_DIR", os.path.expanduser("~/.claude/projects"))
 IDLE = int(os.environ.get("SESSION_IDLE_SECONDS", "120"))
@@ -117,9 +116,12 @@ def _decide(req, out, master="", phases=None):
         phase_txt = json.dumps(phases or [])
         p = (PROMPT.replace("{req}", req).replace("{out}", out)
              .replace("{master}", master[:2000]).replace("{phases}", phase_txt))
-        r = subprocess.check_output([CLAUDE_BIN, "-p", p, "--model", MODEL, "--output-format", "text"],
-                                    text=True, timeout=120)
-        return json.loads(re.search(r"\{.*\}", r, re.S).group(0))
+        r = claude_cli.run(p, MODEL, permission=None, max_turns=1, timeout=120)
+        m = re.search(r"\{.*\}", r["text"] or "", re.S)
+        if not m:
+            return {"next_action": "(no decision: model returned no JSON, likely out of credits)",
+                    "auto_safe": False, "done": False, "phases_remaining": None}
+        return json.loads(m.group(0))
     except Exception as e:
         return {"next_action": f"(could not auto-decide: {e})", "auto_safe": False, "done": False,
                 "phases_remaining": None}
@@ -173,6 +175,8 @@ def _close_vscode_tab(session_id, transcript_path):
 def scan():
     seen = _seen()
     made = 0
+    cap = int(os.environ.get("SESSION_MAX_PER_SCAN", "8"))   # cost + noise guard
+    known = {p["name"] for p in (db.select("projects", {"select": "name"}) or [])}
     for path in glob.glob(os.path.join(PROJECTS_DIR, "**", "*.jsonl"), recursive=True):
         try:
             mtime = os.path.getmtime(path)
@@ -183,6 +187,10 @@ def scan():
         sid = os.path.splitext(os.path.basename(path))[0]
         if seen.get(sid) == mtime:                    # already handled this state
             continue
+        # skip the orchestrator's OWN headless/worktree transcripts — only watch real,
+        # registered interactive projects (prevents the 15k-card / 15k-model-call flood)
+        if "-wt" in path or _project_for(path) not in known:
+            seen[sid] = mtime; continue
         out, req, master = _last_output(path)
         if not out:
             seen[sid] = mtime; continue
@@ -216,26 +224,18 @@ def scan():
             if proj:
                 db.insert("tasks", {"project_id": proj[0]["id"], "slug": f"cont-{sid[:6]}",
                                     "kind": "build", "state": "QUEUED", "prompt": d["next_action"]})
-        elif not done:
-            # File as a decision card so it shows up in the dashboard Sessions panel
-            try:
-                phases_note = f" ({phases_remaining} phase(s) remaining)" if phases_remaining else ""
-                db.insert("approvals", {
-                    "project": _project_for(path), "kind": "self",
-                    "title": f"Session paused — next step needed{phases_note}: {sid[:8]}",
-                    "why": d.get("next_action", ""),
-                    "value": "Continue this paused session to keep work moving.",
-                    "risk": "Low — the suggested step has auto_safe=False, review before queuing.",
-                    "detail": out[-2000:],
-                })
-            except Exception:
-                pass
+        # NOTE: routine "paused — next step" notices live in session_actions ONLY (the
+        # dashboard Sessions panel reads that). We do NOT file an approval per paused session —
+        # that flooded the approval queue (15k cards) and is pure noise. Approvals are reserved
+        # for things that genuinely need a decision.
 
         # Close finished VS Code tabs (gated: done=True AND tab close is enabled)
         if done and CLOSE_TABS:
             _close_vscode_tab(sid, path)
 
         seen[sid] = mtime; made += 1
+        if made >= cap:                               # per-scan cap (cost + noise guard)
+            break
     _save(seen)
     print(f"session_watcher: processed {made} idle sessions (auto_continue={AUTO})")
     return made

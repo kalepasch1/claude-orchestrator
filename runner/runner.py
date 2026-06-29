@@ -37,6 +37,7 @@ import context_retrieval, result_cache
 import confidence, blast_radius, replay
 import feedback
 import kill_switch, secrets_manager, credential_broker, quality_gate
+import claude_cli, waste
 
 INTEGRATION_MODE = os.environ.get("INTEGRATION_MODE", "local")  # local | pr
 USE_CACHE = os.environ.get("RESULT_CACHE", "true").lower() == "true"
@@ -98,7 +99,7 @@ def run_task(t):
         base = t.get("base_branch", "main")
         slug = t["slug"]
         kind = t.get("kind", "build")
-        test_cmd = os.environ.get("TEST_CMD", "npm test")
+        test_cmd = proj.get("test_cmd") or os.environ.get("TEST_CMD", "npm test")
 
         # kill switch: stop all spend on this project (or globally) at a click
         if kill_switch.is_paused(name):
@@ -108,6 +109,23 @@ def run_task(t):
         # budget guardrail: hold the task if the project hit its monthly cap
         if not budget.allow(name):
             set_state(t["id"], state="BLOCKED", note="budget cap reached")
+            return
+
+        # waste guardrail: spend with nothing shipped (the $400 pattern) -> pause this
+        # project + file an approval, immediately, before burning more tokens.
+        waste_reason = waste.check(name)
+        if waste_reason:
+            kill_switch.pause(scope="project", project=name, reason=waste_reason, by="waste")
+            set_state(t["id"], state="BLOCKED", note="waste guard: " + waste_reason)
+            approval(name, "self", f"Waste guard paused {name}",
+                     why=waste_reason,
+                     value="Stops non-improving spend the moment it appears.",
+                     risk="Project is paused until you review and resume.",
+                     command="")
+            try:
+                import notify; notify.send(f"[waste] {waste_reason}")
+            except Exception:
+                pass
             return
 
         # result cache: identical (repo+prompt+commit) work is reused, not re-run
@@ -195,12 +213,24 @@ def run_task(t):
                 env.update(secrets_manager.inject_env(name))
             except Exception:
                 pass
-            log = subprocess.run(
-                [CLAUDE_BIN, "-p", prompt, "--model", model, "--permission-mode", "acceptEdits",
-                 "--max-turns", "60", "--output-format", "text"],
-                cwd=wt if os.path.isdir(wt) else repo, env=env,
-                capture_output=True, text=True)
-            out = (log.stdout + log.stderr)
+            # ALL model spend goes through claude_cli: it honors the kill switch, hard-caps
+            # $/hour, $/day and calls/hour, and captures REAL cost via --output-format json.
+            try:
+                r = claude_cli.run(prompt, model,
+                                   cwd=wt if os.path.isdir(wt) else repo, env=env,
+                                   project=name, max_turns=60, permission="acceptEdits")
+            except claude_cli.CircuitOpen as e:
+                # spend ceiling hit: hold the task and pause everything until you intervene
+                kill_switch.pause(scope="global", reason=f"cost circuit open: {e}", by="claude_cli")
+                set_state(t["id"], state="QUEUED", note=f"cost circuit open: {e}; paused")
+                time.sleep(10); return
+            if r.get("skipped") == "kill_switch":
+                set_state(t["id"], state="QUEUED", note="paused by kill switch (mid-run)")
+                time.sleep(5); return
+            rc = r["returncode"]
+            run_cost = {"usd": r["cost_usd"], "input_tokens": r["input_tokens"],
+                        "output_tokens": r["output_tokens"]}
+            out = (r["text"] or "") + ("\n" + r["stderr"] if r.get("stderr") else "")
             low = out.lower()
             set_state(t["id"], log_tail=out[-2000:])
             # bidirectional learning: harvest the agent's feedback about the orchestration
@@ -225,25 +255,25 @@ def run_task(t):
                 set_state(t["id"], state="RETRY", note=f"rate-limited, backoff {back}s")
                 time.sleep(min(back, 30)); continue
 
-            tests_ok = log.returncode == 0
+            tests_ok = rc == 0
             if not tests_ok:
                 set_state(t["id"], state="BLOCKED", note="agent run failed")
                 regression.record(name, slug, kind, t["prompt"][:500], out[-500:], "agent run failed; re-scope or escalate model")
-                record(t, name, slug, kind, model, acct, attempt, False, False, out, t0); return
+                record(t, name, slug, kind, model, acct, attempt, False, False, out, t0, cost=run_cost); return
 
             # blast radius: find dependents of changed files, pass to verifier
             radius = blast_radius.radius_after(wt, base)
             deps = radius.get("dependents", [])
 
             # verification swarm BEFORE integrate (blast-radius-aware)
-            v = verify.review_diff(wt, base, dependents=deps if deps else None)
+            v = verify.review_diff(wt, base, dependents=deps if deps else None, project=name)
             if v["verdict"] == "fail":
                 set_state(t["id"], state="BLOCKED", note="verify: " + v["notes"])
                 approval(name, "verify", f"Verification flagged {slug}",
                          why=v["notes"], risk="cheap-model review wants a human look",
                          detail=out[-3000:])
                 regression.record(name, slug, kind, t["prompt"][:500], "verify: " + v["notes"], v["notes"])
-                record(t, name, slug, kind, model, acct, attempt, True, False, out, t0); return
+                record(t, name, slug, kind, model, acct, attempt, True, False, out, t0, cost=run_cost); return
 
             # quality gate: mutation + property tests (blocking if MUTATION_CMD/PROPERTY_CMD set)
             qg = quality_gate.run(wt)
@@ -254,17 +284,22 @@ def run_task(t):
                          detail=out[-2000:])
                 regression.record(name, slug, kind, t["prompt"][:500],
                                   "quality gate: " + qg["notes"], qg["notes"])
-                record(t, name, slug, kind, model, acct, attempt, True, False, out, t0); return
+                record(t, name, slug, kind, model, acct, attempt, True, False, out, t0, cost=run_cost); return
 
             # confidence-gated autonomy: high -> auto-merge; low -> human; high-risk -> two-key
             conf = {"confidence": None}
+            decision = "auto"
             if USE_CONFIDENCE:
                 proj_thresh = proj.get("confidence_threshold")
-                decision, conf = confidence.gate(wt, base, threshold=proj_thresh)
+                decision, conf = confidence.gate(wt, base, threshold=proj_thresh, project=name)
+            # MATERIAL tasks (money/auth/schema/filings/prod) never auto-merge — force approval.
+            if t.get("material"):
+                decision = "two_key"
+                conf = {**conf, "reason": (conf.get("reason") or "") + " [material: human approval required]"}
             conf_score = conf.get("confidence")
             replay.capture(t["id"], name, slug, kind, model, (acct or {}).get("name"),
                            repo, base, prompt, conf_score)
-            if USE_CONFIDENCE and decision != "auto":
+            if decision != "auto":
                 req = 2 if decision == "two_key" else 1
                 set_state(t["id"], state="BLOCKED", confidence=conf_score,
                           note=f"awaiting {'two-key ' if req == 2 else ''}approval (confidence {conf_score})")
@@ -273,7 +308,7 @@ def run_task(t):
                          value="agent work passed tests + verification",
                          risk=("HIGH-RISK path — needs two approvers" if req == 2 else "below auto-merge confidence"),
                          detail=out[-2000:], approvals_required=req)
-                record(t, name, slug, kind, model, acct, attempt, True, False, out, t0); return
+                record(t, name, slug, kind, model, acct, attempt, True, False, out, t0, cost=run_cost); return
 
             result = integrate(repo, f"agent/{slug}", base, test_cmd, slug, v["notes"], "passed")
             POOL.mark_ok(acct)
@@ -286,7 +321,7 @@ def run_task(t):
                 approval(name, "integrate", f"{slug} {result.lower()} on integrate",
                          why=f"could not auto-integrate ({result})", detail=out[-2000:])
                 regression.record(name, slug, kind, t["prompt"][:500], f"integrate {result}", "stay within file scope; rebase early")
-            record(t, name, slug, kind, model, acct, attempt, True, integrated, out, t0)
+            record(t, name, slug, kind, model, acct, attempt, True, integrated, out, t0, cost=run_cost)
             return
         set_state(t["id"], state="BLOCKED", note="exhausted retries")
 
@@ -316,8 +351,9 @@ def _update_capability_eval(cap_slug, passed):
         print(f"capability eval update failed for {cap_slug}: {e}")
 
 
-def record(t, project, slug, kind, model, acct, attempt, tests_ok, integrated, out, t0):
-    row = cost_ledger_row(project, slug, model, out)
+def record(t, project, slug, kind, model, acct, attempt, tests_ok, integrated, out, t0, cost=None):
+    # Prefer REAL cost from claude_cli (json envelope); fall back to regex parse of text.
+    row = cost if cost is not None else cost_ledger_row(project, slug, model, out)
     db.insert("outcomes", {
         "task_id": t["id"], "project": project, "slug": slug, "kind": kind,
         "model": model, "account": (acct or {}).get("name"), "attempts": attempt,
@@ -349,6 +385,10 @@ def cost_ledger_row(project, slug, model, out):
 # schedule_type: 'interval' (seconds) | 'daily' (H,M) | 'weekly' (weekday,H,M)
 _SCHEDULE = [
     ("txn-300",       "txn",                "interval", 300),
+    ("merge-60",      "approval_merge.py",  "interval", 60),    # complete approved merges
+    ("intake-120",    "intake_watcher.py",  "interval", 120),   # auto-ingest dropped task lists
+
+
     ("anomaly-3600",  "anomaly.py",         "interval", 3600),
     ("roi-daily",     "roi",                "daily",    (0, 15)),
     ("deploy-daily",  "deploy",             "daily",    (2, 30)),
@@ -370,7 +410,29 @@ _SCHEDULE = [
 ]
 _sched_last: dict = {}
 
+# Jobs that NEVER call a model and are safe (even desirable) to run while paused:
+# protect the Mac, and keep read-only spend/health telemetry flowing.
+_SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn"}
+
+# Optional autonomous-improvement jobs that are NOT yet routed through claude_cli (so their
+# spend isn't counted against the $40/day cap). OFF unless ENABLE_PROACTIVE_LOOPS=true.
+_PROACTIVE = {"scout", "spec", "chaos", "self_review.py", "maturity.py", "demand_mining.py",
+              "capability_radar.py", "meta_loop.py", "feedback_review.py"}
+_PROACTIVE_ON = os.environ.get("ENABLE_PROACTIVE_LOOPS", "false").lower() == "true"
+
 def _fire_periodic(job: str) -> None:
+    # don't run uncounted proactive spenders unless explicitly enabled
+    if job in _PROACTIVE and not _PROACTIVE_ON:
+        return False
+    # honor the kill switch for every scheduled job that could spend tokens, so a global
+    # pause stops ALL spend (not just the main task loop) without restarting the runner.
+    if job not in _SAFE_WHEN_PAUSED:
+        try:
+            if kill_switch.is_paused():
+                print(f"[sched] {job} skipped (paused)", flush=True)
+                return False
+        except Exception:
+            pass
     _dir = os.path.dirname(os.path.abspath(__file__))
     _log = os.path.expanduser(f"~/Library/Logs/claude-orchestrator/{job.replace('.py','').replace('_','-')}")
     os.makedirs(os.path.dirname(_log + ".log"), exist_ok=True)
@@ -378,6 +440,7 @@ def _fire_periodic(job: str) -> None:
            else [sys.executable, os.path.join(_dir, "periodic.py"), job])
     with open(_log + ".log", "a") as lf, open(_log + ".err", "a") as ef:
         subprocess.Popen(cmd, stdout=lf, stderr=ef, cwd=_dir, env=os.environ.copy())
+    return True
 
 def _scheduler_tick() -> None:
     now = time.time()
@@ -396,8 +459,8 @@ def _scheduler_tick() -> None:
         if fire:
             _sched_last[key] = now
             try:
-                _fire_periodic(job)
-                print(f"[sched] {job}", flush=True)
+                if _fire_periodic(job):
+                    print(f"[sched] {job}", flush=True)
             except Exception as e:
                 print(f"[sched] {job} error: {e}", flush=True)
 # ─────────────────────────────────────────────────────────────────────────────

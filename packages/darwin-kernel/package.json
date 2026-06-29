@@ -1,0 +1,29 @@
+{
+  "name": "@darwin/kernel",
+  "version": "0.1.0",
+  "description": "Shared cross-product kernel: agent governance (constitution + signed receipts + materiality), portable risk/identity passport, consent-scoped identity graph, federated-privacy primitives, and an orchestrator client. Zero runtime dependencies. Consumed by tomorrow, smarter, apparently, pareto, galop, hisanta and the orchestrator.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./governance": "./src/governance/index.ts",
+    "./passport": "./src/passport/index.ts",
+    "./identity": "./src/identity/index.ts",
+    "./federated": "./src/federated/index.ts",
+    "./orchestrator": "./src/orchestratorClient/index.ts",
+    "./cade": "./src/cade/index.ts"
+  },
+  "scripts": {
+    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20.10.0"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "typescript": "^5.6.3"
+  }
+}

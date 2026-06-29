@@ -6,9 +6,8 @@ flag the spec for your review). Keeps intent and implementation in sync. Schedul
 """
 import os, sys, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import db
+import db, claude_cli
 
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 MODEL = os.environ.get("SPEC_MODEL", "claude-sonnet-4-6")
 
 PROMPT = """Read SPEC.md and the codebase. List concrete points where the CODE no longer
@@ -20,8 +19,7 @@ def check(repo, project, project_id):
     if not os.path.isfile(os.path.join(repo, "SPEC.md")):
         return None
     try:
-        out = subprocess.check_output([CLAUDE_BIN, "-p", PROMPT, "--model", MODEL,
-                                       "--output-format", "text"], cwd=repo, text=True, timeout=200)
+        out = claude_cli.run(PROMPT, MODEL, cwd=repo, timeout=200)["text"]
     except Exception:
         return None
     if "IN SYNC" in out.upper():

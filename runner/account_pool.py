@@ -38,10 +38,22 @@ class AccountPool:
         self.state = self._load_state()
 
     def _load_cfg(self):
+        # 1) Supabase `accounts` table is the source of truth (visible in dashboard,
+        #    survives restarts, set by Cowork). Ordered by priority asc = failover order.
+        try:
+            import db
+            rows = db.select("accounts", {"select": "*", "order": "priority.asc"})
+            if rows:
+                return [{"name": r["name"], "type": r.get("type") or "login",
+                         "config_dir": r.get("config_dir"),
+                         "api_key_env": r.get("api_key_env")} for r in rows]
+        except Exception:
+            pass
+        # 2) local file fallback
         if os.path.exists(CFG):
             try: return json.load(open(CFG))
             except Exception: pass
-        # default: single implicit account = whatever `claude` already uses
+        # 3) default: single implicit account = whatever `claude` already uses
         return [{"name": "default", "type": "login"}]
 
     def _load_state(self):
@@ -82,7 +94,25 @@ class AccountPool:
             return
         self.state.setdefault(a["name"], {})["cooldown_until"] = time.time() + COOLDOWN
         self._save()
+        # best-effort: persist cooldown to Supabase so the dashboard shows the rotation
+        try:
+            import db, datetime
+            until = (datetime.datetime.utcnow() +
+                     datetime.timedelta(seconds=COOLDOWN)).isoformat()
+            db.update("accounts", {"name": a["name"]}, {"cooldown_until": until})
+        except Exception:
+            pass
         nxt = self.current()
+        # notify on rotation / full exhaustion so you stop babysitting
+        try:
+            import notify
+            if nxt and nxt != a["name"]:
+                notify.send(f"Account '{a['name']}' hit its limit -> rotated to '{nxt}'.")
+            elif not nxt or nxt == a["name"]:
+                notify.send(f"ALL accounts exhausted ('{a['name']}' was last). "
+                            f"Work pauses until reset or you add capacity.")
+        except Exception:
+            pass
         return nxt["name"] if nxt else None
 
     def mark_ok(self, a):

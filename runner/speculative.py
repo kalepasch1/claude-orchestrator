@@ -9,9 +9,8 @@ so you get a Haiku/Sonnet/Opus race; first-correct-cheapest wins.
 """
 import os, sys, subprocess, threading, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import model_router
+import model_router, claude_cli
 
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 PRICE_RANK = {model_router.HAIKU: 1, model_router.SONNET: 2, model_router.OPUS: 3}
 
 
@@ -20,13 +19,13 @@ def _variant(repo, slug, base, model, prompt, test_cmd, results, idx, env):
     subprocess.run([os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"), vslug, base],
                    cwd=repo, capture_output=True)
     wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", vslug)
-    run = subprocess.run([CLAUDE_BIN, "-p", prompt, "--model", model, "--permission-mode",
-                          "acceptEdits", "--max-turns", "60", "--output-format", "text"],
-                         cwd=wt if os.path.isdir(wt) else repo, env=env, capture_output=True, text=True)
-    passed = run.returncode == 0 and subprocess.run(test_cmd, cwd=wt, shell=True,
-                                                    capture_output=True).returncode == 0
+    r = claude_cli.run(prompt, model, cwd=wt if os.path.isdir(wt) else repo, env=env,
+                       max_turns=60, permission="acceptEdits")
+    passed = r["returncode"] == 0 and subprocess.run(test_cmd, cwd=wt, shell=True,
+                                                     capture_output=True).returncode == 0
     results[idx] = {"vslug": vslug, "branch": f"agent/{vslug}", "model": model,
-                    "passed": passed, "price": PRICE_RANK.get(model, 2)}
+                    "passed": passed, "price": PRICE_RANK.get(model, 2),
+                    "cost_usd": r["cost_usd"]}
 
 
 def run(repo, slug, base, prompt, test_cmd, models=None, env=None):

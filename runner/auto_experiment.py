@@ -14,9 +14,8 @@ Degrades gracefully: no evals -> verdict 'no_evals' (manual). Mockable via CLAUD
 """
 import os, sys, json, re, subprocess, tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import db
+import db, claude_cli
 
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 EVAL_MODEL = os.environ.get("EXPERIMENT_MODEL", "claude-haiku-4-5-20251001")
 EVALS_PATH = os.environ.get("ORCH_EVALS", os.path.join(os.path.dirname(__file__), "evals.json"))
 COST_TOLERANCE = float(os.environ.get("EXPERIMENT_COST_TOLERANCE", "1.10"))
@@ -38,15 +37,12 @@ def _run(evals, env_patch):
     try:
         for e in evals:
             with tempfile.TemporaryDirectory() as d:
-                r = subprocess.run([CLAUDE_BIN, "-p", e["prompt"], "--model", EVAL_MODEL,
-                                    "--permission-mode", "acceptEdits", "--max-turns", "15",
-                                    "--output-format", "text"], cwd=d, capture_output=True, text=True)
+                r = claude_cli.run(e["prompt"], EVAL_MODEL, cwd=d,
+                                   permission="acceptEdits", max_turns=15)
                 ok = (subprocess.run(e["check"], cwd=d, shell=True).returncode == 0
-                      if e.get("check") else r.returncode == 0)
+                      if e.get("check") else r["returncode"] == 0)
                 passed += 1 if ok else 0
-                otok = sum(int(x[1].replace(",", "")) for x in
-                           re.findall(r"(output|completion)[ _]tokens[\"':\s]+([0-9,]+)", r.stdout or "", re.I))
-                cost += otok / 1e6 * 15
+                cost += r["cost_usd"]
     finally:
         os.environ.clear(); os.environ.update(saved)
     return (passed / max(1, len(evals))), round(cost, 4)

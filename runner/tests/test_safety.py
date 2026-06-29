@@ -217,5 +217,149 @@ class TestSecretsHygiene(unittest.TestCase):
         self.assertNotIn("TEST_KEY", output)
 
 
+# ── D: kill_switch halt ───────────────────────────────────────────────────────
+
+class TestKillSwitch(unittest.TestCase):
+
+    def _mock_db(self, rows_by_table):
+        """Provide a lightweight in-memory mock for db.select/insert (with upsert support)."""
+        import db
+        store = {}
+        orig_select = db.select
+        orig_insert = db.insert
+
+        def _select(table, q=None):
+            return list(store.get(table, []))
+
+        def _insert(table, row, upsert=False, **kw):
+            if upsert and table == "controls":
+                # Merge-on (scope, project) — same logic as the DB unique constraint
+                existing = store.setdefault(table, [])
+                for i, r in enumerate(existing):
+                    if r.get("scope") == row.get("scope") and r.get("project") == row.get("project"):
+                        existing[i] = {**r, **row}
+                        return
+            store.setdefault(table, []).append(row)
+
+        db.select = _select
+        db.insert = _insert
+        return orig_select, orig_insert, db
+
+    def test_pause_makes_is_paused_true(self):
+        """pause(global) must make is_paused() return True immediately."""
+        import kill_switch, db
+        orig_select, orig_insert, db = self._mock_db({})
+        try:
+            kill_switch.pause(scope="global", reason="test", by="test")
+            self.assertTrue(kill_switch.is_paused(), "global pause must halt runner")
+        finally:
+            db.select = orig_select
+            db.insert = orig_insert
+
+    def test_resume_makes_is_paused_false(self):
+        """resume() must make is_paused() return False."""
+        import kill_switch, db
+        orig_select, orig_insert, db = self._mock_db({})
+        try:
+            kill_switch.pause(scope="global", reason="test", by="test")
+            kill_switch.resume(scope="global", by="test")
+            self.assertFalse(kill_switch.is_paused(), "resume must lift the pause")
+        finally:
+            db.select = orig_select
+            db.insert = orig_insert
+
+    def test_project_pause_does_not_affect_other_projects(self):
+        """A project-scoped pause must not block other projects."""
+        import kill_switch, db
+        orig_select, orig_insert, db = self._mock_db({})
+        try:
+            kill_switch.pause(scope="project", project="my-app", reason="test", by="test")
+            self.assertTrue(kill_switch.is_paused("my-app"), "paused project must be blocked")
+            self.assertFalse(kill_switch.is_paused("other-app"), "other project must not be blocked")
+            self.assertFalse(kill_switch.is_paused(), "global must not be paused")
+        finally:
+            db.select = orig_select
+            db.insert = orig_insert
+
+    def test_global_pause_blocks_all_projects(self):
+        """A global pause must block any project check too."""
+        import kill_switch, db
+        orig_select, orig_insert, db = self._mock_db({})
+        try:
+            kill_switch.pause(scope="global", reason="test", by="test")
+            self.assertTrue(kill_switch.is_paused("any-project"),
+                            "global pause must block project checks too")
+        finally:
+            db.select = orig_select
+            db.insert = orig_insert
+
+
+# ── E: claude_cli cost capture ────────────────────────────────────────────────
+
+class TestCostCapture(unittest.TestCase):
+
+    def test_claude_cli_extracts_cost_from_json(self):
+        """claude_cli.run must return cost_usd > 0 when the CLI returns a cost in JSON."""
+        from unittest.mock import patch, MagicMock
+        import claude_cli
+
+        fake_json = json.dumps({
+            "result": "pong",
+            "total_cost_usd": 0.0042,
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+        })
+        fake_proc = MagicMock()
+        fake_proc.stdout = fake_json
+        fake_proc.stderr = ""
+        fake_proc.returncode = 0
+
+        with patch("subprocess.run", return_value=fake_proc), \
+             patch.object(claude_cli, "_paused", return_value=False):
+            r = claude_cli.run("ping", "claude-haiku-4-5-20251001")
+
+        self.assertGreater(r["cost_usd"], 0,
+                           "claude_cli must extract cost_usd from JSON envelope")
+        self.assertAlmostEqual(r["cost_usd"], 0.0042)
+        self.assertEqual(r["input_tokens"], 100)
+        self.assertEqual(r["output_tokens"], 50)
+        self.assertEqual(r["text"], "pong")
+
+    def test_runner_record_writes_real_cost(self):
+        """record() must write the passed cost to outcomes.usd, not the regex fallback."""
+        import time
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        import runner, db
+
+        outcomes_rows = []
+        orig_insert = db.insert
+        db.insert = lambda table, row, **kw: outcomes_rows.append(row) if table == "outcomes" else None
+        try:
+            fake_task = {"id": "t-cost-test", "prompt": "x", "capability_slug": None}
+            fake_cost = {"usd": 0.0075, "input_tokens": 200, "output_tokens": 100}
+            runner.record(fake_task, "proj", "slug1", "build", "claude-haiku-4-5-20251001",
+                          {"name": "acct"}, 1, True, True, "", time.time(), cost=fake_cost)
+        finally:
+            db.insert = orig_insert
+
+        self.assertEqual(len(outcomes_rows), 1, "record() must insert exactly one outcomes row")
+        row = outcomes_rows[0]
+        self.assertEqual(row["usd"], 0.0075,
+                         "outcomes.usd must come from real cost, not regex parse")
+        self.assertEqual(row["input_tokens"], 200)
+        self.assertEqual(row["output_tokens"], 100)
+
+    def test_kill_switch_skips_return_zero_cost(self):
+        """claude_cli.run must return cost_usd=0 and skipped='kill_switch' when paused."""
+        from unittest.mock import patch
+        import claude_cli
+
+        with patch.object(claude_cli, "_paused", return_value=True):
+            r = claude_cli.run("ping", "claude-haiku-4-5-20251001")
+
+        self.assertEqual(r["cost_usd"], 0)
+        self.assertEqual(r.get("skipped"), "kill_switch")
+        self.assertEqual(r["returncode"], 75)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

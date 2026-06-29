@@ -163,4 +163,14 @@ if __name__ == "__main__":
     if job not in JOBS:
         print(f"usage: periodic.py {'|'.join(JOBS)}")
         sys.exit(1)
+    # honor the kill switch: model-spending jobs don't run while paused.
+    _SAFE_WHEN_PAUSED = {"roi", "txn"}
+    if job not in _SAFE_WHEN_PAUSED:
+        try:
+            import kill_switch
+            if kill_switch.is_paused():
+                print(f"periodic {job}: skipped (paused)")
+                sys.exit(0)
+        except Exception:
+            pass
     JOBS[job]()

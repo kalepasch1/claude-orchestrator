@@ -8,7 +8,9 @@ conventions, test commands, and do/don't rules. That file is the cached context 
 Run periodically (e.g. weekly) per project. Writes CLAUDE.md at the repo root.
 """
 import os, sys, subprocess
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import claude_cli
+
 MODEL = os.environ.get("CONVENTIONS_MODEL", "claude-haiku-4-5-20251001")
 
 PROMPT = """Read this repository and write/refresh a concise CLAUDE.md at the repo root that a
@@ -20,9 +22,7 @@ it is used as a cached prompt prefix). Write the file with your file tools; do n
 
 
 def run(repo):
-    r = subprocess.run([CLAUDE_BIN, "-p", PROMPT, "--model", MODEL,
-                        "--permission-mode", "acceptEdits", "--max-turns", "20",
-                        "--output-format", "text"], cwd=repo, capture_output=True, text=True)
+    claude_cli.run(PROMPT, MODEL, cwd=repo, permission="acceptEdits", max_turns=20)
     ok = os.path.isfile(os.path.join(repo, "CLAUDE.md"))
     print(f"{'updated' if ok else 'no'} CLAUDE.md in {repo}")
     return ok

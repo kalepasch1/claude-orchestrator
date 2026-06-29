@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""
+enqueue_task.py - push a JSON task definition into the orchestrator queue so the
+runner executes it under the normal budget/verify/PR gates. The canonical channel
+for cross-repo work (e.g. vendoring the Darwin Kernel into Pareto via git subtree
++ PR) instead of hand-editing another repo.
+
+Usage:
+  python runner/enqueue_task.py tasks/pareto-darwin-kernel.task.json
+
+Requires the same env as the runner (SUPABASE_URL + service key, read by db.py).
+Idempotent: skips if a task with the same (project_id, slug) is already open/done.
+"""
+import os, sys, json
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import db
+
+
+def project_id_by_name(name):
+    rows = db.select("projects", {"select": "id,name,repo_path"}) or []
+    for p in rows:
+        if p.get("name") == name:
+            return p["id"]
+    # tolerate the '2080' folder name too
+    for p in rows:
+        if name in (p.get("repo_path") or ""):
+            return p["id"]
+    return None
+
+
+def already_present(project_id, slug):
+    rows = db.select("tasks", {"select": "id,state",
+                               "project_id": f"eq.{project_id}",
+                               "slug": f"eq.{slug}"}) or []
+    return len(rows) > 0
+
+
+def main(path):
+    spec = json.load(open(path))
+    pid = project_id_by_name(spec["project"])
+    if not pid:
+        sys.exit(f"[enqueue] project '{spec['project']}' not found in projects table. "
+                 f"Register it first (name + repo_path).")
+    if already_present(pid, spec["slug"]):
+        print(f"[enqueue] task '{spec['slug']}' already exists for project — skipping.")
+        return
+    row = {
+        "project_id": pid,
+        "slug": spec["slug"],
+        "prompt": spec["prompt"],
+        "kind": spec.get("kind", "build"),
+        "state": spec.get("state", "QUEUED"),
+    }
+    if spec.get("model"):
+        row["model"] = spec["model"]
+    res = db.insert("tasks", row)
+    print(f"[enqueue] queued '{spec['slug']}' for project '{spec['project']}' -> {res}")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        sys.exit("usage: python runner/enqueue_task.py <task.json>")
+    main(sys.argv[1])

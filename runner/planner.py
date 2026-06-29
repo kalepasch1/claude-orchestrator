@@ -12,8 +12,9 @@ Independent tasks share no files -> safe to run concurrently. Dependent tasks ar
 ordered. Falls back to a single task if planning fails. Mockable via CLAUDE_BIN.
 """
 import os, sys, json, subprocess, re
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import claude_cli
 
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 PLAN_MODEL = os.environ.get("PLAN_MODEL", "claude-opus-4-8")
 
 META = """You are a build planner. Decompose the REQUEST below into the smallest set of
@@ -42,10 +43,9 @@ def plan(master: str, repo: str = None) -> list:
                 spec_content = f.read()[:12000]
             spec = f"\n\n# Project Specification (SPEC.md — every task MUST satisfy these invariants):\n{spec_content}\n\n"
     try:
-        out = subprocess.check_output(
-            [CLAUDE_BIN, "-p", META + spec + master, "--model", PLAN_MODEL, "--output-format", "text"],
-            text=True, timeout=int(os.environ.get("PLAN_TIMEOUT", "300")))
-        m = re.search(r"\[.*\]", out, re.S)
+        r = claude_cli.run(META + spec + master, PLAN_MODEL,
+                           timeout=int(os.environ.get("PLAN_TIMEOUT", "300")))
+        m = re.search(r"\[.*\]", r["text"], re.S)
         tasks = json.loads(m.group(0)) if m else []
         assert isinstance(tasks, list) and tasks
     except Exception as e:

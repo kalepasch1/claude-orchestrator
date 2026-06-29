@@ -1,0 +1,120 @@
+{
+  "_README": "Cowork→Orchestrator backlog. Staged via: python3 runner/cowork_stage.py --commit. Contract-first per project (first task = contracts-*, deps []). Prompts are self-contained with explicit file scope + an acceptance test, per planner.py. The runner builds each in an isolated {repo}-wt/{slug} worktree, gated by cost caps + kill switch + tests + approval cards. Nothing spends until the runner is unpaused per ACTIVATION.md.",
+  "projects": {
+    "tomorrow": { "repo_path": "/Users/kpasch/Documents/tomorrow/tomorrow", "default_base": "main" },
+    "smarter": { "repo_path": "/Users/kpasch/Documents/smarter", "default_base": "main" },
+    "apparently": { "repo_path": "/Users/kpasch/Documents/apparently", "default_base": "main" }
+  },
+  "tasks": [
+    {
+      "project": "tomorrow", "slug": "contracts-tomorrow", "deps": [], "kind": "build", "model": "opus",
+      "prompt": "CONTRACT TASK (boundary-pinning; no feature code). Create shared/contracts/ with TypeScript interface files that every downstream task imports so parallel branches cannot disagree on boundaries: (1) decisionBudget.ts surface-id registry + the Outcome/One-knob/Proof wrapper props contract (build on the existing server/utils/ux/decisionBudget.ts); (2) xappSignal.ts — the cross-app operational-risk-signal payload {ts, eventType, severity, orgId, affectedEntity, metadata} consumed at server/api/apparently/*/signal and emitted by Apparently; (3) warRoomSync.ts — the Tomorrow<->Smarter war-room push/pull contract matching smarter/server/api/warroom/bridge.post.ts (WarRoomUpdate, WarRoomBridgeEvent); (4) perpLifecycle.ts — the drift->propose->re-strike->re-price->re-prove event contract; (5) contingentIdentity.ts — the default-OFF anonymity feature-flag + contingent-reveal state machine types. Acceptance: `npm run typecheck` passes; a unit test asserts each interface is exported and stable. Do NOT implement behavior here."
+    },
+    {
+      "project": "tomorrow", "slug": "p0-decision-budget-wrapper", "deps": ["contracts-tomorrow"], "kind": "build",
+      "prompt": "Generalize the 5/95 doctrine wrapper. Add components/ui/FiveNinetyFive.vue implementing Outcome (95% shown as fact) / One-knob (single Recommended override) / disclosure (everything else) / mandatory GlassBox proof, per shared/contracts/decisionBudget.ts. Wire server/utils/ux/decisionBudget.ts to the EXISTING telemetry (server/utils/ux/magicMomentTracker.ts, uxExperimentRunner.ts) so measured interactions per surface are flagged when they exceed budget. Fix the two declared violations: pages/app/onboarding/institution.vue (6->3) and the war-room surface (8->5) by collapsing advanced controls behind disclosure. Make scripts/lint-decision-budgets.mjs BLOCKING for declared surfaces (flip the footer to process.exit). Acceptance: `node scripts/lint-decision-budgets.mjs` reports 0 declared-surface violations; `npx vitest run server/utils/ux/__tests__/decisionBudget.test.ts` green."
+    },
+    {
+      "project": "tomorrow", "slug": "p0-mandate-collapse", "deps": ["p0-decision-budget-wrapper"], "kind": "build",
+      "prompt": "pages/app/mandate.vue currently renders ~105 discretionary controls (worst 5/95 violation in the repo). Replace it with a regret-minimizing inferred mandate: pre-fill ALL fields from peer-consensus (server/utils/autonomy/constitutionCompiler.ts) + the institution's own public-data history, present ONE confirm decision ('looks right / adjust'), and move the full field set behind a 'More controls' disclosure. Preserve the existing mandatePolicy round-trip (server/utils/hive/mandatePolicy.ts) — no field is lost, just defaulted+hidden. Acceptance: `node scripts/lint-decision-budgets.mjs --all` shows app/mandate within a declared budget of 3; existing mandate API tests still pass."
+    },
+    {
+      "project": "tomorrow", "slug": "trust-ratchet", "deps": ["p0-decision-budget-wrapper"], "kind": "build",
+      "prompt": "Implement the self-shrinking Trust Ratchet generalizing server/utils/hive/approvalQueue.ts learning-mode: any decision a user has ratified N times graduates to autonomous; each surface recomputes its presented decisions to the user's current trust frontier so 5/95 -> 2/98 -> 1/99 over time. Pure core in server/utils/ux/trustRatchet.ts + tests. Acceptance: `npx vitest run server/utils/ux/__tests__/trustRatchet.test.ts` proves graduation after N approvals and per-user frontier recompute."
+    },
+    {
+      "project": "tomorrow", "slug": "perp-lifecycle-loop", "deps": ["contracts-tomorrow"], "kind": "build", "model": "opus",
+      "prompt": "Close the perpetual lifecycle loop per shared/contracts/perpLifecycle.ts. Add a cron handler (server/api/cron/perp-lifecycle.post.ts + server/utils/otc/eventOptions/lifecycleManager.ts) that: reads open perpetual positions, computes Greeks drift via mmHedgeOrchestrator.detectNakedInventory, calls proposeHedge, applies perpetualLegs.reStrikePerpetualLeg, re-prices, and mints a fresh C1 proof — honoring the distanceToResolution<5% resolution-zone guard (no auto re-strike inside the zone; escalate instead). Acceptance: `npx vitest run` of a new lifecycleManager.test.ts simulating a drift event drives end-to-end re-strike+re-price+proof, and asserts the guard blocks re-strike inside the resolution zone."
+    },
+    {
+      "project": "tomorrow", "slug": "composite-payoff-compiler", "deps": ["perp-lifecycle-loop"], "kind": "build", "model": "opus",
+      "prompt": "Build the Composite Payoff Compiler over the existing server/utils/otc/payoffDSL.ts. Input: a risk spec (NL or risk-vector). Output: an allowlist-valid instrument (gradient ramp / call-spread-on-leg / reinstatement) chosen via composeProgram + assertComposable, with perpetual-vs-discrete auto-choice by comparing funding carry to one-off cost over the exposure horizon, fail-closed against instrumentAllowlist + a structural backtest. File: server/utils/otc/compositePayoffCompiler.ts. Acceptance: a test feeds a risk spec and asserts the returned instrument passes the allowlist+backtest, picks discrete for a one-off exposure with a stated cost delta, and rejects an un-backtested composite."
+    },
+    {
+      "project": "tomorrow", "slug": "funding-equilibrium", "deps": ["perp-lifecycle-loop"], "kind": "build",
+      "prompt": "Add a cross-book funding equilibrium engine (server/utils/otc/fundingEquilibrium.ts): given the netted system state across all open perpetual positions, set funding rates that clear aggregate risk so each user's re-strike references the network state (marginal hedge cost falls as the book grows). Pure + tested. Acceptance: a test shows that adding offsetting demand lowers the computed marginal funding cost, conserving the per-position guards."
+    },
+    {
+      "project": "tomorrow", "slug": "instrument-discovery-loop", "deps": ["composite-payoff-compiler"], "kind": "build",
+      "prompt": "Wire generatorV3 + payoffDSL + the backtest gate into an autonomous instrument-discovery loop (server/utils/otc/instrumentDiscovery.ts): every autonomously-generated underlying spawns its perpetual-hedge, embedded-option, and gradient-payout variants; backtest each; promote Pareto-winners into the catalog; fail-closed on un-backtested composites. Acceptance: a test asserts a new underlying yields backtested variants and that a failing variant is never promoted."
+    },
+    {
+      "project": "tomorrow", "slug": "warroom-autoskip", "deps": ["contracts-tomorrow"], "kind": "build",
+      "prompt": "Add the war-room auto-skip gate + learning frontier. Route clauses where novelty<30 && risk<30 && notional<cap && commonlyApprovedByThisUser to the existing email/1-button path (server/utils/coordination/approvalNotify.ts + /api/approvals/inline/[token]) instead of opening a room, using server/utils/warRoom/noveltySentinel.ts scores. Wire the stubbed hivemind learning-mode into a per-user, per-clause-type auto-approve frontier that expands on each approve/reject, plus a counsel-needed signal. Files: server/utils/warRoom/autoSkipGate.ts + learningFrontier.ts. Acceptance: tests prove a gated clause skips the room, a clause failing any condition opens it, and the frontier widens after repeated approvals."
+    },
+    {
+      "project": "tomorrow", "slug": "warroom-attorney-cockpit", "deps": ["warroom-autoskip"], "kind": "build",
+      "prompt": "Apply 5/95 to counsel. In the war-room UI badge 95% of clauses '✓ at-market, auto-accepted' (market-standard percentile) so only out-of-market clauses are action items; pre-compute each open clause's ZOPA + a proposed market-median midpoint; generate a pre-call briefing pack; and add a post-counsel one-button close that fires the existing closingWorkflow + docusign.ts. Acceptance: a test on a sample deal surfaces only out-of-market clauses, attaches a ZOPA midpoint to each, and the one-button close advances the closing workflow to send_for_signature."
+    },
+    {
+      "project": "tomorrow", "slug": "mesh-of-rings", "deps": ["contracts-tomorrow"], "kind": "build", "model": "opus",
+      "prompt": "Implement the hierarchical mesh-of-rings netting topology (server/utils/otc/rings/meshOfRings.ts) that composes many small-N rings (capacityFormation/multilateralNetting/selfHealingRing) into a mesh giving 100s-1000s-party risk dispersion WITHOUT a single large ring — preserving the N6 non-CCP / bilateral posture. Emit a breach-resilience metric (max single-party default impact as % of each party's net). Acceptance: a 1000-party simulation disperses risk, the breach-resilience metric is <1% per party, and the existing posture invariants (failingInvariants) still hold."
+    },
+    {
+      "project": "tomorrow", "slug": "credit-hard-gate", "deps": ["contracts-tomorrow"], "kind": "build",
+      "prompt": "Upgrade credit from soft-rank to hard, market-priced gate in server/utils/otc/rings/creditReliability.ts + creditStore.ts: user-set AND Tomorrow-set minimum-tier admission; a debt-ceiling absorbing penalty state so serial defaulters cannot fully recover reputation (portable in the credit passport); risk-priced participation (wider spread from predictDeterioration severity); and a hedgeable credit passport (a perp on a counterparty's passport). Acceptance: tests show a sub-tier party is denied or priced wider, and a serial defaulter's reputation recovery is capped."
+    },
+    {
+      "project": "tomorrow", "slug": "breach-remediation", "deps": ["mesh-of-rings", "credit-hard-gate"], "kind": "build",
+      "prompt": "Wire three-pronged instant breach remediation in server/utils/otc/rings/defaultManagement.ts: on breach (1) auto-fire selfHealingRing + discoverPairings to source a replacement party/parcels so honest parties' contract resumes immediately, (2) open a pre-agreed shared-cost remediation matter via the Smarter bridge (warRoomSync contract), (3) apply the credit penalty on reveal. Acceptance: a simulated breach triggers replacement sourcing + a remediation matter payload + a credit penalty + contract resume, all in one flow, with tests."
+    },
+    {
+      "project": "tomorrow", "slug": "per-contract-hedging", "deps": ["contracts-tomorrow"], "kind": "build",
+      "prompt": "Add per-contract (not per-bucket) hedge derivation: extract each loan/policy/customer-contract risk vector via the existing extraction layer (server/utils/extraction/verticalExtractors.ts, documentProcessor.ts) and derive a specific hedge bound to that contract id. File: server/utils/otc/perContractHedger.ts. Acceptance: a test ingests a small loan tape and asserts one hedge per contract with extraction provenance, measurably tighter than the bucket baseline."
+    },
+    {
+      "project": "tomorrow", "slug": "lifecycle-adaptive-hedging", "deps": ["per-contract-hedging"], "kind": "build",
+      "prompt": "Make hedges follow the contract lifecycle. Consume Apparently loan-state signals (shared/contracts/xappSignal.ts; default/prepay/cancel/paid/degrade) at server/api/apparently/bank/exposure-sync and adjust the per-contract hedge via perpetualLegs.reStrikePerpetualLeg in real time (stop on removal, increase on degrade). Acceptance: a test simulates a default (hedge stops) and a degradation (hedge increases), each with a fresh proof."
+    },
+    {
+      "project": "tomorrow", "slug": "underwriting-score", "deps": ["per-contract-hedging"], "kind": "build", "model": "opus",
+      "prompt": "Build the cross-portfolio proprietary risk score (server/utils/risk/underwritingScore.ts) trained on loan/policy outcomes across all users (by firm/geo/segment/global, building on selfImprovingEngine), then expose origination-embedded hedge quoting: at underwriting, return 'we can hedge residual to X for Y bps' via the Apparently bank bridge, plus a peer benchmark percentile. Acceptance: a test returns score + hedge-to-X + bps price + percentile for a candidate loan and backtests the recommendation against realized outcomes."
+    },
+    {
+      "project": "tomorrow", "slug": "benefit-receipts", "deps": ["contracts-tomorrow"], "kind": "build",
+      "prompt": "Extend server/utils/hive/hedgeAttributionEngine.ts to compute+display the full benefit cascade with proof: capital freed ('$X available for lending'), earnings-volatility reduced (%), earnings uplift from risk-free premium (%), and event-time avoided-loss receipts ('you just avoided $X'); add an emergent-benefit discovery pass that mines each org's own data for second-order gains; and regenerate the compliance doc set (SRT/ASC 815/RBC/constitution, each chained to its C1 proof) on every re-optimization so the regulatory posture is never stale. Acceptance: a test simulates a market event and asserts a defensible avoided-$ receipt with a proof trail, and that a re-optimization regenerates the chained compliance docs."
+    },
+    {
+      "project": "tomorrow", "slug": "outbound-onboarding", "deps": ["contracts-tomorrow"], "kind": "build",
+      "prompt": "Invert onboarding into outbound demand. Pre-compute the OnboardingPackage (server/utils/autonomy/instantInstitution.ts) for entities already ingested (FDIC list) and mint personalized 'click-to-arm' URLs showing trapped $ + drafted constitution + first hedges; add a shadow-mode pre-commitment receipt that backtests the autonomous book against their real public positions for 60-90 days. Acceptance: a test turns one identifier into a full value surface + a shadow-backtest receipt with no further input."
+    },
+    {
+      "project": "tomorrow", "slug": "legal-identity-docs", "deps": ["contracts-tomorrow"], "kind": "legal",
+      "prompt": "Expand the contingent-ECP-identity legal document set under legal/ (the rider + comparables memo are already drafted by Cowork). Produce: (a) ISDA Schedule/Confirmation integration language enabling contingent identity escrow + reveal-on-trigger; (b) the IOI anonymity disclosure schedule; (c) an Identity Custodian / escrow-agent agreement template; (d) the unanimously-pre-agreed breach-remediation engagement-letter template; (e) finalize the comparables validity memo. ALL marked DRAFT — FOR EXECUTION BY COUNSEL, default-OFF feature, ECP-only. Acceptance: docs exist under legal/, cross-reference shared/contracts/contingentIdentity.ts, and each carries the DRAFT/counsel-execution header."
+    },
+
+    {
+      "project": "smarter", "slug": "contracts-smarter", "deps": [], "kind": "build",
+      "prompt": "CONTRACT TASK. Add a vitest harness to Smarter (currently no test runner): install vitest, add 'test' script, create tests/ with one smoke test. Pin types/integration.ts mirroring Tomorrow's shared/contracts/warRoomSync.ts and xappSignal.ts so the Smarter side of the bridge cannot drift. Acceptance: `npm test` runs and the smoke test + a contract-shape test pass."
+    },
+    {
+      "project": "smarter", "slug": "smarter-warroom-bridge-activate", "deps": ["contracts-smarter"], "kind": "build",
+      "prompt": "Complete the live path of server/api/warroom/bridge.post.ts against the pinned warRoomSync contract: real push/pull using TOMORROW_WARROOM_API_URL/KEY, set ProjectItem.tomorrowConnected on connect, and add the pre-agreed remediation-firm matter hook that Tomorrow's breach-remediation calls. Acceptance: a test round-trips push+pull against a contract mock and asserts a remediation matter is created from a breach payload."
+    },
+    {
+      "project": "smarter", "slug": "smarter-opsignal-feed", "deps": ["contracts-smarter"], "kind": "build",
+      "prompt": "Emit operational risk signals to Tomorrow from server/utils/standing.ts + reliabilityScore.ts + the IssueAgent: when a matter/relationship degrades, POST an xappSignal (degrading relationship, missed response, stalled negotiation) to Tomorrow so its risk scorer can hedge the growing risk. Respect the information barrier (no client PII). Acceptance: a test asserts a degradation event produces a well-formed signal excluding PII."
+    },
+    {
+      "project": "smarter", "slug": "smarter-model-policy", "deps": ["contracts-smarter"], "kind": "refactor",
+      "prompt": "Centralize the hardcoded MODELS map in server/utils/llm.ts into server/utils/model-policy.ts (mirror Apparently's selectModel(taskType)); replace all literal model strings with the policy lookup. Acceptance: a test asserts no literal 'claude-*' model strings remain outside model-policy.ts and selectModel returns the right tier per task."
+    },
+    {
+      "project": "smarter", "slug": "smarter-5-95", "deps": ["contracts-smarter"], "kind": "build",
+      "prompt": "Apply the 5/95 doctrine to Smarter surfaces, reusing its existing trust dial (counsel_only/co_pilot/auto_pilot in server/utils/governance.ts) as the autonomy substrate. Port a decision-budget lint for Smarter's pages (war room, matter detail, now/approve) and collapse advanced controls behind disclosure so attorneys see only the 5% that matters. Acceptance: a budget lint script reports the war-room and matter surfaces within budget."
+    },
+
+    {
+      "project": "apparently", "slug": "contracts-apparently", "deps": [], "kind": "build",
+      "prompt": "CONTRACT TASK. Pin shared/contracts/tomorrow-signal.ts (mirror Tomorrow's xappSignal + the existing rewards/gaming S2S) and an outbox handler interface for operational-risk signals. Add the fixed-vector HMAC contract test alongside tests/engines/rewards-s2s-contract.test.ts. Acceptance: `npm test` passes including the new signal-signing fixed-vector test."
+    },
+    {
+      "project": "apparently", "slug": "apparently-tomorrow-client", "deps": ["contracts-apparently"], "kind": "build",
+      "prompt": "Build server/utils/tomorrow-client.ts: an HMAC-SHA256 signer (reusing rewards/s2s.ts patterns) that POSTs operational-risk signals to Tomorrow's /api/apparently/{bank,fabric,gaming,risk-studio}/signal endpoints, plus a server/engines/outbox/handlers/operational-risk-handler.ts with retry/dead-letter. Enforce the information barrier (allowlist fields only; no participant PII / contract terms / internal pricing). Acceptance: a contract test round-trips a signed signal and asserts non-allowlisted fields are stripped before egress."
+    },
+    {
+      "project": "apparently", "slug": "apparently-signal-emitters", "deps": ["apparently-tomorrow-client"], "kind": "build",
+      "prompt": "Wire the four detection engines to emit via the outbox operational-risk handler: licensing/renewal-engine.ts (critical <30d), regulator-intel/portal-monitor.ts (filing.status_change), disclosure/burden-estimator.ts (filing-burden delta), email-triage/triage-engine.ts (high-risk inbound). Each emits an xappSignal to Tomorrow on its existing trigger. Acceptance: a test per engine asserts a signal is emitted on the trigger and is information-barrier clean."
+    }
+  ]
+}

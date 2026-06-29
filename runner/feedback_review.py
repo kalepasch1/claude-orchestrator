@@ -16,9 +16,8 @@ Each category routes to a concrete knob:
 import os, sys, json, subprocess, tempfile
 from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import db, preference
+import db, preference, claude_cli
 
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 MODEL = os.environ.get("FEEDBACK_MODEL", "claude-sonnet-4-6")
 MIN_CLUSTER = int(os.environ.get("FEEDBACK_MIN_CLUSTER", "3"))
 SEV_WEIGHT = {"low": 1, "med": 2, "high": 4}
@@ -58,16 +57,13 @@ def _ab_test(synthesis, category):
         passed = 0
         for e in evals[:5]:  # limit to 5 evals to keep cost low
             with tempfile.TemporaryDirectory() as d:
-                r = subprocess.run(
-                    [CLAUDE_BIN, "-p", prefix + "\n\n" + e["prompt"],
-                     "--model", os.environ.get("EVAL_MODEL", "claude-haiku-4-5-20251001"),
-                     "--permission-mode", "acceptEdits", "--max-turns", "15",
-                     "--output-format", "text"],
-                    cwd=d, capture_output=True, text=True, timeout=180)
+                r = claude_cli.run(prefix + "\n\n" + e["prompt"],
+                                   os.environ.get("EVAL_MODEL", "claude-haiku-4-5-20251001"),
+                                   cwd=d, permission="acceptEdits", max_turns=15, timeout=180)
                 if e.get("check"):
                     ok = subprocess.run(e["check"], cwd=d, shell=True).returncode == 0
                 else:
-                    ok = r.returncode == 0
+                    ok = r["returncode"] == 0
                 passed += 1 if ok else 0
         return passed / max(1, len(evals[:5]))
 
@@ -102,8 +98,7 @@ def run():
         try:
             prompt = (f"Worker agents reported friction with the orchestration's '{cat}' behavior. "
                       f"Propose ONE concrete, low-risk change ({KNOB.get(cat)}). Reply 2-4 sentences.\n{obs}")
-            synthesis = subprocess.check_output([CLAUDE_BIN, "-p", prompt, "--model", MODEL,
-                                                 "--output-format", "text"], text=True, timeout=120).strip() or obs
+            synthesis = claude_cli.run(prompt, MODEL, timeout=120)["text"].strip() or obs
         except Exception:
             pass
         if preference.should_suppress(title, synthesis, "self"):

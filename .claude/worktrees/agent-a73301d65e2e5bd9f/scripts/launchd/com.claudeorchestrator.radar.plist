@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- TEMPLATE — run scripts/setup-scheduler.sh to install. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.claudeorchestrator.radar</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>HOME_DIR/Applications/ClaudeRunner.app/Contents/MacOS/run</string>
+        <string>capability_radar.py</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>SUPABASE_URL</key>
+        <string>SUPABASE_URL_PLACEHOLDER</string>
+        <key>SUPABASE_SERVICE_KEY</key>
+        <string>SUPABASE_SERVICE_KEY_PLACEHOLDER</string>
+        <key>CLAUDE_BIN</key>
+        <string>CLAUDE_BIN_PLACEHOLDER</string>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>REPO_PATH/runner</string>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>1</integer>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>LOG_DIR/radar.log</string>
+    <key>StandardErrorPath</key>
+    <string>LOG_DIR/radar.err</string>
+</dict>
+</plist>

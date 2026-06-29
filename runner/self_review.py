@@ -18,9 +18,8 @@ Run: python3 self_review.py        (wire to the 02:00 launchd agent / a Supabase
 """
 import os, sys, json, subprocess, collections
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import db
+import db, claude_cli
 
-CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 REVIEW_MODEL = os.environ.get("SELF_REVIEW_MODEL", "claude-opus-4-8")
 
 
@@ -62,9 +61,9 @@ def run():
     if not summary:
         print(text); return
     try:
-        out = subprocess.check_output(
-            [CLAUDE_BIN, "-p", PROMPT + text, "--model", REVIEW_MODEL, "--output-format", "text"],
-            text=True, timeout=int(os.environ.get("SELF_REVIEW_TIMEOUT", "300")))
+        r = claude_cli.run(PROMPT + text, REVIEW_MODEL,
+                           timeout=int(os.environ.get("SELF_REVIEW_TIMEOUT", "300")))
+        out = r["text"]
     except Exception as e:
         print("self-review model call failed:", e); return
     made = 0
