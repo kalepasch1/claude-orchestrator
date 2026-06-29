@@ -87,6 +87,35 @@ def parse(text):
     return tasks, operator
 
 
+def emit_operator_cards(proj_name, operator, src):
+    """Create ONE approval card per operator item so the human can review/approve each
+    individually from the app. Idempotent by title (re-runs won't duplicate). Shared by
+    the live watcher and operator_backfill.py. Returns count created."""
+    if not operator:
+        return 0
+    existing_titles = {a.get("title") for a in
+                       (db.select("approvals", {"select": "title", "project": f"eq.{proj_name}"}) or [])}
+    created = 0
+    for o in operator:
+        short = (o[:88] + "…") if len(o) > 88 else o
+        title = f"[operator] {short}"
+        if title in existing_titles:
+            continue
+        low = o.lower()
+        kind = ("legal" if any(k in low for k in ("counsel", "legal", "sign-off", "sign off", "execute"))
+                else "secret" if any(k in low for k in ("secret", "env", "api key", "oauth", "token", "credential"))
+                else "operator")
+        db.insert("approvals", {
+            "project": proj_name, "kind": kind, "title": title,
+            "why": "Needs a human — secrets / deploys / OAuth / legal sign-off the runner can't do.",
+            "value": "Unblocks dependent tasks once done; Approve = authorized/completed, Deny = not yet.",
+            "risk": "Dependent tasks stay blocked until this is approved.",
+            "detail": f"{o}\n\n(from intake/{src})"})
+        existing_titles.add(title)
+        created += 1
+    return created
+
+
 def ingest_file(path, projects_by_name):
     text = open(path, encoding="utf-8", errors="replace").read()
     tasks, operator = parse(text)
@@ -107,13 +136,8 @@ def ingest_file(path, projects_by_name):
             row["model"] = t["model"]
         db.insert("tasks", row)
         existing.add(t["slug"]); created += 1
-    if operator:
-        # surface operator-only items as a single approval card so they're tracked, not queued
-        db.insert("approvals", {"project": (tasks[0]["project"] if tasks else "intake"),
-                  "kind": "self", "title": f"Operator actions from {os.path.basename(path)}",
-                  "why": "These need secrets/deploys/legal sign-off — the runner can't do them.",
-                  "value": "Tracked so they aren't lost.", "risk": "Blocks dependent tasks until done.",
-                  "detail": "\n".join(f"- {o}" for o in operator)})
+    # surface each operator-only item as its OWN approval card (per-item, not a lump)
+    emit_operator_cards(tasks[0]["project"] if tasks else "intake", operator, os.path.basename(path))
     return created, skipped
 
 

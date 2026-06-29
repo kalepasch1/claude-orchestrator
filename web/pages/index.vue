@@ -55,6 +55,39 @@ async function productize(proposal: any) {
   }
 }
 
+// Operator sign-offs (secrets / deploys / OAuth / legal) are grouped separately from
+// code-merge approvals so a human can clear the human-only gates at a glance.
+const OPERATOR_KINDS = ['operator', 'legal', 'secret', 'deploy']
+const operatorApprovals = computed(() => approvals.value.filter(a => OPERATOR_KINDS.includes(a.kind)))
+const mergeApprovals = computed(() => approvals.value.filter(a => !OPERATOR_KINDS.includes(a.kind)))
+
+// Per-project filter for the operator section — clear one repo's gates without the others in the way.
+const operatorProjectFilter = ref('all')
+const operatorProjects = computed(() =>
+  [...new Set(operatorApprovals.value.map(a => a.project).filter(Boolean))].sort())
+const filteredOperatorApprovals = computed(() => operatorProjectFilter.value === 'all'
+  ? operatorApprovals.value
+  : operatorApprovals.value.filter(a => a.project === operatorProjectFilter.value))
+// If the selected project's gates all clear, fall back to "all" so the dropdown never sticks on an empty view.
+watch(operatorProjects, projs => {
+  if (operatorProjectFilter.value !== 'all' && !projs.includes(operatorProjectFilter.value)) {
+    operatorProjectFilter.value = 'all'
+  }
+})
+
+// One-click: approve every operator gate currently in view (respects the project filter).
+// Two-key cards only record the caller's first approval — a second person still has to confirm.
+const bulkApproving = ref(false)
+async function approveAllOperator() {
+  const items = [...filteredOperatorApprovals.value]
+  if (!items.length) return
+  const scope = operatorProjectFilter.value === 'all' ? 'all projects' : operatorProjectFilter.value
+  if (!confirm(`Approve ${items.length} operator sign-off(s) for ${scope}?\nTwo-key items will only record your first approval.`)) return
+  bulkApproving.value = true
+  try { for (const a of items) await decide(a.id, 'approved') }
+  finally { bulkApproving.value = false }
+}
+
 // ── autonomy layer ────────────────────────────────────────────────────────
 const loops = ref<any[]>([])
 const sessions = ref<any[]>([])
@@ -550,34 +583,37 @@ watch(user, u => { if (u) loadAll() })
         </div>
       </div>
 
-      <!-- ── Approvals (with two-key enforcement) ── -->
-      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Needs your approval</h2>
-      <div v-if="!approvals.length" class="text-slate-500 italic text-sm mb-6">Nothing waiting. The swarm is flowing.</div>
-      <div v-for="a in approvals" :key="a.id" class="bg-slate-900 border border-amber-600/60 rounded-xl p-4 mb-3">
-        <div class="flex items-center gap-2">
-          <span class="text-xs uppercase font-bold text-amber-400">{{ a.kind }}</span>
-          <b>{{ a.title }}</b>
-          <span v-if="a.approvals_required >= 2"
-                class="text-xs bg-red-900/60 text-red-300 rounded px-1.5 py-0.5 font-bold">2-KEY</span>
-          <span class="flex-1"></span>
-          <span class="text-slate-500 text-xs">{{ a.project }}</span>
-        </div>
-        <p v-if="a.why" class="text-sm mt-2"><span class="text-amber-400 text-xs font-semibold uppercase mr-2">Why</span>{{ a.why }}</p>
-        <p v-if="a.value" class="text-sm mt-1"><span class="text-amber-400 text-xs font-semibold uppercase mr-2">Value</span>{{ a.value }}</p>
-        <p v-if="a.risk" class="text-sm mt-1"><span class="text-amber-400 text-xs font-semibold uppercase mr-2">Risk</span>{{ a.risk }}</p>
-        <pre v-if="a.detail" class="bg-black/40 border border-slate-700 rounded-md p-2 mt-2 text-xs text-slate-300 overflow-auto max-h-44 whitespace-pre-wrap font-mono">{{ a.detail }}</pre>
-        <!-- two-key status indicator -->
-        <p v-if="a.approvals_required >= 2 && a.decided_by" class="text-xs text-green-400 mt-2">
-          ✓ First approval: {{ a.decided_by }} — one more needed from a different user
-        </p>
-        <div class="flex gap-2 mt-3">
-          <button @click="decide(a.id, 'approved')"
-                  class="bg-green-600 hover:bg-green-500 rounded-lg px-4 py-1.5 font-semibold text-sm">
-            {{ a.approvals_required >= 2 && !a.decided_by ? 'Approve (1st)' : a.approvals_required >= 2 && a.decided_by !== user?.email ? 'Approve (2nd)' : 'Approve' }}
-          </button>
-          <button @click="decide(a.id, 'denied')" class="bg-red-600 hover:bg-red-500 rounded-lg px-4 py-1.5 font-semibold text-sm">Deny</button>
-        </div>
-      </div>
+      <!-- ── Operator sign-offs (secrets / deploys / OAuth / legal) ── -->
+      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-2 flex-wrap">
+        Operator sign-offs
+        <span class="text-slate-400 normal-case tracking-normal">secrets · deploys · OAuth · legal</span>
+        <span v-if="operatorApprovals.length"
+              class="text-[10px] bg-sky-900/60 text-sky-300 rounded-full px-2 py-0.5 font-bold">{{ filteredOperatorApprovals.length }}/{{ operatorApprovals.length }}</span>
+        <span class="flex-1"></span>
+        <select v-if="operatorProjects.length > 1" v-model="operatorProjectFilter"
+                class="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 normal-case tracking-normal">
+          <option value="all">All projects</option>
+          <option v-for="p in operatorProjects" :key="p" :value="p">{{ p }}</option>
+        </select>
+        <button v-if="filteredOperatorApprovals.length" @click="approveAllOperator" :disabled="bulkApproving"
+                class="bg-sky-600 hover:bg-sky-500 disabled:opacity-50 rounded-lg px-3 py-1 text-xs font-semibold text-white normal-case tracking-normal">
+          {{ bulkApproving ? 'Approving…' : `Approve all${operatorProjectFilter === 'all' ? '' : ' (' + operatorProjectFilter + ')'} · ${filteredOperatorApprovals.length}` }}
+        </button>
+      </h2>
+      <div v-if="!operatorApprovals.length" class="text-slate-500 italic text-sm mb-6">No operator gates waiting.</div>
+      <div v-else-if="!filteredOperatorApprovals.length" class="text-slate-500 italic text-sm mb-6">No operator gates for {{ operatorProjectFilter }}.</div>
+      <ApprovalCard v-for="a in filteredOperatorApprovals" :key="a.id" :a="a" :user-email="user?.email" accent="sky"
+                    @decide="decide" />
+
+      <!-- ── Code-merge approvals (with two-key enforcement) ── -->
+      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-6 flex items-center gap-2">
+        Code-merge approvals
+        <span v-if="mergeApprovals.length"
+              class="text-[10px] bg-amber-900/60 text-amber-300 rounded-full px-2 py-0.5 font-bold">{{ mergeApprovals.length }}</span>
+      </h2>
+      <div v-if="!mergeApprovals.length" class="text-slate-500 italic text-sm mb-6">Nothing waiting. The swarm is flowing.</div>
+      <ApprovalCard v-for="a in mergeApprovals" :key="a.id" :a="a" :user-email="user?.email" accent="amber"
+                    @decide="decide" />
 
       <!-- ── Transactions ── -->
       <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Cross-repo transactions</h2>

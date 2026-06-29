@@ -18,7 +18,10 @@ THROTTLE_FILE = os.path.join(HOME, "throttle")
 CEILING = int(os.environ.get("MAX_PARALLEL_CEILING", "4"))
 DISK_SOFT = float(os.environ.get("DISK_SOFT_PCT", "80"))   # prune above this
 DISK_HARD = float(os.environ.get("DISK_HARD_PCT", "90"))   # throttle to 1 + alert
-RAM_HARD = float(os.environ.get("RAM_HARD_PCT", "88"))
+RAM_HARD = float(os.environ.get("RAM_HARD_PCT", "82"))
+# Hard low-memory brake: if fewer than this many GB are available, PAUSE new task claims
+# entirely (a single heavy task — e.g. an 8GB typecheck — could otherwise crash the Mac).
+RAM_FLOOR_GB = float(os.environ.get("RAM_FLOOR_GB", "5"))
 LOG_KEEP_DAYS = int(os.environ.get("LOG_KEEP_DAYS", "7"))
 PRUNE_NODE_MODULES = os.environ.get("PRUNE_NODE_MODULES", "false").lower() == "true"
 PRUNE_DOCKER = os.environ.get("PRUNE_DOCKER", "false").lower() == "true"
@@ -39,12 +42,39 @@ def disk_pct(path="/"):
     return round(u.used / u.total * 100, 1), round(u.free / 1e9, 1)
 
 
+def _vm_stat():
+    """macOS memory via vm_stat + sysctl (no psutil dependency). Returns (pct_used, free_gb)."""
+    try:
+        import re
+        page = 4096
+        total = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]).strip())
+        out = subprocess.check_output(["vm_stat"]).decode()
+        vals = {}
+        for ln in out.splitlines():
+            m = re.match(r"Pages (free|active|inactive|speculative|wired down|occupied by compressor):\s+(\d+)", ln)
+            if m:
+                vals[m.group(1)] = int(m.group(2)) * page
+        used = vals.get("active", 0) + vals.get("wired down", 0) + vals.get("occupied by compressor", 0)
+        avail = vals.get("free", 0) + vals.get("inactive", 0) + vals.get("speculative", 0)
+        return round(used / total * 100, 1), round(avail / 1e9, 1)
+    except Exception:
+        return None, None
+
+
 def ram_pct():
     try:
         import psutil
         return psutil.virtual_memory().percent
     except Exception:
-        return None
+        return _vm_stat()[0]
+
+
+def ram_free_gb():
+    try:
+        import psutil
+        return round(psutil.virtual_memory().available / 1e9, 1)
+    except Exception:
+        return _vm_stat()[1]
 
 
 def _projects():
@@ -215,11 +245,51 @@ def dashboard_gauge():
     }
 
 
+def _global_pause_reason():
+    try:
+        rows = db.select("controls", {"select": "paused,reason", "scope": "eq.global"}) or []
+        if rows and rows[0].get("paused"):
+            return rows[0].get("reason") or ""
+    except Exception:
+        pass
+    return None
+
+
 def govern():
     used, free_gb = disk_pct()
     ram = ram_pct()
+    free_ram = ram_free_gb()
     _event("disk", used, f"{free_gb}GB free")
     action = "ok"
+
+    # ── MEMORY BRAKE: protect the Mac from a crash/restart ──────────────────────
+    # If available RAM is critically low, PAUSE all new task claims (the running task
+    # finishes; nothing new starts) until memory recovers. Uses the kill switch so the
+    # whole runner + scheduler honor it. Auto-resumes only what IT auto-paused.
+    if free_ram is not None:
+        cur_reason = _global_pause_reason()
+        if free_ram < RAM_FLOOR_GB:
+            set_throttle(1)
+            if cur_reason is None:  # not already paused by anyone
+                try:
+                    import kill_switch
+                    kill_switch.pause(scope="global", reason="auto:low-memory", by="governor")
+                    db.insert("approvals", {"project": "ORCHESTRATOR", "kind": "self",
+                        "title": f"Low memory: {free_ram}GB free — orchestrator paused",
+                        "why": "Available RAM dropped below the floor; paused new work to avoid a Mac crash.",
+                        "value": "Prevents an out-of-memory restart.",
+                        "risk": "Orchestrator auto-resumes when memory recovers."})
+                except Exception:
+                    pass
+            print(f"governor: LOW MEMORY {free_ram}GB free (<{RAM_FLOOR_GB}) -> paused new claims")
+            return dashboard_gauge()
+        elif cur_reason == "auto:low-memory" and free_ram > RAM_FLOOR_GB + 3:
+            try:
+                import kill_switch
+                kill_switch.resume(scope="global", by="governor")
+                print(f"governor: memory recovered ({free_ram}GB free) -> resumed")
+            except Exception:
+                pass
 
     # Predictive check: prune now if trend says we'll hit DISK_HARD within the window
     pred_pct, hours_to_hard = _predicted_disk_pct()
@@ -242,10 +312,12 @@ def govern():
                 "value": "Prevents a crash.", "risk": "Throughput reduced until pressure eases."})
         except Exception:
             pass
-    elif used < DISK_SOFT - 10:
+    elif used < DISK_SOFT - 10 and (ram is None or ram < RAM_HARD - 12) and (free_ram is None or free_ram > RAM_FLOOR_GB + 3):
         set_throttle(CEILING); action = f"throttle->{CEILING}"
-    else:
+    elif (ram is None or ram < RAM_HARD - 8) and (free_ram is None or free_ram > RAM_FLOOR_GB + 2):
         set_throttle(current_limit() + 1); action = "ease up"
+    else:
+        action = "hold (memory elevated)"
     g = dashboard_gauge()
     print(f"governor: disk {used}% ({free_gb}GB free) ram {ram} -> {action}, limit={current_limit()}")
     return g
