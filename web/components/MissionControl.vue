@@ -56,9 +56,9 @@ const statusMix = computed(() => {
     const s = (t.state || 'UNKNOWN').toUpperCase()
     counts[s] = (counts[s] || 0) + 1
   }
-  const ordered = STATE_ORDER
+  const ordered: { state: string; count: number }[] = STATE_ORDER
     .filter(s => counts[s])
-    .map(s => ({ state: s, count: counts[s] }))
+    .map(s => ({ state: s as string, count: counts[s] ?? 0 }))
   // append any non-canonical states at the end so nothing is silently dropped
   for (const [s, n] of Object.entries(counts)) {
     if (!STATE_ORDER.includes(s as any)) ordered.push({ state: s, count: n })
