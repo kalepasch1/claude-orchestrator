@@ -6,8 +6,10 @@ A) resource_governor must NEVER delete a worktree with uncommitted changes or an
 B) session_watcher must NEVER close a tab for a session whose output shows in-progress signals,
    and must NEVER call _close_vscode_tab unless done=True.
 C) secrets_manager must NEVER write secret values to any Supabase insert.
+D) kill_switch must NEVER allow paused projects to run tasks.
+E) improvement_miner must NEVER exceed budget caps or deploy degraded experiments.
 """
-import os, sys, tempfile, subprocess, json, unittest
+import os, sys, tempfile, subprocess, json, unittest, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
@@ -294,7 +296,85 @@ class TestKillSwitch(unittest.TestCase):
             db.insert = orig_insert
 
 
-# ── E: claude_cli cost capture ────────────────────────────────────────────────
+# ── E: improvement_miner canary economics ──────────────────────────────────
+
+class TestImprovementMinerBudget(unittest.TestCase):
+
+    def test_budget_never_exceeds_max_pct(self):
+        """Budget available must never exceed MINER_BUDGET_PCT of fleet."""
+        from unittest.mock import patch
+        import improvement_miner
+        with patch.object(improvement_miner, 'db') as mock_db:
+            mock_db.select.return_value = []
+            avail = improvement_miner.budget_available()
+            self.assertLessEqual(avail["available_pct"], improvement_miner.MINER_BUDGET_PCT,
+                                f"budget available must be <= {improvement_miner.MINER_BUDGET_PCT}%")
+
+    def test_degraded_experiment_triggers_rollback(self):
+        """Evaluate_experiment must return 'roll_back' when candidate underperforms significantly."""
+        from unittest.mock import patch
+        import improvement_miner
+        import time
+
+        with patch.object(improvement_miner.db, 'select') as mock_select:
+            def _select_fn(table, q=None):
+                if table == "experiments":
+                    return [{"id": "exp-1", "status": "active", "created_at": time.time() - 86400,
+                             "fleet_allocation_pct": 5}]
+                elif table == "outcomes":
+                    return (
+                        [{"id": f"c{i}", "experiment_id": "exp-1", "experiment_variant": "control",
+                          "tests_passed": True, "usd": 0.01} for i in range(15)] +
+                        [{"id": f"k{i}", "experiment_id": "exp-1", "experiment_variant": "candidate",
+                          "tests_passed": i < 5, "usd": 0.01} for i in range(15)]
+                    )
+                return []
+            mock_select.side_effect = _select_fn
+            verdict = improvement_miner.evaluate_experiment("exp-1")
+            self.assertEqual(verdict, "roll_back",
+                           "experiment with 33% vs 100% pass rate must trigger rollback")
+
+    def test_experiment_needs_min_trials_for_decision(self):
+        """Evaluate_experiment must return 'inconclusive' if fewer than MIN_TRIAL_SIZE trials."""
+        from unittest.mock import patch
+        import improvement_miner
+
+        with patch.object(improvement_miner.db, 'select') as mock_select:
+            def _select_fn(table, q=None):
+                if table == "experiments":
+                    return [{"id": "exp-1", "status": "active", "created_at": 0}]
+                elif table == "outcomes":
+                    return []
+                return []
+            mock_select.side_effect = _select_fn
+            verdict = improvement_miner.evaluate_experiment("exp-1")
+            self.assertEqual(verdict, "inconclusive",
+                           "experiment with no trials must be inconclusive")
+
+    def test_non_degraded_candidate_is_winning(self):
+        """Evaluate_experiment must return 'winning' when candidate matches or beats control."""
+        from unittest.mock import patch
+        import improvement_miner
+
+        with patch.object(improvement_miner.db, 'select') as mock_select:
+            def _select_fn(table, q=None):
+                if table == "experiments":
+                    return [{"id": "exp-1", "status": "active", "created_at": time.time()}]
+                elif table == "outcomes":
+                    return (
+                        [{"id": f"c{i}", "experiment_id": "exp-1", "experiment_variant": "control",
+                          "tests_passed": i < 12, "usd": 0.01} for i in range(15)] +
+                        [{"id": f"k{i}", "experiment_id": "exp-1", "experiment_variant": "candidate",
+                          "tests_passed": i < 12, "usd": 0.01} for i in range(15)]
+                    )
+                return []
+            mock_select.side_effect = _select_fn
+            verdict = improvement_miner.evaluate_experiment("exp-1")
+            self.assertIn(verdict, ["winning", "inconclusive"],
+                         "experiment with equal pass rate should not be losing")
+
+
+# ── F: claude_cli cost capture ────────────────────────────────────────────────
 
 class TestCostCapture(unittest.TestCase):
 

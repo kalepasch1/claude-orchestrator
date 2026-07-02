@@ -37,7 +37,7 @@ import context_retrieval, result_cache
 import confidence, blast_radius, replay
 import feedback
 import kill_switch, secrets_manager, credential_broker, quality_gate
-import claude_cli, waste
+import claude_cli, waste, experiment_router
 
 INTEGRATION_MODE = os.environ.get("INTEGRATION_MODE", "local")  # local | pr
 USE_CACHE = os.environ.get("RESULT_CACHE", "true").lower() == "true"
@@ -354,13 +354,19 @@ def _update_capability_eval(cap_slug, passed):
 def record(t, project, slug, kind, model, acct, attempt, tests_ok, integrated, out, t0, cost=None):
     # Prefer REAL cost from claude_cli (json envelope); fall back to regex parse of text.
     row = cost if cost is not None else cost_ledger_row(project, slug, model, out)
-    db.insert("outcomes", {
+    outcome = {
         "task_id": t["id"], "project": project, "slug": slug, "kind": kind,
         "model": model, "account": (acct or {}).get("name"), "attempts": attempt,
         "rate_limited": any(s in out.lower() for s in RATE),
         "tests_passed": tests_ok, "integrated": integrated,
         "input_tokens": row["input_tokens"], "output_tokens": row["output_tokens"],
-        "usd": row["usd"], "wall_ms": int((time.time() - t0) * 1000)})
+        "usd": row["usd"], "wall_ms": int((time.time() - t0) * 1000)}
+    # Track experiment assignment if this task is part of an A/B trial
+    exp_meta = t.get("experiment_id")
+    if exp_meta:
+        outcome["experiment_id"] = exp_meta
+        outcome["experiment_variant"] = t.get("experiment_variant", "control")
+    db.insert("outcomes", outcome)
     # federated capability feedback: real-world outcomes flow back to capability_evals
     cap_slug = t.get("capability_slug")
     if cap_slug:
@@ -406,6 +412,7 @@ _SCHEDULE = [
     ("loops-300",     "loops.py",           "interval", 300),   # per-app learning/remediation loops
     ("metaloop-daily","meta_loop.py",       "daily",    (4, 0)),# loop on a loop
     ("feedback-daily","feedback_review.py", "daily",    (5, 0)),# agent->orchestrator improvements
+    ("miner-daily",   "improvement_miner.py","daily",   (3, 30)),# autonomous A/B experiment portfolio
     ("usage-daily",   "usage_meter.py",     "daily",    (6, 0)),# external API/subscription spend
 ]
 _sched_last: dict = {}
@@ -417,7 +424,7 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
 # Optional autonomous-improvement jobs that are NOT yet routed through claude_cli (so their
 # spend isn't counted against the $40/day cap). OFF unless ENABLE_PROACTIVE_LOOPS=true.
 _PROACTIVE = {"scout", "spec", "chaos", "self_review.py", "maturity.py", "demand_mining.py",
-              "capability_radar.py", "meta_loop.py", "feedback_review.py"}
+              "capability_radar.py", "meta_loop.py", "feedback_review.py", "improvement_miner.py"}
 _PROACTIVE_ON = os.environ.get("ENABLE_PROACTIVE_LOOPS", "false").lower() == "true"
 
 def _fire_periodic(job: str) -> None:
