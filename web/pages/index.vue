@@ -1,5 +1,6 @@
 <script setup lang="ts">
-const supabase = useSupabaseClient()
+import type { LogLine } from '~/types/log'
+const supabase = useSupabaseClient<any>()
 const user = useSupabaseUser()
 
 // ── auth ──────────────────────────────────────────────────────────────────
@@ -406,8 +407,7 @@ const byModel = computed(() => {
 // TODO(bind-stream): replace with a dedicated run_logs table + realtime channel
 // for true per-line streaming instead of polling the task log_tail snapshot.
 const logLines = computed(() => {
-  type LL = { ts?: number; level: 'debug' | 'info' | 'warn' | 'error'; message: string; source?: string }
-  const out: LL[] = []
+  const out: LogLine[] = []
   const recent = [...tasks.value]
     .filter(t => t.log_tail)
     .slice(0, 12)
@@ -419,7 +419,7 @@ const logLines = computed(() => {
       const line = raw.trimEnd()
       if (!line) continue
       const m = line.match(/^\s*(ERROR|ERR|WARN|WARNING|DEBUG|DBG|INFO)\b[:\s-]*/i)
-      let level: LL['level'] = 'info'
+      let level: LogLine['level'] = 'info'
       let message = line
       if (m) {
         const tok = m[1].toUpperCase()
@@ -845,7 +845,7 @@ watch(user, u => { if (u) loadAll() })
           </div>
           <div v-if="budgetFor(p.name).cap" class="h-2 bg-slate-800 rounded-full overflow-hidden">
             <div class="h-full rounded-full"
-                 :class="budgetFor(p.name).spent >= budgetFor(p.name).cap ? 'bg-red-500' : budgetFor(p.name).spent / budgetFor(p.name).cap > 0.8 ? 'bg-amber-500' : 'bg-green-500'"
+                 :class="budgetFor(p.name).spent >= (budgetFor(p.name).cap ?? 0) ? 'bg-red-500' : budgetFor(p.name).spent / (budgetFor(p.name).cap ?? 1) > 0.8 ? 'bg-amber-500' : 'bg-green-500'"
                  :style="{ width: Math.min(100, 100 * budgetFor(p.name).spent / (budgetFor(p.name).cap ?? 1)) + '%' }"></div>
           </div>
           <div v-else class="text-slate-600 text-xs">no cap set</div>

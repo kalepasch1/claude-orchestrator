@@ -1,34 +1,5 @@
 <script setup lang="ts">
-// ─────────────────────────────────────────────────────────────────────────────
-// LogView — a proper log surface for the orchestrator.
-//
-//  • JetBrains Mono (font-mono token) with tabular numerics for aligned timestamps
-//  • per-line level styling — level is conveyed by an ICON + TEXT label, never by
-//    colour alone (WCAG 1.4.1: don't use colour as the only visual means)
-//  • copy-one-line and copy-all affordances
-//  • "follow tail" toggle — auto-scrolls to newest; auto-pauses when the user
-//    scrolls up, resumes when they return to the bottom
-//  • reusable: bind a live stream via the `lines` prop, or let it render sample
-//    lines so the surface is demoable before the real source is wired.
-//
-// TODO(bind-stream): the orchestrator currently exposes task progress via
-// `tasks[].log_tail` (a raw text blob) and Supabase realtime on the `tasks`
-// table. To bind the real stream, parse `log_tail` into LogLine[] (one entry per
-// text line, infer level from a leading token) and pass it in as `:lines`, or add
-// a dedicated `run_logs` table + realtime channel and map rows → LogLine.
-// ─────────────────────────────────────────────────────────────────────────────
-
-export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
-
-export interface LogLine {
-  /** epoch ms or ISO string; rendered as HH:MM:SS. Optional. */
-  ts?: number | string
-  level: LogLevel
-  /** the message body (already plain text). */
-  message: string
-  /** optional source tag, e.g. runner id / task slug. */
-  source?: string
-}
+import type { LogLevel, LogLine } from '~/types/log'
 
 const props = withDefaults(defineProps<{
   lines?: LogLine[]
