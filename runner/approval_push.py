@@ -49,13 +49,18 @@ def _links_block(a):
 def run(limit=50):
     # new decisions/actions not yet pushed
     already = {r.get("approval_id") for r in (db.select("notifications", {"select": "approval_id"}) or [])}
-    cards = db.select("approvals", {"select": "id,kind,project,title,why,value,risk,alternatives,prebrief,legal_risk_level",
+    cards = db.select("approvals", {"select": "id,kind,project,title,why,value,risk,alternatives,prebrief,legal_risk_level,radar_tag,detail",
                                     "status": "eq.pending",
                                     "kind": "in.(legal,material,secret,operator)",
                                     "order": "created_at.desc", "limit": str(limit)}) or []
+    import approval_policy
     pushed = 0
     for a in cards:
         if a["id"] in already:
+            continue
+        # OWNER POLICY: only narrow legal-structuring questions email immediately;
+        # approval_policy.sweep() auto-approves the rest (they land in the daily digest).
+        if not approval_policy.is_legal_gated(a):
             continue
         is_decision = a["kind"] in ("legal", "material")
         kind = "decision" if is_decision else "action"
