@@ -42,3 +42,14 @@ select * from notifications where channel='smarter' and sent=false order by crea
   rather not query tables directly.
 - Legal cards tagged `legal_risk_level='novel'` are the ones that truly need you; `routine` may be
   auto-cleared by `legal_triage` when `LEGAL_AUTO_APPROVE_ROUTINE=true`.
+
+## Structured decision prompts (2026-07-02)
+`v_pending_decisions` now exposes `alternatives` + `brief_json`. Render decisions EXACTLY like the
+owner email does — never a bare approve/reject:
+- `brief_json.question` → the one narrow question (headline)
+- `brief_json.options[]` → 2-4 choice cards: `label`, `description`, `risk`, `reversible`,
+  `recommended` (pre-select the recommended one)
+- On tap: `update approvals set status='approved', decision_type='conditions',
+  decision_text='chosen implementation: <label>', decided_by='smarter', decided_at=now() where id=$1`
+  (deny/defer analogous; defer sets brief_status='requested' instead of status).
+Email one-click links (approvals-api edge fn) and Smarter taps write the same rows — first decision wins.
