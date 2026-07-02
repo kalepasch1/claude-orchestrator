@@ -573,6 +573,7 @@ _SCHEDULE = [
     ("chaos-weekly",  "chaos",              "weekly",   (6, 2, 0)),
     ("demand-weekly", "demand_mining.py",   "weekly",   (1, 4, 0)),
     ("radar-weekly",  "capability_radar.py","weekly",   (1, 3, 0)),
+    ("digest-weekly", "portfolio_strategy_digest.py","weekly",(0, 1, 0)),# portfolio strategy clustering
     ("governor-60",   "resource_governor.py","interval",60),    # keep the Mac alive (faster cadence)
     ("sessions-120",  "session_watcher.py", "interval", 120),   # read paused/finished sessions
     ("loops-300",     "loops.py",           "interval", 300),   # per-app learning/remediation loops
