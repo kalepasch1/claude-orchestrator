@@ -10,10 +10,13 @@
 <dict>
   <key>Label</key><string>com.orchestrator.runner</string>
   <key>WorkingDirectory</key><string>/Users/kpasch/Documents/beethoven/claude-orchestrator/runner</string>
+  <!-- run via a login shell so it uses the SAME python3 (PATH: homebrew/pyenv) that works when you
+       run it by hand — avoids launchd crash-looping on missing deps under Apple's /usr/bin/python3 -->
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/bin/python3</string>
-    <string>runner.py</string>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>exec python3 runner.py</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
