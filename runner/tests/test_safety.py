@@ -548,6 +548,96 @@ class TestCommittees(unittest.TestCase):
             self.assertIsInstance(member["expertise"], str)
             self.assertIsInstance(member["veto"], bool)
 
+# ── G: auto-approval safety ──────────────────────────────────────────────────
+
+class TestAutoApprovalSafety(unittest.TestCase):
+
+    def test_sensitive_paths_detected(self):
+        """_touches_sensitive_paths must flag sensitive files."""
+        from approval_merge import _touches_sensitive_paths
+        d = tempfile.mkdtemp()
+        subprocess.run(["git", "init", "-b", "main"], cwd=d, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=d, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=d, capture_output=True)
+        open(os.path.join(d, "README"), "w").write("x")
+        subprocess.run(["git", "add", "."], cwd=d, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=d, capture_output=True)
+        subprocess.run(["git", "checkout", "-b", "agent/test"], cwd=d, capture_output=True)
+        # Create a sensitive file
+        os.makedirs(os.path.join(d, "config"), exist_ok=True)
+        open(os.path.join(d, "config", "pricing.json"), "w").write("{}")
+        subprocess.run(["git", "add", "."], cwd=d, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "add pricing"], cwd=d, capture_output=True)
+        subprocess.run(["git", "checkout", "main"], cwd=d, capture_output=True)
+
+        result = _touches_sensitive_paths(d, "agent/test", "main")
+        self.assertTrue(result, "pricing.json should be detected as sensitive")
+
+    def test_safe_paths_not_flagged(self):
+        """_touches_sensitive_paths must NOT flag safe files."""
+        from approval_merge import _touches_sensitive_paths
+        d = tempfile.mkdtemp()
+        subprocess.run(["git", "init", "-b", "main"], cwd=d, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=d, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "T"], cwd=d, capture_output=True)
+        open(os.path.join(d, "README"), "w").write("x")
+        subprocess.run(["git", "add", "."], cwd=d, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "init"], cwd=d, capture_output=True)
+        subprocess.run(["git", "checkout", "-b", "agent/test"], cwd=d, capture_output=True)
+        # Create safe files
+        open(os.path.join(d, "feature.js"), "w").write("console.log('hi')")
+        open(os.path.join(d, "test.js"), "w").write("expect(true)")
+        subprocess.run(["git", "add", "."], cwd=d, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "add feature"], cwd=d, capture_output=True)
+        subprocess.run(["git", "checkout", "main"], cwd=d, capture_output=True)
+
+        result = _touches_sensitive_paths(d, "agent/test", "main")
+        self.assertFalse(result, "safe files should not be flagged")
+
+    def test_should_autoapprove_checks_kind(self):
+        """_should_autoapprove must check card kind."""
+        from approval_merge import _should_autoapprove
+        # Card kind not in (integrate, material) -> should not autoapprove
+        card = {"kind": "proposal"}  # Not low-risk
+        task = {"kind": "build"}
+        result = _should_autoapprove(card, task)
+        self.assertFalse(result, "proposal cards should not be auto-approved")
+
+    def test_should_autoapprove_checks_task_kind(self):
+        """_should_autoapprove must check task kind."""
+        from approval_merge import _should_autoapprove
+        # Task kind not in (build, bugfix) -> should not autoapprove
+        card = {"kind": "integrate"}
+        task = {"kind": "research"}  # Not low-risk
+        result = _should_autoapprove(card, task)
+        self.assertFalse(result, "research tasks should not be auto-approved")
+
+    def test_should_autoapprove_accepts_low_risk(self):
+        """_should_autoapprove must accept integrate+build combinations."""
+        from approval_merge import _should_autoapprove
+        card = {"kind": "integrate"}
+        task = {"kind": "build"}
+        result = _should_autoapprove(card, task)
+        self.assertTrue(result, "integrate+build should be auto-approved")
+
+        card = {"kind": "material"}
+        task = {"kind": "bugfix"}
+        result = _should_autoapprove(card, task)
+        self.assertTrue(result, "material+bugfix should be auto-approved")
+
+    def test_autoapprove_disabled_by_env(self):
+        """_should_autoapprove must return False if ORCH_AUTOAPPROVE_LOWRISK=false."""
+        import approval_merge
+        orig_enabled = approval_merge.AUTOAPPROVE_ENABLED
+        try:
+            approval_merge.AUTOAPPROVE_ENABLED = False
+            card = {"kind": "integrate"}
+            task = {"kind": "build"}
+            result = approval_merge._should_autoapprove(card, task)
+            self.assertFalse(result, "autoapprove disabled should return False")
+        finally:
+            approval_merge.AUTOAPPROVE_ENABLED = orig_enabled
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
