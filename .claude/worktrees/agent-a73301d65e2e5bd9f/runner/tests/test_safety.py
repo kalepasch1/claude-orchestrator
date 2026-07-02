@@ -217,5 +217,113 @@ class TestSecretsHygiene(unittest.TestCase):
         self.assertNotIn("TEST_KEY", output)
 
 
+# ── F: committees domain mapping ──────────────────────────────────────────────
+
+class TestCommittees(unittest.TestCase):
+
+    def test_fintech_committee_has_regulatory_veto(self):
+        """Fintech apps must have Regulatory seat with veto power."""
+        from committees import for_app, has_veto_seat
+        board = for_app("paypal")  # infer from name
+        seats = [m["seat"] for m in board]
+        self.assertIn("Regulatory", seats, "fintech must have Regulatory seat")
+        self.assertTrue(has_veto_seat("paypal", "Regulatory"),
+                       "Regulatory must have veto power for fintech")
+
+    def test_consumer_committee_has_privacy_veto(self):
+        """Consumer apps must have Privacy seat with veto power."""
+        from committees import for_app, has_veto_seat
+        board = for_app("social_media")  # infer from name
+        seats = [m["seat"] for m in board]
+        self.assertIn("Privacy", seats, "consumer must have Privacy seat")
+        self.assertTrue(has_veto_seat("social_media", "Privacy"),
+                       "Privacy must have veto power for consumer")
+
+    def test_saas_committee_has_reliability_veto(self):
+        """SaaS apps must have Reliability seat with veto power."""
+        from committees import for_app, has_veto_seat
+        board = for_app("workspace_saas")  # infer from name
+        seats = [m["seat"] for m in board]
+        self.assertIn("Reliability", seats, "saas must have Reliability seat")
+        self.assertTrue(has_veto_seat("workspace_saas", "Reliability"),
+                       "Reliability must have veto power for saas")
+
+    def test_platform_committee_has_stability_veto(self):
+        """Platform apps must have Stability seat with veto power."""
+        from committees import for_app, has_veto_seat
+        board = for_app("platform-core")  # infer from name
+        seats = [m["seat"] for m in board]
+        self.assertIn("Stability", seats, "platform must have Stability seat")
+        self.assertTrue(has_veto_seat("platform-core", "Stability"),
+                       "Stability must have veto power for platform")
+
+    def test_explicit_app_type_overrides_inference(self):
+        """If db_project['type'] is set, it should override name inference."""
+        from committees import for_app
+        # Pass a dict with explicit type
+        db_project = {"type": "fintech", "name": "ambiguous-name"}
+        board = for_app("ambiguous-name", db_project)
+        seats = [m["seat"] for m in board]
+        self.assertIn("Regulatory", seats,
+                     "explicit type=fintech should return fintech committee")
+
+    def test_unknown_app_type_uses_default(self):
+        """Unknown app types should fall back to the default committee."""
+        from committees import for_app
+        board = for_app("xyz-system-123")
+        seats = [m["seat"] for m in board]
+        # Default has Code, Security, Performance
+        self.assertIn("Security", seats, "default committee must have Security")
+        self.assertIn("Code", seats, "default committee must have Code")
+
+    def test_members_for_app_returns_seat_names(self):
+        """members_for_app should return a list of seat names only."""
+        from committees import members_for_app
+        seats = members_for_app("bank-app")  # infer fintech
+        self.assertIsInstance(seats, list)
+        self.assertTrue(all(isinstance(s, str) for s in seats))
+        self.assertIn("Regulatory", seats)
+
+    def test_has_veto_seat_for_nonexistent_seat(self):
+        """has_veto_seat should return False for a seat that doesn't exist."""
+        from committees import has_veto_seat
+        result = has_veto_seat("social-app", "NonexistentSeat")
+        self.assertFalse(result, "nonexistent seat should return False")
+
+    def test_all_veto_seats_respected(self):
+        """All defined veto seats must actually have veto=True in their definition."""
+        from committees import APP_COMMITTEES, has_veto_seat
+        for app_type, members in APP_COMMITTEES.items():
+            for m in members:
+                if m.get("veto"):
+                    # Double-check: calling has_veto_seat should agree
+                    result = has_veto_seat(app_type, m["seat"],
+                                          db_project={"type": app_type})
+                    self.assertTrue(result,
+                                   f"{app_type}/{m['seat']} marked veto but has_veto_seat disagrees")
+
+    def test_all_committee_types_defined(self):
+        """all_types() must return fintech, consumer, saas, platform, opensource."""
+        from committees import all_types
+        types = all_types()
+        self.assertIn("fintech", types)
+        self.assertIn("consumer", types)
+        self.assertIn("saas", types)
+        self.assertIn("platform", types)
+        self.assertIn("opensource", types)
+
+    def test_committee_members_structure(self):
+        """Each member must have seat, expertise, and veto keys."""
+        from committees import for_app
+        board = for_app("fintech-app")
+        for member in board:
+            self.assertIn("seat", member, "member must have 'seat'")
+            self.assertIn("expertise", member, "member must have 'expertise'")
+            self.assertIn("veto", member, "member must have 'veto'")
+            self.assertIsInstance(member["seat"], str)
+            self.assertIsInstance(member["expertise"], str)
+            self.assertIsInstance(member["veto"], bool)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
