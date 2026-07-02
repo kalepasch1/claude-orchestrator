@@ -3,8 +3,9 @@
     "defaultMode": "acceptEdits",
     "allow": ["Edit","Write","Read","Grep","Glob","Bash","WebFetch","WebSearch"],
     "deny": [
+      "Bash(git push:*)",
       "Bash(git push --force:*)",
-      "Bash(git push -f:*)",
+      "Bash(gh:*)",
       "Bash(git reset --hard:*)",
       "Bash(git clean -fdx:*)",
       "Bash(rm -rf:*)",
