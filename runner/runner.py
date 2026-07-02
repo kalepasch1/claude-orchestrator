@@ -143,10 +143,13 @@ def _commit_agent_work(wt, slug, prompt):
     """Stage + commit everything the agent changed in the worktree. Returns True if a commit
     was made, False if there was nothing to commit. Uses --no-verify so a repo's pre-commit
     hook can't block/hang the pipeline; identity is set explicitly so commits never fail on a
-    missing git user.email."""
+    missing git user.email. Author is a VALID GitHub-verified email so Vercel does not block
+    the resulting deployments (an invalid author like *.local blocks every deploy fleet-wide)."""
+    _git_name = os.environ.get("FLEET_GIT_AUTHOR_NAME", "Kale Aaron Pasch")
+    _git_email = os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "kalepasch@gmail.com")
     env = {**os.environ,
-           "GIT_AUTHOR_NAME": "orchestrator", "GIT_AUTHOR_EMAIL": "agent@orchestrator.local",
-           "GIT_COMMITTER_NAME": "orchestrator", "GIT_COMMITTER_EMAIL": "agent@orchestrator.local"}
+           "GIT_AUTHOR_NAME": _git_name, "GIT_AUTHOR_EMAIL": _git_email,
+           "GIT_COMMITTER_NAME": _git_name, "GIT_COMMITTER_EMAIL": _git_email}
     try:
         subprocess.run(["git", "add", "-A"], cwd=wt, env=env, capture_output=True)
         # nothing staged -> agent changed nothing
@@ -589,7 +592,9 @@ _SCHEDULE = [
     ("improve-3am",   "improve",            "daily",    (3, 15)),# deeper improvement sweep in the research window
     ("improvemeas-dy","improvemeasure",     "daily",    (5, 20)),# learn which improvement kinds pay off
     ("committees-900","committees",         "interval", 900),   # expert committees weigh in on proposals/decisions
-    ("committeecal-dy","committeecal",       "daily",    (5, 40)),# reweight committees by predictive accuracy
+    ("committeecal-dy","committeecal",       "daily",    (5, 40)),# reweight committees + seats by predictive accuracy
+    ("committeedock-dy","committeedocket",   "daily",    (4, 10)),# continuous docket: re-review shipped features
+    ("committeedig-wk","committeedigest",    "daily",    (6, 5)), # owner brief of sharpest dissents/reversals
     ("remediate-180", "remediate",          "interval", 180),   # drive BLOCKED to zero (auto self-remedy)
     ("objective-3600","objective",          "interval", 3600),  # meta-controller: tune knobs toward north-star
     ("selfcheck-600", "selfcheck",          "interval", 600),   # periodic invariant assert + auto-heal
