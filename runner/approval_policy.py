@@ -46,10 +46,46 @@ ALARM_RX = re.compile(
     r"secret|credential", re.I)
 
 FALLBACK_ALTERNATIVES = [
-    {"label": "Proceed with guardrails: ship the non-legal parts now; wrap the sensitive part in disclaimers/limits", "risk": "low", "reversible": True},
-    {"label": "Proceed fully - after counsel confirms it fits the current exemption/structuring posture", "risk": "high", "reversible": False},
-    {"label": "Defer only the conflicting fraction; everything else proceeds now", "risk": "minimal", "reversible": True},
+    {"label": "Proceed with guardrails (Recommended)",
+     "description": "Ship the non-legal parts now; wrap the sensitive fraction in disclaimers/limits/flags.",
+     "risk": "low", "reversible": True, "recommended": True},
+    {"label": "Proceed fully after counsel",
+     "description": "Build everything; launch the sensitive fraction only after counsel confirms it fits the current exemption/structuring posture.",
+     "risk": "high", "reversible": False, "recommended": False},
+    {"label": "Defer the conflicting fraction",
+     "description": "Everything else proceeds now; only the legally sensitive piece waits.",
+     "risk": "minimal", "reversible": True, "recommended": False},
 ]
+
+
+def build_decision_prompt(card, alts):
+    """Canonical structured decision prompt - same shape on email, cockpit, and Smarter:
+    one NARROW question, 2-4 labeled options with tradeoffs, a recommended default."""
+    title = str(card.get("title") or "")
+    why = str(card.get("why") or "")
+    question = why.split("\n")[0][:400] if why else f"Approve: {title}?"
+    options, rec = [], 0
+    for i, a in enumerate(alts[:4]):
+        if isinstance(a, str):
+            a = {"label": a}
+        if a.get("recommended"):
+            rec = i
+        options.append({
+            "label": str(a.get("label") or f"Option {i+1}")[:120],
+            "description": str(a.get("description") or a.get("label") or "")[:400],
+            "risk": a.get("risk", "unknown"),
+            "reversible": bool(a.get("reversible", True)),
+            "recommended": bool(a.get("recommended", False)),
+        })
+    if options and not any(o["recommended"] for o in options):
+        # default recommendation: lowest-risk reversible option
+        order = {"minimal": 0, "low": 1, "low-medium": 2, "medium": 3, "unknown": 4, "high": 5}
+        rec = min(range(len(options)),
+                  key=lambda i: (order.get(str(options[i]["risk"]), 4), not options[i]["reversible"]))
+        options[rec]["recommended"] = True
+        options[rec]["label"] += " (Recommended)" if "(Recommended)" not in options[rec]["label"] else ""
+    return {"question": question, "header": (card.get("radar_tag") or card.get("kind") or "decision")[:24],
+            "options": options, "recommended_index": rec}
 
 
 def _text(card):
@@ -91,9 +127,14 @@ def _enrich_gated(card):
         except Exception:
             alts = None
     if not alts:
-        patch["alternatives"] = FALLBACK_ALTERNATIVES
+        alts = FALLBACK_ALTERNATIVES
+        patch["alternatives"] = alts
     if not card.get("legal_risk_level"):
         patch["legal_risk_level"] = "novel"
+    # canonical structured prompt for every surface (email/cockpit/Smarter)
+    bj = card.get("brief_json")
+    if not bj or not isinstance(bj, dict) or "options" not in (bj or {}):
+        patch["brief_json"] = build_decision_prompt({**card, **patch}, alts)
     return patch
 
 

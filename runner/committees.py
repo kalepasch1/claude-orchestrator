@@ -605,11 +605,159 @@ def review(subject_type, subject_id, title, body, app=None):
             auto_ok = False; experiment = False
             escalate = True; rec = "ESCALATE (north-star drift)"
 
-    return {"aggregate": agg, "recommendation": rec, "opposed_by": opposed, "dissents": dissents,
-            "conflicts": conflicts, "arbitration": arbitration, "owner_bar": round(bar, 2),
-            "critical": critical, "contentious": contentious, "auto_ok": auto_ok, "escalate": escalate,
-            "experiment": experiment, "premortem": premortem, "rollout": rollout, "budget_left": budget,
-            "alignment": align, "drift": (align_info or {}).get("drift"), "panel": panel}
+    # CADE: consensus %, faction clustering, contributors, materiality — the substance of the 1-pager.
+    consensus_pct, factions, contributors = _consensus(panel)
+    materiality = _materiality(panel, critical, legal_veto)
+    out = {"aggregate": agg, "recommendation": rec, "opposed_by": opposed, "dissents": dissents,
+           "conflicts": conflicts, "arbitration": arbitration, "owner_bar": round(bar, 2),
+           "critical": critical, "contentious": contentious, "auto_ok": auto_ok, "escalate": escalate,
+           "experiment": experiment, "premortem": premortem, "rollout": rollout, "budget_left": budget,
+           "alignment": align, "drift": (align_info or {}).get("drift"),
+           "consensus_pct": consensus_pct, "factions": factions, "contributors": contributors,
+           "materiality": materiality, "title": title, "panel": panel}
+    return out
+
+
+def _consensus(panel):
+    """CADE faction clustering: group the assembled experts' positions into factions, and compute the
+    CONSENSUS % = the calibration-and-conviction-weighted share of the winning stance. Also returns the
+    per-expert contributor list (who weighed in, their stance, and their weight on the outcome)."""
+    contributors, weights_by_verdict, total_w = [], {}, 0.0
+    for p in panel:
+        w = float(p.get("base_w", 1.0)) * _cal_weight(p["committee"]) * (0.5 + float(p.get("conviction", 5) or 5) / 10.0)
+        total_w += w
+        v = p.get("verdict") or "needs-info"
+        weights_by_verdict[v] = weights_by_verdict.get(v, 0.0) + w
+        contributors.append({"expert": p.get("committee"), "chair": p.get("chair"), "verdict": v,
+                             "conviction": p.get("conviction"), "weight": round(w, 2),
+                             "position": (p.get("opinion") or p.get("rec") or "")[:200],
+                             "key_risk": (p.get("risk") or p.get("dissent") or "")[:200]})
+    consensus_pct = round(max(weights_by_verdict.values()) / total_w, 3) if total_w else 1.0
+    factions = []
+    for v, w in sorted(weights_by_verdict.items(), key=lambda x: -x[1]):
+        members = [c["expert"] for c in contributors if c["verdict"] == v]
+        arg = next((c["position"] for c in contributors if c["verdict"] == v and c["position"]), "")
+        factions.append({"stance": v, "share": round(w / total_w, 3) if total_w else 0,
+                         "experts": members, "argument": arg[:220]})
+    # contributors sorted by influence (weight) so the 1-pager leads with who mattered most
+    contributors.sort(key=lambda c: c["weight"], reverse=True)
+    return consensus_pct, factions, contributors
+
+
+def _materiality(panel, critical, legal_veto):
+    """[0,1] stakes estimate that drives review depth AND whether a human is looped in. High materiality =
+    legal exposure, irreversibility, or strong high-conviction opposition."""
+    m = 0.3
+    if legal_veto or any(_is_legal(p["committee"]) for p in panel):
+        m += 0.3
+    if critical:
+        m += 0.3
+    if any(p.get("verdict") == "oppose" and float(p.get("conviction", 0) or 0) >= 7 for p in panel):
+        m += 0.2
+    return round(min(1.0, m), 2)
+
+
+def _consensus_floor():
+    try:
+        r = db.select("owner_model", {"select": "value", "key": "eq.consensus_floor"}) or []
+        return float(r[0]["value"]) if r else 0.85
+    except Exception:
+        return 0.85
+
+
+def constitution_gate(agg):
+    """CADE bound: the engine DETERMINES; approval flows ACT. Anything critical, legal-vetoed, or
+    irreversible must reach a human regardless of consensus — no autonomous money movement / filing /
+    sending. Returns True if the determination must be gated to a human."""
+    return bool(agg.get("escalate") or agg.get("critical") or
+                str(agg.get("recommendation", "")).startswith(("HOLD (legal", "ESCALATE")))
+
+
+def certify(subject_type, subject_id, agg):
+    """Build the Optimality Certificate + hash-chained proof for a determination and persist it with its
+    reviewer 1-pager. The proof chains to the previous determination so the ledger is tamper-evident."""
+    import hashlib
+    onepager = deliberation_onepager(agg)
+    cert = {"position": agg.get("recommendation"), "consensus_pct": agg.get("consensus_pct"),
+            "materiality": agg.get("materiality"), "confidence": agg.get("aggregate"),
+            "contributors": agg.get("contributors"), "factions": agg.get("factions"),
+            "dissent": agg.get("dissents"), "gated_to_human": constitution_gate(agg),
+            "counterfactual": (f"winning stance carried {round((agg.get('consensus_pct') or 0)*100)}% of "
+                               f"weighted expertise; strongest opposing view preserved in dissent")}
+    try:
+        prev = (db.select("determinations", {"select": "proof_hash", "order": "created_at.desc",
+                                             "limit": "1"}) or [{}])
+        prev_hash = (prev[0].get("proof_hash") if prev else "") or ""
+    except Exception:
+        prev_hash = ""
+    canonical = json.dumps(cert, sort_keys=True, default=str) + prev_hash
+    proof_hash = hashlib.sha256(canonical.encode()).hexdigest()
+    try:
+        db.insert("determinations", {"subject_type": subject_type, "subject_id": subject_id,
+                  "title": (agg.get("title") or "")[:200], "position": agg.get("recommendation"),
+                  "recommendation": agg.get("recommendation"), "consensus_pct": agg.get("consensus_pct"),
+                  "confidence": agg.get("aggregate"), "materiality": agg.get("materiality"),
+                  "contributors": agg.get("contributors"), "factions": agg.get("factions"),
+                  "dissent": agg.get("dissents"), "certificate": cert,
+                  "proof_hash": proof_hash, "prev_hash": prev_hash, "onepager": onepager})
+    except Exception:
+        pass
+    return {"certificate": cert, "proof_hash": proof_hash, "onepager": onepager}
+
+
+def deliberation_onepager(agg):
+    """THE REVIEWER 1-PAGER: a concise, confidence-building summary of how the outcome was reached — who
+    contributed and how much, the consensus level, the key counter-arguments, and (if consensus is below
+    the reviewer's calibrated floor) an explicit CONTENTION section highlighting exactly what to look at."""
+    title = agg.get("title") or "(untitled issue)"
+    cons = agg.get("consensus_pct")
+    floor = _consensus_floor()
+    contributors = agg.get("contributors") or []
+    factions = agg.get("factions") or []
+    contested = cons is not None and cons < floor
+    L = []
+    L.append(f"# Deliberation 1-Pager — {title}")
+    L.append("")
+    L.append(f"**Outcome:** {agg.get('recommendation')}  |  **Consensus:** "
+             f"{round((cons or 0)*100)}% (floor {round(floor*100)}%)  |  **Confidence (EV):** "
+             f"{agg.get('aggregate')}/10  |  **Materiality:** {agg.get('materiality')}")
+    if contested:
+        L.append("")
+        L.append(f"> ⚠️ **CONTENTION — consensus below your {round(floor*100)}% floor. Review the "
+                 f"disagreements below before relying on this.**")
+    L.append("")
+    L.append("## Who contributed to the outcome (by influence)")
+    for c in contributors[:8]:
+        L.append(f"- **{c.get('expert')}** ({c.get('verdict')}, conviction {c.get('conviction')}, "
+                 f"weight {c.get('weight')}) — {c.get('position') or '—'}")
+    L.append("")
+    L.append("## Positions / factions")
+    for f in factions:
+        L.append(f"- **{f.get('stance')}** — {round((f.get('share') or 0)*100)}% of weighted expertise "
+                 f"({', '.join(f.get('experts') or []) or '—'}): {f.get('argument') or '—'}")
+    dissents = [d for d in (agg.get("dissents") or [])]
+    L.append("")
+    L.append("## Key counter-arguments raised")
+    if dissents:
+        for d in dissents[:6]:
+            L.append(f"- {d}")
+    else:
+        L.append("- None material — the panel was substantially aligned.")
+    if agg.get("premortem") and agg["premortem"].get("severe"):
+        pm = agg["premortem"]
+        L.append(f"- **Pre-mortem ({pm.get('severity')}):** {pm.get('failure_story')} "
+                 f"→ mitigation: {pm.get('mitigation')}")
+    if agg.get("arbitration"):
+        L.append(f"- **Arbitration:** {agg['arbitration'].get('ruling')} — {agg['arbitration'].get('rationale')}")
+    if contested:
+        L.append("")
+        L.append("## 🔍 For your personal consideration")
+        opp = agg.get("opposed_by") or []
+        L.append(f"- Dissenting experts: {', '.join(opp) or 'see factions above'}")
+        L.append("- The decision was NOT unanimous; the areas above are where reasonable experts disagreed.")
+    L.append("")
+    L.append(f"_Determination gated to a human: {'yes' if constitution_gate(agg) else 'no (auto-resolved)'}._")
+    return "\n".join(L)
 
 
 def compose_spec(title, body, panel):
@@ -721,6 +869,7 @@ def run(limit=8):
             continue
         agg = review("proposal", p["id"], p.get("title"),
                      (p.get("proposal") or "") + "\n" + (p.get("rationale") or ""), app=p.get("app"))
+        cert = certify("proposal", p["id"], agg)   # Optimality Certificate + proof + reviewer 1-pager
         upd = {"rationale": (p.get("rationale") or "")[:500] + _note(agg)}
         # AUTONOMY: a non-divergent, non-critical, high-conviction GO builds itself — no owner card.
         if agg.get("auto_ok") and not p.get("divergent"):
@@ -758,6 +907,8 @@ def run(limit=8):
             _log_action("proposal", p["id"], p.get("title"), "auto-experiment", agg)
         elif agg.get("escalate") or p.get("divergent"):
             upd["status"] = "for_review"   # keep in front of the owner (divergent OR critical/contentious)
+            # attach the reviewer 1-pager so the owner sees contributors + contention at a glance
+            upd["rationale"] = (upd["rationale"] + "\n\n---\n" + cert["onepager"])[:6000]
             escalated += 1; _log_action("proposal", p["id"], p.get("title"), "escalate", agg)
         elif (agg.get("recommendation", "").startswith("GO") and not agg.get("critical")
               and not agg.get("opposed_by") and agg.get("budget_left") == 0):
@@ -774,6 +925,7 @@ def run(limit=8):
         if a["id"] in reviewed:
             continue
         agg = review("decision", a["id"], a.get("title"), a.get("why"))
+        cert = certify("decision", a["id"], agg)   # certificate + proof + reviewer 1-pager
         # AUTO-CLEAR routine MATERIAL decisions the board is confident + united on; NEVER legal, never
         # critical, never contentious — those stay pending for the human.
         if (a.get("kind") == "material" and agg.get("auto_ok") and not agg.get("critical")
@@ -782,6 +934,9 @@ def run(limit=8):
                       "why": (a.get("why") or "")[:400] + _note(agg)})
             cleared += 1; _log_action("decision", a["id"], a.get("title"), "auto-approve", agg)
         else:
+            # escalated to the owner -> surface the 1-pager (contributors + contention) on the card
+            db.update("approvals", {"id": a["id"]},
+                      {"why": (a.get("why") or "")[:400] + "\n\n---\n" + cert["onepager"][:4000]})
             escalated += 1; _log_action("decision", a["id"], a.get("title"), "escalate", agg)
         n += 1
 

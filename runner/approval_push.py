@@ -38,8 +38,15 @@ def _links_block(a):
         except Exception:
             alts = []
     for i, alt in enumerate(alts[:4]):
-        label = alt if isinstance(alt, str) else (alt.get("label") or alt.get("title") or f"option {i+1}")
-        lines.append(f"  OPTION {i+1} — {str(label)[:90]}:\n    {_sign(a['id'], 'option', str(i))}")
+        if isinstance(alt, str):
+            alt = {"label": alt}
+        label = alt.get("label") or alt.get("title") or f"option {i+1}"
+        tag = " *** RECOMMENDED ***" if alt.get("recommended") else ""
+        meta = f" [risk: {alt.get('risk','?')} | {'reversible' if alt.get('reversible', True) else 'HARD TO REVERSE'}]"
+        desc = (alt.get("description") or "")[:200]
+        lines.append(f"  OPTION {i+1} — {str(label)[:90]}{tag}{meta}\n"
+                     + (f"    {desc}\n" if desc else "")
+                     + f"    {_sign(a['id'], 'option', str(i))}")
     lines.append(f"  APPROVE as proposed:\n    {_sign(a['id'], 'approve')}")
     lines.append(f"  DENY:\n    {_sign(a['id'], 'deny')}")
     lines.append(f"  DEFER / request fuller brief:\n    {_sign(a['id'], 'defer')}")
@@ -49,7 +56,7 @@ def _links_block(a):
 def run(limit=50):
     # new decisions/actions not yet pushed
     already = {r.get("approval_id") for r in (db.select("notifications", {"select": "approval_id"}) or [])}
-    cards = db.select("approvals", {"select": "id,kind,project,title,why,value,risk,alternatives,prebrief,legal_risk_level,radar_tag,detail",
+    cards = db.select("approvals", {"select": "id,kind,project,title,why,value,risk,alternatives,prebrief,legal_risk_level,radar_tag,detail,brief_json",
                                     "status": "eq.pending",
                                     "kind": "in.(legal,material,secret,operator)",
                                     "order": "created_at.desc", "limit": str(limit)}) or []
@@ -68,7 +75,10 @@ def run(limit=50):
         if a["kind"] == "legal" and (a.get("legal_risk_level") == "routine"):
             continue
         title = ("Decision: " if is_decision else "Action: ") + (a.get("title") or "")[:140]
+        bj = a.get("brief_json") or {}
         parts = [f"[{a.get('project') or '-'}] {a.get('title') or ''}"]
+        if isinstance(bj, dict) and bj.get("question"):
+            parts.append(f"QUESTION: {bj['question']}")
         for k, hdr in (("why", "WHY"), ("value", "VALUE"), ("risk", "RISK"), ("prebrief", "BRIEF")):
             if a.get(k):
                 parts.append(f"{hdr}: {str(a[k])[:700]}")

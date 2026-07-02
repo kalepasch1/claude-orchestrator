@@ -61,8 +61,19 @@ class TestEnrichment(unittest.TestCase):
 
     def test_already_narrowed_not_reframed(self):
         c = card(radar_tag="regulatory", why="NARROW LEGAL QUESTION: x",
-                 alternatives=[{"label": "a"}], legal_risk_level="novel")
+                 alternatives=[{"label": "a"}], legal_risk_level="novel",
+                 brief_json={"question": "x", "options": [{"label": "a"}], "recommended_index": 0})
         self.assertEqual(ap._enrich_gated(c), {})
+
+    def test_structured_prompt_built(self):
+        c = card(radar_tag="regulatory", why="may break the lending exemption")
+        patch_ = ap._enrich_gated(c)
+        bj = patch_["brief_json"]
+        self.assertIn("question", bj)
+        self.assertGreaterEqual(len(bj["options"]), 3)
+        self.assertTrue(any(o["recommended"] for o in bj["options"]))
+        # recommended default = lowest-risk reversible
+        self.assertEqual(bj["options"][bj["recommended_index"]]["risk"], "low")
 
 
 class TestSweep(unittest.TestCase):
