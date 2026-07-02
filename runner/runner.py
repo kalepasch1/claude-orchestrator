@@ -558,6 +558,7 @@ def cost_ledger_row(project, slug, model, out):
 _SCHEDULE = [
     ("txn-300",       "txn",                "interval", 300),
     ("policy-45",     "approval_policy.py", "interval", 45),    # owner policy: auto-approve all but narrow legal
+    ("janitor-300",   "queue_janitor.py",   "interval", 300),   # auto-clear blockers: wedged runs, empty diffs, stranded cards, stale locks
     ("merge-60",      "approval_merge.py",  "interval", 60),    # complete approved merges
     ("intake-120",    "intake_watcher.py",  "interval", 120),   # auto-ingest dropped task lists
     ("drafts-90",     "decision_drafts.py", "interval", 90),    # auto-draft on founder directives
@@ -643,7 +644,7 @@ _sched_last: dict = {}
 # Jobs that NEVER call a model and are safe (even desirable) to run while paused:
 # protect the Mac, and keep read-only spend/health telemetry flowing.
 _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn",
-                     "approval_policy.py",
+                     "approval_policy.py", "queue_janitor.py",
                      "unstick", "dagfix", "batchmech", "selftune", "cluster",
                      "governor", "costslo", "promote", "prewarm", "billingguard",
                      "dedup", "canaryecon", "forecast", "arbitrage", "autoscale", "bizradar",
