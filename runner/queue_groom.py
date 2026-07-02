@@ -12,6 +12,11 @@ def run():
         print(f"queue_groom: culled {n} non-actionable/duplicate queued tasks")
     except Exception as e:
         print(f"queue_groom error: {e}")
+    try:
+        d = db.rpc("dedup_task_queue", {})
+        print(f"queue_groom: deduped {d} near-duplicate queued tasks")
+    except Exception as e:
+        print(f"queue_groom dedup error: {e}")
 
 
 if __name__ == "__main__":

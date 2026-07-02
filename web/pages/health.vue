@@ -22,6 +22,20 @@ const sc = (s: string) => s === 'ok' ? '#39a06b' : s === 'critical' ? '#f2618f' 
         <span v-if="data.alerts.length" style="color:#f2618f"> · {{ data.alerts.length }} open alert(s)</span>
       </div>
 
+      <!-- ship KPIs (cost/value) -->
+      <div v-if="data.ship" style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px">
+        <div v-for="k in [
+          {l:'Ship rate', v:(data.ship.ship_rate_pct ?? 0)+'%'},
+          {l:'Cost / shipped', v:'$'+(data.ship.cost_per_shipped_usd ?? 0)},
+          {l:'Merged', v:data.ship.merged+' / '+data.ship.total_tasks},
+          {l:'Total spend', v:'$'+(data.ship.total_spend_usd ?? 0)},
+          {l:'Queued', v:data.ship.queued}]" :key="k.l"
+          style="border:1px solid #eee;border-radius:10px;padding:10px 14px;min-width:120px">
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#8a97ad">{{ k.l }}</div>
+          <div style="font-size:18px;font-weight:800">{{ k.v }}</div>
+        </div>
+      </div>
+
       <table style="width:100%;border-collapse:collapse;font-size:14px">
         <thead><tr style="text-align:left;color:#8a97ad;border-bottom:1px solid #eee">
           <th style="padding:8px">App</th><th>Deploy</th><th>RLS</th><th>Momentum</th><th>Tokens 30d</th><th>Mkt spend</th>
