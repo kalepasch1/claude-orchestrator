@@ -37,7 +37,7 @@ import context_retrieval, result_cache
 import confidence, blast_radius, replay
 import feedback
 import kill_switch, secrets_manager, credential_broker, quality_gate
-import claude_cli, waste, judge, experiment_router
+import claude_cli, waste, judge, experiment_router, decision_engine
 
 INTEGRATION_MODE = os.environ.get("INTEGRATION_MODE", "local")  # local | pr
 USE_CACHE = os.environ.get("RESULT_CACHE", "true").lower() == "true"
@@ -559,6 +559,7 @@ _SCHEDULE = [
     ("txn-300",       "txn",                "interval", 300),
     ("merge-60",      "approval_merge.py",  "interval", 60),    # complete approved merges
     ("intake-120",    "intake_watcher.py",  "interval", 120),   # auto-ingest dropped task lists
+    ("drafts-90",     "decision_drafts.py", "interval", 90),    # auto-draft on founder directives
 
 
     ("anomaly-3600",  "anomaly.py",         "interval", 3600),
