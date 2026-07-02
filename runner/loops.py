@@ -63,6 +63,12 @@ def run_due():
                 import rls_guard; rls_guard.run()
             elif typ == "deploy_watch":
                 import deploy_watch; deploy_watch.run()
+            elif typ == "queue_groom":
+                import queue_groom; queue_groom.run()
+            elif typ == "deploy_canary":
+                import deploy_canary; deploy_canary.run()
+            elif typ == "preflight":
+                import preflight_gate; preflight_gate.run()
             elif typ == "optimize":
                 repo = (db.select("projects", {"select": "repo_path", "name": f"eq.{project}"}) or [{}])[0].get("repo_path")
                 if repo and os.path.isdir(repo):
