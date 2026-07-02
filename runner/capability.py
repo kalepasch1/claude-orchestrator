@@ -159,6 +159,56 @@ def compose(slugs):
     return order
 
 
+def suggest_for(prompt, project=None, k=3):
+    """Cross-project transfer: given a new task prompt, return already-published capabilities whose
+    domain/summary overlaps — so the runner can INJECT the distilled recipe and the agent reuses
+    instead of re-solving. Prefers pgvector match when embeddings are on; else keyword overlap.
+    Excludes retired caps and (optionally) ones already instantiated in this project."""
+    text = (prompt or "").lower()
+    # fast path: embedding ANN search
+    if _EMBED_OK and _ke:
+        vec = _ke.embed(prompt or "")
+        if vec:
+            try:
+                hits = db.rpc("match_capabilities",
+                              {"query_embedding": vec, "match_threshold": 0.55,
+                               "match_count": k * 2}) or []
+                caps = [get(h["slug"]) for h in hits]
+                caps = [c for c in caps if c and c.get("status") != "retired"]
+                return caps[:k]
+            except Exception:
+                pass
+    # fallback: keyword overlap on name/domain/summary
+    toks = {w for w in _re_words(text) if len(w) > 3}
+    scored = []
+    for c in db.select("capabilities", {"select": "*"}) or []:
+        if c.get("status") == "retired":
+            continue
+        hay = f"{c.get('name','')} {c.get('domain','')} {c.get('summary','')}".lower()
+        overlap = len(toks & {w for w in _re_words(hay) if len(w) > 3})
+        if overlap:
+            scored.append((overlap, c))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [c for _, c in scored[:k]]
+
+
+def reuse_note(prompt, project=None):
+    """A short prompt-injection block listing reusable capabilities for this task (or '')."""
+    caps = suggest_for(prompt, project=project)
+    if not caps:
+        return ""
+    lines = ["# Reuse-first: these published capabilities may already solve part of this task —",
+             "# prefer instantiating/adapting them over building from scratch:"]
+    for c in caps:
+        lines.append(f"- {c.get('slug')} [{c.get('domain','')}]: {(c.get('summary') or '')[:160]}")
+    return "\n".join(lines) + "\n\n"
+
+
+def _re_words(s):
+    import re
+    return re.findall(r"[a-z0-9]+", s or "")
+
+
 def usage(slug):
     cap = get(slug)
     if not cap:

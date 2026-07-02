@@ -35,17 +35,64 @@ def _branch_exists(repo, branch):
                           capture_output=True).returncode == 0
 
 
+def _worktree_for(repo, branch):
+    """Return the path of the worktree that has `branch` checked out, or None."""
+    out = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo,
+                         capture_output=True, text=True).stdout
+    cur = None
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            cur = line[len("worktree "):].strip()
+        elif line.strip() == f"branch refs/heads/{branch}":
+            return cur
+    return None
+
+
+def _free_branch(repo, branch):
+    """Unlock a branch that's still checked out in a leftover agent worktree. THIS was the root cause
+    of the phantom CONFLICTs: git refuses to rebase/merge a branch that's checked out elsewhere, and the
+    handler mislabeled that error as CONFLICT. Removing the stale worktree frees the branch."""
+    wt = _worktree_for(repo, branch)
+    if wt:
+        subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=repo, capture_output=True)
+    subprocess.run(["git", "worktree", "prune"], cwd=repo, capture_output=True)
+
+
 def _integrate(repo, branch, base, test_cmd=TEST_CMD):
-    """Local ff-merge with a test gate. Mirrors runner.integrate (local mode)."""
-    if subprocess.run(["git", "rebase", base, branch], cwd=repo, capture_output=True).returncode != 0:
-        subprocess.run(["git", "rebase", "--abort"], cwd=repo, capture_output=True)
-        return "CONFLICT"
-    subprocess.run(["git", "checkout", branch], cwd=repo, capture_output=True)
-    if subprocess.run(TEST_CMD, cwd=repo, shell=True, capture_output=True).returncode != 0:
-        subprocess.run(["git", "checkout", base], cwd=repo, capture_output=True)
-        return "TESTFAIL"
-    subprocess.run(["git", "checkout", base], cwd=repo, capture_output=True)
-    subprocess.run(["git", "merge", "--ff-only", branch], cwd=repo, capture_output=True)
+    """Merge agent/<slug> into `base` correctly, regardless of what's checked out, and (optionally)
+    push so Vercel deploys. Frees any leftover worktree first (the real bug)."""
+    _free_branch(repo, branch)
+    # clean fast-forward if the branch is strictly ahead of base (the common case)
+    ahead = subprocess.run(["git", "merge-base", "--is-ancestor", base, branch],
+                           cwd=repo, capture_output=True).returncode == 0
+    if not ahead:
+        # diverged -> rebase the (now-free) branch onto base; a real conflict returns CONFLICT
+        if subprocess.run(["git", "rebase", base, branch], cwd=repo, capture_output=True).returncode != 0:
+            subprocess.run(["git", "rebase", "--abort"], cwd=repo, capture_output=True)
+            return "CONFLICT"
+    # fast-forward `base` to include the branch WITHOUT checking base out (base may not be HEAD).
+    ff = subprocess.run(["git", "fetch", ".", f"{branch}:{base}"], cwd=repo, capture_output=True, text=True)
+    if ff.returncode != 0:
+        # base can't fast-forward (it moved) -> do a real no-ff merge via an ephemeral worktree
+        import tempfile, shutil, os as _os
+        tmp = tempfile.mkdtemp(prefix="mt-")
+        try:
+            if subprocess.run(["git", "worktree", "add", "-f", tmp, base], cwd=repo, capture_output=True).returncode != 0:
+                return "CONFLICT"
+            r = subprocess.run(["git", "merge", "--no-ff", "-m", f"merge {branch}", branch],
+                               cwd=tmp, capture_output=True)
+            if r.returncode != 0:
+                subprocess.run(["git", "merge", "--abort"], cwd=tmp, capture_output=True)
+                return "CONFLICT"
+        finally:
+            subprocess.run(["git", "worktree", "remove", "--force", tmp], cwd=repo, capture_output=True)
+            shutil.rmtree(tmp, ignore_errors=True)
+    # push to origin so CI/Vercel deploy — guarded: only when explicitly enabled.
+    if os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() == "true":
+        push = subprocess.run(["git", "push", "origin", base], cwd=repo, capture_output=True, text=True)
+        if push.returncode != 0:
+            return "PUSHFAIL:" + (push.stderr or "")[-120:]
+    _free_branch(repo, branch)   # cleanup so worktrees never accumulate again
     return "MERGED"
 
 
@@ -101,6 +148,29 @@ def run():
             handled += 1
             continue
         result = _integrate(repo, branch, base, proj.get("test_cmd") or TEST_CMD)
+        if result == "CONFLICT":
+            # SELF-HEAL: a stale branch conflicting with current main should REDO on fresh main, not
+            # sit CONFLICT forever (that's what stalled 93 tasks at 0 merged). Requeue to rebuild on
+            # the up-to-date base, up to a cap; delete the stale branch so the worktree is recreated.
+            tr = int(t.get("transient_retries") or 0)
+            cap = int(os.environ.get("MERGE_CONFLICT_REDO_CAP", "2"))
+            if tr < cap:
+                subprocess.run(["git", "branch", "-D", branch], cwd=repo, capture_output=True)
+                db.update("tasks", {"id": t["id"]},
+                          {"state": "QUEUED", "transient_retries": tr + 1,
+                           "note": f"merge conflict -> redo on fresh {base} ({tr+1}/{cap})"})
+                # re-open the card as pending so it flows again once rebuilt+judged
+                db.update("approvals", {"id": c["id"]}, {"decided_by": f"{MARK}:redo"})
+                _notify(f"[merge] {slug}: conflict — rebuilding on fresh {base} ({tr+1}/{cap})")
+                handled += 1
+                continue
+            # exhausted redo cap -> genuine conflict needing a human/agent resolution
+            db.update("tasks", {"id": t["id"]}, {"state": "CONFLICT",
+                      "note": f"merge-handler: CONFLICT after {cap} redo attempts — needs manual rebase"})
+            db.update("approvals", {"id": c["id"]}, {"decided_by": f"{MARK}:conflict-exhausted"})
+            _notify(f"[merge] {slug}: still conflicts after {cap} redos — needs a look")
+            handled += 1
+            continue
         db.update("tasks", {"id": t["id"]}, {"state": result,
                   "note": f"merge-handler: {result} (approved by {c.get('decided_by') or 'you'})"})
         db.update("approvals", {"id": c["id"]}, {"decided_by": f"{MARK}:{result}"})

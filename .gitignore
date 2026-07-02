@@ -8,3 +8,8 @@ __pycache__/
 *.pyc
 .DS_Store
 supabase/.temp/
+.env.growth
+
+runner/.env.bak*
+.env.*.bak
+*.env.bak*

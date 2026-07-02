@@ -126,6 +126,285 @@ def run_batch():
     batch_pass.run()
 
 
+def run_unstick():
+    """Safety-net sweep (dependency resilience): requeue TRANSIENT-BLOCKED tasks under the retry
+    cap so a foundation task that died on a network blip / notional budget cap can never freeze
+    its whole dependency subtree again. Terminal blocks (agent/verify/judge/legal) are left alone.
+    This automates the manual requeue that was needed to un-jam `tomorrow`."""
+    import retry_policy
+    limit = int(os.environ.get("UNSTICK_LIMIT", "60"))
+    blocked = db.select("tasks", {"select": "id,slug,note,transient_retries,project_id",
+                                  "state": "eq.BLOCKED", "limit": str(limit * 3)}) or []
+    requeued = terminal = capped = 0
+    for t in blocked:
+        d = retry_policy.decide(t.get("note") or "", t.get("transient_retries") or 0)
+        if d["action"] == "requeue":
+            if requeued >= limit:
+                break
+            db.update("tasks", {"id": t["id"]},
+                      {"state": "QUEUED", "note": d["note"],
+                       "transient_retries": d["transient_retries"], "updated_at": "now()"})
+            requeued += 1
+        elif retry_policy.classify(t.get("note") or "") == "transient":
+            capped += 1  # transient but over the retry cap -> leave for a human
+        else:
+            terminal += 1
+    print(f"unstick: requeued {requeued} transient-blocked, {capped} over-cap, {terminal} terminal (left alone)")
+
+
+def run_dagfix():
+    """Keep the dependency graph healthy: drop ghost/redundant dep edges, flag true orphans."""
+    import dag_optimizer
+    dag_optimizer.optimize()
+
+
+def run_selftune():
+    """Outcome-driven autonomy tuning: nudge per-project confidence thresholds from real results."""
+    import self_tune
+    self_tune.run(apply=True)
+
+
+def run_batchmech():
+    """Fold independent same-repo mechanical tasks into single agent runs (cold-start savings)."""
+    import batch_mechanical
+    batch_mechanical.apply()
+
+
+def run_releasetrain():
+    """Accumulate agent work on staging, QA it, release to prod (main/master) as a batch."""
+    import release_train; release_train.run()
+
+
+def run_deployverify():
+    """Confirm each Vercel prod deploy; auto-rollback to last-good on failure (no downtime)."""
+    import deploy_verify; deploy_verify.run()
+
+
+def run_worktreegc():
+    """Remove leftover agent worktrees so branches are free to merge (fixes phantom CONFLICTs)."""
+    import worktree_gc; worktree_gc.run()
+
+
+def run_stripe():
+    import stripe_revenue; stripe_revenue.run()
+
+
+def run_ownerreport():
+    import owner_report; owner_report.run()
+
+
+def run_pushdecisions():
+    """Fan every new decision/action out to email + Smarter (source-of-truth notifications)."""
+    import approval_push
+    approval_push.run()
+
+
+def run_roadmap():
+    import roadmap; roadmap.run()
+
+
+def run_selfheal():
+    import self_heal; self_heal.run()
+
+
+def run_newapp():
+    import new_app; new_app.run()
+
+
+def run_autopilot():
+    import autopilot; autopilot.run()
+
+
+def run_abedge():
+    import ab_edge; ab_edge.run()
+
+
+def run_objective():
+    """Meta-controller: measure the north-star and tune one knob toward it (revert regressions)."""
+    import objective_optimizer; objective_optimizer.run()
+
+
+def run_remediate():
+    """Drive BLOCKED to zero: requeue transient/conflict, escalate+sharpen review/no-op fails, human-card the rest."""
+    import auto_remediate; auto_remediate.run()
+
+
+def run_selfcheck():
+    """Assert + auto-heal core invariants; post a health line."""
+    import startup_selfcheck; startup_selfcheck.run("periodic")
+
+
+def run_improve():
+    """Always-on '20-500X better?' loop: auto-queue non-divergent improvements, queue business-model ones for review."""
+    import improvement_miner; improvement_miner.run()
+
+
+def run_improvemeasure():
+    """Learn which KINDS of improvements actually pay off; bias future mining toward them."""
+    import improvement_measure; improvement_measure.run()
+
+
+def run_committees():
+    """Convene expert committees (Legal, BizDev/Marketing, Finance, Product, Security, Growth, Risk)
+    on business-model proposals + legal/strategic decisions."""
+    import committees; committees.run()
+
+
+def run_committeecal():
+    """Committee memory: reweight committees by how well their past verdicts predicted outcomes."""
+    import committees; committees.calibrate()
+
+
+def run_decisionbriefs():
+    """Generate war-room/negotiation-grade briefs for new legal/strategic decisions."""
+    import decision_engine; decision_engine.run()
+
+
+def run_legaltriage():
+    """Classify legal cards routine/elevated/novel; auto-clear routine (if enabled), escalate novel."""
+    import legal_triage
+    legal_triage.run()
+
+
+def run_revattr():
+    """Snapshot revenue + attribute merges to revenue movement (which work pays off)."""
+    import revenue_attribution
+    revenue_attribution.run()
+
+
+def run_specwriter():
+    """Each app self-writes SPEC.md from merged outcomes + usage (compounding plan quality)."""
+    import spec_writer
+    spec_writer.run()
+
+
+def run_autoexec():
+    """Auto-run the safe majority of proven operator steps (no click), plus execute queued ones."""
+    import action_runner
+    action_runner.auto_execute()
+    action_runner.run()
+
+
+def run_draftactions():
+    """Pre-generate exact command/steps for each operator/credential to-do (review + run one line)."""
+    import action_drafter
+    action_drafter.run()
+
+
+def run_prebrief():
+    """Attach a plain-English legal decision brief to each legal card."""
+    import legal_prebrief
+    legal_prebrief.run()
+
+
+def run_bizradar():
+    """Flag queued work that would change pricing/data-use/regulatory posture as an early decision."""
+    import business_radar
+    business_radar.run()
+
+
+def run_actionexec():
+    """Execute ONLY the safe, you-clicked operator steps queued from the cockpit."""
+    import action_runner
+    action_runner.run()
+
+
+def run_mergetrain():
+    """Batch non-overlapping judge-passed branches into one green CI run and merge the train."""
+    import merge_train
+    merge_train.run()
+
+
+def run_forecast():
+    """Project end-of-day spend from burn rate; pause on real-$ runaway, alert on notional spike."""
+    import spend_forecast
+    spend_forecast.run()
+
+
+def run_arbitrage():
+    """Rebalance provider routing to the cheapest capable frontier as prices/quality move."""
+    import price_arbitrage
+    price_arbitrage.run()
+
+
+def run_autoscale():
+    """Emit scale up/down signal when weighted demand diverges from live fleet capacity."""
+    import autoscale_signal
+    autoscale_signal.run()
+
+
+def run_learnmerges():
+    """Reinforcement from shipped work: distill merged diffs into conventions + regression rules."""
+    import learn_from_merges
+    learn_from_merges.run()
+
+
+def run_dedup():
+    """Collapse near-duplicate queued tasks so the swarm solves each thing once."""
+    import task_dedup
+    task_dedup.apply()
+
+
+def run_canaryecon():
+    """Promote/rollback canaries on live production cost + quality."""
+    import canary_economics
+    canary_economics.run()
+
+
+def run_billingguard():
+    """Tripwire: pause everything if any real API spend or leaked key appears (anti-$500-invoice)."""
+    import billing_guard
+    billing_guard.run()
+
+
+def run_governor():
+    """Allocate fleet capacity across apps by expected value (ROI x success / cost)."""
+    import portfolio_governor
+    portfolio_governor.run(apply=True)
+
+
+def run_costslo():
+    """Hold each app's $/merge SLO by biasing routing cheaper; escalate on hard breach."""
+    import cost_slo
+    cost_slo.run(apply=True)
+
+
+def run_promote():
+    """Propose productizing capabilities proven across multiple apps."""
+    import capability_promote
+    capability_promote.run(apply=True)
+
+
+def run_prewarm():
+    """Pre-create worktrees + warm context for the next claimable tasks (zero claim latency)."""
+    import prewarm
+    prewarm.run()
+
+
+def run_appreview():
+    """Perpetual cross-app AI/API triage review: rate cost/quality, learn cheapest good route."""
+    import app_triage_review
+    app_triage_review.run()
+
+
+def run_cluster():
+    """Cluster pending approval cards so the human can bulk-approve siblings."""
+    import approval_cluster
+    approval_cluster.tag()
+
+
+def run_conventions():
+    """Refresh each repo's CLAUDE.md (compounding caching + on-style, cheaper builds)."""
+    import synthesize_conventions
+    for p in db.select("projects", {"select": "name,repo_path"}) or []:
+        repo = p.get("repo_path", "")
+        if repo and os.path.isdir(repo):
+            try:
+                synthesize_conventions.run(repo)
+            except Exception as e:
+                print(f"conventions {p.get('name')}: {e}")
+
+
 def run_roi():
     import roi
     report = roi.report()
@@ -156,6 +435,52 @@ JOBS = {
     "deploy": run_deploy,
     "roi": run_roi,
     "batch": run_batch,
+    "unstick": run_unstick,
+    "dagfix": run_dagfix,
+    "selftune": run_selftune,
+    "batchmech": run_batchmech,
+    "appreview": run_appreview,
+    "cluster": run_cluster,
+    "conventions": run_conventions,
+    "governor": run_governor,
+    "costslo": run_costslo,
+    "promote": run_promote,
+    "prewarm": run_prewarm,
+    "billingguard": run_billingguard,
+    "learnmerges": run_learnmerges,
+    "dedup": run_dedup,
+    "canaryecon": run_canaryecon,
+    "forecast": run_forecast,
+    "arbitrage": run_arbitrage,
+    "autoscale": run_autoscale,
+    "mergetrain": run_mergetrain,
+    "draftactions": run_draftactions,
+    "prebrief": run_prebrief,
+    "bizradar": run_bizradar,
+    "actionexec": run_actionexec,
+    "legaltriage": run_legaltriage,
+    "decisionbriefs": run_decisionbriefs,
+    "improve": run_improve,
+    "improvemeasure": run_improvemeasure,
+    "committees": run_committees,
+    "committeecal": run_committeecal,
+    "remediate": run_remediate,
+    "selfcheck": run_selfcheck,
+    "objective": run_objective,
+    "revattr": run_revattr,
+    "specwriter": run_specwriter,
+    "autoexec": run_autoexec,
+    "pushdecisions": run_pushdecisions,
+    "roadmap": run_roadmap,
+    "selfheal": run_selfheal,
+    "newapp": run_newapp,
+    "autopilot": run_autopilot,
+    "abedge": run_abedge,
+    "stripe": run_stripe,
+    "ownerreport": run_ownerreport,
+    "worktreegc": run_worktreegc,
+    "releasetrain": run_releasetrain,
+    "deployverify": run_deployverify,
 }
 
 if __name__ == "__main__":
@@ -164,7 +489,8 @@ if __name__ == "__main__":
         print(f"usage: periodic.py {'|'.join(JOBS)}")
         sys.exit(1)
     # honor the kill switch: model-spending jobs don't run while paused.
-    _SAFE_WHEN_PAUSED = {"roi", "txn"}
+    # these only read outcomes / move task state / edit thresholds — they never spend tokens
+    _SAFE_WHEN_PAUSED = {"roi", "txn", "unstick", "dagfix", "selftune", "batchmech"}
     if job not in _SAFE_WHEN_PAUSED:
         try:
             import kill_switch

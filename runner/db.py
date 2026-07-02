@@ -64,8 +64,41 @@ def rpc(fn, args):
 
 
 def claim_task(runner_id):
-    """Atomically grab one QUEUED task whose deps are satisfied. Returns task or None."""
-    queued = select("tasks", {"select": "*", "state": "eq.QUEUED", "order": "created_at.asc"})
+    """Atomically grab one QUEUED task whose deps are satisfied. ECONOMIC ORDERING: within a
+    project-priority band, prefer higher-ROI projects (projects.concurrency_weight, set from
+    cost-per-merge by roi.py) and then FIFO. This makes the highest expected-value work run first
+    under any capacity limit — and stays correct across MULTIPLE machines because the final claim
+    is an atomic optimistic PATCH (state=QUEUED -> RUNNING), so two runners never double-claim."""
+    prio, roi_w, paused_pids = {}, {}, set()
+    try:
+        projs = select("projects", {"select": "id,name,priority,concurrency_weight"}) or []
+        prio = {p["id"]: (p.get("priority") if p.get("priority") is not None else 5) for p in projs}
+        roi_w = {p["id"]: (p.get("concurrency_weight") if p.get("concurrency_weight") is not None else 1)
+                 for p in projs}
+        name2id = {p["name"]: p["id"] for p in projs}
+        paused_names = {c["project"] for c in (select("controls", {"select": "project,paused",
+                        "scope": "eq.project", "paused": "is.true"}) or []) if c.get("project")}
+        paused_pids = {name2id[n] for n in paused_names if n in name2id}
+    except Exception:
+        pass
+    queued = select("tasks", {"select": "*", "state": "eq.QUEUED"}) or []
+    queued = [t for t in queued if t.get("project_id") not in paused_pids]  # skip paused projects
+    # FAIR ROUND-ROBIN across projects: prefer the project that has gone LONGEST without activity, so
+    # every app gets worked (not just the biggest/highest-priority queue). Within that, honor priority,
+    # ROI weight, then FIFO. This is what lets a single-slot runner still touch ALL projects in rotation.
+    last_act = {}
+    try:
+        for r in (select("tasks", {"select": "project_id,updated_at", "state": "in.(RUNNING,DONE,MERGED)",
+                                    "order": "updated_at.desc", "limit": "400"}) or []):
+            pid = r.get("project_id")
+            if pid and pid not in last_act:
+                last_act[pid] = r.get("updated_at") or ""
+    except Exception:
+        pass
+    queued.sort(key=lambda t: (last_act.get(t.get("project_id"), ""),           # least-recently-served first
+                               prio.get(t.get("project_id"), 5),
+                               -float(roi_w.get(t.get("project_id"), 1) or 1),
+                               t.get("created_at") or ""))
     done = {t["slug"] for t in select("tasks", {"select": "slug", "state": "in.(DONE,MERGED)"})}
     for t in queued or []:
         if all(d in done for d in (t.get("deps") or [])):

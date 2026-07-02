@@ -21,7 +21,12 @@ DISK_HARD = float(os.environ.get("DISK_HARD_PCT", "90"))   # throttle to 1 + ale
 RAM_HARD = float(os.environ.get("RAM_HARD_PCT", "82"))
 # Hard low-memory brake: if fewer than this many GB are available, PAUSE new task claims
 # entirely (a single heavy task — e.g. an 8GB typecheck — could otherwise crash the Mac).
-RAM_FLOOR_GB = float(os.environ.get("RAM_FLOOR_GB", "5"))
+# 1.5GB was too low — macOS is already swapping/thrashing by then. Default 3GB, and the
+# effective floor scales UP with machine size (see effective_floor_gb).
+RAM_FLOOR_GB = float(os.environ.get("RAM_FLOOR_GB", "3.0"))
+# Headroom to reserve per concurrent task. A new task is only started if free RAM exceeds
+# (floor + PER_TASK_GB), so concurrency is implicitly capped by available memory.
+PER_TASK_GB = float(os.environ.get("PER_TASK_GB", "2.0"))
 LOG_KEEP_DAYS = int(os.environ.get("LOG_KEEP_DAYS", "7"))
 PRUNE_NODE_MODULES = os.environ.get("PRUNE_NODE_MODULES", "false").lower() == "true"
 PRUNE_DOCKER = os.environ.get("PRUNE_DOCKER", "false").lower() == "true"
@@ -75,6 +80,56 @@ def ram_free_gb():
         return round(psutil.virtual_memory().available / 1e9, 1)
     except Exception:
         return _vm_stat()[1]
+
+
+def total_gb():
+    try:
+        import psutil
+        return round(psutil.virtual_memory().total / 1e9, 1)
+    except Exception:
+        try:
+            return round(int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]).strip()) / 1e9, 1)
+        except Exception:
+            return None
+
+
+def effective_floor_gb():
+    """Flat, env-tunable RAM reserve. (Earlier this scaled to 12% of total RAM, but macOS
+    normally runs with most RAM committed to cache — on a large-RAM Mac that pushed the floor
+    so high the runner never claimed. The kernel memory-pressure brake is the real anti-crash
+    guard; this floor just keeps a sane emergency reserve.) Tune via RAM_FLOOR_GB in .env."""
+    return RAM_FLOOR_GB
+
+
+def mem_pressure_ok():
+    """macOS authoritative brake. The free-GB heuristic (free+inactive+speculative) is
+    optimistic; the kernel's own pressure level is the reliable signal.
+    sysctl kern.memorystatus_vm_pressure_level -> 1=normal, 2=warn, 4=critical."""
+    try:
+        lvl = int(subprocess.check_output(
+            ["sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
+            timeout=5, stderr=subprocess.DEVNULL).strip())
+        return lvl <= 1
+    except Exception:
+        return True  # signal unavailable -> don't block on it alone
+
+
+def can_claim(n_active=0):
+    """Real-time gate the runner calls BEFORE starting each new task — protects the Mac in
+    the gaps between the slower periodic govern() ticks. Returns (ok, reason)."""
+    free = ram_free_gb()
+    floor = effective_floor_gb()
+    if free is not None and free < floor + PER_TASK_GB:
+        return False, f"low RAM {free}GB free < need {floor + PER_TASK_GB}GB (floor {floor}+task {PER_TASK_GB})"
+    if not mem_pressure_ok():
+        return False, "kernel memory pressure warn/critical"
+    try:
+        used, _ = disk_pct()
+        if used >= DISK_HARD:
+            return False, f"disk {used}% >= hard {DISK_HARD}%"
+    except Exception:
+        pass
+    return True, "ok"
 
 
 def _projects():
@@ -266,24 +321,49 @@ def govern():
     # If available RAM is critically low, PAUSE all new task claims (the running task
     # finishes; nothing new starts) until memory recovers. Uses the kill switch so the
     # whole runner + scheduler honor it. Auto-resumes only what IT auto-paused.
+    # ── SELF-HEAL cost/call-circuit trips ───────────────────────────────────────
+    # The call/$ breaker hard-pauses globally on a trip; without this it stays paused until a
+    # human un-pauses (which stalled the fleet repeatedly). Auto-resume once the rolling hour
+    # has cleared. Only lifts AUTO pauses (claude_cli/governor) — never a human STOP button.
+    try:
+        gc = db.select("controls", {"select": "paused,reason,updated_by", "scope": "eq.global",
+                                    "order": "updated_at.desc", "limit": "1"}) or []
+        if gc and gc[0].get("paused") and gc[0].get("updated_by") in ("claude_cli", "governor"):
+            reason = (gc[0].get("reason") or "").lower()
+            if any(k in reason for k in ("call cap", "cost circuit", "$ cap", "hourly")):
+                import claude_cli, kill_switch
+                st = claude_cli.status()
+                if (st["calls_last_hour"] < claude_cli.MAX_CALLS_HOUR
+                        and st["usd_last_hour"] < claude_cli.MAX_USD_HOUR):
+                    kill_switch.resume(scope="global", by="governor")
+                    print(f"governor: cost-circuit cleared "
+                          f"(calls {st['calls_last_hour']}/{claude_cli.MAX_CALLS_HOUR}) -> resumed")
+    except Exception:
+        pass
+
+    eff_floor = effective_floor_gb()
+    pressure_bad = not mem_pressure_ok()
     if free_ram is not None:
         cur_reason = _global_pause_reason()
-        if free_ram < RAM_FLOOR_GB:
+        if free_ram < eff_floor or pressure_bad:
             set_throttle(1)
             if cur_reason is None:  # not already paused by anyone
+                why = ("kernel memory pressure warn/critical" if pressure_bad
+                       else f"available RAM {free_ram}GB below floor {eff_floor}GB")
                 try:
                     import kill_switch
                     kill_switch.pause(scope="global", reason="auto:low-memory", by="governor")
                     db.insert("approvals", {"project": "ORCHESTRATOR", "kind": "self",
                         "title": f"Low memory: {free_ram}GB free — orchestrator paused",
-                        "why": "Available RAM dropped below the floor; paused new work to avoid a Mac crash.",
+                        "why": why + "; paused new work to avoid a Mac crash.",
                         "value": "Prevents an out-of-memory restart.",
                         "risk": "Orchestrator auto-resumes when memory recovers."})
                 except Exception:
                     pass
-            print(f"governor: LOW MEMORY {free_ram}GB free (<{RAM_FLOOR_GB}) -> paused new claims")
+            print(f"governor: LOW MEMORY {free_ram}GB free (floor {eff_floor}, "
+                  f"pressure_bad={pressure_bad}) -> paused new claims")
             return dashboard_gauge()
-        elif cur_reason == "auto:low-memory" and free_ram > RAM_FLOOR_GB + 3:
+        elif cur_reason == "auto:low-memory" and free_ram > eff_floor + 3 and not pressure_bad:
             try:
                 import kill_switch
                 kill_switch.resume(scope="global", by="governor")
@@ -318,8 +398,16 @@ def govern():
         set_throttle(current_limit() + 1); action = "ease up"
     else:
         action = "hold (memory elevated)"
+    # Memory-budget clamp: never allow more concurrent tasks than free RAM can hold,
+    # regardless of what the disk/ram branches above decided.
+    if free_ram is not None:
+        mem_budget = max(1, int((free_ram - eff_floor) / PER_TASK_GB))
+        if current_limit() > mem_budget:
+            set_throttle(mem_budget)
+            action += f"; mem-clamp->{mem_budget}"
     g = dashboard_gauge()
-    print(f"governor: disk {used}% ({free_gb}GB free) ram {ram} -> {action}, limit={current_limit()}")
+    print(f"governor: disk {used}% ({free_gb}GB free) ram {ram} free_ram {free_ram}GB "
+          f"floor {eff_floor} -> {action}, limit={current_limit()}")
     return g
 
 

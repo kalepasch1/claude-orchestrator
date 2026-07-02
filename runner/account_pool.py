@@ -41,12 +41,18 @@ class AccountPool:
         # 1) Supabase `accounts` table is the source of truth (visible in dashboard,
         #    survives restarts, set by Cowork). Ordered by priority asc = failover order.
         try:
-            import db
+            import db, socket
+            host = socket.gethostname()
             rows = db.select("accounts", {"select": "*", "order": "priority.asc"})
             if rows:
+                # machine affinity: an account with machine=NULL is usable by ANY Mac; one pinned to a
+                # hostname is only used on that machine. Lets you add a 2nd seat later and pin seat->Mac
+                # so the two runners don't contend on one login. Today (shared) = leave machine NULL.
+                usable = [r for r in rows if not r.get("machine") or r.get("machine") == host]
                 return [{"name": r["name"], "type": r.get("type") or "login",
                          "config_dir": r.get("config_dir"),
-                         "api_key_env": r.get("api_key_env")} for r in rows]
+                         "api_key_env": r.get("api_key_env"), "machine": r.get("machine")}
+                        for r in usable] or [{"name": "default", "type": "login"}]
         except Exception:
             pass
         # 2) local file fallback
@@ -82,6 +88,15 @@ class AccountPool:
         if not a:
             return env
         if a.get("type") == "api":
+            # BILLING GUARD: an api-type account injects ANTHROPIC_API_KEY -> bills prepaid credits,
+            # bypassing your Max plan. Refuse unless API billing is explicitly opted in.
+            try:
+                import subscription_guard
+                if not subscription_guard.is_api_allowed():
+                    return env  # no key injected -> falls back to subscription login
+            except Exception:
+                if os.environ.get("ORCH_ALLOW_API_BILLING", "false").lower() != "true":
+                    return env
             key = os.environ.get(a.get("api_key_env", "ANTHROPIC_API_KEY"), "")
             if key:
                 env["ANTHROPIC_API_KEY"] = key

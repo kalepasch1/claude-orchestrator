@@ -25,6 +25,12 @@ scope and an acceptance test to run","deps":["slugs that must complete first"],
 Rules: tasks that touch DIFFERENT files must NOT list each other in deps (so they run
 in parallel). Tasks editing the SAME files MUST be chained via deps to prevent merge
 conflicts. Keep each prompt small enough to avoid context compaction.
+MAXIMIZE PARALLELISM / MINIMIZE DEPTH: produce a WIDE, SHALLOW graph. After the single
+"contracts" task, put as many INDEPENDENT sibling tasks as possible at depth 1 (deps just
+["contracts"]) so the fleet runs them all at once. Do NOT create long chains A->B->C->D unless
+each step genuinely edits the previous step's files; a task should depend ONLY on the minimal set
+it truly needs (never add a dep "just to be safe" — that serializes the graph and starves
+throughput). Target max dependency depth <= 2 beyond contracts.
 CONTRACT-FIRST (required): the FIRST task MUST have slug "contracts" and deps []; it
 defines the shared interfaces/types/API signatures/DB schema that the others build
 against (and ONLY those - no implementation). EVERY other task MUST list "contracts"
@@ -42,6 +48,19 @@ def plan(master: str, repo: str = None) -> list:
             with open(spec_path) as f:
                 spec_content = f.read()[:12000]
             spec = f"\n\n# Project Specification (SPEC.md — every task MUST satisfy these invariants):\n{spec_content}\n\n"
+        # OUTCOME-WEIGHTED PLANNING: fold in what ACTUALLY merged before (conventions distilled by
+        # learn_from_merges into CLAUDE.md) so the decomposition mirrors past first-pass successes.
+        cmd_path = os.path.join(repo, "CLAUDE.md")
+        if os.path.isfile(cmd_path):
+            try:
+                txt = open(cmd_path).read()
+                marker = "## Learned from merged work"
+                if marker in txt:
+                    lesson = txt[txt.index(marker):][:3000]
+                    spec += (f"\n\n# What has merged cleanly here before (bias the plan toward these "
+                             f"patterns to maximize first-pass merge rate):\n{lesson}\n\n")
+            except Exception:
+                pass
     try:
         r = claude_cli.run(META + spec + master, PLAN_MODEL,
                            timeout=int(os.environ.get("PLAN_TIMEOUT", "300")))

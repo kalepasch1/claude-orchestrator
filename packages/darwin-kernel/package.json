@@ -11,7 +11,8 @@
     "./identity": "./src/identity/index.ts",
     "./federated": "./src/federated/index.ts",
     "./orchestrator": "./src/orchestratorClient/index.ts",
-    "./cade": "./src/cade/index.ts"
+    "./cade": "./src/cade/index.ts",
+    "./fleetAdmin": "./src/fleetAdmin/index.ts"
   },
   "scripts": {
     "test": "node --test --experimental-strip-types test/*.test.ts",

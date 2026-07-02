@@ -176,7 +176,18 @@ def _process_results(batch_id, results_url, task_ids):
 
 
 def run():
-    """Full off-peak pass: submit new batch tasks, then poll all pending."""
+    """Full off-peak pass: submit new batch tasks, then poll all pending.
+    GUARDED: the Batch API bills prepaid API credits (NOT your Max subscription) — it was a source
+    of the ~$500 June invoice. It only runs if you've explicitly opted into API billing."""
+    try:
+        import subscription_guard
+        if not subscription_guard.require_api_or_skip("batch_pass (Batch API)"):
+            return
+    except Exception:
+        # if the guard can't load, fail CLOSED (do not bill) when a key isn't explicitly opted in
+        if os.environ.get("ORCH_ALLOW_API_BILLING", "false").lower() != "true":
+            print("batch_pass: skipped (billing guard unavailable; failing closed)")
+            return
     submit()
     poll()
 

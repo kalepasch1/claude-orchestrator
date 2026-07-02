@@ -2,6 +2,9 @@
 export default defineNuxtConfig({
   modules: ['@nuxtjs/supabase', '@nuxtjs/tailwindcss'],
   ssr: true,
+  // The kernel ships raw ESM/TS (zero deps) — let Vite transpile it in the bundle.
+  build: { transpile: ['@darwin/kernel'] },
+  vite: { ssr: { noExternal: ['@darwin/kernel'] } },
   // SUPABASE_URL + SUPABASE_KEY (anon) come from env vars on Vercel.
   supabase: {
     // we gate auth inside index.vue, so don't force a global redirect

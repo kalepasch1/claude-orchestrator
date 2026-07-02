@@ -51,13 +51,28 @@ def _extract(filepath, content):
 
 # ── batch embedding ───────────────────────────────────────────────────────────
 
+_EMBED_FAILS = 0
+_EMBED_COOLDOWN_UNTIL = 0.0
+_EMBED_FAIL_LIMIT = int(os.environ.get("EMBED_FAIL_LIMIT", "2"))
+_EMBED_COOLDOWN_S = float(os.environ.get("EMBED_COOLDOWN_S", "900"))
+
+
 def _batch_embed(texts):
     """
     Embed a list of strings in one or a few API calls.
     Returns a list of vectors (same length as `texts`), or [] on error.
+    Circuit breaker: after repeated provider rate-limits (429), pause embedding for a
+    cooldown and let callers fall back to keyword ranking — no wasteful retry loops.
     """
+    global _EMBED_FAILS, _EMBED_COOLDOWN_UNTIL
     if not texts:
         return []
+    # COST GUARD: paid embeddings (Voyage/OpenAI) are OFF by default — use free keyword ranking.
+    # Opt in only if you deliberately want the semantic layer: ORCH_PAID_EMBED=true
+    if os.environ.get("ORCH_PAID_EMBED", "false").lower() != "true":
+        return []
+    if time.time() < _EMBED_COOLDOWN_UNTIL:
+        return []   # embeddings paused (rate-limited) -> keyword fallback
 
     def _post(url, body, headers, retries=4):
         """POST with exponential backoff on 429/5xx."""
@@ -89,6 +104,7 @@ def _batch_embed(texts):
                      "Content-Type": "application/json"})
                 items = data["data"]
                 results.extend(x["embedding"] for x in sorted(items, key=lambda x: x["index"]))
+            _EMBED_FAILS = 0
             return results
 
         if _CTX_PROVIDER == "voyage" and os.environ.get("VOYAGE_API_KEY"):
@@ -103,8 +119,15 @@ def _batch_embed(texts):
                 for x in sorted(data["data"], key=lambda x: x["index"]):
                     v = x["embedding"]
                     results.append((v + [0.0] * 1536)[:1536])
+            _EMBED_FAILS = 0
             return results
     except Exception as exc:
+        _EMBED_FAILS += 1
+        if _EMBED_FAILS >= _EMBED_FAIL_LIMIT:
+            _EMBED_COOLDOWN_UNTIL = time.time() + _EMBED_COOLDOWN_S
+            _EMBED_FAILS = 0
+            print(f"[context_embed] provider rate-limited — pausing embeddings "
+                  f"{_EMBED_COOLDOWN_S/60:.0f}m, using keyword fallback")
         print(f"[context_embed] batch embed error: {exc}")
     # single-vector fallback via knowledge_embed (covers any provider it supports)
     out = []

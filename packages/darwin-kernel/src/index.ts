@@ -25,3 +25,4 @@ export * from './orchestratorClient/index.ts';
 export * from './flywheel.ts';
 export * as products from './products/index.ts';
 export * as cade from './cade/index.ts';
+export * as fleetAdmin from './fleetAdmin/index.ts';

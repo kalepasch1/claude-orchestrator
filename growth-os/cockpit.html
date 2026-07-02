@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Portfolio Growth Cockpit</title>
+<style>
+  :root{--bg:#0b0e14;--panel:#141924;--panel2:#1b2231;--line:#232c3d;--tx:#e6edf7;--mut:#8a97ad;
+        --rise:#39d98a;--steady:#f0b429;--cool:#f2618f;--accent:#5b8cff}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--tx);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif}
+  header{display:flex;align-items:center;justify-content:space-between;padding:18px 24px;border-bottom:1px solid var(--line)}
+  h1{font-size:17px;margin:0;letter-spacing:.2px} .sub{color:var(--mut);font-size:12px}
+  button{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:600;cursor:pointer}
+  button.ghost{background:var(--panel2);color:var(--tx);border:1px solid var(--line)}
+  .wrap{padding:20px 24px;display:grid;grid-template-columns:1.7fr 1fr;gap:20px;align-items:start}
+  @media(max-width:900px){.wrap{grid-template-columns:1fr}}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+  .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.8px;color:var(--mut);margin:0 0 12px}
+  .app{display:grid;grid-template-columns:36px 1fr auto;gap:12px;align-items:center;padding:12px;border-radius:10px;
+    background:var(--panel2);margin-bottom:10px;border:1px solid transparent}
+  .app:hover{border-color:var(--line)} .rank{font-weight:700;color:var(--mut);text-align:center;font-size:16px}
+  .name{font-weight:600} .meta{color:var(--mut);font-size:12px}
+  .score{font-size:22px;font-weight:800;text-align:right}
+  .pill{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:99px;margin-left:8px}
+  .rising{background:rgba(57,217,138,.15);color:var(--rise)} .steady{background:rgba(240,180,41,.15);color:var(--steady)}
+  .cooling{background:rgba(242,97,143,.15);color:var(--cool)}
+  .bar{height:6px;border-radius:6px;background:var(--line);margin-top:8px;overflow:hidden}
+  .bar > i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),#8ab4ff)}
+  .tier{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--mut);border:1px solid var(--line);
+    border-radius:5px;padding:1px 6px;margin-left:6px}
+  .feed{max-height:70vh;overflow:auto} .fi{padding:10px 12px;border-bottom:1px solid var(--line)}
+  .fi:last-child{border:0} .fk{font-size:10px;text-transform:uppercase;letter-spacing:.5px;color:var(--accent)}
+  .fi .t{font-weight:600;margin:2px 0} .fi .d{color:var(--mut);font-size:12px}
+  .empty{color:var(--mut);padding:24px;text-align:center} .err{color:var(--cool);padding:12px}
+  .kv{display:flex;gap:14px;flex-wrap:wrap;margin-top:6px} .kv span{color:var(--mut);font-size:12px}
+  .kv b{color:var(--tx)}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>Portfolio Growth Cockpit</h1>
+    <div class="sub">Where your attention goes this week — ranked by momentum across all apps</div></div>
+  <div style="display:flex;gap:8px">
+    <button class="ghost" id="recompute">Recompute momentum</button>
+    <button id="reload">Reload</button>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <h2>Momentum ranking</h2>
+    <div id="apps"><div class="empty">Loading…</div></div>
+  </div>
+  <div class="card">
+    <h2>Action feed → Smarter</h2>
+    <div id="feed" class="feed"><div class="empty">Loading…</div></div>
+  </div>
+</div>
+
+<script type="module">
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm'
+
+// Replace at deploy time (matches the repo's %%SUPABASE_*%% dashboard convention).
+const SUPABASE_URL = '%%SUPABASE_URL%%'
+const SUPABASE_ANON_KEY = '%%SUPABASE_ANON_KEY%%'
+const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
+
+const fmt = n => n>=1000 ? (n/1000).toFixed(1)+'k' : (n??0)
+const money = n => '$'+(Number(n||0)).toLocaleString()
+
+async function loadApps(){
+  const el = document.getElementById('apps')
+  const { data, error } = await sb.from('growth_momentum_latest').select('*')
+  if(error){ el.innerHTML = `<div class="err">${error.message}. Have you run compute_growth_momentum() yet?</div>`; return }
+  if(!data?.length){ el.innerHTML = `<div class="empty">No momentum snapshots yet. Emit some events, then hit “Recompute”.</div>`; return }
+  el.innerHTML = data.map(a=>{
+    const c = a.components||{}
+    return `<div class="app">
+      <div class="rank">${a.rank??'–'}</div>
+      <div>
+        <div class="name">${a.display_name||a.app}
+          <span class="tier">${a.tier||''}</span>
+          <span class="pill ${a.trend}">${a.trend}</span></div>
+        <div class="meta">north star: ${a.north_star||'—'} · ${a.stage||''}</div>
+        <div class="kv">
+          <span>rev 7d <b>${money(c.revenue_7d)}</b></span>
+          <span>QL <b>${fmt(c.qualified_leads_7d)}</b></span>
+          <span>signups <b>${fmt(c.signups_7d)}</b></span>
+          <span>visits <b>${fmt(c.visits_7d)}</b></span>
+          <span>conv <b>${((c.signup_conversion||0)*100).toFixed(1)}%</b></span>
+        </div>
+        <div class="bar"><i style="width:${Math.min(100,a.score)}%"></i></div>
+      </div>
+      <div class="score">${Number(a.score).toFixed(0)}</div>
+    </div>`
+  }).join('')
+}
+
+async function loadFeed(){
+  const el = document.getElementById('feed')
+  const { data, error } = await sb.from('growth_action_feed').select('*').limit(40)
+  if(error){ el.innerHTML = `<div class="err">${error.message}</div>`; return }
+  if(!data?.length){ el.innerHTML = `<div class="empty">No open GTM tasks or approvals.</div>`; return }
+  el.innerHTML = data.map(f=>`<div class="fi">
+    <div class="fk">${f.item_kind} · ${f.app||''} · ${f.status||''}</div>
+    <div class="t">${f.title||''}</div>
+    <div class="d">${(f.detail||'').slice(0,160)}</div>
+  </div>`).join('')
+}
+
+async function reloadAll(){ await Promise.all([loadApps(), loadFeed()]) }
+
+document.getElementById('reload').onclick = reloadAll
+document.getElementById('recompute').onclick = async (e)=>{
+  e.target.textContent='Recomputing…'
+  const { error } = await sb.rpc('compute_growth_momentum')
+  e.target.textContent='Recompute momentum'
+  if(error) alert(error.message); else reloadAll()
+}
+reloadAll()
+</script>
+</body>
+</html>

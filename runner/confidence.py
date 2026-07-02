@@ -11,8 +11,16 @@ import claude_cli
 
 MODEL = os.environ.get("CONFIDENCE_MODEL", "claude-haiku-4-5-20251001")
 THRESHOLD = float(os.environ.get("CONFIDENCE_THRESHOLD", "0.8"))
-HIGH_RISK = re.compile(r"(auth|payment|billing|allowlist|migration|secret|rls|admin|"
-                       r"settlement|crypto|password|token)", re.I)
+# The money/auth/schema backstop: any diff matching this ALWAYS routes to two-key approval,
+# independent of the confidence threshold. Widened so lowering thresholds for low-risk work
+# can't let a sensitive change merge automatically.
+HIGH_RISK = re.compile(
+    r"(auth|oauth|sso|login|session|password|secret|token|credential|api[_-]?key|"
+    r"private[_-]?key|allowlist|admin|rbac|permission|"                       # auth / access
+    r"payment|billing|payout|refund|charge|invoice|stripe|plaid|wallet|"
+    r"transfer|withdraw|deposit|ach|sepa|settlement|crypto|"                  # money movement
+    r"migration|schema|prisma|drizzle|\.sql|alter table|drop table|rls|grant|policy|"  # schema/db
+    r"\.env|dotenv)", re.I)
 
 PROMPT = """Score this git diff for how SAFE it is to auto-merge to main, 0.0-1.0.
 Consider: correctness, test coverage of the change, security, blast radius. Reply with ONE

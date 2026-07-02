@@ -66,12 +66,15 @@ def _check_budget():
         raise CircuitOpen(f"daily $ cap: ${day_usd:.2f}/${MAX_USD_DAY}")
 
 
-def _record(usd):
+def _record(usd, sub_usd=0):
+    # `usd` = REAL billable dollars (0 in subscription mode) -> feeds the $ circuit breaker.
+    # `sub_usd` = subscription-EQUIVALENT cost -> tracked for visibility only, never trips caps.
     with _lock:
         s = _load()
         now = time.time()
         s["calls"] = _within(s.get("calls", []), 86400) + [[now, 1]]
         s["spend"] = _within(s.get("spend", []), 86400) + [[now, float(usd or 0)]]
+        s["sub_spend"] = _within(s.get("sub_spend", []), 86400) + [[now, float(sub_usd or 0)]]
         _save(s)
 
 
@@ -101,7 +104,8 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
     # subscription session — which is what drained the balance. Drop it so `claude` uses
     # the logged-in session at CLAUDE_CONFIG_DIR (or the default ~/.claude login).
     runenv = dict(env if env is not None else os.environ)
-    if os.environ.get("ORCH_USE_SUBSCRIPTION", "true").lower() == "true":
+    subscription = os.environ.get("ORCH_USE_SUBSCRIPTION", "true").lower() == "true"
+    if subscription:
         runenv.pop("ANTHROPIC_API_KEY", None)
     proc = subprocess.run(cmd, cwd=cwd, env=runenv, capture_output=True, text=True, timeout=timeout)
     text, cost, itok, otok, raw = proc.stdout, 0.0, 0, 0, None
@@ -115,10 +119,17 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
         otok = int(usage.get("output_tokens", 0) or 0)
     except Exception:
         text = proc.stdout + proc.stderr      # non-JSON fallback (older CLI)
-    _record(cost)
+    # In subscription mode the call is costless: real billable $ = 0, so the $ circuit breaker
+    # never trips on phantom Max-plan dollars. `cost` is kept as the subscription-equivalent.
+    real_usd = 0.0 if subscription else cost
+    _record(real_usd, sub_usd=cost)
     try:
         import usage_meter
-        usage_meter.record("anthropic", project, units=itok + otok, unit="tokens", usd=cost)
+        # Record REAL billable $ under 'anthropic' (0 in subscription mode) so dashboards show true
+        # spend, and the subscription-equivalent under 'anthropic-notional' (visibility only, not money).
+        usage_meter.record("anthropic", project, units=itok + otok, unit="tokens", usd=real_usd)
+        if subscription and cost:
+            usage_meter.record("anthropic-notional", project, units=itok + otok, unit="tokens", usd=cost)
     except Exception:
         pass
     return {"text": text, "cost_usd": cost, "input_tokens": itok, "output_tokens": otok,
@@ -130,6 +141,8 @@ def status():
     return {"calls_last_hour": len(_within(s.get("calls", []), 3600)),
             "usd_last_hour": round(sum(x[1] for x in _within(s.get("spend", []), 3600)), 2),
             "usd_last_day": round(sum(x[1] for x in _within(s.get("spend", []), 86400)), 2),
+            "sub_equiv_last_hour": round(sum(x[1] for x in _within(s.get("sub_spend", []), 3600)), 2),
+            "sub_equiv_last_day": round(sum(x[1] for x in _within(s.get("sub_spend", []), 86400)), 2),
             "caps": {"calls_hr": MAX_CALLS_HOUR, "usd_hr": MAX_USD_HOUR, "usd_day": MAX_USD_DAY}}
 
 

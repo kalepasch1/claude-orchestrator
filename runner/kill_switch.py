@@ -10,12 +10,18 @@ import db
 
 
 def is_paused(project=None):
-    rows = db.select("controls", {"select": "scope,project,paused"}) or []
-    for r in rows:
-        if r["scope"] == "global" and r.get("paused"):
-            return True
-        if project and r["scope"] == "project" and r.get("project") == project and r.get("paused"):
-            return True
+    # LATEST decision wins per scope (rows can duplicate; old paused rows must not win).
+    rows = db.select("controls", {"select": "scope,project,paused,updated_at",
+                                  "order": "updated_at.desc"}) or []
+    for r in rows:                       # first global row = most recent global decision
+        if r["scope"] == "global":
+            if r.get("paused"):
+                return True
+            break
+    if project:
+        for r in rows:
+            if r["scope"] == "project" and r.get("project") == project:
+                return bool(r.get("paused"))
     return False
 
 

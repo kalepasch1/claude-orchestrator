@@ -51,6 +51,18 @@ def run_due():
                 import self_review; self_review.run()
             elif typ == "learn":
                 import opportunity_scout; opportunity_scout.run()
+            elif typ == "colosseum":
+                import growth_colosseum; growth_colosseum.run()
+            elif typ == "bd_autopilot":
+                import bd_autopilot_tick; bd_autopilot_tick.run()
+            elif typ == "creative_gen":
+                import growth_creative_gen; growth_creative_gen.run()
+            elif typ == "growth_learn":
+                import growth_learn; growth_learn.run()
+            elif typ == "security_rls":
+                import rls_guard; rls_guard.run()
+            elif typ == "deploy_watch":
+                import deploy_watch; deploy_watch.run()
             elif typ == "optimize":
                 repo = (db.select("projects", {"select": "repo_path", "name": f"eq.{project}"}) or [{}])[0].get("repo_path")
                 if repo and os.path.isdir(repo):

@@ -39,8 +39,11 @@ def check(project):
         return None
     spent = sum(float(r.get("usd") or 0) for r in rows)
     shipped = sum(1 for r in rows if r.get("integrated"))
-    # 1) money out, nothing shipped
-    if spent >= WASTE_USD and shipped == 0:
+    # 1) money out, nothing shipped. Only meaningful when REAL dollars are billed (paid API).
+    # In subscription mode `usd` is a phantom equivalent, so a $-spend trigger would false-fire;
+    # the REPEAT-FAIL signal below catches unproductive loops in the costless case.
+    subscription = os.environ.get("ORCH_USE_SUBSCRIPTION", "true").lower() == "true"
+    if (not subscription) and spent >= WASTE_USD and shipped == 0:
         return (f"${spent:.2f} spent in the last {WINDOW_H:.0f}h on '{project}' with "
                 f"0 merged changes - pausing to avoid a no-value spend loop.")
     # 2) a streak of pure failures (regardless of spend)
