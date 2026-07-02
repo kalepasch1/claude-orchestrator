@@ -1,0 +1,26 @@
+# systemd unit for the orchestrator runner on an always-on cloud VM.
+# Install on the VM:
+#   sudo cp deploy/runner.service /etc/systemd/system/orchestrator-runner.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now orchestrator-runner
+#   journalctl -u orchestrator-runner -f     # live logs
+# Restart=always => never silently dies; the pg_cron dead-man's-switch is the backstop.
+[Unit]
+Description=Claude Orchestrator Runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/claude-orchestrator/runner
+EnvironmentFile=/opt/claude-orchestrator/runner/.env
+Environment=ENABLE_PROACTIVE_LOOPS=true
+Environment=ORCH_PUSH_ON_MERGE=true
+ExecStart=/usr/bin/python3 runner.py
+Restart=always
+RestartSec=5
+# resource guardrails (cost control): cap CPU/RAM so a runaway can't inflate the bill
+CPUQuota=180%
+MemoryMax=3G
+
+[Install]
+WantedBy=multi-user.target

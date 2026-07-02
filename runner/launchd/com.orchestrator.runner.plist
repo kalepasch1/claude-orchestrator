@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- macOS supervision for the runner (interim, until it moves to a cloud VM).
+     Install:
+       cp runner/launchd/com.orchestrator.runner.plist ~/Library/LaunchAgents/
+       launchctl load  ~/Library/LaunchAgents/com.orchestrator.runner.plist
+       launchctl start com.orchestrator.runner
+     KeepAlive=true => macOS auto-respawns it if it crashes or the terminal closes.
+     Pair with `caffeinate -s` (or Amphetamine) so the Mac never sleeps the process. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.orchestrator.runner</string>
+  <key>WorkingDirectory</key><string>/Users/kpasch/Documents/beethoven/claude-orchestrator/runner</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>runner.py</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ENABLE_PROACTIVE_LOOPS</key><string>true</string>
+    <key>ORCH_PUSH_ON_MERGE</key><string>true</string>
+    <!-- add VERCEL_TOKEN / SUPABASE_ACCESS_TOKEN / provider keys here or rely on runner/.env -->
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>10</integer>
+  <key>StandardOutPath</key><string>/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/runner.log</string>
+  <key>StandardErrorPath</key><string>/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/runner.log</string>
+</dict>
+</plist>
