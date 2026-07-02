@@ -251,8 +251,49 @@ def run_committees():
 
 
 def run_committeecal():
-    """Committee memory: reweight committees by how well their past verdicts predicted outcomes."""
+    """Committee memory: reweight committees + individual seats by how well past verdicts predicted outcomes."""
     import committees; committees.calibrate()
+
+
+def run_committeedocket():
+    """Continuous docket: committees proactively re-review shipped features and act when evidence has moved."""
+    import committees; committees.docket()
+
+
+def run_committeerollout():
+    """Staged rollout controller: advance healthy canaries (canary->ramp->full) and auto-rollback regressions."""
+    import committees; committees.rollout_advance(); committees.conclude_experiments()
+
+
+def run_committeeboard():
+    """Portfolio bandit: continuously shift build effort toward the highest realized-reward app (with
+    exploration), and mine fresh experiment hypotheses so the A/B pipeline never runs dry."""
+    import committees; committees.board_bandit(); committees.mine_hypotheses()
+
+
+def run_committeekg():
+    """Cross-committee knowledge graph: index opinions/precedents/dissents so panels can pull related priors."""
+    import committees; committees.build_kg()
+
+
+def run_committeemeta():
+    """Meta-committee: review the committee system itself and recalibrate autonomously; log structural ideas."""
+    import committees; committees.meta_review()
+
+
+def run_committeewatch():
+    """Event-driven watch: scan external reg/security/competitor signals and re-open the docket on material ones."""
+    import committees; committees.watch_scan()
+
+
+def run_committeeminutes():
+    """Plain-English board minutes so the owner can skim the whole autonomous operation in 60 seconds."""
+    import committees; committees.board_minutes()
+
+
+def run_committeedigest():
+    """Weekly owner brief of the sharpest committee dissents, reversals, and least-confident calls."""
+    import committees; committees.dissent_digest()
 
 
 def run_decisionbriefs():
@@ -464,6 +505,14 @@ JOBS = {
     "improvemeasure": run_improvemeasure,
     "committees": run_committees,
     "committeecal": run_committeecal,
+    "committeedocket": run_committeedocket,
+    "committeedigest": run_committeedigest,
+    "committeerollout": run_committeerollout,
+    "committeeboard": run_committeeboard,
+    "committeewatch": run_committeewatch,
+    "committeeminutes": run_committeeminutes,
+    "committeekg": run_committeekg,
+    "committeemeta": run_committeemeta,
     "remediate": run_remediate,
     "selfcheck": run_selfcheck,
     "objective": run_objective,

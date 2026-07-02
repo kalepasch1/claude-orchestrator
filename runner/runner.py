@@ -603,6 +603,12 @@ _SCHEDULE = [
     ("committeecal-dy","committeecal",       "daily",    (5, 40)),# reweight committees + seats by predictive accuracy
     ("committeedock-dy","committeedocket",   "daily",    (4, 10)),# continuous docket: re-review shipped features
     ("committeedig-wk","committeedigest",    "daily",    (6, 5)), # owner brief of sharpest dissents/reversals
+    ("committeeroll-1h","committeerollout",  "interval", 3600),  # advance canaries / auto-rollback + conclude A/Bs
+    ("committeeboard-6h","committeeboard",   "interval", 21600), # portfolio bandit: allocate build effort + mine hypotheses
+    ("committeewatch-3am","committeewatch",  "daily",    (3, 25)),# event-driven reg/security/competitor watch
+    ("committeemins-dy","committeeminutes",  "daily",    (7, 0)), # plain-English board minutes for the owner
+    ("committeekg-2am","committeekg",        "daily",    (2, 40)),# build the cross-committee knowledge graph
+    ("committeemeta-wk","committeemeta",     "daily",    (2, 55)),# meta-review of the expert-assembly system
     ("remediate-180", "remediate",          "interval", 180),   # drive BLOCKED to zero (auto self-remedy)
     ("objective-3600","objective",          "interval", 3600),  # meta-controller: tune knobs toward north-star
     ("selfcheck-600", "selfcheck",          "interval", 600),   # periodic invariant assert + auto-heal
