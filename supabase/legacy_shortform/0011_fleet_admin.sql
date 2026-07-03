@@ -167,6 +167,22 @@ do $$ begin
 end $$;
 -- Receipts are append-only: no UPDATE/DELETE policy is ever granted (immutability).
 
+-- ---------- notifications (alerts for approvals + dead-man heartbeat alerts) ----------
+create table if not exists notifications (
+  id             text primary key default gen_random_uuid()::text,
+  channel        text not null,                      -- email | smarter | slack
+  audience       text not null,                      -- email address | slack channel | etc
+  kind           text not null,                      -- decision | action | heartbeat_alert
+  title          text not null,
+  body           text,
+  approval_id    text references fleet_approvals(id) on delete set null,
+  sent           boolean not null default false,
+  sent_at        timestamptz,
+  created_at     timestamptz not null default now()
+);
+create index if not exists notifications_approval_idx on notifications(approval_id);
+create index if not exists notifications_channel_idx on notifications(channel, sent, created_at desc);
+
 -- ---------- realtime ----------
 do $$ begin
   begin execute 'alter publication supabase_realtime add table fleet_admin_events'; exception when others then null; end;

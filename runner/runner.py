@@ -2811,6 +2811,7 @@ _SCHEDULE = [
     ("preflight-90",  "preflight",          "interval", 90),    # cheap multi-provider triage before agentic spend
     ("governor-900",  "governor",           "interval", 900),   # EV-based capacity allocation
     ("costslo-1800",  "costslo",            "interval", 1800),  # hold per-app $/merge SLOs
+    ("heartbeat-900", "heartbeat_monitor",  "interval", 900),   # detect stale heartbeats (dead-man alert)
     ("promote-daily", "promote",            "daily",    (6, 30)),# productize proven capabilities
     ("dedup-600",     "dedup",              "interval", 600),   # collapse near-duplicate queued tasks (+ semantic pass)
     ("conflictres-300","conflictresolve",   "interval", 300),   # zero-token auto-rebase/branch recovery for BLOCKED
@@ -2917,7 +2918,7 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      "surge_planner.py", "service_agent.py",
                      "pause_arbiter.py", "fleet_stuck_alarm.py", "batch_completion.py", "queue_bankruptcy.py",
                      "scoreboard.py", "toolchain_gate.py", "context_cache_distill.py",
-                     "cost_intelligence.py", "improvement_roadmap.py"}
+                     "cost_intelligence.py", "improvement_roadmap.py", "heartbeat_monitor"}
 
 # Optional autonomous-improvement jobs that are NOT yet routed through claude_cli (so their
 # spend isn't counted against the $40/day cap). OFF unless ENABLE_PROACTIVE_LOOPS=true.
@@ -3579,7 +3580,12 @@ def main():
         except Exception as e:
             _log.debug("hook self_deploy failed: %s", e)
         try:
-            db.heartbeat(RUNNER_ID, socket.gethostname(), len(active))
+            # fail-soft: a heartbeat write failure must never wedge the loop, but it is logged
+            # loudly so a silently-dead heartbeat is visible (see heartbeat_monitor.py).
+            try:
+                db.heartbeat(RUNNER_ID, socket.gethostname(), len(active))
+            except Exception as _hb_e:
+                print(f"[heartbeat] write failed: {_hb_e}", flush=True)
             # RUNNER REMOTE RESTART: check runner_control table for pending restart commands
             # targeted at this host (or 'all'). Mark handled, release lock, exit (keepalive respawns).
             try:
