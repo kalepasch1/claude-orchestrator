@@ -39,6 +39,7 @@ import feedback
 import kill_switch, secrets_manager, credential_broker, quality_gate
 import claude_cli, waste, judge, experiment_router, decision_engine
 import agentic_coders
+import plan_stage
 
 INTEGRATION_MODE = os.environ.get("INTEGRATION_MODE", "local")  # local | pr
 USE_CACHE = os.environ.get("RESULT_CACHE", "true").lower() == "true"
@@ -350,8 +351,20 @@ def run_task(t):
             # Agentic file edits go through the coder seam. Claude Code remains the default
             # backend because it enforces the spend circuit; configured second coders can take
             # independent safe tasks and fall back to Claude on failure.
+            # MULTI-MODEL PLAN: a cheaper NON-Claude strategy model plans before the coder drafts.
+            # Makes model optimization visible (recorded as task_class='plan' in telemetry) and cuts
+            # Claude token burn (Claude drafts against a plan instead of strategizing from scratch).
+            draft_prompt = prompt
             try:
-                r = agentic_coders.run(coder, prompt, model,
+                if plan_stage.should_plan(t, prompt):
+                    _plan_text, _plan_model = plan_stage.make_plan(t, prompt, name)
+                    if _plan_text:
+                        draft_prompt = plan_stage.inject(prompt, _plan_text, _plan_model)
+                        set_state(t["id"], note=f"strategy: {_plan_model} -> draft: {coder}")
+            except Exception:
+                draft_prompt = prompt  # fail-soft: never block drafting on the plan step
+            try:
+                r = agentic_coders.run(coder, draft_prompt, model,
                                        cwd=wt if os.path.isdir(wt) else repo, env=env,
                                        project=name, max_turns=60, permission="acceptEdits",
                                        timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
