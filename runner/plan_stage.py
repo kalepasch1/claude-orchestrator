@@ -25,17 +25,33 @@ def should_plan(task, prompt):
     return len(prompt or "") >= MIN_LEN
 
 
+_RR = {"i": 0}
+
+
 def _pick_planner():
-    """Cheapest AVAILABLE non-Claude model capable of planning (cap>=6). (provider, model) or None."""
+    """Round-robin across ALL available non-Claude models capable of planning (cap>=6), so the
+    whole stack — local(Ollama), DeepSeek, Google(Gemini), OpenAI — gets exercised for strategy
+    instead of always the first/cheapest. Returns (provider, model) or None."""
     try:
-        import model_policy, model_gateway
+        import model_gateway
+        try:
+            import model_policy
+            tranches = getattr(model_policy, "TRANCHES", [])
+        except Exception:
+            tranches = []
         avail = set(model_gateway.available())
-        for prov, model, tier, cap in getattr(model_policy, "TRANCHES", []):
-            if prov != "claude" and prov in avail and cap >= 6 and model:
-                return prov, model
+        cands, seen = [], set()
+        for prov, model, tier, cap in tranches:
+            if prov != "claude" and prov in avail and cap >= 6 and model and prov not in seen:
+                seen.add(prov)
+                cands.append((prov, model))
+        if not cands:
+            return None
+        pick = cands[_RR["i"] % len(cands)]
+        _RR["i"] += 1
+        return pick
     except Exception:
-        pass
-    return None
+        return None
 
 
 def make_plan(task, prompt, project=None):
