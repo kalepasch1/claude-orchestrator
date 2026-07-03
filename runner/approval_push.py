@@ -3,7 +3,8 @@
 approval_push.py - fan every decision you need to make out to wherever you want to manage it: email
 (kalepasch@gmail.com) and Smarter (which reads the shared Supabase). For each NEW pending legal /
 business-model / action card, it writes a row to `notifications` (the source of truth every surface
-reads) and, if a direct channel is configured (notify.sh / RESEND_API_KEY), sends it immediately.
+reads) and sends immediately only for critical decisions (kind=legal with legal_risk_level=novel).
+Other decisions batch to the daily digest.
 
 Dedup: one notification per approval id. The daily/hourly digest task drains unsent email rows and
 mails them; Smarter reads v_pending_decisions live. So you can act from the cockpit, from email, or
@@ -14,6 +15,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 AUDIENCE = os.environ.get("APPROVAL_PUSH_EMAIL", "kalepasch@gmail.com")
+
+
+def _should_send_immediately(approval):
+    """Only critical legal decisions send immediately. Everything else batches to digest."""
+    # Send immediately: kind=legal AND legal_risk_level=novel
+    return (approval.get("kind") == "legal" and
+            approval.get("legal_risk_level") == "novel")
 
 
 def run(limit=50):
@@ -34,17 +42,19 @@ def run(limit=50):
             continue
         title = ("Decision: " if is_decision else "Action: ") + (a.get("title") or "")[:140]
         body = f"[{a.get('project') or '-'}] {(a.get('why') or '')[:240]}\nManage: cockpit, email reply, or Smarter."
+        send_now = _should_send_immediately(a)
         row = {"channel": "email", "audience": AUDIENCE, "kind": kind,
-               "title": title[:180], "body": body[:600], "approval_id": a["id"], "sent": False}
+               "title": title[:180], "body": body[:600], "approval_id": a["id"], "sent": send_now}
         db.insert("notifications", row)
         # also mirror to Smarter channel (same content; Smarter reads v_pending_decisions live anyway)
         db.insert("notifications", {**row, "channel": "smarter"})
-        # best-effort immediate ping
-        try:
-            import notify
-            notify.send(f"{title}")
-        except Exception:
-            pass
+        # send immediately only for critical decisions
+        if send_now:
+            try:
+                import notify
+                notify.send(f"{title}")
+            except Exception:
+                pass
         pushed += 1
     print(f"approval_push: pushed {pushed} new decisions/actions to {AUDIENCE} + Smarter")
     return pushed
