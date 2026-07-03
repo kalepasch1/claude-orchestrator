@@ -10,6 +10,51 @@ Costless-first + cross-model: committees are spread across providers so it's a g
 panel, not one model wearing hats. Used by improvement_miner (business-model proposals) + decision_engine.
 
   review(subject_type, subject_id, title, body) -> {aggregate, recommendation, panel:[...]}
+
+================================================================================
+                        CADE ALIGNMENT CONTRACT
+================================================================================
+
+This module implements the Consensus & Adversarial Determination Engine (CADE)
+adaptive-panel vocabulary. The following mappings establish stable boundaries
+between this orchestrator surface and the shared @darwin/kernel/cade contracts:
+
+VOCABULARY ALIGNMENT:
+  panel seat / committee              ↦  Persona
+    - committee["name"]               ↦  Persona.name
+    - committee["mandate"]            ↦  (implicit in system prompt / priorsTag)
+    - committee["weight"]             ↦  Persona.authority (base authority weight)
+    - calibrated weight               ↦  Persona.reliability (prediction accuracy)
+
+  proposal / decision (title + body)  ↦  IssueSpec
+    - subject_type (proposal/decision)↦  IssueSpec.kind
+    - title                           ↦  IssueSpec.text (summary)
+    - body                            ↦  IssueSpec.text (detail)
+    - (implicit materiality)          ↦  IssueSpec.materiality (1.0 for material)
+
+  verdict + consensus aggregate      ↦  Determination
+    - verdict (support/oppose/...)    ↦  Determination.position
+    - score [0-10] + weighting        ↦  Determination.confidence
+    - debate round + dissent          ↦  Determination.dissent (losing factions)
+    - (not yet surfaced)              ↦  Determination.certificate (optimality proof)
+    - (not yet surfaced)              ↦  Determination.proof (signed proof pack)
+
+STUB HELPERS (no-op implementations — later tasks will implement):
+  - to_issue_spec(title, body, app)      : IssueSpec
+    Convert orchestrator proposal/decision to CADE IssueSpec.
+  - to_personas(panel)                   : Persona[]
+    Convert committee DB records + calibration to Persona roster.
+  - build_certificate(det)               : OptimalityCertificate
+    Construct the bounded-completeness guarantee.
+  - build_proof_pack(det)                : ProofPack
+    Sign the proof pack via DARWIN_SIGNING_PRIVATE_KEY_PEM.
+  - constitution_gate(det)               : bool
+    Check if determination passes constitution outer bound.
+
+This contract ensures that future enhancements (Expert Councils, red-team
+harnesses, Tribunal reviewers, signed proofs) integrate cleanly without
+requiring rewrites of this orchestrator surface.
+================================================================================
 """
 import os, sys, json, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -22,6 +67,75 @@ lens only. Return ONE JSON object:
  "recommendation":"your concrete recommendation (1 sentence)"}
 PROPOSAL: {title}
 DETAIL: {body}"""
+
+
+# ============================================================================
+#                    STUB HELPERS (CADE ADAPTATION LAYER)
+# These are invoked by downstream tasks to bridge orchestrator → kernel.
+# Each returns a typed CADE contract; the stubs are no-ops pending implementation.
+# ============================================================================
+
+def to_issue_spec(title, body, app=None):
+    """
+    Convert orchestrator proposal/decision (title + body) to CADE IssueSpec.
+    Returns: {id, text, kind, requiredCompetence, materiality, rosterClass, distribution}
+    Stub: returns None (pending kernel adaptation layer implementation).
+    """
+    # TODO: extract IssueKind from subject_type; infer requiredCompetence from body;
+    # pull materiality from governance.materiality classifier; seed ExpertCouncil subQuestions.
+    return None
+
+
+def to_personas(panel):
+    """
+    Convert committee DB records + calibration weights to CADE Persona roster.
+    panel: [{"name": "Legal", "weight": 1.0, "verdict": ..., ...}]
+    Returns: [Persona{id, name, role, competence, authority, reliability, priorsTag, ...}]
+    Stub: returns empty list (pending persona DB + corpus integration).
+    """
+    # TODO: join committee_calibration for reliability; infer role from committee name;
+    # populate competence vector from corpus metadata; surface priorsTag for debate framing.
+    return []
+
+
+def build_certificate(determination):
+    """
+    Construct OptimalityCertificate: the bounded-completeness guarantee.
+    Input: determination dict with panel, dissent, rounds info.
+    Returns: {rosterComplete, consideredCount, seatedCount, marginalValueBound, confidence, ...}
+    Stub: returns None (pending panel-optimization math).
+    """
+    # TODO: compute marginalValueBound from inactive committee exclusions;
+    # check rosterClass completeness; attestation of adversarial coverage.
+    return None
+
+
+def build_proof_pack(determination):
+    """
+    Sign the proof pack via DARWIN_SIGNING_PRIVATE_KEY_PEM (Ed25519 anchor).
+    Input: determination dict (panel, certificate, rounds, dissent).
+    Returns: ProofPack{id, issueId, digest, signature, record}
+    Stub: returns None (pending Ed25519 infrastructure).
+    """
+    # TODO: canonicalize record; sha256 digest; sign with private key if DARWIN_SIGNING_PRIVATE_KEY_PEM;
+    # attach publicKeyPem for verification.
+    return None
+
+
+def constitution_gate(determination):
+    """
+    Check if determination passes constitution outer bound.
+    Input: determination dict (position, confidence, proof).
+    Returns: bool (True if determination is constitutionally valid).
+    Stub: returns True (no-op — pending constitution enforcement in governance.py).
+    """
+    # TODO: invoke governance.materiality + privilege checkers;
+    # check against any swap-only / ECP / specialized-authority constraints;
+    # audit proof pack signature before committing.
+    return True
+
+
+# ============================================================================
 
 
 def active_committees():
