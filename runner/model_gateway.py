@@ -19,8 +19,26 @@ Providers (enabled when their key/env is present):
 
 complete(provider, model, prompt) -> {"text","cost_usd","provider","model"}
 """
-import os, sys, json, urllib.request, urllib.error
+import os, sys, json, time, urllib.request, urllib.error
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+
+def _load_env():
+    """Load runner/.env for scripts that import routing without going through db.py first."""
+    env = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    try:
+        with open(env) as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                os.environ.setdefault(k.strip(), v.split("#")[0].strip().strip('"').strip("'"))
+    except OSError:
+        pass
+
+
+_load_env()
 
 # rough $/1M tokens (input,output) for routing decisions; edit to current pricing
 PRICES = {
@@ -36,9 +54,15 @@ PRICES = {
 }
 
 
+def _ollama_host():
+    raw = os.environ.get("OLLAMA_HOST", "http://localhost:11434").strip()
+    # tolerate accidental notes like "http://localhost:11434 + ollama pull model"
+    return raw.split()[0] if raw else "http://localhost:11434"
+
+
 def _ollama_up():
     """Auto-detect a running Ollama on the default host (no OLLAMA_HOST needed)."""
-    host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    host = _ollama_host()
     try:
         urllib.request.urlopen(host + "/api/tags", timeout=1.5)
         return True
@@ -52,7 +76,7 @@ def available():
     if os.environ.get("OPENAI_API_KEY", "").strip(): prov.append("openai")
     if os.environ.get("GOOGLE_API_KEY", "").strip(): prov.append("google")
     if os.environ.get("DEEPSEEK_API_KEY", "").strip(): prov.append("deepseek")
-    if os.environ.get("OLLAMA_HOST", "").strip() or _ollama_up(): prov.append("local")
+    if _ollama_up(): prov.append("local")
     return prov
 
 
@@ -127,26 +151,112 @@ def _deepseek(model, prompt):
 
 
 def _local(model, prompt):
-    host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    host = _ollama_host()
     d = _post(f"{host}/api/generate", {}, {"model": model, "prompt": prompt, "stream": False})
     return d.get("response", ""), 0.0
 
 
-def complete(provider, model, prompt, project=None, timeout=90):
-    """Non-agentic completion via any provider (for QA/review/rating/planning)."""
+DEFAULT_MODELS = {
+    "local": lambda: os.environ.get("OLLAMA_MODEL", "llama3.1"),
+    "deepseek": lambda: "deepseek-chat",
+    "google": lambda: os.environ.get("GEMINI_MODEL", "gemini-2.0-flash") or "gemini-2.0-flash",
+    "openai": lambda: "gpt-4o-mini",
+    "claude": lambda: "claude-haiku-4-5-20251001",
+}
+
+FALLBACK_ORDER = ("local", "deepseek", "google", "openai", "claude")
+
+
+def provider_for_model(model):
+    m = (model or "").lower()
+    if "claude" in m:
+        return "claude"
+    if "gemini" in m:
+        return "google"
+    if "deepseek" in m:
+        return "deepseek"
+    if m.startswith(("gpt-", "o1", "o3", "o4")):
+        return "openai"
+    if m:
+        return "local"
+    return "claude"
+
+
+def _record_operation(project, operation, task_class, provider, model, prompt, cost, latency_ms, ok=True, error=""):
+    """Best-effort telemetry so routing decisions are visible and reviewable."""
     try:
-        if provider == "claude":
-            import claude_cli
-            r = claude_cli.run(prompt, model, project=project, max_turns=1, permission=None, timeout=timeout)
-            return {"text": r["text"], "cost_usd": r["cost_usd"], "provider": provider, "model": model}
-        fn = {"openai": _openai, "google": _google, "deepseek": _deepseek, "local": _local}[provider]
-        text, cost = fn(model, prompt)
+        import db
+        db.insert("app_operations", {
+            "app": project or "orchestrator",
+            "operation": operation or "completion",
+            "task_class": task_class or "unknown",
+            "provider": provider,
+            "model": model,
+            "prompt_chars": len(prompt or ""),
+            "cost_usd": float(cost or 0),
+            "latency_ms": int(latency_ms or 0),
+            "ok": bool(ok),
+        })
+    except Exception:
+        pass
+
+
+def _call_provider(provider, model, prompt, project=None, timeout=90):
+    if provider == "claude":
+        import claude_cli
+        r = claude_cli.run(prompt, model, project=project, max_turns=1, permission=None, timeout=timeout)
+        return {"text": r["text"], "cost_usd": r["cost_usd"], "provider": provider, "model": model}
+    fn = {"openai": _openai, "google": _google, "deepseek": _deepseek, "local": _local}[provider]
+    text, cost = fn(model, prompt)
+    try:
+        import usage_meter
+        usage_meter.record(provider, project, usd=cost)
+    except Exception:
+        pass
+    return {"text": text, "cost_usd": cost, "provider": provider, "model": model}
+
+
+def _fallbacks(first_provider):
+    seen = {first_provider}
+    for prov in FALLBACK_ORDER:
+        if prov in seen or prov not in available():
+            continue
+        seen.add(prov)
+        yield prov, DEFAULT_MODELS[prov]()
+
+
+def complete(provider, model, prompt, project=None, timeout=90, operation="completion",
+             task_class="unknown", fallback=True, record_op=True):
+    """Non-agentic completion via any provider (for QA/review/rating/planning)."""
+    attempts = [(provider, model)] + (list(_fallbacks(provider)) if fallback else [])
+    last = None
+    for prov, mdl in attempts:
+        t0 = time.time()
         try:
-            import usage_meter
-            usage_meter.record(provider, project, usd=cost)
-        except Exception:
-            pass
-        return {"text": text, "cost_usd": cost, "provider": provider, "model": model}
+            res = _call_provider(prov, mdl, prompt, project=project, timeout=timeout)
+            latency = int((time.time() - t0) * 1000)
+            if record_op:
+                _record_operation(project, operation, task_class, res["provider"], res["model"],
+                                  prompt, res.get("cost_usd", 0), latency, ok=True)
+            if last:
+                res["fallback_from"] = last.get("provider")
+                res["fallback_error"] = last.get("error")
+            return res
+        except Exception as e:
+            latency = int((time.time() - t0) * 1000)
+            last = {"provider": prov, "model": mdl, "error": str(e)}
+            if record_op:
+                _record_operation(project, operation, task_class, prov, mdl, prompt, 0, latency,
+                                  ok=False, error=str(e))
+            continue
+    return {"text": "", "cost_usd": 0, "provider": provider, "model": model,
+            "error": (last or {}).get("error", "no provider attempted")}
+
+
+def complete_legacy(provider, model, prompt, project=None, timeout=90):
+    """Backward-compatible no-fallback/no-telemetry path for old callers that need it."""
+    try:
+        return _call_provider(provider, model, prompt, project=project, timeout=timeout)
     except Exception as e:
         return {"text": "", "cost_usd": 0, "provider": provider, "model": model, "error": str(e)}
 

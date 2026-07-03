@@ -215,7 +215,7 @@ def run_task(t):
             set_state(t["id"], state="QUEUED", note="paused by kill switch")
             time.sleep(5); return
 
-        # budget guardrail: hold the task if the project hit its monthly cap
+        # budget guardrail: telemetry by default; hard-stops only when explicitly enabled
         if not budget.allow(name):
             set_state(t["id"], state="BLOCKED", note="budget cap reached")
             return
@@ -732,8 +732,10 @@ def _fire_periodic(job: str) -> None:
         except Exception:
             pass
     _dir = os.path.dirname(os.path.abspath(__file__))
-    _log = os.path.expanduser(f"~/Library/Logs/claude-orchestrator/{job.replace('.py','').replace('_','-')}")
-    os.makedirs(os.path.dirname(_log + ".log"), exist_ok=True)
+    _home = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
+    _log_dir = os.environ.get("ORCH_LOG_DIR") or os.path.join(_home, "logs")
+    os.makedirs(_log_dir, exist_ok=True)
+    _log = os.path.join(_log_dir, job.replace(".py", "").replace("_", "-"))
     cmd = ([sys.executable, os.path.join(_dir, job)] if job.endswith(".py")
            else [sys.executable, os.path.join(_dir, "periodic.py"), job])
     with open(_log + ".log", "a") as lf, open(_log + ".err", "a") as ef:
@@ -810,10 +812,17 @@ def _acquire_singleton():
     import fcntl
     home = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
     os.makedirs(home, exist_ok=True)
-    _LOCK_FD = open(os.path.join(home, "runner.lock"), "w")
+    lock_path = os.path.join(home, "runner.lock")
+    # Open without truncating first. Losing contenders used to open with "w", fail the
+    # flock, and still erase the active PID. That made startup hooks think no runner was
+    # alive and spawn duplicate keepalives forever.
+    _LOCK_FD = open(lock_path, "a+")
     try:
         fcntl.flock(_LOCK_FD, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        _LOCK_FD.write(str(os.getpid())); _LOCK_FD.flush()
+        _LOCK_FD.seek(0)
+        _LOCK_FD.truncate()
+        _LOCK_FD.write(str(os.getpid()))
+        _LOCK_FD.flush()
         return True
     except (BlockingIOError, OSError):
         return False

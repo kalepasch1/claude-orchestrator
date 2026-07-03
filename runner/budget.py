@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """
-budget.py - per-project spend guardrails. Before running a task the runner checks
-month-to-date spend (outcomes) against the project's cap (budgets table). If over and
-hard_pause is set, the task is held (state BLOCKED, note 'budget cap') and an approval
-card is filed so you can raise the cap or wait for the reset. No spend surprises.
+budget.py - per-project spend telemetry/guardrails.
+
+Owner policy: caps should inform routing and spend dashboards, not create manual task
+backlogs. The runner therefore does NOT block by default when a project crosses its cap;
+subscription/fixed-price coders can keep moving, and paid-API coders enforce their own
+small caps at the provider route. Set ORCH_BUDGET_BLOCKS_TASKS=true only for a deliberate
+hard stop.
 """
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+
+BLOCK_ON_CAP = os.environ.get("ORCH_BUDGET_BLOCKS_TASKS", "false").lower() in ("true", "1", "yes")
+FILE_BUDGET_CARDS = os.environ.get("ORCH_FILE_BUDGET_CARDS", "false").lower() in ("true", "1", "yes")
 
 
 def status(project):
@@ -31,17 +37,18 @@ def status(project):
 
 
 def allow(project):
-    """True if a new task may run; False if hard budget cap reached."""
+    """True if a new task may run; False only when the owner explicitly enabled hard caps."""
     s = status(project)
     if s["over"] and s["hard_pause"]:
-        try:
-            db.insert("approvals", {"project": project, "kind": "self",
-                "title": f"Budget cap reached for {project} (${s['spent']}/{s['cap']})",
-                "why": "Month-to-date spend hit the cap; swarm paused for this project.",
-                "value": "Prevents runaway spend.",
-                "risk": "Work is paused until you raise the cap or the month resets.",
-                "command": ""})
-        except Exception:
-            pass
-        return False
+        if FILE_BUDGET_CARDS:
+            try:
+                db.insert("approvals", {"project": project, "kind": "self",
+                    "title": f"Budget cap reached for {project} (${s['spent']}/{s['cap']})",
+                    "why": "Month-to-date spend hit the cap; continuing via subscription/failover routes.",
+                    "value": "Keeps visibility without blocking queued improvements.",
+                    "risk": "Paid API coders remain separately capped by their provider route.",
+                    "command": ""})
+            except Exception:
+                pass
+        return not BLOCK_ON_CAP
     return True

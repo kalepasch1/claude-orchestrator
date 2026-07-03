@@ -11,9 +11,8 @@ Every scheduler cycle, sweep() classifies each pending card:
 
   LEGAL-GATE (stays for the owner, enriched):
     * kind='legal' with legal_risk_level='novel' (legal_triage already auto-clears routine)
-    * radar_tag='regulatory'
-    * title/why/detail matches LEGAL_RX (exemptions, licensing, solicitation, attestation
-      reliance, securities/insurance advice, entity/tax structuring, privilege, KYC/AML)
+    * title/why/detail indicates a posture-changing regulated activity: licensing,
+      registration, custody, transmission, regulated advice, underwriting, etc.
     Gated cards get: a "NARROW LEGAL QUESTION" framing if missing, and fallback
     alternatives (guardrailed / full-after-counsel / defer-fraction-build-rest) so email
     links always offer flexible strategies, not yes/no.
@@ -29,21 +28,13 @@ digest notification row - nothing disappears silently.
 import os, re, sys, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import legal_filter
 
 POLICY_MARK = "auto-policy:owner-20260702"
 ENABLED = os.environ.get("OWNER_POLICY_AUTOAPPROVE", "true").lower() in ("true", "1", "yes")
 AUDIENCE = os.environ.get("APPROVAL_PUSH_EMAIL", "kalepasch@gmail.com")
 
-LEGAL_RX = re.compile(
-    r"exempt|licens|solicit|attestation|reliance|securit(y|ies)\s+offering|"
-    r"broker|adviser|advisor.{0,12}(regist|licens)|insurance\s+(advice|product|producer)|"
-    r"regulated\s+activit|general\s+solicitation|entity\s+(formation|structur)|"
-    r"tax\s+(election|structur)|privilege|kyc|aml|money\s+transmi|lending\s+exemption|"
-    r"legal\s+structur", re.I)
-
-ALARM_RX = re.compile(
-    r"billing\s+firewall|api\s+key|spend\s+(cap|circuit)|cost\s+circuit|account.{0,20}exhaust|"
-    r"secret|credential", re.I)
+ALARM_RX = re.compile(r"key\s+leak|secret\s+leak|credential\s+compromis", re.I)
 
 FALLBACK_ALTERNATIVES = [
     {"label": "Proceed with guardrails (Recommended)",
@@ -93,12 +84,14 @@ def _text(card):
 
 
 def is_legal_gated(card):
-    """True if this card raises a genuine legal-structuring/exemption question."""
+    """True only for a genuine posture-changing legal/regulatory question."""
     if card.get("kind") == "legal" and (card.get("legal_risk_level") or "") == "novel":
         return True
-    if (card.get("radar_tag") or "") == "regulatory":
-        return True
-    return bool(LEGAL_RX.search(_text(card)))
+    return legal_filter.requires_owner_approval(
+        card,
+        kind=card.get("kind") or "",
+        radar_tag=card.get("radar_tag") or "",
+    )
 
 
 def is_auto_approvable(card):
@@ -115,8 +108,8 @@ def _enrich_gated(card):
     patch = {}
     why = str(card.get("why") or "")
     if "NARROW LEGAL QUESTION" not in why:
-        m = LEGAL_RX.search(_text(card))
-        hook = f" (trigger: '{m.group(0)}')" if m else ""
+        trigger = legal_filter.trigger_excerpt(card)
+        hook = f" (trigger: '{trigger}')" if trigger else ""
         patch["why"] = ("NARROW LEGAL QUESTION" + hook +
                         " - only the legally sensitive fraction needs your call; "
                         "non-conflicting parts of this work proceed automatically.\n\n" + why)[:4000]

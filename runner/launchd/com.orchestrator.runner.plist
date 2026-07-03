@@ -10,24 +10,31 @@
 <dict>
   <key>Label</key><string>com.orchestrator.runner</string>
   <key>WorkingDirectory</key><string>/Users/kpasch/Documents/beethoven/claude-orchestrator/runner</string>
-  <!-- run via a login shell so it uses the SAME python3 (PATH: homebrew/pyenv) that works when you
-       run it by hand — avoids launchd crash-looping on missing deps under Apple's /usr/bin/python3 -->
+  <!-- Run without a login shell: runner.py/db.py load runner/.env directly, and avoiding -l keeps
+       ~/.zprofile from starting a second copy while launchd owns this one. -->
   <key>ProgramArguments</key>
   <array>
     <string>/bin/zsh</string>
-    <string>-lc</string>
+    <string>-fc</string>
     <string>exec python3 runner.py</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
     <key>ENABLE_PROACTIVE_LOOPS</key><string>true</string>
-    <key>ORCH_PUSH_ON_MERGE</key><string>true</string>
+    <key>CLAUDE_ORCH_HOME</key><string>/Users/kpasch/Documents/beethoven/claude-orchestrator/.runtime</string>
+    <key>ORCH_LOG_DIR</key><string>/Users/kpasch/Documents/beethoven/claude-orchestrator/.runtime/logs</string>
+    <key>ORCH_LOGICAL_RUNNERS</key><string>true</string>
+    <key>ORCH_RUNNER_FLEET_TARGET</key><string>8</string>
+    <key>ORCH_PUSH_ON_MERGE</key><string>false</string>
+    <key>ORCH_PUSH_ON_RELEASE</key><string>true</string>
+    <key>SESSION_AUTO_CONTINUE</key><string>true</string>
+    <key>SESSION_FORCE_CONTINUE</key><string>true</string>
     <!-- add VERCEL_TOKEN / SUPABASE_ACCESS_TOKEN / provider keys here or rely on runner/.env -->
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
-  <key>StandardOutPath</key><string>/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/runner.log</string>
-  <key>StandardErrorPath</key><string>/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/runner.log</string>
+  <key>StandardOutPath</key><string>/Users/kpasch/Documents/beethoven/claude-orchestrator/.runtime/logs/runner-launchd.log</string>
+  <key>StandardErrorPath</key><string>/Users/kpasch/Documents/beethoven/claude-orchestrator/.runtime/logs/runner-launchd.log</string>
 </dict>
 </plist>

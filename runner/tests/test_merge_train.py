@@ -10,6 +10,7 @@ The train must:
   D) on rebase conflict past the cap: task -> CONFLICT, card -> train:conflict-exhausted
   E) on test failure: task -> TESTFAIL, card -> train:TESTFAIL, and NEVER fast-forward the base
   F) serialize per project, oldest approval first
+  G) branch-missing approved cards remain live while the task is still being rebuilt
 """
 import os, sys, unittest
 from unittest.mock import patch, MagicMock
@@ -97,8 +98,8 @@ class TestCleanMerge(TrainCase):
         summary = merge_train.train_run()
         self.assertEqual(summary["merged"], 1)
         tps = self.task_updates("t1")
-        self.assertEqual(len(tps), 1)
-        self.assertEqual(tps[0]["state"], "MERGED")
+        self.assertEqual(tps[0]["state"], merge_train.MERGING_STATE)
+        self.assertEqual(tps[-1]["state"], "MERGED")
         cps = self.card_updates("c1")
         self.assertEqual(cps[-1]["decided_by"], "train:MERGED")
 
@@ -141,6 +142,34 @@ class TestSkipsHandledCards(TrainCase):
                        "decided_by": None, "title": "no slug here", "created_at": "x"}]
         merge_train.train_run()
         self.assertEqual(self.card_updates("c1")[-1]["decided_by"], "train:no-slug")
+
+
+# ── G: branch-missing recovery ───────────────────────────────────────────────
+
+class TestBranchMissing(TrainCase):
+
+    def test_running_task_waits_without_consuming_approved_card(self):
+        self.cards = [_card("c1", "feat-x")]
+        self.tasks = [_task("t1", "feat-x", state="RUNNING")]
+        self.mocks["_branch_exists"].return_value = False
+        summary = merge_train.train_run()
+        self.assertEqual(summary["skipped"], 1)
+        self.assertEqual(self.task_updates("t1"), [])
+        self.assertEqual(self.card_updates("c1"), [])
+        self.mocks["_rebase_onto_base"].assert_not_called()
+
+    def test_blocked_task_with_missing_branch_requeues_without_consuming_card(self):
+        self.cards = [_card("c1", "feat-x")]
+        self.tasks = [_task("t1", "feat-x", state="BLOCKED", retries=0)]
+        self.mocks["_branch_exists"].return_value = False
+        with patch.dict(os.environ, {"MERGE_BRANCH_MISSING_REDO_CAP": "2"}):
+            summary = merge_train.train_run()
+        self.assertEqual(summary["redo"], 1)
+        tp = self.task_updates("t1")[-1]
+        self.assertEqual(tp["state"], "QUEUED")
+        self.assertEqual(tp["transient_retries"], 1)
+        self.assertEqual(self.card_updates("c1"), [])
+        self.mocks["_rebase_onto_base"].assert_not_called()
 
 
 # ── C/D: rebase-conflict redo pattern ─────────────────────────────────────────

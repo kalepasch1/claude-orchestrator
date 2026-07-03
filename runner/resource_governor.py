@@ -136,6 +136,24 @@ def mem_pressure_ok():
         return True  # signal unavailable -> don't block on it alone
 
 
+def pressure_should_block(free_gb=None, floor_gb=None):
+    """Treat kernel memory pressure as decisive only when measured headroom is also tight.
+
+    macOS can leave kern.memorystatus_vm_pressure_level at warn/critical after a burst even
+    when vm_stat shows tens of GB available. That stale signal collapsed the fleet to one
+    lane. Keep it as a crash brake, but require corroborating low headroom before blocking.
+    """
+    if mem_pressure_ok():
+        return False
+    if free_gb is None:
+        free_gb = ram_free_gb()
+    if floor_gb is None:
+        floor_gb = effective_floor_gb()
+    if free_gb is None:
+        return True
+    return free_gb < floor_gb + (PER_TASK_GB * 2)
+
+
 def can_claim(n_active=0):
     """Real-time gate the runner calls BEFORE starting each new task — protects the Mac in
     the gaps between the slower periodic govern() ticks. Returns (ok, reason)."""
@@ -143,8 +161,8 @@ def can_claim(n_active=0):
     floor = effective_floor_gb()
     if free is not None and free < floor + PER_TASK_GB:
         return False, f"low RAM {free}GB free < need {floor + PER_TASK_GB}GB (floor {floor}+task {PER_TASK_GB})"
-    if not mem_pressure_ok():
-        return False, "kernel memory pressure warn/critical"
+    if pressure_should_block(free, floor):
+        return False, "kernel memory pressure warn/critical with low RAM headroom"
     try:
         used, _ = disk_pct()
         if used >= DISK_HARD:
@@ -364,7 +382,7 @@ def govern():
         pass
 
     eff_floor = effective_floor_gb()
-    pressure_bad = not mem_pressure_ok()
+    pressure_bad = pressure_should_block(free_ram, eff_floor)
     if free_ram is not None:
         cur_reason = _global_pause_reason()
         if free_ram < eff_floor or pressure_bad:

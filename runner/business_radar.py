@@ -11,6 +11,7 @@ already-set). Schedule every ~15 min.
 import os, sys, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import legal_filter
 
 SIGNALS = {
     "pricing": re.compile(r"\b(pricing|price|paywall|subscription tier|billing plan|charge|monetiz|"
@@ -20,6 +21,7 @@ SIGNALS = {
     "regulatory": re.compile(r"\b(kyc|aml|money transmission|securities|lending|insurance|reinsur|"
                              r"derivativ|hipaa|gdpr|ccpa|license|regulat|custod|deposit)\b", re.I),
 }
+FILE_ROUTINE_BUSINESS_CARDS = os.environ.get("ORCH_FILE_ROUTINE_BUSINESS_CARDS", "false").lower() == "true"
 
 
 def _classify(text):
@@ -60,6 +62,11 @@ def run(limit=300):
                 continue
             if key in prior:
                 continue  # already ruled by the owner - decision memory applies
+            prompt = t.get("prompt") or ""
+            if tag == "regulatory" and not legal_filter.requires_owner_approval(text=f"{t.get('slug')} {prompt}"):
+                continue
+            if tag in ("pricing", "data_use") and not FILE_ROUTINE_BUSINESS_CARDS:
+                continue
             db.insert("approvals", {"project": name, "kind": "material", "radar_tag": tag,
                 "title": f"Business-model check ({tag}): {t.get('slug')}",
                 "why": f"Queued work may change {tag.replace('_',' ')} for {name}. Decide the direction "

@@ -17,7 +17,8 @@ import db, feedback, claude_cli
 MODEL = os.environ.get("NEXTSTEP_MODEL", "claude-sonnet-4-6")
 PROJECTS_DIR = os.environ.get("CLAUDE_PROJECTS_DIR", os.path.expanduser("~/.claude/projects"))
 IDLE = int(os.environ.get("SESSION_IDLE_SECONDS", "120"))
-AUTO = os.environ.get("SESSION_AUTO_CONTINUE", "false").lower() == "true"
+AUTO = os.environ.get("SESSION_AUTO_CONTINUE", "true").lower() == "true"
+FORCE_CONTINUE = os.environ.get("SESSION_FORCE_CONTINUE", "true").lower() == "true"
 CLOSE_TABS = os.environ.get("SESSION_CLOSE_TABS", "true").lower() == "true"
 STATE = os.path.join(os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator")), "watched.json")
 
@@ -112,19 +113,52 @@ auto_safe=true only if the step is low-risk and clearly defined."""
 
 
 def _decide(req, out, master="", phases=None):
+    phase_txt = json.dumps(phases or [])
+    p = (PROMPT.replace("{req}", req).replace("{out}", out)
+         .replace("{master}", master[:2000]).replace("{phases}", phase_txt))
+    errors = []
     try:
-        phase_txt = json.dumps(phases or [])
-        p = (PROMPT.replace("{req}", req).replace("{out}", out)
-             .replace("{master}", master[:2000]).replace("{phases}", phase_txt))
         r = claude_cli.run(p, MODEL, permission=None, max_turns=1, timeout=120)
-        m = re.search(r"\{.*\}", r["text"] or "", re.S)
-        if not m:
-            return {"next_action": "(no decision: model returned no JSON, likely out of credits)",
-                    "auto_safe": False, "done": False, "phases_remaining": None}
-        return json.loads(m.group(0))
+        parsed = _parse_decision(r.get("text") or "")
+        if parsed:
+            return parsed
+        errors.append("claude returned no JSON")
     except Exception as e:
-        return {"next_action": f"(could not auto-decide: {e})", "auto_safe": False, "done": False,
-                "phases_remaining": None}
+        errors.append(f"claude: {e}")
+    for _ in range(4):
+        try:
+            import model_policy, model_gateway
+            prov, model, _why = model_policy.choose("plan", agentic=False)
+            r = model_gateway.complete(prov, model, p, project="orchestrator",
+                                       operation="session_next_step", task_class="plan",
+                                       fallback=True)
+            parsed = _parse_decision(r.get("text") or "")
+            if parsed:
+                return parsed
+            errors.append(f"{r.get('provider')}/{r.get('model')}: no JSON")
+        except Exception as e:
+            errors.append(str(e))
+    return {"next_action": "Continue the unfinished implementation from this paused session. Inspect the transcript context, complete the remaining code changes, run the relevant checks, and let the normal merge train integrate the result.",
+            "auto_safe": True, "done": False, "phases_remaining": None,
+            "decision_fallback": "; ".join(errors)[-500:]}
+
+
+def _parse_decision(text):
+    m = re.search(r"\{.*\}", text or "", re.S)
+    if not m:
+        return None
+    try:
+        d = json.loads(m.group(0))
+    except Exception:
+        return None
+    if not isinstance(d, dict) or not d.get("next_action"):
+        return None
+    return {
+        "next_action": str(d.get("next_action"))[:2000],
+        "auto_safe": bool(d.get("auto_safe")),
+        "done": bool(d.get("done")),
+        "phases_remaining": d.get("phases_remaining"),
+    }
 
 
 def _project_for(path):
@@ -210,9 +244,9 @@ def scan():
         d = _decide(req, out, master, phases)
         done = bool(d.get("done"))
         phases_remaining = d.get("phases_remaining")
-        auto = bool(AUTO and d.get("auto_safe") and not done)
+        auto = bool((AUTO and d.get("auto_safe") and not done) or (FORCE_CONTINUE and not done))
 
-        status = "finished" if done else "paused"
+        status = "finished" if done else ("queued" if auto else "paused")
         db.insert("session_actions", {
             "session_id": sid, "project": _project_for(path),
             "status": status, "summary": out[-500:],
@@ -239,6 +273,30 @@ def scan():
     _save(seen)
     print(f"session_watcher: processed {made} idle sessions (auto_continue={AUTO})")
     return made
+
+
+def recover_paused(limit=200):
+    """Convert old paused session_actions into queued continuation work."""
+    rows = db.select("session_actions", {"select": "id,session_id,project,next_action,status",
+                                         "status": "eq.paused", "limit": str(limit)}) or []
+    projects = {p["name"]: p["id"] for p in (db.select("projects", {"select": "id,name"}) or [])}
+    queued = hidden = 0
+    for s in rows:
+        action = (s.get("next_action") or "").strip()
+        pid = projects.get(s.get("project"))
+        if pid and action and not action.startswith("("):
+            slug = f"cont-{(s.get('session_id') or s['id'])[:8]}"
+            try:
+                db.insert("tasks", {"project_id": pid, "slug": slug, "kind": "build", "state": "QUEUED",
+                                    "prompt": action,
+                                    "note": "source:session-autocontinue; recovered from paused session"})
+                queued += 1
+            except Exception:
+                pass
+        db.update("session_actions", {"id": s["id"]}, {"status": "queued"})
+        hidden += 1
+    print(f"session_watcher: recovered {queued} paused sessions, hid {hidden}")
+    return {"queued": queued, "hidden": hidden}
 
 
 if __name__ == "__main__":

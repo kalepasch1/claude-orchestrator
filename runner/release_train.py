@@ -20,8 +20,11 @@ import os, sys, subprocess, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
+# SHIP-FAST defaults: deploy green work continuously (>=1 change, >=15 min since last release),
+# not a 72h/20 bulk hold. Overridable via env; the build/test green-gate still runs first.
 MIN_BATCH = int(os.environ.get("RELEASE_MIN_BATCH", "1"))
-STAGING = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/staging")
+RELEASE_INTERVAL_HOURS = float(os.environ.get("RELEASE_INTERVAL_HOURS", "0.25"))
+STAGING = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
 
 
 def _git(repo, *args, timeout=120):
@@ -91,6 +94,9 @@ def run_for(project):
     ahead = _git(repo, "rev-list", "--count", f"{prod}..{STAGING}").stdout.strip() or "0"
     if int(ahead) < MIN_BATCH:
         return {"project": project, "prod": prod, "staged": merged, "ahead": ahead, "note": "below batch size"}
+    due, due_note = _release_due(project)
+    if not due:
+        return {"project": project, "prod": prod, "staged": merged, "ahead": ahead, "note": due_note}
     # QA staging (build/tests) in an ephemeral worktree
     test_cmd = p.get("test_cmd") or os.environ.get("DEFAULT_TEST_CMD", "")
     if test_cmd:
@@ -130,7 +136,7 @@ def run_for(project):
     rel = db.insert("releases", {"project": project, "version": ver, "from_sha": last_good, "to_sha": to_sha,
                     "n_changes": int(ahead), "changelog": changelog, "deploy_status": "pending"})
     pushed = None
-    if os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() == "true":
+    if os.environ.get("ORCH_PUSH_ON_RELEASE", os.environ.get("ORCH_PUSH_ON_MERGE", "false")).lower() == "true":
         pr = _git(repo, "push", "origin", prod)
         pushed = pr.returncode == 0
         db.update("releases", {"project": project, "to_sha": to_sha},
@@ -147,10 +153,30 @@ def _next_version():
     return v[0]["version"] if v else "v1"
 
 
+def _release_due(project):
+    if RELEASE_INTERVAL_HOURS <= 0:
+        return True, "release interval disabled"
+    rows = db.select("releases", {"select": "created_at,project", "project": f"eq.{project}",
+                                  "order": "created_at.desc", "limit": "1"}) or []
+    if not rows:
+        return True, "first release"
+    try:
+        last = datetime.datetime.fromisoformat(str(rows[0]["created_at"]).replace("Z", "+00:00"))
+        now = datetime.datetime.now(datetime.timezone.utc)
+        hours = (now - last).total_seconds() / 3600.0
+        if hours >= RELEASE_INTERVAL_HOURS:
+            return True, f"release interval elapsed ({hours:.1f}h)"
+        return False, f"held for bulk deploy cadence ({hours:.1f}/{RELEASE_INTERVAL_HOURS:.1f}h)"
+    except Exception:
+        return True, "release timestamp unreadable"
+
+
 def run():
     out = []
     for p in db.select("projects", {"select": "name,auto_merge"}) or []:
-        if p.get("auto_merge") and p["name"] != "smoke-test":
+        if os.environ.get("ORCH_RELEASE_ALL_PROJECTS", "true").lower() == "true" or p.get("auto_merge"):
+            if p["name"] == "smoke-test":
+                continue
             try:
                 out.append(run_for(p["name"]))
             except Exception as e:

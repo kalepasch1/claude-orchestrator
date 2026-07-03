@@ -10,11 +10,12 @@ queue_janitor.py - automates the manual cleanup session of 2026-07-02, every cyc
   3. EMPTY/FAILED RUNS - BLOCKED tasks whose notes show the empty-diff/prompt-delivery
      class ("no committable changes", "agent run failed", "diff is empty", ...) are
      requeued automatically instead of waiting for a human to notice.
-  4. STRANDED APPROVALS - BLOCKED "awaiting your approval" tasks whose card was denied
-     by a bulk cleanup (not by the owner) get a fresh pending card, which
-     approval_policy/approval_merge then process autonomously.
+  4. STRANDED APPROVALS - BLOCKED "awaiting your approval" tasks are released into
+     automatic batching instead of getting fresh code-merge cards.
   5. STALE GIT LOCKS - leftover .git/*.lock files older than LOCK_STALE_MIN in local
      repos are removed (a crashed run left index.lock and silently blocked all merges).
+  6. CRASHED MERGE CLAIMS - optional MERGING tasks older than STUCK_RUNNING_H are
+     returned to BLOCKED when the DB enum supports MERGING.
 
 Everything is bounded, idempotent (the approvals_one_pending_per_issue index blocks
 duplicate cards), and audited via notes/notifications. No model spend.
@@ -80,6 +81,32 @@ def requeue_stuck_running():
     return fixed
 
 
+def recover_stuck_merging():
+    """If merge_train crashes mid-claim, release the task for the next train cycle."""
+    if os.environ.get("MERGE_TRAIN_STATE", "RUNNING") != "MERGING":
+        return 0
+    fixed = 0
+    cutoff = time.time() - STUCK_RUNNING_H * 3600
+    try:
+        rows = db.select("tasks", {"select": "*", "state": "eq.MERGING"}) or []
+    except Exception as e:
+        print(f"janitor: MERGING state unsupported; skipping merge-claim cleanup ({e})")
+        return 0
+    for t in rows:
+        try:
+            import datetime
+            ts = datetime.datetime.fromisoformat(str(t.get("updated_at")).replace("Z", "+00:00")).timestamp()
+        except Exception:
+            continue
+        if ts > cutoff:
+            continue
+        db.update("tasks", {"id": t["id"]},
+                  {"state": "BLOCKED",
+                   "note": (t.get("note") or "") + f" [janitor: stale MERGING >{STUCK_RUNNING_H}h - released for train retry]"})
+        fixed += 1
+    return fixed
+
+
 def requeue_empty_runs():
     """The empty-diff/prompt-delivery class: requeue instead of waiting on a human."""
     fixed = 0
@@ -97,29 +124,15 @@ def requeue_empty_runs():
 
 
 def refile_stranded_approvals():
-    """BLOCKED awaiting-approval tasks with no live card (bulk-denied earlier) get one."""
+    """BLOCKED awaiting-approval tasks are released into automatic code-merge flow."""
     made = 0
-    projects = {p["id"]: p["name"] for p in (db.select("projects", {"select": "id,name"}) or [])}
-    live = set()
-    for a in db.select("approvals", {"select": "slug,title", "status": "in.(pending,approved)"}) or []:
-        if a.get("slug"):
-            live.add(a["slug"])
-        live.add((a.get("title") or "").replace("Approve merge of ", ""))
     for t in db.select("tasks", {"select": "*", "state": "eq.BLOCKED"}) or []:
         if "awaiting your approval" not in (t.get("note") or ""):
             continue
-        if t.get("slug") in live:
-            continue
-        try:
-            db.insert("approvals", {
-                "project": projects.get(t.get("project_id"), ""), "slug": t["slug"], "kind": "material",
-                "title": f"Approve merge of {t['slug']}",
-                "why": "janitor re-file: original card was bulk-denied (not by owner); work is complete per "
-                       "runner and the merge stays test-gated. Auto-policy will clear it if non-legal.",
-                "risk": "standard merge risk; policy + tests gate", "status": "pending"})
-            made += 1
-        except Exception:
-            pass  # dedup index already has a pending card — fine
+        db.update("tasks", {"id": t["id"]},
+                  {"state": "DONE",
+                   "note": "janitor: code-merge approval removed; release_train will batch into dev/prod"})
+        made += 1
     return made
 
 
@@ -145,12 +158,13 @@ def clear_stale_git_locks():
 def run():
     hb = scheduler_heartbeat()
     stuck = requeue_stuck_running()
+    merging = recover_stuck_merging()
     empty = requeue_empty_runs()
     refiled = refile_stranded_approvals()
     locks = clear_stale_git_locks()
     print(f"queue_janitor: heartbeat={'ok' if hb else 'FAIL'} unstuck={stuck} "
-          f"empty-requeued={empty} cards-refiled={refiled} locks-cleared={locks}")
-    return stuck + empty + refiled + locks
+          f"merge-released={merging} empty-requeued={empty} cards-refiled={refiled} locks-cleared={locks}")
+    return stuck + merging + empty + refiled + locks
 
 
 if __name__ == "__main__":

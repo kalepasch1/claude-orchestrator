@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 DEDUP_SIM = float(os.environ.get("DEDUP_SIM", "0.82"))
+DEDUP_FILE_PENDING_CARDS = os.environ.get("DEDUP_FILE_PENDING_CARDS", "false").lower() in ("true", "1", "yes")
 _STOP = set("the a an to of and or for in on with build add fix update create make this that use "
             "implement task change set get run test file page component function".split())
 
@@ -83,6 +84,10 @@ def apply():
                 collapsed += 1
         else:
             db.insert("approvals", {"project": "PORTFOLIO", "kind": "self",
+                "status": "pending" if DEDUP_FILE_PENDING_CARDS else "approved",
+                "decided_by": None if DEDUP_FILE_PENDING_CARDS else "auto-policy:dedup-advisory",
+                "decision_type": None if DEDUP_FILE_PENDING_CARDS else "approve",
+                "decision_text": None if DEDUP_FILE_PENDING_CARDS else "Auto-approved advisory; dedup should not interrupt the owner.",
                 "title": f"Cross-app duplicate work: {len(g)} tasks look identical",
                 "why": f"Near-duplicate across apps: {[t['slug'] for t in g]}. Solve once as a capability "
                        f"and instantiate per app.",

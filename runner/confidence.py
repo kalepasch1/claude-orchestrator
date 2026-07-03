@@ -7,9 +7,9 @@ two-key approval. Autonomy that flexes with risk instead of fixed rules.
 """
 import os, sys, subprocess, json, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import claude_cli
+import model_gateway, model_policy
 
-MODEL = os.environ.get("CONFIDENCE_MODEL", "claude-haiku-4-5-20251001")
+MODEL = os.environ.get("CONFIDENCE_MODEL", "")
 THRESHOLD = float(os.environ.get("CONFIDENCE_THRESHOLD", "0.8"))
 # The money/auth/schema backstop: any diff matching this ALWAYS routes to two-key approval,
 # independent of the confidence threshold. Widened so lowering thresholds for low-risk work
@@ -38,10 +38,18 @@ def assess(worktree, base="main", max_chars=50000, project=None):
     if not diff.strip():
         return {"confidence": 0.5, "reason": "empty diff", "high_risk": high_risk}
     try:
-        out = claude_cli.run(PROMPT + diff, MODEL, project=project,
-                             permission=None, max_turns=1, timeout=150)["text"]
+        if MODEL:
+            prov = model_gateway.provider_for_model(MODEL)
+            model = MODEL
+        else:
+            prov, model, _ = model_policy.choose("rating", agentic=False, need=5)
+        res = model_gateway.complete(prov, model, PROMPT + diff, project=project,
+                                     timeout=150, operation="confidence_gate",
+                                     task_class="rating")
+        out = res["text"]
         d = json.loads(re.search(r"\{.*\}", out, re.S).group(0))
         c = float(d.get("confidence", 0.5))
+        d["by"] = f"{res.get('provider')}:{res.get('model')}"
     except Exception as e:
         c, d = 0.5, {"reason": f"score failed ({e})"}
     return {"confidence": round(c, 3), "reason": d.get("reason", ""), "high_risk": high_risk}

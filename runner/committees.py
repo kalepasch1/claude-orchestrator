@@ -391,11 +391,14 @@ def deliberate(committee, subject_type, subject_id, title, body, app=None):
 
     # round 0: independent opening positions (each seat spread across providers for real diversity)
     positions = []
-    for seat in seats:
+    _emit(subject_id, 0, "assemble", expert=name, text=f"convened {name}: {', '.join(seats)}")
+    for i, seat in enumerate(seats):
         d = _json(_seat_prompt(seat, ""), need=_seat_need(name, seat))
         if d:
             d["seat"] = seat
             positions.append(d)
+            _emit(subject_id, i + 1, "opening", expert=f"{name}/{seat}",
+                  verdict=d.get("verdict"), text=d.get("risk") or d.get("opportunity"))
     if not positions:
         return None
 
@@ -450,6 +453,8 @@ def deliberate(committee, subject_type, subject_id, title, body, app=None):
     except Exception:
         pass
 
+    _emit(subject_id, 90, "synthesis", expert=f"{name}/{chair}",
+          verdict=syn.get("verdict"), text=syn.get("opinion"))
     # PRE-MORTEM / EXPECTED VALUE: decide against the forecast, not just the present-tense opinion.
     p_succ = max(0.0, min(1.0, float(syn.get("p_success", 0.5) or 0.5)))
     raw_score = float(syn.get("score", 5) or 5)
@@ -608,13 +613,17 @@ def review(subject_type, subject_id, title, body, app=None):
     # CADE: consensus %, faction clustering, contributors, materiality — the substance of the 1-pager.
     consensus_pct, factions, contributors = _consensus(panel)
     materiality = _materiality(panel, critical, legal_veto)
+    lo, hi = _consensus_ci(panel, consensus_pct)
     out = {"aggregate": agg, "recommendation": rec, "opposed_by": opposed, "dissents": dissents,
            "conflicts": conflicts, "arbitration": arbitration, "owner_bar": round(bar, 2),
            "critical": critical, "contentious": contentious, "auto_ok": auto_ok, "escalate": escalate,
            "experiment": experiment, "premortem": premortem, "rollout": rollout, "budget_left": budget,
            "alignment": align, "drift": (align_info or {}).get("drift"),
-           "consensus_pct": consensus_pct, "factions": factions, "contributors": contributors,
-           "materiality": materiality, "title": title, "panel": panel}
+           "consensus_pct": consensus_pct, "consensus_lo": lo, "consensus_hi": hi,
+           "factions": factions, "contributors": contributors, "pivotal": _pivotal(panel),
+           "materiality": materiality, "title": title, "body": body, "panel": panel}
+    out["adv_discount"] = _adv_discount(out)
+    out["consistency"] = _consistency(subject_type, title, rec)
     return out
 
 
@@ -657,6 +666,286 @@ def _materiality(panel, critical, legal_veto):
     return round(min(1.0, m), 2)
 
 
+def _consensus_ci(panel, consensus_pct):
+    """CONSENSUS AS A DISTRIBUTION: bootstrap over the expert weights to put an uncertainty band on the
+    headline consensus %. A tight band = a stable result; a wide band = the number could easily move."""
+    import random
+    if not panel:
+        return consensus_pct, consensus_pct
+    items = []
+    for p in panel:
+        w = float(p.get("base_w", 1.0)) * _cal_weight(p["committee"]) * (0.5 + float(p.get("conviction", 5) or 5) / 10.0)
+        items.append((p.get("verdict") or "needs-info", w))
+    samples = []
+    rnd = random.Random(len(panel))
+    for _ in range(200):
+        draw = [items[rnd.randrange(len(items))] for _ in items]  # resample with replacement
+        by = {}; tot = 0.0
+        for v, w in draw:
+            by[v] = by.get(v, 0.0) + w; tot += w
+        samples.append(max(by.values()) / tot if tot else 1.0)
+    samples.sort()
+    lo = round(samples[int(0.05 * len(samples))], 3)
+    hi = round(samples[min(len(samples) - 1, int(0.95 * len(samples)))], 3)
+    return lo, hi
+
+
+def _pivotal(panel):
+    """PIVOTAL-FACTOR SENSITIVITY: find the single expert whose flip would most change the balance — the
+    factor the decision hinges on, so the reviewer knows where the leverage is."""
+    if len(panel) < 2:
+        return None
+    def _win(ps):
+        by = {}; tot = 0.0
+        for p in ps:
+            w = float(p.get("base_w", 1.0)) * _cal_weight(p["committee"]) * (0.5 + float(p.get("conviction", 5) or 5) / 10.0)
+            by[p.get("verdict")] = by.get(p.get("verdict"), 0.0) + w; tot += w
+        return max(by, key=by.get) if by else None
+    base = _win(panel)
+    for p in sorted(panel, key=lambda x: -float(x.get("conviction", 0) or 0)):
+        flipped = [dict(q, verdict=("support" if q.get("verdict") == "oppose" else "oppose")) if q is p else q
+                   for q in panel]
+        if _win(flipped) != base:
+            return {"expert": p.get("committee"), "current": p.get("verdict"),
+                    "note": f"if {p.get('committee')} flipped, the outcome would change"}
+    return None
+
+
+def _adv_discount(agg):
+    """ADVERSARIAL CONFIDENCE DISCOUNT: haircut the headline confidence by how easily the red-team moved
+    the panel. A determination no adversary could dent keeps full confidence."""
+    pm = agg.get("premortem") or {}
+    if pm.get("severe"):
+        return round(min(0.4, 0.2 + float(pm.get("plausibility", 0) or 0) * 0.2), 2)
+    if agg.get("contentious"):
+        return 0.1
+    return 0.0
+
+
+def _consistency(subject_type, title, recommendation):
+    """CROSS-DETERMINATION CONSISTENCY: flag when a new determination contradicts a prior one on a similar
+    subject, so reversals are explicit rather than silent."""
+    try:
+        prior = db.select("determinations", {"select": "title,recommendation",
+                          "order": "created_at.desc", "limit": "60"}) or []
+    except Exception:
+        return None
+    key = set(re.findall(r"[a-z]{4,}", (title or "").lower()))
+    pos = lambda r: not str(r or "").startswith(("HOLD", "ESCALATE"))
+    for r in prior:
+        kk = set(re.findall(r"[a-z]{4,}", (r.get("title") or "").lower()))
+        if len(key & kk) >= 3 and pos(r.get("recommendation")) != pos(recommendation):
+            return f"reverses prior '{r.get('recommendation')}' on '{r.get('title')}'"
+    return None
+
+
+def _domain_floor(reviewer, domain):
+    """PER-REVIEWER, PER-DOMAIN contention routing: a reviewer can want tighter scrutiny in some domains
+    (e.g. legal) and looser in others. Falls back to the global consensus_floor."""
+    try:
+        r = db.select("reviewer_prefs", {"select": "consensus_floor", "reviewer": f"eq.{reviewer}",
+                                         "domain": f"eq.{domain}"}) or []
+        if r:
+            return float(r[0]["consensus_floor"])
+    except Exception:
+        pass
+    return _consensus_floor()
+
+
+def verify_determination(det_id):
+    """OFFLINE PROOF VERIFIER: recompute the certificate hash and confirm it chains to the previous
+    determination — so any 1-pager is independently auditable, not merely trusted."""
+    import hashlib
+    rows = db.select("determinations", {"select": "*", "id": f"eq.{det_id}"}) or []
+    if not rows:
+        return {"ok": False, "reason": "not found"}
+    d = rows[0]
+    cert = d.get("certificate")
+    if isinstance(cert, str):
+        try:
+            cert = json.loads(cert)
+        except Exception:
+            cert = {}
+    canonical = json.dumps(cert, sort_keys=True, default=str) + (d.get("prev_hash") or "")
+    recomputed = hashlib.sha256(canonical.encode()).hexdigest()
+    return {"ok": recomputed == d.get("proof_hash"), "recomputed": recomputed,
+            "stored": d.get("proof_hash"), "title": d.get("title")}
+
+
+def dissent_audit():
+    """DISSENT-WAS-RIGHT TRACKING: when a determination's realized outcome contradicts what the majority
+    concluded, mark the dissent as vindicated and notify the owner — so the contention flags earn trust."""
+    dets = db.select("determinations", {"select": "id,subject_type,subject_id,title,recommendation,dissent",
+                     "dissent_vindicated": "eq.false", "limit": "300"}) or []
+    n = 0
+    for d in dets:
+        if not d.get("dissent"):
+            continue
+        rv = db.select("committee_reviews", {"select": "outcome", "subject_id": f"eq.{d.get('subject_id')}",
+                                             "outcome": "not.is.null", "limit": "1"}) or []
+        if not rv:
+            continue
+        outcome_good = float(rv[0].get("outcome") or 0) > 0
+        majority_positive = not str(d.get("recommendation") or "").startswith(("HOLD", "ESCALATE"))
+        if majority_positive and not outcome_good:   # the doubters were right
+            db.update("determinations", {"id": d["id"]}, {"dissent_vindicated": True})
+            try:
+                db.insert("inbox", {"kind": "dissent_vindicated",
+                          "title": f"A minority view you saw was right: {d.get('title')}",
+                          "body": f"The panel recommended {d.get('recommendation')}, but the dissent "
+                                  f"({d.get('dissent')}) proved correct. Weighting that domain up.",
+                          "status": "unread"})
+            except Exception:
+                pass
+            n += 1
+    print(f"committees.dissent_audit: {n} dissents vindicated")
+    return n
+
+
+def _emit(subject_id, seq, kind, expert=None, verdict=None, text=None):
+    """LIVE STREAMING: append a deliberation event so the console can watch a determination form in real
+    time. Off by default cost-wise unless COMMITTEE_STREAM=1 (only DB writes, no extra model calls)."""
+    if os.environ.get("COMMITTEE_STREAM", "1") != "1" or not subject_id:
+        return
+    try:
+        db.insert("deliberation_events", {"subject_id": subject_id, "seq": seq, "kind": kind,
+                  "expert": expert, "verdict": verdict, "text": (text or "")[:400]})
+    except Exception:
+        pass
+
+
+def _subfactions(contributors):
+    """EMBEDDING-BASED FACTION CLUSTERING (lightweight): within a single verdict camp, split experts into
+    sub-factions by ARGUMENT MEANING (bag-of-words cosine), surfacing hidden disagreement inside a 'support'
+    or 'oppose' bloc that a verdict-only view would miss."""
+    import math
+    def vec(t):
+        v = {}
+        for w in re.findall(r"[a-z]{4,}", (t or "").lower()):
+            v[w] = v.get(w, 0) + 1
+        return v
+    def cos(a, b):
+        if not a or not b:
+            return 0.0
+        dot = sum(a[k] * b.get(k, 0) for k in a)
+        na = math.sqrt(sum(x * x for x in a.values())); nb = math.sqrt(sum(x * x for x in b.values()))
+        return dot / (na * nb) if na and nb else 0.0
+    out = {}
+    for verdict in set(c.get("verdict") for c in contributors):
+        camp = [c for c in contributors if c.get("verdict") == verdict]
+        if len(camp) < 2:
+            continue
+        clusters = []
+        for c in camp:
+            v = vec(c.get("position"))
+            placed = False
+            for cl in clusters:
+                if cos(v, cl["v"]) >= 0.25:
+                    cl["experts"].append(c.get("expert")); placed = True; break
+            if not placed:
+                clusters.append({"v": v, "experts": [c.get("expert")], "gist": (c.get("position") or "")[:120]})
+        if len(clusters) > 1:   # only report when a camp actually splits
+            out[verdict] = [{"experts": cl["experts"], "gist": cl["gist"]} for cl in clusters]
+    return out or None
+
+
+def replay_determination(det_id):
+    """DETERMINATION REPLAY: re-run the exact issue on TODAY's evidence and diff the outcome vs the stored
+    one — so a reviewer can see whether a past call still holds."""
+    rows = db.select("determinations", {"select": "*", "id": f"eq.{det_id}"}) or []
+    if not rows:
+        return {"error": "not found"}
+    d = rows[0]
+    fresh = review(d.get("subject_type") or "proposal", None, d.get("title"), d.get("body") or d.get("title"))
+    changed = (fresh.get("recommendation") != d.get("recommendation") or
+               abs((fresh.get("consensus_pct") or 0) - float(d.get("consensus_pct") or 0)) >= 0.1)
+    return {"then": {"recommendation": d.get("recommendation"), "consensus_pct": float(d.get("consensus_pct") or 0)},
+            "now": {"recommendation": fresh.get("recommendation"), "consensus_pct": fresh.get("consensus_pct")},
+            "changed": changed, "note": "outcome moved" if changed else "outcome holds"}
+
+
+def ask_panel(det_id, question):
+    """ASK THE PANEL: answer a reviewer's follow-up on a determination, grounded in the assembled experts'
+    positions + preserved dissent (not a fresh opinion from nowhere)."""
+    rows = db.select("determinations", {"select": "title,contributors,factions,dissent", "id": f"eq.{det_id}"}) or []
+    if not rows:
+        return {"answer": "Determination not found."}
+    d = rows[0]
+    ctx = json.dumps({"contributors": d.get("contributors"), "factions": d.get("factions"),
+                      "dissent": d.get("dissent")}, default=str)[:2500]
+    ans = _complete(f"You are the chair summarizing this expert panel. Answer the reviewer's question using "
+                    f"ONLY the panel's positions below; if the panel didn't address it, say so.\n"
+                    f"ISSUE: {d.get('title')}\nPANEL: {ctx}\nQUESTION: {question}")
+    return {"answer": (ans or "").strip()[:1200] or "The panel did not address this."}
+
+
+def export_proof_pack(det_id):
+    """SIGNED, SHAREABLE PROOF PACK: export a determination + certificate as a JSON pack, Ed25519-signed
+    with DARWIN_SIGNING_PRIVATE_KEY_PEM when present, so a third party can verify it offline."""
+    rows = db.select("determinations", {"select": "*", "id": f"eq.{det_id}"}) or []
+    if not rows:
+        return {"error": "not found"}
+    d = rows[0]
+    pack = {"title": d.get("title"), "recommendation": d.get("recommendation"),
+            "consensus_pct": d.get("consensus_pct"), "certificate": d.get("certificate"),
+            "proof_hash": d.get("proof_hash"), "prev_hash": d.get("prev_hash")}
+    sig = None
+    try:
+        pem = os.environ.get("DARWIN_SIGNING_PRIVATE_KEY_PEM")
+        if pem:
+            from cryptography.hazmat.primitives.serialization import load_pem_private_key
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+            key = load_pem_private_key(pem.encode(), password=None)
+            if isinstance(key, Ed25519PrivateKey):
+                sig = key.sign(json.dumps(pack, sort_keys=True, default=str).encode()).hex()
+    except Exception:
+        sig = None
+    pack["signature"] = sig
+    pack["signed"] = bool(sig)
+    return pack
+
+
+def process_determination_actions(limit=10):
+    """Drain the console action queue: replay / ask / approve / override / another-round. Approve+override
+    feed the owner-preference learner so the system needs the reviewer less over time."""
+    acts = db.select("determination_actions", {"select": "*", "status": "eq.pending",
+                     "order": "created_at.asc", "limit": str(limit)}) or []
+    n = 0
+    for a in acts:
+        act = a.get("action"); did = a.get("determination_id"); payload = a.get("payload") or {}
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                payload = {}
+        res = {}
+        try:
+            if act == "replay":
+                res = replay_determination(did)
+            elif act == "ask":
+                res = ask_panel(did, payload.get("question", ""))
+            elif act in ("approve", "override"):
+                res = {"status": act, "by": a.get("reviewer") or "owner"}
+                # record as an owner decision so _owner_bias / learn_overrides adapt
+                det = (db.select("determinations", {"select": "recommendation,subject_id", "id": f"eq.{did}"}) or [{}])[0]
+                rec = det.get("recommendation") or ""
+                direction = ("owner_more_aggressive" if act == "approve" and rec.startswith(("HOLD", "ESCALATE"))
+                             else "owner_more_cautious" if act == "override" else "aligned")
+                db.insert("owner_overrides", {"subject_type": "determination", "subject_id": det.get("subject_id"),
+                          "committee_rec": rec, "owner_decision": act, "direction": direction})
+            elif act == "another-round":
+                res = replay_determination(did)   # re-deliberate fresh
+            db.update("determination_actions", {"id": a["id"]},
+                      {"status": "done", "result": res, "done_at": "now()"})
+        except Exception as e:
+            db.update("determination_actions", {"id": a["id"]}, {"status": "error", "result": {"error": str(e)}})
+        n += 1
+    if acts:
+        learn_overrides()   # fold approve/override into the threshold model immediately
+    print(f"committees.process_determination_actions: handled {n}")
+    return n
+
+
 def _consensus_floor():
     try:
         r = db.select("owner_model", {"select": "value", "key": "eq.consensus_floor"}) or []
@@ -665,12 +954,20 @@ def _consensus_floor():
         return 0.85
 
 
-def constitution_gate(agg):
+def constitution_gate(agg, determination_id=None):
     """CADE bound: the engine DETERMINES; approval flows ACT. Anything critical, legal-vetoed, or
     irreversible must reach a human regardless of consensus — no autonomous money movement / filing /
-    sending. Returns True if the determination must be gated to a human."""
-    return bool(agg.get("escalate") or agg.get("critical") or
-                str(agg.get("recommendation", "")).startswith(("HOLD (legal", "ESCALATE")))
+    sending. Now backed by CONSTITUTION-AS-CODE (constitution.py): explicit machine-checked predicates,
+    not just string heuristics. Returns True if the determination must be gated to a human."""
+    heuristic = bool(agg.get("escalate") or agg.get("critical") or
+                     str(agg.get("recommendation", "")).startswith(("HOLD (legal", "ESCALATE")))
+    try:
+        import constitution
+        c = constitution.evaluate(agg, determination_id)
+        agg["constitution"] = c
+        return heuristic or c.get("must_gate", False)
+    except Exception:
+        return heuristic
 
 
 def certify(subject_type, subject_id, agg):
@@ -678,8 +975,13 @@ def certify(subject_type, subject_id, agg):
     reviewer 1-pager. The proof chains to the previous determination so the ledger is tamper-evident."""
     import hashlib
     onepager = deliberation_onepager(agg)
+    adv = float(agg.get("adv_discount") or 0)
+    disc_conf = round(float(agg.get("aggregate") or 0) * (1 - adv), 2)
     cert = {"position": agg.get("recommendation"), "consensus_pct": agg.get("consensus_pct"),
+            "consensus_ci": [agg.get("consensus_lo"), agg.get("consensus_hi")],
             "materiality": agg.get("materiality"), "confidence": agg.get("aggregate"),
+            "adversarial_discounted_confidence": disc_conf, "adv_discount": adv,
+            "pivotal": agg.get("pivotal"), "consistency": agg.get("consistency"),
             "contributors": agg.get("contributors"), "factions": agg.get("factions"),
             "dissent": agg.get("dissents"), "gated_to_human": constitution_gate(agg),
             "counterfactual": (f"winning stance carried {round((agg.get('consensus_pct') or 0)*100)}% of "
@@ -696,9 +998,11 @@ def certify(subject_type, subject_id, agg):
         db.insert("determinations", {"subject_type": subject_type, "subject_id": subject_id,
                   "title": (agg.get("title") or "")[:200], "position": agg.get("recommendation"),
                   "recommendation": agg.get("recommendation"), "consensus_pct": agg.get("consensus_pct"),
+                  "consensus_lo": agg.get("consensus_lo"), "consensus_hi": agg.get("consensus_hi"),
                   "confidence": agg.get("aggregate"), "materiality": agg.get("materiality"),
+                  "pivotal": agg.get("pivotal"), "adv_discount": adv, "consistency_flag": agg.get("consistency"),
                   "contributors": agg.get("contributors"), "factions": agg.get("factions"),
-                  "dissent": agg.get("dissents"), "certificate": cert,
+                  "dissent": agg.get("dissents"), "certificate": cert, "body": (agg.get("body") or "")[:4000],
                   "proof_hash": proof_hash, "prev_hash": prev_hash, "onepager": onepager})
     except Exception:
         pass
@@ -718,9 +1022,21 @@ def deliberation_onepager(agg):
     L = []
     L.append(f"# Deliberation 1-Pager — {title}")
     L.append("")
+    ci = ""
+    if agg.get("consensus_lo") is not None:
+        ci = f" ±{round((agg.get('consensus_hi',cons)-agg.get('consensus_lo',cons))*50)}pt"
+    adv = float(agg.get("adv_discount") or 0)
+    conf = agg.get("aggregate")
+    conf_str = f"{conf}/10" + (f" → {round(float(conf or 0)*(1-adv),1)}/10 after red-team" if adv else "")
     L.append(f"**Outcome:** {agg.get('recommendation')}  |  **Consensus:** "
-             f"{round((cons or 0)*100)}% (floor {round(floor*100)}%)  |  **Confidence (EV):** "
-             f"{agg.get('aggregate')}/10  |  **Materiality:** {agg.get('materiality')}")
+             f"{round((cons or 0)*100)}%{ci} (floor {round(floor*100)}%)  |  **Confidence (EV):** "
+             f"{conf_str}  |  **Materiality:** {agg.get('materiality')}")
+    if agg.get("pivotal"):
+        L.append("")
+        L.append(f"**Decision hinges on:** {agg['pivotal'].get('expert')} "
+                 f"({agg['pivotal'].get('current')}) — {agg['pivotal'].get('note')}")
+    if agg.get("consistency"):
+        L.append(f"**⟳ Consistency:** {agg['consistency']}")
     if contested:
         L.append("")
         L.append(f"> ⚠️ **CONTENTION — consensus below your {round(floor*100)}% floor. Review the "
@@ -777,6 +1093,16 @@ def compose_spec(title, body, panel):
 def calibrate():
     """COMMITTEE MEMORY: reweight each committee by how well its past verdicts predicted realized outcomes
     (committee_reviews.outcome). Accurate committees count more; consistently-wrong ones less."""
+    # GROUND TRUTH FIRST: label determinations with realized (and causal) outcomes before scoring anything,
+    # so every downstream signal (weights, Brier, seat reliability, dissent-vindication) learns from reality.
+    try:
+        import outcome_instrument; outcome_instrument.run()
+    except Exception as e:
+        print(f"calibrate: outcome_instrument skipped ({e})")
+    try:
+        import causal_attribution; causal_attribution.run()
+    except Exception as e:
+        print(f"calibrate: causal_attribution skipped ({e})")
     rows = db.select("committee_reviews", {"select": "committee,verdict,score,outcome",
                                            "outcome": "not.is.null", "limit": "3000"}) or []
     agg = {}
@@ -799,6 +1125,7 @@ def calibrate():
     scoreboard()       # grade who was actually right (committees + seats)
     learn_overrides()  # retrain the decision threshold from owner overrides
     tune_budget()      # earn/lose daily autonomy budget by realized win-rate
+    dissent_audit()    # vindicate minority views that proved right -> trust in contention flags
     return n
 
 
@@ -859,6 +1186,7 @@ def _note(agg):
 def run(limit=8):
     """Convene the committees. AUTONOMOUS BY DEFAULT: the panel self-executes clear wins and auto-clears
     routine decisions; a human is involved ONLY when the matter is critical or highly contentious."""
+    process_determination_actions()   # first, fulfill any one-click reviewer actions from the console
     reviewed = {r["subject_id"] for r in (db.select("committee_reviews", {"select": "subject_id"}) or [])}
     pid = {p["name"]: p["id"] for p in (db.select("projects", {"select": "id,name"}) or [])}
     n = executed = escalated = cleared = 0
@@ -989,29 +1317,32 @@ def scoreboard():
         for r in rows:
             pred_good = (r.get("verdict") == "support") or float(r.get("score") or 0) >= 6
             real_good = float(r.get("outcome") or 0) > 0
-            a = agg.setdefault(keyfn(r), [0, 0, 0.0]); a[1] += 1
+            a = agg.setdefault(keyfn(r), [0, 0, 0.0, 0.0]); a[1] += 1
             if pred_good == real_good:
                 a[0] += 1
             a[2] += float(r.get("score") or 0)
+            # BRIER SCORE (proper scoring rule): treat score/10 as the predicted P(good); penalize squared error
+            p = max(0.0, min(1.0, float(r.get("score") or 5) / 10.0))
+            a[3] += (p - (1.0 if real_good else 0.0)) ** 2
         return agg
     crows = db.select("committee_reviews", {"select": "committee,verdict,score,outcome",
                                             "outcome": "not.is.null", "limit": "5000"}) or []
     srows = db.select("committee_seat_reviews", {"select": "committee,seat,verdict,score,outcome",
                                                  "outcome": "not.is.null", "limit": "5000"}) or []
     n = 0
-    for (committee), (hit, tot, sev) in _tally(crows, lambda r: r["committee"]).items():
+    for (committee), (hit, tot, sev, bri) in _tally(crows, lambda r: r["committee"]).items():
         if tot < 3:
             continue
         db.insert("committee_scoreboard", {"entity_type": "committee", "committee": committee, "seat": "",
                   "calls": tot, "correct": hit, "accuracy": round(hit / tot, 3),
-                  "avg_ev": round(sev / tot, 2), "updated_at": "now()"}, upsert=True)
+                  "avg_ev": round(sev / tot, 2), "brier": round(bri / tot, 3), "updated_at": "now()"}, upsert=True)
         n += 1
-    for (committee, seat), (hit, tot, sev) in _tally(srows, lambda r: (r["committee"], r.get("seat"))).items():
+    for (committee, seat), (hit, tot, sev, bri) in _tally(srows, lambda r: (r["committee"], r.get("seat"))).items():
         if tot < 3:
             continue
         db.insert("committee_scoreboard", {"entity_type": "seat", "committee": committee, "seat": seat or "",
                   "calls": tot, "correct": hit, "accuracy": round(hit / tot, 3),
-                  "avg_ev": round(sev / tot, 2), "updated_at": "now()"}, upsert=True)
+                  "avg_ev": round(sev / tot, 2), "brier": round(bri / tot, 3), "updated_at": "now()"}, upsert=True)
         n += 1
     print(f"committees.scoreboard: graded {n} entities")
     return n
@@ -1028,7 +1359,7 @@ def learn_overrides():
                                       "order": "decided_at.desc", "limit": "300"}) or []
     net = cnt = 0
     for d in decided:
-        a = acts.get(d["id"])
+        a = acts.get(d.get("id"))
         if not a:
             continue
         rec = (a.get("recommendation") or "")

@@ -13,11 +13,9 @@ we never auto-clear real regulatory decisions. Schedule every few minutes. Costl
 import os, sys, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import legal_filter
 
-FORCE_NOVEL = re.compile(r"cftc|dcm|sec\b|securities|money transmission|money service|msb|"
-                         r"broker.?dealer|reinsur|insurance license|lending license|custod|deposit|"
-                         r"derivativ|patent|litigation|regulat|kyc|aml", re.I)
-AUTO_APPROVE = os.environ.get("LEGAL_AUTO_APPROVE_ROUTINE", "false").lower() == "true"
+AUTO_APPROVE = os.environ.get("LEGAL_AUTO_APPROVE_ROUTINE", "true").lower() == "true"
 
 PROMPT = """Classify this decision's legal risk for a solo founder as exactly one word: routine,
 elevated, or novel. routine = standard/boilerplate that founders normally self-approve. elevated =
@@ -34,7 +32,7 @@ def run(limit=40):
         if a.get("legal_risk_level"):
             continue
         blob = (a.get("title") or "") + " " + (a.get("why") or "")
-        if FORCE_NOVEL.search(blob):
+        if legal_filter.requires_owner_approval(a, text=blob, kind="legal"):
             level = "novel"
         else:
             try:

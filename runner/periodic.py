@@ -428,6 +428,12 @@ def run_appreview():
     app_triage_review.run()
 
 
+def run_preflight():
+    """Cheap-model triage for queued tasks before spending agentic coder time."""
+    import preflight_gate
+    preflight_gate.run()
+
+
 def run_cluster():
     """Cluster pending approval cards so the human can bulk-approve siblings."""
     import approval_cluster
@@ -530,6 +536,7 @@ JOBS = {
     "worktreegc": run_worktreegc,
     "releasetrain": run_releasetrain,
     "deployverify": run_deployverify,
+    "preflight": run_preflight,
 }
 
 if __name__ == "__main__":

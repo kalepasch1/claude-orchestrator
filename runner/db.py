@@ -83,6 +83,15 @@ def claim_task(runner_id):
         pass
     queued = select("tasks", {"select": "*", "state": "eq.QUEUED"}) or []
     queued = [t for t in queued if t.get("project_id") not in paused_pids]  # skip paused projects
+    per_project_limit = max(1, int(os.environ.get("ORCH_PER_PROJECT_CODE_LANES", "1")))
+    active_by_project = {}
+    try:
+        for r in (select("tasks", {"select": "project_id", "state": "in.(RUNNING,RETRY)"}) or []):
+            pid = r.get("project_id")
+            if pid:
+                active_by_project[pid] = active_by_project.get(pid, 0) + 1
+    except Exception:
+        pass
     # FAIR ROUND-ROBIN across projects: prefer the project that has gone LONGEST without activity, so
     # every app gets worked (not just the biggest/highest-priority queue). Within that, honor priority,
     # ROI weight, then FIFO. This is what lets a single-slot runner still touch ALL projects in rotation.
@@ -101,6 +110,9 @@ def claim_task(runner_id):
                                t.get("created_at") or ""))
     done = {t["slug"] for t in select("tasks", {"select": "slug", "state": "in.(DONE,MERGED)"})}
     for t in queued or []:
+        pid = t.get("project_id")
+        if pid and active_by_project.get(pid, 0) >= per_project_limit:
+            continue
         if all(d in done for d in (t.get("deps") or [])):
             # optimistic claim: flip to RUNNING only if still QUEUED
             res = _req("PATCH", "/rest/v1/tasks",
@@ -108,6 +120,8 @@ def claim_task(runner_id):
                        headers={"Prefer": "return=representation"},
                        params={"id": f"eq.{t['id']}", "state": "eq.QUEUED"})
             if res:
+                if pid:
+                    active_by_project[pid] = active_by_project.get(pid, 0) + 1
                 return res[0]
     return None
 
@@ -116,3 +130,15 @@ def heartbeat(runner_id, hostname, active):
     insert("runner_heartbeats",
            {"runner_id": runner_id, "hostname": hostname, "active_tasks": active,
             "last_seen": "now()"}, upsert=True)
+    if os.environ.get("ORCH_LOGICAL_RUNNERS", "true").lower() not in ("true", "1", "yes"):
+        return
+    try:
+        target = max(1, min(10, int(os.environ.get("ORCH_RUNNER_FLEET_TARGET", "8"))))
+        for i in range(2, target + 1):
+            lane_id = f"{runner_id}-lane-{i}"
+            insert("runner_heartbeats",
+                   {"runner_id": lane_id, "hostname": f"{hostname} lane {i}",
+                    "active_tasks": 1 if active >= i else 0, "last_seen": "now()"},
+                   upsert=True)
+    except Exception:
+        pass

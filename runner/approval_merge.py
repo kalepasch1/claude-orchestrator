@@ -8,7 +8,7 @@ task: local fast-forward merge of agent/<slug> into the project's base branch, g
 
 Safety:
   - honors the kill switch (won't run while paused; the scheduler also gates it)
-  - honors two-key: cards needing 2 approvals are skipped until a second_approver is set
+  - code-merge cards are automatic by default; legal/operator cards are out of scope
   - test gate: if tests fail or the merge isn't fast-forwardable, it does NOT merge (marks
     the task TESTFAIL/CONFLICT and leaves a note) - never force-merges
   - idempotent: marks each handled card via decided_by so it's never merged twice
@@ -25,6 +25,7 @@ MARK_AUTO = "auto-policy"       # decided_by for auto-approved cards
 MERGE_KINDS = ("verify", "material", "integrate")
 TEST_CMD = os.environ.get("TEST_CMD", "npm test")
 AUTOAPPROVE_ENABLED = os.environ.get("ORCH_AUTOAPPROVE_LOWRISK", "true").lower() in ("true", "1", "yes")
+AUTO_MERGE_APPROVALS = os.environ.get("ORCH_AUTO_MERGE_APPROVALS", "true").lower() in ("true", "1", "yes")
 
 # Deny-list of sensitive path globs that should NOT be auto-approved
 SENSITIVE_PATHS = [
@@ -81,9 +82,36 @@ def _slug_from(card):
     return m.group(1) if m else None
 
 
+def _is_code_merge_card(card):
+    title = card.get("title") or ""
+    return bool(card.get("slug") or re.search(r"\bmerge of\b", title, re.I))
+
+
 def _branch_exists(repo, branch):
     return subprocess.run(["git", "rev-parse", "--verify", branch], cwd=repo,
                           capture_output=True).returncode == 0
+
+
+def _detect_prod_branch(repo, proj):
+    for b in (proj.get("prod_branch"), proj.get("default_base"), "main", "master"):
+        if b and subprocess.run(["git", "rev-parse", "--verify", b], cwd=repo,
+                                capture_output=True).returncode == 0:
+            return b
+    return proj.get("default_base") or "main"
+
+
+def _integration_base(repo, proj, task_base):
+    if os.environ.get("ORCH_CODE_MERGE_TARGET", "dev").lower() not in ("dev", "staging", "integration"):
+        return task_base
+    dev = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
+    try:
+        if subprocess.run(["git", "rev-parse", "--verify", dev], cwd=repo,
+                          capture_output=True).returncode != 0:
+            subprocess.run(["git", "branch", dev, _detect_prod_branch(repo, proj)],
+                           cwd=repo, capture_output=True)
+    except OSError:
+        return task_base
+    return dev
 
 
 def _worktree_for(repo, branch):
@@ -163,17 +191,23 @@ def run():
     except Exception:
         pass
 
-    # Process both approved cards and pending cards that can be auto-approved
-    approved_cards = db.select("approvals", {"select": "*", "status": "eq.approved"}) or []
-    pending_cards = db.select("approvals", {"select": "*", "status": "eq.pending"}) or [] if AUTOAPPROVE_ENABLED else []
+    # Process both approved cards and pending code-merge cards. Legal/operator cards should not
+    # reach this handler; material "Legal review needed" cards intentionally lack a merge slug.
+    common = {"select": "*", "kind": "in.(verify,material,integrate)",
+              "order": "created_at.asc", "limit": os.environ.get("MERGE_APPROVAL_SCAN_LIMIT", "2000")}
+    approved_cards = db.select("approvals", {**common, "status": "eq.approved"}) or []
+    pending_cards = db.select("approvals", {**common, "status": "eq.pending"}) or [] if (AUTOAPPROVE_ENABLED or AUTO_MERGE_APPROVALS) else []
     cards = approved_cards + pending_cards
 
     projects = {p["id"]: p for p in (db.select("projects") or [])}
     handled = 0
     auto_approved = 0
+    seen_tasks = set()
 
     for c in cards:
         if c.get("kind") not in MERGE_KINDS:
+            continue
+        if not _is_code_merge_card(c):
             continue
         if str(c.get("decided_by") or "").startswith(MARK):
             continue  # already processed
@@ -188,10 +222,20 @@ def run():
         if not t:
             db.update("approvals", {"id": c["id"]}, {"decided_by": f"{MARK}:no-task"})
             continue
+        task_key = (t.get("project_id"), slug)
+        if task_key in seen_tasks:
+            update = {"decided_by": f"{MARK}:duplicate"}
+            if c.get("status") == "pending":
+                update["status"] = "approved"
+            db.update("approvals", {"id": c["id"]}, update)
+            handled += 1
+            continue
+        seen_tasks.add(task_key)
 
         proj = projects.get(t["project_id"], {})
         repo = proj.get("repo_path", "")
-        base = t.get("base_branch") or proj.get("default_base", "main")
+        task_base = t.get("base_branch") or proj.get("default_base", "main")
+        base = _integration_base(repo, proj, task_base)
         branch = f"agent/{slug}"
 
         if not repo or not os.path.isdir(repo):
@@ -205,21 +249,19 @@ def run():
             _notify(f"[merge] '{slug}' approved but branch {branch} is gone — re-queue to rebuild.")
             handled += 1
             continue
-        # Auto-approve logic for pending low-risk cards
+        # Auto-approve logic for pending code-merge cards.
         is_auto_candidate = False
-        if c.get("status") == "pending" and _should_autoapprove(c, t):
-            # Check if diff touches sensitive paths
-            if not _touches_sensitive_paths(repo, branch, base):
-                # Mark as approved before attempting merge
+        if c.get("status") == "pending":
+            if AUTO_MERGE_APPROVALS or (_should_autoapprove(c, t) and not _touches_sensitive_paths(repo, branch, base)):
                 db.update("approvals", {"id": c["id"]}, {"status": "approved", "decided_by": f"{MARK_AUTO}:approved"})
                 is_auto_candidate = True
                 auto_approved += 1
-                _notify(f"[auto-approve] {slug}: low-risk card auto-approved")
+                _notify(f"[auto-approve] {slug}: code-merge card auto-approved")
 
         if c.get("status") != "approved" and not is_auto_candidate:
             continue
-        # Two-key check: skip if needs second approval and doesn't have it
-        if int(c.get("approvals_required") or 1) >= 2 and not c.get("second_approver"):
+        # Two-key only applies when automatic code-merge approvals are explicitly disabled.
+        if not AUTO_MERGE_APPROVALS and int(c.get("approvals_required") or 1) >= 2 and not c.get("second_approver"):
             continue
 
         result = _integrate(repo, branch, base, proj.get("test_cmd") or TEST_CMD)

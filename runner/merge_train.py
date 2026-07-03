@@ -14,7 +14,7 @@ that structurally by SERIALIZING integration per project:
            via approval_merge._free_branch — the phantom-CONFLICT root cause)
         3. run the project's test command on the rebased branch
         4. fast-forward the base to the branch (no force, no no-ff surprises)
-        5. optionally push (ORCH_PUSH_ON_MERGE=true)
+        5. optionally push (ORCH_PUSH_ON_MERGE=true; normally false for dev batching)
         6. mark task MERGED + card decided_by='train:MERGED'
 
 Because the base only advances through the train, every later branch rebases onto the
@@ -36,6 +36,7 @@ SKIP_PREFIXES = ("merge-handler", "train")       # cards already handled by any 
 MERGE_KINDS = ("verify", "material", "integrate")
 TEST_CMD = os.environ.get("TEST_CMD", "npm test")
 TEST_TIMEOUT = int(os.environ.get("MERGE_TRAIN_TEST_TIMEOUT", "1800"))
+MERGING_STATE = os.environ.get("MERGE_TRAIN_STATE", "RUNNING")
 
 
 # ── git plumbing (each step never assumes what's checked out) ─────────────────
@@ -46,6 +47,10 @@ def _git(repo, *args, timeout=60):
 
 def _branch_exists(repo, branch):
     return _git(repo, "rev-parse", "--verify", branch).returncode == 0
+
+
+def _task_patch(task, patch):
+    db.update("tasks", {"id": task["id"]}, patch)
 
 
 def _refresh_base(repo, base):
@@ -98,6 +103,25 @@ def _push_base(repo, base):
     return "" if r.returncode == 0 else "PUSHFAIL:" + (r.stderr or "")[-120:]
 
 
+def _detect_prod_branch(repo, proj):
+    for b in (proj.get("prod_branch"), proj.get("default_base"), "main", "master"):
+        if b and _git(repo, "rev-parse", "--verify", b).returncode == 0:
+            return b
+    return proj.get("default_base") or "main"
+
+
+def _integration_base(repo, proj, task_base):
+    if os.environ.get("ORCH_CODE_MERGE_TARGET", "dev").lower() not in ("dev", "staging", "integration"):
+        return task_base
+    dev = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
+    try:
+        if _git(repo, "rev-parse", "--verify", dev).returncode != 0:
+            _git(repo, "branch", dev, _detect_prod_branch(repo, proj))
+    except OSError:
+        return task_base
+    return dev
+
+
 def _delete_branch(repo, branch):
     _git(repo, "branch", "-D", branch)
 
@@ -125,7 +149,9 @@ def _resolve_task(card):
     if not slug:
         return None, None
     tasks = db.select("tasks", {"select": "*", "slug": f"eq.{slug}"}) or []
-    t = next((x for x in tasks if x.get("state") == "BLOCKED"), tasks[0] if tasks else None)
+    preferred = ("BLOCKED", MERGING_STATE, "DONE", "MERGED", "RUNNING", "QUEUED", "RETRY")
+    t = next((x for state in preferred for x in tasks if x.get("state") == state),
+             tasks[0] if tasks else None)
     return slug, t
 
 
@@ -133,7 +159,7 @@ def _integrate_card(card, slug, task, proj):
     """Run one card through the train steps. Returns the outcome string for the summary."""
     repo = proj.get("repo_path", "")
     pname = proj.get("name") or str(task.get("project_id"))
-    base = task.get("base_branch") or proj.get("default_base", "main")
+    task_base = task.get("base_branch") or proj.get("default_base", "main")
     branch = f"agent/{slug}"
 
     if not repo or not os.path.isdir(repo):
@@ -141,14 +167,27 @@ def _integrate_card(card, slug, task, proj):
         _log(pname, slug, "SKIP", "repo missing")
         return "no-repo"
 
+    base = _integration_base(repo, proj, task_base)
+
     if not _branch_exists(repo, branch):
-        db.update("tasks", {"id": task["id"]},
-                  {"state": "BLOCKED", "note": f"approved, but {branch} no longer exists - re-queue to rebuild"})
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:branch-missing"})
-        _log(pname, slug, "SKIP", "branch missing")
+        state = task.get("state")
+        if state in ("QUEUED", "RUNNING", "RETRY"):
+            _log(pname, slug, "WAIT", f"{branch} not created yet ({state})")
+            return "waiting-branch"
+        tr = int(task.get("transient_retries") or 0)
+        cap = int(os.environ.get("MERGE_BRANCH_MISSING_REDO_CAP", "2"))
+        if tr < cap:
+            _task_patch(task, {"state": "QUEUED", "transient_retries": tr + 1,
+                               "note": f"train: approved card is waiting for {branch}; rebuild branch ({tr+1}/{cap})"})
+            _log(pname, slug, "REDO", f"branch missing, rebuild ({tr+1}/{cap})")
+            return "redo"
+        _task_patch(task, {"state": "BLOCKED",
+                           "note": f"train: approved, but {branch} is still missing after {cap} rebuilds"})
+        _log(pname, slug, "BLOCKED", "branch missing")
         return "branch-missing"
 
     _refresh_base(repo, base)                                     # (1)
+    _task_patch(task, {"state": MERGING_STATE, "note": f"train: integrating {branch} into {base}"})
 
     if not _rebase_onto_base(repo, branch, base):                 # (2)
         # redo-on-fresh-base: a stale branch conflicting with the advanced base should be REBUILT
@@ -157,14 +196,12 @@ def _integrate_card(card, slug, task, proj):
         cap = int(os.environ.get("MERGE_CONFLICT_REDO_CAP", "2"))
         if tr < cap:
             _delete_branch(repo, branch)
-            db.update("tasks", {"id": task["id"]},
-                      {"state": "QUEUED", "transient_retries": tr + 1,
-                       "note": f"train: rebase conflict -> redo on fresh {base} ({tr+1}/{cap})"})
+            _task_patch(task, {"state": "QUEUED", "transient_retries": tr + 1,
+                               "note": f"train: rebase conflict -> redo on fresh {base} ({tr+1}/{cap})"})
             db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:redo"})
             _log(pname, slug, "REDO", f"rebase conflict, rebuild on fresh {base} ({tr+1}/{cap})")
             return "redo"
-        db.update("tasks", {"id": task["id"]},
-                  {"state": "CONFLICT", "note": f"train: still conflicts after {cap} redos — needs manual rebase"})
+        _task_patch(task, {"state": "CONFLICT", "note": f"train: still conflicts after {cap} redos - needs manual rebase"})
         db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:conflict-exhausted"})
         _log(pname, slug, "CONFLICT", f"redo cap {cap} exhausted")
         return "conflict"
@@ -172,8 +209,7 @@ def _integrate_card(card, slug, task, proj):
     ok, tail = _run_tests(repo, proj.get("test_cmd") or TEST_CMD)  # (3)
     if not ok:
         # NEVER force-merge red work.
-        db.update("tasks", {"id": task["id"]},
-                  {"state": "TESTFAIL", "note": f"train: tests failed on rebased {branch}: {tail[:200]}"})
+        _task_patch(task, {"state": "TESTFAIL", "note": f"train: tests failed on rebased {branch}: {tail[:200]}"})
         db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:TESTFAIL"})
         _log(pname, slug, "TESTFAIL", tail[:120])
         return "testfail"
@@ -185,14 +221,12 @@ def _integrate_card(card, slug, task, proj):
         cap = int(os.environ.get("MERGE_CONFLICT_REDO_CAP", "2"))
         if tr < cap:
             _delete_branch(repo, branch)
-            db.update("tasks", {"id": task["id"]},
-                      {"state": "QUEUED", "transient_retries": tr + 1,
-                       "note": f"train: base moved, could not ff -> redo on fresh {base} ({tr+1}/{cap})"})
+            _task_patch(task, {"state": "QUEUED", "transient_retries": tr + 1,
+                               "note": f"train: base moved, could not ff -> redo on fresh {base} ({tr+1}/{cap})"})
             db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:redo"})
             _log(pname, slug, "REDO", f"ff refused ({tr+1}/{cap})")
             return "redo"
-        db.update("tasks", {"id": task["id"]},
-                  {"state": "CONFLICT", "note": f"train: base won't fast-forward after {cap} redos"})
+        _task_patch(task, {"state": "CONFLICT", "note": f"train: base won't fast-forward after {cap} redos"})
         db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:conflict-exhausted"})
         _log(pname, slug, "CONFLICT", "ff refused, cap exhausted")
         return "conflict"
@@ -202,7 +236,7 @@ def _integrate_card(card, slug, task, proj):
     if push_err:
         note += f" ({push_err})"
 
-    db.update("tasks", {"id": task["id"]}, {"state": "MERGED", "note": note})  # (6)
+    _task_patch(task, {"state": "MERGED", "note": note})  # (6)
     db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:MERGED"})
     approval_merge._free_branch(repo, branch)   # cleanup so worktrees never accumulate
     _log(pname, slug, "MERGED", f"-> {base}" + (f", {push_err}" if push_err else ""))

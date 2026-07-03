@@ -14,14 +14,36 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 
-def _running_slugs():
-    return {t["slug"] for t in (db.select("tasks", {"select": "slug", "state": "eq.RUNNING"}) or [])}
+PROTECTED_STATES = ("RUNNING", "MERGING", "RETRY")
+MERGE_KINDS = ("verify", "material", "integrate")
+
+
+def _protected_slugs():
+    """Branches in active execution or approved integration must not be garbage-collected."""
+    slugs = set()
+    for state in PROTECTED_STATES:
+        slugs.update(t["slug"] for t in (db.select("tasks", {"select": "slug", "state": f"eq.{state}"}) or []))
+    for a in db.select("approvals", {"select": "slug,title,kind,status,decided_by", "status": "in.(pending,approved)"}) or []:
+        if a.get("kind") not in MERGE_KINDS:
+            continue
+        if str(a.get("decided_by") or "").startswith(("merge-handler", "train")):
+            continue
+        slug = a.get("slug")
+        if not slug:
+            try:
+                slug = __import__("approval_merge")._slug_from(a)
+            except Exception:
+                slug = None
+        if slug:
+            slugs.add(slug)
+    return slugs
 
 
 def gc_repo(repo):
     if not repo or not os.path.isdir(repo):
         return 0
-    running = _running_slugs()
+    main_worktree = os.path.abspath(repo)
+    protected = _protected_slugs()
     out = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo,
                          capture_output=True, text=True).stdout
     removed = 0
@@ -35,7 +57,7 @@ def gc_repo(repo):
             # end of a worktree block
             if path and branch and branch.startswith("agent/"):
                 slug = branch[len("agent/"):]
-                if slug not in running and repo not in path:  # don't touch the main worktree
+                if slug not in protected and os.path.abspath(path) != main_worktree:
                     if subprocess.run(["git", "worktree", "remove", "--force", path],
                                       cwd=repo, capture_output=True).returncode == 0:
                         removed += 1

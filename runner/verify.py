@@ -9,9 +9,9 @@ A 'fail' blocks integration and routes an approval card so you can look.
 """
 import os, sys, subprocess, json, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import claude_cli
+import model_gateway, model_policy
 
-REVIEW_MODEL = os.environ.get("VERIFY_MODEL", "claude-haiku-4-5-20251001")
+REVIEW_MODEL = os.environ.get("VERIFY_MODEL", "")
 
 PROMPT = """You are a strict code reviewer. Below is a git diff. Decide if it is safe to
 merge. Look for: security regressions (auth/allowlist made permissive, secrets added),
@@ -39,12 +39,19 @@ def review_diff(worktree, base="main", max_chars=60000, dependents=None, project
         prompt += BLAST_SUFFIX + "\n".join(f"- {d}" for d in dependents[:12])
     prompt += "\n\nDiff:\n"
     try:
-        out = claude_cli.run(prompt + diff, REVIEW_MODEL, project=project,
-                             permission=None, max_turns=1,
-                             timeout=int(os.environ.get("VERIFY_TIMEOUT", "180")))["text"]
+        if REVIEW_MODEL:
+            prov = model_gateway.provider_for_model(REVIEW_MODEL)
+            model = REVIEW_MODEL
+        else:
+            prov, model, _ = model_policy.choose("review", agentic=False, need=6)
+        res = model_gateway.complete(prov, model, prompt + diff, project=project,
+                                     timeout=int(os.environ.get("VERIFY_TIMEOUT", "180")),
+                                     operation="verify_diff", task_class="review")
+        out = res["text"]
         m = re.search(r"\{.*\}", out, re.S)
         d = json.loads(m.group(0)) if m else {"verdict": "pass", "notes": "unparseable; defaulting pass"}
         d["verdict"] = "fail" if str(d.get("verdict", "")).lower().startswith("fail") else "pass"
+        d["by"] = f"{res.get('provider')}:{res.get('model')}"
         return d
     except Exception as e:
         return {"verdict": "pass", "notes": f"review skipped ({e})"}

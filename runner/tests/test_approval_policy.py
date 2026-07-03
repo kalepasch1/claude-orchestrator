@@ -29,22 +29,28 @@ class TestClassification(unittest.TestCase):
         # legal_triage owns routine-legal clearing; policy must not gate it
         self.assertFalse(ap.is_legal_gated(card(kind="legal", legal_risk_level="routine")))
 
-    def test_regulatory_radar_gated(self):
-        self.assertTrue(ap.is_legal_gated(card(radar_tag="regulatory")))
+    def test_regulatory_radar_alone_auto_approves(self):
+        self.assertFalse(ap.is_legal_gated(card(radar_tag="regulatory")))
+        self.assertTrue(ap.is_auto_approvable(card(radar_tag="regulatory")))
 
-    def test_exemption_language_gated(self):
-        c = card(why="public recruit page may be general solicitation breaking the lending exemption")
+    def test_posture_changing_license_language_gated(self):
+        c = card(why="this would require us to obtain a lending license before launch")
         self.assertTrue(ap.is_legal_gated(c))
 
-    def test_licensing_language_gated(self):
-        c = card(detail="issues signed license attestations third parties rely on")
+    def test_forced_registration_language_gated(self):
+        c = card(detail="forces broker-dealer registration before users can use the workflow")
         self.assertTrue(ap.is_legal_gated(c))
+
+    def test_safe_positioning_language_auto_approves(self):
+        c = card(detail="add disclaimers and avoid licensing by keeping this informational only")
+        self.assertFalse(ap.is_legal_gated(c))
+        self.assertTrue(ap.is_auto_approvable(c))
 
     def test_secret_never_auto(self):
         self.assertFalse(ap.is_auto_approvable(card(kind="secret", title="Provide STRIPE_KEY")))
 
-    def test_billing_alarm_never_auto(self):
-        self.assertFalse(ap.is_auto_approvable(card(kind="self", title="Billing firewall stripped an API key at startup")))
+    def test_billing_status_auto_approves(self):
+        self.assertTrue(ap.is_auto_approvable(card(kind="self", title="Billing firewall stripped an API key at startup")))
 
     def test_pricing_data_use_auto(self):
         self.assertTrue(ap.is_auto_approvable(card(radar_tag="pricing", why="update pricing xlsx")))
@@ -53,7 +59,7 @@ class TestClassification(unittest.TestCase):
 
 class TestEnrichment(unittest.TestCase):
     def test_gated_card_gets_options_and_narrow_framing(self):
-        c = card(radar_tag="regulatory", why="may break exemption")
+        c = card(radar_tag="regulatory", why="would require us to become a money transmitter")
         patch_ = ap._enrich_gated(c)
         self.assertIn("NARROW LEGAL QUESTION", patch_["why"])
         self.assertGreaterEqual(len(patch_["alternatives"]), 3)
@@ -66,7 +72,7 @@ class TestEnrichment(unittest.TestCase):
         self.assertEqual(ap._enrich_gated(c), {})
 
     def test_structured_prompt_built(self):
-        c = card(radar_tag="regulatory", why="may break the lending exemption")
+        c = card(radar_tag="regulatory", why="would require us to obtain a lending license")
         patch_ = ap._enrich_gated(c)
         bj = patch_["brief_json"]
         self.assertIn("question", bj)
@@ -78,7 +84,8 @@ class TestEnrichment(unittest.TestCase):
 
 class TestSweep(unittest.TestCase):
     def test_sweep_approves_auto_and_keeps_legal(self):
-        cards = [card(id="a"), card(id="b", radar_tag="regulatory", why="exemption risk")]
+        cards = [card(id="a"), card(id="b", radar_tag="regulatory",
+                                    why="would require us to register as a money transmitter")]
         with patch.object(ap, "db") as mdb:
             mdb.select.return_value = cards
             approved, gated = ap.sweep()

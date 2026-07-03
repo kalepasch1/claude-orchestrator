@@ -27,8 +27,8 @@ PRIORITY STORAGE CHOICE (apply_ranking):
        for the top 50 (higher = better). Chosen because 'confidence' already exists and
        is numeric; the cascade guarantees SOME storage works without schema changes.
 
-park_zero_ev(): tasks scoring < 0.01 that already burned >= 2 attempts get state=BLOCKED
-with note '[ev-parked: ...]' (max 20 per run) so dead-weight work stops recycling.
+park_zero_ev(): legacy name. It no longer blocks work; tasks scoring < 0.01 are annotated
+and deprioritized, but remain QUEUED so the implementation pipeline continues.
 """
 import os, sys, json, math
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -38,7 +38,7 @@ TOP_N = 50                 # tasks that receive an explicit priority write
 CONTROLS_TOP = 100         # ids stored in the controls ev_ranking row
 PARK_CAP = 20              # max tasks parked per run
 ZERO_EV = 0.01             # scores below this are "near-zero"
-PARK_NOTE = "[ev-parked: near-zero expected value — promote manually or via proposal]"
+PARK_NOTE = "[ev-low-priority: near-zero expected value — keep queued, run when capacity allows]"
 BOOST_KINDS = ("build",)
 REVENUE_WORDS = ("revenue", "pricing", "growth", "conversion")
 
@@ -172,7 +172,7 @@ def apply_ranking(scored=None):
 
 
 def park_zero_ev(scored=None):
-    """BLOCK near-zero-EV tasks that already burned >=2 attempts (cap PARK_CAP/run)."""
+    """Annotate near-zero-EV tasks without blocking them (cap PARK_CAP/run)."""
     scored = scored if scored is not None else _scored_queue()
     parked = 0
     for s, t in scored:
@@ -181,7 +181,7 @@ def park_zero_ev(scored=None):
         if s < ZERO_EV and int(t.get("attempt") or 0) >= 2:
             try:
                 db.update("tasks", {"id": t["id"]},
-                          {"state": "BLOCKED", "note": PARK_NOTE, "updated_at": "now()"})
+                          {"note": PARK_NOTE, "updated_at": "now()"})
                 parked += 1
             except Exception:
                 pass

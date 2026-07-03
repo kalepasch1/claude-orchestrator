@@ -211,7 +211,9 @@ class TestParkZeroEV(_MockDB):
         self.assertEqual(parked, 1)
         table, match, patch = self.updates[0]
         self.assertEqual(match, {"id": "z0"})
-        self.assertEqual(patch["state"], "BLOCKED")
+        # New behavior: near-zero-EV tasks are annotated + deprioritized but NOT blocked,
+        # so the implementation pipeline keeps flowing. State must be left untouched.
+        self.assertNotIn("state", patch)
         self.assertEqual(patch["note"], ev_scheduler.PARK_NOTE)
 
     def test_park_cap_respected(self):

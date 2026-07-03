@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import type { LogLine } from '~/types/log'
+definePageMeta({ alias: ['/index'] })
+
 const supabase = useSupabaseClient<any>()
 const user = useSupabaseUser()
 
@@ -56,11 +58,20 @@ async function productize(proposal: any) {
   }
 }
 
-// Operator sign-offs (secrets / deploys / OAuth / legal) are grouped separately from
-// code-merge approvals so a human can clear the human-only gates at a glance.
+// Operator sign-offs only. Code-merge approvals are intentionally hidden because code
+// mergers are automatic after tests + verification + judge; production deploys are batch-gated.
 const OPERATOR_KINDS = ['operator', 'legal', 'secret', 'deploy']
-const operatorApprovals = computed(() => approvals.value.filter(a => OPERATOR_KINDS.includes(a.kind)))
-const mergeApprovals = computed(() => approvals.value.filter(a => !OPERATOR_KINDS.includes(a.kind)))
+const isCodeMergeApproval = (a: any) =>
+  Boolean(a.slug || /\bmerge of\b/i.test(String(a.title || '')))
+const approvalText = (a: any) => `${a.title || ''} ${a.why || ''}`.toLowerCase()
+const isOperatorApproval = (a: any) => {
+  if (isCodeMergeApproval(a)) return false
+  const text = approvalText(a)
+  return OPERATOR_KINDS.includes(a.kind) ||
+    (a.kind === 'material' && /\b(legal|regulatory|compliance|business[- ]model)\b/i.test(text)) ||
+    (a.kind === 'self' && /\b(credential|secret|api key|token)\b/i.test(text))
+}
+const operatorApprovals = computed(() => approvals.value.filter(isOperatorApproval))
 
 // Per-project filter for the operator section — clear one repo's gates without the others in the way.
 const operatorProjectFilter = ref('all')
@@ -105,7 +116,8 @@ const panicLoading = ref(false)
 const rotateLoading = ref<Record<string, boolean>>({})
 const sessionRunning = ref<Record<string, boolean>>({})
 
-const newTask = reactive({ project_id: '', slug: '', prompt: '', kind: 'build' })
+const newTask = reactive({ project_id: '', slug: '', prompt: '', kind: 'build', mode: 'improvement' })
+const queueLoading = ref(false)
 const newTxn = reactive({ id: '', name: '', description: '' })
 
 // ── NL analytics ──────────────────────────────────────────────────────────
@@ -150,16 +162,16 @@ async function loadAll() {
     supabase.from('controls').select('*'),
     supabase.from('resource_events').select('kind,detail,action,created_at').eq('kind', 'prune').order('created_at', { ascending: false }).limit(10),
   ])
-  tasks.value = t.data || []; approvals.value = a.data || []
+  tasks.value = t.data || []; approvals.value = (a.data || []).filter(isOperatorApproval)
   outcomes.value = o.data || []; runners.value = r.data || []; projects.value = p.data || []
   budgets.value = b.data || []; runs.value = r2.data || []; health.value = h.data || []
-  goals.value = g.data || []; inbox.value = i.data || []; txns.value = tx.data || []
+  goals.value = g.data || []; inbox.value = (i.data || []).filter(isActionInboxItem); txns.value = tx.data || []
   capabilities.value = caps.data || []
   capInstances.value = cinst.data || []
   capProvenance.value = cprov.data || []
   radarProposals.value = rprops.data || []
   loops.value = lps.data || []
-  sessions.value = sess.data || []
+  sessions.value = (sess.data || []).filter((s: any) => s.status !== 'paused')
   feedbackItems.value = fb.data || []
   providerSpend.value = pspend.data || []
   credRequests.value = creds.data || []
@@ -210,11 +222,20 @@ async function decide(id: string, status: 'approved' | 'denied') {
 // ── tasks ─────────────────────────────────────────────────────────────────
 async function queueTask() {
   if (!newTask.project_id || !newTask.prompt) return
-  await supabase.from('tasks').insert({
-    project_id: newTask.project_id, slug: newTask.slug || 'task-' + Date.now(),
-    prompt: newTask.prompt, kind: newTask.kind, state: 'QUEUED',
-  })
-  newTask.slug = ''; newTask.prompt = ''; loadAll()
+  queueLoading.value = true
+  try {
+    const project = projects.value.find((p: any) => p.id === newTask.project_id)
+    const slug = newTask.slug || makeSlug(newTask.prompt)
+    await supabase.from('tasks').insert({
+      project_id: newTask.project_id, slug,
+      prompt: optimizedImprovementPrompt(newTask.prompt, project?.name || ''),
+      kind: newTask.kind, state: 'QUEUED',
+      note: 'source:dashboard-user-driven; route:triage-code-qa-devmerge-release',
+    })
+    newTask.slug = ''; newTask.prompt = ''; await loadAll()
+  } finally {
+    queueLoading.value = false
+  }
 }
 
 // ── replay ────────────────────────────────────────────────────────────────
@@ -368,9 +389,43 @@ async function renderChart() {
 
 function alive(r: any) { return (Date.now() - new Date(r.last_seen).getTime()) < 60000 }
 function fmtConf(c: any) { return c != null ? Math.round(Number(c) * 100) + '%' : '' }
+function confidenceLabel(c: any) {
+  if (c == null) return 'not scored'
+  const pct = Math.round(Number(c) * 100)
+  if (pct >= 90) return `${pct}% ready`
+  if (pct >= 75) return `${pct}% needs watch`
+  return `${pct}% risky`
+}
 function ago(ts: string) {
   const d = Math.round((Date.now() - new Date(ts).getTime()) / 60000)
   return d < 60 ? `${d}m ago` : d < 1440 ? `${Math.round(d/60)}h ago` : `${Math.round(d/1440)}d ago`
+}
+
+function makeSlug(text: string) {
+  const s = text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 48)
+  return s || `task-${Date.now()}`
+}
+
+function optimizedImprovementPrompt(text: string, projectName: string) {
+  return [
+    `USER-DRIVEN IMPROVEMENT for ${projectName || 'selected app'}`,
+    '',
+    text.trim(),
+    '',
+    'Route this through the orchestration pipeline:',
+    '1. Triage with the cheapest capable non-agentic model across configured providers.',
+    '2. Implement with the best available coding agent/vendor for the repo and task complexity.',
+    '3. QA with an independent capable model/vendor plus local tests/build checks.',
+    '4. If clean, merge through the automatic dev-branch merge train and batch release path.',
+    '5. Do not create manual approval, blocked_task, or paused-session interruptions unless the work would force a licensing/registration/custody/transmission posture change or needs a missing secret.',
+  ].join('\n')
+}
+
+function isActionInboxItem(item: any) {
+  const kind = String(item.kind ?? item.type ?? '').toLowerCase()
+  if (kind === 'blocked_task') return false
+  const text = `${item.title || ''} ${item.message || ''}`.toLowerCase()
+  return !/\bblocked_task\b/.test(text)
 }
 
 const feedbackStats = computed(() => {
@@ -450,6 +505,15 @@ const logLines = computed(() => {
   }
   return out
 })
+
+const deployableTasks = computed(() =>
+  tasks.value.filter(t => !['BLOCKED', 'CONFLICT', 'TESTFAIL'].includes(String(t.state || '').toUpperCase()))
+)
+const repairingTaskCount = computed(() =>
+  tasks.value.filter(t => ['BLOCKED', 'CONFLICT', 'TESTFAIL'].includes(String(t.state || '').toUpperCase())).length
+)
+const liveRunnerCount = computed(() => runners.value.filter(alive).length)
+const runnerFleetTarget = computed(() => Math.max(8, liveRunnerCount.value || 0))
 
 const stateColor: Record<string, string> = {
   RUNNING: 'bg-blue-500/20 text-blue-300', DONE: 'bg-green-500/20 text-green-300',
@@ -535,7 +599,7 @@ watch(user, u => { if (u) loadAll() })
         </span>
         <h1 class="text-lg font-semibold">Claude Orchestrator</h1>
         <span class="text-slate-500 text-sm">
-          {{ runners.filter(alive).length }} runner(s) · {{ approvals.length }} pending · <span class="font-mono text-slate-300" title="Token cost covered by your Claude Max plan — not cash">${{ coveredMtd.toFixed(2) }}</span> Max-covered · <span class="font-mono text-emerald-400" title="Real out-of-pocket API cash, month-to-date">${{ cashMtd.toFixed(2) }}</span> cash
+          {{ liveRunnerCount }}/{{ runnerFleetTarget }} live lanes · {{ approvals.length }} pending · <span class="font-mono text-slate-300" title="Token cost covered by your Claude Max plan — not cash">${{ coveredMtd.toFixed(2) }}</span> Max-covered · <span class="font-mono text-emerald-400" title="Real out-of-pocket API cash, month-to-date">${{ cashMtd.toFixed(2) }}</span> cash
         </span>
         <span class="flex-1"></span>
         <button @click="signOut" class="text-slate-400 text-sm hover:text-white">Sign out</button>
@@ -543,17 +607,45 @@ watch(user, u => { if (u) loadAll() })
 
       <!-- ── Mission Control live strip ── -->
       <MissionControl
-        :tasks="tasks"
+        :tasks="deployableTasks"
         :runners="runners"
         :approvals="approvals"
         :outcomes="outcomes"
         :spend="spend"
         :last-event-at="lastEventAt" />
 
+      <!-- ── Improvement command center ── -->
+      <section class="bg-slate-900 border border-slate-700 rounded-xl p-4 mb-6">
+        <div class="flex items-center gap-2 mb-3">
+          <h2 class="text-xs uppercase tracking-wider text-slate-500">Queue an improvement</h2>
+          <span class="text-xs text-slate-500">triage → code → QA → dev merge → batch release</span>
+          <span class="flex-1"></span>
+          <span v-if="repairingTaskCount" class="text-xs text-amber-300">{{ repairingTaskCount }} auto-repairing internally</span>
+        </div>
+        <div class="grid md:grid-cols-[1fr_1fr_auto] gap-2">
+          <select v-model="newTask.project_id" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+            <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
+          </select>
+          <input v-model="newTask.slug" placeholder="slug (optional)" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm" />
+          <select v-model="newTask.kind" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+            <option value="build">Code change</option>
+            <option value="research">Research then implement</option>
+            <option value="efficiency">Efficiency / cost</option>
+            <option value="speculative">Experiment</option>
+          </select>
+          <textarea v-model="newTask.prompt" placeholder="Describe the improvement, product change, bug fix, or new concept to generate and implement…" rows="3"
+                    class="md:col-span-3 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm"></textarea>
+          <button @click="queueTask" :disabled="queueLoading || !newTask.prompt.trim()"
+                  class="md:col-span-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded-lg py-2 font-semibold text-sm">
+            {{ queueLoading ? 'Routing…' : 'Route, implement, QA, and merge' }}
+          </button>
+        </div>
+      </section>
+
       <!-- ── NL analytics search ── -->
       <div class="bg-slate-900 border border-slate-700 rounded-xl p-4 mb-6">
         <div class="flex gap-2">
-          <input v-model="nlQuery" @keydown.enter="askNL" placeholder="Ask a question: 'which projects are blocked?' or 'where is money going?'"
+          <input v-model="nlQuery" @keydown.enter="askNL" placeholder="Ask a question: 'which projects are shipping today?' or 'where is money going?'"
                  class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm" />
           <button @click="askNL" :disabled="nlLoading"
                   class="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 rounded-lg px-4 py-2 text-sm font-semibold">
@@ -618,16 +710,6 @@ watch(user, u => { if (u) loadAll() })
       <div v-if="!operatorApprovals.length" class="text-slate-500 italic text-sm mb-6">No operator gates waiting.</div>
       <div v-else-if="!filteredOperatorApprovals.length" class="text-slate-500 italic text-sm mb-6">No operator gates for {{ operatorProjectFilter }}.</div>
       <ApprovalCard v-for="a in filteredOperatorApprovals" :key="a.id" :a="a" :user-email="user?.email" accent="sky"
-                    @decide="decide" />
-
-      <!-- ── Code-merge approvals (with two-key enforcement) ── -->
-      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-6 flex items-center gap-2">
-        Code-merge approvals
-        <span v-if="mergeApprovals.length"
-              class="text-[10px] bg-amber-900/60 text-amber-300 rounded-full px-2 py-0.5 font-bold">{{ mergeApprovals.length }}</span>
-      </h2>
-      <div v-if="!mergeApprovals.length" class="text-slate-500 italic text-sm mb-6">Nothing waiting. The swarm is flowing.</div>
-      <ApprovalCard v-for="a in mergeApprovals" :key="a.id" :a="a" :user-email="user?.email" accent="amber"
                     @decide="decide" />
 
       <!-- ── Transactions ── -->
@@ -723,7 +805,7 @@ watch(user, u => { if (u) loadAll() })
                 <div v-if="p._detail" class="flex gap-3 mt-1 text-xs text-slate-500 font-mono">
                   <span>reach {{ p._detail.reach }}</span>
                   <span>impact {{ p._detail.impact }}</span>
-                  <span>conf {{ p._detail.confidence }}</span>
+                  <span>readiness {{ Math.round(Number(p._detail.confidence || 0) * 100) }}%</span>
                   <span>{{ p._detail.effort_days }}d</span>
                   <span class="text-indigo-400 font-semibold">→ {{ p._detail.target_app }}</span>
                 </div>
@@ -738,21 +820,6 @@ watch(user, u => { if (u) loadAll() })
         </div>
       </div>
 
-      <!-- ── Queue a task ── -->
-      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Queue a task</h2>
-      <div class="bg-slate-900 border border-slate-700 rounded-xl p-4 mb-6 grid sm:grid-cols-[1fr_1fr_auto] gap-2">
-        <select v-model="newTask.project_id" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
-          <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
-        </select>
-        <input v-model="newTask.slug" placeholder="slug (optional)" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm" />
-        <select v-model="newTask.kind" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
-          <option>build</option><option>research</option><option>efficiency</option><option>speculative</option>
-        </select>
-        <textarea v-model="newTask.prompt" placeholder="scoped task prompt…" rows="2"
-                  class="sm:col-span-3 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm"></textarea>
-        <button @click="queueTask" class="sm:col-span-3 bg-blue-600 hover:bg-blue-500 rounded-lg py-2 font-semibold text-sm">Queue</button>
-      </div>
-
       <!-- ── Live activity log ── -->
       <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Live activity</h2>
       <div class="mb-6">
@@ -760,14 +827,15 @@ watch(user, u => { if (u) loadAll() })
       </div>
 
       <!-- ── Tasks ── -->
-      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Tasks</h2>
-      <div v-for="t in tasks" :key="t.id" class="bg-slate-900 border border-slate-800 rounded-xl p-3 mb-2">
+      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Deployable task flow</h2>
+      <div v-if="!deployableTasks.length" class="text-slate-500 italic text-sm mb-6">No deployable tasks visible yet; repair work is handled internally.</div>
+      <div v-for="t in deployableTasks" :key="t.id" class="bg-slate-900 border border-slate-800 rounded-xl p-3 mb-2">
         <div class="flex items-center gap-2 flex-wrap">
           <StatusPill :label="t.state" :tone="stateColor[t.state] || 'bg-slate-700'" />
           <b class="text-sm font-mono">{{ t.slug }}</b>
           <span class="text-slate-500 text-xs font-mono">{{ t.model }}</span>
           <span v-if="t.confidence != null" class="text-xs bg-slate-700 text-slate-300 rounded px-1.5 py-0.5 font-mono">
-            conf {{ fmtConf(t.confidence) }}</span>
+            {{ confidenceLabel(t.confidence) }}</span>
           <span class="flex-1"></span>
           <span v-if="t.note" class="text-slate-500 text-xs">{{ t.note }}</span>
         </div>
@@ -782,7 +850,7 @@ watch(user, u => { if (u) loadAll() })
           <thead>
             <tr class="text-slate-500 text-left border-b border-slate-800">
               <th class="pb-2 pr-3">Project</th><th class="pb-2 pr-3">Slug</th>
-              <th class="pb-2 pr-3">Model</th><th class="pb-2 pr-3">Conf</th>
+              <th class="pb-2 pr-3">Model</th><th class="pb-2 pr-3">Merge readiness</th>
               <th class="pb-2 pr-3">When</th><th class="pb-2"></th>
             </tr>
           </thead>
@@ -792,7 +860,7 @@ watch(user, u => { if (u) loadAll() })
               <td class="py-1.5 pr-3 text-slate-400 font-mono">{{ r.slug }}</td>
               <td class="py-1.5 pr-3 text-slate-500 font-mono">{{ r.model }}</td>
               <td class="py-1.5 pr-3">
-                <span v-if="r.confidence != null" class="text-slate-400 font-mono">{{ fmtConf(r.confidence) }}</span>
+                <span v-if="r.confidence != null" class="text-slate-400 font-mono">{{ confidenceLabel(r.confidence) }}</span>
               </td>
               <td class="py-1.5 pr-3 text-slate-500">{{ ago(r.created_at) }}</td>
               <td class="py-1.5">

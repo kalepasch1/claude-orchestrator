@@ -1,7 +1,5 @@
 <script setup lang="ts">
-// One approval card. Used by index.vue for both groups:
-//  - operator sign-offs (secrets / deploys / OAuth / legal) — accent "sky"
-//  - code-merge approvals (material / proposal / self) — accent "amber"
+// One approval card for operator sign-offs (secrets / deploys / OAuth / legal).
 // Emits `decide(id, 'approved'|'denied')` so the parent owns the two-key logic.
 const props = withDefaults(defineProps<{
   a: any

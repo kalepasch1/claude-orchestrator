@@ -86,12 +86,15 @@ def run(app, operation, prompt, task_class="qa", need=None, project=None, execut
         record(app, operation, task_class, prov, model, len(prompt or ""), 0, 0, ok=True)
         return {**r, "text": "", "cost_usd": 0}
     t0 = time.time()
-    res = mg.complete(prov, model, prompt, project=project or app)
+    res = mg.complete(prov, model, prompt, project=project or app,
+                      operation=operation, task_class=task_class, record_op=False)
     dt = int((time.time() - t0) * 1000)
     cost = res.get("cost_usd", 0)
-    record(app, operation, task_class, prov, model, len(prompt or ""), cost, dt,
+    actual_provider = res.get("provider") or prov
+    actual_model = res.get("model") or model
+    record(app, operation, task_class, actual_provider, actual_model, len(prompt or ""), cost, dt,
            ok=not bool(res.get("error")))
-    return {"provider": prov, "model": model, "text": res.get("text", ""),
+    return {"provider": actual_provider, "model": actual_model, "text": res.get("text", ""),
             "cost_usd": cost, "reason": r["reason"], "error": res.get("error")}
 
 

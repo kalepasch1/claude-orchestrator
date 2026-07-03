@@ -3,7 +3,7 @@
 auto_remediate.py - drive BLOCKED to zero, autonomously. Every BLOCKED task is classified and remediated
 so it flows back toward shipped/merged, existing AND future — no task lingers stuck.
 
-Remediation by cause (capped by tasks.remediation_count to avoid infinite loops):
+Remediation by cause (tasks.remediation_count changes strategy; it does not punt to manual review):
   * transient (network/budget/rate/overload)  -> requeue as-is (retry_policy handles the detail).
   * conflict                                    -> requeue to rebuild on fresh base (merge fix + staging).
   * no-op / "changed nothing" / agent failed    -> requeue with a SHARPER prompt (inject the failure note)
@@ -11,59 +11,96 @@ Remediation by cause (capped by tasks.remediation_count to avoid infinite loops)
   * verify / judge / quality reject             -> requeue with the reviewer's notes injected so the agent
                                                    fixes the specific issue on the next attempt.
   * legal / material                            -> leave for the human (surfaced with a decision brief).
-  * over the remediation cap                    -> stop retrying; file ONE concise human card with the
-                                                   full history so it's a quick decision, not a mystery.
+  * over the remediation cap                    -> reclaim as implementation work with a smaller,
+                                                   explicit prompt; do not create manual-review backlog.
+  * old cap-review cards / no-op auto-closures  -> recover and put the task back in the queue.
 
 Runs every couple minutes; also callable. This is the "self-remedy everything" loop.
 """
 import os, sys, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import legal_filter
 
 CAP = int(os.environ.get("REMEDIATION_CAP", "3"))
+RECOVERY_MARK = "auto-remediate:reclaimed-20260703"
+DIRECTIVE_MARKER = "AUTO-REMEDIATION DIRECTIVE"
+_BUDGET = re.compile(r"budget cap|call cap|hourly \$ cap|daily \$ cap|cost circuit", re.I)
 _TRANSIENT = re.compile(r"budget cap|connection reset|urlopen|errno|timeout|overload|503|high demand|rate.?limit", re.I)
 _NOOP = re.compile(r"no committable|changed nothing|no file changes|agent run failed", re.I)
 _REVIEW = re.compile(r"verify:|judge:|quality gate", re.I)
 _CONFLICT = re.compile(r"conflict", re.I)
-_HUMAN = re.compile(r"legal|counsel|awaiting.*approval|two-key", re.I)
+_MISSING_BRANCH = re.compile(r"branch.*missing|no longer exists|approved.*agent/", re.I)
+_HUMAN = re.compile(r"credential needed|missing credential|auth failure|secret|api key|two-key", re.I)
+_CAP_CARD = re.compile(r"blocked after \d+ auto-fixes|can't self-revise|needs a look:|re-scope needed", re.I)
+_PARKED = re.compile(r"ev-parked|near-zero expected value|preflight: predicted no committable|permission denial|tool use", re.I)
+_QUOTED_SLUG = re.compile(r"'([^']+)'")
 
 
 def run(limit=120):
     """Anti-burn remediation. NEVER blindly re-run the same failing task into a credit loop:
       attempt 1  : one smart retry (transient/conflict) or escalate+sharpen (review/no-op).
-      attempt 2  : RE-PLAN — a cheap model fully REVISES the task prompt to be concrete + achievable
-                   from the failure; a persistent NO-OP is auto-CLOSED (nothing to build), not retried.
-      attempt >=CAP or a repeat of the SAME failure signature -> stop, file a human card. No more spend.
+      attempt 2  : RE-PLAN - a cheap model fully revises the task prompt to be concrete + achievable
+                   from the failure; a persistent no-op is reclaimed with a direct implementation prompt.
+      attempt >=CAP or a repeat of the SAME failure signature -> reclaim with a full-implementation
+                   prompt and keep it moving, except genuine legal/material gates.
     """
-    blocked = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,log_tail",
-                                  "state": "eq.BLOCKED", "limit": str(limit)}) or []
-    requeued = escalated = revised = closed = human = left = 0
+    recovered_cards = recover_pending_manual_reviews()
+    restored_noops = recover_auto_closed_noops()
+    blocked = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,log_tail,state",
+                                  "state": "in.(BLOCKED,CONFLICT,TESTFAIL)", "limit": str(limit)}) or []
+    requeued = escalated = revised = reclaimed = left = 0
     for t in blocked:
         note = t.get("note") or ""
         rc = int(t.get("remediation_count") or 0)
-        if t.get("material") or _HUMAN.search(note):
+        upd = {"state": "QUEUED", "remediation_count": rc + 1, "account": None, "updated_at": "now()"}
+
+        if _PARKED.search(note):
+            upd["prompt"] = _implementation_prompt(t, note, "This was incorrectly parked as non-actionable; implement the smallest concrete useful improvement now.")
+            upd["model"] = _escalate(_escalate(t.get("model")))
+            upd["note"] = f"auto-remediate: unparked for implementation ({rc + 1})"
+            db.update("tasks", {"id": t["id"]}, upd)
+            reclaimed += 1
+            continue
+
+        if _CONFLICT.search(note):
+            upd["prompt"] = _implementation_prompt(t, note, "Recover from the merge/build conflict on a fresh branch and complete the implementation.")
+            upd["model"] = _escalate(_escalate(t.get("model")))
+            upd["note"] = f"auto-remediate: conflict recovery queued ({rc + 1})"
+            db.update("tasks", {"id": t["id"]}, upd)
+            requeued += 1
+            continue
+
+        if _BUDGET.search(note):
+            upd["remediation_count"] = 0
+            upd["note"] = "auto-remediate: budget guard converted to subscription/failover route"
+            db.update("tasks", {"id": t["id"]}, upd)
+            requeued += 1
+            continue
+
+        if _requires_human_hold(t, note):
             left += 1
             continue
 
-        # HARD ANTI-BURN: a task that has produced NO commit and no-op'd more than once is genuinely
-        # nothing to build -> CLOSE it (don't keep paying to re-discover there's nothing to do).
+        # A repeated no-op means the instruction was too vague or context was lost. Keep it in the cue
+        # with an explicit implementation directive instead of marking it DONE.
         if _NOOP.search(note) and rc >= 1:
-            db.update("tasks", {"id": t["id"]}, {"state": "DONE",
-                      "note": "auto-closed: no committable work after retry (not a real task)"})
-            closed += 1
+            upd["prompt"] = _implementation_prompt(t, note, "Repeated no-op: produce and commit the concrete missing change.")
+            upd["model"] = _escalate(_escalate(t.get("model")))
+            upd["note"] = f"auto-remediate: reclaimed no-op; implement fully ({rc + 1})"
+            db.update("tasks", {"id": t["id"]}, upd)
+            reclaimed += 1
             continue
 
         if rc >= CAP:
-            db.insert("approvals", {"project": None, "kind": "self",
-                      "title": f"Needs a look: '{t['slug']}' blocked after {CAP} auto-fixes",
-                      "why": f"Last error: {note[:200]}. Auto-remediation exhausted — re-scope or cancel.",
-                      "value": "Unblock or drop this task.", "risk": "Low.", "command": ""})
-            db.update("tasks", {"id": t["id"]}, {"note": note + " [remediation cap reached]"})
-            human += 1
+            upd["prompt"] = _implementation_prompt(t, note, f"Remediation cap {CAP} reached; finish the implementation instead of escalating to manual review.")
+            upd["model"] = _escalate(_escalate(t.get("model")))
+            upd["note"] = f"auto-remediate: cap reached; reclaimed for full implementation ({rc + 1})"
+            db.update("tasks", {"id": t["id"]}, upd)
+            reclaimed += 1
             continue
 
-        upd = {"state": "QUEUED", "remediation_count": rc + 1, "account": None, "updated_at": "now()"}
-        if rc == 0 and (_TRANSIENT.search(note) or _CONFLICT.search(note)):
+        if rc == 0 and (_TRANSIENT.search(note) or _CONFLICT.search(note) or _MISSING_BRANCH.search(note)):
             upd["note"] = f"auto-remediate: retry (1/{CAP}) — {note[:70]}"
             requeued += 1
         elif rc == 0:
@@ -82,18 +119,125 @@ def run(limit=120):
                 upd["note"] = f"auto-remediate: re-planned (2/{CAP})"
                 revised += 1
             else:
-                # couldn't revise -> stop, hand to human (don't loop)
-                db.insert("approvals", {"project": None, "kind": "self",
-                          "title": f"Re-scope needed: '{t['slug']}' can't self-revise",
-                          "why": f"Failing repeatedly: {note[:200]}.", "value": "Re-scope or drop.",
-                          "risk": "Low.", "command": ""})
-                db.update("tasks", {"id": t["id"]}, {"note": note + " [needs human re-scope]"})
-                human += 1
-                continue
+                upd["prompt"] = _implementation_prompt(t, note, "Planner could not rewrite this; implement the smallest useful fix directly.")
+                upd["model"] = _escalate(_escalate(t.get("model")))
+                upd["note"] = f"auto-remediate: fallback implementation prompt ({rc + 1})"
+                reclaimed += 1
         db.update("tasks", {"id": t["id"]}, upd)
     print(f"auto_remediate: retry {requeued}, escalate {escalated}, re-plan {revised}, "
-          f"closed-noop {closed}, human {human}, left {left}")
-    return {"requeued": requeued, "escalated": escalated, "revised": revised, "closed": closed, "human": human}
+          f"reclaimed {reclaimed}, recovered-cards {recovered_cards}, restored-noops {restored_noops}, left {left}")
+    return {"requeued": requeued, "escalated": escalated, "revised": revised,
+            "reclaimed": reclaimed, "recovered_cards": recovered_cards,
+            "restored_noops": restored_noops, "left": left}
+
+
+def recover_pending_manual_reviews(limit=500):
+    """Convert old 'blocked after N auto-fixes' cards back into executable work."""
+    cards = db.select("approvals", {"select": "*", "status": "eq.pending",
+                                    "order": "created_at.asc", "limit": str(limit)}) or []
+    recovered = 0
+    for card in cards:
+        text = " ".join(str(card.get(k) or "") for k in ("title", "why", "detail"))
+        if not _CAP_CARD.search(text):
+            continue
+        slug = _slug_from_card(card)
+        if not slug:
+            continue
+        tasks = db.select("tasks", {"select": "*", "slug": f"eq.{slug}", "limit": "5"}) or []
+        task = tasks[0] if tasks else _create_task_from_card(card, slug)
+        if not task:
+            continue
+        state = task.get("state")
+        if state in ("QUEUED", "RUNNING", "RETRY", "MERGING"):
+            _close_review_card(card, "task already active")
+            recovered += 1
+            continue
+        note = task.get("note") or card.get("why") or text
+        if state == "MERGED" or (state == "DONE" and "auto-closed: no committable" not in note.lower()):
+            _close_review_card(card, f"task already {state}")
+            recovered += 1
+            continue
+        patch = {"state": "QUEUED", "account": None, "updated_at": "now()",
+                 "remediation_count": 0,
+                 "prompt": _implementation_prompt(task, note, "Recovered from stale manual-review card; implement now."),
+                 "model": _escalate(_escalate(task.get("model"))),
+                 "note": "auto-remediate: reclaimed pending manual review; implementing fully"}
+        db.update("tasks", {"id": task["id"]}, patch)
+        _close_review_card(card, "requeued matching task for implementation")
+        recovered += 1
+    return recovered
+
+
+def recover_auto_closed_noops(limit=500):
+    """Put tasks that were incorrectly marked DONE for no-op retries back into the cue."""
+    rows = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,log_tail",
+                               "state": "eq.DONE", "limit": str(limit)}) or []
+    restored = 0
+    for task in rows:
+        note = task.get("note") or ""
+        if "auto-closed: no committable" not in note.lower():
+            continue
+        if _requires_human_hold(task, note):
+            continue
+        db.update("tasks", {"id": task["id"]},
+                  {"state": "QUEUED", "account": None, "updated_at": "now()",
+                   "remediation_count": 0,
+                   "prompt": _implementation_prompt(task, note, "This was incorrectly removed from the cue; implement the underlying work."),
+                   "model": _escalate(_escalate(task.get("model"))),
+                   "note": "auto-remediate: restored incorrectly auto-closed no-op task"})
+        restored += 1
+    return restored
+
+
+def _slug_from_card(card):
+    if card.get("slug"):
+        return card["slug"]
+    text = " ".join(str(card.get(k) or "") for k in ("title", "why", "detail"))
+    m = _QUOTED_SLUG.search(text)
+    return m.group(1) if m else None
+
+
+def _project_id(name):
+    if not name:
+        return None
+    rows = db.select("projects", {"select": "id", "name": f"eq.{name}", "limit": "1"}) or []
+    return rows[0]["id"] if rows else None
+
+
+def _create_task_from_card(card, slug):
+    pid = _project_id(card.get("project"))
+    if not pid:
+        return None
+    prompt = _implementation_prompt({"slug": slug, "prompt": ""}, card.get("why") or card.get("title") or "",
+                                    "Original task row was missing; reconstruct from the recovery card.")
+    rows = db.insert("tasks", {"project_id": pid, "slug": slug, "state": "QUEUED", "kind": "build",
+                               "prompt": prompt, "note": "auto-remediate: reconstructed from stale review card"})
+    return rows[0] if rows else None
+
+
+def _close_review_card(card, reason):
+    db.update("approvals", {"id": card["id"]},
+              {"status": "approved", "decided_by": RECOVERY_MARK,
+               "decision_type": "approve",
+               "decision_text": f"Auto-reclaimed: {reason}. Work is back in the task queue."})
+
+
+def _requires_human_hold(task, note):
+    text = " ".join(str(task.get(k) or "") for k in ("slug", "prompt", "log_tail")) + " " + str(note or "")
+    if _HUMAN.search(text):
+        return True
+    return legal_filter.requires_owner_approval(text=text)
+
+
+def _implementation_prompt(task, note, directive):
+    base = (task.get("prompt") or f"Implement the queued task '{task.get('slug')}'.").split(DIRECTIVE_MARKER, 1)[0].rstrip()
+    return (base +
+            f"\n\n{DIRECTIVE_MARKER}\n"
+            f"{directive}\n"
+            f"Failure context: {(note or '')[:800]}\n"
+            "Do not stop at analysis or manual review. Make the smallest complete code change, "
+            "restore any missing/deleted branch or worktree artifacts if needed, run the relevant checks, "
+            "and commit the implementation.")
 
 
 def _revise(task, note):

@@ -20,7 +20,7 @@ SLUG="${1:?usage: setup-worktrees.sh <task-slug> [base-branch]}"
 BASE="${2:-main}"
 BRANCH="agent/${SLUG}"
 DEST="${WT_ROOT}/${SLUG}"
-STAGING="${ORCH_STAGING_BRANCH:-orchestrator/staging}"
+STAGING="${ORCH_STAGING_BRANCH:-orchestrator/dev}"
 
 mkdir -p "$WT_ROOT"
 git -C "$REPO_ROOT" fetch origin "$BASE" --quiet || true
