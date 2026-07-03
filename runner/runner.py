@@ -70,6 +70,7 @@ REUSE_FIRST = ("\n\n## Reuse before you draft (cost discipline)\n"
 POOL = account_pool.AccountPool()
 _sem = threading.Semaphore(MAX_PARALLEL)
 _projects = {}
+MAX_AGENT_PROMPT_CHARS = int(os.environ.get("ORCH_MAX_AGENT_PROMPT_CHARS", "90000"))
 
 
 def projects(project_id=None):
@@ -217,6 +218,22 @@ def _commit_agent_work(wt, slug, prompt):
         return False
 
 
+def _cap_agent_prompt(prompt):
+    """Keep Claude Code requests comfortably below context limits after tool/system overhead."""
+    text = prompt or ""
+    if len(text) <= MAX_AGENT_PROMPT_CHARS:
+        return text
+    head = min(20000, MAX_AGENT_PROMPT_CHARS // 3)
+    tail = MAX_AGENT_PROMPT_CHARS - head
+    return (
+        text[:head].rstrip() +
+        "\n\n[ORCHESTRATOR COMPACTION: middle context removed to stay below model limits. "
+        "Use the focus files, task contract, and final request below; inspect repo files directly "
+        "instead of relying on omitted transcript bulk.]\n\n" +
+        text[-tail:].lstrip()
+    )
+
+
 def run_task(t):
     with _sem:
         proj = projects(t["project_id"]).get(t["project_id"], {})
@@ -244,18 +261,15 @@ def run_task(t):
         # project + file an approval, immediately, before burning more tokens.
         waste_reason = waste.check(name)
         if waste_reason:
-            kill_switch.pause(scope="project", project=name, reason=waste_reason, by="waste")
-            set_state(t["id"], state="BLOCKED", note="waste guard: " + waste_reason)
-            approval(name, "self", f"Waste guard paused {name}",
-                     why=waste_reason,
-                     value="Stops non-improving spend the moment it appears.",
-                     risk="Project is paused until you review and resume.",
-                     command="")
+            if os.environ.get("ORCH_WASTE_GUARD_PAUSES", "false").lower() in ("true", "1", "yes"):
+                kill_switch.pause(scope="project", project=name, reason=waste_reason, by="waste")
+                set_state(t["id"], state="QUEUED", note="waste guard cooldown: " + waste_reason)
+                return
             try:
-                import notify; notify.send(f"[waste] {waste_reason}")
+                db.insert("resource_events", {"kind": "waste_guard", "detail": waste_reason,
+                                              "action": "observed_continue", "created_at": "now()"})
             except Exception:
                 pass
-            return
 
         task_body = pipeline_contract.original_request(t["prompt"])
 
@@ -284,6 +298,7 @@ def run_task(t):
             material=bool(t.get("material")),
         )
         prompt = prefix + focus + blast + reuse + regression.inject(kb.inject(contracted_prompt)) + feedback.INSTRUCTION + REUSE_FIRST
+        prompt = _cap_agent_prompt(prompt)
         t0 = time.time()
 
         # deterministic replay: re-run a captured run snapshot

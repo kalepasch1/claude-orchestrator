@@ -5,7 +5,7 @@ The runner uses the SERVICE ROLE key so it bypasses RLS. Set:
     SUPABASE_URL=https://<ref>.supabase.co
     SUPABASE_SERVICE_KEY=<service-role key>   (keep secret; never ship to the web app)
 """
-import os, json, urllib.request, urllib.parse
+import os, json, urllib.request, urllib.parse, urllib.error
 
 # Load runner/.env directly from Python so launchd agents pick up all env vars
 # (EMBED_PROVIDER, ANTHROPIC_API_KEY, etc.) even when the shell wrapper can't
@@ -50,7 +50,20 @@ def select(table, params=None):
 
 def insert(table, row, upsert=False):
     h = {"Prefer": "return=representation" + (",resolution=merge-duplicates" if upsert else "")}
-    return _req("POST", f"/rest/v1/{table}", body=row, headers=h)
+    try:
+        return _req("POST", f"/rest/v1/{table}", body=row, headers=h)
+    except urllib.error.HTTPError as e:
+        # 409 = duplicate key: the row already exists, so the write intent is satisfied. A retried
+        # task re-inserting an outcome/row used to raise HTTP 409 -> "runner exception: Conflict" ->
+        # BLOCKED, which stalled merges. Retry idempotently as an upsert; if that still can't apply,
+        # swallow it so a duplicate never crashes the task.
+        if e.code == 409 and not upsert:
+            try:
+                return _req("POST", f"/rest/v1/{table}",
+                            body=row, headers={"Prefer": "return=representation,resolution=merge-duplicates"})
+            except Exception:
+                return None
+        raise
 
 
 def update(table, match, patch):
