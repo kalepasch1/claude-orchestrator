@@ -170,11 +170,24 @@ def _integration_base(repo, proj, task_base):
         return task_base
     dev = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
     try:
+        prod = _detect_prod_branch(repo, proj)
+        # RECURRENT-CONFLICT FIX: keep the integration base CURRENT with prod. After external pushes
+        # (e.g. hotfixes to origin/main) a stale local dev drifts BEHIND prod, so every agent branch
+        # rebased onto it conflicts and releases can't promote. Fetch prod, then reset dev to it
+        # UNLESS dev is strictly ahead (contains all of prod + unreleased merges). Fail-soft; a
+        # no-op if dev is checked out in a worktree (the recovery script frees those).
+        subprocess.run(["git", "fetch", "origin", prod], cwd=repo, capture_output=True, timeout=90)
+        pref = f"origin/{prod}" if subprocess.run(["git", "rev-parse", "--verify", f"origin/{prod}"],
+                                                  cwd=repo, capture_output=True).returncode == 0 else prod
         if subprocess.run(["git", "rev-parse", "--verify", dev], cwd=repo,
                           capture_output=True).returncode != 0:
-            prod = _detect_prod_branch(repo, proj)
-            subprocess.run(["git", "branch", dev, prod], cwd=repo, capture_output=True)
-    except OSError:
+            subprocess.run(["git", "branch", dev, pref], cwd=repo, capture_output=True)
+        else:
+            strictly_ahead = subprocess.run(["git", "merge-base", "--is-ancestor", pref, dev],
+                                            cwd=repo, capture_output=True).returncode == 0
+            if not strictly_ahead:
+                subprocess.run(["git", "branch", "-f", dev, pref], cwd=repo, capture_output=True)
+    except (OSError, subprocess.SubprocessError):
         return task_base
     return dev
 
@@ -869,6 +882,11 @@ def _run_task_safe(t):
     try:
         run_task(t)
     except Exception as e:
+        try:
+            import traceback
+            set_state(t["id"], log_tail=traceback.format_exc()[-2000:])
+        except Exception:
+            pass
         _block_or_retry(t, f"runner exception: {e}"[:300])
 
 
