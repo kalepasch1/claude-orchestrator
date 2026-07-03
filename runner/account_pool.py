@@ -30,6 +30,35 @@ HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestr
 CFG = os.path.join(HOME, "accounts.json")
 STATE = os.path.join(HOME, "accounts_state.json")
 COOLDOWN = int(os.environ.get("ACCOUNT_COOLDOWN", str(4 * 3600)))
+# Cheap cross-module signal: written when EVERY Claude account is cooling down, self-expiring
+# at the earliest cooldown. agentic_coders.pick() reads claude_exhausted() to fail over to the
+# subscription second coder (Codex) instead of stalling. No DB call on the hot path.
+EXHAUSTED_FLAG = os.path.join(HOME, "claude_exhausted.json")
+
+
+_EXH_CACHE = {"t": 0.0, "v": False}
+
+
+def claude_exhausted():
+    """True iff all Claude accounts are currently cooling down (limits hit).
+    Fast path: the flag file written by mark_exhausted. Fallback: derive from the live account
+    cooldowns (cached ~15s so high-concurrency pick() calls don't hammer the DB). This makes the
+    Codex fail-over engage the moment both accounts are cooling, even if the flag wasn't written."""
+    try:
+        d = json.load(open(EXHAUSTED_FLAG))
+        if time.time() < float(d.get("until", 0)):
+            return True
+    except Exception:
+        pass
+    now = time.time()
+    if now - _EXH_CACHE["t"] < 15:
+        return _EXH_CACHE["v"]
+    try:
+        v = AccountPool().all_exhausted()
+    except Exception:
+        v = False
+    _EXH_CACHE["t"], _EXH_CACHE["v"] = now, v
+    return v
 
 
 class AccountPool:
@@ -83,6 +112,21 @@ class AccountPool:
         return min(self.accts,
                    key=lambda a: self.state.get(a["name"], {}).get("cooldown_until", 0)) if self.accts else None
 
+    def all_exhausted(self):
+        """True iff no Claude account is currently healthy (every one is cooling down)."""
+        return bool(self.accts) and not any(self._healthy(a) for a in self.accts)
+
+    def _write_exhausted_flag(self):
+        """Persist/clear the cheap cross-module 'all Claude exhausted' signal."""
+        try:
+            if self.all_exhausted():
+                soonest = min(self.state.get(a["name"], {}).get("cooldown_until", 0) for a in self.accts)
+                json.dump({"until": soonest}, open(EXHAUSTED_FLAG, "w"))
+            elif os.path.exists(EXHAUSTED_FLAG):
+                os.remove(EXHAUSTED_FLAG)
+        except Exception:
+            pass
+
     def env_for(self, a):
         env = {}
         if not a:
@@ -109,6 +153,7 @@ class AccountPool:
             return
         self.state.setdefault(a["name"], {})["cooldown_until"] = time.time() + COOLDOWN
         self._save()
+        self._write_exhausted_flag()   # flip the fail-over-to-Codex signal if this was the last one
         # best-effort: persist cooldown to Supabase so the dashboard shows the rotation
         try:
             import db, datetime
@@ -134,6 +179,7 @@ class AccountPool:
         if a and a["name"] in self.state:
             self.state[a["name"]].pop("cooldown_until", None)
             self._save()
+            self._write_exhausted_flag()   # a Claude account recovered -> clear the fail-over signal
 
 
 if __name__ == "__main__":

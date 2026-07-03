@@ -38,6 +38,7 @@ import confidence, blast_radius, replay
 import feedback
 import kill_switch, secrets_manager, credential_broker, quality_gate
 import claude_cli, waste, judge, experiment_router, decision_engine
+import agentic_coders
 
 INTEGRATION_MODE = os.environ.get("INTEGRATION_MODE", "local")  # local | pr
 USE_CACHE = os.environ.get("RESULT_CACHE", "true").lower() == "true"
@@ -54,7 +55,8 @@ MAX_PARALLEL = int(os.environ.get("MAX_PARALLEL", "12"))
 RATE = ("temporarily limiting", "rate limit", "429", "overloaded", "too many requests")
 EXHAUST = ("usage limit", "out of credits", "insufficient_quota", "quota",
            "weekly limit", "hit your weekly", "limit · resets", "limit - resets",
-           "reached your usage", "usage limit reached", "upgrade to increase")
+           "reached your usage", "usage limit reached", "upgrade to increase",
+           "5-hour limit", "hour limit reached", "session limit", "limit reached ∙ resets")
 # Cross-project reuse directive injected into every task: economize by reusing, not re-drafting.
 REUSE_FIRST = ("\n\n## Reuse before you draft (cost discipline)\n"
     "Before writing net-new code: (1) search THIS repo for an existing helper/component/pattern "
@@ -139,6 +141,37 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
     return "MERGED"
 
 
+def _detect_prod_branch(repo, proj):
+    """Best-effort production branch detection for repos whose default is master instead of main."""
+    for b in (proj.get("prod_branch"), proj.get("default_base"), "main", "master"):
+        if not b:
+            continue
+        if subprocess.run(["git", "rev-parse", "--verify", b], cwd=repo,
+                          capture_output=True).returncode == 0:
+            return b
+    return proj.get("default_base") or "main"
+
+
+def _integration_base(repo, proj, task_base):
+    """Merge completed code into a temporary integration branch by default.
+
+    This keeps code mergers automatic while decoupling them from Vercel production deploys.
+    release_train.py later QA's the integration branch and promotes it to prod on a slower
+    cadence.
+    """
+    if os.environ.get("ORCH_CODE_MERGE_TARGET", "dev").lower() not in ("dev", "staging", "integration"):
+        return task_base
+    dev = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
+    try:
+        if subprocess.run(["git", "rev-parse", "--verify", dev], cwd=repo,
+                          capture_output=True).returncode != 0:
+            prod = _detect_prod_branch(repo, proj)
+            subprocess.run(["git", "branch", dev, prod], cwd=repo, capture_output=True)
+    except OSError:
+        return task_base
+    return dev
+
+
 def _commit_agent_work(wt, slug, prompt):
     """Stage + commit everything the agent changed in the worktree. Returns True if a commit
     was made, False if there was nothing to commit. Uses --no-verify so a repo's pre-commit
@@ -171,7 +204,8 @@ def run_task(t):
         name = proj.get("name", "repo")
         # Fall back to the project's REAL default branch (master vs main), not a hardcoded
         # "main" — otherwise diff/rebase against a nonexistent branch returns empty.
-        base = t.get("base_branch") or proj.get("default_base") or "main"
+        task_base = t.get("base_branch") or proj.get("default_base") or "main"
+        base = _integration_base(repo, proj, task_base)
         slug = t["slug"]
         kind = t.get("kind", "build")
         test_cmd = proj.get("test_cmd") or os.environ.get("TEST_CMD", "npm test")
@@ -299,9 +333,11 @@ def run_task(t):
                 model = model_router.HAIKU
             elif bias >= 1 and model == model_router.OPUS:
                 model = model_router.SONNET
+            coder = "claude" if t.get("_force_claude") else agentic_coders.pick(t, slot_index=attempt - 1)
+            visible_model = model if coder == "claude" else f"{coder}:{model}"
             acct = POOL.current()
-            set_state(t["id"], state="RUNNING", model=model, attempt=attempt,
-                      account=(acct or {}).get("name"))
+            set_state(t["id"], state="RUNNING", model=visible_model, attempt=attempt,
+                      account=(acct or {}).get("name"), note=f"agentic coder: {coder}")
             subprocess.run([os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"), slug, base],
                            cwd=repo, capture_output=True)
             wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", slug)
@@ -311,16 +347,18 @@ def run_task(t):
                 env.update(secrets_manager.inject_env(name))
             except Exception:
                 pass
-            # ALL model spend goes through claude_cli: it honors the kill switch, hard-caps
-            # $/hour, $/day and calls/hour, and captures REAL cost via --output-format json.
+            # Agentic file edits go through the coder seam. Claude Code remains the default
+            # backend because it enforces the spend circuit; configured second coders can take
+            # independent safe tasks and fall back to Claude on failure.
             try:
-                r = claude_cli.run(prompt, model,
-                                   cwd=wt if os.path.isdir(wt) else repo, env=env,
-                                   project=name, max_turns=60, permission="acceptEdits",
-                                   timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
+                r = agentic_coders.run(coder, prompt, model,
+                                       cwd=wt if os.path.isdir(wt) else repo, env=env,
+                                       project=name, max_turns=60, permission="acceptEdits",
+                                       timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
+                r.setdefault("coder", coder)
             except subprocess.TimeoutExpired:
                 set_state(t["id"], state="BLOCKED", note="timed out (>15m) — killed to free the slot")
-                record(t, name, slug, kind, model, acct, attempt, False, False, "timeout", t0); return
+                record(t, name, slug, kind, visible_model, acct, attempt, False, False, "timeout", t0); return
             except claude_cli.CircuitOpen as e:
                 # spend ceiling hit: hold the task and pause everything until you intervene
                 kill_switch.pause(scope="global", reason=f"cost circuit open: {e}", by="claude_cli")
@@ -359,9 +397,14 @@ def run_task(t):
 
             tests_ok = rc == 0
             if not tests_ok:
+                if coder != "claude":
+                    t["_force_claude"] = True
+                    set_state(t["id"], state="RETRY",
+                              note=f"{coder} failed; retrying once through Claude Code")
+                    continue
                 set_state(t["id"], state="BLOCKED", note="agent run failed")
                 regression.record(name, slug, kind, t["prompt"][:500], out[-500:], "agent run failed; re-scope or escalate model")
-                record(t, name, slug, kind, model, acct, attempt, False, False, out, t0, cost=run_cost); return
+                record(t, name, slug, kind, visible_model, acct, attempt, False, False, out, t0, cost=run_cost); return
 
             # COMMIT the agent's edits. Agents edit the worktree (acceptEdits) but don't commit;
             # verify/confidence/integrate all diff `base...HEAD` (commit-based), so without this
@@ -382,7 +425,7 @@ def run_task(t):
                     pass
                 set_state(t["id"], state="BLOCKED", note="agent produced no committable changes")
                 regression.record(name, slug, kind, t["prompt"][:500], "no file changes", "agent investigated but changed nothing; re-scope task")
-                record(t, name, slug, kind, model, acct, attempt, True, False, out, t0, cost=run_cost); return
+                record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0, cost=run_cost); return
             # SESSION PROOF (positive path): verify the diff is real work echoing the task
             try:
                 import session_proof
@@ -407,7 +450,7 @@ def run_task(t):
                          why=v["notes"], risk="cheap-model review wants a human look",
                          detail=out[-3000:])
                 regression.record(name, slug, kind, t["prompt"][:500], "verify: " + v["notes"], v["notes"])
-                record(t, name, slug, kind, model, acct, attempt, True, False, out, t0, cost=run_cost); return
+                record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0, cost=run_cost); return
 
             # quality gate: mutation + property tests (blocking if MUTATION_CMD/PROPERTY_CMD set)
             qg = quality_gate.run(wt)
@@ -418,7 +461,7 @@ def run_task(t):
                          detail=out[-2000:])
                 regression.record(name, slug, kind, t["prompt"][:500],
                                   "quality gate: " + qg["notes"], qg["notes"])
-                record(t, name, slug, kind, model, acct, attempt, True, False, out, t0, cost=run_cost); return
+                record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0, cost=run_cost); return
 
             # cross-model QA + legal-risk panel — a different model family reviews the diff
             _diff_for_judge = ""
@@ -440,7 +483,7 @@ def run_task(t):
                          detail=out[-2000:])
                 regression.record(name, slug, kind, t["prompt"][:500],
                                   "judge: " + jv["notes"], "cross-model review failed; re-scope or fix")
-                record(t, name, slug, kind, model, acct, attempt, True, False, out, t0, cost=run_cost)
+                record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0, cost=run_cost)
                 return
 
             if jv.get("legal_counsel_required"):
@@ -450,39 +493,29 @@ def run_task(t):
                          value="work passed tests + code review; legal clearance needed before merge",
                          risk="legal exposure identified by cross-model judge panel — DO NOT merge without counsel",
                          detail=out[-2000:], approvals_required=1)
-                record(t, name, slug, kind, model, acct, attempt, True, False, out, t0, cost=run_cost)
+                record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0, cost=run_cost)
                 return
 
-            # auto-merge rollout: projects with auto_merge=True skip the confidence gate for
-            # judge-passed, non-material tasks. Only `tomorrow` is auto_merge=True right now.
-            # Material tasks (money/auth/prod-deploy) always require explicit two-key approval.
-            auto_merge = bool(proj.get("auto_merge"))
+            # Code merges are automatic after tests + verification + judge. Confidence is still
+            # recorded, but it no longer creates human "Approve merge" cards; true legal-counsel
+            # findings above remain operator gates.
             conf = {"confidence": None, "reason": ""}
             decision = "auto"
-            if not auto_merge or t.get("material"):
-                # confidence-gated path: non-auto_merge projects + material tasks
-                if USE_CONFIDENCE:
+            if USE_CONFIDENCE:
+                try:
                     proj_thresh = proj.get("confidence_threshold")
                     decision, conf = confidence.gate(wt, base, threshold=proj_thresh, project=name)
-                if t.get("material"):
-                    decision = "two_key"
-                    conf = {**conf, "reason": (conf.get("reason") or "") + " [material: human approval required]"}
-            conf_score = conf.get("confidence")
-            replay.capture(t["id"], name, slug, kind, model, (acct or {}).get("name"),
-                           repo, base, prompt, conf_score)
+                except Exception as _ce:
+                    conf = {"confidence": None, "reason": f"confidence unavailable ({_ce})"}
             if decision != "auto":
-                # SOLO OWNER: a single (your) approval is final — no secondary approver required.
-                req = 1
-                set_state(t["id"], state="BLOCKED", confidence=conf_score,
-                          note=f"awaiting your approval (material change; confidence {conf_score})")
-                approval(name, "material" if decision == "two_key" else "verify",
-                         f"Approve merge of {slug}", why=conf.get("reason"),
-                         value="agent work passed tests + verification + judge",
-                         risk=("material change (money/auth/prod-deploy) — your review" if decision == "two_key"
-                               else "below auto-merge confidence"),
-                         detail=out[-2000:], approvals_required=req)
-                record(t, name, slug, kind, model, acct, attempt, True, False, out, t0, cost=run_cost)
-                return
+                conf = {**conf, "reason": (conf.get("reason") or "") + " [auto-merged to dev branch; no code-merge approval required]"}
+                decision = "auto"
+            if t.get("material"):
+                if USE_CONFIDENCE:
+                    conf = {**conf, "reason": (conf.get("reason") or "") + " [material: merged to dev branch; production release remains batch-gated]"}
+            conf_score = conf.get("confidence")
+            replay.capture(t["id"], name, slug, kind, visible_model, (acct or {}).get("name"),
+                           repo, base, prompt, conf_score)
 
             result = integrate(repo, f"agent/{slug}", base, test_cmd, slug, v["notes"], "passed")
             POOL.mark_ok(acct)
@@ -501,7 +534,7 @@ def run_task(t):
                          why=f"could not auto-integrate ({result})", detail=out[-2000:])
                 regression.record(name, slug, kind, t["prompt"][:500], f"integrate {result}",
                                   "run the prod build locally and fix all type/build errors before finishing")
-            record(t, name, slug, kind, model, acct, attempt, True, integrated, out, t0, cost=run_cost)
+            record(t, name, slug, kind, visible_model, acct, attempt, True, integrated, out, t0, cost=run_cost)
             return
         set_state(t["id"], state="BLOCKED", note="exhausted retries")
 
@@ -654,6 +687,7 @@ _SCHEDULE = [
     ("revattr-daily", "revattr",            "daily",    (5, 45)),# attribute merges to revenue movement
     ("specwriter-wk", "specwriter",         "weekly",   (0, 5, 0)),# apps self-write SPEC.md
     ("prewarm-120",   "prewarm",            "interval", 120),   # warm next worktrees/context (0 spend)
+    ("preflight-90",  "preflight",          "interval", 90),    # cheap multi-provider triage before agentic spend
     ("governor-900",  "governor",           "interval", 900),   # EV-based capacity allocation
     ("costslo-1800",  "costslo",            "interval", 1800),  # hold per-app $/merge SLOs
     ("promote-daily", "promote",            "daily",    (6, 30)),# productize proven capabilities

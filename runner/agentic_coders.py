@@ -25,14 +25,65 @@ def available():
     coders = ["claude"]
     if os.environ.get("ORCH_SECOND_CODER") and os.environ.get("ORCH_SECOND_CODER_CMD"):
         coders.append(os.environ["ORCH_SECOND_CODER"])
+    if os.environ.get("ORCH_THIRD_CODER") and os.environ.get("ORCH_THIRD_CODER_CMD"):
+        coders.append(os.environ["ORCH_THIRD_CODER"])
     return coders
 
 
+def _third_within_cap():
+    """The optional THIRD (paid-API) agentic coder is used only when today's spend on it is
+    under ORCH_THIRD_CODER_DAILY_USD. Soft daily cap read from outcomes tagged with its name."""
+    try:
+        cap = float(os.environ.get("ORCH_THIRD_CODER_DAILY_USD", "0"))
+    except ValueError:
+        cap = 0.0
+    if cap <= 0:
+        return False
+    try:
+        import db, datetime
+        since = datetime.date.today().isoformat()
+        name = os.environ.get("ORCH_THIRD_CODER", "")
+        rows = db.select("outcomes", {"select": "usd", "created_at": f"gte.{since}",
+                                      "model": f"eq.{name}"}) or []
+        return sum(float(r.get("usd") or 0) for r in rows) < cap
+    except Exception:
+        return True  # fail-open within the day; the coder's own per-call cost stays small
+
+
 def pick(task, slot_index=0):
-    """Choose a coder for a task. Only route to a second coder when it's SAFE: independent
-    (no deps), non-material, and within the configured share. Otherwise Claude."""
+    """Choose an agentic coder for a task.
+
+    COST-PRIORITISED CASCADE (owner directive):
+      1. Claude Code on the Max SUBSCRIPTION (both accounts, $0/call) — normal path.
+      2. When EVERY Claude account is rate-limited/exhausted (account_pool.claude_exhausted),
+         fail over to the SUBSCRIPTION second coder (Codex/ChatGPT — bundled, non-API, $0) for
+         ALL eligible work instead of stalling until Claude resets.
+      3. If Codex is unavailable, use the optional paid-API THIRD coder, but only within its
+         daily $ cap (ORCH_THIRD_CODER_DAILY_USD).
+    In the NORMAL (not-exhausted) state, the second coder still takes a diversification share of
+    SAFE (independent, non-material) tasks so capacity is spread and benchmarked.
+    """
     second = os.environ.get("ORCH_SECOND_CODER")
-    if not second or not os.environ.get("ORCH_SECOND_CODER_CMD"):
+    second_ok = bool(second and os.environ.get("ORCH_SECOND_CODER_CMD"))
+    third = os.environ.get("ORCH_THIRD_CODER")
+    third_ok = bool(third and os.environ.get("ORCH_THIRD_CODER_CMD"))
+
+    try:
+        import account_pool
+        exhausted = account_pool.claude_exhausted()
+    except Exception:
+        exhausted = False
+
+    if exhausted:
+        # Claude Code can't run — keep the fleet moving on subscription-first, then capped paid API.
+        if second_ok:
+            return second
+        if third_ok and _third_within_cap():
+            return third
+        return "claude"  # nothing better available; task waits for Claude reset
+
+    # Normal state: diversification share to the second coder for SAFE tasks only.
+    if not second_ok:
         return "claude"
     if task.get("material") or (task.get("deps") or []):
         return "claude"
@@ -45,16 +96,19 @@ def pick(task, slot_index=0):
     return second if h < share else "claude"
 
 
-def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900):
+def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900, **kwargs):
     """Dispatch to the chosen agentic backend, returning claude_cli-shaped output."""
     if coder == "claude":
         import claude_cli
-        return claude_cli.run(prompt, model, cwd=cwd, env=env, project=project, timeout=timeout)
-    # generic CLI backend
-    tmpl = os.environ.get("ORCH_SECOND_CODER_CMD", "")
+        return claude_cli.run(prompt, model, cwd=cwd, env=env, project=project, timeout=timeout, **kwargs)
+    # generic CLI backend — pick the right command template for this coder
+    if coder == os.environ.get("ORCH_THIRD_CODER"):
+        tmpl = os.environ.get("ORCH_THIRD_CODER_CMD", "")
+    else:
+        tmpl = os.environ.get("ORCH_SECOND_CODER_CMD", "")
     if not tmpl:
-        raise RuntimeError("second coder command not configured")
-    cmd = tmpl.replace("{prompt}", prompt).replace("{model}", model or "")
+        raise RuntimeError(f"coder '{coder}' command not configured")
+    cmd = tmpl.replace("{prompt}", shlex.quote(prompt)).replace("{model}", shlex.quote(model or ""))
     t0 = time.time()
     try:
         proc = subprocess.run(shlex.split(cmd) if "{prompt}" not in tmpl else ["bash", "-lc", cmd],
