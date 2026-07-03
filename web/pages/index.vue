@@ -395,6 +395,21 @@ const loopHealth = computed(() => {
 })
 
 const spend = computed(() => outcomes.value.reduce((s, o) => s + Number(o.usd || 0), 0))
+// Cost split: `*-notional` providers are token cost COVERED by the fixed Claude Max plan
+// (no cash). Everything else is REAL out-of-pocket API cash. Sourced from v_provider_spend_mtd.
+const isNotional = (p: any) => String(p ?? '').includes('notional')
+const coveredMtd = computed(() => providerSpend.value.filter(s => isNotional(s.provider)).reduce((n, s) => n + Number(s.spent || 0), 0))
+const cashMtd = computed(() => providerSpend.value.filter(s => !isNotional(s.provider)).reduce((n, s) => n + Number(s.spent || 0), 0))
+const spendSplitByProject = computed(() => {
+  const m: Record<string, { covered: number; cash: number }> = {}
+  for (const s of providerSpend.value) {
+    const p = s.project || '(none)'
+    ;(m[p] ??= { covered: 0, cash: 0 })
+    if (isNotional(s.provider)) m[p].covered += Number(s.spent || 0)
+    else m[p].cash += Number(s.spent || 0)
+  }
+  return m
+})
 const byModel = computed(() => {
   const m: Record<string, number> = {}
   for (const o of outcomes.value) m[o.model] = (m[o.model] || 0) + Number(o.usd || 0)
@@ -520,7 +535,7 @@ watch(user, u => { if (u) loadAll() })
         </span>
         <h1 class="text-lg font-semibold">Claude Orchestrator</h1>
         <span class="text-slate-500 text-sm">
-          {{ runners.filter(alive).length }} runner(s) · {{ approvals.length }} pending · <span class="font-mono">${{ spend.toFixed(2) }}</span> spent
+          {{ runners.filter(alive).length }} runner(s) · {{ approvals.length }} pending · <span class="font-mono text-slate-300" title="Token cost covered by your Claude Max plan — not cash">${{ coveredMtd.toFixed(2) }}</span> Max-covered · <span class="font-mono text-emerald-400" title="Real out-of-pocket API cash, month-to-date">${{ cashMtd.toFixed(2) }}</span> cash
         </span>
         <span class="flex-1"></span>
         <button @click="signOut" class="text-slate-400 text-sm hover:text-white">Sign out</button>
@@ -798,14 +813,15 @@ watch(user, u => { if (u) loadAll() })
         <table v-else class="w-full text-xs">
           <thead>
             <tr class="text-slate-500 text-left border-b border-slate-800">
-              <th class="pb-2 pr-3">Project</th><th class="pb-2 pr-3">Spend</th>
+              <th class="pb-2 pr-3">Project</th><th class="pb-2 pr-3">Max-covered</th><th class="pb-2 pr-3">Cash</th>
               <th class="pb-2 pr-3">Merged</th><th class="pb-2 pr-3">$/merge</th><th class="pb-2">Pass rate</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="r in roiData" :key="r.project" class="border-b border-slate-800/60 last:border-0">
               <td class="py-1.5 pr-3 text-slate-300 font-medium">{{ r.project }}</td>
-              <td class="py-1.5 pr-3 text-slate-400">${{ r.spend }}</td>
+              <td class="py-1.5 pr-3 text-slate-400" title="Token cost covered by your Claude Max plan — not cash">${{ r.spend }}</td>
+              <td class="py-1.5 pr-3 text-emerald-400" title="Real out-of-pocket API cash (month-to-date)">${{ (spendSplitByProject[r.project]?.cash ?? 0).toFixed(2) }}</td>
               <td class="py-1.5 pr-3 text-slate-400">{{ r.merged }}</td>
               <td class="py-1.5 pr-3">
                 <span :class="r.cost_per_merge ? 'text-slate-300' : 'text-slate-600'">
@@ -1054,12 +1070,15 @@ watch(user, u => { if (u) loadAll() })
           <tbody>
             <tr v-for="s in providerSpend" :key="`${s.provider}-${s.project}`"
                 class="border-b border-slate-800/60 last:border-0">
-              <td class="py-1.5 pr-3 text-slate-300 font-medium">{{ s.provider }}</td>
+              <td class="py-1.5 pr-3 text-slate-300 font-medium">
+                {{ s.provider }}
+                <span :class="isNotional(s.provider) ? 'bg-slate-700 text-slate-400' : 'bg-emerald-900/60 text-emerald-300'"
+                      class="ml-1 text-[9px] px-1 py-0.5 rounded uppercase tracking-wide">{{ isNotional(s.provider) ? 'Max-covered' : 'cash' }}</span>
+              </td>
               <td class="py-1.5 pr-3 text-slate-400">{{ s.project || '—' }}</td>
               <td class="py-1.5 pr-3">
-                <span :class="Number(s.spent) > 50 ? 'text-red-400' : Number(s.spent) > 20 ? 'text-amber-400' : 'text-slate-300'">
-                  ${{ Number(s.spent).toFixed(2) }}
-                </span>
+                <span v-if="isNotional(s.provider)" class="text-slate-500" title="Covered by Claude Max plan — not cash">${{ Number(s.spent).toFixed(2) }}</span>
+                <span v-else :class="Number(s.spent) > 20 ? 'text-amber-400' : 'text-emerald-300'">${{ Number(s.spent).toFixed(2) }}</span>
               </td>
               <td class="py-1.5">
                 <div class="flex items-center gap-2">

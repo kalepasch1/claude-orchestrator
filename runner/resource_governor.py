@@ -15,7 +15,7 @@ import db
 
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 THROTTLE_FILE = os.path.join(HOME, "throttle")
-CEILING = int(os.environ.get("MAX_PARALLEL_CEILING", "4"))
+CEILING = int(os.environ.get("MAX_PARALLEL_CEILING", "12"))
 DISK_SOFT = float(os.environ.get("DISK_SOFT_PCT", "80"))   # prune above this
 DISK_HARD = float(os.environ.get("DISK_HARD_PCT", "90"))   # throttle to 1 + alert
 RAM_HARD = float(os.environ.get("RAM_HARD_PCT", "82"))
