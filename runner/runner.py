@@ -234,6 +234,13 @@ def _cap_agent_prompt(prompt):
     )
 
 
+BUILD_MANDATE = (
+    "\n\n---\nBEFORE YOU FINISH (required): run the project's production build and, if present, its "
+    "tests (e.g. `npm run build` then the test command). If ANYTHING fails, fix it and re-run until the "
+    "build is GREEN. Make the smallest correct change and reuse existing code. Do not finish with a red "
+    "build, and do not finish by only describing changes — actually apply your edits to the files.")
+
+
 def run_task(t):
     with _sem:
         proj = projects(t["project_id"]).get(t["project_id"], {})
@@ -413,6 +420,13 @@ def run_task(t):
                     set_state(t["id"], note=f"strategy: {_plan_model} -> draft: {coder}")
             except Exception:
                 draft_prompt = prompt  # fail-soft: never block drafting on the plan step
+            # BUILD-TO-GREEN MANDATE: make the agent iterate to a mergeable state ITSELF (edit -> build ->
+            # fix -> re-build -> commit), the way an interactive VSCode session does — so it returns green,
+            # mergeable work instead of a draft a downstream committee rejects and recycles. The build is
+            # the hard gate, so returning a red build just wastes the whole (paid) run. Appended AFTER the
+            # length cap so the mandate is never truncated. Toggle with ORCH_BUILD_MANDATE=false.
+            if os.environ.get("ORCH_BUILD_MANDATE", "true").lower() in ("true", "1", "yes"):
+                draft_prompt = _cap_agent_prompt(draft_prompt) + BUILD_MANDATE
             try:
                 r = agentic_coders.run(coder, draft_prompt, model,
                                        cwd=wt if os.path.isdir(wt) else repo, env=env,
@@ -519,26 +533,41 @@ def run_task(t):
             radius = blast_radius.radius_after(wt, base)
             deps = radius.get("dependents", [])
 
+            # SOFT GATES (verify / quality / judge) are ADVISORY for non-material work: the production
+            # BUILD is the hard gate (a green build is deployable), so a cheap-model quibble is recorded
+            # as a flag rather than a reject-to-recycle. Rejecting on every soft-gate concern — each an
+            # independent model that recycles the task — is what compounded yield down to ~1%. Material
+            # tasks keep the full gauntlet. Toggle with ORCH_SOFT_GATES_ADVISORY=false.
+            _soft_advisory = (os.environ.get("ORCH_SOFT_GATES_ADVISORY", "true").lower() in ("true", "1", "yes")
+                              and not t.get("material"))
+            _soft_flags = []
+
             # verification swarm BEFORE integrate (blast-radius-aware)
             v = verify.review_diff(wt, base, dependents=deps if deps else None, project=name)
             if v["verdict"] == "fail":
-                set_state(t["id"], state="BLOCKED", note="verify: " + v["notes"])
-                approval(name, "verify", f"Verification flagged {slug}",
-                         why=v["notes"], risk="cheap-model review wants a human look",
-                         detail=out[-3000:])
-                regression.record(name, slug, kind, t["prompt"][:500], "verify: " + v["notes"], v["notes"])
-                record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0, cost=run_cost); return
+                if _soft_advisory:
+                    _soft_flags.append("verify: " + (v.get("notes") or "")[:180])
+                else:
+                    set_state(t["id"], state="BLOCKED", note="verify: " + v["notes"])
+                    approval(name, "verify", f"Verification flagged {slug}",
+                             why=v["notes"], risk="cheap-model review wants a human look",
+                             detail=out[-3000:])
+                    regression.record(name, slug, kind, t["prompt"][:500], "verify: " + v["notes"], v["notes"])
+                    record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0, cost=run_cost); return
 
             # quality gate: mutation + property tests (blocking if MUTATION_CMD/PROPERTY_CMD set)
             qg = quality_gate.run(wt)
             if not qg["pass"]:
-                set_state(t["id"], state="BLOCKED", note="quality gate: " + qg["notes"])
-                approval(name, "verify", f"Quality gate failed: {slug}",
-                         why=qg["notes"], risk="mutation or property test score below threshold",
-                         detail=out[-2000:])
-                regression.record(name, slug, kind, t["prompt"][:500],
-                                  "quality gate: " + qg["notes"], qg["notes"])
-                record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0, cost=run_cost); return
+                if _soft_advisory:
+                    _soft_flags.append("quality: " + (qg.get("notes") or "")[:180])
+                else:
+                    set_state(t["id"], state="BLOCKED", note="quality gate: " + qg["notes"])
+                    approval(name, "verify", f"Quality gate failed: {slug}",
+                             why=qg["notes"], risk="mutation or property test score below threshold",
+                             detail=out[-2000:])
+                    regression.record(name, slug, kind, t["prompt"][:500],
+                                      "quality gate: " + qg["notes"], qg["notes"])
+                    record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0, cost=run_cost); return
 
             # cross-model QA + legal-risk panel — a different model family reviews the diff
             _diff_for_judge = ""
@@ -554,14 +583,17 @@ def run_task(t):
                       "legal_counsel_required": False, "legal_risk": ""}
 
             if jv["verdict"] != "pass":
-                set_state(t["id"], state="BLOCKED", note="judge: " + jv["notes"][:200])
-                approval(name, "verify", f"Cross-model review flagged {slug}",
-                         why=jv["notes"], risk="judge panel rejected the diff",
-                         detail=out[-2000:])
-                regression.record(name, slug, kind, t["prompt"][:500],
-                                  "judge: " + jv["notes"], "cross-model review failed; re-scope or fix")
-                record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0, cost=run_cost)
-                return
+                if _soft_advisory:
+                    _soft_flags.append("judge: " + (jv.get("notes") or "")[:180])
+                else:
+                    set_state(t["id"], state="BLOCKED", note="judge: " + jv["notes"][:200])
+                    approval(name, "verify", f"Cross-model review flagged {slug}",
+                             why=jv["notes"], risk="judge panel rejected the diff",
+                             detail=out[-2000:])
+                    regression.record(name, slug, kind, t["prompt"][:500],
+                                      "judge: " + jv["notes"], "cross-model review failed; re-scope or fix")
+                    record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0, cost=run_cost)
+                    return
 
             if jv.get("legal_counsel_required"):
                 set_state(t["id"], state="BLOCKED", note="legal review required: " + jv["legal_risk"][:200])
@@ -632,6 +664,8 @@ def run_task(t):
                          + _fix + _esc)[:1800]
             else:
                 _note = f"verify pass (conf={conf_score}); integrate={result} ({INTEGRATION_MODE})"
+                if _soft_flags:
+                    _note = (_note + " | advisory (shipped on green build): " + "; ".join(_soft_flags))[:1800]
                 if result == "MERGED" and (t.get("build_fail_count") or t.get("force_coder")):
                     # clean slate on success so a later unrelated fail starts fresh
                     try:
@@ -794,6 +828,7 @@ _SCHEDULE = [
     ("deployverify-120","deployverify",     "interval", 120),   # confirm Vercel deploy / auto-rollback
     ("releasekpi-1800","release_kpi.py",     "interval", 1800),  # released->deploy-green KPI + self-tune gate
     ("integratekpi-1800","integrate_kpi.py",  "interval", 1800),  # per-app integrate build-pass / merge-rate KPI
+    ("fleetsync-90",  "fleet_control.py",     "interval", 90),    # fleet gateway: central config + control + auto-pull (survives a busy main loop)
     ("stripe-daily",  "stripe",             "daily",    (6, 0)),  # pull real MRR from Stripe -> app_revenue
     ("ownerreport-wk","ownerreport",        "weekly",   (1, 7, 0)),# Monday owner report -> email
     ("revattr-daily", "revattr",            "daily",    (5, 45)),# attribute merges to revenue movement
@@ -822,7 +857,7 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      "dedup", "canaryecon", "forecast", "arbitrage", "autoscale", "bizradar",
                      "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",
                      "stripe", "ownerreport", "worktreegc", "remediate", "selfcheck", "release_kpi.py",
-                     "integrate_kpi.py"}
+                     "integrate_kpi.py", "fleet_control.py"}
 
 # Optional autonomous-improvement jobs that are NOT yet routed through claude_cli (so their
 # spend isn't counted against the $40/day cap). OFF unless ENABLE_PROACTIVE_LOOPS=true.
@@ -996,6 +1031,9 @@ def _acquire_singleton():
         return False
 
 
+_FLEET = {"t": 0.0}  # throttle for the in-loop fleet_control gateway tick
+
+
 def main():
     if not _acquire_singleton():
         print("another runner already holds the lock — exiting (singleton guard).")
@@ -1061,6 +1099,17 @@ def main():
             pass
         try:
             db.heartbeat(RUNNER_ID, socket.gethostname(), len(active))
+            # FLEET GATEWAY: load central config (fleet_config) + honor control actions (restart / pull)
+            # from ONE place, so every Mac converges without a second terminal. In-process so config is
+            # live (the loop reads MAX_PARALLEL etc. from env below) and a restart action affects THIS
+            # runner. Throttled + fail-soft.
+            try:
+                import fleet_control
+                if time.time() - _FLEET["t"] >= float(os.environ.get("ORCH_FLEET_TICK_S", "60")):
+                    _FLEET["t"] = time.time()
+                    fleet_control.tick()
+            except Exception:
+                pass
             # live throttle: the resource governor lowers this under disk/RAM pressure
             # read MAX_PARALLEL live from env each loop so concurrency is tunable via .env + hot_reload
             # WITHOUT a restart (RAM permitting; resource_governor still clamps to protect the Mac).

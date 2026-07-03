@@ -469,19 +469,21 @@ const spendSplitByProject = computed(() => {
 // (integrated). This is the number that should climb as the build self-heal + coder-switch take hold.
 const isChurn = (slug: any) => { const s = String(slug ?? ''); return s.startsWith('cont-') || s.startsWith('batch-mech') }
 const integrateKpi = computed(() => {
-  const m: Record<string, { completed: number; integrated: number }> = {}
-  let c = 0, i = 0
+  const m: Record<string, { completed: number; integrated: number; usd: number }> = {}
+  let c = 0, i = 0, usd = 0
   for (const o of outcomes.value) {
     if (isChurn(o.slug)) continue
     const p = o.project || '(none)'
-    ;(m[p] ??= { completed: 0, integrated: 0 })
-    m[p].completed++; c++
+    ;(m[p] ??= { completed: 0, integrated: 0, usd: 0 })
+    m[p].completed++; c++; m[p].usd += Number(o.usd || 0); usd += Number(o.usd || 0)
     if (o.integrated) { m[p].integrated++; i++ }
   }
   const byProject = Object.entries(m)
-    .map(([project, v]) => ({ project, ...v, rate: v.completed ? v.integrated / v.completed : 0 }))
+    .map(([project, v]) => ({ project, ...v, rate: v.completed ? v.integrated / v.completed : 0,
+                              usdPerMerge: v.integrated ? v.usd / v.integrated : null }))
     .sort((a, b) => b.completed - a.completed)
-  return { overall: c ? i / c : 0, completed: c, integrated: i, byProject }
+  // $/merged-change is the north-star: drive it DOWN.
+  return { overall: c ? i / c : 0, completed: c, integrated: i, usd, usdPerMerge: i ? usd / i : null, byProject }
 })
 const byModel = computed(() => {
   const m: Record<string, number> = {}
@@ -617,7 +619,7 @@ watch(user, u => { if (u) loadAll() })
         </span>
         <h1 class="text-lg font-semibold">Claude Orchestrator</h1>
         <span class="text-slate-500 text-sm">
-          {{ liveRunnerCount }}/{{ runnerFleetTarget }} live lanes · {{ approvals.length }} pending · <span class="font-mono text-slate-300" title="Token cost covered by your Claude Max plan — not cash">${{ coveredMtd.toFixed(2) }}</span> Max-covered · <span class="font-mono text-emerald-400" title="Real out-of-pocket API cash, month-to-date">${{ cashMtd.toFixed(2) }}</span> cash · <span class="font-mono" :class="integrateKpi.overall >= 0.15 ? 'text-emerald-400' : 'text-amber-400'" title="Integrate merge-rate: real (non-churn) completed tasks that merged. Should climb as the build self-heal engages.">{{ (integrateKpi.overall * 100).toFixed(0) }}%</span> merge-rate ({{ integrateKpi.integrated }}/{{ integrateKpi.completed }})
+          {{ liveRunnerCount }}/{{ runnerFleetTarget }} live lanes · {{ approvals.length }} pending · <span class="font-mono text-slate-300" title="Token cost covered by your Claude Max plan — not cash">${{ coveredMtd.toFixed(2) }}</span> Max-covered · <span class="font-mono text-emerald-400" title="Real out-of-pocket API cash, month-to-date">${{ cashMtd.toFixed(2) }}</span> cash · <span class="font-mono" :class="integrateKpi.overall >= 0.15 ? 'text-emerald-400' : 'text-amber-400'" title="Integrate merge-rate: real (non-churn) completed tasks that merged. Should climb as the gauntlet-collapse + build mandate engage.">{{ (integrateKpi.overall * 100).toFixed(0) }}%</span> merge-rate ({{ integrateKpi.integrated }}/{{ integrateKpi.completed }}) · <span class="font-mono" :class="(integrateKpi.usdPerMerge ?? 99) <= 2 ? 'text-emerald-400' : 'text-amber-400'" title="NORTH STAR: $ per merged change. Drive this DOWN.">{{ integrateKpi.usdPerMerge == null ? '—' : ('$' + integrateKpi.usdPerMerge.toFixed(2)) }}</span>/merge
         </span>
         <span class="flex-1"></span>
         <button @click="signOut" class="text-slate-400 text-sm hover:text-white">Sign out</button>
