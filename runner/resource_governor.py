@@ -23,10 +23,10 @@ RAM_HARD = float(os.environ.get("RAM_HARD_PCT", "82"))
 # entirely (a single heavy task — e.g. an 8GB typecheck — could otherwise crash the Mac).
 # 1.5GB was too low — macOS is already swapping/thrashing by then. Default 3GB, and the
 # effective floor scales UP with machine size (see effective_floor_gb).
-RAM_FLOOR_GB = float(os.environ.get("RAM_FLOOR_GB", "3.0"))
+RAM_FLOOR_GB = float(os.environ.get("RAM_FLOOR_GB", "6.0"))
 # Headroom to reserve per concurrent task. A new task is only started if free RAM exceeds
 # (floor + PER_TASK_GB), so concurrency is implicitly capped by available memory.
-PER_TASK_GB = float(os.environ.get("PER_TASK_GB", "2.0"))
+PER_TASK_GB = float(os.environ.get("PER_TASK_GB", "3.0"))
 LOG_KEEP_DAYS = int(os.environ.get("LOG_KEEP_DAYS", "7"))
 PRUNE_NODE_MODULES = os.environ.get("PRUNE_NODE_MODULES", "false").lower() == "true"
 PRUNE_DOCKER = os.environ.get("PRUNE_DOCKER", "false").lower() == "true"
@@ -48,38 +48,60 @@ def disk_pct(path="/"):
 
 
 def _vm_stat():
-    """macOS memory via vm_stat + sysctl (no psutil dependency). Returns (pct_used, free_gb)."""
+    """macOS memory via vm_stat + sysctl (no psutil dependency). Returns (pct_used, avail_gb).
+
+    CRITICAL FIX (2026-07): macOS keeps almost all RAM committed to reclaimable file
+    cache, so the old `free + inactive + speculative` heuristic reported ~3GB "free" on a
+    48GB Mac that Activity Monitor showed as having ~19GB available (0 swap, GREEN pressure).
+    That starved the runner to 1-2 tasks. True available ≈ total - non-reclaimable, where
+    non-reclaimable = anonymous (app) + wired + compressor. Everything else (free space +
+    file-backed cache + purgeable) can be handed to a new task instantly."""
     try:
         import re
         page = 4096
         total = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]).strip())
         out = subprocess.check_output(["vm_stat"]).decode()
-        vals = {}
-        for ln in out.splitlines():
-            m = re.match(r"Pages (free|active|inactive|speculative|wired down|occupied by compressor):\s+(\d+)", ln)
-            if m:
-                vals[m.group(1)] = int(m.group(2)) * page
-        used = vals.get("active", 0) + vals.get("wired down", 0) + vals.get("occupied by compressor", 0)
-        avail = vals.get("free", 0) + vals.get("inactive", 0) + vals.get("speculative", 0)
+        def f(label):
+            m = re.search(re.escape(label) + r":\s+(\d+)", out)
+            return int(m.group(1)) * page if m else 0
+        wired      = f("Pages wired down")
+        compressor = f("Pages occupied by compressor")
+        anon       = f("Anonymous pages")
+        if anon:  # modern vm_stat: non-reclaimable = app + wired + compressed
+            used  = anon + wired + compressor
+            avail = max(0, total - used)
+        else:     # older vm_stat fallback: add file-backed + purgeable to the old buckets
+            used  = f("Pages active") + wired + compressor
+            avail = (f("Pages free") + f("Pages inactive") + f("Pages speculative")
+                     + f("File-backed pages") + f("Pages purgeable"))
+        avail = min(avail, total)
         return round(used / total * 100, 1), round(avail / 1e9, 1)
     except Exception:
         return None, None
 
 
 def ram_pct():
+    # Prefer our macOS-accurate calc; psutil's macOS `available` also undercounts cache.
+    v = _vm_stat()[0]
+    if v is not None:
+        return v
     try:
         import psutil
         return psutil.virtual_memory().percent
     except Exception:
-        return _vm_stat()[0]
+        return None
 
 
 def ram_free_gb():
+    # Prefer our macOS-accurate calc (counts reclaimable cache as available).
+    v = _vm_stat()[1]
+    if v is not None:
+        return v
     try:
         import psutil
         return round(psutil.virtual_memory().available / 1e9, 1)
     except Exception:
-        return _vm_stat()[1]
+        return None
 
 
 def total_gb():

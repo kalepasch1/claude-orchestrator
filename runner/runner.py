@@ -50,7 +50,7 @@ POLL = int(os.environ.get("POLL_SECONDS", "5"))
 # Concurrency ceiling. Bumped 2->4: resource_governor.can_claim() still clamps every claim by
 # free RAM / kernel memory pressure / disk, so the Mac can't be overrun — this just lets the
 # runner use idle headroom instead of sitting at 2. Tune MAX_PARALLEL in runner/.env per machine.
-MAX_PARALLEL = int(os.environ.get("MAX_PARALLEL", "4"))
+MAX_PARALLEL = int(os.environ.get("MAX_PARALLEL", "12"))
 RATE = ("temporarily limiting", "rate limit", "429", "overloaded", "too many requests")
 EXHAUST = ("usage limit", "out of credits", "insufficient_quota", "quota",
            "weekly limit", "hit your weekly", "limit · resets", "limit - resets",
