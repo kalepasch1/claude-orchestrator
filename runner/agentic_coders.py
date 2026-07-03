@@ -68,6 +68,18 @@ def pick(task, slot_index=0):
     third = os.environ.get("ORCH_THIRD_CODER")
     third_ok = bool(third and os.environ.get("ORCH_THIRD_CODER_CMD"))
 
+    # FORCED CODER: integrate-level self-heal sets task.force_coder after repeated build fails, so the
+    # re-draft runs on a DIFFERENT backend instead of recycling forever on one that keeps producing a
+    # red build. Honor it when that coder is actually available; otherwise fall through to the cascade.
+    forced = str(task.get("force_coder") or "").strip()
+    if forced:
+        if forced == "claude":
+            return "claude"
+        if forced == second and second_ok:
+            return second
+        if forced == third and third_ok and _third_within_cap():
+            return third
+
     try:
         import account_pool
         exhausted = account_pool.claude_exhausted()

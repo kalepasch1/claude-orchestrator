@@ -604,9 +604,31 @@ def run_task(t):
                                                      t.get("prompt", ""), project=name)
                 except Exception:
                     _fix = ""
-                _note = ("integrate BUILDFAIL — production build red; fix build/type errors before merge. " + _fix)[:1800]
+                # CODER SWITCH: after repeated red builds on the SAME backend, route the re-draft to a
+                # DIFFERENT coder (mirror of the release-level self-heal) so we stop recycling on a coder
+                # that keeps producing a broken build. Persisted via task.force_coder (pick() honors it).
+                _bfc = int(t.get("build_fail_count") or 0) + 1
+                _switch = int(os.environ.get("ORCH_BUILD_FAIL_CODER_SWITCH", "2"))
+                _second = os.environ.get("ORCH_SECOND_CODER")
+                _patch = {"build_fail_count": _bfc}
+                _esc = ""
+                if _bfc >= _switch and _second and str(t.get("force_coder") or "") != _second:
+                    _patch["force_coder"] = _second
+                    _esc = f" [escalated to coder '{_second}' after {_bfc} build fails]"
+                try:
+                    db.update("tasks", {"id": t["id"]}, _patch)
+                except Exception:
+                    pass
+                _note = ("integrate BUILDFAIL — production build red; fix build/type errors before merge. "
+                         + _fix + _esc)[:1800]
             else:
                 _note = f"verify pass (conf={conf_score}); integrate={result} ({INTEGRATION_MODE})"
+                if result == "MERGED" and (t.get("build_fail_count") or t.get("force_coder")):
+                    # clean slate on success so a later unrelated fail starts fresh
+                    try:
+                        db.update("tasks", {"id": t["id"]}, {"build_fail_count": 0, "force_coder": None})
+                    except Exception:
+                        pass
             set_state(t["id"], state=state_val, confidence=conf_score, note=_note)
             if result in ("CONFLICT", "TESTFAIL", "BUILDFAIL"):
                 approval(name, "integrate", f"{slug} {result.lower()} on integrate",
