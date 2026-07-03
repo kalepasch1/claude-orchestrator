@@ -363,14 +363,23 @@ def run_task(t):
             # An explicit "haiku" hint is honored (lets authors force the cheap tier).
             routed = model_router.route(t["prompt"], attempt)
             hint = (t.get("model") or "").lower()
-            if hint in ("haiku", model_router.HAIKU) and attempt == 1:
+            # YIELD-FIRST routing (optimize cost-per-MERGE, not per-call): Haiku empirically merges ~0%
+            # of feature/bugfix work, so a Haiku draft is pure spend with zero return. Draft REAL coding
+            # on Sonnet+ and honor an explicit haiku hint only for genuinely mechanical edits.
+            kind_l = (t.get("kind") or "").lower()
+            mechanical = kind_l in ("mechanical", "chore", "docs", "cleanup", "test")
+            if hint in ("haiku", model_router.HAIKU) and attempt == 1 and mechanical:
                 model = model_router.HAIKU
             else:
                 model = routed["model"]
-            # cost SLO: cost_slo.py sets projects.cost_bias when an app is over its $/merge target.
-            # honor it by forcing a cheaper tier (1 = no Opus, 2 = Haiku only) until the SLO recovers.
+            if model == model_router.HAIKU and not mechanical:
+                model = model_router.SONNET   # never draft real code on Haiku
+            # cost SLO: cost_slo.py raises projects.cost_bias when an app is over its $/merge target.
+            # BUT forcing Haiku on real coding was a doom loop (Haiku merges nothing -> $/merge worsens
+            # -> more Haiku). So the bias may only drop Opus->Sonnet; it can push down to Haiku ONLY for
+            # mechanical tasks, never for real coding.
             bias = int(proj.get("cost_bias") or 0)
-            if bias >= 2:
+            if bias >= 2 and mechanical:
                 model = model_router.HAIKU
             elif bias >= 1 and model == model_router.OPUS:
                 model = model_router.SONNET
@@ -784,6 +793,7 @@ _SCHEDULE = [
     ("releasetrain-600","releasetrain",     "interval", 600),   # accumulate on staging, QA, release to prod
     ("deployverify-120","deployverify",     "interval", 120),   # confirm Vercel deploy / auto-rollback
     ("releasekpi-1800","release_kpi.py",     "interval", 1800),  # released->deploy-green KPI + self-tune gate
+    ("integratekpi-1800","integrate_kpi.py",  "interval", 1800),  # per-app integrate build-pass / merge-rate KPI
     ("stripe-daily",  "stripe",             "daily",    (6, 0)),  # pull real MRR from Stripe -> app_revenue
     ("ownerreport-wk","ownerreport",        "weekly",   (1, 7, 0)),# Monday owner report -> email
     ("revattr-daily", "revattr",            "daily",    (5, 45)),# attribute merges to revenue movement
@@ -811,7 +821,8 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      "governor", "costslo", "promote", "prewarm", "billingguard",
                      "dedup", "canaryecon", "forecast", "arbitrage", "autoscale", "bizradar",
                      "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",
-                     "stripe", "ownerreport", "worktreegc", "remediate", "selfcheck", "release_kpi.py"}
+                     "stripe", "ownerreport", "worktreegc", "remediate", "selfcheck", "release_kpi.py",
+                     "integrate_kpi.py"}
 
 # Optional autonomous-improvement jobs that are NOT yet routed through claude_cli (so their
 # spend isn't counted against the $40/day cap). OFF unless ENABLE_PROACTIVE_LOOPS=true.

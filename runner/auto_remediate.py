@@ -21,8 +21,15 @@ import os, sys, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import legal_filter
+import pipeline_contract
 
 CAP = int(os.environ.get("REMEDIATION_CAP", "3"))
+# HARD TERMINAL CAP: a task remediated this many times without ever merging is almost certainly
+# mis-scoped or impossible. Every branch below used to re-queue it, so no-op / empty-diff tasks
+# recycled FOREVER — burning fleet lanes and sinking merge throughput. At the hard cap we SHELVE it
+# (terminal state nothing re-picks) with a clear note, so a human can re-scope it instead.
+HARD_CAP = int(os.environ.get("REMEDIATION_HARD_CAP", "6"))
+MAX_REMEDIATION_PROMPT_CHARS = int(os.environ.get("ORCH_MAX_REMEDIATION_PROMPT_CHARS", "16000"))
 RECOVERY_MARK = "auto-remediate:reclaimed-20260703"
 DIRECTIVE_MARKER = "AUTO-REMEDIATION DIRECTIVE"
 _BUDGET = re.compile(r"budget cap|call cap|hourly \$ cap|daily \$ cap|cost circuit", re.I)
@@ -34,6 +41,8 @@ _MISSING_BRANCH = re.compile(r"branch.*missing|no longer exists|approved.*agent/
 _HUMAN = re.compile(r"credential needed|missing credential|auth failure|secret|api key|two-key", re.I)
 _CAP_CARD = re.compile(r"blocked after \d+ auto-fixes|can't self-revise|needs a look:|re-scope needed", re.I)
 _PARKED = re.compile(r"ev-parked|near-zero expected value|preflight: predicted no committable|permission denial|tool use", re.I)
+_TOO_LONG = re.compile(r"prompt is too long|context.*limit|single-exchange conversation cannot be compacted", re.I)
+_READY_UNCOMMITTED = re.compile(r"ready to commit|git commit|changes are safe|implementation is complete", re.I)
 _QUOTED_SLUG = re.compile(r"'([^']+)'")
 
 
@@ -49,43 +58,65 @@ def run(limit=120):
     restored_noops = recover_auto_closed_noops()
     blocked = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,log_tail,state",
                                   "state": "in.(BLOCKED,CONFLICT,TESTFAIL)", "limit": str(limit)}) or []
-    requeued = escalated = revised = reclaimed = left = 0
+    requeued = escalated = revised = reclaimed = left = shelved = 0
     for t in blocked:
         note = t.get("note") or ""
+        signal = f"{note}\n{t.get('log_tail') or ''}"
         rc = int(t.get("remediation_count") or 0)
+
+        # HARD TERMINAL CAP: stop burning lanes on a task that has been remediated past the hard cap
+        # without ever merging. Legal/material holds still route to the human path below, but everything
+        # else is SHELVED (terminal — the claim loop and this remediator both ignore SHELVED) so it
+        # surfaces in the cockpit for a re-scope instead of recycling indefinitely.
+        if rc >= HARD_CAP and not _requires_human_hold(t, signal):
+            db.update("tasks", {"id": t["id"]},
+                      {"state": "SHELVED", "account": None, "updated_at": "now()",
+                       "note": (f"shelved after {rc} remediations without merge — needs human re-scope. "
+                                + note)[:500]})
+            shelved += 1
+            continue
+
         upd = {"state": "QUEUED", "remediation_count": rc + 1, "account": None, "updated_at": "now()"}
 
-        if _PARKED.search(note):
-            upd["prompt"] = _implementation_prompt(t, note, "This was incorrectly parked as non-actionable; implement the smallest concrete useful improvement now.")
+        if _TOO_LONG.search(signal):
+            upd["prompt"] = _implementation_prompt(t, signal, "Previous prompt exceeded the model context limit; use this compacted instruction and inspect files directly.")
+            upd["model"] = _escalate(t.get("model"))
+            upd["note"] = f"auto-remediate: compacted overlong prompt ({rc + 1})"
+            db.update("tasks", {"id": t["id"]}, upd)
+            reclaimed += 1
+            continue
+
+        if _PARKED.search(signal):
+            upd["prompt"] = _implementation_prompt(t, signal, "This was incorrectly parked as non-actionable; implement the smallest concrete useful improvement now.")
             upd["model"] = _escalate(_escalate(t.get("model")))
             upd["note"] = f"auto-remediate: unparked for implementation ({rc + 1})"
             db.update("tasks", {"id": t["id"]}, upd)
             reclaimed += 1
             continue
 
-        if _CONFLICT.search(note):
-            upd["prompt"] = _implementation_prompt(t, note, "Recover from the merge/build conflict on a fresh branch and complete the implementation.")
+        if _CONFLICT.search(signal):
+            upd["prompt"] = _implementation_prompt(t, signal, "Recover from the merge/build conflict on a fresh branch and complete the implementation.")
             upd["model"] = _escalate(_escalate(t.get("model")))
             upd["note"] = f"auto-remediate: conflict recovery queued ({rc + 1})"
             db.update("tasks", {"id": t["id"]}, upd)
             requeued += 1
             continue
 
-        if _BUDGET.search(note):
+        if _BUDGET.search(signal):
             upd["remediation_count"] = 0
             upd["note"] = "auto-remediate: budget guard converted to subscription/failover route"
             db.update("tasks", {"id": t["id"]}, upd)
             requeued += 1
             continue
 
-        if _requires_human_hold(t, note):
+        if _requires_human_hold(t, signal):
             left += 1
             continue
 
         # A repeated no-op means the instruction was too vague or context was lost. Keep it in the cue
         # with an explicit implementation directive instead of marking it DONE.
-        if _NOOP.search(note) and rc >= 1:
-            upd["prompt"] = _implementation_prompt(t, note, "Repeated no-op: produce and commit the concrete missing change.")
+        if (_NOOP.search(signal) and rc >= 1) or _READY_UNCOMMITTED.search(signal):
+            upd["prompt"] = _implementation_prompt(t, signal, "The prior run found/created work but did not leave a committable branch. Verify the diff, commit it, and let merge train integrate it.")
             upd["model"] = _escalate(_escalate(t.get("model")))
             upd["note"] = f"auto-remediate: reclaimed no-op; implement fully ({rc + 1})"
             db.update("tasks", {"id": t["id"]}, upd)
@@ -100,7 +131,7 @@ def run(limit=120):
             reclaimed += 1
             continue
 
-        if rc == 0 and (_TRANSIENT.search(note) or _CONFLICT.search(note) or _MISSING_BRANCH.search(note)):
+        if rc == 0 and (_TRANSIENT.search(signal) or _CONFLICT.search(signal) or _MISSING_BRANCH.search(signal)):
             upd["note"] = f"auto-remediate: retry (1/{CAP}) — {note[:70]}"
             requeued += 1
         elif rc == 0:
@@ -125,9 +156,10 @@ def run(limit=120):
                 reclaimed += 1
         db.update("tasks", {"id": t["id"]}, upd)
     print(f"auto_remediate: retry {requeued}, escalate {escalated}, re-plan {revised}, "
-          f"reclaimed {reclaimed}, recovered-cards {recovered_cards}, restored-noops {restored_noops}, left {left}")
+          f"reclaimed {reclaimed}, shelved {shelved}, recovered-cards {recovered_cards}, "
+          f"restored-noops {restored_noops}, left {left}")
     return {"requeued": requeued, "escalated": escalated, "revised": revised,
-            "reclaimed": reclaimed, "recovered_cards": recovered_cards,
+            "reclaimed": reclaimed, "shelved": shelved, "recovered_cards": recovered_cards,
             "restored_noops": restored_noops, "left": left}
 
 
@@ -179,9 +211,19 @@ def recover_auto_closed_noops(limit=500):
             continue
         if _requires_human_hold(task, note):
             continue
+        rc = int(task.get("remediation_count") or 0)
+        # Don't let the no-op restore dodge the hard cap by resetting the counter: a task that has
+        # already been remediated past the hard cap is SHELVED for human re-scope, not restored again.
+        if rc >= HARD_CAP:
+            db.update("tasks", {"id": task["id"]},
+                      {"state": "SHELVED", "account": None, "updated_at": "now()",
+                       "note": (f"shelved after {rc} remediations (repeat no-op) — needs human re-scope. "
+                                + note)[:500]})
+            continue
+        # Preserve (increment) the counter across restores so repeat no-ops converge to the hard cap.
         db.update("tasks", {"id": task["id"]},
                   {"state": "QUEUED", "account": None, "updated_at": "now()",
-                   "remediation_count": 0,
+                   "remediation_count": rc + 1,
                    "prompt": _implementation_prompt(task, note, "This was incorrectly removed from the cue; implement the underlying work."),
                    "model": _escalate(_escalate(task.get("model"))),
                    "note": "auto-remediate: restored incorrectly auto-closed no-op task"})
@@ -230,7 +272,16 @@ def _requires_human_hold(task, note):
 
 
 def _implementation_prompt(task, note, directive):
-    base = (task.get("prompt") or f"Implement the queued task '{task.get('slug')}'.").split(DIRECTIVE_MARKER, 1)[0].rstrip()
+    raw = task.get("prompt") or f"Implement the queued task '{task.get('slug')}'."
+    base = pipeline_contract.original_request(raw).split(DIRECTIVE_MARKER, 1)[0].rstrip()
+    if len(base) > MAX_REMEDIATION_PROMPT_CHARS:
+        keep_tail = MAX_REMEDIATION_PROMPT_CHARS - 4000
+        base = (
+            base[:4000].rstrip() +
+            "\n\n[auto-remediate compaction: omitted bulky middle transcript/context. "
+            "Continue from the concrete task summary and inspect files directly.]\n\n" +
+            base[-keep_tail:].lstrip()
+        )
     return (base +
             f"\n\n{DIRECTIVE_MARKER}\n"
             f"{directive}\n"

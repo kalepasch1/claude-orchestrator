@@ -27,6 +27,11 @@ import db
 STUCK_RUNNING_H = float(os.environ.get("JANITOR_STUCK_RUNNING_H", "2"))
 LOCK_STALE_MIN = float(os.environ.get("JANITOR_LOCK_STALE_MIN", "15"))
 REQUEUE_CAP = int(os.environ.get("JANITOR_REQUEUE_CAP", "3"))
+# Fast orphan recovery: a runner restart/crash strands its in-flight tasks in RUNNING (the claim is
+# never released). Those stale rows hold lanes, so the fleet claims nothing new and goes idle — the
+# exact stall a Mac restart caused. This threshold is well beyond the agentic coder timeout (~15 min),
+# so a task RUNNING past it has already exceeded its own run and is orphaned, not live.
+ORPHAN_RUNNING_MIN = float(os.environ.get("JANITOR_ORPHAN_RUNNING_MIN", "20"))
 
 EMPTY_RUN_MARKERS = ("no committable changes", "empty diff", "diff is empty",
                      "no diff provided", "missing diff", "no code diff",
@@ -81,6 +86,35 @@ def requeue_stuck_running():
     return fixed
 
 
+def release_orphaned_running():
+    """Release RUNNING tasks orphaned by a runner restart/crash, far faster than the 2h wedge detector.
+
+    A RUNNING task untouched for ORPHAN_RUNNING_MIN minutes has exceeded the agentic coder timeout, so
+    its worker is gone; the claim is dead but still holds a lane. Requeue it (account cleared) so the
+    fleet can re-run it, capped by transient_retries so a genuinely long task can't ping-pong forever.
+    This is what stops a Mac restart from stranding in-flight work and starving the whole fleet."""
+    fixed = 0
+    cutoff = time.time() - ORPHAN_RUNNING_MIN * 60
+    import datetime
+    for t in db.select("tasks", {"select": "*", "state": "eq.RUNNING"}) or []:
+        try:
+            ts = datetime.datetime.fromisoformat(str(t.get("updated_at")).replace("Z", "+00:00")).timestamp()
+        except Exception:
+            continue
+        if ts > cutoff:
+            continue
+        attempts = int(t.get("transient_retries") or 0)
+        if attempts >= REQUEUE_CAP:
+            db.update("tasks", {"id": t["id"]}, {"state": "BLOCKED", "account": None,
+                      "note": f"janitor: orphaned RUNNING >{ORPHAN_RUNNING_MIN:.0f}m and requeue cap hit — needs a look"})
+        else:
+            db.update("tasks", {"id": t["id"]},
+                      {"state": "QUEUED", "account": None, "transient_retries": attempts + 1,
+                       "note": (t.get("note") or "") + f" [janitor: orphaned RUNNING >{ORPHAN_RUNNING_MIN:.0f}m — released]"})
+        fixed += 1
+    return fixed
+
+
 def recover_stuck_merging():
     """If merge_train crashes mid-claim, release the task for the next train cycle."""
     if os.environ.get("MERGE_TRAIN_STATE", "RUNNING") != "MERGING":
@@ -124,14 +158,14 @@ def requeue_empty_runs():
 
 
 def refile_stranded_approvals():
-    """BLOCKED awaiting-approval tasks are released into automatic code-merge flow."""
+    """BLOCKED awaiting-approval tasks are released back into automatic code-merge flow."""
     made = 0
     for t in db.select("tasks", {"select": "*", "state": "eq.BLOCKED"}) or []:
         if "awaiting your approval" not in (t.get("note") or ""):
             continue
         db.update("tasks", {"id": t["id"]},
-                  {"state": "DONE",
-                   "note": "janitor: code-merge approval removed; release_train will batch into dev/prod"})
+                  {"state": "QUEUED", "account": None,
+                   "note": "janitor: stale code-merge approval removed; requeued for automatic QA/merge"})
         made += 1
     return made
 
@@ -157,14 +191,15 @@ def clear_stale_git_locks():
 
 def run():
     hb = scheduler_heartbeat()
+    orphans = release_orphaned_running()
     stuck = requeue_stuck_running()
     merging = recover_stuck_merging()
     empty = requeue_empty_runs()
     refiled = refile_stranded_approvals()
     locks = clear_stale_git_locks()
-    print(f"queue_janitor: heartbeat={'ok' if hb else 'FAIL'} unstuck={stuck} "
+    print(f"queue_janitor: heartbeat={'ok' if hb else 'FAIL'} orphans-released={orphans} unstuck={stuck} "
           f"merge-released={merging} empty-requeued={empty} cards-refiled={refiled} locks-cleared={locks}")
-    return stuck + merging + empty + refiled + locks
+    return orphans + stuck + merging + empty + refiled + locks
 
 
 if __name__ == "__main__":

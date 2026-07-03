@@ -140,7 +140,7 @@ async function loadAll() {
          lps, sess, fb, pspend, creds, ctrl, prunes] = await Promise.all([
     supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(200),
     supabase.from('approvals').select('*').eq('status', 'pending').order('created_at'),
-    supabase.from('outcomes').select('model,usd,project,tests_passed,integrated,created_at').order('created_at').limit(2000),
+    supabase.from('outcomes').select('model,usd,project,tests_passed,integrated,created_at,slug').order('created_at').limit(2000),
     supabase.from('runner_heartbeats').select('*'),
     supabase.from('projects').select('*').order('name'),
     supabase.from('budgets').select('*'),
@@ -230,7 +230,7 @@ async function queueTask() {
       project_id: newTask.project_id, slug,
       prompt: optimizedImprovementPrompt(newTask.prompt, project?.name || ''),
       kind: newTask.kind, state: 'QUEUED',
-      note: 'source:dashboard-user-driven; route:triage-code-qa-devmerge-release',
+      note: 'pipeline:dashboard-user-driven; triage-plan-code-qa-devmerge-release',
     })
     newTask.slug = ''; newTask.prompt = ''; await loadAll()
   } finally {
@@ -413,11 +413,11 @@ function optimizedImprovementPrompt(text: string, projectName: string) {
     text.trim(),
     '',
     'Route this through the orchestration pipeline:',
-    '1. Triage with the cheapest capable non-agentic model across configured providers.',
-    '2. Implement with the best available coding agent/vendor for the repo and task complexity.',
-    '3. QA with an independent capable model/vendor plus local tests/build checks.',
-    '4. If clean, merge through the automatic dev-branch merge train and batch release path.',
-    '5. Do not create manual approval, blocked_task, or paused-session interruptions unless the work would force a licensing/registration/custody/transmission posture change or needs a missing secret.',
+    '1. Use the shared orchestration contract: cheap capable preflight, cross-provider strategy planning, best available coding agent, independent QA, automatic dev merge, and batch production release.',
+    '2. Coordinate with continuous improvement loops already running for this app: reuse prior shipped solutions, avoid duplicate work, and do not delete or overwrite queued improvements from other bots.',
+    '3. Pick fixed-price/subscription capacity first; fall back to configured paid API routes only when that is the highest-value available path for the task.',
+    '4. Use cross-model/cross-bot review before merge: one model plans, one coder implements, another model family checks the diff and legal/regulatory posture.',
+    '5. Do not create manual approval, blocked_task, or paused-session interruptions unless the work would force a licensing/registration/custody/transmission/advice posture change or needs a missing secret.',
   ].join('\n')
 }
 
@@ -464,6 +464,24 @@ const spendSplitByProject = computed(() => {
     else m[p].cash += Number(s.spent || 0)
   }
   return m
+})
+// INTEGRATE BUILD-PASS / MERGE-RATE KPI: of real (non-churn) completed outcomes, what fraction merged
+// (integrated). This is the number that should climb as the build self-heal + coder-switch take hold.
+const isChurn = (slug: any) => { const s = String(slug ?? ''); return s.startsWith('cont-') || s.startsWith('batch-mech') }
+const integrateKpi = computed(() => {
+  const m: Record<string, { completed: number; integrated: number }> = {}
+  let c = 0, i = 0
+  for (const o of outcomes.value) {
+    if (isChurn(o.slug)) continue
+    const p = o.project || '(none)'
+    ;(m[p] ??= { completed: 0, integrated: 0 })
+    m[p].completed++; c++
+    if (o.integrated) { m[p].integrated++; i++ }
+  }
+  const byProject = Object.entries(m)
+    .map(([project, v]) => ({ project, ...v, rate: v.completed ? v.integrated / v.completed : 0 }))
+    .sort((a, b) => b.completed - a.completed)
+  return { overall: c ? i / c : 0, completed: c, integrated: i, byProject }
 })
 const byModel = computed(() => {
   const m: Record<string, number> = {}
@@ -599,7 +617,7 @@ watch(user, u => { if (u) loadAll() })
         </span>
         <h1 class="text-lg font-semibold">Claude Orchestrator</h1>
         <span class="text-slate-500 text-sm">
-          {{ liveRunnerCount }}/{{ runnerFleetTarget }} live lanes · {{ approvals.length }} pending · <span class="font-mono text-slate-300" title="Token cost covered by your Claude Max plan — not cash">${{ coveredMtd.toFixed(2) }}</span> Max-covered · <span class="font-mono text-emerald-400" title="Real out-of-pocket API cash, month-to-date">${{ cashMtd.toFixed(2) }}</span> cash
+          {{ liveRunnerCount }}/{{ runnerFleetTarget }} live lanes · {{ approvals.length }} pending · <span class="font-mono text-slate-300" title="Token cost covered by your Claude Max plan — not cash">${{ coveredMtd.toFixed(2) }}</span> Max-covered · <span class="font-mono text-emerald-400" title="Real out-of-pocket API cash, month-to-date">${{ cashMtd.toFixed(2) }}</span> cash · <span class="font-mono" :class="integrateKpi.overall >= 0.15 ? 'text-emerald-400' : 'text-amber-400'" title="Integrate merge-rate: real (non-churn) completed tasks that merged. Should climb as the build self-heal engages.">{{ (integrateKpi.overall * 100).toFixed(0) }}%</span> merge-rate ({{ integrateKpi.integrated }}/{{ integrateKpi.completed }})
         </span>
         <span class="flex-1"></span>
         <button @click="signOut" class="text-slate-400 text-sm hover:text-white">Sign out</button>
