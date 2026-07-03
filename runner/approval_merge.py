@@ -212,6 +212,16 @@ def run():
         if str(c.get("decided_by") or "").startswith(MARK):
             continue  # already processed
 
+        # OWNER POLICY: merges auto-approve (QA/build-gated) EXCEPT when the change moves the legal-
+        # licensing / regulatory posture — those stay for the owner/counsel and are never auto-merged.
+        try:
+            import legal_filter
+            if legal_filter.requires_owner_approval(c, kind=c.get("kind") or "",
+                                                    radar_tag=c.get("radar_tag") or ""):
+                continue
+        except Exception:
+            pass
+
         slug = _slug_from(c)
         if not slug:
             db.update("approvals", {"id": c["id"]}, {"decided_by": f"{MARK}:no-slug"})

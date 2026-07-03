@@ -131,11 +131,58 @@ def _enrich_gated(card):
     return patch
 
 
+def gate_owner_emails(limit=400):
+    """CENTRAL OWNER-EMAIL GUARDRAIL (owner policy 2026-07-03).
+
+    The owner asked to NEVER approve merges and to be emailed ONLY when something changes the
+    company's legal-LICENSING / regulatory posture. Merges auto-approve (QA/build-gated), and every
+    material change, operator to-do, digest and auto-approval is managed in the cockpit + Smarter —
+    not the inbox.
+
+    This is the single chokepoint that enforces it no matter which composer produced the row: any
+    UNSENT notification bound to an approval card (channel email/digest) whose card is NOT legal-
+    licensing-gated is demoted to channel='cockpit' (still visible in the app + Smarter, never
+    emailed). Rows with no approval_id are system alerts (account exhaustion, cost circuit, weekly
+    report) and are left alone — those are the few things the owner does want to hear about.
+    """
+    try:
+        pend = db.select("notifications",
+                         {"select": "id,approval_id,channel", "channel": "in.(email,digest)",
+                          "sent": "eq.false", "order": "id.desc", "limit": str(limit)}) or []
+    except Exception:
+        return 0
+    ids = sorted({str(n["approval_id"]) for n in pend if n.get("approval_id")})
+    cards = {}
+    if ids:
+        try:
+            for r in (db.select("approvals", {"select": "*", "id": f"in.({','.join(ids)})"}) or []):
+                cards[r["id"]] = r
+        except Exception:
+            cards = {}
+    demoted = 0
+    for n in pend:
+        aid = n.get("approval_id")
+        if not aid:
+            continue  # system alert / report, not an approval email — leave it
+        card = cards.get(aid)
+        if card and is_legal_gated(card):
+            continue  # the ONE thing allowed to email the owner
+        try:
+            db.update("notifications", {"id": n["id"]}, {"channel": "cockpit"})
+            demoted += 1
+        except Exception:
+            pass
+    if demoted:
+        print(f"approval_policy: gated {demoted} non-legal notification(s) to cockpit (owner-email = legal-licensing only)")
+    return demoted
+
+
 def sweep(limit=200):
     """Classify every pending card: auto-approve the safe, enrich + keep the legal."""
     if not ENABLED:
         print("approval_policy: disabled (OWNER_POLICY_AUTOAPPROVE=false)")
         return 0, 0
+    gate_owner_emails()
     cards = db.select("approvals", {"select": "*", "status": "eq.pending",
                                     "order": "created_at.asc", "limit": str(limit)}) or []
     approved = gated = 0
@@ -147,10 +194,10 @@ def sweep(limit=200):
                            "decision_type": "approve",
                            "decision_text": "auto-approved by owner policy: no legal-structuring conflict"})
                 db.insert("notifications", {
-                    "channel": "digest", "audience": AUDIENCE, "kind": "auto-approved",
+                    "channel": "cockpit", "audience": AUDIENCE, "kind": "auto-approved",
                     "title": f"[auto] {(c.get('title') or '')[:150]}",
                     "body": f"[{c.get('project') or '-'}] auto-approved under owner policy; "
-                            f"merges stay test-gated. Why: {(c.get('why') or '')[:300]}",
+                            f"merges stay QA/build-gated. Why: {(c.get('why') or '')[:300]}",
                     "approval_id": c["id"], "sent": False})
                 approved += 1
             elif is_legal_gated(c):

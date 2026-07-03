@@ -16,7 +16,7 @@ Flow per project:
   4. if green AND >= MIN_BATCH new changes: record last_good = prod tip, merge staging -> prod, push.
      deploy_verify then confirms Vercel success or rolls back to last_good.
 """
-import os, sys, subprocess, datetime
+import os, sys, subprocess, datetime, json, tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
@@ -25,6 +25,70 @@ import db
 MIN_BATCH = int(os.environ.get("RELEASE_MIN_BATCH", "1"))
 RELEASE_INTERVAL_HOURS = float(os.environ.get("RELEASE_INTERVAL_HOURS", "0.25"))
 STAGING = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
+
+# release_kpi writes this: the set of apps whose recent prod deploys keep failing, so we promote their
+# tests to a HARD release gate until they recover (self-tuning loop). Read fail-soft.
+_GATE_FILE = os.path.join(tempfile.gettempdir(), "orch-release-gate.json")
+
+
+def _detect_test_cmd(repo):
+    """Return (cmd, is_real). is_real is True ONLY when the app has a genuine, runnable test suite —
+    not a placeholder like `echo "no test specified" && exit 1`. This is what lets tests become a TRUE
+    release gate where they actually exist, and stay advisory (build-gated) where they don't."""
+    try:
+        with open(os.path.join(repo, "package.json")) as f:
+            scripts = (json.load(f) or {}).get("scripts", {}) or {}
+    except Exception:
+        return "", False
+    t = str(scripts.get("test") or "").strip()
+    if not t:
+        return "", False
+    low = t.lower()
+    if "no test specified" in low or "exit 1" in low or low.startswith("echo") or low == "true":
+        return "", False  # placeholder script — not a real suite
+    return "npm test", True
+
+
+def _kpi_requires_tests(project):
+    """True when release_kpi flagged this app as chronically failing its prod deploy → gate harder."""
+    try:
+        with open(_GATE_FILE) as f:
+            return bool((json.load(f) or {}).get(project))
+    except Exception:
+        return False
+
+
+def _self_heal_build(p, project, repo, branch, blog):
+    """On a RED release build, don't just dead-end at deploy_status='failed': capture the build log,
+    ask a fast non-Claude model for a concrete fix directive, and auto-queue a per-app build-fix task
+    so the swarm self-corrects (this is what turns santas-style 'BUILD red' into a shipped fix)."""
+    try:
+        import build_fixer
+        # don't pile up: skip if an open build-fix task already exists for this app
+        existing = db.select("tasks", {"select": "slug", "project_id": f"eq.{p['id']}",
+                                       "state": "in.(QUEUED,RUNNING,RETRY,BLOCKED)"}) or []
+        if any(str(e.get("slug", "")).startswith("relfix-") for e in existing):
+            return
+        build_fixer.save_log(f"rel-{project}", blog)
+        diff = _git(repo, "log", "-1", "--stat", branch).stdout[:3000]
+        directive = build_fixer.fix_directive(blog or "", diff=diff, project=project)
+        uslug = f"relfix-{project}-{datetime.datetime.utcnow().strftime('%m%d%H%M')}"
+        prompt = ("The production build for this app is RED and is BLOCKING release. Make `npm run build` "
+                  "pass with the SMALLEST possible change (fix types/imports/syntax). Do NOT add features.\n\n"
+                  "# Build error (tail):\n" + (blog or "")[-3000:] + "\n\n" + (directive or ""))
+        try:
+            import pipeline_contract
+            prompt = pipeline_contract.wrap_prompt(prompt, project=project, kind="bugfix",
+                                                   source="release-self-heal", slug=uslug, material=False)
+        except Exception:
+            pass
+        db.insert("tasks", {"project_id": p["id"], "slug": uslug, "prompt": prompt,
+                  "base_branch": p.get("default_base", "main"), "kind": "bugfix", "state": "QUEUED",
+                  "deps": [], "material": False,
+                  "note": "auto-queued by release_train build-red self-heal"})
+        print(f"release_train: queued build-fix task {uslug} for RED {project}")
+    except Exception as e:
+        print(f"release_train: self-heal failed for {project}: {e}")
 
 
 def _git(repo, *args, timeout=120):
@@ -97,9 +161,17 @@ def run_for(project):
     due, due_note = _release_due(project)
     if not due:
         return {"project": project, "prod": prod, "staged": merged, "ahead": ahead, "note": due_note}
-    # QA staging (build/tests) in an ephemeral worktree
-    test_cmd = p.get("test_cmd") or os.environ.get("DEFAULT_TEST_CMD", "")
-    if test_cmd:
+    # QA staging tests. The BUILD gate below is always the hard release gate. Tests GATE the release
+    # too when the app has a genuine, runnable suite (AUTO-DETECTED from package.json), when the owner
+    # forces it (ORCH_RELEASE_REQUIRE_TESTS=true), or when release_kpi flagged this app as chronically
+    # failing its prod deploy. Otherwise tests are advisory — so a missing/placeholder `npm test` never
+    # hard-blocks a deploy (the bug that stalled tomorrow/pareto/smarter) while real suites still gate.
+    det_cmd, has_real_tests = _detect_test_cmd(repo)
+    test_cmd = p.get("test_cmd") or det_cmd or os.environ.get("DEFAULT_TEST_CMD", "")
+    require_tests = (has_real_tests
+                     or os.environ.get("ORCH_RELEASE_REQUIRE_TESTS", "false").lower() == "true"
+                     or _kpi_requires_tests(project))
+    if test_cmd and require_tests:
         import tempfile, shutil
         tmp = tempfile.mkdtemp(prefix="qa-")
         try:
@@ -110,7 +182,7 @@ def run_for(project):
             _git(repo, "worktree", "remove", "--force", tmp); shutil.rmtree(tmp, ignore_errors=True)
         if not ok:
             db.insert("releases", {"project": project, "from_sha": "", "to_sha": "", "n_changes": int(ahead),
-                      "deploy_status": "failed", "note": "staging QA failed — not released"})
+                      "deploy_status": "failed", "note": "staging QA failed (tests required) — not released"})
             return {"project": project, "qa": "FAILED", "note": "staging not green; held"}
     # BUILD GATE on the whole staging batch: the real prod build must be green before we release to
     # prod (this is what stops the Vercel deploy failures — no green build, no release).
@@ -120,9 +192,10 @@ def run_for(project):
         if bcmd:
             bok, blog = build_gate.run_build(repo, STAGING, bcmd)
             if not bok:
+                _self_heal_build(p, project, repo, STAGING, blog)  # queue a targeted build-fix task
                 db.insert("releases", {"project": project, "n_changes": int(ahead),
-                          "deploy_status": "failed", "note": f"staging BUILD red — not released: {blog[-120:]}"})
-                return {"project": project, "build": "RED", "note": "staging build not green; held"}
+                          "deploy_status": "failed", "note": f"staging BUILD red — self-heal queued: {blog[-120:]}"})
+                return {"project": project, "build": "RED", "note": "staging build not green; build-fix task queued"}
     except Exception:
         pass
     # release: record last-good, ff prod to staging, push (deploy_verify confirms/rolls back)

@@ -22,6 +22,39 @@ FORCE_CONTINUE = os.environ.get("SESSION_FORCE_CONTINUE", "true").lower() == "tr
 CLOSE_TABS = os.environ.get("SESSION_CLOSE_TABS", "true").lower() == "true"
 STATE = os.path.join(os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator")), "watched.json")
 
+# CIRCUIT BREAKER: continuation ("cont-") tasks are minted from paused/idle Claude sessions. When
+# Claude is rate-limited those continuations can't run, so they used to pile up unboundedly (hundreds
+# queued — the runaway that ballooned the queue to ~1.8k and starved real merges). Stop minting new
+# continuations once the queued cont- backlog is already deep; existing ones drain first.
+CONT_QUEUE_MAX = int(os.environ.get("CONT_QUEUE_MAX", "60"))
+
+
+def _cont_backlog():
+    """Count QUEUED continuation tasks (bounded probe)."""
+    try:
+        rows = db.select("tasks", {"select": "id", "state": "eq.QUEUED",
+                                   "slug": "like.cont-*", "limit": str(CONT_QUEUE_MAX + 1)}) or []
+        return len(rows)
+    except Exception:
+        return 0
+
+
+def _route_if_exhausted(task):
+    """FAIL-OVER INSIGHT: a continuation is only spawned because a Claude session paused — often
+    because Claude is rate-limited. If EVERY Claude account is exhausted, tag the continuation to run
+    on the SUBSCRIPTION second coder (Codex/ChatGPT — bundled, $0) so it executes immediately instead
+    of sitting Claude-locked in the queue waiting for a reset. Fail-soft."""
+    try:
+        import account_pool
+        if account_pool.claude_exhausted():
+            second = os.environ.get("ORCH_SECOND_CODER")
+            if second:
+                task["model"] = second
+                task["note"] = (str(task.get("note", "")) + f"; failover:{second} (claude exhausted)").lstrip("; ")
+    except Exception:
+        pass
+    return task
+
 
 def _seen():
     try:
@@ -253,11 +286,13 @@ def scan():
             "next_action": d.get("next_action"), "auto": auto,
         })
 
-        if auto:
+        if auto and _cont_backlog() < CONT_QUEUE_MAX:
             proj = db.select("projects", {"select": "id", "name": f"eq.{_project_for(path)}"}) or []
             if proj:
-                db.insert("tasks", {"project_id": proj[0]["id"], "slug": f"cont-{sid[:6]}",
-                                    "kind": "build", "state": "QUEUED", "prompt": d["next_action"]})
+                db.insert("tasks", _route_if_exhausted(
+                    {"project_id": proj[0]["id"], "slug": f"cont-{sid[:6]}",
+                     "kind": "build", "state": "QUEUED", "prompt": d["next_action"],
+                     "note": "source:session-autocontinue"}))
         # NOTE: routine "paused — next step" notices live in session_actions ONLY (the
         # dashboard Sessions panel reads that). We do NOT file an approval per paused session —
         # that flooded the approval queue (15k cards) and is pure noise. Approvals are reserved
@@ -280,16 +315,40 @@ def recover_paused(limit=200):
     rows = db.select("session_actions", {"select": "id,session_id,project,next_action,status",
                                          "status": "eq.paused", "limit": str(limit)}) or []
     projects = {p["name"]: p["id"] for p in (db.select("projects", {"select": "id,name"}) or [])}
+    def resolve_project(raw, action):
+        raw = (raw or "").strip()
+        if raw in projects:
+            return raw
+        text = f"{raw} {action or ''}".lower()
+        aliases = {
+            "pareto-2080": ("2080", "/pareto/2080", "pareto 2080"),
+            "santas-secret-workshop": ("hisanta", "santa", "workshop"),
+            "sustainable-barks": ("sustainable-barks", "sustainable barks", "dogs"),
+            "tomorrow": ("tomorrow", "/tomorrow"),
+            "smarter": ("smarter", "/smarter"),
+            "apparently": ("apparently", "/apparently"),
+            "racefeed": ("racefeed", "/racefeed"),
+            "darwn": ("darwn", "/darwn"),
+            "beethoven": ("beethoven", "/beethoven", "orchestrator"),
+        }
+        for name, needles in aliases.items():
+            if name in projects and any(n in text for n in needles):
+                return name
+        return None
+
     queued = hidden = 0
+    backlog = _cont_backlog()  # circuit breaker: don't recover into an already-deep continuation queue
     for s in rows:
         action = (s.get("next_action") or "").strip()
-        pid = projects.get(s.get("project"))
-        if pid and action and not action.startswith("("):
+        project_name = resolve_project(s.get("project"), action)
+        pid = projects.get(project_name)
+        if pid and action and not action.startswith("(") and (queued + backlog) < CONT_QUEUE_MAX:
             slug = f"cont-{(s.get('session_id') or s['id'])[:8]}"
             try:
-                db.insert("tasks", {"project_id": pid, "slug": slug, "kind": "build", "state": "QUEUED",
-                                    "prompt": action,
-                                    "note": "source:session-autocontinue; recovered from paused session"})
+                db.insert("tasks", _route_if_exhausted(
+                    {"project_id": pid, "slug": slug, "kind": "build", "state": "QUEUED",
+                     "prompt": action,
+                     "note": "source:session-autocontinue; recovered from paused session"}))
                 queued += 1
             except Exception:
                 pass

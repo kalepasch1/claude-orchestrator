@@ -70,7 +70,7 @@ REUSE_FIRST = ("\n\n## Reuse before you draft (cost discipline)\n"
 POOL = account_pool.AccountPool()
 _sem = threading.Semaphore(MAX_PARALLEL)
 _projects = {}
-MAX_AGENT_PROMPT_CHARS = int(os.environ.get("ORCH_MAX_AGENT_PROMPT_CHARS", "90000"))
+MAX_AGENT_PROMPT_CHARS = int(os.environ.get("ORCH_MAX_AGENT_PROMPT_CHARS", "36000"))
 
 
 def projects(project_id=None):
@@ -398,9 +398,10 @@ def run_task(t):
             try:
                 if plan_stage.should_plan(t, prompt):
                     _plan_text, _plan_model = plan_stage.make_plan(t, prompt, name)
-                    if _plan_text:
-                        draft_prompt = plan_stage.inject(prompt, _plan_text, _plan_model)
-                        set_state(t["id"], note=f"strategy: {_plan_model} -> draft: {coder}")
+                if _plan_text:
+                    draft_prompt = plan_stage.inject(prompt, _plan_text, _plan_model)
+                    draft_prompt = _cap_agent_prompt(draft_prompt)
+                    set_state(t["id"], note=f"strategy: {_plan_model} -> draft: {coder}")
             except Exception:
                 draft_prompt = prompt  # fail-soft: never block drafting on the plan step
             try:
@@ -760,6 +761,7 @@ _SCHEDULE = [
     ("worktreegc-300","worktreegc",         "interval", 300),   # remove stale agent worktrees (unblocks merges)
     ("releasetrain-600","releasetrain",     "interval", 600),   # accumulate on staging, QA, release to prod
     ("deployverify-120","deployverify",     "interval", 120),   # confirm Vercel deploy / auto-rollback
+    ("releasekpi-1800","release_kpi.py",     "interval", 1800),  # released->deploy-green KPI + self-tune gate
     ("stripe-daily",  "stripe",             "daily",    (6, 0)),  # pull real MRR from Stripe -> app_revenue
     ("ownerreport-wk","ownerreport",        "weekly",   (1, 7, 0)),# Monday owner report -> email
     ("revattr-daily", "revattr",            "daily",    (5, 45)),# attribute merges to revenue movement
@@ -787,7 +789,7 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      "governor", "costslo", "promote", "prewarm", "billingguard",
                      "dedup", "canaryecon", "forecast", "arbitrage", "autoscale", "bizradar",
                      "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",
-                     "stripe", "ownerreport", "worktreegc", "remediate", "selfcheck"}
+                     "stripe", "ownerreport", "worktreegc", "remediate", "selfcheck", "release_kpi.py"}
 
 # Optional autonomous-improvement jobs that are NOT yet routed through claude_cli (so their
 # spend isn't counted against the $40/day cap). OFF unless ENABLE_PROACTIVE_LOOPS=true.
@@ -796,9 +798,36 @@ _PROACTIVE = {"scout", "spec", "chaos", "self_review.py", "maturity.py", "demand
               "experiment_portfolio.py"}
 _PROACTIVE_ON = os.environ.get("ENABLE_PROACTIVE_LOOPS", "false").lower() == "true"
 
+# QUEUE-DEPTH OBJECTIVE: generators of speculative work (idea-miners / radars / roadmap). When the
+# queue is already far deeper than the fleet can execute, STOP firing these so the backlog DRAINS
+# instead of ballooning — the portfolio-level complement to session_watcher's per-continuation cap.
+_GENERATORS = {"improve", "bizradar", "demand_mining.py", "capability_radar.py", "scout", "spec",
+               "promote", "roadmap", "autopilot", "newapp", "committees"}
+_QUEUE_GEN_CEILING = int(os.environ.get("QUEUE_GEN_CEILING", "500"))
+_qdepth = {"n": 0, "t": 0.0}
+
+
+def _queue_depth():
+    """Cached (60s) count of QUEUED tasks, bounded so the probe stays cheap."""
+    if time.time() - _qdepth["t"] < 60:
+        return _qdepth["n"]
+    try:
+        rows = db.select("tasks", {"select": "id", "state": "eq.QUEUED",
+                                   "limit": str(_QUEUE_GEN_CEILING + 1)}) or []
+        _qdepth["n"] = len(rows)
+    except Exception:
+        _qdepth["n"] = 0
+    _qdepth["t"] = time.time()
+    return _qdepth["n"]
+
+
 def _fire_periodic(job: str) -> None:
     # don't run uncounted proactive spenders unless explicitly enabled
     if job in _PROACTIVE and not _PROACTIVE_ON:
+        return False
+    # throttle speculative-work generators when the queue is already deeper than we can execute
+    if job in _GENERATORS and _queue_depth() > _QUEUE_GEN_CEILING:
+        print(f"[sched] {job} throttled — queue depth > {_QUEUE_GEN_CEILING} (draining backlog first)", flush=True)
         return False
     # honor the kill switch for every scheduled job that could spend tokens, so a global
     # pause stops ALL spend (not just the main task loop) without restarting the runner.

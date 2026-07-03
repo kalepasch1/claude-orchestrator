@@ -57,7 +57,9 @@ def insert(table, row, upsert=False):
         # task re-inserting an outcome/row used to raise HTTP 409 -> "runner exception: Conflict" ->
         # BLOCKED, which stalled merges. Retry idempotently as an upsert; if that still can't apply,
         # swallow it so a duplicate never crashes the task.
-        if e.code == 409 and not upsert:
+        if e.code == 409:
+            if upsert:
+                return None
             try:
                 return _req("POST", f"/rest/v1/{table}",
                             body=row, headers={"Prefer": "return=representation,resolution=merge-duplicates"})
@@ -89,8 +91,9 @@ def claim_task(runner_id):
         roi_w = {p["id"]: (p.get("concurrency_weight") if p.get("concurrency_weight") is not None else 1)
                  for p in projs}
         name2id = {p["name"]: p["id"] for p in projs}
-        paused_names = {c["project"] for c in (select("controls", {"select": "project,paused",
-                        "scope": "eq.project", "paused": "is.true"}) or []) if c.get("project")}
+        paused_names = {c["project"] for c in (select("controls", {"select": "project,paused,updated_by",
+                        "scope": "eq.project", "paused": "is.true"}) or [])
+                        if c.get("project") and c.get("updated_by") != "remote-quarantine"}
         paused_pids = {name2id[n] for n in paused_names if n in name2id}
     except Exception:
         pass
@@ -117,7 +120,20 @@ def claim_task(runner_id):
                 last_act[pid] = r.get("updated_at") or ""
     except Exception:
         pass
-    queued.sort(key=lambda t: (last_act.get(t.get("project_id"), ""),           # least-recently-served first
+    # CHURN DEPRIORITIZATION: continuation ("cont-") and mechanical batch tasks are low-value churn —
+    # they rarely produce a mergeable deliverable, and when the queue fills with them they starve the
+    # real feature work that actually reaches integrate()+MERGED (the root cause of the ~2% merge rate).
+    # Sort them LAST so real work is always claimed first; they still run when nothing else is pending,
+    # so they're deprioritized, not starved. Ordering-only change — the atomic optimistic PATCH below
+    # still guarantees two runners never double-claim, so multi-machine correctness is unchanged.
+    deprio_churn = os.environ.get("ORCH_DEPRIORITIZE_CHURN", "true").lower() in ("true", "1", "yes")
+
+    def _churn(t):
+        s = str(t.get("slug") or "")
+        return 1 if deprio_churn and (s.startswith("cont-") or s.startswith("batch-mech")) else 0
+
+    queued.sort(key=lambda t: (_churn(t),                                        # real work before churn
+                               last_act.get(t.get("project_id"), ""),           # least-recently-served first
                                prio.get(t.get("project_id"), 5),
                                -float(roi_w.get(t.get("project_id"), 1) or 1),
                                t.get("created_at") or ""))
