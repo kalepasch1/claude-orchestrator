@@ -1,0 +1,9 @@
+#cloud-config
+package_update: true
+packages: [git, python3-pip, curl, tmux]
+runcmd:
+  - sudo -u ubuntu bash -c 'curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - && sudo apt-get install -y nodejs'
+  - sudo npm install -g @anthropic-ai/claude-code
+  - sudo -u ubuntu pip3 install pyyaml
+  - sudo -u ubuntu mkdir -p /home/ubuntu/beethoven
+  - echo "READY — clone claude-orchestrator into /home/ubuntu/beethoven, copy runner/.env, run: claude login, then bash runner/keepalive.sh" > /home/ubuntu/SETUP-NEXT.txt
