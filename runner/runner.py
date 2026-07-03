@@ -368,9 +368,32 @@ def run_task(t):
             # every diff is empty -> verify trivially "passes", confidence defaults to 0.5, and
             # ff-merge ships nothing. This is what kept integration at 0.
             if not _commit_agent_work(wt, slug, t["prompt"]):
+                # SESSION PROOF: distinguish "agent got no instructions" (stall) from a genuine no-op,
+                # and retry ONCE with the full prompt re-injected before blocking. (2026-07-02: 8+
+                # branches shipped nothing because the prompt never reached the agent.)
+                try:
+                    import session_proof
+                    if not t.get("_proof_retry") and session_proof.STALL_RX.search(out or ""):
+                        t["_proof_retry"] = True
+                        prompt = session_proof.reinjection_prompt(t)
+                        set_state(t["id"], state="RUNNING", note="session-proof: stall detected — re-injecting prompt")
+                        continue
+                except Exception:
+                    pass
                 set_state(t["id"], state="BLOCKED", note="agent produced no committable changes")
                 regression.record(name, slug, kind, t["prompt"][:500], "no file changes", "agent investigated but changed nothing; re-scope task")
                 record(t, name, slug, kind, model, acct, attempt, True, False, out, t0, cost=run_cost); return
+            # SESSION PROOF (positive path): verify the diff is real work echoing the task
+            try:
+                import session_proof
+                proof = session_proof.verify_session(t, out, wt if os.path.isdir(wt) else repo, f"agent/{slug}")
+                if not proof.get("ok") and not t.get("_proof_retry"):
+                    t["_proof_retry"] = True
+                    prompt = session_proof.reinjection_prompt(t)
+                    set_state(t["id"], state="RUNNING", note=f"session-proof failed ({'; '.join(proof.get('reasons', [])[:2])}) — retrying once")
+                    continue
+            except Exception:
+                pass
 
             # blast radius: find dependents of changed files, pass to verifier
             radius = blast_radius.radius_after(wt, base)
@@ -559,7 +582,10 @@ _SCHEDULE = [
     ("txn-300",       "txn",                "interval", 300),
     ("policy-45",     "approval_policy.py", "interval", 45),    # owner policy: auto-approve all but narrow legal
     ("janitor-300",   "queue_janitor.py",   "interval", 300),   # auto-clear blockers: wedged runs, empty diffs, stranded cards, stale locks
-    ("merge-60",      "approval_merge.py",  "interval", 60),    # complete approved merges
+    ("train-60",      "merge_train.py",     "interval", 60),    # serialized rebase→test→merge→push (THE integration path)
+    ("ownermodel-300","owner_decision_model.py","interval",300),# draft/auto-apply gated decisions from owner precedent
+    ("ev-900",        "ev_scheduler.py",    "interval", 900),   # EV-per-token queue ordering + zero-EV parking
+    ("selfdeploy-180","self_deploy.py",     "interval", 180),   # canary-gated exec-into-new-code (no human restarts)
     ("intake-120",    "intake_watcher.py",  "interval", 120),   # auto-ingest dropped task lists
     ("drafts-90",     "decision_drafts.py", "interval", 90),    # auto-draft on founder directives
 
@@ -810,6 +836,18 @@ def main():
                 hot_reload.maybe_reload()
             except Exception:
                 pass
+        # SELF-DEPLOY: graceful exec-into-new-code when self_deploy requested it (canary-gated)
+        # and no tasks are mid-flight; keepalive.sh restarts us into the new commit.
+        try:
+            _rr = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".restart_requested")
+            if not active and os.path.exists(_rr):
+                print("[self-deploy] restart requested — exiting for keepalive to reload new code")
+                os.remove(_rr)
+                sys.exit(0)
+        except SystemExit:
+            raise
+        except Exception:
+            pass
         try:
             db.heartbeat(RUNNER_ID, socket.gethostname(), len(active))
             # live throttle: the resource governor lowers this under disk/RAM pressure
@@ -830,6 +868,12 @@ def main():
                 else:
                     t = db.claim_task(RUNNER_ID)
                     if t:
+                        # REUSE-FIRST: adapt an already-solved implementation instead of rebuilding
+                        try:
+                            import reuse_first
+                            t = reuse_first.pre_claim_hook(t)
+                        except Exception:
+                            pass
                         th = threading.Thread(target=_run_task_safe, args=(t,), daemon=True)
                         th.start(); active.append(th); continue
         except Exception as e:
