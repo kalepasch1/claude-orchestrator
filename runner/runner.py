@@ -746,14 +746,37 @@ def _fire_periodic(job: str) -> None:
             pass
     _dir = os.path.dirname(os.path.abspath(__file__))
     _home = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
-    _log_dir = os.environ.get("ORCH_LOG_DIR") or os.path.join(_home, "logs")
-    os.makedirs(_log_dir, exist_ok=True)
-    _log = os.path.join(_log_dir, job.replace(".py", "").replace("_", "-"))
     cmd = ([sys.executable, os.path.join(_dir, job)] if job.endswith(".py")
            else [sys.executable, os.path.join(_dir, "periodic.py"), job])
-    with open(_log + ".log", "a") as lf, open(_log + ".err", "a") as ef:
-        subprocess.Popen(cmd, stdout=lf, stderr=ef, cwd=_dir, env=os.environ.copy())
-    return True
+    # FAIL-SOFT logging: a scheduled job must NEVER be skipped just because its log file can't be
+    # opened (e.g. ORCH_LOG_DIR points at a root-owned ~/Library/Logs path -> EPERM). Try the
+    # configured dir, then runner/logs, then /tmp; if none is writable, run the job with output
+    # discarded. Previously an EPERM here silently skipped merge_train/release_train/intake/etc.,
+    # stalling the entire deploy pipeline.
+    _base = os.environ.get("ORCH_LOG_DIR") or os.path.join(_home, "logs")
+    _log = None
+    for cand in (_base, os.path.join(_dir, "logs"), "/tmp/claude-orchestrator-logs"):
+        try:
+            os.makedirs(cand, exist_ok=True)
+            _probe = os.path.join(cand, ".wtest")
+            with open(_probe, "a"):
+                pass
+            os.remove(_probe)
+            _log = os.path.join(cand, job.replace(".py", "").replace("_", "-"))
+            break
+        except Exception:
+            continue
+    try:
+        if _log:
+            with open(_log + ".log", "a") as lf, open(_log + ".err", "a") as ef:
+                subprocess.Popen(cmd, stdout=lf, stderr=ef, cwd=_dir, env=os.environ.copy())
+        else:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             cwd=_dir, env=os.environ.copy())
+        return True
+    except Exception as e:
+        print(f"[sched] {job} launch failed: {e}")
+        return False
 
 def _scheduler_tick() -> None:
     now = time.time()
