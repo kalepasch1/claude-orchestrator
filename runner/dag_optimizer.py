@@ -130,12 +130,30 @@ def optimize(apply_redundant=True):
         dropped_redundant += sum(1 for e in a["redundant"] if e["slug"] == slug and apply_redundant)
 
     for o in a["orphans"]:
-        db.insert("approvals", {
-            "project": None, "kind": "self",
-            "title": f"Orphaned task '{o['slug']}' — deps will never complete",
-            "why": f"All deps are dead: {o['blockers']}. It can't be claimed until re-scoped.",
-            "value": "Re-scope or cancel so it stops sitting un-claimable.",
-            "risk": "Low — advisory; nothing auto-changed on this task.", "command": ""})
+        # AUTO-REPAIR FIRST (owner policy 2026-07-02): revive dead deps instead of paging a human.
+        # Only file a card if a dep is beyond repair (denied by the owner, or requeue cap exhausted).
+        repaired = True
+        for dep_slug, why_dead in (o.get("blockers") or {}).items():
+            dt = by_slug.get(dep_slug)
+            if dt and dt.get("state") in ("QUEUED", "RUNNING", "DONE", "MERGED"):
+                continue  # dep is actually alive - stale analysis, nothing to do
+            if dt and dt.get("state") in ("BLOCKED", "CONFLICT") and int(dt.get("transient_retries") or 0) < 3:
+                db.update("tasks", {"id": dt["id"]},
+                          {"state": "QUEUED", "transient_retries": int(dt.get("transient_retries") or 0) + 1,
+                           "note": (dt.get("note") or "") + " [dag-optimizer: revived to unblock orphan chain]"})
+                continue
+            repaired = False
+        if repaired:
+            continue
+        try:
+            db.insert("approvals", {
+                "project": None, "kind": "self",
+                "title": f"Orphaned task '{o['slug']}' — deps will never complete",
+                "why": f"All deps are dead: {o['blockers']}. Auto-repair failed; re-scope or cancel.",
+                "value": "Re-scope or cancel so it stops sitting un-claimable.",
+                "risk": "Low — advisory; nothing auto-changed on this task.", "command": ""})
+        except Exception:
+            pass  # pending-dedup index: card already exists
         flagged += 1
 
     print(f"dag_optimizer: dropped {dropped_ghost} ghost + {dropped_redundant} redundant dep edges; "
