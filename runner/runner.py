@@ -614,6 +614,7 @@ _SCHEDULE = [
     ("prewarm-120",   "prewarm",            "interval", 120),   # warm next worktrees/context (0 spend)
     ("governor-900",  "governor",           "interval", 900),   # EV-based capacity allocation
     ("costslo-1800",  "costslo",            "interval", 1800),  # hold per-app $/merge SLOs
+    ("heartbeat-900", "heartbeat_monitor",  "interval", 900),   # detect stale heartbeats (dead-man alert)
     ("promote-daily", "promote",            "daily",    (6, 30)),# productize proven capabilities
     ("dedup-600",     "dedup",              "interval", 600),   # collapse near-duplicate queued tasks
     ("canaryecon-600","canaryecon",         "interval", 600),   # promote/rollback canaries on cost+quality
@@ -631,7 +632,7 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      "governor", "costslo", "promote", "prewarm", "billingguard",
                      "dedup", "canaryecon", "forecast", "arbitrage", "autoscale", "bizradar",
                      "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",
-                     "stripe", "ownerreport", "worktreegc", "remediate", "selfcheck"}
+                     "stripe", "ownerreport", "worktreegc", "remediate", "selfcheck", "heartbeat_monitor"}
 
 # Optional autonomous-improvement jobs that are NOT yet routed through claude_cli (so their
 # spend isn't counted against the $40/day cap). OFF unless ENABLE_PROACTIVE_LOOPS=true.
@@ -792,7 +793,10 @@ def main():
             except Exception:
                 pass
         try:
-            db.heartbeat(RUNNER_ID, socket.gethostname(), len(active))
+            try:
+                db.heartbeat(RUNNER_ID, socket.gethostname(), len(active))
+            except Exception as _hb_e:
+                print(f"[heartbeat] write failed: {_hb_e}", flush=True)
             # live throttle: the resource governor lowers this under disk/RAM pressure
             # read MAX_PARALLEL live from env each loop so concurrency is tunable via .env + hot_reload
             # WITHOUT a restart (RAM permitting; resource_governor still clamps to protect the Mac).
