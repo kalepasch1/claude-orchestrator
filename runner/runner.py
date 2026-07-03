@@ -40,6 +40,7 @@ import kill_switch, secrets_manager, credential_broker, quality_gate
 import claude_cli, waste, judge, experiment_router, decision_engine
 import agentic_coders
 import plan_stage
+import pipeline_contract
 
 INTEGRATION_MODE = os.environ.get("INTEGRATION_MODE", "local")  # local | pr
 USE_CACHE = os.environ.get("RESULT_CACHE", "true").lower() == "true"
@@ -126,6 +127,11 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
             ok, blog = build_gate.run_build(repo, branch, bcmd)
             if not ok:
                 print(f"[integrate] build RED for {branch} -> not merging: {blog[-160:]}")
+                try:
+                    import build_fixer
+                    build_fixer.save_log(slug, blog)   # keep the log for a model-generated fix directive
+                except Exception:
+                    pass
                 return "BUILDFAIL"
     except Exception as _be:
         print(f"[integrate] build gate skipped ({_be})")
@@ -238,8 +244,10 @@ def run_task(t):
                 pass
             return
 
+        task_body = pipeline_contract.original_request(t["prompt"])
+
         # result cache: identical (repo+prompt+commit) work is reused, not re-run
-        sig = result_cache.signature(name, t["prompt"], repo, base) if USE_CACHE else None
+        sig = result_cache.signature(name, task_body, repo, base) if USE_CACHE else None
         if sig:
             hit = result_cache.lookup(sig)
             if hit:
@@ -249,16 +257,20 @@ def run_task(t):
 
         # context prefix + scoped file focus + blast radius + semantic reuse + lessons
         prefix = caching.load_prefix(repo)
-        focus = context_retrieval.focus_note(repo, t["prompt"]) if USE_RETRIEVAL else ""
-        blast = blast_radius.note_for_task(repo, t["prompt"]) if USE_RETRIEVAL else ""
+        focus = context_retrieval.focus_note(repo, task_body) if USE_RETRIEVAL else ""
+        blast = blast_radius.note_for_task(repo, task_body) if USE_RETRIEVAL else ""
         # cross-project capability transfer: inject reusable published recipes for this task
         reuse = ""
         try:
             import capability
-            reuse = capability.reuse_note(t["prompt"], project=name)
+            reuse = capability.reuse_note(task_body, project=name)
         except Exception:
             reuse = ""
-        prompt = prefix + focus + blast + reuse + regression.inject(kb.inject(t["prompt"])) + feedback.INSTRUCTION + REUSE_FIRST
+        contracted_prompt = pipeline_contract.wrap_prompt(
+            task_body, project=name, kind=kind, source="runner-claim", slug=slug,
+            material=bool(t.get("material")),
+        )
+        prompt = prefix + focus + blast + reuse + regression.inject(kb.inject(contracted_prompt)) + feedback.INSTRUCTION + REUSE_FIRST
         t0 = time.time()
 
         # deterministic replay: re-run a captured run snapshot
@@ -373,9 +385,23 @@ def run_task(t):
                 set_state(t["id"], state="BLOCKED", note="timed out (>15m) — killed to free the slot")
                 record(t, name, slug, kind, visible_model, acct, attempt, False, False, "timeout", t0); return
             except claude_cli.CircuitOpen as e:
-                # spend ceiling hit: hold the task and pause everything until you intervene
-                kill_switch.pause(scope="global", reason=f"cost circuit open: {e}", by="claude_cli")
-                set_state(t["id"], state="QUEUED", note=f"cost circuit open: {e}; paused")
+                # Capacity/cost circuit hit. Do not create a global pause by default: rotate/fail over
+                # when another coder route exists, otherwise leave the task queued for cooldown.
+                try:
+                    POOL.mark_exhausted(acct)
+                except Exception:
+                    pass
+                if len(agentic_coders.available()) > 1:
+                    attempt -= 1
+                    set_state(t["id"], state="RETRY",
+                              note=f"capacity circuit -> failover route ({e})")
+                    time.sleep(5)
+                    continue
+                if os.environ.get("ORCH_PAUSE_ON_COST_CIRCUIT", "false").lower() in ("true", "1", "yes"):
+                    kill_switch.pause(scope="global", reason=f"cost circuit open: {e}", by="claude_cli")
+                    set_state(t["id"], state="QUEUED", note=f"cost circuit open: {e}; paused by configured policy")
+                    time.sleep(10); return
+                set_state(t["id"], state="QUEUED", note=f"capacity circuit: {e}; queued for cooldown/failover")
                 time.sleep(10); return
             if r.get("skipped") == "kill_switch":
                 set_state(t["id"], state="QUEUED", note="paused by kill switch (mid-run)")
@@ -538,10 +564,21 @@ def run_task(t):
             # BUILDFAIL is not a task state — record it as BLOCKED with a build-fix note so auto_remediate
             # re-plans it (fix the build errors) instead of shipping build-breaking code.
             state_val = "BLOCKED" if result == "BUILDFAIL" else result
-            set_state(t["id"], state=state_val, confidence=conf_score,
-                      note=(f"integrate BUILDFAIL — production build red; fix build/type errors before merge"
-                            if result == "BUILDFAIL"
-                            else f"verify pass (conf={conf_score}); integrate={result} ({INTEGRATION_MODE})"))
+            if result == "BUILDFAIL":
+                # INLINE BUILD-FIX: a fast non-Claude model (Gemini/DeepSeek) turns the red build into a
+                # concrete fix directive, injected into the note so auto_remediate re-drafts build-aware
+                # (converts "recycled forever" into "self-corrected + shipped").
+                _fix = ""
+                try:
+                    import build_fixer
+                    _fix = build_fixer.fix_directive(build_fixer.load_log(slug), _diff_for_judge,
+                                                     t.get("prompt", ""), project=name)
+                except Exception:
+                    _fix = ""
+                _note = ("integrate BUILDFAIL — production build red; fix build/type errors before merge. " + _fix)[:1800]
+            else:
+                _note = f"verify pass (conf={conf_score}); integrate={result} ({INTEGRATION_MODE})"
+            set_state(t["id"], state=state_val, confidence=conf_score, note=_note)
             if result in ("CONFLICT", "TESTFAIL", "BUILDFAIL"):
                 approval(name, "integrate", f"{slug} {result.lower()} on integrate",
                          why=f"could not auto-integrate ({result})", detail=out[-2000:])

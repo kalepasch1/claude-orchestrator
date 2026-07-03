@@ -65,6 +65,11 @@ def score(task, ctx):
         s *= 2.0
     if int(task.get("transient_retries") or 0) >= 2:
         s *= 0.3
+    # ORCHESTRATOR-FIRST (owner directive): self-improvements to the orchestration layer have no
+    # direct MRR but compound across the WHOLE fleet (a better orchestrator ships every app better),
+    # so give them a high synthetic EV to rank them at the front of the queue.
+    if project in ("beethoven", "orchestrator", "ORCHESTRATOR"):
+        s = max(s, 20.0) * float(os.environ.get("ORCH_SELF_IMPROVE_BOOST", "3.0"))
     return s
 
 
