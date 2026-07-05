@@ -11,6 +11,8 @@ import os, sys, subprocess, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import context_retrieval as cr
 
+__all__ = ["note_for_task", "radius_after"]
+
 
 def _dependents(repo, files):
     deps = set()
