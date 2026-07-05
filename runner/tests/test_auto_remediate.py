@@ -103,6 +103,61 @@ class AutoRemediateRecoveryTest(unittest.TestCase):
         self.assertEqual(task_patch["state"], "QUEUED")
         self.assertIn("cap reached", task_patch["note"])
 
+    def test_max_turns_retries_under_cap(self):
+        task = {
+            "id": "t4",
+            "slug": "turns-limit",
+            "state": "BLOCKED",
+            "prompt": "Implement feature X.",
+            "note": "reached maximum number of turns (1)",
+            "remediation_count": 0,
+            "model": "claude-haiku-4-5-20251001",
+            "material": False,
+            "project_id": "p1",
+            "log_tail": "terminal_reason: max_turns",
+        }
+        updates = []
+        db = MagicMock()
+        db.select.side_effect = [[], [], [task]]
+        db.update.side_effect = lambda table, match, patch: updates.append((table, match, patch))
+
+        with patch.object(auto_remediate, "db", db):
+            result = auto_remediate.run()
+
+        self.assertEqual(result["requeued"], 1)
+        task_patch = next(p for table, _, p in updates if table == "tasks")
+        self.assertEqual(task_patch["state"], "QUEUED")
+        self.assertEqual(task_patch["remediation_count"], 1)
+        self.assertIn("retry after max_turns", task_patch["note"])
+
+    def test_max_turns_escalates_at_cap(self):
+        task = {
+            "id": "t5",
+            "slug": "persistent-turns",
+            "state": "BLOCKED",
+            "prompt": "Implement feature Y.",
+            "note": "reached maximum number of turns (1)",
+            "remediation_count": auto_remediate.CAP,
+            "model": "claude-sonnet-4-6",
+            "material": False,
+            "project_id": "p1",
+            "log_tail": "terminal_reason: max_turns, permission_denials: [Bash]",
+        }
+        updates = []
+        db = MagicMock()
+        db.select.side_effect = [[], [], [task]]
+        db.update.side_effect = lambda table, match, patch: updates.append((table, match, patch))
+
+        with patch.object(auto_remediate, "db", db):
+            result = auto_remediate.run()
+
+        self.assertEqual(result["reclaimed"], 1)
+        task_patch = next(p for table, _, p in updates if table == "tasks")
+        self.assertEqual(task_patch["state"], "QUEUED")
+        self.assertEqual(task_patch["remediation_count"], auto_remediate.CAP + 1)
+        self.assertIn("cap reached on max_turns", task_patch["note"])
+        self.assertIn("implement focused", task_patch["prompt"].lower())
+
 
 if __name__ == "__main__":
     unittest.main()

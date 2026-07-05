@@ -41,6 +41,7 @@ _MISSING_BRANCH = re.compile(r"branch.*missing|no longer exists|approved.*agent/
 _HUMAN = re.compile(r"credential needed|missing credential|auth failure|secret|api key|two-key", re.I)
 _CAP_CARD = re.compile(r"blocked after \d+ auto-fixes|can't self-revise|needs a look:|re-scope needed", re.I)
 _PARKED = re.compile(r"ev-parked|near-zero expected value|preflight: predicted no committable|permission denial|tool use", re.I)
+_MAX_TURNS = re.compile(r"max_turns|maximum number of turns|reached.*turn.*limit", re.I)
 _TOO_LONG = re.compile(r"prompt is too long|context.*limit|single-exchange conversation cannot be compacted", re.I)
 _READY_UNCOMMITTED = re.compile(r"ready to commit|git commit|changes are safe|implementation is complete", re.I)
 _QUOTED_SLUG = re.compile(r"'([^']+)'")
@@ -77,6 +78,18 @@ def run(limit=120):
             continue
 
         upd = {"state": "QUEUED", "remediation_count": rc + 1, "account": None, "updated_at": "now()"}
+
+        if _MAX_TURNS.search(signal):
+            if rc < CAP:
+                upd["note"] = f"auto-remediate: retry after max_turns limit ({rc + 1}/{CAP})"
+                requeued += 1
+            else:
+                upd["prompt"] = _implementation_prompt(t, signal, "Agent hit turn limit repeatedly; implement with focused, direct approach avoiding excessive tool use.")
+                upd["model"] = _escalate(_escalate(t.get("model")))
+                upd["note"] = f"auto-remediate: cap reached on max_turns; implement focused approach ({rc + 1})"
+                reclaimed += 1
+            db.update("tasks", {"id": t["id"]}, upd)
+            continue
 
         if _TOO_LONG.search(signal):
             upd["prompt"] = _implementation_prompt(t, signal, "Previous prompt exceeded the model context limit; use this compacted instruction and inspect files directly.")
