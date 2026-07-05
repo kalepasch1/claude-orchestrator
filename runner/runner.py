@@ -42,6 +42,7 @@ import agentic_coders
 import plan_stage
 import pipeline_contract
 import model_policy
+import result_classifier
 
 INTEGRATION_MODE = os.environ.get("INTEGRATION_MODE", "local")  # local | pr
 USE_CACHE = os.environ.get("RESULT_CACHE", "true").lower() == "true"
@@ -479,6 +480,10 @@ def run_task(t):
             if r.get("skipped") == "kill_switch":
                 set_state(t["id"], state="QUEUED", note="paused by kill switch (mid-run)")
                 time.sleep(5); return
+            if result_classifier.is_error_max_turns(r.get("raw") or {}):
+                print(f"[max_turns] session {t['id']}: hit max_turns limit, retrying")
+                set_state(t["id"], state="RETRY", note=f"max_turns reached (attempt {attempt}/{4})")
+                time.sleep(5); continue
             rc = r["returncode"]
             run_cost = {"usd": r["cost_usd"], "input_tokens": r["input_tokens"],
                         "output_tokens": r["output_tokens"]}
