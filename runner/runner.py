@@ -420,13 +420,24 @@ def run_task(t):
                     set_state(t["id"], note=f"strategy: {_plan_model} -> draft: {coder}")
             except Exception:
                 draft_prompt = prompt  # fail-soft: never block drafting on the plan step
+            # CONTEXT + PRECEDENT: give the headless agent what an interactive session has — a repo map +
+            # this project's conventions, and the most-similar change that already MERGED (adapt a proven
+            # pattern instead of inventing). Both are pure retrieval (no tokens) and lift first-pass yield.
+            _extras = ""
+            try:
+                import context_pack, precedent
+                _extras += context_pack.block(repo)
+                _extras += precedent.hint(t, repo, project_id=t.get("project_id"))
+            except Exception:
+                _extras = ""
             # BUILD-TO-GREEN MANDATE: make the agent iterate to a mergeable state ITSELF (edit -> build ->
             # fix -> re-build -> commit), the way an interactive VSCode session does — so it returns green,
             # mergeable work instead of a draft a downstream committee rejects and recycles. The build is
             # the hard gate, so returning a red build just wastes the whole (paid) run. Appended AFTER the
-            # length cap so the mandate is never truncated. Toggle with ORCH_BUILD_MANDATE=false.
+            # length cap so the mandate + context are never truncated. Toggle with ORCH_BUILD_MANDATE=false.
+            draft_prompt = _cap_agent_prompt(draft_prompt) + _extras
             if os.environ.get("ORCH_BUILD_MANDATE", "true").lower() in ("true", "1", "yes"):
-                draft_prompt = _cap_agent_prompt(draft_prompt) + BUILD_MANDATE
+                draft_prompt = draft_prompt + BUILD_MANDATE
             try:
                 r = agentic_coders.run(coder, draft_prompt, model,
                                        cwd=wt if os.path.isdir(wt) else repo, env=env,

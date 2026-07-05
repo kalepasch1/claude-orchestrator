@@ -42,5 +42,19 @@ fi
 # copy the repo's permission allowlist into the worktree so agents CANNOT push / trigger CI
 mkdir -p "$DEST/.claude"
 [ -f "$REPO_ROOT/.claude/settings.local.json" ] && cp "$REPO_ROOT/.claude/settings.local.json" "$DEST/.claude/settings.local.json" || true
+
+# WARM DEPS: the agent's build-to-green loop dominates wall-clock, and a fresh worktree would
+# `npm install` from scratch every time (minutes). Symlink the main checkout's node_modules (and
+# reuse the build cache) so `npm run build`/tests start instantly. Symlink = zero copy, zero disk.
+# Disable with ORCH_WARM_DEPS=false. (npm/pnpm resolve a symlinked node_modules fine for builds.)
+if [ "${ORCH_WARM_DEPS:-true}" = "true" ]; then
+  for depdir in node_modules .next/cache .nuxt node_modules/.cache; do
+    src="$REPO_ROOT/$depdir"; dst="$DEST/$depdir"
+    if [ -e "$src" ] && [ ! -e "$dst" ]; then
+      mkdir -p "$(dirname "$dst")"
+      ln -s "$src" "$dst" 2>/dev/null || true
+    fi
+  done
+fi
 echo "✅ worktree ready: $DEST  (branch $BRANCH, based on $BASE)"
 echo "   run an agent there with: scripts/orchestrate.sh"

@@ -178,6 +178,18 @@ def pick(task, slot_index=0):
                            key=lambda c: -c["cap"])
         return strongest[0]["name"] if strongest else "claude"
 
+    # LEARNED ROUTER: prefer the coder that empirically converts THIS task-kind to merges most cheaply
+    # ($/merge from our own outcomes). Returns None until there's enough signal, so it refines the
+    # heuristic rather than fighting it; never overrides material (those stay on Claude below).
+    if not task.get("material"):
+        try:
+            import router_stats
+            rec = router_stats.best_coder(task.get("kind"), [c["name"] for c in usable])
+            if rec:
+                return rec
+        except Exception:
+            pass
+
     # NORMAL state
     if task.get("material") or (task.get("deps") or []):
         return "claude"
