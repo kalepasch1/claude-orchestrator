@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import model_gateway
 import model_policy
 import app_triage
+import orchestrator_config
 
 
 class ModelRoutingTest(unittest.TestCase):
@@ -75,6 +76,118 @@ class ModelRoutingTest(unittest.TestCase):
             res = app_triage.run("orchestrator", "verify", "prompt", task_class="review")
         self.assertEqual(res["provider"], "google")
         self.assertEqual(rows[0][1]["provider"], "google")
+
+
+class LLMVerifyGatingTest(unittest.TestCase):
+    """Test should_skip_llm_verify() gating policy."""
+
+    def test_skip_low_blast_radius_with_tests_and_build_passing(self):
+        """Low-risk diff that passes tests + build → skip LLM verify."""
+        diff = {
+            "blast_radius": "low",
+            "high_risk": False,
+            "constitution_touching": False,
+            "tests_passed": True,
+            "build_passed": True,
+        }
+        with patch.object(orchestrator_config, "GATING_POLICY", {"skip_llm_verify": True, "material_threshold": "high"}):
+            self.assertTrue(model_policy.should_skip_llm_verify(diff))
+
+    def test_do_not_skip_high_blast_radius(self):
+        """High blast radius diffs always get full verify."""
+        diff = {
+            "blast_radius": "high",
+            "high_risk": False,
+            "constitution_touching": False,
+            "tests_passed": True,
+            "build_passed": True,
+        }
+        with patch.object(orchestrator_config, "GATING_POLICY", {"skip_llm_verify": True, "material_threshold": "high"}):
+            self.assertFalse(model_policy.should_skip_llm_verify(diff))
+
+    def test_do_not_skip_when_high_risk_flag_set(self):
+        """Diffs flagged as high-risk always get full verify."""
+        diff = {
+            "blast_radius": "low",
+            "high_risk": True,
+            "constitution_touching": False,
+            "tests_passed": True,
+            "build_passed": True,
+        }
+        with patch.object(orchestrator_config, "GATING_POLICY", {"skip_llm_verify": True, "material_threshold": "high"}):
+            self.assertFalse(model_policy.should_skip_llm_verify(diff))
+
+    def test_do_not_skip_when_constitution_touching(self):
+        """Diffs touching constitutional files get full verify."""
+        diff = {
+            "blast_radius": "low",
+            "high_risk": False,
+            "constitution_touching": True,
+            "tests_passed": True,
+            "build_passed": True,
+        }
+        with patch.object(orchestrator_config, "GATING_POLICY", {"skip_llm_verify": True, "material_threshold": "high", "allow_skip_for_constitution_touch": False}):
+            self.assertFalse(model_policy.should_skip_llm_verify(diff))
+
+    def test_do_not_skip_when_tests_failed(self):
+        """Diffs where tests failed cannot skip verify."""
+        diff = {
+            "blast_radius": "low",
+            "high_risk": False,
+            "constitution_touching": False,
+            "tests_passed": False,
+            "build_passed": True,
+        }
+        with patch.object(orchestrator_config, "GATING_POLICY", {"skip_llm_verify": True, "material_threshold": "high"}):
+            self.assertFalse(model_policy.should_skip_llm_verify(diff))
+
+    def test_do_not_skip_when_build_failed(self):
+        """Diffs where build failed cannot skip verify."""
+        diff = {
+            "blast_radius": "low",
+            "high_risk": False,
+            "constitution_touching": False,
+            "tests_passed": True,
+            "build_passed": False,
+        }
+        with patch.object(orchestrator_config, "GATING_POLICY", {"skip_llm_verify": True, "material_threshold": "high"}):
+            self.assertFalse(model_policy.should_skip_llm_verify(diff))
+
+    def test_strict_policy_disables_all_skipping(self):
+        """When policy.skip_llm_verify=false, always run verify."""
+        diff = {
+            "blast_radius": "low",
+            "high_risk": False,
+            "constitution_touching": False,
+            "tests_passed": True,
+            "build_passed": True,
+        }
+        with patch.object(orchestrator_config, "GATING_POLICY", {"skip_llm_verify": False}):
+            self.assertFalse(model_policy.should_skip_llm_verify(diff))
+
+    def test_medium_blast_radius_not_skipped_with_high_threshold(self):
+        """Medium blast radius should not be skipped when threshold is 'high'."""
+        diff = {
+            "blast_radius": "medium",
+            "high_risk": False,
+            "constitution_touching": False,
+            "tests_passed": True,
+            "build_passed": True,
+        }
+        with patch.object(orchestrator_config, "GATING_POLICY", {"skip_llm_verify": True, "material_threshold": "high"}):
+            self.assertFalse(model_policy.should_skip_llm_verify(diff))
+
+    def test_medium_blast_radius_skipped_with_medium_threshold(self):
+        """Medium blast radius should be skipped when threshold is 'medium'."""
+        diff = {
+            "blast_radius": "medium",
+            "high_risk": False,
+            "constitution_touching": False,
+            "tests_passed": True,
+            "build_passed": True,
+        }
+        with patch.object(orchestrator_config, "GATING_POLICY", {"skip_llm_verify": True, "material_threshold": "medium"}):
+            self.assertTrue(model_policy.should_skip_llm_verify(diff))
 
 
 if __name__ == "__main__":

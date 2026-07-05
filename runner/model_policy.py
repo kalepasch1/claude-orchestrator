@@ -21,6 +21,7 @@ Env keys enable providers (added by the owner; Cowork cannot create accounts/key
 import os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import model_gateway as mg
+import orchestrator_config as config
 
 # Ascending all-in cost. 'free' = local/subscription. Each entry: (provider, model, tier, cap)
 # cap = rough capability score 1-10 for general coding/reasoning.
@@ -140,6 +141,42 @@ def analysis():
         p, m, why = choose(tc, agentic=agentic)
         out["routing"][tc] = {"agentic": agentic, "provider": p, "model": m, "why": why}
     return out
+
+
+def should_skip_llm_verify(diff_metadata):
+    """
+    Determine if LLM verify can be skipped for this diff. Non-material, non-high-risk diffs that
+    already pass tests + build_gate don't need expensive LLM committee verify. Returns True to skip,
+    False to run full verify.
+
+    diff_metadata dict fields:
+      - blast_radius: 'low', 'medium', 'high' (from blast_radius module)
+      - high_risk: bool (explicit high-risk flag)
+      - constitution_touching: bool (touches constitutional files like auth, security, compliance)
+      - tests_passed: bool (unit/integration tests pass)
+      - build_passed: bool (real build gate passed)
+    """
+    policy = config.GATING_POLICY
+    # Conservative default: if policy disabled, always run verify
+    if not policy.get("skip_llm_verify", True):
+        return False
+    # Always verify high-risk or constitution-touching diffs
+    if diff_metadata.get("high_risk", False):
+        return False
+    if diff_metadata.get("constitution_touching", False) and not policy.get("allow_skip_for_constitution_touch", False):
+        return False
+    # Check material threshold: only skip for blast radius below threshold
+    threshold = policy.get("material_threshold", "high")
+    blast_radius = diff_metadata.get("blast_radius", "high")
+    radius_hierarchy = ["low", "medium", "high"]  # ascending severity
+    threshold_level = radius_hierarchy.index(threshold) if threshold in radius_hierarchy else 2
+    actual_level = radius_hierarchy.index(blast_radius) if blast_radius in radius_hierarchy else 2
+    if actual_level >= threshold_level:
+        return False  # too risky
+    # Only skip if tests and build already passed (objective signals)
+    if not diff_metadata.get("tests_passed", False) or not diff_metadata.get("build_passed", False):
+        return False
+    return True  # safe to skip LLM verify
 
 
 if __name__ == "__main__":
