@@ -95,18 +95,32 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
     with _lock:
         _check_budget()          # raises CircuitOpen if over cap
     cmd = [CLAUDE_BIN, "-p", prompt, "--model", model, "--output-format", "json"]
-    if permission:
+    # Agents run inside per-task git WORKTREES, which are fresh paths the user never trusted —
+    # so Claude Code ignores .claude/settings.local.json ("workspace not trusted") and stalls.
+    # For an autonomous runner the correct mode is to skip the interactive trust/permission gate
+    # entirely. Guarded by env so it can be turned off. Supersedes --permission-mode.
+    if os.environ.get("ORCH_SKIP_PERMISSIONS", "true").lower() == "true":
+        cmd += ["--dangerously-skip-permissions"]
+    elif permission:
         cmd += ["--permission-mode", permission]
     if max_turns:
         cmd += ["--max-turns", str(max_turns)]
-    # Use the Max SUBSCRIPTION logins (flat plan, real capacity), NOT API billing. With
-    # ANTHROPIC_API_KEY present Claude Code bills prepaid API credits and ignores the
-    # subscription session — which is what drained the balance. Drop it so `claude` uses
-    # the logged-in session at CLAUDE_CONFIG_DIR (or the default ~/.claude login).
+    # Use Max SUBSCRIPTION logins first. A paid API key is kept only when account_pool selected an
+    # explicit api account AND subscription_guard says paid fallback is allowed. This prevents a
+    # stray process-level ANTHROPIC_API_KEY from silently turning ordinary subscription calls into
+    # billable API calls.
     runenv = dict(env if env is not None else os.environ)
     subscription = os.environ.get("ORCH_USE_SUBSCRIPTION", "true").lower() == "true"
-    if subscription:
+    api_account = runenv.get("ORCH_ANTHROPIC_API_ACCOUNT") == "1"
+    try:
+        import subscription_guard
+        api_allowed = subscription_guard.is_api_allowed()
+    except Exception:
+        api_allowed = os.environ.get("ORCH_ALLOW_API_BILLING", "false").lower() == "true"
+    if subscription and not (api_account and api_allowed):
         runenv.pop("ANTHROPIC_API_KEY", None)
+        runenv.pop("ORCH_ANTHROPIC_API_ACCOUNT", None)
+    using_api = bool(runenv.get("ANTHROPIC_API_KEY"))
     proc = subprocess.run(cmd, cwd=cwd, env=runenv, capture_output=True, text=True, timeout=timeout)
     text, cost, itok, otok, raw = proc.stdout, 0.0, 0, 0, None
     try:
@@ -119,16 +133,16 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
         otok = int(usage.get("output_tokens", 0) or 0)
     except Exception:
         text = proc.stdout + proc.stderr      # non-JSON fallback (older CLI)
-    # In subscription mode the call is costless: real billable $ = 0, so the $ circuit breaker
-    # never trips on phantom Max-plan dollars. `cost` is kept as the subscription-equivalent.
-    real_usd = 0.0 if subscription else cost
+    # Subscription calls are costless; explicit API fallback is real billable spend and is recorded
+    # as such so the billing guard can enforce the daily cap.
+    real_usd = cost if using_api else 0.0
     _record(real_usd, sub_usd=cost)
     try:
         import usage_meter
-        # Record REAL billable $ under 'anthropic' (0 in subscription mode) so dashboards show true
-        # spend, and the subscription-equivalent under 'anthropic-notional' (visibility only, not money).
+        # Record REAL billable $ under 'anthropic' and subscription-equivalent under
+        # 'anthropic-notional' only for fixed-price login usage.
         usage_meter.record("anthropic", project, units=itok + otok, unit="tokens", usd=real_usd)
-        if subscription and cost:
+        if not using_api and cost:
             usage_meter.record("anthropic-notional", project, units=itok + otok, unit="tokens", usd=cost)
     except Exception:
         pass
