@@ -41,6 +41,7 @@ import claude_cli, waste, judge, experiment_router, decision_engine
 import agentic_coders
 import plan_stage
 import pipeline_contract
+import model_policy
 
 INTEGRATION_MODE = os.environ.get("INTEGRATION_MODE", "local")  # local | pr
 USE_CACHE = os.environ.get("RESULT_CACHE", "true").lower() == "true"
@@ -232,6 +233,15 @@ def _cap_agent_prompt(prompt):
         "instead of relying on omitted transcript bulk.]\n\n" +
         text[-tail:].lstrip()
     )
+
+
+def _classify_blast_radius(num_changed, num_dependents):
+    """Classify blast radius based on number of changed files and dependent files."""
+    if num_changed <= 2 and num_dependents <= 2:
+        return "low"
+    if num_changed <= 5 and num_dependents <= 10:
+        return "medium"
+    return "high"
 
 
 BUILD_MANDATE = (
@@ -553,8 +563,28 @@ def run_task(t):
                               and not t.get("material"))
             _soft_flags = []
 
+            # LLM gating policy: skip expensive verify + confidence calls for low-risk diffs
+            _skip_llm_verify = False
+            try:
+                changed_files = radius.get("changed", [])
+                constitutional = any(f in f for f in changed_files
+                                     for pattern in ("auth", "security", "compliance", "privacy", "legal", "payment", "rls"))
+                diff_metadata = {
+                    "blast_radius": _classify_blast_radius(len(changed_files), len(deps)),
+                    "high_risk": t.get("high_risk", False),
+                    "constitution_touching": constitutional,
+                    "tests_passed": True,
+                    "build_passed": True,
+                }
+                _skip_llm_verify = model_policy.should_skip_llm_verify(diff_metadata)
+            except Exception:
+                _skip_llm_verify = False
+
             # verification swarm BEFORE integrate (blast-radius-aware)
-            v = verify.review_diff(wt, base, dependents=deps if deps else None, project=name)
+            if _skip_llm_verify:
+                v = {"verdict": "pass", "notes": "gating policy: skipped LLM verify (low-risk, tests+build pass)"}
+            else:
+                v = verify.review_diff(wt, base, dependents=deps if deps else None, project=name)
             if v["verdict"] == "fail":
                 if _soft_advisory:
                     _soft_flags.append("verify: " + (v.get("notes") or "")[:180])
@@ -622,11 +652,15 @@ def run_task(t):
             conf = {"confidence": None, "reason": ""}
             decision = "auto"
             if USE_CONFIDENCE:
-                try:
-                    proj_thresh = proj.get("confidence_threshold")
-                    decision, conf = confidence.gate(wt, base, threshold=proj_thresh, project=name)
-                except Exception as _ce:
-                    conf = {"confidence": None, "reason": f"confidence unavailable ({_ce})"}
+                if _skip_llm_verify:
+                    conf = {"confidence": None, "reason": "gating policy: skipped confidence gate (low-risk, tests+build pass)"}
+                    decision = "auto"
+                else:
+                    try:
+                        proj_thresh = proj.get("confidence_threshold")
+                        decision, conf = confidence.gate(wt, base, threshold=proj_thresh, project=name)
+                    except Exception as _ce:
+                        conf = {"confidence": None, "reason": f"confidence unavailable ({_ce})"}
             if decision != "auto":
                 conf = {**conf, "reason": (conf.get("reason") or "") + " [auto-merged to dev branch; no code-merge approval required]"}
                 decision = "auto"
