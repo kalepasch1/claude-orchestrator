@@ -572,7 +572,7 @@ def run_task(t):
             _skip_llm_verify = False
             try:
                 changed_files = radius.get("changed", [])
-                constitutional = any(f in f for f in changed_files
+                constitutional = any(pattern in f for f in changed_files
                                      for pattern in ("auth", "security", "compliance", "privacy", "legal", "payment", "rls"))
                 diff_metadata = {
                     "blast_radius": _classify_blast_radius(len(changed_files), len(deps)),
