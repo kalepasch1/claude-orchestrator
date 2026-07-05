@@ -56,22 +56,34 @@ def run(limit=120):
     """
     recovered_cards = recover_pending_manual_reviews()
     restored_noops = recover_auto_closed_noops()
-    blocked = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,log_tail,state",
+    shelf_dec, shelf_req = recover_shelved()   # auto-process the shelved pile — no manual requeue needed
+    blocked = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,base_branch,log_tail,state",
                                   "state": "in.(BLOCKED,CONFLICT,TESTFAIL)", "limit": str(limit)}) or []
-    requeued = escalated = revised = reclaimed = left = shelved = 0
+    requeued = escalated = revised = reclaimed = left = shelved = decomposed = 0
     for t in blocked:
         note = t.get("note") or ""
         signal = f"{note}\n{t.get('log_tail') or ''}"
         rc = int(t.get("remediation_count") or 0)
 
-        # HARD TERMINAL CAP: stop burning lanes on a task that has been remediated past the hard cap
-        # without ever merging. Legal/material holds still route to the human path below, but everything
-        # else is SHELVED (terminal — the claim loop and this remediator both ignore SHELVED) so it
-        # surfaces in the cockpit for a re-scope instead of recycling indefinitely.
+        # HARD CAP: a task that has failed this many times is almost always TOO BIG, not impossible.
+        # Instead of shelving it for a human (the old behavior — a manual bottleneck), auto-DECOMPOSE it
+        # into smaller, independently-buildable sub-tasks and retire the oversized parent. Only if it's
+        # genuinely atomic-and-stuck (or already a decomposition product) do we shelve — which should be
+        # rare. Legal/material holds still route to the human path below.
         if rc >= HARD_CAP and not _requires_human_hold(t, signal):
+            if not _already_decomposed(t, note):
+                subs = _decompose(t, signal)
+                if subs:
+                    n = _spawn_subtasks(t, subs)
+                    if n:
+                        db.update("tasks", {"id": t["id"]},
+                                  {"state": "DECOMPOSED", "account": None, "updated_at": "now()",
+                                   "note": (f"too large after {rc} attempts -> auto-split into {n} sub-tasks; parent retired.")[:500]})
+                        decomposed += 1
+                        continue
             db.update("tasks", {"id": t["id"]},
                       {"state": "SHELVED", "account": None, "updated_at": "now()",
-                       "note": (f"shelved after {rc} remediations without merge — needs human re-scope. "
+                       "note": (f"shelved after {rc} remediations (atomic + unbuildable) — needs human re-scope. "
                                 + note)[:500]})
             shelved += 1
             continue
@@ -156,11 +168,13 @@ def run(limit=120):
                 reclaimed += 1
         db.update("tasks", {"id": t["id"]}, upd)
     print(f"auto_remediate: retry {requeued}, escalate {escalated}, re-plan {revised}, "
-          f"reclaimed {reclaimed}, shelved {shelved}, recovered-cards {recovered_cards}, "
+          f"reclaimed {reclaimed}, decomposed {decomposed}, shelved {shelved}, "
+          f"shelf-recovered {shelf_dec}dec/{shelf_req}req, recovered-cards {recovered_cards}, "
           f"restored-noops {restored_noops}, left {left}")
     return {"requeued": requeued, "escalated": escalated, "revised": revised,
-            "reclaimed": reclaimed, "shelved": shelved, "recovered_cards": recovered_cards,
-            "restored_noops": restored_noops, "left": left}
+            "reclaimed": reclaimed, "decomposed": decomposed, "shelved": shelved,
+            "shelf_decomposed": shelf_dec, "shelf_requeued": shelf_req,
+            "recovered_cards": recovered_cards, "restored_noops": restored_noops, "left": left}
 
 
 def recover_pending_manual_reviews(limit=500):
@@ -289,6 +303,96 @@ def _implementation_prompt(task, note, directive):
             "Do not stop at analysis or manual review. Make the smallest complete code change, "
             "restore any missing/deleted branch or worktree artifacts if needed, run the relevant checks, "
             "and commit the implementation.")
+
+
+DECOMPOSE_MAX = int(os.environ.get("REMEDIATION_DECOMPOSE_MAX", "5"))
+
+
+def _decompose(task, note):
+    """Split a repeatedly-failing (too-big) task into 2-5 SMALLER, independently-buildable sub-tasks.
+    Returns [{"title","prompt"}] or None if the model judges it atomic/undoable. This is the fix that
+    makes 'shelve for complexity' unnecessary: instead of parking a big task for a human, break it down
+    until each piece is small enough to build in one pass."""
+    import json
+    base = pipeline_contract.original_request(task.get("prompt") or "").split(DIRECTIVE_MARKER, 1)[0]
+    ask = ("A build task has failed many times — it is almost certainly TOO BIG to finish in one pass. "
+           "Split it into 2-5 SMALLER, independently-buildable sub-tasks, each completable by a coding "
+           "agent in a single pass with a concrete acceptance test, ordered so earlier ones don't depend "
+           "on later ones. If it is genuinely atomic and small (cannot be split), reply exactly 'ATOMIC'. "
+           "Reply ONLY as a JSON array: "
+           '[{"title":"short-kebab-title","prompt":"full concrete instruction"}].\n'
+           f"TASK: {base[:1500]}\nFAILURE: {(note or '')[:400]}\nLOG: {(task.get('log_tail') or '')[:500]}")
+    try:
+        import model_policy, model_gateway
+        prov, model, _ = model_policy.choose("plan", agentic=False)
+        txt = (model_gateway.complete(prov, model, ask).get("text") or "").strip()
+        if txt.upper().startswith("ATOMIC"):
+            return None
+        m = re.search(r"\[.*\]", txt, re.S)
+        if not m:
+            return None
+        subs = []
+        for i, x in enumerate(json.loads(m.group(0))[:DECOMPOSE_MAX]):
+            title = re.sub(r"[^a-z0-9-]+", "-", str(x.get("title") or f"part{i+1}").lower()).strip("-")[:40] or f"part{i+1}"
+            p = str(x.get("prompt") or "").strip()
+            if p:
+                subs.append({"title": title, "prompt": p})
+        return subs or None
+    except Exception:
+        return None
+
+
+def _spawn_subtasks(task, subs):
+    """Create child tasks for a decomposed parent. Returns count actually created."""
+    made = 0
+    for i, s in enumerate(subs):
+        child = f"{task['slug']}-{s['title']}"[:80]
+        if db.select("tasks", {"select": "id", "slug": f"eq.{child}", "limit": "1"}):
+            continue
+        try:
+            db.insert("tasks", {
+                "project_id": task.get("project_id"), "slug": child, "kind": "build", "state": "QUEUED",
+                "remediation_count": 0, "base_branch": task.get("base_branch") or "main",
+                "material": bool(task.get("material")),
+                "prompt": s["prompt"] + f"\n\n(Sub-task {i+1}/{len(subs)} of '{task['slug']}', auto-split because the parent was too large to build in one pass.)",
+                "note": f"auto-decomposed from {task['slug']}"})
+            made += 1
+        except Exception:
+            pass
+    return made
+
+
+def _already_decomposed(task, note):
+    """Depth guard: a task that was itself a decomposition product and STILL can't build is genuinely
+    stuck — don't recurse forever."""
+    return "auto-decomposed from" in (note or "") or (task.get("slug") or "").count("-part") >= 2
+
+
+def recover_shelved(limit=200):
+    """Auto-process the SHELVED pile so no human ever has to requeue: decompose big ones, requeue small
+    ones. Only genuine legal/secret human-holds are left for the owner."""
+    rows = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,base_branch,log_tail",
+                               "state": "eq.SHELVED", "limit": str(limit)}) or []
+    decomposed = requeued = 0
+    for t in rows:
+        note = t.get("note") or ""
+        signal = f"{note}\n{t.get('log_tail') or ''}"
+        if _requires_human_hold(t, signal):
+            continue
+        if not _already_decomposed(t, note):
+            subs = _decompose(t, signal)
+            if subs and _spawn_subtasks(t, subs):
+                db.update("tasks", {"id": t["id"]}, {"state": "DECOMPOSED", "account": None,
+                          "updated_at": "now()", "note": f"recovered from shelf -> split into sub-tasks"})
+                decomposed += 1
+                continue
+        # atomic/small (or already a decomposition product): requeue fresh with a concrete impl prompt
+        db.update("tasks", {"id": t["id"]}, {"state": "QUEUED", "remediation_count": 0, "account": None,
+                  "updated_at": "now()",
+                  "prompt": _implementation_prompt(t, note, "Recovered from shelf; make the smallest complete change and commit it now."),
+                  "note": "auto-remediate: recovered from shelf"})
+        requeued += 1
+    return decomposed, requeued
 
 
 def _revise(task, note):

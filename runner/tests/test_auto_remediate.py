@@ -72,7 +72,8 @@ class AutoRemediateRecoveryTest(unittest.TestCase):
         self.assertEqual(restored, 1)
         patch_row = updates[0][2]
         self.assertEqual(patch_row["state"], "QUEUED")
-        self.assertEqual(patch_row["remediation_count"], 0)
+        # counter is preserved+incremented across restores so repeat no-ops converge to the hard cap
+        self.assertEqual(patch_row["remediation_count"], 1)
         self.assertIn("incorrectly removed from the cue", patch_row["prompt"])
 
     def test_cap_reached_requeues_without_creating_human_card(self):
@@ -90,7 +91,8 @@ class AutoRemediateRecoveryTest(unittest.TestCase):
         updates = []
         inserts = []
         db = MagicMock()
-        db.select.side_effect = [[], [], [task]]
+        # select order in run(): approvals(cards), tasks(DONE noops), tasks(SHELVED recover), tasks(blocked)
+        db.select.side_effect = [[], [], [], [task]]
         db.update.side_effect = lambda table, match, patch: updates.append((table, match, patch))
         db.insert.side_effect = lambda table, row, **kw: inserts.append((table, row))
 
