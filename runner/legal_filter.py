@@ -37,7 +37,7 @@ POSTURE_CHANGE = re.compile(
 
 EXTREME_LEGAL = re.compile(
     r"\b(subpoena|lawsuit|litigation|cease and desist|enforcement action|consent order|"
-    r"criminal|fraud|sanction|ofac)\b",
+    r"criminal|fraud|sanction|ofac|general solicitation|solicitation)\b",
     re.I,
 )
 
