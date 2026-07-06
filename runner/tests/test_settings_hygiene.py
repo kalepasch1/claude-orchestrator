@@ -109,6 +109,80 @@ class TestSettingsHygiene(unittest.TestCase):
             f"Local settings files are tracked in git: {tracked_settings}",
         )
 
+    def test_settings_local_not_in_recent_history(self):
+        """Verify .claude/settings.local.json was removed from git history.
+
+        This test detects the security regression where settings.local.json
+        (containing overly permissive allowlists) was accidentally committed.
+        """
+        result = subprocess.run(
+            ["git", "log", "--all", "--full-history", "--name-only", "--pretty=format:"],
+            cwd=self.repo_root,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        all_files_in_history = result.stdout.strip().split("\n")
+
+        # Filter to settings files only
+        settings_in_history = [
+            f for f in all_files_in_history
+            if ".claude/settings.local.json" in f and f.strip()
+        ]
+
+        self.assertEqual(
+            len(settings_in_history),
+            0,
+            ".claude/settings.local.json found in git history (security regression). "
+            "This file contains overly permissive allowlists with kill commands and "
+            "database access. It must be removed via git filter-repo. "
+            f"Found in {len(settings_in_history)} commits.",
+        )
+
+    def test_no_allowlist_with_dangerous_commands(self):
+        """Verify that any tracked allowlist files don't contain dangerous patterns.
+
+        Dangerous patterns: kill commands, database access, file manipulation.
+        """
+        result = subprocess.run(
+            ["git", "ls-files"],
+            cwd=self.repo_root,
+            capture_output=True,
+            text=True,
+        )
+        tracked_files = result.stdout.strip().split("\n")
+
+        # Only check tracked settings files
+        tracked_settings = [
+            f for f in tracked_files
+            if "settings" in f.lower() and f.endswith(".json") and f.strip()
+        ]
+
+        dangerous_patterns = [
+            "Bash(kill",
+            "Bash(pkill",
+            'import db"',
+            "db.select",
+            "db.update",
+            "Bash(rm -rf",
+            "Bash(git reset --hard",
+        ]
+
+        for settings_file in tracked_settings:
+            file_path = os.path.join(self.repo_root, settings_file)
+            if not os.path.exists(file_path):
+                continue
+
+            with open(file_path) as f:
+                content = f.read()
+
+            for pattern in dangerous_patterns:
+                self.assertNotIn(
+                    pattern,
+                    content,
+                    f"Dangerous pattern '{pattern}' found in tracked settings file {settings_file}",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
