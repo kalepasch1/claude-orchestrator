@@ -8,24 +8,31 @@ Checks every run:
   1. Residual API keys in the env while API billing is blocked -> shouldn't happen post-enforce();
      if it does, alert (a subprocess got a key it shouldn't have).
   2. REAL billable $ from claude_cli's circuit-breaker ledger (real_usd; ~$0 in subscription mode).
-     If real spend today exceeds BILLING_TRIP_USD, PAUSE everything and file a material approval.
+     If real spend today exceeds the allowed cap, PAUSE everything and file a material approval.
 
-This is intentionally a near-zero threshold ($2 default): on Max subscriptions real API $ should be
-$0, so any real spend at all is an anomaly worth stopping for. Schedule every ~5 min; safe when paused
-(it only reads + can pause, never spends).
+Default behavior is still near-zero ($2) when API billing is not explicitly allowed. If
+ORCH_ALLOW_API_BILLING=true, the trip cap becomes ORCH_API_DAILY_USD_CAP (or BILLING_TRIP_USD), so
+paid fallback can operate inside a deliberate budget without becoming a user-facing pause.
 """
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-TRIP_USD = float(os.environ.get("BILLING_TRIP_USD", "2.0"))
+
+def _trip_usd(api_allowed=False):
+    if api_allowed:
+        return float(os.environ.get("ORCH_API_DAILY_USD_CAP",
+                                    os.environ.get("BILLING_TRIP_USD", "25.0")))
+    return float(os.environ.get("BILLING_TRIP_USD", "2.0"))
 
 
 def run():
     findings = []
     # 1) key-leak check
+    api_allowed = False
     try:
         import subscription_guard
         a = subscription_guard.audit()
+        api_allowed = bool(a["api_allowed"])
         if a["api_keys_present"] and not a["api_allowed"]:
             findings.append(f"API key(s) present in env while billing blocked: {a['api_keys_present']}")
     except Exception as e:
@@ -37,8 +44,9 @@ def run():
         import claude_cli
         s = claude_cli.status()
         real_day = float(s.get("usd_last_day", 0) or 0)
-        if real_day > TRIP_USD:
-            findings.append(f"REAL API spend today ${real_day:.2f} > trip ${TRIP_USD:.2f}")
+        trip = _trip_usd(api_allowed)
+        if real_day > trip:
+            findings.append(f"REAL API spend today ${real_day:.2f} > trip ${trip:.2f}")
     except Exception as e:
         findings.append(f"claude_cli status failed: {e}")
 

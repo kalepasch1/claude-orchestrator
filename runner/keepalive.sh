@@ -5,8 +5,9 @@ cd "$(dirname "$0")" || exit 1
 export ENABLE_PROACTIVE_LOOPS=true
 export CLAUDE_ORCH_HOME="/Users/kpasch/Documents/beethoven/claude-orchestrator/.runtime"
 export ORCH_LOG_DIR="/Users/kpasch/Documents/beethoven/claude-orchestrator/.runtime/logs"
-export ORCH_PUSH_ON_MERGE=false
+export ORCH_PUSH_ON_MERGE=true
 export ORCH_PUSH_ON_RELEASE=true
+export INTEGRATION_MODE=local
 mkdir -p "$ORCH_LOG_DIR"
 RUNNER_LOG="$ORCH_LOG_DIR/runner.log"
 while true; do

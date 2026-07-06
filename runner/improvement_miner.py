@@ -16,6 +16,7 @@ Bounded: a few (app,surface) pairs per run. Schedule ~hourly (heavier in the 2-5
 import os, sys, json, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import pipeline_contract
 
 # EVERYTHING is in scope — not just the app's product surfaces, but the whole autonomous system:
 # cross-app coordination, the orchestration layer, the individual bots, the swarm, and the hive-mind.
@@ -142,11 +143,16 @@ def run():
                 # auto-queue a build task in the app (only if the app is active)
                 slug = "improve-" + re.sub(r"[^a-z0-9]+", "-", title[:40].lower()).strip("-")
                 if pid.get(app):
+                    raw_prompt = (f"IMPROVEMENT ({surface}, target {it.get('expected_multiplier','')}): "
+                                  f"{it.get('proposal')}\nContext/gap: {it.get('current_state')}\n"
+                                  f"Make a concrete, well-tested change and ensure the prod build stays green.")
                     db.insert("tasks", {"project_id": pid[app], "slug": slug, "state": "QUEUED",
                         "kind": "build", "deps": [], "base_branch": "main", "material": False,
-                        "prompt": f"IMPROVEMENT ({surface}, target {it.get('expected_multiplier','')}): "
-                                  f"{it.get('proposal')}\nContext/gap: {it.get('current_state')}\n"
-                                  f"Make a concrete, well-tested change and ensure the prod build stays green."})
+                        "prompt": pipeline_contract.wrap_prompt(raw_prompt, project=app,
+                                                                kind="build",
+                                                                source=f"improvement_miner:{surface}",
+                                                                slug=slug, material=False),
+                        "note": pipeline_contract.note(source=f"improvement_miner:{surface}")})
                     row["status"] = "queued"; row["task_slug"] = slug
                     db.insert("improvement_proposals", row)
                     queued += 1

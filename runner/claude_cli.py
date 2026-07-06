@@ -121,6 +121,18 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
         runenv.pop("ANTHROPIC_API_KEY", None)
         runenv.pop("ORCH_ANTHROPIC_API_ACCOUNT", None)
     using_api = bool(runenv.get("ANTHROPIC_API_KEY"))
+    # GLOBAL $200 real-spend ceiling also covers Claude's PAID API. When the ceiling is hit, drop the API
+    # key and fall back to the free Max subscription instead of spending more real dollars — work keeps
+    # flowing at $0 rather than failing, and real spend stays capped pending approval.
+    if using_api:
+        try:
+            import budget
+            if not budget.paid_allowed():
+                runenv.pop("ANTHROPIC_API_KEY", None)
+                runenv.pop("ORCH_ANTHROPIC_API_ACCOUNT", None)
+                using_api = False
+        except Exception:
+            pass
     proc = subprocess.run(cmd, cwd=cwd, env=runenv, capture_output=True, text=True, timeout=timeout)
     text, cost, itok, otok, raw = proc.stdout, 0.0, 0, 0, None
     try:

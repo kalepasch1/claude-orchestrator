@@ -28,6 +28,7 @@ Idempotent: a task whose slug already exists is skipped (re-dropping a file won'
 import os, sys, re, glob, json, datetime, shutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import pipeline_contract
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 INTAKE = os.path.abspath(os.path.join(HERE, "..", "intake"))
@@ -128,10 +129,14 @@ def ingest_file(path, projects_by_name):
             skipped += 1; continue
         if t["slug"] in existing:
             skipped += 1; continue
+        raw_prompt = (t["prompt"] + (f"\n\nProof: {t['proof']}" if t["proof"] else ""))
         row = {"project_id": proj["id"], "slug": t["slug"],
-               "prompt": (t["prompt"] + (f"\n\nProof: {t['proof']}" if t["proof"] else "")),
+               "prompt": pipeline_contract.wrap_prompt(raw_prompt, project=t["project"],
+                                                        kind="build", source="intake-file",
+                                                        slug=t["slug"], material=bool(t["material"])),
                "base_branch": proj.get("default_base", "main"), "kind": "build",
-               "state": "QUEUED", "deps": t["depends"], "material": bool(t["material"])}
+               "state": "QUEUED", "deps": t["depends"], "material": bool(t["material"]),
+               "note": pipeline_contract.note(source="intake-file")}
         if t.get("model"):
             row["model"] = t["model"]
         db.insert("tasks", row)

@@ -30,7 +30,8 @@ def run():
             db.insert("approvals", {"project": p["name"], "kind": "self",
                 "title": f"Canary {d['decision'].upper()} ({CANARY_PCT}% slice): {p['name']}",
                 "why": d["why"], "value": f"A/B on live traffic decided: {d['decision']}.",
-                "risk": "Rollback protects prod; promote ships to 100%.", "command": ""})
+                "risk": "Rollback protects prod; promote ships to 100%.", "command": "",
+                "status": "approved", "decided_by": f"ab-edge:auto-{d['decision']}"})
             decisions += 1
     print(f"ab_edge: {decisions} canary promote/rollback decisions on live traffic")
     return decisions

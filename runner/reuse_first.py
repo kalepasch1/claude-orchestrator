@@ -17,6 +17,7 @@ import os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import pipeline_contract
 
 try:
     import knowledge_embed
@@ -75,7 +76,7 @@ def _hit(row, sim):
 def find_reusable(task):
     """Return {"source_slug","project","similarity","summary"} for the best prior
     solution matching this task's prompt, or None."""
-    prompt = str((task or {}).get("prompt") or "")
+    prompt = pipeline_contract.original_request(str((task or {}).get("prompt") or ""))
     if not prompt.strip():
         return None
     # tier 1: vector search via pgvector (only when an embed provider is configured)

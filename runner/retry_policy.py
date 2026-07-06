@@ -25,7 +25,7 @@ Used by:
 import os, re
 
 # max automatic transient retries before we give up and leave it BLOCKED for a human
-MAX_TRANSIENT_RETRIES = int(os.environ.get("MAX_TRANSIENT_RETRIES", "5"))
+MAX_TRANSIENT_RETRIES = int(os.environ.get("MAX_TRANSIENT_RETRIES", "50"))
 # base backoff seconds; actual = min(BACKOFF_CAP, BASE * 2**n) with light jitter
 BACKOFF_BASE_S = float(os.environ.get("RETRY_BACKOFF_BASE_S", "5"))
 BACKOFF_CAP_S = float(os.environ.get("RETRY_BACKOFF_CAP_S", "120"))
@@ -35,7 +35,7 @@ _TRANSIENT = re.compile(
     r"(connection reset|urlopen|errno|timed?\s?out|timeout|temporar|"
     r"rate.?limit|overload|429|500|502|503|504|"
     r"service unavailable|read timed out|broken pipe|"
-    r"budget cap|cost circuit|high demand|try again|econnreset|"
+    r"budget cap|cost circuit|http error 409|409: conflict|postgrest|high demand|try again|econnreset|"
     r"name resolution|dns|ssl|handshake|reset by peer)",
     re.I,
 )
@@ -79,8 +79,8 @@ def decide(note: str, transient_retries: int = 0) -> dict:
                 "transient_retries": tr + 1,
                 "note": f"transient ({tr + 1}/{MAX_TRANSIENT_RETRIES}); auto-requeued: {(note or '')[:120]}"}
     if kind == "transient":
-        return {"action": "block", "backoff_s": 0, "transient_retries": tr,
-                "note": f"transient but hit {MAX_TRANSIENT_RETRIES}-retry cap; needs a look: {(note or '')[:120]}"}
+        return {"action": "requeue", "backoff_s": BACKOFF_CAP_S, "transient_retries": tr + 1,
+                "note": f"transient cap reached; still auto-requeued for cooldown/failover: {(note or '')[:120]}"}
     return {"action": "block", "backoff_s": 0, "transient_retries": tr, "note": note}
 
 

@@ -97,7 +97,7 @@ def run():
                       "title": f"Prod deploy failed + auto-rolled-back: {r['project']}",
                       "why": f"Vercel deploy {state}; restored {(last_good or '')[:8]}. No downtime (previous deploy kept serving).",
                       "value": "Investigate the failing change; it's out of prod.", "risk": "None — prod is on last-good.",
-                      "command": ""})
+                      "command": "", "status": "approved", "decided_by": "deploy-verify:auto-rollback"})
     return len(pend)
 
 

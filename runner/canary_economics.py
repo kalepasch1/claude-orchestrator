@@ -57,10 +57,11 @@ def run():
         d = decide(p["name"])
         out.append(d)
         if d["decision"] == "rollback":
-            db.insert("approvals", {"project": p["name"], "kind": "material",
+            db.insert("approvals", {"project": p["name"], "kind": "self",
                 "title": f"Canary ROLLBACK recommended: {p['name']}",
                 "why": d["why"], "value": "Protect production cost/quality.",
-                "risk": "Promoting this canary would degrade the app.", "command": ""})
+                "risk": "Promoting this canary would degrade the app.", "command": "",
+                "status": "approved", "decided_by": "canary-economics:auto-rollback"})
         print(f"canary_economics: {p['name']} -> {d['decision']} ({d['why']})")
     return out
 

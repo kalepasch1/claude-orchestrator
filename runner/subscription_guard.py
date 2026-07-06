@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-subscription_guard.py - the HARD firewall that makes API billing structurally impossible when you
-are running on your Max subscriptions. This is the systemic fix for the ~$500 June invoice
-(Sonnet 4.6 $387 + Haiku $111), which was prepaid-credit API spend — NOT subscription usage.
+subscription_guard.py - the billing firewall that keeps fixed-price subscriptions first and makes
+paid Anthropic API billing an explicit fallback instead of an accidental default.
 
 Where that money went (all bypass the Max plan and bill the API):
   * batch_pass.py  -> Claude Batch API via a raw ANTHROPIC_API_KEY (scheduled twice daily).
@@ -11,15 +10,16 @@ Where that money went (all bypass the Max plan and bill the API):
   * auto-recharge on the account silently re-bought credits so it never hard-stopped.
 
 enforce() (call ONCE at runner startup, before anything else):
-  If ORCH_USE_SUBSCRIPTION=true (default), it REMOVES ANTHROPIC_API_KEY and every ANTHROPIC_API_KEY_*
+  Unless ORCH_ALLOW_API_BILLING=true, it REMOVES ANTHROPIC_API_KEY and every ANTHROPIC_API_KEY_*
   from this process's environment. Because the runner launches all periodic jobs as subprocesses with
-  a COPY of its environment, the key is gone everywhere — batch_pass, edge calls, and api-accounts all
+  a COPY of its environment, the key is gone everywhere - batch_pass, edge calls, and api-accounts all
   lose the ability to bill. Subscription (Max) usage is unaffected (it uses the logged-in CLI session).
 
 audit() returns what it stripped so startup can log it. is_api_allowed() is the single switch other
-modules check before doing anything that would bill the API.
+modules check before doing anything that would bill the API. Subscription mode controls route
+priority; ORCH_ALLOW_API_BILLING=true is the explicit permission for paid fallback.
 
-NOTE: the strongest control is on the ACCOUNT itself and only you can set it — turn OFF auto-recharge
+NOTE: the strongest control is on the ACCOUNT itself and only you can set it - turn OFF auto-recharge
 and set a $0/low monthly spend limit in the Anthropic Console. This module guarantees the ORCHESTRATOR
 never bills the API; the console setting guarantees NOTHING can, even outside this tool.
 """
@@ -31,8 +31,12 @@ API_OPT_IN = os.environ.get("ORCH_ALLOW_API_BILLING", "false").lower() == "true"
 
 
 def is_api_allowed():
-    """API billing is allowed ONLY if subscription mode is off AND you explicitly opted in."""
-    return (not SUB_ON) and API_OPT_IN
+    """API billing is allowed only when explicitly opted in.
+
+    Subscription mode controls priority (fixed-price first), not an absolute ban once the owner has
+    enabled paid fallback with ORCH_ALLOW_API_BILLING=true.
+    """
+    return API_OPT_IN
 
 
 def _api_key_vars():
@@ -44,7 +48,7 @@ def enforce():
     """Strip every Anthropic API key from the process env unless API billing is explicitly allowed.
     Returns a dict describing what was done (for logging)."""
     if is_api_allowed():
-        return {"enforced": False, "reason": "API billing explicitly opted in (ORCH_ALLOW_API_BILLING=true)",
+        return {"enforced": False, "reason": "API billing explicitly opted in (subscription-first fallback mode)",
                 "stripped": []}
     stripped = []
     for k in _api_key_vars():
@@ -68,8 +72,8 @@ def require_api_or_skip(job_name="job"):
     caller may proceed; otherwise logs why and returns False."""
     if is_api_allowed():
         return True
-    print(f"subscription_guard: {job_name} SKIPPED — API billing is blocked (you're on Max "
-          f"subscription). Set ORCH_ALLOW_API_BILLING=true only if you truly intend to pay API rates.")
+    print(f"subscription_guard: {job_name} SKIPPED - API billing is blocked in subscription-first mode. "
+          f"Set ORCH_ALLOW_API_BILLING=true only if you truly intend to pay API rates.")
     return False
 
 

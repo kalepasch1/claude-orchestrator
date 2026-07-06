@@ -24,28 +24,20 @@ def _block_on_cap():
 BLOCK_ON_CAP = _block_on_cap()
 FILE_BUDGET_CARDS = os.environ.get("ORCH_FILE_BUDGET_CARDS", "false").lower() in ("true", "1", "yes")
 
-# Model-name fragments that are REAL paid providers (billed per token). Everything else — Claude Max
-# and Codex subscriptions — is $0 and must NOT count toward spend. This is the calibration point: the
-# budget reflects money actually spent on paid APIs, per source.
-_PAID_FRAGMENTS = ("deepseek", "gemini", "gpt", "openai", "mistral", "groq")
-
-
 def _real_spent(project=None):
-    """Real month-to-date billable $ from PAID providers only (subscription = $0, excluded). Immune to
-    the phantom subscription 'spend' that polluted v_spend_mtd. Sums outcomes.usd for paid-model rows."""
+    """Real month-to-date billable $ across ALL vendors — every paid API counts toward the ceiling,
+    INCLUDING Claude's paid-API calls (deepseek/gemini/gpt/openai + Claude API). This is correct because
+    outcomes.usd now records REAL dollars only: subscription Claude/Codex record $0 (claude_cli returns
+    real_usd), so summing everything captures exactly the money actually spent and nothing phantom."""
     import datetime
     month_start = datetime.date.today().replace(day=1).isoformat()
-    q = {"select": "usd,model", "created_at": f"gte.{month_start}"}
+    q = {"select": "usd", "created_at": f"gte.{month_start}"}
     if project:
         q["project"] = f"eq.{project}"
     total = 0.0
     try:
         for r in (db.select("outcomes", q) or []):
-            m = str(r.get("model") or "").lower()
-            if "claude" in m or "codex" in m:      # subscription -> $0
-                continue
-            if any(f in m for f in _PAID_FRAGMENTS):
-                total += float(r.get("usd") or 0)
+            total += float(r.get("usd") or 0)
     except Exception:
         pass
     return round(total, 2)

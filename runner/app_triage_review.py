@@ -79,15 +79,13 @@ def _aggregate_and_route():
             "avg_cost": round(best["avg_cost"], 5), "avg_quality": round(best["avg_quality"], 2),
             "n_samples": best["n"], "updated_at": "now()"}, upsert=True)
         routes += 1
-        # propose a switch if a cheaper-good option beats what's most-used
+        # route optimization is automatic. Do not create manual approval cards for "cheaper provider"
+        # recommendations; the route table above is the reversible source of truth.
         most_used = max(cands, key=lambda c: c["n"])
         if best["provider"] != most_used["provider"] and best["avg_cost"] < most_used["avg_cost"]:
-            db.insert("approvals", {"project": app, "kind": "self",
-                "title": f"Cheaper route for {app}/{op}: {most_used['provider']} -> {best['provider']}",
-                "why": f"{best['provider']} holds quality {best['avg_quality']:.1f} at "
-                       f"${best['avg_cost']:.4f} vs {most_used['provider']} ${most_used['avg_cost']:.4f}.",
-                "value": "Lower cost at equal/better quality across this app's operation.",
-                "risk": "Low — routing recommendation; revertible.", "command": ""})
+            print(f"app_triage_review: auto-routed {app}/{op} "
+                  f"{most_used['provider']} -> {best['provider']} "
+                  f"(q {best['avg_quality']:.1f}, ${best['avg_cost']:.4f})")
     return routes
 
 
