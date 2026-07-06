@@ -834,6 +834,7 @@ _SCHEDULE = [
     ("autopilot-3600","autopilot",          "interval", 3600),  # portfolio autopilot (weights + attention)
     ("abedge-600",    "abedge",             "interval", 600),   # edge A/B promote/rollback on live traffic
     ("roadmap-weekly","roadmap",            "weekly",   (1, 6, 0)),# revenue-ranked weekly focus proposals
+    ("dagspecunbl-60","dagspecunblock",      "interval", 60),    # speculatively release tasks waiting on RETRY deps
     ("worktreegc-300","worktreegc",         "interval", 300),   # remove stale agent worktrees (unblocks merges)
     ("releasetrain-600","releasetrain",     "interval", 600),   # accumulate on staging, QA, release to prod
     ("deployverify-120","deployverify",     "interval", 120),   # confirm Vercel deploy / auto-rollback
@@ -863,7 +864,7 @@ _sched_last: dict = {}
 # protect the Mac, and keep read-only spend/health telemetry flowing.
 _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn",
                      "approval_policy.py", "queue_janitor.py",
-                     "unstick", "dagfix", "batchmech", "selftune", "cluster",
+                     "unstick", "dagfix", "dagspecunblock", "batchmech", "selftune", "cluster",
                      "governor", "costslo", "promote", "prewarm", "billingguard",
                      "dedup", "canaryecon", "forecast", "arbitrage", "autoscale", "bizradar",
                      "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",

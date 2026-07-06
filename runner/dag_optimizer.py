@@ -161,9 +161,47 @@ def optimize(apply_redundant=True):
     return {"ghost": dropped_ghost, "redundant": dropped_redundant, "orphans": flagged}
 
 
+def speculative_unblock(dry_run=False):
+    """Release QUEUED tasks that are only blocked by actively-retrying deps.
+
+    A dep in RETRY state is expected to complete soon (rate-limit backoff, account switch, etc.).
+    Holding the downstream task idle adds latency without safety benefit: if the dep fails
+    terminally, the downstream task fails too and auto_remediate handles both. Removing the RETRY
+    dep edge lets the downstream task start in parallel, speculatively.
+
+    Only bypasses RETRY deps; BLOCKED/CONFLICT (terminal) deps are never speculatively skipped.
+    """
+    rows, by_slug = _load()
+    released = 0
+    for t in rows:
+        if t.get("state") != "QUEUED":
+            continue
+        deps = list(t.get("deps") or [])
+        if not deps:
+            continue
+        blocking = [d for d in deps if by_slug.get(d, {}).get("state") not in ("DONE", "MERGED")]
+        if not blocking:
+            continue  # already claimable, no help needed
+        bypassed = [d for d in blocking if by_slug.get(d, {}).get("state") == "RETRY"]
+        # conservative: only release if EVERY blocking dep is actively retrying
+        if set(bypassed) != set(blocking):
+            continue
+        new_deps = [d for d in deps if d not in set(bypassed)]
+        suffix = f"[speculative-unblock: bypassed RETRY deps {bypassed}]"
+        new_note = ((t.get("note") or "") + " " + suffix).strip()[:500]
+        if not dry_run:
+            db.update("tasks", {"id": t["id"]},
+                      {"deps": new_deps, "note": new_note, "updated_at": "now()"})
+        released += 1
+    print(f"dag_optimizer.speculative_unblock: released={released} dry_run={dry_run}")
+    return {"released": released}
+
+
 if __name__ == "__main__":
     import json
     if len(sys.argv) > 1 and sys.argv[1] == "apply":
         print(json.dumps(optimize(), indent=2))
+    elif len(sys.argv) > 1 and sys.argv[1] == "specunblock":
+        print(json.dumps(speculative_unblock(dry_run="--apply" not in sys.argv), indent=2))
     else:
         print(json.dumps(analyze(), indent=2)[:4000])

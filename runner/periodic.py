@@ -158,6 +158,12 @@ def run_dagfix():
     dag_optimizer.optimize()
 
 
+def run_dagspecunblock():
+    """Speculatively release tasks waiting only on actively-retrying deps (removes RETRY-wait stalls)."""
+    import dag_optimizer
+    dag_optimizer.speculative_unblock()
+
+
 def run_selftune():
     """Outcome-driven autonomy tuning: nudge per-project confidence thresholds from real results."""
     import self_tune
@@ -484,6 +490,7 @@ JOBS = {
     "batch": run_batch,
     "unstick": run_unstick,
     "dagfix": run_dagfix,
+    "dagspecunblock": run_dagspecunblock,
     "selftune": run_selftune,
     "batchmech": run_batchmech,
     "appreview": run_appreview,
@@ -546,7 +553,7 @@ if __name__ == "__main__":
         sys.exit(1)
     # honor the kill switch: model-spending jobs don't run while paused.
     # these only read outcomes / move task state / edit thresholds — they never spend tokens
-    _SAFE_WHEN_PAUSED = {"roi", "txn", "unstick", "dagfix", "selftune", "batchmech"}
+    _SAFE_WHEN_PAUSED = {"roi", "txn", "unstick", "dagfix", "dagspecunblock", "selftune", "batchmech"}
     if job not in _SAFE_WHEN_PAUSED:
         try:
             import kill_switch
