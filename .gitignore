@@ -17,3 +17,4 @@ runner/.env.bak*
 
 # runner log (huge, machine-local — never commit)
 runner/runner.log
+.aider*
