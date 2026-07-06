@@ -70,12 +70,52 @@ def insert(table, row, upsert=False):
 
 def update(table, match, patch):
     params = {k: f"eq.{v}" for k, v in match.items()}
-    return _req("PATCH", f"/rest/v1/{table}", body=patch,
-                headers={"Prefer": "return=representation"}, params=params)
+    try:
+        return _req("PATCH", f"/rest/v1/{table}", body=patch,
+                    headers={"Prefer": "return=representation"}, params=params)
+    except urllib.error.HTTPError as e:
+        # 409 = a concurrent write (the two Macs racing the same row). The write intent is already
+        # satisfied by the other writer, so treat it as a no-op instead of letting it bubble up as a
+        # "runner exception: HTTP 409 conflict" that terminally BLOCKS the task (this froze 200+ tasks).
+        if e.code == 409:
+            return None
+        raise
 
 
 def rpc(fn, args):
     return _req("POST", f"/rest/v1/rpc/{fn}", body=args)
+
+
+def _ev_rank_map():
+    """Best-effort EV ranking fallback.
+
+    ev_scheduler writes a controls row when the live schema lacks tasks.priority.
+    claim_task must consume that row or the ranking loop becomes advisory only.
+    """
+    try:
+        rows = select("controls", {"select": "value", "key": "eq.ev_ranking", "limit": "1"}) or []
+        raw = (rows[0] if rows else {}).get("value") or "[]"
+        ids = json.loads(raw) if isinstance(raw, str) else raw
+        return {str(tid): i for i, tid in enumerate(ids or [])}
+    except Exception:
+        return {}
+
+
+def _thermal_rank_map():
+    try:
+        rows = select("controls", {"select": "value", "key": "eq.thermal_ranking", "limit": "1"}) or []
+        raw = (rows[0] if rows else {}).get("value") or "[]"
+        ids = json.loads(raw) if isinstance(raw, str) else raw
+        return {str(tid): i for i, tid in enumerate(ids or [])}
+    except Exception:
+        return {}
+
+
+def _num(v, default):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
 
 
 def claim_task(runner_id):
@@ -132,7 +172,27 @@ def claim_task(runner_id):
         s = str(t.get("slug") or "")
         return 1 if deprio_churn and (s.startswith("cont-") or s.startswith("batch-mech")) else 0
 
+    thermal_rank = _thermal_rank_map()
+    ev_rank = _ev_rank_map()
+
+    def _task_priority(t):
+        return _num(t.get("priority"), 1000)
+
+    def _ev_rank(t):
+        return ev_rank.get(str(t.get("id")), 1000000)
+
+    def _thermal_rank(t):
+        return thermal_rank.get(str(t.get("id")), 1000000)
+
+    def _confidence_rank(t):
+        # Last-resort EV fallback writes higher confidence for better tasks.
+        return -_num(t.get("confidence"), 0.0)
+
     queued.sort(key=lambda t: (_churn(t),                                        # real work before churn
+                               _thermal_rank(t),                                 # EV/min thermal map
+                               _task_priority(t),                                # EV/task priority when present
+                               _ev_rank(t),                                      # controls.ev_ranking fallback
+                               _confidence_rank(t),                              # tasks.confidence fallback
                                last_act.get(t.get("project_id"), ""),           # least-recently-served first
                                prio.get(t.get("project_id"), 5),
                                -float(roi_w.get(t.get("project_id"), 1) or 1),
