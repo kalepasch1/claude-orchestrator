@@ -1,0 +1,23 @@
+#!/bin/bash
+# pre-commit hook - prevent committing machine-specific settings files
+
+# Check if .claude/settings.local.json is being staged
+if git diff --cached --name-only | grep -q "\.claude/settings.local.json"; then
+    echo "ERROR: .claude/settings.local.json is machine-specific and should NEVER be committed."
+    echo "This file contains overly permissive allowlists that create a security regression."
+    echo ""
+    echo "To fix:"
+    echo "  1. Unstage it: git reset HEAD .claude/settings.local.json"
+    echo "  2. Verify .gitignore has the entry (already does)"
+    echo "  3. Continue with your commit"
+    exit 1
+fi
+
+# Check for other machine-specific files
+for pattern in ".env.local" "settings.local.json"; do
+    if git diff --cached --name-only | grep -q "$pattern"; then
+        echo "WARNING: File matching '$pattern' is being committed. Verify this is intentional."
+    fi
+done
+
+exit 0
