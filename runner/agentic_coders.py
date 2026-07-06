@@ -72,18 +72,13 @@ def _pool():
                          "daily_usd": float(c.get("daily_usd", 0) or 0), "est_usd": float(c.get("est_usd", 0.02) or 0)})
     except Exception as e:
         print(f"agentic_coders: bad ORCH_EXTRA_CODERS ({e}) — ignoring extras")
-    # SAFETY: drop any coder whose command needs a CLI that isn't installed. Without this, configuring a
-    # coder (aider/codex/etc.) before its CLI exists would route real tasks to a coder that instantly
-    # fails — turning "no cheap models" into "broken tasks". Pruning keeps work on the coders that ARE
-    # present; each cheap coder lights up automatically the moment its CLI is installed. Native claude
-    # (cmd=None) is never pruned. Cached (~60s) so this hot path doesn't shell out per call.
-    def _usable(c):
-        cmd = str(c.get("cmd") or "").strip()
-        if not cmd:
-            return True                      # native (claude) — always usable
-        exe = cmd.split()[0]
-        return _cli_present(exe)
-    pool = [c for c in pool if _usable(c)]
+    # SAFETY / SELF-HEALING: only keep a coder whose CLI is installed AND whose provider (key or local
+    # server) is actually reachable. Without this, configuring a coder before its cred/server exists would
+    # route real tasks to a backend that instantly fails on every call — turning "no cheap models" into
+    # "broken tasks + tanked throughput". Each cheap coder (ollama/gemini/deepseek/gpt) therefore lights
+    # up automatically the moment its key/server appears, and drops out the moment it's gone. Native
+    # claude (cmd=None) is never pruned. All checks cached (~60s) so this hot path stays cheap.
+    pool = [c for c in pool if _coder_ready(c.get("cmd"))]
     # de-dupe by name, keep first (native wins)
     seen, uniq = set(), []
     for c in pool:
@@ -106,6 +101,49 @@ def _cli_present(name):
     ok = bool(shutil.which(name))
     _CLI_CACHE[name] = (_t.time(), ok)
     return ok
+
+
+def _ollama_up():
+    """Is a local Ollama server reachable? Cached ~60s. Used to prune the free ollama coder when the
+    server is down, so easy tasks don't all fail on it before switching coders."""
+    import time as _t
+    hit = _CLI_CACHE.get("__ollama__")
+    if hit and _t.time() - hit[0] < 60:
+        return hit[1]
+    ok = False
+    try:
+        import urllib.request
+        base = (os.environ.get("OLLAMA_API_BASE") or os.environ.get("OLLAMA_HOST")
+                or "http://127.0.0.1:11434")
+        if not base.startswith("http"):
+            base = "http://" + base
+        urllib.request.urlopen(base.rstrip("/") + "/api/tags", timeout=1.5)
+        ok = True
+    except Exception:
+        ok = False
+    _CLI_CACHE["__ollama__"] = (_t.time(), ok)
+    return ok
+
+
+def _coder_ready(cmd):
+    """A coder is usable only if its CLI is installed AND its provider is reachable (key present /
+    local server up). Native coders (cmd falsy) are always ready. Prevents routing tasks to a backend
+    that would fail every call. Unknown providers are assumed ready (fail-open, never over-prune)."""
+    cmd = str(cmd or "").strip()
+    if not cmd:
+        return True                                  # native (claude)
+    if not _cli_present(cmd.split()[0]):
+        return False                                 # e.g. aider not installed yet
+    low = cmd.lower()
+    if "ollama/" in low:
+        return _ollama_up()
+    if "deepseek/" in low:
+        return bool(os.environ.get("DEEPSEEK_API_KEY"))
+    if "gemini/" in low or "google/" in low:
+        return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+    if "openai/" in low or "gpt-" in low:
+        return bool(os.environ.get("OPENAI_API_KEY"))
+    return True
 
 
 def available():

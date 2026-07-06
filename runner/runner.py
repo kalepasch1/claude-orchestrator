@@ -42,7 +42,12 @@ import agentic_coders
 import plan_stage
 import pipeline_contract
 
-INTEGRATION_MODE = os.environ.get("INTEGRATION_MODE", "local")  # local | pr
+# local | pr. Prefer ORCH_INTEGRATION_MODE so it's controllable fleet-wide via fleet_config (plain
+# INTEGRATION_MODE lacks a safe prefix and can only be set in a machine's launch env — which is how it
+# got silently stuck on "pr", making every integrate() try to open a GitHub PR and return CONFLICT when
+# that failed). Default local: ff-merge onto origin/base + push (the durable, verified-working path).
+INTEGRATION_MODE = (os.environ.get("ORCH_INTEGRATION_MODE")
+                    or os.environ.get("INTEGRATION_MODE", "local")).lower()
 USE_CACHE = os.environ.get("RESULT_CACHE", "true").lower() == "true"
 USE_RETRIEVAL = os.environ.get("SCOPED_CONTEXT", "true").lower() == "true"
 USE_CONFIDENCE = os.environ.get("CONFIDENCE_GATE", "true").lower() == "true"
@@ -1104,6 +1109,15 @@ def _ensure_agentic_deps():
               os.path.expanduser("~/Library/Python/3.12/bin")):
         if os.path.isdir(p) and p not in os.environ.get("PATH", ""):
             os.environ["PATH"] = p + os.pathsep + os.environ.get("PATH", "")
+    # Provider-key aliases so the cheap coders work with the keys the machine already has:
+    # aider/litellm read GEMINI_API_KEY for gemini/ models (we usually only have GOOGLE_API_KEY), and
+    # OLLAMA_API_BASE for the local server (we set OLLAMA_HOST). Alias them so gemini + ollama coders
+    # run without needing new secrets. Never overwrite an explicitly-set value.
+    if not os.environ.get("GEMINI_API_KEY") and os.environ.get("GOOGLE_API_KEY"):
+        os.environ["GEMINI_API_KEY"] = os.environ["GOOGLE_API_KEY"]
+    if not os.environ.get("OLLAMA_API_BASE") and os.environ.get("OLLAMA_HOST"):
+        _oh = os.environ["OLLAMA_HOST"]
+        os.environ["OLLAMA_API_BASE"] = _oh if _oh.startswith("http") else "http://" + _oh
     if shutil.which("aider"):
         print("[deps] aider present — cheap-model agentic fallback available", flush=True)
         return True
