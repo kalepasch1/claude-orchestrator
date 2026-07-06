@@ -29,7 +29,13 @@ import os, json, time
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 CFG = os.path.join(HOME, "accounts.json")
 STATE = os.path.join(HOME, "accounts_state.json")
-COOLDOWN = int(os.environ.get("ACCOUNT_COOLDOWN", str(4 * 3600)))
+# Re-probe interval after an account hits a limit. Most limits are SHORT (rolling 5-hour / session /
+# rate), not the weekly cap, so we re-try Claude every 20 min and use cheap models in the gap — this
+# switches back to costless Claude fast the moment a short limit clears, instead of parking it for hours.
+# ORCH_-prefixed so it's tunable fleet-wide via fleet_config. Repeat hits back off (see mark_exhausted).
+COOLDOWN = int(os.environ.get("ORCH_ACCOUNT_COOLDOWN",
+                              os.environ.get("ACCOUNT_COOLDOWN", str(20 * 60))))
+COOLDOWN_MAX = int(os.environ.get("ORCH_ACCOUNT_COOLDOWN_MAX", str(6 * 3600)))
 # Cheap cross-module signal: written when EVERY Claude account is cooling down, self-expiring
 # at the earliest cooldown. agentic_coders.pick() reads claude_exhausted() to fail over to the
 # subscription second coder (Codex) instead of stalling. No DB call on the hot path.
@@ -144,6 +150,7 @@ class AccountPool:
             key = os.environ.get(a.get("api_key_env", "ANTHROPIC_API_KEY"), "")
             if key:
                 env["ANTHROPIC_API_KEY"] = key
+                env["ORCH_ANTHROPIC_API_ACCOUNT"] = "1"
         elif a.get("config_dir"):
             env["CLAUDE_CONFIG_DIR"] = os.path.expanduser(a["config_dir"])
         return env
@@ -151,7 +158,13 @@ class AccountPool:
     def mark_exhausted(self, a):
         if not a:
             return
-        self.state.setdefault(a["name"], {})["cooldown_until"] = time.time() + COOLDOWN
+        # Exponential backoff: a SHORT limit (session/5-hour/rate) clears on the next 20-min re-probe and
+        # mark_ok resets the counter; a PERSISTENT limit (weekly) keeps hitting, so we back off toward
+        # COOLDOWN_MAX. This tells short vs long limits apart automatically without parsing messages.
+        st = self.state.setdefault(a["name"], {})
+        hits = int(st.get("exh_hits", 0)) + 1
+        st["exh_hits"] = hits
+        st["cooldown_until"] = time.time() + min(COOLDOWN * (2 ** (hits - 1)), COOLDOWN_MAX)
         self._save()
         self._write_exhausted_flag()   # flip the fail-over-to-Codex signal if this was the last one
         # best-effort: persist cooldown to Supabase so the dashboard shows the rotation
@@ -178,6 +191,7 @@ class AccountPool:
     def mark_ok(self, a):
         if a and a["name"] in self.state:
             self.state[a["name"]].pop("cooldown_until", None)
+            self.state[a["name"]].pop("exh_hits", None)   # genuine success -> reset the backoff counter
             self._save()
             self._write_exhausted_flag()   # a Claude account recovered -> clear the fail-over signal
 

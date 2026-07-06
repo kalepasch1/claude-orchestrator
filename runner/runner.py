@@ -1052,6 +1052,33 @@ def _acquire_singleton():
 _FLEET = {"t": 0.0}  # throttle for the in-loop fleet_control gateway tick
 
 
+def _ensure_agentic_deps():
+    """Cheap-model agentic coding needs the `aider` CLI. If it's missing, the cheap coders silently fail
+    and ALL agentic work falls back to Claude — overloading it and stalling the whole fleet the moment
+    both Claude accounts hit their limits (exactly what happened). Best-effort self-install so every
+    machine provisions the fallback executor on its own. Fail-soft — never blocks startup."""
+    import shutil
+    for p in (os.path.expanduser("~/.local/bin"),
+              os.path.expanduser("~/Library/Python/3.9/bin"),
+              os.path.expanduser("~/Library/Python/3.11/bin"),
+              os.path.expanduser("~/Library/Python/3.12/bin")):
+        if os.path.isdir(p) and p not in os.environ.get("PATH", ""):
+            os.environ["PATH"] = p + os.pathsep + os.environ.get("PATH", "")
+    if shutil.which("aider"):
+        print("[deps] aider present — cheap-model agentic fallback available", flush=True)
+        return True
+    try:
+        print("[deps] aider missing — installing cheap-coder executor (aider-chat)…", flush=True)
+        subprocess.run([sys.executable, "-m", "pip", "install", "--user", "--quiet", "aider-chat"],
+                       capture_output=True, timeout=900)
+        ok = bool(shutil.which("aider"))
+        print(f"[deps] aider install {'ok' if ok else 'FAILED (cheap agentic unavailable until installed)'}", flush=True)
+        return ok
+    except Exception as e:
+        print(f"[deps] aider install error ({e})", flush=True)
+        return False
+
+
 def main():
     if not _acquire_singleton():
         print("another runner already holds the lock — exiting (singleton guard).")
@@ -1081,6 +1108,7 @@ def main():
     except Exception as _e:
         print(f"[billing-firewall] guard failed to load: {_e}")
     print(f"runner {RUNNER_ID} online -> {os.environ.get('SUPABASE_URL','(set SUPABASE_URL)')}")
+    _ensure_agentic_deps()   # provision the cheap-model fallback (aider) so the fleet never stalls on Claude limits
     # STARTUP SELF-CHECK + AUTO-HEAL: assert firewall/worktrees/zombies/claimable/RAM and fix what it
     # can, posting a health line so a silent stall can never go unseen again.
     try:
