@@ -109,11 +109,21 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
         approval_merge._free_branch(repo, branch)
     except Exception:
         pass
-    # clean fast-forward when the branch is strictly ahead of base (the normal case) — no rebase needed
-    ahead = subprocess.run(["git", "merge-base", "--is-ancestor", base, branch],
+    # DURABLE FIX: rebase the branch onto CURRENT origin/base, not the (possibly stale) LOCAL base.
+    # A local repo that has drifted behind origin (e.g. 353 commits) was the reason merges conflicted and
+    # pushes were rejected non-fast-forward. Fetching origin/base + rebasing onto it means every branch is
+    # built on current code, so the merge is clean and the push to origin is always a fast-forward.
+    subprocess.run(["git", "fetch", "origin", base, "--quiet"], cwd=repo, capture_output=True, timeout=180)
+    _tgt = base
+    if subprocess.run(["git", "rev-parse", "--verify", f"origin/{base}"],
+                      cwd=repo, capture_output=True).returncode == 0:
+        _tgt = f"origin/{base}"
+        # keep the local base ref current with origin so the ff-merge below advances to origin + this work
+        subprocess.run(["git", "fetch", ".", f"origin/{base}:{base}"], cwd=repo, capture_output=True)
+    ahead = subprocess.run(["git", "merge-base", "--is-ancestor", _tgt, branch],
                            cwd=repo, capture_output=True).returncode == 0
     if not ahead:
-        if subprocess.run(["git", "rebase", base, branch], cwd=repo, capture_output=True).returncode != 0:
+        if subprocess.run(["git", "rebase", _tgt, branch], cwd=repo, capture_output=True).returncode != 0:
             subprocess.run(["git", "rebase", "--abort"], cwd=repo, capture_output=True)
             return "CONFLICT"
     # BUILD GATE: run the project's REAL production build on the branch; do NOT merge if it's red.
