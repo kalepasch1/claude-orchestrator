@@ -445,11 +445,28 @@ def run_task(t):
             draft_prompt = _cap_agent_prompt(draft_prompt) + _extras
             if os.environ.get("ORCH_BUILD_MANDATE", "true").lower() in ("true", "1", "yes"):
                 draft_prompt = draft_prompt + BUILD_MANDATE
+            # SHORT-CIRCUIT: if the agent branch already has committed work ahead of base (a prior run
+            # committed but never integrated, or a recovered branch), SKIP the agent run and integrate it
+            # directly. This ships already-done work with ZERO model calls — so committed branches merge
+            # even while Claude is rate-limited, instead of being stuck in a re-run → ratelimit → requeue
+            # loop that never reaches integrate (the reason 24h of committed work never shipped).
+            _branch_has_work = False
             try:
-                r = agentic_coders.run(coder, draft_prompt, model,
-                                       cwd=wt if os.path.isdir(wt) else repo, env=env,
-                                       project=name, max_turns=60, permission="acceptEdits",
-                                       timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
+                _av = subprocess.run(["git", "rev-list", "--count", f"{base}..HEAD"],
+                                     cwd=wt if os.path.isdir(wt) else repo, capture_output=True, text=True)
+                _branch_has_work = int((_av.stdout or "0").strip()) > 0
+            except Exception:
+                _branch_has_work = False
+            try:
+                if _branch_has_work:
+                    print(f"[integrate-existing] {slug}: branch ahead of {base} -> skip agent, integrate directly", flush=True)
+                    r = {"text": "existing committed branch — integrating without re-running the agent",
+                         "returncode": 0, "cost_usd": 0, "input_tokens": 0, "output_tokens": 0, "coder": coder}
+                else:
+                    r = agentic_coders.run(coder, draft_prompt, model,
+                                           cwd=wt if os.path.isdir(wt) else repo, env=env,
+                                           project=name, max_turns=60, permission="acceptEdits",
+                                           timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
                 r.setdefault("coder", coder)
             except subprocess.TimeoutExpired:
                 set_state(t["id"], state="BLOCKED", note="timed out (>15m) — killed to free the slot")
