@@ -17,3 +17,6 @@ runner/.env.bak*
 
 # runner log (huge, machine-local — never commit)
 runner/runner.log
+
+# machine-local Claude Code settings — never commit
+.claude/settings.local.json
