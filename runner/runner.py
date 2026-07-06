@@ -97,13 +97,11 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
     # PR-native: push, open PR, let YOUR CI (sfc/gitleaks/vercel) gate, auto-merge on green.
     if INTEGRATION_MODE == "pr":
         r = pr_integrate.open_pr(repo, branch, base, slug, verify_notes, test_summary)
-        if r.get("ok"):
-            # PR opened + GitHub auto-merge armed: it merges the moment CI + Vercel go green,
-            # so we don't block the task slot waiting. PR_OPEN = shipped-in-flight (not failure).
-            return "PR_OPEN"
-        print(f"[integrate] PR mode unavailable ({r.get('error')}) -> local ff-merge fallback")
-        # fall through to local merge so the work still lands even without gh/push
-    # local ff-merge (also the PR-mode fallback)
+        if not r.get("ok"):
+            return "CONFLICT"
+        outcome = pr_integrate.wait_and_merge(repo, branch)
+        return {"MERGED": "MERGED", "CHECKS_FAILED": "TESTFAIL", "OPEN": "BLOCKED"}.get(outcome, "BLOCKED")
+    # local ff-merge
     # FIX: free the branch from its leftover agent worktree first, or `git rebase` fails with
     # "already checked out" — which was being mislabeled as CONFLICT and blocked ALL auto-merges.
     try:
@@ -193,12 +191,15 @@ def _integration_base(repo, proj, task_base):
     return dev
 
 
-def _commit_agent_work(wt, slug, prompt):
-    """Stage + commit everything the agent changed in the worktree. Returns True if a commit
-    was made, False if there was nothing to commit. Uses --no-verify so a repo's pre-commit
-    hook can't block/hang the pipeline; identity is set explicitly so commits never fail on a
-    missing git user.email. Author is a VALID GitHub-verified email so Vercel does not block
-    the resulting deployments (an invalid author like *.local blocks every deploy fleet-wide)."""
+def _commit_agent_work(wt, slug, prompt, base="main"):
+    """Capture the agent's work. Returns True if the branch has real work to integrate.
+
+    CRITICAL: the build-to-green prompt instructs agents to COMMIT their own work, and Claude Code
+    (run with --dangerously-skip-permissions) does. The old logic only staged UNCOMMITTED changes and,
+    finding nothing staged when the agent had already committed, wrongly returned False — silently
+    DISCARDING every self-committed change (the reason 150 runs/hour shipped 0 commits). Fix: commit any
+    leftover uncommitted changes AND treat a branch that is ahead of base (agent's own commits) as real
+    work. Only a branch with no staged changes AND no commits ahead of base is a true no-op."""
     _git_name = os.environ.get("FLEET_GIT_AUTHOR_NAME", "Kale Aaron Pasch")
     _git_email = os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "kalepasch@gmail.com")
     env = {**os.environ,
@@ -206,13 +207,19 @@ def _commit_agent_work(wt, slug, prompt):
            "GIT_COMMITTER_NAME": _git_name, "GIT_COMMITTER_EMAIL": _git_email}
     try:
         subprocess.run(["git", "add", "-A"], cwd=wt, env=env, capture_output=True)
-        # nothing staged -> agent changed nothing
-        if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=wt, env=env).returncode == 0:
-            return False
-        msg = f"agent: {slug}\n\n{(prompt or '')[:300]}"
-        r = subprocess.run(["git", "commit", "--no-verify", "-m", msg], cwd=wt, env=env,
+        # commit any uncommitted changes the agent left staged
+        if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=wt, env=env).returncode != 0:
+            msg = f"agent: {slug}\n\n{(prompt or '')[:300]}"
+            subprocess.run(["git", "commit", "--no-verify", "-m", msg], cwd=wt, env=env,
                            capture_output=True, text=True)
-        return r.returncode == 0
+        # real work = the branch is ahead of base (covers BOTH our commit above and the agent's own commits)
+        ahead = subprocess.run(["git", "rev-list", "--count", f"{base}..HEAD"], cwd=wt, env=env,
+                               capture_output=True, text=True)
+        try:
+            return int((ahead.stdout or "0").strip()) > 0
+        except ValueError:
+            # base ref not found in the worktree — fall back to "did we just stage anything?"
+            return subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=wt, env=env).returncode != 0
     except Exception as e:
         print(f"[commit] {slug}: {e}")
         return False
@@ -512,7 +519,7 @@ def run_task(t):
             # verify/confidence/integrate all diff `base...HEAD` (commit-based), so without this
             # every diff is empty -> verify trivially "passes", confidence defaults to 0.5, and
             # ff-merge ships nothing. This is what kept integration at 0.
-            if not _commit_agent_work(wt, slug, t["prompt"]):
+            if not _commit_agent_work(wt, slug, t["prompt"], base):
                 # SESSION PROOF: distinguish "agent got no instructions" (stall) from a genuine no-op,
                 # and retry ONCE with the full prompt re-injected before blocking. (2026-07-02: 8+
                 # branches shipped nothing because the prompt never reached the agent.)
