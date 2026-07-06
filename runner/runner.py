@@ -148,7 +148,18 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
     if subprocess.run(["git", "fetch", ".", f"{branch}:{base}"], cwd=repo, capture_output=True).returncode != 0:
         return "CONFLICT"
     if os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() == "true":
-        subprocess.run(["git", "push", "origin", base], cwd=repo, capture_output=True)
+        _p = subprocess.run(["git", "push", "origin", base], cwd=repo, capture_output=True, text=True)
+        if _p.returncode != 0:
+            # Don't let a failed push masquerade as a shipped merge. Most causes: non-fast-forward
+            # (retry once after re-syncing origin/base into the branch) or missing credentials.
+            _err = ((_p.stderr or "") + (_p.stdout or ""))[-200:]
+            print(f"[integrate] push FAILED for {base}: {_err}")
+            subprocess.run(["git", "fetch", "origin", base, "--quiet"], cwd=repo, capture_output=True, timeout=180)
+            subprocess.run(["git", "fetch", ".", f"{branch}:{base}"], cwd=repo, capture_output=True)
+            _p2 = subprocess.run(["git", "push", "origin", base], cwd=repo, capture_output=True, text=True)
+            if _p2.returncode != 0:
+                print(f"[integrate] push retry FAILED for {base} — merged LOCALLY only: {((_p2.stderr or '')+(_p2.stdout or ''))[-160:]}")
+                return "MERGED_LOCAL"
     try:
         import approval_merge
         approval_merge._free_branch(repo, branch)
@@ -673,12 +684,14 @@ def run_task(t):
 
             result = integrate(repo, f"agent/{slug}", base, test_cmd, slug, v["notes"], "passed")
             POOL.mark_ok(acct)
-            integrated = result == "MERGED"
+            # MERGED_LOCAL = merged into local base but the push to origin failed (creds/non-ff). It IS
+            # integrated work; surface the push gap instead of silently discarding or re-running it.
+            integrated = result in ("MERGED", "MERGED_LOCAL")
             if integrated and sig:
                 result_cache.store(sig, name, slug, f"agent/{slug}", v["notes"])
             # BUILDFAIL is not a task state — record it as BLOCKED with a build-fix note so auto_remediate
             # re-plans it (fix the build errors) instead of shipping build-breaking code.
-            state_val = "BLOCKED" if result == "BUILDFAIL" else result
+            state_val = "BLOCKED" if result == "BUILDFAIL" else ("MERGED" if result == "MERGED_LOCAL" else result)
             if result == "BUILDFAIL":
                 # INLINE BUILD-FIX: a fast non-Claude model (Gemini/DeepSeek) turns the red build into a
                 # concrete fix directive, injected into the note so auto_remediate re-drafts build-aware
@@ -1094,16 +1107,32 @@ def _ensure_agentic_deps():
     if shutil.which("aider"):
         print("[deps] aider present — cheap-model agentic fallback available", flush=True)
         return True
-    try:
-        print("[deps] aider missing — installing cheap-coder executor (aider-chat)…", flush=True)
-        subprocess.run([sys.executable, "-m", "pip", "install", "--user", "--quiet", "aider-chat"],
-                       capture_output=True, timeout=900)
-        ok = bool(shutil.which("aider"))
-        print(f"[deps] aider install {'ok' if ok else 'FAILED (cheap agentic unavailable until installed)'}", flush=True)
-        return ok
-    except Exception as e:
-        print(f"[deps] aider install error ({e})", flush=True)
-        return False
+    print("[deps] aider missing — installing cheap-coder executor (aider-chat)…", flush=True)
+    # Try installers in order of reliability for a CLI tool. pipx is the recommended path and sidesteps
+    # PEP 668 "externally-managed-environment" (which makes plain `pip --user` fail on modern macOS
+    # Python); the --break-system-packages fallbacks cover machines without pipx.
+    attempts = [
+        ["pipx", "install", "aider-chat"],
+        [sys.executable, "-m", "pipx", "install", "aider-chat"],
+        [sys.executable, "-m", "pip", "install", "--user", "--break-system-packages", "--quiet", "aider-chat"],
+        [sys.executable, "-m", "pip", "install", "--user", "--quiet", "aider-chat"],
+    ]
+    for cmd in attempts:
+        try:
+            r = subprocess.run(cmd, capture_output=True, timeout=900, text=True)
+            # pipx may install to ~/.local/bin — already on PATH above; re-check
+            if shutil.which("aider"):
+                print(f"[deps] aider install ok via: {' '.join(cmd[:3])}", flush=True)
+                return True
+            if r.returncode != 0 and ("No module named pipx" in (r.stderr or "") or "not found" in (r.stderr or "")):
+                continue
+        except FileNotFoundError:
+            continue   # installer (e.g. pipx) not present — try the next one
+        except Exception as e:
+            print(f"[deps] aider install attempt error ({e})", flush=True)
+    ok = bool(shutil.which("aider"))
+    print(f"[deps] aider install {'ok' if ok else 'FAILED (cheap agentic stays dormant; work stays on claude/codex — safe)'}", flush=True)
+    return ok
 
 
 def main():

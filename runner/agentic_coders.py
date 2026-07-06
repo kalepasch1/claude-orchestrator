@@ -72,6 +72,18 @@ def _pool():
                          "daily_usd": float(c.get("daily_usd", 0) or 0), "est_usd": float(c.get("est_usd", 0.02) or 0)})
     except Exception as e:
         print(f"agentic_coders: bad ORCH_EXTRA_CODERS ({e}) — ignoring extras")
+    # SAFETY: drop any coder whose command needs a CLI that isn't installed. Without this, configuring a
+    # coder (aider/codex/etc.) before its CLI exists would route real tasks to a coder that instantly
+    # fails — turning "no cheap models" into "broken tasks". Pruning keeps work on the coders that ARE
+    # present; each cheap coder lights up automatically the moment its CLI is installed. Native claude
+    # (cmd=None) is never pruned. Cached (~60s) so this hot path doesn't shell out per call.
+    def _usable(c):
+        cmd = str(c.get("cmd") or "").strip()
+        if not cmd:
+            return True                      # native (claude) — always usable
+        exe = cmd.split()[0]
+        return _cli_present(exe)
+    pool = [c for c in pool if _usable(c)]
     # de-dupe by name, keep first (native wins)
     seen, uniq = set(), []
     for c in pool:
@@ -79,6 +91,21 @@ def _pool():
             continue
         seen.add(c["name"]); uniq.append(c)
     return uniq
+
+
+_CLI_CACHE = {}
+
+
+def _cli_present(name):
+    """Is a CLI on PATH? Cached ~60s so _pool() (hot path) doesn't shell out on every call."""
+    import time as _t
+    hit = _CLI_CACHE.get(name)
+    if hit and _t.time() - hit[0] < 60:
+        return hit[1]
+    import shutil
+    ok = bool(shutil.which(name))
+    _CLI_CACHE[name] = (_t.time(), ok)
+    return ok
 
 
 def available():

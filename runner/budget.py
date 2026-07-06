@@ -12,7 +12,16 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
-BLOCK_ON_CAP = os.environ.get("ORCH_BUDGET_BLOCKS_TASKS", "false").lower() in ("true", "1", "yes")
+def _block_on_cap():
+    # Evaluate at CALL time (not import) so flipping ORCH_EMERGENCY_BUDGET_STOP via fleet_config +
+    # reload takes effect immediately, without waiting for a full runner restart. This is the
+    # emergency brake ONLY — in subscription mode real spend is $0, so it must stay OFF or it blocks
+    # every over-(phantom)-cap project and starves integrate of inputs (the "ships nothing" bug).
+    return os.environ.get("ORCH_EMERGENCY_BUDGET_STOP", "false").lower() in ("true", "1", "yes")
+
+
+# back-compat module constant (some callers import it); prefer _block_on_cap() for live evaluation
+BLOCK_ON_CAP = _block_on_cap()
 FILE_BUDGET_CARDS = os.environ.get("ORCH_FILE_BUDGET_CARDS", "false").lower() in ("true", "1", "yes")
 
 
@@ -37,7 +46,7 @@ def status(project):
 
 
 def allow(project):
-    """True if a new task may run; False only when the owner explicitly enabled hard caps."""
+    """True if a new task may run; False only for the explicit emergency stop flag."""
     s = status(project)
     if s["over"] and s["hard_pause"]:
         if FILE_BUDGET_CARDS:
@@ -50,5 +59,5 @@ def allow(project):
                     "command": ""})
             except Exception:
                 pass
-        return not BLOCK_ON_CAP
+        return not _block_on_cap()
     return True
