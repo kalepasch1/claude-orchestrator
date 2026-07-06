@@ -42,12 +42,16 @@ import agentic_coders
 import plan_stage
 import pipeline_contract
 
-# local | pr. Prefer ORCH_INTEGRATION_MODE so it's controllable fleet-wide via fleet_config (plain
-# INTEGRATION_MODE lacks a safe prefix and can only be set in a machine's launch env — which is how it
-# got silently stuck on "pr", making every integrate() try to open a GitHub PR and return CONFLICT when
-# that failed). Default local: ff-merge onto origin/base + push (the durable, verified-working path).
-INTEGRATION_MODE = (os.environ.get("ORCH_INTEGRATION_MODE")
-                    or os.environ.get("INTEGRATION_MODE", "local")).lower()
+# local | pr. Read at CALL time via _integ_mode(), never cached at import — because load_config() applies
+# the fleet_config ORCH_INTEGRATION_MODE override AFTER this module is imported, and a launch-env
+# INTEGRATION_MODE=pr wins over .env via setdefault. Caching at import is exactly how the fleet got
+# silently stuck on "pr" (every integrate() opened a failing GitHub PR -> CONFLICT). ORCH_ takes
+# precedence so fleet_config can force it fleet-wide; default local (ff-merge onto origin/base + push).
+def _integ_mode():
+    return (os.environ.get("ORCH_INTEGRATION_MODE")
+            or os.environ.get("INTEGRATION_MODE", "local")).lower()
+
+INTEGRATION_MODE = _integ_mode()   # back-compat for any importer; live checks use _integ_mode()
 USE_CACHE = os.environ.get("RESULT_CACHE", "true").lower() == "true"
 USE_RETRIEVAL = os.environ.get("SCOPED_CONTEXT", "true").lower() == "true"
 USE_CONFIDENCE = os.environ.get("CONFIDENCE_GATE", "true").lower() == "true"
@@ -100,7 +104,7 @@ def approval(project, kind, title, **kw):
 
 def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summary="passed"):
     # PR-native: push, open PR, let YOUR CI (sfc/gitleaks/vercel) gate, auto-merge on green.
-    if INTEGRATION_MODE == "pr":
+    if _integ_mode() == "pr":
         r = pr_integrate.open_pr(repo, branch, base, slug, verify_notes, test_summary)
         if not r.get("ok"):
             return "CONFLICT"
@@ -726,7 +730,7 @@ def run_task(t):
                 _note = ("integrate BUILDFAIL — production build red; fix build/type errors before merge. "
                          + _fix + _esc)[:1800]
             else:
-                _note = f"verify pass (conf={conf_score}); integrate={result} ({INTEGRATION_MODE})"
+                _note = f"verify pass (conf={conf_score}); integrate={result} ({_integ_mode()})"
                 if _soft_flags:
                     _note = (_note + " | advisory (shipped on green build): " + "; ".join(_soft_flags))[:1800]
                 if result == "MERGED" and (t.get("build_fail_count") or t.get("force_coder")):
