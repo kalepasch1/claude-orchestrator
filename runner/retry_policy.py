@@ -36,7 +36,8 @@ _TRANSIENT = re.compile(
     r"rate.?limit|overload|429|500|502|503|504|"
     r"service unavailable|read timed out|broken pipe|"
     r"budget cap|cost circuit|high demand|try again|econnreset|"
-    r"name resolution|dns|ssl|handshake|reset by peer)",
+    r"name resolution|dns|ssl|handshake|reset by peer|"
+    r"409|conflict|duplicate key|already exists)",   # multi-machine write race -> requeue, never terminal
     re.I,
 )
 
