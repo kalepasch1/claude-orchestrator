@@ -24,9 +24,35 @@ def _block_on_cap():
 BLOCK_ON_CAP = _block_on_cap()
 FILE_BUDGET_CARDS = os.environ.get("ORCH_FILE_BUDGET_CARDS", "false").lower() in ("true", "1", "yes")
 
+# Model-name fragments that are REAL paid providers (billed per token). Everything else — Claude Max
+# and Codex subscriptions — is $0 and must NOT count toward spend. This is the calibration point: the
+# budget reflects money actually spent on paid APIs, per source.
+_PAID_FRAGMENTS = ("deepseek", "gemini", "gpt", "openai", "mistral", "groq")
+
+
+def _real_spent(project=None):
+    """Real month-to-date billable $ from PAID providers only (subscription = $0, excluded). Immune to
+    the phantom subscription 'spend' that polluted v_spend_mtd. Sums outcomes.usd for paid-model rows."""
+    import datetime
+    month_start = datetime.date.today().replace(day=1).isoformat()
+    q = {"select": "usd,model", "created_at": f"gte.{month_start}"}
+    if project:
+        q["project"] = f"eq.{project}"
+    total = 0.0
+    try:
+        for r in (db.select("outcomes", q) or []):
+            m = str(r.get("model") or "").lower()
+            if "claude" in m or "codex" in m:      # subscription -> $0
+                continue
+            if any(f in m for f in _PAID_FRAGMENTS):
+                total += float(r.get("usd") or 0)
+    except Exception:
+        pass
+    return round(total, 2)
+
 
 def status(project):
-    """Return {cap, spent, hard_pause, over} for a project (defaults if unset)."""
+    """Return {cap, spent, hard_pause, over} for a project. `spent` is REAL paid-provider $ only."""
     cap, hard = None, True
     try:
         b = db.select("budgets", {"select": "*", "project": f"eq.{project}"}) or []
@@ -34,19 +60,58 @@ def status(project):
             cap = float(b[0]["monthly_usd_cap"]); hard = bool(b[0]["hard_pause"])
     except Exception:
         pass
-    spent = 0.0
-    try:
-        rows = db.select("v_spend_mtd", {"select": "spent", "project": f"eq.{project}"}) or []
-        if rows:
-            spent = float(rows[0]["spent"] or 0)
-    except Exception:
-        pass
+    spent = _real_spent(project)
     over = cap is not None and spent >= cap
-    return {"cap": cap, "spent": round(spent, 2), "hard_pause": hard, "over": over}
+    return {"cap": cap, "spent": spent, "hard_pause": hard, "over": over}
+
+
+def _global_real_cap():
+    # Hard ceiling on TOTAL real billable $ across ALL projects/providers before human approval is
+    # required. Subscription work is $0 (see claude_cli), so this only counts money actually spent on
+    # paid APIs (deepseek/gemini/gpt via aider + key_broker). Call-time read so it's tunable fleet-wide.
+    try:
+        return float(os.environ.get("ORCH_REAL_USD_MONTH_CAP", "200"))
+    except ValueError:
+        return 200.0
+
+
+def global_real_spent():
+    """Total real month-to-date billable $ across ALL projects (paid providers only; subscription $0)."""
+    return _real_spent(None)
+
+
+def global_status():
+    spent = global_real_spent()
+    cap = _global_real_cap()
+    return {"real_spent": spent, "cap": cap, "over": spent >= cap, "left": round(max(0.0, cap - spent), 2)}
+
+
+_PAID_CARD_ONCE = {"filed": False}
+
+
+def paid_allowed():
+    """True while total real spend is under the global ceiling. Gates ONLY paid-API providers
+    (deepseek/gemini/gpt/key_broker) — subscription + free/local work is $0 and always allowed, so the
+    fleet keeps running costlessly even after the ceiling; only real spending pauses for approval."""
+    g = global_status()
+    if g["over"] and FILE_BUDGET_CARDS and not _PAID_CARD_ONCE["filed"]:
+        try:
+            db.insert("approvals", {"project": "global", "kind": "material",
+                "title": f"Real-spend ceiling reached (${g['real_spent']}/${g['cap']})",
+                "why": "Total REAL billable spend across all paid providers hit the approval ceiling.",
+                "value": "Approve to raise ORCH_REAL_USD_MONTH_CAP and resume paid-API coders.",
+                "risk": "Paid-API work is paused; subscription + free/local work continues at $0.",
+                "command": ""})
+            _PAID_CARD_ONCE["filed"] = True
+        except Exception:
+            pass
+    return not g["over"]
 
 
 def allow(project):
-    """True if a new task may run; False only for the explicit emergency stop flag."""
+    """True if a new task may run. Task execution itself is never blocked by the $-ceiling (subscription
+    work is free); only the legacy per-project emergency stop can halt it. The real-$ ceiling is enforced
+    at the PAID-provider layer via paid_allowed()."""
     s = status(project)
     if s["over"] and s["hard_pause"]:
         if FILE_BUDGET_CARDS:

@@ -136,13 +136,22 @@ def _coder_ready(cmd):
         return False                                 # e.g. aider not installed yet
     low = cmd.lower()
     if "ollama/" in low:
-        return _ollama_up()
+        return _ollama_up()                          # free/local — never gated by the $ ceiling
+    # PAID providers below: also require the global real-spend ceiling not be reached, so paid coders
+    # go dormant once total real spend hits ORCH_REAL_USD_MONTH_CAP ($200) — subscription/free work
+    # keeps running, only real spending pauses for approval.
+    def _paid_ok():
+        try:
+            import budget
+            return budget.paid_allowed()
+        except Exception:
+            return True
     if "deepseek/" in low:
-        return bool(os.environ.get("DEEPSEEK_API_KEY"))
+        return bool(os.environ.get("DEEPSEEK_API_KEY")) and _paid_ok()
     if "gemini/" in low or "google/" in low:
-        return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
+        return bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")) and _paid_ok()
     if "openai/" in low or "gpt-" in low:
-        return bool(os.environ.get("OPENAI_API_KEY"))
+        return bool(os.environ.get("OPENAI_API_KEY")) and _paid_ok()
     return True
 
 

@@ -146,7 +146,12 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
             usage_meter.record("anthropic-notional", project, units=itok + otok, unit="tokens", usd=cost)
     except Exception:
         pass
-    return {"text": text, "cost_usd": cost, "input_tokens": itok, "output_tokens": otok,
+    # cost_usd is REAL billable dollars (0 on subscription) — this is what flows into outcomes.usd /
+    # v_spend_mtd / budgets, so the budget reflects money actually spent, not the notional token price
+    # of costless subscription calls (the phantom "$236 spent" that forced the absurd $100k caps).
+    # notional_usd keeps the subscription-equivalent for visibility only.
+    return {"text": text, "cost_usd": real_usd, "notional_usd": cost,
+            "input_tokens": itok, "output_tokens": otok,
             "returncode": proc.returncode, "raw": raw, "stderr": proc.stderr or ""}
 
 

@@ -110,6 +110,16 @@ def call(provider, model, prompt, app="orchestrator", operation="call", max_usd=
         return {"text": "", "cost_usd": 0, "provider": provider, "model": model,
                 "error": "anthropic must go through claude_cli (subscription), not the key broker"}
     cap = float(max_usd if max_usd is not None else MAX_USD_CALL)
+    # GLOBAL real-$ ceiling ($200 default): once total real spend across all providers hits it, refuse
+    # further paid calls until approved. Subscription/free work is unaffected (it never reaches here).
+    try:
+        import budget
+        if not budget.paid_allowed():
+            g = budget.global_status()
+            return {"text": "", "cost_usd": 0, "provider": provider, "model": model,
+                    "error": f"global real-spend ceiling ${g['cap']} reached (${g['real_spent']}) — call refused pending approval"}
+    except Exception:
+        pass
     if _today_spend() >= MAX_USD_DAY:
         return {"text": "", "cost_usd": 0, "provider": provider, "model": model,
                 "error": f"broker daily ceiling ${MAX_USD_DAY} reached — call refused"}
