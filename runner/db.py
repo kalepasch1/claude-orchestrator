@@ -132,7 +132,11 @@ def claim_task(runner_id):
         s = str(t.get("slug") or "")
         return 1 if deprio_churn and (s.startswith("cont-") or s.startswith("batch-mech")) else 0
 
-    queued.sort(key=lambda t: (_churn(t),                                        # real work before churn
+    # PINNED TASKS: sort before everything else. pin_rank ASC (lower = higher priority),
+    # then normal ordering. Tasks without the column (older rows) are treated as unpinned.
+    queued.sort(key=lambda t: (0 if t.get("pinned") else 1,                    # pinned express lane first
+                               t.get("pin_rank") or 0,                         # pin_rank ASC within pinned
+                               _churn(t),                                       # real work before churn
                                last_act.get(t.get("project_id"), ""),           # least-recently-served first
                                prio.get(t.get("project_id"), 5),
                                -float(roi_w.get(t.get("project_id"), 1) or 1),
@@ -153,6 +157,13 @@ def claim_task(runner_id):
                     active_by_project[pid] = active_by_project.get(pid, 0) + 1
                 return res[0]
     return None
+
+
+def set_pin(slug, rank=1):
+    """Pin a QUEUED task so it sorts before the normal fairness round-robin.
+    rank is a positive int; lower = higher priority (1 = top). Pass rank=0 to unpin."""
+    pinned = rank > 0
+    return update("tasks", {"slug": slug}, {"pinned": pinned, "pin_rank": rank})
 
 
 def heartbeat(runner_id, hostname, active):
