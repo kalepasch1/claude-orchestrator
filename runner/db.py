@@ -219,12 +219,18 @@ def claim_task(runner_id):
         return _num(t.get("priority"), 1000)
 
     def _ev_rank(t):
+        if _is_release_fix_task(t):
+            return 0
         return ev_rank.get(str(t.get("id")), 1000000)
 
     def _thermal_rank(t):
+        if _is_release_fix_task(t):
+            return 0
         return thermal_rank.get(str(t.get("id")), 1000000)
 
     def _confidence_rank(t):
+        if _is_release_fix_task(t):
+            return 0
         # Last-resort EV fallback writes higher confidence for better tasks.
         return -_num(t.get("confidence"), 0.0)
 
