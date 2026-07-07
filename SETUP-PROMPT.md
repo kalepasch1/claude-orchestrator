@@ -59,6 +59,8 @@ PHASE 3 — Start the runner on this Mac.
    and have me put it in `runner/.env` as `SUPABASE_SERVICE_KEY=...`. Also set:
    `SUPABASE_URL=https://eatfwdzfurujcuwlhdgj.supabase.co`
    `MAX_PARALLEL=2`   `TEST_CMD="npm test"`   (optional: `INTEGRATION_MODE=pr`)
+   Keep `runner/.env` local-only; share new required variables through `.env.example`
+   with placeholder values instead.
 3. `pip3 install pyyaml`. Confirm `claude` CLI is authenticated (it is — you're it).
 4. Make sure git identity is set (worktrees need it): `git config --global user.email`
    and `user.name` if unset.
