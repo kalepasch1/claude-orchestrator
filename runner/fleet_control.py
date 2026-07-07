@@ -71,13 +71,12 @@ def _target_matches(target):
 
 
 def _restart():
-    """Release the singleton lock and exit; keepalive.sh respawns a fresh runner with new code/config."""
-    try:
-        lock = os.path.join(REPO, ".runtime", "runner.lock")
-        if os.path.exists(lock):
-            os.remove(lock)
-    except Exception:
-        pass
+    """Exit; keepalive.sh respawns a fresh runner with new code/config.
+
+    Do not unlink runner.lock here. The running process holds an flock on that file; deleting it
+    creates a new inode that another supervisor can lock before this process exits, causing two
+    runners to operate on the same machine. Exiting naturally releases the existing flock.
+    """
     print(f"fleet_control: restart requested — exiting for keepalive respawn ({HOST})", flush=True)
     os._exit(0)
 
