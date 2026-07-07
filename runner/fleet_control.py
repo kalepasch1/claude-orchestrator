@@ -57,6 +57,19 @@ def _git(*args, timeout=120):
     return subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True, timeout=timeout)
 
 
+def _host_aliases():
+    aliases = {HOST}
+    if HOST.endswith(".local"):
+        aliases.add(HOST[:-6])
+    else:
+        aliases.add(HOST + ".local")
+    return aliases
+
+
+def _target_matches(target):
+    return target == "all" or target in _host_aliases()
+
+
 def _restart():
     """Release the singleton lock and exit; keepalive.sh respawns a fresh runner with new code/config."""
     try:
@@ -102,7 +115,8 @@ def process_controls():
     for r in rows:
         target = str(r.get("target") or "all")
         handled = r.get("handled_by") or []
-        if target not in ("all", HOST) or HOST in handled:
+        aliases = _host_aliases()
+        if not _target_matches(target) or any(h in handled for h in aliases):
             continue
         action = str(r.get("action") or "").lower()
         try:
@@ -112,7 +126,7 @@ def process_controls():
                 _git("pull", "--ff-only")
             # ack this host
             db.update("fleet_control", {"id": r["id"]},
-                      {"handled_by": handled + [HOST], "done": (target == HOST)})
+                      {"handled_by": handled + [HOST], "done": (target != "all")})
             done += 1
             if action == "git_pull" and (r.get("params") or {}).get("restart", True):
                 _restart()

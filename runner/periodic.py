@@ -172,6 +172,9 @@ def run_batchmech():
 
 def run_releasetrain():
     """Accumulate agent work on staging, QA it, release to prod (main/master) as a batch."""
+    if os.environ.get("AUTOPILOT_RELEASE_TRAIN_ONLY_HOTLANE", "true").lower() in ("1", "true", "yes", "on"):
+        print("releasetrain: skipped; hot-lane release_blocker_agent owns release attempts")
+        return {"skipped": "hotlane_only"}
     import release_train; release_train.run()
 
 
@@ -546,7 +549,15 @@ if __name__ == "__main__":
         sys.exit(1)
     # honor the kill switch: model-spending jobs don't run while paused.
     # these only read outcomes / move task state / edit thresholds — they never spend tokens
-    _SAFE_WHEN_PAUSED = {"roi", "txn", "unstick", "dagfix", "selftune", "batchmech"}
+    _SAFE_WHEN_PAUSED = {
+        "resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn",
+        "approval_policy.py", "queue_janitor.py", "unstick", "dagfix", "batchmech",
+        "selftune", "cluster", "governor", "costslo", "promote", "prewarm",
+        "billingguard", "dedup", "canaryecon", "forecast", "arbitrage", "autoscale",
+        "bizradar", "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",
+        "stripe", "ownerreport", "worktreegc", "remediate", "selfcheck",
+        "release_kpi.py", "integrate_kpi.py", "fleet_control.py",
+    }
     if job not in _SAFE_WHEN_PAUSED:
         try:
             import kill_switch

@@ -240,10 +240,25 @@ def release_blocker_agent():
         else:
             os.environ["PREWARM_N"] = old_prewarm
     try:
+        old_min_batch = os.environ.get("RELEASE_MIN_BATCH")
+        old_interval = os.environ.get("RELEASE_INTERVAL_HOURS")
+        os.environ["RELEASE_MIN_BATCH"] = "1"
+        os.environ["RELEASE_INTERVAL_HOURS"] = "0"
         import release_train
+        release_train.MIN_BATCH = 1
+        release_train.RELEASE_INTERVAL_HOURS = 0
         out["release_train"] = release_train.run()
     except Exception as e:
         out["release_train_error"] = str(e)[:300]
+    finally:
+        if old_min_batch is None:
+            os.environ.pop("RELEASE_MIN_BATCH", None)
+        else:
+            os.environ["RELEASE_MIN_BATCH"] = old_min_batch
+        if old_interval is None:
+            os.environ.pop("RELEASE_INTERVAL_HOURS", None)
+        else:
+            os.environ["RELEASE_INTERVAL_HOURS"] = old_interval
     try:
         import deploy_verify
         out["deploy_verify"] = deploy_verify.run()

@@ -19,6 +19,16 @@ FLEET_TTL = int(os.environ.get("FLEET_TTL_S", "180"))
 PER_MACHINE_MAX = int(os.environ.get("MAX_PARALLEL", "4"))
 
 
+def _physical_host(name):
+    raw = str(name or "")
+    marker = " lane "
+    return raw.split(marker, 1)[0] if marker in raw else raw
+
+
+def _is_lane(name):
+    return " lane " in str(name or "")
+
+
 def _live(rows):
     now = datetime.datetime.now(datetime.timezone.utc)
     live = []
@@ -36,15 +46,26 @@ def _live(rows):
 
 
 def status():
-    rows = db.select("runner_heartbeats", {"select": "*"}) or []
-    # collapse to the freshest heartbeat per hostname (a machine may have restarted -> new pid)
-    by_host = {}
+    rows = _live(db.select("runner_heartbeats", {"select": "*"}) or [])
+    # Collapse logical lane heartbeats back to physical machines. db.heartbeat() emits synthetic
+    # "<host> lane N" rows for dashboard lane visibility; counting those as machines made the fleet
+    # ceiling look 8-10x larger than the real hardware and hid memory pressure. Use the canonical
+    # non-lane heartbeat for active_tasks when present; lane rows are just per-lane visibility.
+    groups = {}
     for r in rows:
-        h = r.get("hostname") or r.get("runner_id")
-        cur = by_host.get(h)
-        if not cur or (r.get("last_seen") or "") > (cur.get("last_seen") or ""):
-            by_host[h] = r
-    live = _live(list(by_host.values()))
+        h = _physical_host(r.get("hostname") or r.get("runner_id"))
+        groups.setdefault(h, []).append(r)
+    live = []
+    for h, items in groups.items():
+        real = [r for r in items if not _is_lane(r.get("hostname") or r.get("runner_id"))]
+        source = max(real or items, key=lambda r: r.get("last_seen") or "")
+        nr = dict(source)
+        nr["hostname"] = h
+        if real:
+            nr["active_tasks"] = max(int(r.get("active_tasks") or 0) for r in real)
+        else:
+            nr["active_tasks"] = sum(int(r.get("active_tasks") or 0) for r in items)
+        live.append(nr)
     return {
         "machines_live": len(live),
         "machines": [{"host": r.get("hostname"), "runner": r.get("runner_id"),
