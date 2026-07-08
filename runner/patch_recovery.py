@@ -98,7 +98,7 @@ def _replay_stored_patch(repo, slug, branch, base):
 def _reflog_recovery(repo, slug, branch, base):
     """Try to find the branch's last known commit in the reflog."""
     try:
-        r = _git(repo, "reflog", "--format=%H %gs", timeout=30)
+        r = _git(repo, "reflog", "--all", "--format=%H %gs", timeout=30)
         if r.returncode != 0:
             return {"ok": False, "method": "reflog", "branch": branch, "reason": "reflog unavailable"}
 
