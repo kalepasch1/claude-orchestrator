@@ -36,21 +36,18 @@ def _strict_key_presence_pause():
 def _maybe_resume_own_pause(findings):
     """Undo billing_guard's own pause once the hard condition is gone.
 
-    A key-presence-only trip used to pause the whole fleet. After the guard learns that
-    subscription mode can scrub keys safely, it should also recover old pauses without a
-    human having to notice a silent overnight freeze.
+    Delegates to pause_arbiter, which owns typed pause/resume + TTL for the whole fleet
+    (see pause_arbiter.py). billing_guard used to hand-roll this check-and-clear itself,
+    which is exactly the kind of one-off logic that let the 2026-07-08 deadlock sit for
+    ~10 hours with nobody re-checking; now every guard shares one arbiter and one test.
     """
     if findings:
         return False
     try:
-        import db, kill_switch
-        rows = db.select("controls", {"select": "paused,reason,updated_by",
-                                      "scope": "eq.global",
-                                      "order": "updated_at.desc",
-                                      "limit": "1"}) or []
-        if rows and rows[0].get("paused") and rows[0].get("updated_by") == "billing_guard":
-            kill_switch.resume(scope="global", by="billing_guard")
-            print("billing_guard: cleared previous billing_guard pause; no hard spend condition remains")
+        import pause_arbiter
+        result = pause_arbiter.recheck(scope="global")
+        if result.get("action") == "lifted":
+            print(f"billing_guard: {result.get('reason')}")
             return True
     except Exception:
         pass
@@ -60,6 +57,7 @@ def _maybe_resume_own_pause(findings):
 def run():
     findings = []
     warnings = []
+    key_presence_only = False
     # 1) key-leak check
     api_allowed = False
     try:
@@ -71,6 +69,7 @@ def run():
             msg = f"API key(s) present in env while billing blocked: {a['api_keys_present']}"
             if _strict_key_presence_pause() or not a.get("subscription_mode"):
                 findings.append(msg)
+                key_presence_only = True
             else:
                 warnings.append(msg + f"; stripped={g.get('stripped', [])}")
     except Exception as e:
@@ -85,8 +84,10 @@ def run():
         trip = _trip_usd(api_allowed)
         if real_day > trip:
             findings.append(f"REAL API spend today ${real_day:.2f} > trip ${trip:.2f}")
+            key_presence_only = False
     except Exception as e:
         findings.append(f"claude_cli status failed: {e}")
+        key_presence_only = False
 
     if not findings:
         resumed = _maybe_resume_own_pause(findings)
@@ -94,13 +95,25 @@ def run():
         print(f"billing_guard: clean (real API $ today ~${real_day:.2f}){suffix}")
         return {"ok": True, "real_day": real_day, "warnings": warnings, "resumed": resumed}
 
-    # trip: pause everything + escalate
+    # trip: pause everything + escalate. Key-presence-only trips (strict mode, or subscription
+    # mode somehow off) are a self-clearing condition — route through pause_arbiter with a TTL
+    # so it lifts itself the moment the key is gone, instead of requiring a human to notice.
+    # Real spend / audit-failure trips are NOT auto-clearable: no TTL, stays paused for a human.
     try:
-        import kill_switch
-        kill_switch.pause(scope="global", reason="billing_guard: " + "; ".join(findings)[:200],
-                          by="billing_guard")
+        import pause_arbiter
+        if key_presence_only and len(findings) == 1:
+            pause_arbiter.pause("billing_key_presence", "; ".join(findings)[:200],
+                                by="billing_guard", ttl_s=900)
+        else:
+            pause_arbiter.pause("billing_real_spend_or_audit_failure", "; ".join(findings)[:200],
+                                by="billing_guard", ttl_s=None)
     except Exception:
-        pass
+        try:
+            import kill_switch
+            kill_switch.pause(scope="global", reason="billing_guard: " + "; ".join(findings)[:200],
+                              by="billing_guard")
+        except Exception:
+            pass
     try:
         import db
         db.insert("approvals", {"project": "PORTFOLIO", "kind": "material",
