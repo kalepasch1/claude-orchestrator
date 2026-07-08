@@ -109,14 +109,49 @@ def choose_coder(task, category="rework", prefer_non_claude=False):
         return _default_coder()
 
 
+def _agentic_artifacts_context(slug):
+    """Return a formatted block of prior task artifacts for repair context, or empty string."""
+    if not slug:
+        return ""
+    try:
+        import task_artifacts
+        art = task_artifacts.get_artifacts(str(slug))
+        if not art:
+            return ""
+        parts = []
+        touched = art.get("touched_files") or ""
+        if touched and touched != "[]":
+            try:
+                import json as _json
+                files = _json.loads(touched) if isinstance(touched, str) else touched
+                if files:
+                    parts.append("Touched files from prior run: " + ", ".join(str(f) for f in files[:20]))
+            except Exception:
+                parts.append(f"Touched files from prior run: {touched[:300]}")
+        sha = art.get("commit_sha") or ""
+        if sha:
+            parts.append(f"Prior commit SHA: {sha}")
+        diff = art.get("patch_diff") or ""
+        if diff:
+            diff_head = diff[:3000].rstrip()
+            parts.append(f"Prior patch diff (truncated):\n```diff\n{diff_head}\n```")
+        if not parts:
+            return ""
+        return "Agentic analysis artifacts from prior run:\n" + "\n".join(parts) + "\n\n"
+    except Exception:
+        return ""
+
+
 def repair_prompt(task, failure, directive, category="rework"):
     failure_text = str(failure or "")[-5000:]
     category = str(category or "rework")
+    slug = task.get("slug") or task.get("id")
+    artifacts_context = _agentic_artifacts_context(slug)
     return (
         f"{_original_prompt(task)}\n\n"
         f"{MARKER}\n"
         f"Repair category: {category}\n"
-        f"Original task slug: {task.get('slug') or task.get('id')}\n\n"
+        f"Original task slug: {slug}\n\n"
         "This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, "
         "inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.\n\n"
         f"{directive}\n\n"
@@ -126,6 +161,7 @@ def repair_prompt(task, failure, directive, category="rework"):
         "- If tests/build fail, fix source/config/tests until the relevant checks are green.\n"
         "- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.\n"
         "- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.\n\n"
+        f"{artifacts_context}"
         "Failure context:\n"
         f"```\n{failure_text}\n```\n"
     )
