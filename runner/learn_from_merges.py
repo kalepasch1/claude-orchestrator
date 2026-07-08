@@ -11,12 +11,96 @@ For each project with recent MERGED work, a cheap model reads the merged diffs a
 
 Non-agentic + costless-first: the distillation runs through the cheapest capable provider (model_policy
 -> local/DeepSeek/$0-subscription). Schedule daily. Read-only except appending to CLAUDE.md + memory.
+
+QUALITY GATE (2026-07-08): on 2026-07-08 a rate-limited model_gateway.complete() call returned its
+provider's usage-limit banner text ("You've hit your weekly limit...") as if it were a real
+distillation, and this module appended it straight into CLAUDE.md/regression memory unfiltered —
+polluting the cached context prefix every future task pays for. quality_gate() below is the fix:
+nothing reaches CLAUDE.md or regression memory without passing a pattern reject-list, a structural
+shape check (must actually look like bullet-point conventions/rules), and a best-effort cheap-model
+grading pass. Rejects are quarantined to .runtime/knowledge/rejected.jsonl for later inspection
+instead of being silently dropped or silently written.
 """
-import os, sys, subprocess
+import os, sys, re, json, time, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 LOOKBACK = int(os.environ.get("MERGE_LEARN_LOOKBACK", "40"))
+
+HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
+REJECTED_LOG = os.path.join(HOME, "knowledge", "rejected.jsonl")
+
+# Content matching any of these is never a reusable engineering learning — it's an error banner,
+# a refusal/apology, or empty noise that leaked through as if it were real model output.
+_FAILURE_PATTERNS = [
+    re.compile(r"\b(weekly|daily|monthly|usage)\s+limit\b", re.I),
+    re.compile(r"\brate[\s-]?limit(ed)?\b", re.I),
+    re.compile(r"\bquota\s+(exceeded|reached)\b", re.I),
+    re.compile(r"\bHTTP\s+(Error\s+)?[45]\d\d\b", re.I),
+    re.compile(r"\b(Internal Server Error|Not Found|Bad Gateway|Service Unavailable|Too Many Requests)\b", re.I),
+    re.compile(r"\bresets?\s+\w+\s+\d", re.I),                 # "resets Jul 8 at 6am" style banners
+    re.compile(r"^\s*as an ai\b", re.I),
+    re.compile(r"\bas a language model\b", re.I),
+    re.compile(r"\bi(?:'m| am) (?:sorry|unable to|not able to)\b", re.I),
+    re.compile(r"^\s*i apologi[sz]e\b", re.I),
+    re.compile(r"\bI cannot (?:help|assist|provide)\b", re.I),
+]
+
+_BULLET_RX = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+\S", re.M)
+
+
+def quality_gate(text, source=""):
+    """Return (accepted: bool, reason: str). Never raises — an error during grading is treated as
+    'could not confirm quality' and falls back to the structural checks already passed, not a hard
+    reject (the model-grading pass is a confidence booster, not a single point of failure the whole
+    learning pipeline depends on)."""
+    t = (text or "").strip()
+    if not t:
+        return False, "empty"
+    if len(t) < 20:
+        return False, "too short to be a real convention/rule list"
+    if len(t) > 4000:
+        return False, "too long — likely raw dump, not a distillation"
+    for rx in _FAILURE_PATTERNS:
+        if rx.search(t):
+            return False, f"matched failure/banner pattern: {rx.pattern}"
+    bullets = _BULLET_RX.findall(t)
+    if len(bullets) < 2:
+        return False, "does not look like a bulleted convention/do-avoid list (fewer than 2 bullet lines)"
+    graded = _grade_with_cheap_model(t)
+    if graded is False:
+        return False, "cheap-model grader said this is not a reusable engineering learning"
+    return True, "ok" if graded is None else "ok (model-graded)"
+
+
+def _grade_with_cheap_model(text):
+    """Best-effort second opinion. Returns True/False, or None if grading itself is unavailable
+    (network/provider error, missing module) — callers must treat None as 'no opinion', not reject."""
+    try:
+        import model_policy, model_gateway
+        prov, model, _ = model_policy.choose("review", agentic=False)
+        prompt = ("Is the following a reusable SOFTWARE ENGINEERING learning (a coding convention or "
+                  "a do/avoid rule), as opposed to an error message, rate-limit notice, apology, or "
+                  "unrelated content? Reply with exactly one word: YES or NO.\n\n" + text[:2000])
+        r = model_gateway.complete(prov, model, prompt, project="quality-gate")
+        answer = (r.get("text") or "").strip().upper()
+        if answer.startswith("YES"):
+            return True
+        if answer.startswith("NO"):
+            return False
+        return None
+    except Exception:
+        return None
+
+
+def _quarantine(text, source, reason):
+    try:
+        os.makedirs(os.path.dirname(REJECTED_LOG), exist_ok=True)
+        with open(REJECTED_LOG, "a", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": time.time(), "source": source, "reason": reason,
+                                "text": (text or "")[:2000]}) + "\n")
+    except Exception:
+        pass  # quarantine logging is best-effort visibility, never blocks the reject decision
 
 
 def _recent_merged(project_id):
@@ -67,6 +151,11 @@ def run():
         except Exception as e:
             text = ""
         if not text:
+            continue
+        accepted, reason = quality_gate(text, source=p["name"])
+        if not accepted:
+            _quarantine(text, p["name"], reason)
+            print(f"learn_from_merges: rejected distillation for {p['name']} ({reason})")
             continue
         # append to regression memory (do/avoid) so it's injected into future prompts
         try:
