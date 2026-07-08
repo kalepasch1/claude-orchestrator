@@ -8,9 +8,12 @@ WHOLE fleet from one place (Mission Control / the DB) and never touch a second m
   1. CENTRAL CONFIG  - `fleet_config` (key/value) is loaded into env every loop on EVERY machine. Change
      MAX_PARALLEL / ORCH_EXTRA_CODERS / model policy / any ORCH_* knob once here and both Macs converge.
      Only safe config keys are applied (never secrets/keys/tokens).
-  2. CENTRAL CONTROL - `fleet_control` rows (action: restart | git_pull | reload_config; target: hostname
-     or 'all') are honored by the targeted machine(s), each acking into handled_by. Restart or pull-and-
-     restart the whole fleet from the cockpit — no ssh, no second terminal.
+  2. CENTRAL CONTROL - `fleet_control` rows (action: restart | git_pull | reload_config | pause | resume;
+     target: hostname or 'all') are honored by the targeted machine(s), each acking into handled_by.
+     Restart, pull-and-restart, or pause/resume a single Mac or the whole fleet from the cockpit — no
+     ssh, no second terminal. pause is a soft, keepalive-safe stop: the runner stops claiming new work
+     but stays resident (a hard launchd stop would fight keepalive and be un-resumable remotely), and
+     resume lifts it on the next loop. Implemented via kill_switch's host scope.
   3. AUTO-UPDATE     - with ORCH_AUTO_PULL=true, each machine periodically `git pull --ff-only`, so a push
      from Mac 1 propagates to every machine automatically (no "now go run it on Mac 2 too").
 
@@ -19,6 +22,7 @@ Pure DB + git; no model spend. Fail-soft: any error is swallowed so it can never
 import os, sys, time, socket, subprocess, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import kill_switch
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOST = socket.gethostname()
@@ -140,6 +144,13 @@ def process_controls():
                     raise RuntimeError(msg[-500:])
             elif action == "restart":
                 pass
+            elif action == "pause":
+                # soft, keepalive-safe: the runner's claim loop honors this host-scoped
+                # pause (kill_switch.is_paused) and stops claiming without exiting.
+                reason = str((r.get("params") or {}).get("reason") or "fleet pause")
+                kill_switch.pause(scope="host", project=HOST, reason=reason, by="fleet_control")
+            elif action == "resume":
+                kill_switch.resume(scope="host", project=HOST, by="fleet_control")
             else:
                 raise RuntimeError(f"unknown fleet action: {action}")
             # ack this host

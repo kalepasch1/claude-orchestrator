@@ -6,6 +6,8 @@ Examples:
   python3 fleetctl.py bootstrap-defaults
   python3 fleetctl.py pull all
   python3 fleetctl.py restart Mac-2.local
+  python3 fleetctl.py pause Mac-2.local      # soft-stop one Mac (stays resident, resumable)
+  python3 fleetctl.py resume Mac-2.local     # lift the pause
   python3 fleetctl.py set ORCH_AUTO_PULL true
 """
 import argparse
@@ -124,7 +126,8 @@ def main(argv=None):
     sc.add_argument("value")
     sc.set_defaults(func=cmd_set)
 
-    for name, action in (("pull", "git_pull"), ("restart", "restart"), ("reload", "reload_config")):
+    for name, action in (("pull", "git_pull"), ("restart", "restart"), ("reload", "reload_config"),
+                         ("pause", "pause"), ("resume", "resume")):
         c = sub.add_parser(name)
         c.add_argument("target", nargs="?", default="all")
         c.add_argument("--no-restart", action="store_true")
