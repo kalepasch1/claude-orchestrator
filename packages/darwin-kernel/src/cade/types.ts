@@ -237,4 +237,5 @@ export const DEFAULT_OPTIONS: Required<Omit<CadeOptions, 'sign' | 'now'>> = {
   maxRounds: 4,
   maxDepth: 2,
   convergenceEpsilon: 0.05,
+  posture: 'expected_value',
 };
