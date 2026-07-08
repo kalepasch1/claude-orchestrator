@@ -119,10 +119,38 @@ def try_eliminate(task, project_row=None):
     return {"eliminated": False, "method": "none", "reason": "no zero-token path found"}
 
 
-def _apply_and_verify(repo, diff_text, task_id):
-    """Apply a diff and verify with build+test. Revert on failure."""
+def _worktree_path(repo, branch):
+    return os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", branch)
+
+
+def _cleanup_worktree(repo, wt, branch, keep_branch):
+    """Best-effort cleanup — never raises, this runs on every exit path including exceptions."""
     try:
-        # Check first
+        subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=repo,
+                       capture_output=True, timeout=30)
+    except Exception:
+        pass
+    if not keep_branch:
+        try:
+            subprocess.run(["git", "branch", "-D", branch], cwd=repo, capture_output=True, timeout=15)
+        except Exception:
+            pass
+
+
+def _apply_and_verify(repo, diff_text, task_id):
+    """Apply a diff and verify with build+test, entirely inside an isolated worktree — this
+    used to `git checkout -b` directly in `repo` (the primary checkout), which parked the
+    orchestrator's own live checkout on a throwaway branch for the duration of a build+test run
+    (up to 180s), and left it there permanently on the success path (only the failure/exception
+    paths tried to switch back). Any concurrent process reading `repo`'s working tree during that
+    window — including a human — would see the wrong branch. Matches the same
+    `<repo>-wt/<slug>` isolated-worktree convention runner.py's own zero-spend-recovery path
+    already uses. Revert on failure by discarding the worktree/branch; `repo` itself is never
+    touched."""
+    branch = f"elim-{task_id[:8]}-{int(time.time())}"
+    wt = _worktree_path(repo, branch)
+    try:
+        # Check first (this alone is safe against repo's working tree — --check never writes)
         check = subprocess.run(
             ["git", "apply", "--check", "--3way"],
             input=diff_text, cwd=repo,
@@ -131,47 +159,44 @@ def _apply_and_verify(repo, diff_text, task_id):
         if check.returncode != 0:
             return {"success": False, "reason": "diff doesn't apply"}
 
-        # Create a temporary branch
-        branch = f"elim-{task_id[:8]}-{int(time.time())}"
-        subprocess.run(["git", "checkout", "-b", branch], cwd=repo,
-                       capture_output=True, timeout=15)
+        os.makedirs(os.path.dirname(wt), exist_ok=True)
+        added = subprocess.run(["git", "worktree", "add", "-b", branch, wt, "HEAD"], cwd=repo,
+                               capture_output=True, text=True, timeout=60)
+        if added.returncode != 0 or not os.path.isdir(wt):
+            return {"success": False, "reason": f"worktree add failed: {(added.stderr or '')[:200]}"}
 
-        # Apply
+        # Apply — inside the worktree, never repo
         apply_result = subprocess.run(
             ["git", "apply", "--3way"],
-            input=diff_text, cwd=repo,
+            input=diff_text, cwd=wt,
             capture_output=True, text=True, timeout=30
         )
         if apply_result.returncode != 0:
-            subprocess.run(["git", "checkout", "-"], cwd=repo, capture_output=True, timeout=15)
-            subprocess.run(["git", "branch", "-D", branch], cwd=repo, capture_output=True, timeout=15)
+            _cleanup_worktree(repo, wt, branch, keep_branch=False)
             return {"success": False, "reason": "apply failed"}
 
-        # Build+test
+        # Build+test — inside the worktree
         test_cmd = os.environ.get("TEST_CMD", "npm test")
         test = subprocess.run(
-            test_cmd, shell=True, cwd=repo,
+            test_cmd, shell=True, cwd=wt,
             capture_output=True, text=True, timeout=180,
             env={**os.environ, "CI": "true"}
         )
 
         if test.returncode == 0:
-            # Commit the change
-            subprocess.run(["git", "add", "-A"], cwd=repo, capture_output=True, timeout=15)
+            # Commit the change in the worktree, then remove the worktree directory but KEEP
+            # the branch (the commit) — matches the original return contract of {"branch": ...}.
+            subprocess.run(["git", "add", "-A"], cwd=wt, capture_output=True, timeout=15)
             subprocess.run(["git", "commit", "-m", f"[queue-elim] zero-token resolution for {task_id[:8]}"],
-                          cwd=repo, capture_output=True, timeout=15)
+                          cwd=wt, capture_output=True, timeout=15)
+            _cleanup_worktree(repo, wt, branch, keep_branch=True)
             return {"success": True, "branch": branch}
         else:
-            # Revert
-            subprocess.run(["git", "checkout", "-"], cwd=repo, capture_output=True, timeout=15)
-            subprocess.run(["git", "branch", "-D", branch], cwd=repo, capture_output=True, timeout=15)
+            _cleanup_worktree(repo, wt, branch, keep_branch=False)
             return {"success": False, "reason": "tests failed"}
 
     except Exception as e:
-        try:
-            subprocess.run(["git", "checkout", "-"], cwd=repo, capture_output=True, timeout=15)
-        except Exception:
-            pass
+        _cleanup_worktree(repo, wt, branch, keep_branch=False)
         return {"success": False, "reason": str(e)[:200]}
 
 
