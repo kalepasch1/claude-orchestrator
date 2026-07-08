@@ -8,6 +8,14 @@ Env: METRICS_URL, CANARY_MAX_ERROR_RATE, CANARY_MAX_P95_MS, CANARY_MIN_CONVERSIO
      STAGING_BRANCH (default: staging), MAIN_BRANCH (default: main)
 
 Called by periodic.py via `python3 periodic.py deploy`.
+
+WORKTREE SAFETY (2026-07-08): the promote and rollback paths used to `git checkout` STAGING/MAIN
+directly in `repo` — the orchestrator's own primary checkout — and never switched back
+afterward, so a canary run left the primary checkout parked on whatever branch it last touched.
+Both paths now run inside a `-f`-forced isolated worktree (same convention runner.py's own
+zero-spend-recovery path uses): `-f` lets the worktree check out a branch that's ALSO currently
+checked out in `repo` itself (which STAGING/MAIN often is) without git refusing or `repo` ever
+being touched. See _run_in_branch_worktree().
 """
 import os, sys, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -15,6 +23,34 @@ import db, canary
 
 STAGING = os.environ.get("STAGING_BRANCH", "staging")
 MAIN = os.environ.get("MAIN_BRANCH", "main")
+
+
+def _worktree_path(repo, branch):
+    safe = branch.replace("/", "-")
+    return os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", f"deploy-{safe}")
+
+
+def _run_in_branch_worktree(repo, branch, ops):
+    """Create a forced isolated worktree checked out to `branch`, run `ops(worktree_path)`
+    inside it, then always remove the worktree (the branch/ref itself is untouched by removal —
+    only the temporary working-tree directory goes away). Returns ops()'s result, or None if the
+    worktree couldn't be created (caller decides how to treat that). Never touches `repo`'s own
+    checked-out branch."""
+    wt = _worktree_path(repo, branch)
+    added = None
+    try:
+        os.makedirs(os.path.dirname(wt), exist_ok=True)
+        added = subprocess.run(["git", "worktree", "add", "-f", wt, branch], cwd=repo,
+                               capture_output=True, timeout=60)
+        if added.returncode != 0 or not os.path.isdir(wt):
+            return None
+        return ops(wt)
+    finally:
+        try:
+            subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=repo,
+                           capture_output=True, timeout=30)
+        except Exception:
+            pass
 
 
 def run():
@@ -69,23 +105,33 @@ def _evaluate_project(repo, name, metrics_url):
                 "risk": "manual merge or rebase required"
             })
     else:
-        # rollback: reset staging to main
-        r = subprocess.run(["git", "checkout", STAGING], cwd=repo, capture_output=True)
-        subprocess.run(["git", "reset", "--hard", MAIN], cwd=repo, capture_output=True)
+        # rollback: reset staging to main, inside an isolated worktree — never repo's own checkout
+        def _reset(wt):
+            r = subprocess.run(["git", "reset", "--hard", MAIN], cwd=wt, capture_output=True)
+            return r.returncode == 0
+
+        try:
+            ok = _run_in_branch_worktree(repo, STAGING, _reset)
+        except Exception as e:
+            ok = False
+            print(f"{name}: rollback worktree failed ({e})")
         db.insert("approvals", {
             "project": name, "kind": "self",
             "title": f"Canary rollback: {name} staging reset to {MAIN}",
             "why": reason, "risk": f"metrics breached — staging rolled back to {MAIN}",
             "status": "approved", "decided_by": "canary:auto-rollback"
         })
-        print(f"{name}: rolled back {STAGING} to {MAIN} — {reason}")
+        print(f"{name}: rolled back {STAGING} to {MAIN} — {reason}" if ok
+              else f"{name}: rollback attempt for {STAGING} may not have applied — check manually")
 
 
 def _ff_merge(repo, src, dst):
-    try:
-        subprocess.run(["git", "checkout", dst], cwd=repo, check=True, capture_output=True)
-        r = subprocess.run(["git", "merge", "--ff-only", src], cwd=repo, capture_output=True)
+    def _merge(wt):
+        r = subprocess.run(["git", "merge", "--ff-only", src], cwd=wt, capture_output=True)
         return r.returncode == 0
+
+    try:
+        return bool(_run_in_branch_worktree(repo, dst, _merge))
     except Exception:
         return False
 
