@@ -52,6 +52,46 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
     duplicate_groups = 0
     quarantined = 0
 
+    # Get all tasks that are BLOCKED with notes indicating missing branch
+    rows = db.select("tasks", {
+        "select": "id,slug,project_id,state,note,updated_at",
+        "state": "eq.BLOCKED",
+        "note": "ilike.%missing branch%",
+        "limit": limit
+    }) or []
+
+    for task in rows:
+        slug = task.get("slug", "")
+        note = task.get("note", "")
+        
+        # Check if this is a recovery task for a missing branch
+        if slug.startswith(RECOVERY_PREFIX):
+            # This is already a recovery task, skip it to avoid duplication
+            skipped += 1
+            continue
+            
+        # If we find a task with missing branch note, queue a recovery task
+        if "missing branch" in note.lower():
+            try:
+                # Create a recovery task for this specific case
+                recovery_task = {
+                    "slug": f"{RECOVERY_PREFIX}{slug}",
+                    "project_id": task.get("project_id"),
+                    "state": "QUEUED",
+                    "note": f"Recovery task for missing branch: {slug}\nOriginal note: {note}",
+                    "created_at": datetime.datetime.utcnow().isoformat() + "Z",
+                    "updated_at": datetime.datetime.utcnow().isoformat() + "Z"
+                }
+                
+                # Insert the recovery task
+                db.insert("tasks", recovery_task)
+                recovery_queued += 1
+                missing_branch += 1
+                
+            except Exception as e:
+                print(f"Failed to create recovery task for {slug}: {e}")
+                skipped += 1
+
     # ... (rest of the original code remains unchanged) ...
     return {
         "limit": limit,
