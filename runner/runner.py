@@ -198,8 +198,12 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
     ahead = subprocess.run(["git", "merge-base", "--is-ancestor", base, branch],
                            cwd=repo, capture_output=True).returncode == 0
     if not ahead:
-        if subprocess.run(["git", "rebase", base, branch], cwd=repo, capture_output=True).returncode != 0:
-            subprocess.run(["git", "rebase", "--abort"], cwd=repo, capture_output=True)
+        # Isolated worktree, never repo's own checkout — see approval_merge._rebase_isolated's
+        # docstring for why (a direct `git rebase base branch` here left the orchestrator's own
+        # primary checkout parked on a stray branch, which is very likely the root cause of the
+        # 2026-07-08 finding that repo's checked-out branch kept changing between checks).
+        import approval_merge
+        if not approval_merge._rebase_isolated(repo, base, branch):
             return "CONFLICT"
     # BUILD GATE: run the project's REAL production build on the branch; do NOT merge if it's red.
     # This is the fix for "merges succeed but every Vercel deploy fails" — build-breaking code can no
