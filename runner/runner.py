@@ -36,6 +36,7 @@ if os.environ.get("ORCH_CANONICAL_RUNTIME_HOME", "true").lower() in ("1", "true"
 
 sys.path.insert(0, _RUNNER_DIR)
 import db, bandit, verify, caching, account_pool, cost_ledger, model_router, candidate_shared
+import prompt_assembler
 import knowledge_embed as kb
 import regression, budget, speculative, pr_integrate
 import context_retrieval, result_cache
@@ -442,23 +443,15 @@ def run_task(t):
                 record(t, name, slug, kind, "cache", POOL.current(), 0, True, False, "", time.time())
                 return
 
-        # context prefix + scoped file focus + blast radius + semantic reuse + lessons
-        prefix = caching.load_prefix(repo)
-        focus = context_retrieval.focus_note(repo, task_body) if USE_RETRIEVAL else ""
-        blast = blast_radius.note_for_task(repo, task_body) if USE_RETRIEVAL else ""
-        # cross-project capability transfer: inject reusable published recipes for this task
-        reuse = ""
-        try:
-            import capability
-            reuse = capability.reuse_note(task_body, project=name)
-        except Exception:
-            reuse = ""
-        contracted_prompt = pipeline_contract.wrap_prompt(
-            task_body, project=name, kind=kind, source="runner-claim", slug=slug,
-            material=bool(t.get("material")),
+        # Single composition point (prompt_assembler.py) for every layer that used to be
+        # hand-concatenated here: distilled template, cached prefix, distilled project brief,
+        # focus/blast/reuse notes, pipeline_contract wrap, knowledge/regression injection,
+        # reuse-first tail, final char cap. See prompt_assembler.py for the layer order and why.
+        assembled = prompt_assembler.assemble(
+            task_body, project=name, repo=repo, kind=kind, source="runner-claim", slug=slug,
+            material=bool(t.get("material")), task=t, use_retrieval=USE_RETRIEVAL,
         )
-        prompt = prefix + focus + blast + reuse + regression.inject(kb.inject(contracted_prompt)) + feedback.INSTRUCTION + REUSE_FIRST
-        prompt = _cap_agent_prompt(prompt)
+        prompt = assembled["prompt"]
         try:
             _brain_plan = brain_compiler.compile_for_task(t, repo=repo, project=name)
             if _brain_plan.get("has_plan"):
