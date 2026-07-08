@@ -363,7 +363,8 @@ class ModelRoutingTest(unittest.TestCase):
         self.assertTrue(any(c and c["cap"] == 10 and "opus-4.6-local" in (c.get("cmd") or "") for c in pool))
 
     def test_agentic_easy_work_can_route_to_non_claude(self):
-        env = {"ORCH_EASY_OFFLOAD_SHARE": "1.0", "ORCH_AUTO_AGENTIC_CODERS": "true"}
+        env = {"ORCH_EASY_OFFLOAD_SHARE": "1.0", "ORCH_AUTO_AGENTIC_CODERS": "true",
+               "ORCH_TRUST_HEAVY_OLLAMA_HOT_LANE": "true"}  # hermetic: exclusion reads real RAM
         task = {"slug": "easy-docs", "kind": "docs", "prompt": "update docs", "deps": []}
         with patch.dict(os.environ, env, clear=False), \
              patch.object(agentic_coders, "_aider_available", return_value=True), \
