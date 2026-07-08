@@ -63,14 +63,16 @@ def _materialize_branch(repo, branch):
     Fail-soft on offline/no-remote — falls back to local-only behavior."""
     if _branch_exists(repo, branch):
         return True
+    if not repo or not os.path.isdir(repo):
+        return False
     try:
         _git(repo, "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}", timeout=120)
+        if _git(repo, "rev-parse", "--verify", f"refs/remotes/origin/{branch}").returncode != 0:
+            return False
+        return _git(repo, "branch", branch, f"refs/remotes/origin/{branch}").returncode == 0 \
+            or _branch_exists(repo, branch)
     except Exception:
-        pass
-    if _git(repo, "rev-parse", "--verify", f"refs/remotes/origin/{branch}").returncode != 0:
         return False
-    return _git(repo, "branch", branch, f"refs/remotes/origin/{branch}").returncode == 0 \
-        or _branch_exists(repo, branch)
 
 
 def _task_patch(task, patch):
@@ -274,18 +276,32 @@ def _attribute_train_outcome(slug, task, outcome, integrated=False):
 
 
 def _select_batch(group):
-    annotated = [(card, slug, task, _risk_level(card, task)) for card, slug, task in group]
+    """Return the project's cards sorted (risk band, then age), DEDUPED by slug.
+
+    Duplicate cards for one slug (240 were found for a single slug) used to flood
+    every batch: keep the NEWEST card per slug and terminally mark the rest so
+    they are never picked again. Cap enforcement moved to train_run, which only
+    charges the cap for REAL integration attempts (merged/testfail/conflict) —
+    non-actionable outcomes (waiting/redo/branch-missing) no longer starve cards
+    whose branches actually exist (the 96%-pass / 2.75%-merge blockade)."""
+    newest_by_slug = {}
+    for card, slug, task in group:
+        cur = newest_by_slug.get(slug)
+        if cur is None or str(card.get("created_at") or "") > str(cur[0].get("created_at") or ""):
+            newest_by_slug[slug] = (card, slug, task)
+    for card, slug, task in group:
+        keep = newest_by_slug.get(slug)
+        if keep is not None and card.get("id") != keep[0].get("id"):
+            try:
+                db.update("approvals", {"id": card["id"]},
+                          {"decided_by": f"{MARK}:dup-card", "status": "approved"})
+            except Exception:
+                pass
+    annotated = [(card, slug, task, _risk_level(card, task))
+                 for card, slug, task in newest_by_slug.values()]
     annotated.sort(key=lambda e: ({"low": 0, "standard": 1, "sensitive": 2}[e[3]],
                                   str(e[0].get("created_at") or "")))
-    caps = {"low": LOW_RISK_BATCH, "standard": STANDARD_BATCH, "sensitive": SENSITIVE_BATCH}
-    used = {"low": 0, "standard": 0, "sensitive": 0}
-    selected = []
-    for card, slug, task, risk in annotated:
-        if used[risk] >= caps[risk]:
-            continue
-        used[risk] += 1
-        selected.append((card, slug, task, risk))
-    return selected
+    return annotated
 
 
 def ensure_integration_card(project, slug, *, kind="integrate", title=None, why=None,
@@ -301,7 +317,8 @@ def ensure_integration_card(project, slug, *, kind="integrate", title=None, why=
     cards = db.select("approvals", {"select": "id,slug,title,kind,status,decided_by",
                                     "kind": f"in.({','.join(MERGE_KINDS)})",
                                     "status": "in.(pending,approved)",
-                                    "limit": "2000"}) or []
+                                    "order": "created_at.desc",  # newest first — unordered scans missed dupes past the limit (240 dupes of one slug)
+                                    "limit": os.environ.get("MERGE_CARD_DEDUP_SCAN", "4000")}) or []
     for c in cards:
         if str(c.get("decided_by") or "").startswith(SKIP_PREFIXES):
             continue
@@ -386,6 +403,10 @@ def _integrate_card(card, slug, task, proj):
             return "redo"
         _task_patch(task, {"state": "BLOCKED",
                            "note": f"train: approved, but {branch} is still missing after {cap} rebuilds"})
+        # Terminal for THIS card: mark it handled so it stops re-entering every pick cycle
+        # (a completed recovery task files a fresh card). Unmarked missing-branch cards were
+        # re-selected on every run and starved cards whose branches exist.
+        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:branch-missing"})
         _log(pname, slug, "BLOCKED", "branch missing")
         return "branch-missing"
 
@@ -492,12 +513,22 @@ def train_run():
     summary = {"projects": 0, "merged": 0, "redo": 0, "testfail": 0, "conflict": 0,
                "skipped": 0, "risk": {"low": 0, "standard": 0, "sensitive": 0},
                "pressure": pressure}
+    caps = {"low": LOW_RISK_BATCH, "standard": STANDARD_BATCH, "sensitive": SENSITIVE_BATCH}
+    ATTEMPT_OUTCOMES = ("merged", "testfail", "conflict")  # only real attempts consume the cap
+    scan_cap = int(os.environ.get("MERGE_TRAIN_SCAN_PER_PROJECT", "200"))
     for pid, group in by_project.items():
         proj = projects.get(pid, {})
         summary["projects"] += 1
+        used = {"low": 0, "standard": 0, "sensitive": 0}
+        scanned = 0
         for card, slug, task, risk in _select_batch(group):
+            if used[risk] >= caps[risk] or scanned >= scan_cap:
+                continue
+            scanned += 1
             summary["risk"][risk] += 1
             outcome = _integrate_card(card, slug, task, proj)
+            if outcome in ATTEMPT_OUTCOMES:
+                used[risk] += 1
             if outcome == "merged":
                 summary["merged"] += 1
             elif outcome == "redo":
