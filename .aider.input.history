@@ -766,3 +766,47 @@
 +
 +---
 +BEFORE YOU FINISH (required): run the project's production build and, if present, its tests (e.g. `npm run build` then the test command). If ANYTHING fails, fix it and re-run until the build is GREEN. Make the smallest correct change and reuse existing code. Do not finish with a red build, and do not finish by only describing changes — actually apply your edits to the files.
+
+# 2026-07-08 12:48:00.679769
++## SCOUT ANALYSIS
++Relevant files: beethoven/recovery-backlog.ts, beethoven/queued_recovery_task.py
++Entry points: recoverMissingBranchCadeContractsSlice2Slice1, QueuedRecoveryTask.execute
++Complexity: low
++
++## TASK
++PATCH TEMPLATE e0e1c07311a3
++Intent: 07060650 5fac0ef2b876 6096aa2b 872fc2f0816e 9575dfa7292e 99f45988 9f378a1b3957 a5f8e22456b6 acceptance adapt adding agent analogous analysis artifacts backlog because before behavior billing branch build cached canary
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt: none found; keep the patch template reusable.
++[patch-template:e0e1c07311a3]
++
++REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
++SOURCE: 99f45988-68cc-430d-8228-5fac0ef2b876/patch-template-canary-ollama-5
++SUMMARY: PATCH TEMPLATE 9575dfa7292e
++Intent: 07060650 5fac0ef2b876 6096aa2b 872fc2f0816e 99f45988 9f378a1b3957 a5f8e22456b6 acceptance adapt adding agent analogous analysis artifacts backlog because before behavior billing branch build cached canary change
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/fun
++
++Recovery-backlog canary for coder routing.
++Use queued recovery task recover-missing-branch-cade-contracts-slice-2-slice-1 as the acceptance style, but make only one tiny safe analogous change.
++This canary measures whether the coder can reconstruct missing-branch work from reuse-first context.
++Do not change secrets, dependencies, package managers, billing, legal copy, or product behavior.
++
++Recovery task prompt excerpt:
++- PATCH TEMPLATE 9f378a1b3957
++Intent: 07060650 6096aa2b a5f8e22456b6 acceptance adapt adding agent analysis artifacts because before behavior branch build cached change check checks commit complete conflict context contracts d80d58d07f44
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++- 3.
++- Implementation slots:
++1.
++- Implementation slots:
++1.
++
++Parent task: recover-missing-branch-cade-contracts-slice-2
++
++[reuse-first: matched patch-template-canary-ollama-5]
