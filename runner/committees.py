@@ -64,6 +64,27 @@ def active_committees():
     return db.select("committees", {"select": "*", "active": "eq.true"}) or []
 
 
+def locate_owner(subject_title, body=None):
+    """Locate the existing owner committee for a subject before assembling new panels. Returns
+    a dict {name, chair, mandate} for the best-matching active committee, or None if offline.
+    Prefers exact name-keyword matches; falls back to the first active committee."""
+    try:
+        rows = db.select("committees", {"select": "name,chair,mandate", "active": "eq.true"}) or []
+    except Exception:
+        return None
+    if not rows:
+        return None
+    text = ((subject_title or "") + " " + (body or "")).lower()
+    words = set(w for w in re.findall(r"[a-z]{4,}", text)[:10])
+    best, best_score = None, 0
+    for row in rows:
+        name_words = set(re.findall(r"[a-z]{4,}", (row.get("name") or "").lower()))
+        score = len(words & name_words)
+        if score > best_score:
+            best, best_score = row, score
+    return best or rows[0]
+
+
 LEGAL_HINTS = ("legal", "compliance", "regulat", "privacy", "counsel", "gdpr", "ccpa", "licens", "sanction")
 
 
