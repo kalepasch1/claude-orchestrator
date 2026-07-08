@@ -34,6 +34,36 @@ class KillSwitchTest(unittest.TestCase):
         _table, match, _patch = fake_db.update.call_args.args
         self.assertEqual(match, {"scope": "project", "project": "tomorrow"})
 
+    def test_host_scoped_pause_halts_only_this_machine(self):
+        fake_db = MagicMock()
+        # a pause targeted at THIS host (matched via alias) must register as paused...
+        fake_db.select.return_value = [
+            {"scope": "host", "project": "mac-2", "paused": True, "updated_at": "2026-07-08T00:00:00"},
+        ]
+        with patch.object(kill_switch, "db", fake_db), \
+             patch.object(kill_switch, "HOST", "mac-2.local"):
+            self.assertTrue(kill_switch.is_paused())
+
+    def test_host_scoped_pause_for_other_machine_is_ignored(self):
+        fake_db = MagicMock()
+        # a pause for a DIFFERENT host must not pause this one.
+        fake_db.select.return_value = [
+            {"scope": "host", "project": "mac-1", "paused": True, "updated_at": "2026-07-08T00:00:00"},
+        ]
+        with patch.object(kill_switch, "db", fake_db), \
+             patch.object(kill_switch, "HOST", "mac-2.local"):
+            self.assertFalse(kill_switch.is_paused())
+
+    def test_latest_host_decision_wins(self):
+        fake_db = MagicMock()
+        # rows arrive newest-first (order=updated_at.desc); a later resume lifts an earlier pause.
+        fake_db.select.return_value = [
+            {"scope": "host", "project": "mac-2", "paused": False, "updated_at": "2026-07-08T01:00:00"},
+        ]
+        with patch.object(kill_switch, "db", fake_db), \
+             patch.object(kill_switch, "HOST", "mac-2"):
+            self.assertFalse(kill_switch.is_paused())
+
 
 if __name__ == "__main__":
     unittest.main()

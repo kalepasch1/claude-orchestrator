@@ -4,15 +4,23 @@ kill_switch.py - stop all (or one project's) usage/cost with one flag. The dashb
 button writes controls.paused=true; the runner checks is_paused() before claiming a task and
 before any external API call, so spend halts immediately. resume() lifts it.
 """
-import os, sys, datetime
+import os, sys, socket, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 REMOTE_QUARANTINE_BY = "remote-quarantine"
+HOST = socket.gethostname()
 
 
 def _is_remote_quarantine(row):
     return (row.get("updated_by") or "") == REMOTE_QUARANTINE_BY
+
+
+def _host_aliases():
+    # a host pause may be written as "Mac-2" or "Mac-2.local"; match either form.
+    aliases = {HOST}
+    aliases.add(HOST[:-6] if HOST.endswith(".local") else HOST + ".local")
+    return aliases
 
 
 def _match(scope, project):
@@ -54,6 +62,16 @@ def is_paused(project=None):
         if _is_remote_quarantine(r):
             continue
         if r["scope"] == "global":
+            if r.get("paused"):
+                return True
+            break
+    # host-scoped pause: lets the fleet pause THIS machine (via fleet_control) without a
+    # global pause that would halt every Mac. Latest 'host' decision for this host wins.
+    aliases = _host_aliases()
+    for r in rows:
+        if _is_remote_quarantine(r):
+            continue
+        if r["scope"] == "host" and (r.get("project") or "") in aliases:
             if r.get("paused"):
                 return True
             break
