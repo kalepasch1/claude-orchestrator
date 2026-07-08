@@ -1,4 +1,17 @@
 
+## Operator workflow (manual, not auto-distilled)
+
+Routine strategic/objective prompts belong in the operator drop-box, not a manual serial
+session: drop a `PROMPT-<name>.md` file at repo root (or a canonical-format file in `intake/`)
+and `intake_watcher.py` auto-decomposes anything that isn't already canonical format through
+`planner.py`'s contract-first DAG and queues it for parallel, dependency-linked execution (see
+`prompt_factory.py` and the drop-box section of `intake_watcher.py`'s module docstring).
+
+A manual serial Claude Code session (an operator pasting a long prompt directly into a live
+session, working the phases by hand) is reserved for **fleet-down recovery only** — i.e. when
+the fleet itself can't queue or execute anything yet, so there's nothing for intake to route
+work to. Once the fleet is healthy, prefer the drop-box.
+
 ## Learned from merged work (auto)
 
 **CONVENTIONS**
