@@ -104,6 +104,29 @@ class FleetControlTest(unittest.TestCase):
         self.assertEqual(fake_ks.resume.call_args.kwargs.get("project"), "Mac-2.local")
         fake_ks.pause.assert_not_called()
 
+    def test_dirty_worktree_ignores_untracked_files(self):
+        # untracked files (git would print them under plain --porcelain) must NOT count as dirty,
+        # or a single stray cache/log permanently blocks auto-pull. The guard must ask git to
+        # exclude untracked, and an untracked-only tree reports clean.
+        calls = {}
+
+        def fake_git(*args, **kw):
+            calls["args"] = args
+            r = MagicMock()
+            # with --untracked-files=no, git prints nothing for an untracked-only worktree
+            r.stdout = "" if "--untracked-files=no" in args else "?? runner/stray.py\n"
+            return r
+
+        with patch.object(fleet_control, "_git", side_effect=fake_git):
+            self.assertFalse(fleet_control._dirty_worktree())
+        self.assertIn("--untracked-files=no", calls["args"])
+
+    def test_dirty_worktree_still_flags_tracked_modifications(self):
+        def fake_git(*args, **kw):
+            r = MagicMock(); r.stdout = " M runner/runner.py\n"; return r  # tracked edit survives the flag
+        with patch.object(fleet_control, "_git", side_effect=fake_git):
+            self.assertTrue(fleet_control._dirty_worktree())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,3 +18,7 @@ runner/.env.bak*
 # runner log (huge, machine-local — never commit)
 runner/runner.log
 .aider*
+
+# machine-local build caches — keep the worktree clean so fleet auto-pull isn't blocked
+.npm-cache/
+.pip-cache/
