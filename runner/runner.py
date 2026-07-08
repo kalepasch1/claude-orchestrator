@@ -1221,6 +1221,20 @@ def run_task(t):
             except Exception as _ae:
                 print(f"[artifacts] capture failed for {slug}: {_ae}")
 
+            # FLEET BRANCH SHARE: push the verified agent branch to origin so the OTHER runner
+            # Mac's sweeper/merge-train can see it. Local-only branches were the root cause of
+            # the recover-missing-branch churn (two Macs, one queue, branches on one disk).
+            # Fail-soft: offline/no-remote keeps the old local-only behavior. Env-gated so it
+            # can be disabled fleet-wide via the config gateway if a repo must stay local.
+            if os.environ.get("ORCH_SHARE_AGENT_BRANCHES", "true").lower() in ("true", "1", "yes", "on"):
+                try:
+                    _pr = subprocess.run(["git", "push", "-u", "origin", f"agent/{slug}"],
+                                         cwd=repo, capture_output=True, text=True, timeout=180)
+                    if _pr.returncode != 0:
+                        print(f"[branch-share] push agent/{slug} failed (non-fatal): {(_pr.stderr or '')[-160:]}")
+                except Exception as _pe:
+                    print(f"[branch-share] push agent/{slug} skipped: {_pe}")
+
             result = integrate(repo, f"agent/{slug}", base, test_cmd, slug, v["notes"], "passed", project=name)
             POOL.mark_ok(acct)
             integrated = result == "MERGED"

@@ -56,6 +56,23 @@ def _branch_exists(repo, branch):
     return _git(repo, "rev-parse", "--verify", branch).returncode == 0
 
 
+def _materialize_branch(repo, branch):
+    """Fleet-aware branch lookup: if the branch is not local, try to fetch it from origin
+    (the OTHER runner Mac pushes agent/* after verify). Creates a local branch ref from the
+    remote so the train steps (rebase/ff) can proceed. Returns True when a local ref exists.
+    Fail-soft on offline/no-remote — falls back to local-only behavior."""
+    if _branch_exists(repo, branch):
+        return True
+    try:
+        _git(repo, "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}", timeout=120)
+    except Exception:
+        pass
+    if _git(repo, "rev-parse", "--verify", f"refs/remotes/origin/{branch}").returncode != 0:
+        return False
+    return _git(repo, "branch", branch, f"refs/remotes/origin/{branch}").returncode == 0 \
+        or _branch_exists(repo, branch)
+
+
 def _task_patch(task, patch):
     db.update("tasks", {"id": task["id"]}, patch)
 
@@ -199,7 +216,7 @@ def _record_pressure(by_project, projects):
         for card, slug, task in group:
             risk = _risk_level(card, task)
             p["risk"][risk] += 1
-            if _branch_exists(repo, f"agent/{slug}"):
+            if _materialize_branch(repo, f"agent/{slug}"):
                 p["passed_waiting"] += 1
                 p["oldest_wait_age_s"] = max(p["oldest_wait_age_s"], _age_seconds(card.get("created_at") or task.get("updated_at")))
             else:
@@ -351,7 +368,7 @@ def _integrate_card(card, slug, task, proj):
 
     base = _integration_base(repo, proj, task_base)
 
-    if not _branch_exists(repo, branch):
+    if not _materialize_branch(repo, branch):
         state = task.get("state")
         if state in ("QUEUED", "RUNNING", "RETRY"):
             _log(pname, slug, "WAIT", f"{branch} not created yet ({state})")

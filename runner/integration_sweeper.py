@@ -29,6 +29,37 @@ def _branch_exists(repo, branch):
                           cwd=repo, capture_output=True).returncode == 0
 
 
+_FETCHED_AGENT_REFS = set()
+
+
+def _fetch_agent_refs(repo):
+    """One best-effort fetch of the shared agent/* namespace per repo per process.
+
+    The fleet runs on TWO Macs sharing one Supabase queue: agent branches are created on
+    whichever machine ran the task, so a purely local rev-parse on the other machine
+    mislabels finished work as 'missing branch' and files recovery churn. Fetching
+    refs/heads/agent/* into refs/remotes/origin/agent/* makes the check fleet-aware.
+    Fail-soft: offline / no remote just means we fall back to local-only visibility.
+    """
+    if not repo or repo in _FETCHED_AGENT_REFS or not os.path.isdir(repo):
+        return
+    _FETCHED_AGENT_REFS.add(repo)
+    try:
+        subprocess.run(["git", "fetch", "origin",
+                        "+refs/heads/agent/*:refs/remotes/origin/agent/*", "--prune"],
+                       cwd=repo, capture_output=True, timeout=120)
+    except Exception:
+        pass
+
+
+def _branch_exists_anywhere(repo, branch):
+    """True if the branch exists locally OR on origin (the other runner's Mac)."""
+    if _branch_exists(repo, branch):
+        return True
+    _fetch_agent_refs(repo)
+    return _branch_exists(repo, f"refs/remotes/origin/{branch}")
+
+
 def _normalize_base(repo, proj, requested):
     for b in (requested, proj.get("default_base"), proj.get("prod_branch"), "main", "master"):
         if b and _branch_exists(repo, b):
@@ -240,7 +271,7 @@ def pressure(limit=1000):
         branch = f"agent/{t.get('slug')}"
         bucket = out.setdefault(name, {"passed_waiting": 0, "missing_branch": 0,
                                        "oldest_wait_age_s": 0})
-        if _branch_exists(repo, branch):
+        if _branch_exists_anywhere(repo, branch):
             bucket["passed_waiting"] += 1
             bucket["oldest_wait_age_s"] = max(bucket["oldest_wait_age_s"], _age_seconds(t.get("updated_at")))
         else:
@@ -278,12 +309,15 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
             skipped += 1
             continue
         slug = t.get("slug")
-        if str(slug or "").startswith(RECOVERY_PREFIX):
+        # NESTING GUARD: never file recovery for anything that already IS recovery work,
+        # including rework-* wrappers around recovery slugs — recovery-of-recovery churn
+        # ("rework-missing-branch-recover-missing-branch-...") burned lanes for days.
+        if RECOVERY_PREFIX in str(slug or ""):
             skipped += 1
             continue
         proj = projects.get(t.get("project_id")) or {}
         repo = proj.get("repo_path", "")
-        if not _branch_exists(repo, f"agent/{slug}"):
+        if not _branch_exists_anywhere(repo, f"agent/{slug}"):
             missing += 1
             if _queue_recovery(t, proj, recovery_index=recovery_index):
                 recovery += 1
