@@ -138,6 +138,43 @@ def _free_branch(repo, branch):
     subprocess.run(["git", "worktree", "prune"], cwd=repo, capture_output=True)
 
 
+def _rebase_isolated(repo, base, branch):
+    """Rebase `branch` onto `base` WITHOUT ever checking `branch` out in `repo` itself.
+
+    `git rebase <base> <branch>` is shorthand for `git checkout <branch> && git rebase <base>` —
+    every prior call site here did that directly in `repo`, the orchestrator's OWN primary
+    checkout. A successful rebase left `repo` parked on `branch` afterward (only the conflict
+    path tried `git rebase --abort`, which restores the branch you were on *before* the rebase
+    started — but if a PRIOR call had already left `repo` on some other stray branch, abort just
+    puts it back on that same wrong branch, not master). This is very likely the root cause of
+    the 2026-07-08 finding that `repo`'s checked-out branch kept changing between unrelated
+    checks minutes apart during a manual session.
+
+    Fixed the same way the no-ff-merge fallback below already does it (that path already got
+    this right, this one hadn't caught up): a `-f`-forced isolated worktree, so it works even
+    though `branch` is very likely also checked out somewhere else already. Returns True on a
+    clean rebase, False on conflict (branch's ref is left as it was, matching the original
+    --abort behavior) or if the worktree itself couldn't be created."""
+    wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt",
+                      f"rebase-{branch.replace('/', '-')}")
+    try:
+        os.makedirs(os.path.dirname(wt), exist_ok=True)
+        added = subprocess.run(["git", "worktree", "add", "-f", wt, branch], cwd=repo,
+                               capture_output=True, timeout=60)
+        if added.returncode != 0 or not os.path.isdir(wt):
+            return False
+        ok = subprocess.run(["git", "rebase", base], cwd=wt, capture_output=True).returncode == 0
+        if not ok:
+            subprocess.run(["git", "rebase", "--abort"], cwd=wt, capture_output=True)
+        return ok
+    finally:
+        try:
+            subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=repo,
+                           capture_output=True, timeout=30)
+        except Exception:
+            pass
+
+
 def _integrate(repo, branch, base, test_cmd=TEST_CMD):
     """Merge agent/<slug> into `base` correctly, regardless of what's checked out, and (optionally)
     push so Vercel deploys. Frees any leftover worktree first (the real bug)."""
@@ -147,8 +184,7 @@ def _integrate(repo, branch, base, test_cmd=TEST_CMD):
                            cwd=repo, capture_output=True).returncode == 0
     if not ahead:
         # diverged -> rebase the (now-free) branch onto base; a real conflict returns CONFLICT
-        if subprocess.run(["git", "rebase", base, branch], cwd=repo, capture_output=True).returncode != 0:
-            subprocess.run(["git", "rebase", "--abort"], cwd=repo, capture_output=True)
+        if not _rebase_isolated(repo, base, branch):
             return "CONFLICT"
     # fast-forward `base` to include the branch WITHOUT checking base out (base may not be HEAD).
     ff = subprocess.run(["git", "fetch", ".", f"{branch}:{base}"], cwd=repo, capture_output=True, text=True)
