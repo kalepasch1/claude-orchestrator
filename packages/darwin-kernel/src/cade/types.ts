@@ -225,6 +225,8 @@ export interface CadeOptions {
   sign?: boolean;
   /** Deterministic clock for tests. */
   now?: () => string;
+  /** Default posture for the reviewer model */
+  posture?: 'expected_value' | 'minimax_robust';
 }
 
 export const DEFAULT_OPTIONS: Required<Omit<CadeOptions, 'sign' | 'now'>> = {
@@ -235,4 +237,5 @@ export const DEFAULT_OPTIONS: Required<Omit<CadeOptions, 'sign' | 'now'>> = {
   maxRounds: 4,
   maxDepth: 2,
   convergenceEpsilon: 0.05,
+  posture: 'expected_value',
 };
