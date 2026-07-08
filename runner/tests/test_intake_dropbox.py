@@ -179,11 +179,31 @@ class IngestDropboxPromptsTest(unittest.TestCase):
         moved = os.listdir(self.processed)
         self.assertTrue(any("dropbox-PROMPT-mission.md" in m for m in moved))
 
-    def test_no_resolvable_project_is_skipped_not_crashed(self):
+    def test_no_resolvable_project_is_claimed_not_left_in_place(self):
+        # Claim-before-decompose (2026-07-08 fix): the file is moved as soon as it's confirmed
+        # non-canonical, BEFORE project resolution or decomposition — decompose_freeform() calls
+        # a real, non-deterministic model call, so leaving the file in place to "retry" on the
+        # next tick risks queuing a second, differently-slugged batch of duplicate tasks instead
+        # of safely re-reading a static file. See ingest_dropbox_prompts()'s docstring.
         self._write_prompt("PROMPT-orphan.md", "# do something for nobody in particular")
-        total = iw.ingest_dropbox_prompts({})
+        db_mock = types.SimpleNamespace(select=lambda *a, **kw: [], insert=lambda *a, **kw: None)
+        with patch.object(iw, "db", db_mock):
+            total = iw.ingest_dropbox_prompts({})
         self.assertEqual(total, 0)
-        self.assertTrue(os.path.isfile(os.path.join(self.repo_root, "PROMPT-orphan.md")))
+        self.assertFalse(os.path.isfile(os.path.join(self.repo_root, "PROMPT-orphan.md")))
+        moved = os.listdir(self.processed)
+        self.assertTrue(any("dropbox-PROMPT-orphan.md" in m for m in moved))
+
+    def test_no_resolvable_project_files_an_approval_card(self):
+        self._write_prompt("PROMPT-orphan.md", "# do something for nobody in particular")
+        inserted = []
+        db_mock = types.SimpleNamespace(select=lambda *a, **kw: [],
+                                        insert=lambda t, r: inserted.append((t, r)))
+        with patch.object(iw, "db", db_mock):
+            iw.ingest_dropbox_prompts({})
+        approval_inserts = [r for (t, r) in inserted if t == "approvals"]
+        self.assertEqual(len(approval_inserts), 1)
+        self.assertIn("orphan", approval_inserts[0]["title"])
 
     def test_decomposition_failure_on_one_file_does_not_block_others(self):
         self._write_prompt("PROMPT-bad.md", "# bad one")
@@ -199,8 +219,34 @@ class IngestDropboxPromptsTest(unittest.TestCase):
              patch.dict(sys.modules, {"planner": types.SimpleNamespace(plan=flaky_plan)}):
             total = iw.ingest_dropbox_prompts({"beethoven": {"id": "p1"}})
         self.assertEqual(total, 1)
-        self.assertTrue(os.path.isfile(os.path.join(self.repo_root, "PROMPT-bad.md")))  # left in place to retry
-        self.assertFalse(os.path.isfile(os.path.join(self.repo_root, "PROMPT-good.md")))  # moved
+        # Both files are claimed (moved) regardless of decomposition outcome — see docstring.
+        self.assertFalse(os.path.isfile(os.path.join(self.repo_root, "PROMPT-bad.md")))
+        self.assertFalse(os.path.isfile(os.path.join(self.repo_root, "PROMPT-good.md")))
+        moved = os.listdir(self.processed)
+        self.assertTrue(any("dropbox-PROMPT-bad.md" in m for m in moved))
+        self.assertTrue(any("dropbox-PROMPT-good.md" in m for m in moved))
+
+    def test_decomposition_failure_files_an_approval_card_naming_the_claimed_path(self):
+        self._write_prompt("PROMPT-bad.md", "# bad one")
+        broken_planner = types.SimpleNamespace(plan=lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("kaboom")))
+        inserted = []
+        db_mock = types.SimpleNamespace(select=lambda *a, **kw: [],
+                                        insert=lambda t, r: inserted.append((t, r)))
+        with patch.object(iw, "db", db_mock), patch.dict(sys.modules, {"planner": broken_planner}):
+            iw.ingest_dropbox_prompts({"beethoven": {"id": "p1"}})
+        approval_inserts = [r for (t, r) in inserted if t == "approvals"]
+        self.assertEqual(len(approval_inserts), 1)
+        self.assertIn("kaboom", approval_inserts[0]["detail"])
+        self.assertIn("dropbox-PROMPT-bad.md", approval_inserts[0]["detail"])
+
+    def test_claim_failure_is_fail_soft_and_does_not_decompose(self):
+        self._write_prompt("PROMPT-x.md", "# mission")
+        exploding_planner = types.SimpleNamespace(
+            plan=lambda *a, **kw: (_ for _ in ()).throw(AssertionError("must not decompose")))
+        with patch("shutil.move", side_effect=OSError("disk full")), \
+             patch.dict(sys.modules, {"planner": exploding_planner}):
+            total = iw.ingest_dropbox_prompts({"beethoven": {"id": "p1"}})  # must not raise
+        self.assertEqual(total, 0)
 
     def test_no_prompt_files_returns_zero(self):
         total = iw.ingest_dropbox_prompts({"beethoven": {"id": "p1"}})

@@ -235,11 +235,42 @@ def _queue_dropbox_tasks(rendered, projects_by_name):
     return created, skipped
 
 
+def _flag_dropbox_failure(claimed_path, project, reason):
+    """The source file is already claimed (moved) by the time decomposition can fail — unlike
+    the canonical intake path, it can't just be 'left in place to retry', because retrying means
+    calling planner.plan() again, which is a real (non-deterministic) model call, not a safe
+    no-op re-read. File one visible approval card so the objective doesn't silently vanish; this
+    is best-effort — if even the approval insert fails, the claimed file itself (still sitting in
+    intake/processed/ with its content intact) is the fallback record."""
+    try:
+        db.insert("approvals", {
+            "project": project or "beethoven", "kind": "operator",
+            "title": f"[dropbox] decomposition failed for {os.path.basename(claimed_path)}",
+            "why": "The operator drop-box claimed this PROMPT-*.md but planner.py's decomposition "
+                   "failed before any tasks were queued — nothing was silently lost, but nothing "
+                   "was queued either.",
+            "value": "Re-run manually once the underlying issue is fixed, or decompose by hand.",
+            "risk": "This objective is stalled until someone looks at it.",
+            "detail": f"{reason}\n\nClaimed file: {claimed_path}"})
+    except Exception:
+        pass
+
+
 def ingest_dropbox_prompts(projects_by_name):
     """Scan repo root for PROMPT-*.md files that are NOT canonical format and auto-decompose
-    them. Idempotent the same way as ingest_file(): the source file is moved into
-    intake/processed/ once handled, so re-running never reprocesses it. Fail-soft per file — one
-    bad drop doesn't block the others."""
+    them.
+
+    Ordering note (2026-07-08): the source file is claimed (moved to intake/processed/) BEFORE
+    calling decompose_freeform(), not after. decompose_freeform() calls planner.plan() — a real
+    model call whose output is NOT deterministic across calls — so a slug-based idempotency
+    check (which works fine for canonical hand-written files, whose slugs are static) cannot
+    safely dedupe a re-run of this path. If the file were left in place until decomposition
+    finished (the original design), a process killed between decomposition and the move — which
+    is exactly what happened once, in production, the day this was fixed — would reprocess it on
+    the next tick and queue a second, differently-slugged set of duplicate tasks. Claiming first
+    means the worst case on interruption is "this objective didn't get decomposed this tick" —
+    auditable and re-triggerable by hand — never silent duplication.
+    """
     files = [f for f in glob.glob(os.path.join(REPO_ROOT, "PROMPT-*.md")) if os.path.isfile(f)]
     total = 0
     for f in sorted(files):
@@ -249,22 +280,31 @@ def ingest_dropbox_prompts(projects_by_name):
             print(f"intake: dropbox read failed on {f}: {e}"); continue
         if is_canonical(text):
             continue  # already canonical — nothing to decompose, leave it for a human to move
+
+        # Claim FIRST — see docstring. Nothing below this point may leave the file in repo root.
+        stamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        claimed_path = os.path.join(PROCESSED, f"{stamp}-dropbox-{os.path.basename(f)}")
+        try:
+            shutil.move(f, claimed_path)
+        except Exception as e:
+            print(f"intake: dropbox claim failed on {f}: {e}"); continue
+
         default_project = _default_project_for_dropbox(text, projects_by_name)
         if not default_project or default_project not in projects_by_name:
-            print(f"intake: dropbox {os.path.basename(f)} — no resolvable project, skipped")
+            print(f"intake: dropbox {os.path.basename(f)} — no resolvable project; "
+                  f"claimed at {claimed_path} but not decomposed")
+            _flag_dropbox_failure(claimed_path, None, "no resolvable project among configured projects")
             continue
         try:
             rendered = decompose_freeform(text, REPO_ROOT, default_project)
         except Exception as e:
-            print(f"intake: dropbox decomposition failed on {f}: {e}"); continue
+            print(f"intake: dropbox decomposition failed on {os.path.basename(f)} "
+                  f"(claimed at {claimed_path}): {e}")
+            _flag_dropbox_failure(claimed_path, default_project, str(e))
+            continue
         if not rendered:
             continue
         created, skipped = _queue_dropbox_tasks(rendered, projects_by_name)
-        stamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
-        try:
-            shutil.move(f, os.path.join(PROCESSED, f"{stamp}-dropbox-{os.path.basename(f)}"))
-        except Exception as e:
-            print(f"intake: dropbox move failed on {f}: {e}")
         print(f"intake: dropbox {os.path.basename(f)} -> {created} queued, {skipped} skipped")
         total += created
     return total
