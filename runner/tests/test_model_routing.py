@@ -12,6 +12,8 @@ import app_triage
 import agentic_coders
 import router_stats
 import ollama_catalog
+import local_model_slots
+import resource_governor
 
 _RUNNER_SPEC = importlib.util.spec_from_file_location(
     "runner_entrypoint", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runner.py"))
@@ -110,6 +112,71 @@ class ModelRoutingTest(unittest.TestCase):
     def test_ollama_catalog_can_promote_community_claim_only_by_flag(self):
         with patch.dict(os.environ, {"ORCH_TRUST_COMMUNITY_CLAUDE_OLLAMA": "true"}, clear=False):
             self.assertEqual(ollama_catalog.infer_cap("sorc/qwen3.5-claude-4.6-opus:latest"), 10)
+
+    def test_ollama_catalog_keeps_very_heavy_local_model_canary_only_on_low_ram_box(self):
+        # codestral:22b needs 16GB (local_model_slots.RAM_GB); on a 24GB box that's not enough
+        # headroom to load it during real agentic work without clamping the fleet to one lane.
+        tags = {"models": [{"name": "codestral:22b"}, {"name": "llama3.1"}]}
+        resp = MagicMock()
+        resp.read.return_value = __import__("json").dumps(tags).encode()
+        resp.__enter__.return_value = resp
+        with patch.object(ollama_catalog.urllib.request, "urlopen", return_value=resp), \
+             patch.object(resource_governor, "total_gb", return_value=24.0), \
+             patch.dict(os.environ, {}, clear=False):
+            production = ollama_catalog.candidates()
+            canary = ollama_catalog.candidates(include_canary_only=True)
+        self.assertFalse(any(c["model"] == "codestral:22b" for c in production))
+        self.assertTrue(any(c["model"] == "llama3.1" for c in production))
+        heavy = next(c for c in canary if c["model"] == "codestral:22b")
+        self.assertTrue(heavy["canary_only"])
+
+    def test_ollama_catalog_promotes_heavy_local_model_when_ram_headroom_is_sufficient(self):
+        tags = {"models": [{"name": "codestral:22b"}]}
+        resp = MagicMock()
+        resp.read.return_value = __import__("json").dumps(tags).encode()
+        resp.__enter__.return_value = resp
+        with patch.object(ollama_catalog.urllib.request, "urlopen", return_value=resp), \
+             patch.object(resource_governor, "total_gb", return_value=64.0), \
+             patch.dict(os.environ, {}, clear=False):
+            production = ollama_catalog.candidates()
+        self.assertTrue(any(c["model"] == "codestral:22b" for c in production))
+
+    def test_ollama_catalog_heavy_hot_lane_flag_overrides_ram_gate(self):
+        tags = {"models": [{"name": "codestral:22b"}]}
+        resp = MagicMock()
+        resp.read.return_value = __import__("json").dumps(tags).encode()
+        resp.__enter__.return_value = resp
+        env = {"ORCH_TRUST_HEAVY_OLLAMA_HOT_LANE": "true"}
+        with patch.object(ollama_catalog.urllib.request, "urlopen", return_value=resp), \
+             patch.object(resource_governor, "total_gb", return_value=8.0), \
+             patch.dict(os.environ, env, clear=False):
+            production = ollama_catalog.candidates()
+        self.assertTrue(any(c["model"] == "codestral:22b" for c in production))
+
+    def test_ollama_catalog_heavy_model_stays_canary_only_when_ram_unknown(self):
+        tags = {"models": [{"name": "codestral:22b"}]}
+        resp = MagicMock()
+        resp.read.return_value = __import__("json").dumps(tags).encode()
+        resp.__enter__.return_value = resp
+        with patch.object(ollama_catalog.urllib.request, "urlopen", return_value=resp), \
+             patch.object(resource_governor, "total_gb", return_value=None), \
+             patch.dict(os.environ, {}, clear=False):
+            production = ollama_catalog.candidates()
+        self.assertFalse(any(c["model"] == "codestral:22b" for c in production))
+
+    def test_auto_coders_hot_lane_excludes_heavy_local_model_on_low_ram_box(self):
+        with patch.object(ollama_catalog, "candidates", return_value=[
+                {"provider": "local", "model": "llama3.1", "cap": 6, "tier": "free"},
+             ]), \
+             patch.object(agentic_coders, "_aider_available", return_value=True), \
+             patch.object(model_gateway, "available", return_value=["local"]):
+            coders = agentic_coders._auto_coders()
+
+        def _cmd_has(coder, needle):
+            return needle in str(coder.get("cmd") or "")
+
+        self.assertTrue(any(_cmd_has(c, "llama3.1") for c in coders))
+        self.assertFalse(any(_cmd_has(c, "codestral:22b") for c in coders))
 
     def test_model_catalog_can_choose_strongest_local_for_high_need(self):
         with patch.object(ollama_catalog, "candidates", return_value=[

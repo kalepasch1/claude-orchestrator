@@ -158,10 +158,48 @@ def _canary_only_models():
     return [m.strip() for m in raw.split(",") if m.strip()]
 
 
-def _is_canary_only(candidate):
-    if _truthy("ORCH_TRUST_COMMUNITY_CLAUDE_OLLAMA", False):
+def _heavy_hot_lane_ram_floor_gb():
+    return float(os.environ.get("ORCH_HEAVY_OLLAMA_HOT_LANE_RAM_GB", "16"))
+
+
+def _heavy_hot_lane_headroom_gb():
+    return float(os.environ.get("ORCH_HEAVY_OLLAMA_HOT_LANE_HEADROOM_GB", "12"))
+
+
+def _model_ram_gb(model):
+    try:
+        import local_model_slots
+        return local_model_slots.ram_gb(model)
+    except Exception:
+        return 0
+
+
+def _is_heavy_for_hot_lane(model):
+    """Very heavy local models (e.g. codestral:22b) can clamp system RAM and throttle the
+    fleet down to a single lane when they get pulled into real agentic work. Keep them
+    canary/calibration-only by default; only let them into the hot lane when the box
+    clearly has the headroom, or the operator explicitly opts in."""
+    if _truthy("ORCH_TRUST_HEAVY_OLLAMA_HOT_LANE", False):
         return False
-    return candidate.get("trust") in ("unverified", "community-claim")
+    need = _model_ram_gb(model)
+    if need < _heavy_hot_lane_ram_floor_gb():
+        return False
+    try:
+        import resource_governor
+        total = resource_governor.total_gb()
+    except Exception:
+        total = None
+    if total is None:
+        return True  # unknown headroom -> stay cautious, canary-only
+    return total < (need + _heavy_hot_lane_headroom_gb())
+
+
+def _is_canary_only(candidate):
+    trust_gated = (candidate.get("trust") in ("unverified", "community-claim")
+                   and not _truthy("ORCH_TRUST_COMMUNITY_CLAUDE_OLLAMA", False))
+    if trust_gated:
+        return True
+    return _is_heavy_for_hot_lane(candidate.get("model"))
 
 
 def candidates(include_canary_only=False):
