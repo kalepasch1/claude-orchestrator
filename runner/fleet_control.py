@@ -61,6 +61,31 @@ def _git(*args, timeout=120):
     return subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True, timeout=timeout)
 
 
+def _current_branch():
+    return _git("branch", "--show-current").stdout.strip()
+
+
+def _has_upstream():
+    return _git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}").returncode == 0
+
+
+def _dirty_worktree():
+    return bool(_git("status", "--porcelain").stdout.strip())
+
+
+def _pull_safe():
+    branch = _current_branch()
+    if not branch:
+        return False, "detached HEAD"
+    if branch.startswith("agent/"):
+        return False, f"agent branch {branch}"
+    if not _has_upstream():
+        return False, f"branch {branch} has no upstream"
+    if _dirty_worktree():
+        return False, "dirty worktree"
+    return True, branch
+
+
 def _host_aliases():
     aliases = {HOST}
     if HOST.endswith(".local"):
@@ -103,6 +128,10 @@ def self_update():
         return False
     _last_pull["t"] = time.time()
     try:
+        ok, reason = _pull_safe()
+        if not ok:
+            print(f"fleet_control: auto-pull skipped ({reason})", flush=True)
+            return False
         before = _git("rev-parse", "HEAD").stdout.strip()
         pulled = _git("pull", "--ff-only")
         if pulled.returncode != 0:
@@ -138,6 +167,9 @@ def process_controls():
             if action == "reload_config":
                 load_config()
             elif action == "git_pull":
+                ok, reason = _pull_safe()
+                if not ok:
+                    raise RuntimeError(f"git_pull unsafe: {reason}")
                 pulled = _git("pull", "--ff-only")
                 if pulled.returncode != 0:
                     msg = (pulled.stderr or pulled.stdout or "git pull failed").strip()

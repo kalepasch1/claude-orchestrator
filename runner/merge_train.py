@@ -95,6 +95,24 @@ def _run_tests(repo, test_cmd):
     return True, "green"
 
 
+def _test_cmd_for(proj, repo):
+    """Use a real package-root command when the repo root has no package.json."""
+    cmd = proj.get("test_cmd") or TEST_CMD
+    try:
+        import build_gate
+        if cmd and (os.path.isfile(os.path.join(repo, "package.json"))
+                    or not build_gate._root_npm_cmd_without_package(repo, cmd)):
+            return cmd
+        for root in build_gate.dependency_prewarm.package_roots(repo):
+            scripts = build_gate._load_scripts(root)
+            for script in ("test", "test:unit", "typecheck", "type-check", "build"):
+                if script in scripts:
+                    return build_gate.script_cmd(repo, root, script)
+        return build_gate.detect_build_cmd(repo) or cmd
+    except Exception:
+        return cmd
+
+
 def _ff_base(repo, branch, base):
     """Step 4: fast-forward base to the rebased branch WITHOUT checking base out
     (git fetch . branch:base — the approval_merge technique). No force, ever."""
@@ -379,7 +397,7 @@ def _integrate_card(card, slug, task, proj):
         _log(pname, slug, "CONFLICT", f"redo cap {cap} exhausted")
         return "conflict"
 
-    ok, tail = _run_tests(repo, proj.get("test_cmd") or TEST_CMD)  # (3)
+    ok, tail = _run_tests(repo, _test_cmd_for(proj, repo))  # (3)
     if not ok:
         # NEVER force-merge red work.
         _task_patch(task, {"state": "TESTFAIL", "note": f"train: tests failed on rebased {branch}: {tail[:200]}"})

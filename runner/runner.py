@@ -2189,6 +2189,7 @@ def main():
                     except Exception:
                         pass
                     if not _cp_ok:
+                        t = None
                         pass  # skip claiming this cycle
                     else:
                         t = db.claim_task(RUNNER_ID)

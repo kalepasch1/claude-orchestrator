@@ -13,7 +13,14 @@ fi
 
 export PYTHONUNBUFFERED=1
 export ENABLE_PROACTIVE_LOOPS="${ENABLE_PROACTIVE_LOOPS:-true}"
-export CLAUDE_ORCH_HOME="${CLAUDE_ORCH_HOME:-$REPO_DIR/.runtime}"
+case "${ORCH_CANONICAL_RUNTIME_HOME:-true}" in
+  1|true|TRUE|yes|YES|on|ON)
+    export CLAUDE_ORCH_HOME="$REPO_DIR/.runtime"
+    ;;
+  *)
+    export CLAUDE_ORCH_HOME="${CLAUDE_ORCH_HOME:-$REPO_DIR/.runtime}"
+    ;;
+esac
 export ORCH_LOG_DIR="${ORCH_LOG_DIR:-$CLAUDE_ORCH_HOME/logs}"
 export ORCH_PUSH_ON_MERGE="${ORCH_PUSH_ON_MERGE:-true}"
 export ORCH_PUSH_ON_RELEASE="${ORCH_PUSH_ON_RELEASE:-true}"
@@ -68,7 +75,10 @@ wait_for_runner_release() {
 }
 
 if is_live_runner; then
-  if stay_resident; then
+  if supervisor_lock_live; then
+    echo "[keepalive] runner already live via lock $(cat "$LOCK_FILE" 2>/dev/null); duplicate supervisor exiting at $(date)" >> "$RUNNER_LOG"
+    exit 0
+  elif stay_resident; then
     wait_for_runner_release "runner already live via lock $(cat "$LOCK_FILE" 2>/dev/null)"
   else
     echo "[keepalive] runner already live via lock $(cat "$LOCK_FILE" 2>/dev/null); supervisor exiting at $(date)" >> "$RUNNER_LOG"
@@ -78,11 +88,6 @@ fi
 
 while ! mkdir "$SUPERVISOR_LOCK" 2>/dev/null; do
   if supervisor_lock_live; then
-    if stay_resident; then
-      log_duplicate_exit
-      sleep "$POLL_SECONDS"
-      continue
-    fi
     log_duplicate_exit
     exit 0
   fi

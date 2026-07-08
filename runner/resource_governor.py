@@ -152,7 +152,8 @@ def pressure_should_block(free_gb=None, floor_gb=None):
         floor_gb = effective_floor_gb()
     if free_gb is None:
         return True
-    return free_gb < floor_gb + (PER_TASK_GB * 2)
+    extra_tasks = float(os.environ.get("ORCH_PRESSURE_EXTRA_TASKS", "1.0") or 1.0)
+    return free_gb < floor_gb + (PER_TASK_GB * extra_tasks)
 
 
 def can_claim(n_active=0):

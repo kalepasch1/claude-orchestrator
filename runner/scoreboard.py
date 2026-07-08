@@ -43,7 +43,15 @@ def _queue():
         import queue_counters
         return queue_counters.exact_counts(db_client=db)
     except Exception as e:
-        return {"error": str(e)[:300], "states": {}}
+        try:
+            import importlib.util
+            path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "queue_counters.py")
+            spec = importlib.util.spec_from_file_location("queue_counters_fallback", path)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod.exact_counts(db_client=db)
+        except Exception as e2:
+            return {"error": f"{e}; fallback: {e2}"[:300], "states": {}}
 
 
 def _paused_minutes_today():
