@@ -399,6 +399,19 @@ def run_task(t):
             set_state(t["id"], state="QUEUED", note="paused by kill switch")
             time.sleep(5); return
 
+        # toolchain gate: refuse to spend a model run on a project whose build toolchain is
+        # known broken (missing npm/tsc, or node_modules never installed) — hold the task
+        # QUEUED instead of burning a full agent run that would fail at build_gate anyway.
+        # Cache-only check (no subprocess here); toolchain_gate's own periodic job does the
+        # actual probing every 30 min and queues a single toolchain-repair task.
+        try:
+            import toolchain_gate
+            if not toolchain_gate.is_ready_cached(t["project_id"]):
+                set_state(t["id"], state="QUEUED", note="held: project toolchain not ready (see toolchain-repair task)")
+                time.sleep(2); return
+        except Exception:
+            pass  # never block claiming on a broken check
+
         # budget guardrail: telemetry by default; hard-stops only when explicitly enabled
         if not budget.allow(name):
             set_state(t["id"], state="BLOCKED", note="budget cap reached")
@@ -1678,6 +1691,11 @@ _SCHEDULE = [
     ("surge-planner-300",     "surge_planner.py",       "interval", 300),  # plan high-value surge on reset
     ("queue-velocity-900",    "queue_velocity.py",      "interval", 900),  # PID controller: auto-pause generators when queue growing
     ("toolchain-1800",        "toolchain_gate.py",      "interval", 1800), # verify build toolchain per project, auto-repair
+    ("pause-arbiter-300",     "pause_arbiter.py",       "interval", 300),  # lift self-clearing pauses (TTL + registered checks)
+    ("fleet-stuck-300",       "fleet_stuck_alarm.py",   "interval", 300),  # queued>0 & running=0 for >15min -> notify + remediate
+    ("queue-bankruptcy-3600", "queue_bankruptcy.py",    "interval", 3600), # close QUEUED tasks past ORCH_TASK_BANKRUPTCY_DAYS
+    ("scoreboard-600",        "scoreboard.py",          "interval", 600),  # merged/day, first-pass rate, paused-minutes, queue mix
+    ("context-distill-3600",  "context_cache_distill.py","interval", 3600), # prune stale embedding-cache entries (unbounded growth fix)
 ]
 _sched_last: dict = {}
 
@@ -1706,7 +1724,9 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      "portfolio_rebalancer.py", "batch_fusion.py",
                      "capacity_pacer.py", "account_partition.py",
                      "generator_feedback.py", "exhaustion_signal.py",
-                     "surge_planner.py"}
+                     "surge_planner.py",
+                     "pause_arbiter.py", "fleet_stuck_alarm.py", "queue_bankruptcy.py",
+                     "scoreboard.py", "toolchain_gate.py", "context_cache_distill.py"}
 
 # Optional autonomous-improvement jobs that are NOT yet routed through claude_cli (so their
 # spend isn't counted against the $40/day cap). OFF unless ENABLE_PROACTIVE_LOOPS=true.
@@ -1721,6 +1741,17 @@ _PROACTIVE_ON = os.environ.get("ENABLE_PROACTIVE_LOOPS", "false").lower() == "tr
 _GENERATORS = {"bizradar", "demand_mining.py", "capability_radar.py", "scout", "spec",
                "promote", "roadmap", "newapp", "committees"}
 _qdepth = {"n": 0, "t": 0.0}
+
+# ORCH_LEAN_MODE (opt-in, default off): periodic-only housekeeping for the heaviest self-play
+# subsystems. See the comment in _fire_periodic for what this does and does not affect.
+_LEAN_MODE_SKIP = {"colosseum.py", "cade_tournaments.py", "agentmarket",
+                   "committees", "committeecal", "committeedocket", "committeedigest",
+                   "committeerollout", "committeeboard", "committeewatch",
+                   "committeeminutes", "committeekg", "committeemeta"}
+
+
+def _LEAN_MODE_ON():
+    return os.environ.get("ORCH_LEAN_MODE", "false").lower() in ("1", "true", "yes", "on")
 
 
 def _queue_gen_ceiling():
@@ -1750,6 +1781,19 @@ def _queue_depth():
 
 
 def _fire_periodic(job: str) -> None:
+    # LEAN MODE (opt-in, default off): skip the periodic housekeeping/standings jobs for the
+    # heaviest self-play subsystems (colosseum, cade tournaments, agent market, the committee
+    # assembly — 277 modules / ~80 periodic jobs is most of what turns compute into failed
+    # releases per the 2026-07-08 postmortem). This does NOT touch the inline, load-bearing
+    # calls these same modules make from run_task() every task (cade_tournaments.zero_token_patch,
+    # colosseum.settle, etc.) — those run in-process regardless of the periodic scheduler and are
+    # real cost savings, not noise. Only the standalone "python3 X.py" / periodic.py dispatch that
+    # produces standings reports, promotions, and committee proposals is skipped. Try it for a
+    # week with ORCH_LEAN_MODE=true and compare scoreboard.py's merged/day + usd_per_merge before
+    # reverting to the default (off) if it doesn't help.
+    if _LEAN_MODE_ON() and job in _LEAN_MODE_SKIP:
+        print(f"[sched] {job} skipped — ORCH_LEAN_MODE=true", flush=True)
+        return False
     # don't run uncounted proactive spenders unless explicitly enabled
     if job in _PROACTIVE and not _proactive_on():
         return False

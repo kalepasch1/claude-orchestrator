@@ -7,8 +7,11 @@ runs a single toolchain check per project on startup (and every 30 minutes), cac
 result. If the toolchain is broken, tasks for that project are held in QUEUED state with
 a note, and a single recovery task is queued to fix the toolchain.
 
-This is a pre-claim hook: claim_task checks toolchain_gate.is_ready(project_id) and skips
-projects whose toolchain is down.
+This is a pre-run hook: runner.run_task() calls is_ready_cached(project_id) (no subprocess,
+reads the cache written here) right after claiming and bails back to QUEUED before spending
+any model tokens or setting up a worktree if the toolchain is known broken. The actual
+`npm --version`/`tsc --version`/node_modules probing only happens in the periodic run()
+below (every 30 min), never inline in the hot path.
 """
 import os, sys, json, time, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -30,7 +33,8 @@ PROBES = [
 
 def _load_state():
     try:
-        return json.load(open(STATE_FILE))
+        with open(STATE_FILE) as f:
+            return json.load(f)
     except Exception:
         return {}
 
@@ -62,6 +66,17 @@ def check_project(project_id, repo_path):
             failures.append({"tool": probe["name"], "error": "timeout (>30s)"})
         except Exception as e:
             failures.append({"tool": probe["name"], "error": str(e)[:200]})
+
+    # "build RED: npm not installed" is usually node_modules missing, not the npm binary
+    # itself — that's a cheap filesystem check (no subprocess), so run it unconditionally.
+    if os.path.isfile(os.path.join(repo_path, "package.json")):
+        try:
+            import dependency_prewarm
+            if not dependency_prewarm.deps_ready(repo_path):
+                failures.append({"tool": "node_modules",
+                                 "error": "dependencies not installed/warmed (dependency_prewarm.deps_ready=False)"})
+        except Exception:
+            pass  # best-effort; a broken prewarm check must never itself block claiming
 
     return {"ready": len(failures) == 0, "failures": failures}
 
@@ -101,6 +116,23 @@ def is_ready(project_id, repo_path=None):
 
     _save_state(state)
     return result["ready"]
+
+
+def is_ready_cached(project_id):
+    """Read-only, no-subprocess check for the hot claim/run path. Returns the last cached
+    verdict from the periodic probe (run() below, every 30 min); fails OPEN (True) when there
+    is no cached entry yet so a cold start or brand-new project never gets stuck blocked on
+    missing data. This is what makes it safe to call on every claimed task without adding
+    subprocess latency to the poll loop — the actual `npm --version`/`tsc --version` probing
+    only ever happens in the periodic job, never inline."""
+    try:
+        state = _load_state()
+        entry = state.get(project_id)
+        if not entry:
+            return True
+        return bool(entry.get("ready", True))
+    except Exception:
+        return True
 
 
 def _queue_recovery(project_id, failures):

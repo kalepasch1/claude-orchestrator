@@ -20,7 +20,8 @@ def _load_env():
     # subscription mode is on and API billing hasn't been explicitly opted into, never let
     # ANTHROPIC_API_KEY* enter the environment from .env.
     try:
-        raw_lines = open(env).readlines()
+        with open(env) as f:
+            raw_lines = f.readlines()
     except OSError:
         return  # silently skip if FDA not yet granted; plist env vars are the fallback
     pairs = []
