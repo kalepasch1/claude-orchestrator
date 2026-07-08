@@ -15,6 +15,7 @@ still returns a deterministic contract rather than blocking task execution.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -250,6 +251,34 @@ def note(existing: str = "", source: str = "unknown") -> str:
     base = (existing or "").strip()
     suffix = f"pipeline:{source or 'unknown'}; triage-plan-code-qa-devmerge-release"
     return f"{base}; {suffix}" if base else suffix
+
+
+def artifact(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
+             slug: str = "", material: bool = False) -> str:
+    """Return a compact JSON string capturing the analysis plan for this task.
+
+    Stored alongside the task (e.g. in log_tail or a dedicated column) so the routing
+    decisions made before the agent ran are queryable without re-parsing the prompt.
+    Fail-soft: returns "{}" on any error so callers are never blocked.
+    """
+    try:
+        plan = build_plan(prompt, project=project, kind=kind, source=source, slug=slug, material=material)
+        storable = {
+            "task_class": plan.get("task_class"),
+            "need": plan.get("need"),
+            "risk": plan.get("risk"),
+            "coder": plan.get("coder"),
+            "author_model": plan.get("author_model"),
+            "preflight": plan.get("preflight", {}).get("model"),
+            "strategy": plan.get("strategy", {}).get("model"),
+            "qa": plan.get("qa", {}).get("model"),
+            "qa_panel": plan.get("qa_panel"),
+            "source": plan.get("source"),
+            "project": plan.get("project"),
+        }
+        return json.dumps(storable, separators=(",", ":"))
+    except Exception:
+        return "{}"
 
 
 if __name__ == "__main__":
