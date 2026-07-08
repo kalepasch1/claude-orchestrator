@@ -89,6 +89,35 @@ every file" lesson for any future session working this way.
 like every other fleet operation, or explicitly document that the main checkout is unsafe for
 concurrent manual work and should be avoided even for quick fixes.
 
+**UPDATE (same day, follow-up session): fixed, not just recommended.** Traced the actual root
+cause instead of stopping at the symptom: three call sites ran `git checkout`/`git rebase` with
+`cwd=repo` (the primary checkout) instead of an isolated worktree —
+
+- `queue_elimination.py`'s `_apply_and_verify()` did `git checkout -b <branch>` directly in
+  `repo` to test a zero-token diff replay (build+test, up to 180s); only the failure path tried
+  to switch back, so a *successful* replay left the primary checkout parked on a throwaway branch
+  permanently.
+- `deploy_window.py`'s `_ff_merge()` and its canary-rollback path both checked out
+  STAGING/MAIN directly in `repo` and never restored the original branch.
+- **Most likely the actual root cause of the specific symptom observed**: `approval_merge._integrate()`
+  and a duplicate legacy path in `runner.py` both ran `git rebase base branch` directly in `repo`
+  — which is shorthand for `git checkout branch && git rebase base`. A successful rebase left
+  `repo` on the rebased `agent/*` branch; a failed one only restored whatever branch `repo` was
+  on *before* that call — so once any one rebase left it on a stray branch, every subsequent
+  abort just re-confirmed the same wrong branch instead of ever returning to master. This matches
+  the reflog line captured mid-session almost exactly: `rebase (abort): returning to
+  refs/heads/agent/recover-missing-branch-cade-contracts`.
+
+All three now run inside an isolated (`-f`-forced where the branch may legitimately already be
+checked out elsewhere) worktree, following the exact pattern `approval_merge._integrate()`'s own
+no-ff-merge fallback already used a few lines below the buggy rebase call — the fix was already
+half-present in the codebase, just not applied consistently. 42 new tests across the three fixes;
+the core regression coverage in each walks every subprocess call and asserts none of them is a
+`git checkout` targeting `repo`. Verified live: while this fix was being written, the main
+checkout's branch flickered to `agent/recover-missing-branch-cade-contracts-slice-1` on its own,
+in real time — confirming the bug is still active in the currently-*running* (pre-fix) process,
+and that this diagnosis was correct rather than a one-off fluke.
+
 ## A bug I introduced, caught, and cleaned up (full disclosure)
 
 Testing A3's drop-box feature meant running the *real* `intake_watcher.py` to confirm my Part
@@ -112,6 +141,20 @@ ingested cleanly (9 tasks).
 testing it *against the live fleet DB* by running the real module was itself the mistake — I
 should have trusted the isolated tests and never run the real command against files I knew were
 sensitive. Flagging this plainly rather than omitting it from the report.
+
+**UPDATE (same day, follow-up session): fixed the underlying code bug, not just the incident.**
+The actual defect that made this possible: `ingest_dropbox_prompts()` queued tasks (via
+`planner.plan()`, a real, non-deterministic model call) *before* moving the source file to
+`intake/processed/`. Since `planner.plan()`'s output isn't stable across calls, the slug-based
+idempotency check that safely dedupes canonical hand-written intake files (static slugs) could
+never safely dedupe a *re-run* of this path — a process killed between "tasks queued" and "file
+moved" (exactly what happened) leaves the file in place to be reprocessed on the next tick,
+queuing a second, differently-slugged batch of duplicates. Fixed: the file is now claimed (moved)
+*before* decomposition starts, so the worst case on interruption is "this objective didn't get
+decomposed this tick" — auditable, safe to re-trigger by hand — never silent duplication. A
+decomposition failure after claiming now files one visible approval card naming the claimed
+file's path, instead of the objective just vanishing. 3 new tests + 2 existing tests updated for
+the corrected ordering.
 
 ## Decomposed to intake (Parts C + D, per the mission's own guardrail)
 
@@ -137,6 +180,8 @@ Both files ingested successfully; 9 tasks `QUEUED`, dependency-linked.
 
 ## Push status
 
-This session's backlog-blitz commit (`ed81b86`) and all meta-optimizer commits are on local
-`master`, merged cleanly with the fleet's own concurrent commits, tests green. `git push` was
+This session's backlog-blitz commit (`ed81b86`), all meta-optimizer commits (177 tests), and the
+two follow-up worktree-safety fixes (45 new tests across `queue_elimination.py`,
+`deploy_window.py`, `approval_merge.py`/`runner.py`, and `intake_watcher.py`) are on local
+`master`, merged cleanly with the fleet's own concurrent commits, all green. `git push` was
 denied twice earlier in the session and not re-attempted since. Push when ready.
