@@ -261,7 +261,7 @@ function buildReviewerModel(reviewers: Persona[], options: CadeOptions): Reviewe
   const total = reviewers.reduce((s, r) => s + r.authority, 0) || 1;
   return {
     known: reviewers.length === 1,
-    posture: (options as { posture?: ReviewerModel['posture'] }).posture ?? 'expected_value',
+    posture: options.posture ?? 'expected_value',
     reviewers: reviewers.map((r) => ({
       id: r.id,
       weight: r.authority / total,

@@ -221,6 +221,8 @@ export interface CadeOptions {
   maxDepth?: number;
   /** Convergence threshold (JS divergence between round distributions). */
   convergenceEpsilon?: number;
+  /** EV-optimal vs minimax-robust posture forwarded to the Tribunal Model. */
+  posture?: ReviewerModel['posture'];
   /** Sign the proof pack via the kernel's shared Ed25519 anchor. */
   sign?: boolean;
   /** Deterministic clock for tests. */
