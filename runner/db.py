@@ -12,17 +12,40 @@ import os, json, socket, time, urllib.request, urllib.parse, urllib.error
 # source the file due to macOS TCC restrictions.
 def _load_env():
     env = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    # Billing firewall, layer 2: every periodic job runs as a fresh subprocess that imports db
+    # at the top, and this loader used to setdefault() a stray ANTHROPIC_API_KEY back into the
+    # environment even after subscription_guard.enforce() stripped it from the parent runner
+    # process. That re-injection made billing_guard trip every 5 minutes and re-pause the whole
+    # fleet (root cause of the 2026-07-08 overnight outage: 878 consecutive trips). When
+    # subscription mode is on and API billing hasn't been explicitly opted into, never let
+    # ANTHROPIC_API_KEY* enter the environment from .env.
     try:
-        for raw in open(env):
-            line = raw.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, _, v = line.partition("=")
-            k = k.strip()
-            v = v.split("#")[0].strip().strip('"').strip("'")
-            os.environ.setdefault(k, v)
+        raw_lines = open(env).readlines()
     except OSError:
-        pass  # silently skip if FDA not yet granted; plist env vars are the fallback
+        return  # silently skip if FDA not yet granted; plist env vars are the fallback
+    pairs = []
+    for raw in raw_lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k = k.strip()
+        v = v.split("#")[0].strip().strip('"').strip("'")
+        pairs.append((k, v))
+    # First pass: everything except Anthropic API keys, so an ORCH_ALLOW_API_BILLING=true set
+    # only inside .env (not the shell/plist) is honored below rather than read as its old default.
+    anthropic_pairs = []
+    for k, v in pairs:
+        if k == "ANTHROPIC_API_KEY" or k.startswith("ANTHROPIC_API_KEY_"):
+            anthropic_pairs.append((k, v))
+            continue
+        os.environ.setdefault(k, v)
+    sub_on = os.environ.get("ORCH_USE_SUBSCRIPTION", "true").lower() == "true"
+    api_opt_in = os.environ.get("ORCH_ALLOW_API_BILLING", "false").lower() == "true"
+    if sub_on and not api_opt_in:
+        return  # billing blocked: leave ANTHROPIC_API_KEY* out of the environment entirely
+    for k, v in anthropic_pairs:
+        os.environ.setdefault(k, v)
 
 def _ensure_tool_path():
     paths = (
