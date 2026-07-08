@@ -40,7 +40,7 @@ BLOCKER_AGE_MIN = int(os.environ.get("ORCH_FACTORY_BLOCKER_AGE_MIN", "60"))
 MAX_BLOCKERS_PER_RUN = int(os.environ.get("ORCH_FACTORY_MAX_BLOCKERS", "3"))
 BLOCKER_STATES = ("BLOCKED", "CONFLICT", "TESTFAIL", "SHELVED")
 
-_PROOF_LINE_RX = re.compile(r"(?:proof|acceptance test|test)\s*:\s*(`[^`]+`|\S.+)", re.I)
+_PROOF_LINE_RX = re.compile(r"(?:proof|acceptance test|test)\s*:\s*(\S.+)", re.I)
 
 
 def _slugify(text):
@@ -200,6 +200,13 @@ def run():
     for obj in gather_objectives():
         if budget <= 0:
             break
+        # Cheap idempotency check FIRST — render_objective_dag() calls planner.plan(), which
+        # makes a real model call. Checking shipped-status only after decomposing would waste
+        # a model call (and real $/time) on every already-shipped objective, every single run.
+        precheck_slug = _slugify(obj.get("objective") or obj.get("id") or "objective")
+        if _already_shipped(precheck_slug):
+            skipped += 1
+            continue
         proj = projects_by_name.get(obj.get("project"))
         try:
             slug, entries = render_objective_dag(obj, proj)
