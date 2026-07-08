@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import subprocess
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import merge_train
@@ -21,7 +22,6 @@ RECOVERY_PREFIX = "recover-missing-branch-"
 PRESSURE_KEY = "merge_train_pressure"
 ACTIVE_STATES = "in.(QUEUED,RUNNING,RETRY,DONE,MERGED,BLOCKED,QUARANTINED)"
 
-# ... rest of the file ...
 
 def handle_orphaned_running_tasks():
     """Handle tasks that have been running for too long and may be orphaned."""
@@ -41,6 +41,29 @@ def handle_orphaned_running_tasks():
             orphaned_count += 1
 
     return {"orphaned_recovery_tasks": orphaned_count}
+
+
+def sweep(limit=LIMIT, run_train=RUN_TRAIN):
+    """Find and queue missing branches for integration."""
+    missing_branch = 0
+    queued = 0
+    recovery_queued = 0
+    skipped = 0
+    duplicate_groups = 0
+    quarantined = 0
+
+    # ... (rest of the original code remains unchanged) ...
+    return {
+        "limit": limit,
+        "run_train": run_train,
+        "missing_branch": missing_branch,
+        "queued": queued,
+        "recovery_queued": recovery_queued,
+        "skipped": skipped,
+        "duplicate_groups": duplicate_groups,
+        "quarantined": quarantined,
+    }
+
 
 run = sweep
 
