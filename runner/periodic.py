@@ -441,6 +441,15 @@ def run_learnmerges():
     learn_from_merges.run()
 
 
+def run_promptfactory():
+    """Objective -> intake DAG, with no operator in the loop after the objective is stated.
+    Gated by drain_policy like other generators, and by prompt_factory's own ORCH_FACTORY_MAX_OPEN
+    cap so a slow-draining fleet doesn't get buried in generated work."""
+    import prompt_factory
+    result = prompt_factory.run()
+    print(f"promptfactory: {result}")
+
+
 def run_embedretry():
     """Drain the knowledge_embed retry queue: texts that hit a 429/circuit-open and had no local
     Ollama fallback get another shot at real semantic embedding, with backoff between ticks
@@ -607,6 +616,7 @@ JOBS = {
     "prewarm": run_prewarm,
     "billingguard": run_billingguard,
     "learnmerges": run_learnmerges,
+    "promptfactory": run_promptfactory,
     "embedretry": run_embedretry,
     "dedup": run_dedup,
     "contcompact": run_contcompact,
