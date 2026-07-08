@@ -1649,6 +1649,7 @@ _SCHEDULE = [
     ("backlogcompact-600","backlogcompact", "interval", 600),   # collapse stale broad queued backlog into batches
     ("canaryecon-600","canaryecon",         "interval", 600),   # promote/rollback canaries on cost+quality
     ("learnmerges-dy","learnmerges",        "daily",    (5, 30)),# reinforce from merged diffs
+    ("embedretry-300","embedretry",         "interval", 300),   # drain knowledge_embed retry queue (429 backoff)
     ("metaloop-1800", "meta_loop.py",       "interval", 1800), # continuous meta-improvement loop (every 30m)
     ("metaloop-daily","meta_loop.py",       "daily",    (4, 0)),# deeper improvement sweep overnight
     ("feedback-daily","feedback_review.py", "daily",    (5, 0)),# agent->orchestrator improvements

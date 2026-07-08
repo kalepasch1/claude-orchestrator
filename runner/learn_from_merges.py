@@ -122,6 +122,53 @@ def _merged_diff(repo, slug, base):
     return ""
 
 
+_EXTRACT_PROMPT = (
+    "From this single MERGED diff, extract ONE reusable engineering pattern as JSON with exactly "
+    "these keys: pattern (one-sentence description of the reusable approach), files (comma-separated "
+    "list of the files it lives in), why (the problem it solves / why this approach over the obvious "
+    "one), proof (a command or check that verifies the pattern still holds, e.g. a test name or grep). "
+    "If this diff has nothing reusable (a one-off content/copy/config change), reply with exactly: "
+    "NONE. Output ONLY the JSON object or the word NONE, nothing else.\n\n")
+
+
+def extract_knowledge(project, slug, diff):
+    """Auto-extract {pattern, files, why, proof} from one merged diff and embed it for
+    cross-project reuse, gated by the same quality_gate() that protects CLAUDE.md. Returns True
+    if something was stored, False otherwise (no reusable pattern, gate rejected it, or the
+    extraction call failed) — never raises, this is a best-effort enrichment step."""
+    try:
+        import model_policy, model_gateway
+        prov, model, _ = model_policy.choose("review", agentic=False)
+        r = model_gateway.complete(prov, model, _EXTRACT_PROMPT + diff[:12000], project=project)
+        text = (r.get("text") or "").strip()
+    except Exception:
+        return False
+    if not text or text.strip().upper() == "NONE":
+        return False
+    try:
+        data = json.loads(text)
+        pattern, files, why, proof = (data.get("pattern") or "", data.get("files") or "",
+                                      data.get("why") or "", data.get("proof") or "")
+    except Exception:
+        _quarantine(text, project, "extraction did not parse as JSON")
+        return False
+    if not pattern or not why:
+        _quarantine(text, project, "missing required pattern/why fields")
+        return False
+    rendered = f"- pattern: {pattern}\n- why: {why}\n- proof: {proof or '(none given)'}"
+    accepted, reason = quality_gate(rendered, source=project)
+    if not accepted:
+        _quarantine(text, project, reason)
+        return False
+    try:
+        import knowledge_embed
+        knowledge_embed.extract(project, title=pattern[:120], tags=f"{slug},{files}",
+                                body=f"why: {why}\nproof: {proof}\nfiles: {files}")
+    except Exception:
+        return False
+    return True
+
+
 def run():
     projs = db.select("projects", {"select": "id,name,repo_path"}) or []
     learned = 0
@@ -137,6 +184,10 @@ def run():
             d = _merged_diff(repo, m["slug"], m.get("base_branch") or "main")
             if d:
                 diffs.append(f"### {m['slug']}\n{d}")
+                try:
+                    extract_knowledge(p["name"], m["slug"], d)
+                except Exception:
+                    pass  # per-merge knowledge extraction is enrichment, never blocks the main loop
         if not diffs:
             continue
         prompt = ("From these MERGED diffs, extract (a) 3-6 concise CONVENTIONS this codebase actually "

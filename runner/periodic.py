@@ -441,6 +441,15 @@ def run_learnmerges():
     learn_from_merges.run()
 
 
+def run_embedretry():
+    """Drain the knowledge_embed retry queue: texts that hit a 429/circuit-open and had no local
+    Ollama fallback get another shot at real semantic embedding, with backoff between ticks
+    (not within a call) so a throttled provider degrades to 'embedded later', not 'never'."""
+    import knowledge_embed
+    result = knowledge_embed.retry_queue_flush()
+    print(f"embedretry: {result}")
+
+
 def run_dedup():
     """Collapse near-duplicate queued tasks so the swarm solves each thing once."""
     import task_dedup
@@ -598,6 +607,7 @@ JOBS = {
     "prewarm": run_prewarm,
     "billingguard": run_billingguard,
     "learnmerges": run_learnmerges,
+    "embedretry": run_embedretry,
     "dedup": run_dedup,
     "contcompact": run_contcompact,
     "backlogcompact": run_backlogcompact,

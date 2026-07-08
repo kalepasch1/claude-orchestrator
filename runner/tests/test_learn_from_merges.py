@@ -254,5 +254,112 @@ class RunWiringTest(unittest.TestCase):
         self.assertNotIn("weekly limit", content)
 
 
+GOOD_EXTRACTION_JSON = json.dumps({
+    "pattern": "Module-level singleton with a threading.Lock-protected pool",
+    "files": "runner/db.py, runner/pool.py",
+    "why": "avoids threading state through every call chain in a multi-threaded runner",
+    "proof": "python3 -m unittest tests.test_pool",
+})
+
+
+class ExtractKnowledgeTest(unittest.TestCase):
+    def _mocked_gateway(self, text):
+        model_policy = types.SimpleNamespace(choose=lambda *a, **kw: ("local", "x", "why"))
+        model_gateway = types.SimpleNamespace(complete=lambda *a, **kw: {"text": text})
+        return model_policy, model_gateway
+
+    def test_none_response_stores_nothing(self):
+        model_policy, model_gateway = self._mocked_gateway("NONE")
+        with patch.dict(sys.modules, {"model_policy": model_policy, "model_gateway": model_gateway}):
+            result = lfm.extract_knowledge("proj", "slug1", "diff content")
+        self.assertFalse(result)
+
+    def test_empty_response_stores_nothing(self):
+        model_policy, model_gateway = self._mocked_gateway("")
+        with patch.dict(sys.modules, {"model_policy": model_policy, "model_gateway": model_gateway}):
+            result = lfm.extract_knowledge("proj", "slug1", "diff content")
+        self.assertFalse(result)
+
+    def test_non_json_response_is_quarantined_not_stored(self):
+        model_policy, model_gateway = self._mocked_gateway("this is not json at all")
+        ke = types.SimpleNamespace(extract=lambda *a, **kw: (_ for _ in ()).throw(AssertionError("must not store")))
+        with patch.dict(sys.modules, {"model_policy": model_policy, "model_gateway": model_gateway,
+                                       "knowledge_embed": ke}), \
+             patch.object(lfm, "_quarantine") as q:
+            result = lfm.extract_knowledge("proj", "slug1", "diff content")
+        self.assertFalse(result)
+        q.assert_called_once()
+
+    def test_missing_required_fields_is_quarantined(self):
+        bad = json.dumps({"pattern": "", "files": "a.py", "why": "", "proof": ""})
+        model_policy, model_gateway = self._mocked_gateway(bad)
+        with patch.dict(sys.modules, {"model_policy": model_policy, "model_gateway": model_gateway}), \
+             patch.object(lfm, "_quarantine") as q:
+            result = lfm.extract_knowledge("proj", "slug1", "diff content")
+        self.assertFalse(result)
+        q.assert_called_once()
+
+    def test_extraction_matching_failure_pattern_is_rejected(self):
+        banner = json.dumps({"pattern": "You've hit your weekly limit, resets Jul 8",
+                             "files": "", "why": "rate limited", "proof": ""})
+        model_policy, model_gateway = self._mocked_gateway(banner)
+        with patch.dict(sys.modules, {"model_policy": model_policy, "model_gateway": model_gateway}):
+            result = lfm.extract_knowledge("proj", "slug1", "diff content")
+        self.assertFalse(result)
+
+    def test_good_extraction_calls_knowledge_embed_extract(self):
+        model_policy, model_gateway = self._mocked_gateway(GOOD_EXTRACTION_JSON)
+        captured = {}
+
+        def fake_extract(project, title, tags, body):
+            captured.update(project=project, title=title, tags=tags, body=body)
+
+        ke = types.SimpleNamespace(extract=fake_extract)
+        with patch.dict(sys.modules, {"model_policy": model_policy, "model_gateway": model_gateway,
+                                       "knowledge_embed": ke}):
+            result = lfm.extract_knowledge("proj", "slug1", "diff content")
+        self.assertTrue(result)
+        self.assertEqual(captured["project"], "proj")
+        self.assertIn("singleton", captured["title"])
+        self.assertIn("slug1", captured["tags"])
+
+    def test_gateway_exception_returns_false_without_raising(self):
+        model_policy = types.SimpleNamespace(choose=lambda *a, **kw: ("local", "x", "why"))
+        model_gateway = types.SimpleNamespace(complete=lambda *a, **kw: (_ for _ in ()).throw(OSError("down")))
+        with patch.dict(sys.modules, {"model_policy": model_policy, "model_gateway": model_gateway}):
+            result = lfm.extract_knowledge("proj", "slug1", "diff content")
+        self.assertFalse(result)
+
+    def test_knowledge_embed_extract_failure_returns_false_without_raising(self):
+        model_policy, model_gateway = self._mocked_gateway(GOOD_EXTRACTION_JSON)
+        ke = types.SimpleNamespace(extract=lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("db down")))
+        with patch.dict(sys.modules, {"model_policy": model_policy, "model_gateway": model_gateway,
+                                       "knowledge_embed": ke}):
+            result = lfm.extract_knowledge("proj", "slug1", "diff content")
+        self.assertFalse(result)
+
+    def test_run_calls_extract_knowledge_per_merged_diff_without_blocking_on_failure(self):
+        import tempfile
+        repo = tempfile.mkdtemp()
+        open(os.path.join(repo, "CLAUDE.md"), "w").close()
+        db_mock = types.SimpleNamespace(
+            select=lambda table, params=None: (
+                [{"id": "p1", "name": "proj", "repo_path": repo}] if table == "projects" else
+                [{"slug": "s1", "base_branch": "main"}] if table == "tasks" else []
+            )
+        )
+        calls = []
+        with patch.object(lfm, "db", db_mock), \
+             patch.object(lfm, "_merged_diff", return_value="diff content"), \
+             patch.object(lfm, "extract_knowledge", side_effect=RuntimeError("boom"),
+                          wraps=None) as ek:
+            model_policy = types.SimpleNamespace(choose=lambda *a, **kw: ("local", "x", "why"))
+            model_gateway = types.SimpleNamespace(complete=lambda *a, **kw: {"text": ""})
+            with patch.dict(sys.modules, {"model_policy": model_policy, "model_gateway": model_gateway}):
+                learned = lfm.run()  # must not raise even though extract_knowledge always throws
+        ek.assert_called_once()
+        self.assertEqual(learned, 0)  # empty distillation text -> nothing learned, but no crash
+
+
 if __name__ == "__main__":
     unittest.main()
