@@ -147,7 +147,7 @@ export async function runDetermination(
   }
 
   // 7) Tribunal Model (if reviewer personas present).
-  const reviewerModel = buildReviewerModel(eligible.filter((p) => p.role === 'reviewer'), options);
+  const reviewerModel = buildReviewerModel(eligible.filter((p) => p.role === 'reviewer'), opts.posture);
 
   // 8) certificate + proof.
   const finalLead = factions[0];
@@ -256,12 +256,12 @@ async function runRedTeam(
   });
 }
 
-function buildReviewerModel(reviewers: Persona[], options: CadeOptions): ReviewerModel | undefined {
+function buildReviewerModel(reviewers: Persona[], posture: ReviewerModel['posture']): ReviewerModel | undefined {
   if (reviewers.length === 0) return undefined;
   const total = reviewers.reduce((s, r) => s + r.authority, 0) || 1;
   return {
     known: reviewers.length === 1,
-    posture: (options as { posture?: ReviewerModel['posture'] }).posture ?? 'expected_value',
+    posture,
     reviewers: reviewers.map((r) => ({
       id: r.id,
       weight: r.authority / total,

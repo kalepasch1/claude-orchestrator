@@ -203,6 +203,19 @@ test('financial determination summarizes its distribution, recurses councils, re
   assert.ok((det.proof.record.councils?.length ?? 0) >= 1, 'expert council recursed');
 });
 
+// ---------- posture contract ----------
+test('posture option flows through to the reviewer model; default is expected_value', async () => {
+  const det = await runDetermination(choiceOfLaw, legalRoster(), { invoker, embedder }, { now: () => '2026-06-29T00:00:00Z' });
+  assert.ok(det.proof.record.reviewerModel, 'reviewer model present');
+  assert.equal(det.proof.record.reviewerModel!.posture, 'expected_value', 'default posture');
+});
+
+test('posture: minimax_robust is forwarded to the reviewer model', async () => {
+  const det = await runDetermination(choiceOfLaw, legalRoster(), { invoker, embedder }, { posture: 'minimax_robust', now: () => '2026-06-29T00:00:00Z' });
+  assert.ok(det.proof.record.reviewerModel, 'reviewer model present');
+  assert.equal(det.proof.record.reviewerModel!.posture, 'minimax_robust');
+});
+
 // ---------- advocacy firewall ----------
 test('packageForReviewer preserves substance under a faithful restyle', async () => {
   const det = await runDetermination(choiceOfLaw, legalRoster(), { invoker, embedder }, { now: () => '2026-06-29T00:00:00Z' });
