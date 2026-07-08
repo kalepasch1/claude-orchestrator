@@ -24,6 +24,17 @@ Canonical format (the drop-in prompt emits exactly this):
       - things needing secrets/deploys/legal (logged, never queued)
 
 Idempotent: a task whose slug already exists is skipped (re-dropping a file won't duplicate).
+
+OPERATOR DROP-BOX (2026-07-08): a human/Cowork session can also drop a big FREEFORM prompt as
+../PROMPT-<anything>.md (repo root, not intake/) — not in the canonical format above. Any such
+file that does NOT already start with a `PROJECT:` line gets auto-decomposed through planner.py
+(the same contract-first DAG decomposition prompt_factory.py uses for objectives) and queued the
+same as a hand-written canonical file. This is what makes "paste a big prompt, run one manual
+Claude Code session" the EXCEPTION rather than the default: going forward, a manual serial
+session should be reserved for fleet-down recovery (the fleet can't queue/execute anything, so
+there's nothing for intake to route work to yet); routine strategic prompts belong in the
+drop-box so they run as a parallel, dependency-linked DAG instead of one long serial session.
+A PROMPT-*.md that already IS canonical format is left untouched here (nothing to decompose).
 """
 import os, sys, re, glob, json, datetime, shutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -33,6 +44,7 @@ import pipeline_contract
 HERE = os.path.dirname(os.path.abspath(__file__))
 INTAKE = os.path.abspath(os.path.join(HERE, "..", "intake"))
 PROCESSED = os.path.join(INTAKE, "processed")
+REPO_ROOT = os.path.abspath(os.path.join(HERE, ".."))
 
 
 def parse(text):
@@ -146,12 +158,130 @@ def ingest_file(path, projects_by_name):
     return created, skipped
 
 
+def is_canonical(text):
+    """A file is canonical format if it has a `PROJECT:` header anywhere — that's the one
+    marker every hand-written or machine-generated canonical drop always has."""
+    return bool(re.search(r"^PROJECT:\s*\S", text or "", re.M))
+
+
+def _dropbox_slugify(text):
+    s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return s[:60] or "dropbox"
+
+
+def _extract_proof_line(prompt_text):
+    m = re.search(r"(?:proof|acceptance test|test)\s*:\s*(\S.+)", prompt_text or "", re.I)
+    return m.group(1).strip().rstrip(".") if m else ""
+
+
+def _default_project_for_dropbox(text, projects_by_name):
+    """Heuristic project resolution for freeform prompts, which don't declare PROJECT: by
+    definition. Looks for a known project name mentioned early in the text; falls back to
+    'beethoven' (the orchestrator's own project) since operator-authored strategic PROMPT-*.md
+    drops most commonly target the orchestrator improving itself — the two real examples this
+    feature was built for (PROMPT-backlog-blitz.md, PROMPT-meta-optimizer.md) both do."""
+    head = (text or "")[:2000].lower()
+    for name in projects_by_name:
+        if name and name.lower() in head:
+            return name
+    return "beethoven" if "beethoven" in projects_by_name else (next(iter(projects_by_name), None))
+
+
+def decompose_freeform(text, repo_root, default_project):
+    """Contract-first DAG decomposition of a freeform prompt via planner.py (the same engine
+    prompt_factory.py uses for objectives). Returns a list of task dicts shaped like parse()'s
+    output, ready for the same insertion path ingest_file() uses. Raises on planner failure —
+    callers decide how to handle that (planner.plan() itself already falls back to a single
+    master-task rather than raising in the common case; this only raises on a harder failure,
+    e.g. planner.py itself being unimportable)."""
+    import planner
+    tasks = planner.plan(text, repo=repo_root)
+    slug_base = _dropbox_slugify((text.strip().splitlines() or [""])[0])
+    rendered = []
+    for t in tasks:
+        rendered.append({
+            "project": default_project,
+            "slug": f"dropbox-{slug_base}-{t['slug']}",
+            "material": False,
+            "model": t.get("model_hint"),
+            "depends": [f"dropbox-{slug_base}-{d}" for d in (t.get("deps") or [])],
+            "proof": _extract_proof_line(t.get("prompt")),
+            "prompt": t.get("prompt") or "",
+        })
+    return rendered
+
+
+def _queue_dropbox_tasks(rendered, projects_by_name):
+    existing = {t["slug"] for t in (db.select("tasks", {"select": "slug"}) or [])}
+    created, skipped = 0, 0
+    for t in rendered:
+        proj = projects_by_name.get(t["project"])
+        if not proj:
+            skipped += 1; continue
+        if t["slug"] in existing:
+            skipped += 1; continue
+        raw_prompt = t["prompt"] + (f"\n\nProof: {t['proof']}" if t["proof"] else "")
+        row = {"project_id": proj["id"], "slug": t["slug"],
+               "prompt": pipeline_contract.wrap_prompt(raw_prompt, project=t["project"],
+                                                        kind="build", source="intake-dropbox",
+                                                        slug=t["slug"], material=bool(t["material"])),
+               "base_branch": proj.get("default_base", "main"), "kind": "build",
+               "state": "QUEUED", "deps": t["depends"], "material": bool(t["material"]),
+               "note": pipeline_contract.note(source="intake-dropbox")}
+        if t.get("model"):
+            row["model"] = t["model"]
+        db.insert("tasks", row)
+        existing.add(t["slug"]); created += 1
+    return created, skipped
+
+
+def ingest_dropbox_prompts(projects_by_name):
+    """Scan repo root for PROMPT-*.md files that are NOT canonical format and auto-decompose
+    them. Idempotent the same way as ingest_file(): the source file is moved into
+    intake/processed/ once handled, so re-running never reprocesses it. Fail-soft per file — one
+    bad drop doesn't block the others."""
+    files = [f for f in glob.glob(os.path.join(REPO_ROOT, "PROMPT-*.md")) if os.path.isfile(f)]
+    total = 0
+    for f in sorted(files):
+        try:
+            text = open(f, encoding="utf-8", errors="replace").read()
+        except Exception as e:
+            print(f"intake: dropbox read failed on {f}: {e}"); continue
+        if is_canonical(text):
+            continue  # already canonical — nothing to decompose, leave it for a human to move
+        default_project = _default_project_for_dropbox(text, projects_by_name)
+        if not default_project or default_project not in projects_by_name:
+            print(f"intake: dropbox {os.path.basename(f)} — no resolvable project, skipped")
+            continue
+        try:
+            rendered = decompose_freeform(text, REPO_ROOT, default_project)
+        except Exception as e:
+            print(f"intake: dropbox decomposition failed on {f}: {e}"); continue
+        if not rendered:
+            continue
+        created, skipped = _queue_dropbox_tasks(rendered, projects_by_name)
+        stamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+        try:
+            shutil.move(f, os.path.join(PROCESSED, f"{stamp}-dropbox-{os.path.basename(f)}"))
+        except Exception as e:
+            print(f"intake: dropbox move failed on {f}: {e}")
+        print(f"intake: dropbox {os.path.basename(f)} -> {created} queued, {skipped} skipped")
+        total += created
+    return total
+
+
 def run():
     os.makedirs(PROCESSED, exist_ok=True)
+    projects_by_name = {p["name"]: p for p in (db.select("projects") or [])}
+    dropbox_total = 0
+    try:
+        dropbox_total = ingest_dropbox_prompts(projects_by_name)
+    except Exception as e:
+        print(f"intake: dropbox scan failed: {e}")  # never let dropbox errors block canonical intake
     files = [f for f in glob.glob(os.path.join(INTAKE, "*.md")) if os.path.isfile(f)]
     if not files:
-        print("intake: nothing to ingest"); return 0
-    projects_by_name = {p["name"]: p for p in (db.select("projects") or [])}
+        print(f"intake: nothing to ingest ({dropbox_total} from dropbox)")
+        return dropbox_total
     total = 0
     for f in sorted(files):
         try:
@@ -162,7 +292,7 @@ def run():
             total += c
         except Exception as e:
             print(f"intake: failed on {f}: {e}")  # leave the file in place to retry
-    return total
+    return total + dropbox_total
 
 
 if __name__ == "__main__":
