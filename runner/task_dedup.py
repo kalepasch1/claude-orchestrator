@@ -20,6 +20,7 @@ import db
 
 DEDUP_SIM = float(os.environ.get("DEDUP_SIM", "0.82"))
 DEDUP_FILE_PENDING_CARDS = os.environ.get("DEDUP_FILE_PENDING_CARDS", "false").lower() in ("true", "1", "yes")
+PROTECTED_PREFIXES = ("recover-missing-branch-", "canary-", "rework-", "qafix-", "relfix-", "buildfix-", "deployfix-")
 _STOP = set("the a an to of and or for in on with build add fix update create make this that use "
             "implement task change set get run test file page component function".split())
 
@@ -32,6 +33,44 @@ def _sim(a, b):
     if not a or not b:
         return 0.0
     return len(a & b) / len(a | b)
+
+
+def _protected(t):
+    slug = str((t or {}).get("slug") or "")
+    return any(slug.startswith(p) for p in PROTECTED_PREFIXES)
+
+
+def _released_note(t):
+    slug = str((t or {}).get("slug") or "")
+    note = str((t or {}).get("note") or "")
+    if slug.startswith("canary-") or "canary" in slug:
+        return "coder-canary: protected lane released; independent vendor evidence sample"
+    if slug.startswith("recover-missing-branch-"):
+        return "recovery: protected lane released; rebuild/reuse before net-new work"
+    if slug.startswith("rework-"):
+        return "rework: protected lane released; independently claimable"
+    if note and "dedup:" not in note.lower():
+        return note[:500]
+    return "dedup: protected lane released"
+
+
+def release_protected():
+    """Undo old dedup deps on recovery/canary rows; those lanes must stay independently claimable."""
+    rows = db.select("tasks", {"select": "id,slug,note,deps,state",
+                               "state": "eq.QUEUED", "limit": os.environ.get("DEDUP_RELEASE_LIMIT", "5000")}) or []
+    released = 0
+    for t in rows:
+        if not _protected(t):
+            continue
+        note = t.get("note") or ""
+        if not (t.get("deps") or []) and "dedup:" not in note.lower():
+            continue
+        db.update("tasks", {"id": t["id"]},
+                  {"deps": [],
+                   "note": _released_note(t),
+                   "updated_at": "now()"})
+        released += 1
+    return released
 
 
 def _clusters(tasks):
@@ -57,7 +96,7 @@ def _clusters(tasks):
 def analyze():
     tasks = db.select("tasks", {"select": "id,slug,prompt,deps,material,project_id",
                                 "state": "eq.QUEUED"}) or []
-    tasks = [t for t in tasks if not t.get("material") and not (t.get("deps") or [])]
+    tasks = [t for t in tasks if not _protected(t) and not t.get("material") and not (t.get("deps") or [])]
     out = []
     for g in _clusters(tasks):
         same_proj = len({t["project_id"] for t in g}) == 1
@@ -67,9 +106,10 @@ def analyze():
 
 
 def apply():
+    released = release_protected()
     tasks = db.select("tasks", {"select": "id,slug,prompt,deps,material,project_id,created_at",
                                 "state": "eq.QUEUED"}) or []
-    tasks = [t for t in tasks if not t.get("material") and not (t.get("deps") or [])]
+    tasks = [t for t in tasks if not _protected(t) and not t.get("material") and not (t.get("deps") or [])]
     collapsed = flagged = 0
     for g in _clusters(tasks):
         g.sort(key=lambda t: t.get("created_at") or "")
@@ -94,8 +134,9 @@ def apply():
                 "value": "Avoid N agents solving the same problem in parallel.",
                 "risk": "Low — advisory; nothing auto-merged across repos.", "command": ""})
             flagged += 1
-    print(f"task_dedup: collapsed {collapsed} within-project duplicates, flagged {flagged} cross-app clusters")
-    return {"collapsed": collapsed, "flagged": flagged}
+    print(f"task_dedup: released {released} protected rows, collapsed {collapsed} within-project duplicates, "
+          f"flagged {flagged} cross-app clusters")
+    return {"released": released, "collapsed": collapsed, "flagged": flagged}
 
 
 if __name__ == "__main__":

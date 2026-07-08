@@ -43,7 +43,11 @@ def review_diff(worktree, base="main", max_chars=60000, dependents=None, project
             prov = model_gateway.provider_for_model(REVIEW_MODEL)
             model = REVIEW_MODEL
         else:
-            prov, model, _ = model_policy.choose("review", agentic=False, need=6)
+            try:
+                import verifier_marketplace
+                prov, model = verifier_marketplace.choose("review", need=6, author_model="")
+            except Exception:
+                prov, model, _ = model_policy.choose("review", agentic=False, need=6)
         res = model_gateway.complete(prov, model, prompt + diff, project=project,
                                      timeout=int(os.environ.get("VERIFY_TIMEOUT", "180")),
                                      operation="verify_diff", task_class="review")
@@ -52,6 +56,11 @@ def review_diff(worktree, base="main", max_chars=60000, dependents=None, project
         d = json.loads(m.group(0)) if m else {"verdict": "pass", "notes": "unparseable; defaulting pass"}
         d["verdict"] = "fail" if str(d.get("verdict", "")).lower().startswith("fail") else "pass"
         d["by"] = f"{res.get('provider')}:{res.get('model')}"
+        try:
+            import verifier_marketplace
+            verifier_marketplace.record(d["by"], d["verdict"])
+        except Exception:
+            pass
         return d
     except Exception as e:
         return {"verdict": "pass", "notes": f"review skipped ({e})"}

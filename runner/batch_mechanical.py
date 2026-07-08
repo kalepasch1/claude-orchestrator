@@ -24,6 +24,7 @@ MIN_GROUP = int(os.environ.get("BATCH_MIN", "3"))       # don't bother batching 
 
 
 MECH_MAX_PROMPT = int(os.environ.get("BATCH_MECH_MAX_PROMPT", "600"))
+PROTECTED_PREFIXES = ("recover-missing-branch-", "canary-", "rework-", "qafix-", "relfix-", "buildfix-", "deployfix-")
 
 
 def _is_mechanical(prompt):
@@ -39,8 +40,14 @@ def _is_mechanical(prompt):
     return bool(model_router.MECHANICAL.search(p))
 
 
+def _protected(t):
+    slug = str((t or {}).get("slug") or "")
+    kind = str((t or {}).get("kind") or "").lower()
+    return kind == "canary" or any(slug.startswith(p) for p in PROTECTED_PREFIXES) or "-canary-" in slug
+
+
 def find_batches():
-    tasks = db.select("tasks", {"select": "id,slug,prompt,deps,state,project_id,base_branch",
+    tasks = db.select("tasks", {"select": "id,slug,prompt,deps,state,project_id,base_branch,kind",
                                 "state": "eq.QUEUED"}) or []
     # slugs that are depended upon by ANY task (can't batch those away)
     depended = set()
@@ -49,6 +56,8 @@ def find_batches():
             depended.add(d)
     groups = {}
     for t in tasks:
+        if _protected(t):
+            continue                      # evidence/recovery lanes need independent attribution
         if t.get("deps"):
             continue                      # has upstream deps -> skip
         if t["slug"] in depended:

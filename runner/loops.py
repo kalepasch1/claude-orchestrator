@@ -15,6 +15,23 @@ DEFAULTS = {"remediate": 300, "optimize": 86400, "learn": 604800, "review": 8640
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+def _parse_ts(value):
+    """Parse Supabase timestamps even when PostgREST trims fractional seconds."""
+    raw = str(value or "").replace("Z", "+00:00")
+    if "." in raw:
+        head, tail = raw.split(".", 1)
+        zone = ""
+        for sep in ("+", "-"):
+            idx = tail.find(sep)
+            if idx > 0:
+                zone = tail[idx:]
+                tail = tail[:idx]
+                break
+        tail = (tail + "000000")[:6]
+        raw = f"{head}.{tail}{zone}"
+    return datetime.datetime.fromisoformat(raw).timestamp()
+
+
 def ensure_all():
     projects = db.select("projects", {"select": "name"}) or []
     existing = {(l["project"], l["type"]) for l in (db.select("loops", {"select": "project,type"}) or [])}
@@ -32,7 +49,7 @@ def _due(loop):
         return False
     if not loop.get("last_run"):
         return True
-    last = datetime.datetime.fromisoformat(loop["last_run"].replace("Z", "+00:00")).timestamp()
+    last = _parse_ts(loop["last_run"])
     return time.time() - last >= loop.get("cadence_seconds", 1800)
 
 

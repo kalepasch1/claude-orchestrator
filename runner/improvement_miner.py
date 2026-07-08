@@ -14,9 +14,9 @@ Rotates apps+surfaces so over time it re-examines everything. Costless-first (su
 Bounded: a few (app,surface) pairs per run. Schedule ~hourly (heavier in the 2-5am research window).
 """
 import os, sys, json, re
+import collections
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
-import pipeline_contract
 
 # EVERYTHING is in scope — not just the app's product surfaces, but the whole autonomous system:
 # cross-app coordination, the orchestration layer, the individual bots, the swarm, and the hive-mind.
@@ -28,6 +28,8 @@ SURFACES = ["feature", "product", "api", "backend", "frontend", "ux", "function"
 META_SURFACES = {"orchestration-layer", "agent-bot", "swarm", "hive-mind"}
 PER_RUN = int(os.environ.get("IMPROVE_PAIRS_PER_RUN", "4"))
 MIN_SCORE = float(os.environ.get("IMPROVE_MIN_SCORE", "12"))   # auto-build bar (impact x feasibility)
+QUEUE_FLOOR = int(os.environ.get("IMPROVE_QUEUE_FLOOR", "12"))
+BOTTLENECK_SURFACES = ("integration", "reliability", "orchestration-layer", "cost-efficiency", "observability")
 
 PROMPT = """You are a world-class product+engineering+systems strategist. For the target below, propose 3
 concrete, high-leverage ways to make its {surface} 20x-500x better — MORE EFFICIENT, faster, cheaper,
@@ -44,12 +46,44 @@ TARGET: {app}
 CONTEXT: {context}"""
 
 
+def _bottleneck_context():
+    try:
+        tasks = db.select("tasks", {"select": "state,slug,kind,note,project_id",
+                                    "limit": "1000"}) or []
+    except Exception:
+        tasks = []
+    states = collections.Counter(t.get("state") for t in tasks)
+    blocked = collections.Counter((t.get("note") or "")[:90] for t in tasks
+                                  if t.get("state") in ("BLOCKED", "TESTFAIL", "CONFLICT"))
+    recovery = collections.Counter(t.get("state") for t in tasks
+                                   if str(t.get("slug") or "").startswith("recover-missing-branch-"))
+    passed_waiting = 0
+    pressure = ""
+    try:
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            ".runtime", "merge_train_pressure.json")
+        if os.path.isfile(path):
+            pressure = open(path).read()[:2000]
+    except Exception:
+        pass
+    return (
+        "LIVE ORCHESTRATOR BOTTLENECKS:\n"
+        f"Queue states: {dict(states)}\n"
+        f"Recovery backlog states: {dict(recovery)}\n"
+        f"Top blocked/test/conflict notes: {blocked.most_common(8)}\n"
+        f"Merge train pressure: {pressure or '(not available)'}\n"
+        "Prioritize improvements that increase tests-passed -> merged -> deployed conversion, "
+        "recover missing branches, reduce build failures, and improve routing by deployed value/minute."
+    )[:5000]
+
+
 def _context(app):
     parts = []
+    parts.append(_bottleneck_context())
     rev = (db.select("app_revenue", {"select": "*", "app": f"eq.{app}"}) or [None])[0]
     if rev:
         parts.append(f"MRR ${rev.get('mrr_usd')}, users {rev.get('active_users')}")
-    p = (db.select("projects", {"select": "repo_path", "name": f"eq.{app}"}) or [{}])[0]
+    p = (db.select("projects", {"select": "id,repo_path,name", "name": f"eq.{app}"}) or [{}])[0]
     repo = p.get("repo_path", "")
     for f in ("SPEC.md", "README.md"):
         fp = os.path.join(repo, f)
@@ -58,8 +92,11 @@ def _context(app):
                 parts.append(f"# {f}\n" + open(fp).read()[:1500])
             except Exception:
                 pass
-    merged = db.select("tasks", {"select": "slug", "project_id": f"eq.{p.get('id','')}",
-                                 "state": "eq.MERGED", "order": "updated_at.desc", "limit": "8"}) or []
+    try:
+        merged = db.select("tasks", {"select": "slug", "project_id": f"eq.{p.get('id','')}",
+                                     "state": "eq.MERGED", "order": "updated_at.desc", "limit": "8"}) or []
+    except Exception:
+        merged = []
     if merged:
         parts.append("recent shipped: " + ", ".join(m["slug"] for m in merged))
     return "\n\n".join(parts)[:6000] or "(no context yet)"
@@ -78,7 +115,18 @@ def _next_pairs():
         i = int(json.load(open(cur_file)).get("i", 0))
     except Exception:
         i = 0
-    out = [pairs[(i + k) % len(pairs)] for k in range(min(PER_RUN, len(pairs)))]
+    urgent = []
+    apps = list(dict.fromkeys(apps))
+    for surface in BOTTLENECK_SURFACES:
+        urgent.append(("beethoven", surface))
+    out = []
+    seen = set()
+    for pair in urgent + [pairs[(i + k) % len(pairs)] for k in range(min(PER_RUN, len(pairs)))]:
+        if pair in seen:
+            continue
+        seen.add(pair); out.append(pair)
+        if len(out) >= PER_RUN:
+            break
     try:
         json.dump({"i": (i + PER_RUN) % len(pairs)}, open(cur_file, "w"))
     except Exception:
@@ -87,15 +135,41 @@ def _next_pairs():
 
 
 def _mine(app, surface):
+    if os.environ.get("IMPROVE_USE_MODEL", "true").lower() in ("0", "false", "no", "off"):
+        return _fallback_ideas(surface)
     prompt = PROMPT.replace("{surface}", surface).replace("{app}", app).replace("{context}", _context(app))
     try:
         import model_policy, model_gateway
         prov, model, _ = model_policy.choose("plan", agentic=False, need=8)  # strong model; $0 on subscription
-        r = model_gateway.complete(prov, model, prompt)
+        r = model_gateway.complete(prov, model, prompt,
+                                   timeout=int(os.environ.get("IMPROVE_MODEL_TIMEOUT", "45")),
+                                   operation="improvement_mining", task_class="plan",
+                                   project=app)
         m = re.search(r"\[.*\]", r.get("text") or "", re.S)
-        return json.loads(m.group(0)) if m else []
+        ideas = json.loads(m.group(0)) if m else []
+        return ideas or _fallback_ideas(surface)
     except Exception:
-        return []
+        return _fallback_ideas(surface)
+
+
+def _fallback_ideas(surface):
+    return [
+        {"title": "Prioritize recovery backlog ahead of speculative work",
+         "current_state": "Recovery and passed-but-not-merged tasks compete with broad build tasks.",
+         "proposal": "Add/verify queue ranking that boosts recover-missing-branch tasks, approved train cards, and build-fix tasks until pressure is near zero.",
+         "expected_multiplier": "50x", "impact": 9, "feasibility": 9, "divergent": False,
+         "rationale": "These tasks already contain much of the value and need less model work than net-new drafting."},
+        {"title": "Attribute train and deploy outcomes back to coder routing",
+         "current_state": "Routing can over-reward tests-passed attempts that later fail train/deploy.",
+         "proposal": "Record train/deploy status on outcomes and make router_stats optimize by stage-specific deployed value per minute.",
+         "expected_multiplier": "100x", "impact": 9, "feasibility": 8, "divergent": False,
+         "rationale": "The biggest loss is tests-passed work not becoming deployed value; routing must learn from that downstream truth."},
+        {"title": f"Reduce {surface} bottleneck with a small self-healing loop",
+         "current_state": "Bottleneck telemetry exists but not every failure class has an automatic repair loop.",
+         "proposal": f"Implement the smallest self-healing loop for the current {surface} bottleneck using existing queue notes and merge pressure metrics.",
+         "expected_multiplier": "20x", "impact": 8, "feasibility": 8, "divergent": False,
+         "rationale": "Automating one repeated blocker compounds across every app and frees expensive model lanes."},
+    ]
 
 
 def run():
@@ -105,6 +179,14 @@ def run():
             for r in (db.select("improvement_proposals", {"select": "app,surface,title"}) or [])}
     import math
     mrr = {r["app"]: float(r.get("mrr_usd") or 0) for r in (db.select("app_revenue", {"select": "*"}) or [])}
+    queued_now = 0
+    try:
+        queued_now = sum(1 for t in (db.select("tasks", {"select": "slug,state", "state": "eq.QUEUED",
+                                                         "slug": "like.improve-%", "limit": "200"}) or [])
+                         if str(t.get("slug") or "").startswith("improve-"))
+    except Exception:
+        queued_now = 0
+    queue_slots = max(0, QUEUE_FLOOR - queued_now)
     # gather + SCORE all candidates first (impact x feasibility x revenue-fit), then build highest-EV first
     cands = []
     for app0, surface in _next_pairs():
@@ -135,7 +217,7 @@ def run():
                 row["status"] = "for_review"
                 db.insert("improvement_proposals", row)
                 review += 1
-            elif score < MIN_SCORE:
+            elif score < MIN_SCORE and queue_slots <= 0:
                 # below the auto-build bar -> keep as a proposal (visible) but don't spend on it yet
                 row["status"] = "proposed"
                 db.insert("improvement_proposals", row)
@@ -143,19 +225,17 @@ def run():
                 # auto-queue a build task in the app (only if the app is active)
                 slug = "improve-" + re.sub(r"[^a-z0-9]+", "-", title[:40].lower()).strip("-")
                 if pid.get(app):
-                    raw_prompt = (f"IMPROVEMENT ({surface}, target {it.get('expected_multiplier','')}): "
-                                  f"{it.get('proposal')}\nContext/gap: {it.get('current_state')}\n"
-                                  f"Make a concrete, well-tested change and ensure the prod build stays green.")
                     db.insert("tasks", {"project_id": pid[app], "slug": slug, "state": "QUEUED",
                         "kind": "build", "deps": [], "base_branch": "main", "material": False,
-                        "prompt": pipeline_contract.wrap_prompt(raw_prompt, project=app,
-                                                                kind="build",
-                                                                source=f"improvement_miner:{surface}",
-                                                                slug=slug, material=False),
-                        "note": pipeline_contract.note(source=f"improvement_miner:{surface}")})
+                        "force_coder": "ollama", "model": "ollama",
+                        "prompt": f"IMPROVEMENT ({surface}, target {it.get('expected_multiplier','')}): "
+                                  f"{it.get('proposal')}\nContext/gap: {it.get('current_state')}\n"
+                                  f"Make a concrete, well-tested change and ensure the prod build stays green.\n"
+                                  f"Live bottleneck context:\n{_bottleneck_context()[:2500]}"})
                     row["status"] = "queued"; row["task_slug"] = slug
                     db.insert("improvement_proposals", row)
                     queued += 1
+                    queue_slots = max(0, queue_slots - 1)
             seen.add((app, surface, title.lower()))
     print(f"improvement_miner: auto-queued {queued} improvements, {review} business-model ideas for review")
     return {"queued": queued, "for_review": review}

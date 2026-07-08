@@ -18,7 +18,24 @@ PATTERNS = {
     "secret": r"(sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|ghp_[0-9A-Za-z]{36}|xox[baprs]-[0-9A-Za-z-]+)",
     "key_block": r"-----BEGIN [A-Z ]*PRIVATE KEY-----",
     "case_no": r"\b(case|matter|docket)\s*(no\.?|#)?\s*[:#]?\s*[A-Z0-9-]{4,}\b",
+    "internal_url": r"\b(?:https?://)?(?:localhost|127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|[a-z0-9-]+\.(?:internal|corp|local))(?::\d+)?[^\s)]*",
+    "env_secret": r"\b[A-Z][A-Z0-9_]{2,}_(?:SECRET|TOKEN|KEY|PASSWORD|PRIVATE|WEBHOOK)\b\s*=\s*[^\s]+",
+    "proprietary_marker": r"\b(confidential|proprietary|trade secret|do not distribute|internal only|customer list|unreleased roadmap)\b",
 }
+
+IP_SENSITIVE = re.compile(
+    r"\b(proprietary|trade secret|confidential|unreleased|roadmap|customer list|"
+    r"pricing model|ranking algorithm|matching algorithm|fraud model|risk model|"
+    r"secret sauce|private schema|acquisition target|board deck)\b",
+    re.I,
+)
+
+CROWN_JEWEL = re.compile(
+    r"\b(crown[- ]?jewel|core algorithm|secret sauce|proprietary ux|"
+    r"defensible workflow|customer data|private customer|training data|"
+    r"full app strategy|moat|source of truth schema)\b",
+    re.I,
+)
 
 
 def scrub(text):
@@ -35,6 +52,16 @@ def scrub(text):
 def is_clean(text):
     _, f = scrub(text)
     return not f
+
+
+def sensitivity(text):
+    """Return a coarse routing label for provider policy decisions."""
+    clean, findings = scrub(text or "")
+    if CROWN_JEWEL.search(text or ""):
+        return "crown_jewel"
+    if findings or IP_SENSITIVE.search(text or ""):
+        return "confidential"
+    return "standard"
 
 
 def dp_count(true_count, epsilon=1.0):

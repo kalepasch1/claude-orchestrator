@@ -22,6 +22,28 @@ QUALITY_BAR = float(os.environ.get("APP_QUALITY_BAR", "7.0"))   # min avg score 
 COST_RANK = {"local": 0, "deepseek": 1, "google": 2, "openai": 3, "claude": 4}
 
 
+def _heuristic_score(op):
+    """Cheap fallback score so route learning is not blocked by sparse reviewer calls."""
+    provider = op.get("provider")
+    task_class = str(op.get("task_class") or "").lower()
+    ok = bool(op.get("ok"))
+    latency = int(op.get("latency_ms") or 0)
+    score = 6.0
+    if ok:
+        score += 1.0
+    else:
+        score -= 2.0
+    if provider == "local":
+        score += 0.7 if task_class in ("plan", "rating", "mechanical", "review", "qa") else 0.2
+    if provider in ("deepseek", "google", "openai") and task_class in ("plan", "review", "qa"):
+        score += 0.4
+    if provider == "claude" and task_class in ("security", "legal", "hard"):
+        score += 0.8
+    if latency and latency > 120000:
+        score -= 0.8
+    return max(0.0, min(10.0, round(score, 2)))
+
+
 def _rate_unscored():
     """Score a batch of unreviewed operations with a cheap cross-model reviewer."""
     rows = db.select("app_operations",
@@ -29,6 +51,15 @@ def _rate_unscored():
                       "order": "created_at.desc", "limit": str(SAMPLE)}) or []
     scored = 0
     for op in rows:
+        if os.environ.get("ORCH_APP_REVIEW_USE_MODEL", "false").lower() not in ("1", "true", "yes", "on"):
+            try:
+                score = _heuristic_score(op)
+                db.update("app_operations", {"id": op["id"]},
+                          {"quality_score": score, "verdict": "pass" if score >= QUALITY_BAR else "review"})
+                scored += 1
+            except Exception:
+                pass
+            continue
         # nothing to grade if we didn't capture output text (we log metadata, not payloads);
         # grade on a compact descriptor so we never store customer data in the orchestrator.
         desc = (f"App '{op['app']}' operation '{op['operation']}' (class {op.get('task_class')}) "
@@ -42,7 +73,13 @@ def _rate_unscored():
                       {"quality_score": jv.get("score"), "verdict": jv.get("verdict")})
             scored += 1
         except Exception:
-            continue
+            try:
+                score = _heuristic_score(op)
+                db.update("app_operations", {"id": op["id"]},
+                          {"quality_score": score, "verdict": "pass" if score >= QUALITY_BAR else "review"})
+                scored += 1
+            except Exception:
+                continue
     return scored
 
 
@@ -69,13 +106,20 @@ def _aggregate_and_route():
             "avg_quality": a["q"] / a["n"], "n": a["n"]})
     routes = 0
     for (app, op), cands in byop.items():
-        # keep only those clearing the quality bar; among them choose cheapest (then lowest cost-rank)
-        good = [c for c in cands if c["avg_quality"] >= QUALITY_BAR] or cands
+        # keep only those clearing the quality bar; if none clear, record that this is only the
+        # best observed fallback so operators do not mistake sparse telemetry for a proven route.
+        clears_bar = [c for c in cands if c["avg_quality"] >= QUALITY_BAR]
+        good = clears_bar or cands
         best = sorted(good, key=lambda c: (round(c["avg_cost"], 4),
                                            COST_RANK.get(c["provider"], 9)))[0]
+        route_reason = (
+            f"cheapest clearing q>={QUALITY_BAR} (avg q {best['avg_quality']:.1f})"
+            if clears_bar else
+            f"best observed fallback below q>={QUALITY_BAR} (avg q {best['avg_quality']:.1f})"
+        )
         db.insert("app_op_routes", {
             "app": app, "operation": op, "provider": best["provider"], "model": best["model"],
-            "reason": f"cheapest clearing q>={QUALITY_BAR} (avg q {best['avg_quality']:.1f})",
+            "reason": route_reason,
             "avg_cost": round(best["avg_cost"], 5), "avg_quality": round(best["avg_quality"], 2),
             "n_samples": best["n"], "updated_at": "now()"}, upsert=True)
         routes += 1

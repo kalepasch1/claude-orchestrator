@@ -4,8 +4,9 @@ integrate_kpi.py — per-app integrate-time health, so you can SEE the build sel
 
 Mirrors release_kpi.py but one stage earlier (integrate() into the staging branch, not release to
 prod). For each app over a window it reports:
-  * merge_rate   = integrated outcomes / real completed outcomes (churn excluded) — the number that
-                   should CLIMB as the build self-heal + coder-switch take hold.
+  * merge_rate   = integrated outcomes / post-QA eligible outcomes (tests_passed or integrated,
+                   churn excluded). Failed drafting attempts are tracked as attempt yield, not as
+                   mergeable work, so the headline number reflects the integration train.
   * build_fail_open   = tasks currently carrying an unresolved integrate build failure (build_fail_count>0)
   * coder_switched    = tasks escalated to a different coder after repeated red builds (force_coder set)
 
@@ -29,16 +30,21 @@ def compute():
     # PostgREST can't do now()-interval in a filter param, so pull recent rows and filter in Python.
     import datetime
     cutoff = (datetime.datetime.utcnow() - datetime.timedelta(hours=WINDOW_H)).isoformat()
-    outs = db.select("outcomes", {"select": "project,slug,integrated,usd,created_at",
+    outs = db.select("outcomes", {"select": "project,slug,tests_passed,integrated,usd,created_at",
                                   "created_at": f"gte.{cutoff}", "limit": "5000"}) or []
     by = {}
     for o in outs:
         if _is_churn(o.get("slug")):
             continue
         p = o.get("project") or "?"
-        d = by.setdefault(p, {"completed": 0, "integrated": 0, "usd": 0.0})
-        d["completed"] += 1
+        d = by.setdefault(p, {"completed": 0, "integrated": 0, "attempts": 0, "attempt_integrated": 0, "usd": 0.0})
+        d["attempts"] += 1
         d["usd"] += float(o.get("usd") or 0)
+        if o.get("integrated"):
+            d["attempt_integrated"] += 1
+        if not (o.get("tests_passed") or o.get("integrated")):
+            continue
+        d["completed"] += 1
         if o.get("integrated"):
             d["integrated"] += 1
     # self-heal activity (current, not windowed) — how much the coder-switch is engaging
@@ -63,11 +69,14 @@ def compute():
         rate = round(d["integrated"] / d["completed"], 3) if d["completed"] else None
         # NORTH STAR: $ per merged change. Infinite/None when nothing merges — the number to drive down.
         usd_per_merge = round(d["usd"] / d["integrated"], 3) if d["integrated"] else None
+        attempt_yield = round(d["attempt_integrated"] / d["attempts"], 3) if d["attempts"] else None
         out[p] = {"completed": d["completed"], "integrated": d["integrated"], "merge_rate": rate,
+                  "attempts": d["attempts"], "attempt_yield": attempt_yield,
                   "usd": round(d["usd"], 2), "usd_per_merge": usd_per_merge}
     for pid, h in heal.items():
         nm = pid2name.get(pid, str(pid))
-        out.setdefault(nm, {"completed": 0, "integrated": 0, "merge_rate": None})
+        out.setdefault(nm, {"completed": 0, "integrated": 0, "merge_rate": None,
+                            "attempts": 0, "attempt_yield": None})
         out[nm].update(h)
     return out
 
@@ -77,6 +86,7 @@ def run():
     tot_c = sum(v.get("completed", 0) for v in kpi.values())
     tot_i = sum(v.get("integrated", 0) for v in kpi.values())
     tot_usd = sum(v.get("usd", 0) for v in kpi.values())
+    tot_attempts = sum(v.get("attempts", 0) for v in kpi.values())
     overall = round(tot_i / tot_c, 3) if tot_c else None
     overall_usd_per_merge = round(tot_usd / tot_i, 3) if tot_i else None
     switched = sum(v.get("coder_switched", 0) for v in kpi.values())
@@ -88,7 +98,8 @@ def run():
                                     "usd_per_merge": overall_usd_per_merge, "by_project": kpi})
     except Exception:
         pass
-    print(f"integrate_kpi: merge_rate {overall} ({tot_i}/{tot_c} real, {WINDOW_H}h) · "
+    print(f"integrate_kpi: post-QA merge_rate {overall} ({tot_i}/{tot_c} eligible, {WINDOW_H}h; "
+          f"{tot_attempts} attempts) · "
           f"${overall_usd_per_merge}/merge (north star) · ${round(tot_usd,2)} spent · "
           f"build-fixes open={open_bf}, coder-switched={switched}")
     return {"overall_merge_rate": overall, "completed": tot_c, "integrated": tot_i,

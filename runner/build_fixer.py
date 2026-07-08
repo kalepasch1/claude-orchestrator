@@ -41,7 +41,9 @@ def _pick_fixer():
     try:
         import model_gateway
         avail = set(model_gateway.available())
-        ring = [("google", "gemini-2.0-flash"), ("deepseek", "deepseek-chat"), ("openai", "gpt-4o-mini")]
+        ring = [("google", os.environ.get("FIXER_GOOGLE_MODEL", "gemini-2.5-flash")),
+                ("deepseek", os.environ.get("FIXER_DEEPSEEK_MODEL", "deepseek-v4-flash")),
+                ("openai", os.environ.get("FIXER_OPENAI_MODEL", "gpt-5.4-mini"))]
         ring = [(p, m) for p, m in ring if p in avail]
         if not ring:
             return None

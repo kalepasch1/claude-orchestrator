@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import auto_remediate
+import agentic_repair
 
 
 class AutoRemediateRecoveryTest(unittest.TestCase):
@@ -46,7 +47,7 @@ class AutoRemediateRecoveryTest(unittest.TestCase):
         task_patch = next(p for table, _, p in updates if table == "tasks")
         self.assertEqual(task_patch["state"], "QUEUED")
         self.assertEqual(task_patch["remediation_count"], 0)
-        self.assertIn(auto_remediate.DIRECTIVE_MARKER, task_patch["prompt"])
+        self.assertIn(agentic_repair.MARKER, task_patch["prompt"])
         approval_patch = next(p for table, _, p in updates if table == "approvals")
         self.assertEqual(approval_patch["status"], "approved")
         self.assertEqual(approval_patch["decided_by"], auto_remediate.RECOVERY_MARK)
@@ -66,7 +67,8 @@ class AutoRemediateRecoveryTest(unittest.TestCase):
         db.select.return_value = [task]
         db.update.side_effect = lambda table, match, patch: updates.append((table, match, patch))
 
-        with patch.object(auto_remediate, "db", db):
+        with patch.dict(os.environ, {"ORCH_RECOVER_AUTO_CLOSED_NOOPS": "true"}), \
+             patch.object(auto_remediate, "db", db):
             restored = auto_remediate.recover_auto_closed_noops()
 
         self.assertEqual(restored, 1)
@@ -74,7 +76,17 @@ class AutoRemediateRecoveryTest(unittest.TestCase):
         self.assertEqual(patch_row["state"], "QUEUED")
         # counter is preserved+incremented across restores so repeat no-ops converge to the hard cap
         self.assertEqual(patch_row["remediation_count"], 1)
-        self.assertIn("incorrectly removed from the cue", patch_row["prompt"])
+        self.assertIn("incorrectly removed from active work", patch_row["prompt"])
+
+    def test_auto_closed_noop_recovery_is_disabled_by_default(self):
+        db = MagicMock()
+
+        with patch.dict(os.environ, {}, clear=True), patch.object(auto_remediate, "db", db):
+            restored = auto_remediate.recover_auto_closed_noops()
+
+        self.assertEqual(restored, 0)
+        db.select.assert_not_called()
+        db.update.assert_not_called()
 
     def test_cap_reached_requeues_without_creating_human_card(self):
         task = {
@@ -91,7 +103,7 @@ class AutoRemediateRecoveryTest(unittest.TestCase):
         updates = []
         inserts = []
         db = MagicMock()
-        # select order in run(): approvals(cards), tasks(DONE noops), tasks(SHELVED recover), tasks(blocked)
+        # select order in run(): approvals(cards), tasks(SHELVED recover), tasks(backlog offload), tasks(blocked)
         db.select.side_effect = [[], [], [], [task]]
         db.update.side_effect = lambda table, match, patch: updates.append((table, match, patch))
         db.insert.side_effect = lambda table, row, **kw: inserts.append((table, row))
@@ -103,7 +115,116 @@ class AutoRemediateRecoveryTest(unittest.TestCase):
         self.assertEqual(inserts, [])
         task_patch = next(p for table, _, p in updates if table == "tasks")
         self.assertEqual(task_patch["state"], "QUEUED")
-        self.assertIn("cap reached", task_patch["note"])
+        self.assertIn("agentic-repair:rework", task_patch["note"])
+
+    def test_dependency_buildfail_requeued_after_prewarm(self):
+        task = {
+            "id": "t4",
+            "slug": "nuxt-fix",
+            "state": "BLOCKED",
+            "prompt": "Fix Nuxt build.",
+            "note": "integrate BUILDFAIL — production build red; sh: nuxt: command not found",
+            "remediation_count": 0,
+            "model": "claude-sonnet-4-6",
+            "material": False,
+            "project_id": "p1",
+            "build_fail_count": 2,
+            "force_coder": "gemini",
+        }
+        updates = []
+        db = MagicMock()
+        db.select.side_effect = [[], [], [], [task]]
+        db.update.side_effect = lambda table, match, patch: updates.append((table, match, patch))
+
+        with patch.object(auto_remediate, "db", db):
+            result = auto_remediate.run()
+
+        self.assertEqual(result["requeued"], 1)
+        task_patch = next(p for table, _, p in updates if table == "tasks")
+        self.assertEqual(task_patch["state"], "QUEUED")
+        self.assertEqual(task_patch["build_fail_count"], 0)
+        self.assertEqual(task_patch["force_coder"], "gemini")
+        self.assertIn("Dependency prewarm", task_patch["prompt"])
+
+    def test_budget_guard_blocked_task_forces_non_claude_failover(self):
+        task = {
+            "id": "t5",
+            "slug": "budgeted",
+            "state": "BLOCKED",
+            "prompt": "Finish the implementation.",
+            "note": "budget guard converted to subscription/failover route",
+            "remediation_count": 1,
+            "model": "claude-sonnet-4-6",
+            "material": False,
+            "project_id": "p1",
+        }
+        updates = []
+        db = MagicMock()
+        db.select.side_effect = [[], [], [], [task]]
+        db.update.side_effect = lambda table, match, patch: updates.append((table, match, patch))
+
+        with patch.object(auto_remediate, "db", db), \
+             patch.object(auto_remediate.agentic_repair, "choose_coder", return_value="ollama"), \
+             patch.object(auto_remediate, "_non_claude_coder", return_value="ollama"):
+            result = auto_remediate.run()
+
+        self.assertEqual(result["requeued"], 1)
+        task_patch = updates[-1][2]
+        self.assertEqual(task_patch["state"], "QUEUED")
+        self.assertEqual(task_patch["force_coder"], "ollama")
+        self.assertEqual(task_patch["model"], "ollama")
+        self.assertIn("non-Claude failover", task_patch["note"])
+
+    def test_backlog_budget_capacity_rows_are_offloaded_from_claude(self):
+        task = {
+            "id": "t6",
+            "slug": "capacity-row",
+            "state": "QUEUED",
+            "prompt": "Finish the implementation.",
+            "note": "capacity circuit -> failover route",
+            "model": "claude-haiku-4-5-20251001",
+            "material": False,
+        }
+        updates = []
+        db = MagicMock()
+        db.select.return_value = [task]
+        db.update.side_effect = lambda table, match, patch: updates.append((table, match, patch))
+
+        with patch.object(auto_remediate, "db", db), \
+             patch.object(auto_remediate.agentic_repair, "choose_coder", return_value="ollama"), \
+             patch.object(auto_remediate, "_non_claude_coder", return_value="ollama"):
+            changed = auto_remediate.offload_budget_capacity_backlog()
+
+        self.assertEqual(changed, 1)
+        patch_row = updates[0][2]
+        self.assertEqual(patch_row["force_coder"], "ollama")
+        self.assertEqual(patch_row["model"], "ollama")
+        self.assertEqual(patch_row["state"], "QUEUED")
+
+    def test_mock_api_key_mentions_do_not_create_human_hold(self):
+        task = {
+            "slug": "mock-default-mode",
+            "prompt": "- legal gate: owner-only when a secret is needed\nImplement mock mode.",
+            "log_tail": "Mock mode runs unless DARWIN_LIVE=1 and DARWIN_API_KEY are both set.",
+        }
+        self.assertFalse(auto_remediate._requires_human_hold(task, "agent produced no committable changes"))
+        self.assertTrue(auto_remediate._requires_human_hold(task, "missing api key required for this task"))
+
+    def test_non_claude_failover_prefers_zero_cost_local(self):
+        coders = [
+            {"name": "claude", "cost": 1, "cap": 10},
+            {"name": "codex", "cost": 1, "cap": 8},
+            {"name": "ollama", "cost": 0, "cap": 9},
+        ]
+        fake_agentic = MagicMock()
+        fake_agentic._pool.return_value = coders
+        fake_agentic._within_cap.return_value = True
+        fake_agentic._allowed_by_terms.return_value = True
+        fake_agentic._task_sensitivity.return_value = "standard"
+
+        with patch.dict(sys.modules, {"agentic_coders": fake_agentic}):
+            auto_remediate._NON_CLAUDE_CACHE = {"t": 0.0, "coder": None}
+            self.assertEqual(auto_remediate._non_claude_coder({"prompt": "x"}), "ollama")
 
 
 if __name__ == "__main__":

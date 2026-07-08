@@ -21,6 +21,8 @@ MIN_LEN = int(os.environ.get("ORCH_PLAN_MIN_LEN", "160"))  # skip trivial/mechan
 def should_plan(task, prompt):
     if os.environ.get("ORCH_MULTIMODEL_PLAN", "true").lower() != "true":
         return False
+    if str((task or {}).get("kind") or "").lower() == "canary":
+        return False
     # skip very short / mechanical work — planning overhead isn't worth it there
     return len(prompt or "") >= MIN_LEN
 

@@ -77,7 +77,7 @@ def decide(note: str, transient_retries: int = 0) -> dict:
     if kind == "transient" and tr < MAX_TRANSIENT_RETRIES:
         return {"action": "requeue", "backoff_s": backoff_seconds(tr),
                 "transient_retries": tr + 1,
-                "note": f"transient ({tr + 1}/{MAX_TRANSIENT_RETRIES}); auto-requeued: {(note or '')[:120]}"}
+                "note": f"transient ({tr + 1}/{MAX_TRANSIENT_RETRIES}); agentic-repair assignment: {(note or '')[:120]}"}
     if kind == "transient":
         return {"action": "requeue", "backoff_s": BACKOFF_CAP_S, "transient_retries": tr + 1,
                 "note": f"transient cap reached; still auto-requeued for cooldown/failover: {(note or '')[:120]}"}

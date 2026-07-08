@@ -9,6 +9,7 @@
  *   identity/     — consent-scoped cross-product identity graph + cross-sell routing
  *   federated/    — k-anonymity + ε-DP so products learn from each other without moving raw data
  *   orchestrator/ — capability registry + task queue client (publish a process once, run it anywhere)
+ *   commonBrain/  — deployable shared brain recipes: CADE + agent market + proof + flywheel + reuse
  */
 export * from './types.ts';
 export * as crypto from './crypto/hash.ts';
@@ -25,4 +26,5 @@ export * from './orchestratorClient/index.ts';
 export * from './flywheel.ts';
 export * as products from './products/index.ts';
 export * as cade from './cade/index.ts';
+export * as commonBrain from './commonBrain/index.ts';
 export * as fleetAdmin from './fleetAdmin/index.ts';

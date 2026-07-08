@@ -81,13 +81,26 @@ class AccountPool:
             rows = db.select("accounts", {"select": "*", "order": "priority.asc"})
             if rows:
                 # machine affinity: an account with machine=NULL is usable by ANY Mac; one pinned to a
-                # hostname is only used on that machine. Lets you add a 2nd seat later and pin seat->Mac
-                # so the two runners don't contend on one login. Today (shared) = leave machine NULL.
-                usable = [r for r in rows if not r.get("machine") or r.get("machine") == host]
-                return [{"name": r["name"], "type": r.get("type") or "login",
+                # hostname is only used on that machine. Prefix-match (host in machine) so that
+                # "Mac.lan-scheduler-lane" matches hostname "Mac.lan". Fallback: if ALL affinity-
+                # matched accounts are cooling, include ANY healthy unmatched account so lanes
+                # never idle when capacity exists somewhere.
+                def _affinity(r):
+                    m = r.get("machine") or ""
+                    return not m or m == host or m.startswith(host) or host in m
+                usable = [r for r in rows if _affinity(r)]
+                accts = [{"name": r["name"], "type": r.get("type") or "login",
                          "config_dir": r.get("config_dir"),
                          "api_key_env": r.get("api_key_env"), "machine": r.get("machine")}
-                        for r in usable] or [{"name": "default", "type": "login"}]
+                        for r in usable]
+                # Fallback: if no affinity match OR all matched are cooling, add ALL accounts
+                # so the runner can use any healthy one instead of idling.
+                if not accts:
+                    accts = [{"name": r["name"], "type": r.get("type") or "login",
+                              "config_dir": r.get("config_dir"),
+                              "api_key_env": r.get("api_key_env"), "machine": r.get("machine")}
+                             for r in rows]
+                return accts or [{"name": "default", "type": "login"}]
         except Exception:
             pass
         # 2) local file fallback

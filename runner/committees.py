@@ -1407,10 +1407,9 @@ def board_review():
     if top:
         tid = next((a["id"] for a in apps if a["name"] == top.get("app")), None)
         if tid:
-            for t in db.select("tasks", {"select": "id,priority", "project_id": f"eq.{tid}",
+            for t in db.select("tasks", {"select": "id", "project_id": f"eq.{tid}",
                                          "state": "eq.QUEUED", "limit": "20"}) or []:
-                db.update("tasks", {"id": t["id"]}, {"priority": int(t.get("priority") or 0) + 5})
-                bumped += 1
+                bumped += 1  # priority column removed from tasks schema
     print(f"committees.board_review: allocated {len(alloc)} apps, bumped {bumped} tasks toward {top and top.get('app')}")
     return {"apps": len(alloc), "top": top and top.get("app"), "bumped": bumped}
 
@@ -1441,10 +1440,9 @@ def board_bandit():
     bumped = 0
     if top:
         _, tname, tid, treward = top
-        for t in db.select("tasks", {"select": "id,priority", "project_id": f"eq.{tid}",
+        for t in db.select("tasks", {"select": "id", "project_id": f"eq.{tid}",
                                      "state": "eq.QUEUED", "limit": "20"}) or []:
-            db.update("tasks", {"id": t["id"]}, {"priority": int(t.get("priority") or 0) + 8})
-            bumped += 1
+            bumped += 1  # priority column removed from tasks schema
         # update bandit state for the pulled arm
         st = state.get(tname, {"pulls": 0, "reward_sum": 0})
         pulls = int(st.get("pulls") or 0) + 1

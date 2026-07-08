@@ -26,10 +26,11 @@ MERGE_CONFLICT_REDO_CAP). Test failures mark the task TESTFAIL — the train NEV
 Idempotent: handled cards get decided_by='train:*'; cards already handled by this train or by
 the legacy merge-handler are skipped.
 """
-import os, sys, subprocess
+import datetime, json, os, re, sys, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
+import agentic_repair
 
 MARK = "train"                                   # decided_by prefix => handled by the train
 SKIP_PREFIXES = ("merge-handler", "train")       # cards already handled by any integration path
@@ -37,6 +38,12 @@ MERGE_KINDS = ("verify", "material", "integrate")
 TEST_CMD = os.environ.get("TEST_CMD", "npm test")
 TEST_TIMEOUT = int(os.environ.get("MERGE_TRAIN_TEST_TIMEOUT", "1800"))
 MERGING_STATE = os.environ.get("MERGE_TRAIN_STATE", "RUNNING")
+LOW_RISK_BATCH = int(os.environ.get("MERGE_TRAIN_LOW_RISK_BATCH", "8"))
+STANDARD_BATCH = int(os.environ.get("MERGE_TRAIN_STANDARD_BATCH", "3"))
+SENSITIVE_BATCH = int(os.environ.get("MERGE_TRAIN_SENSITIVE_BATCH", "1"))
+PRESSURE_KEY = "merge_train_pressure"
+SENSITIVE_RE = re.compile(r"secret|token|oauth|auth|rls|security|pricing|legal|compliance|regulatory|privacy|payment|stripe", re.I)
+LOW_RISK_KINDS = {"docs", "chore", "lint", "format", "mechanical", "test", "tests"}
 
 
 # ── git plumbing (each step never assumes what's checked out) ─────────────────
@@ -110,6 +117,13 @@ def _detect_prod_branch(repo, proj):
     return proj.get("default_base") or "main"
 
 
+def _normalize_task_base(repo, proj, requested):
+    for b in (requested, proj.get("default_base"), proj.get("prod_branch"), "main", "master"):
+        if _branch_exists(repo, b):
+            return b
+    return requested or proj.get("default_base") or "main"
+
+
 def _integration_base(repo, proj, task_base):
     if os.environ.get("ORCH_CODE_MERGE_TARGET", "dev").lower() not in ("dev", "staging", "integration"):
         return task_base
@@ -133,13 +147,163 @@ def _log(project, slug, outcome, extra=""):
     print(line)
 
 
+def _risk_level(card, task):
+    blob = " ".join(str(x or "") for x in (
+        card.get("kind"), card.get("title"), card.get("why"), task.get("kind"),
+        task.get("slug"), task.get("prompt"), task.get("note")))
+    if task.get("material") or card.get("kind") == "material" or SENSITIVE_RE.search(blob):
+        return "sensitive"
+    if str(task.get("kind") or "").lower() in LOW_RISK_KINDS or str(task.get("slug") or "").startswith(("batch-mech", "lint-", "docs-")):
+        return "low"
+    return "standard"
+
+
+def _age_seconds(ts):
+    if not ts:
+        return 0
+    raw = str(ts).replace("Z", "+00:00")
+    try:
+        dt = datetime.datetime.fromisoformat(raw)
+        now = datetime.datetime.now(datetime.timezone.utc) if dt.tzinfo else datetime.datetime.utcnow()
+        return max(0, int((now - dt).total_seconds()))
+    except Exception:
+        return 0
+
+
+def _record_pressure(by_project, projects):
+    payload = {"generated_at": datetime.datetime.utcnow().isoformat(), "projects": {}}
+    for pid, group in by_project.items():
+        proj = projects.get(pid, {})
+        name = proj.get("name") or str(pid)
+        repo = proj.get("repo_path", "")
+        p = {"passed_waiting": 0, "missing_branch": 0, "oldest_wait_age_s": 0,
+             "risk": {"low": 0, "standard": 0, "sensitive": 0}}
+        for card, slug, task in group:
+            risk = _risk_level(card, task)
+            p["risk"][risk] += 1
+            if _branch_exists(repo, f"agent/{slug}"):
+                p["passed_waiting"] += 1
+                p["oldest_wait_age_s"] = max(p["oldest_wait_age_s"], _age_seconds(card.get("created_at") or task.get("updated_at")))
+            else:
+                p["missing_branch"] += 1
+        payload["projects"][name] = p
+    try:
+        db.insert("controls", {"key": PRESSURE_KEY, "value": json.dumps(payload),
+                               "updated_at": "now()"}, upsert=True)
+    except Exception:
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            ".runtime", "merge_train_pressure.json")
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                json.dump(payload, f, indent=2)
+        except OSError:
+            pass
+    return payload
+
+
+def _attribute_merge_outcome(slug, task):
+    """Credit the original coder when a delayed train merge finally succeeds."""
+    patch = {"integrated": True}
+    for extra in (
+        {"merge_attributed_by": "merge_train", "merged_at": "now()"},
+        {},
+    ):
+        try:
+            db.update("outcomes", {"slug": slug}, {**patch, **extra})
+            return True
+        except Exception:
+            continue
+    try:
+        db.insert("outcomes", {"task_id": task.get("id"), "project": task.get("project_id"),
+                               "slug": slug, "kind": task.get("kind") or "build",
+                               "model": task.get("model") or "unknown",
+                               "tests_passed": True, "integrated": True,
+                               "usd": 0, "wall_ms": 0, "attempts": task.get("attempt") or 1})
+        return True
+    except Exception:
+        return False
+
+
+def _attribute_train_outcome(slug, task, outcome, integrated=False):
+    patch = {"integrated": bool(integrated)}
+    extras = {"train_outcome": outcome, "merge_attributed_by": "merge_train", "merged_at": "now()"} if integrated else {
+        "train_outcome": outcome, "merge_attributed_by": "merge_train"}
+    for candidate in ({**patch, **extras}, patch):
+        try:
+            db.update("outcomes", {"slug": slug}, candidate)
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _select_batch(group):
+    annotated = [(card, slug, task, _risk_level(card, task)) for card, slug, task in group]
+    annotated.sort(key=lambda e: ({"low": 0, "standard": 1, "sensitive": 2}[e[3]],
+                                  str(e[0].get("created_at") or "")))
+    caps = {"low": LOW_RISK_BATCH, "standard": STANDARD_BATCH, "sensitive": SENSITIVE_BATCH}
+    used = {"low": 0, "standard": 0, "sensitive": 0}
+    selected = []
+    for card, slug, task, risk in annotated:
+        if used[risk] >= caps[risk]:
+            continue
+        used[risk] += 1
+        selected.append((card, slug, task, risk))
+    return selected
+
+
+def ensure_integration_card(project, slug, *, kind="integrate", title=None, why=None,
+                            detail=None, status="approved", decided_by="canonical-train"):
+    """Idempotently feed passed code into the single canonical integration train.
+
+    Producers should not merge directly. They create/approve one code-merge card
+    and let train_run serialize rebase, tests, fast-forward, and cleanup.
+    """
+    if not slug:
+        return False
+    title = title or f"merge of {slug}"
+    cards = db.select("approvals", {"select": "id,slug,title,kind,status,decided_by",
+                                    "kind": f"in.({','.join(MERGE_KINDS)})",
+                                    "status": "in.(pending,approved)",
+                                    "limit": "2000"}) or []
+    for c in cards:
+        if str(c.get("decided_by") or "").startswith(SKIP_PREFIXES):
+            continue
+        cslug = approval_merge._slug_from(c)
+        if cslug == slug:
+            patch = {}
+            if c.get("status") != status:
+                patch["status"] = status
+            if status == "approved" and not c.get("decided_by"):
+                patch["decided_by"] = decided_by
+            if patch:
+                db.update("approvals", {"id": c["id"]}, patch)
+            return False
+    row = {"project": project, "kind": kind, "slug": slug, "title": title,
+           "status": status, "why": why or "passed tests; queued for canonical merge train",
+           "detail": detail or "", "decided_by": decided_by if status == "approved" else None}
+    try:
+        db.insert("approvals", row)
+    except Exception:
+        # Some older approval tables may not have a slug column. The title fallback
+        # keeps approval_merge._slug_from compatible with those rows.
+        row.pop("slug", None)
+        db.insert("approvals", row)
+    return True
+
+
 # ── the train ─────────────────────────────────────────────────────────────────
 
 def _pick_cards():
     """Approved merge-kind cards not yet handled by any integration path."""
-    cards = db.select("approvals", {"select": "*", "status": "eq.approved"}) or []
+    cards = db.select("approvals", {"select": "*", "status": "eq.approved",
+                                    "kind": f"in.({','.join(MERGE_KINDS)})",
+                                    "order": "created_at.desc",
+                                    "limit": os.environ.get("MERGE_TRAIN_SCAN_LIMIT", "3000")}) or []
     return [c for c in cards
             if c.get("kind") in MERGE_KINDS
+            and approval_merge._is_code_merge_card(c)
             and not str(c.get("decided_by") or "").startswith(SKIP_PREFIXES)]
 
 
@@ -159,7 +323,7 @@ def _integrate_card(card, slug, task, proj):
     """Run one card through the train steps. Returns the outcome string for the summary."""
     repo = proj.get("repo_path", "")
     pname = proj.get("name") or str(task.get("project_id"))
-    task_base = task.get("base_branch") or proj.get("default_base", "main")
+    task_base = _normalize_task_base(repo, proj, task.get("base_branch") or proj.get("default_base", "main"))
     branch = f"agent/{slug}"
 
     if not repo or not os.path.isdir(repo):
@@ -177,8 +341,12 @@ def _integrate_card(card, slug, task, proj):
         tr = int(task.get("transient_retries") or 0)
         cap = int(os.environ.get("MERGE_BRANCH_MISSING_REDO_CAP", "2"))
         if tr < cap:
-            _task_patch(task, {"state": "QUEUED", "transient_retries": tr + 1,
-                               "note": f"train: approved card is waiting for {branch}; rebuild branch ({tr+1}/{cap})"})
+            patch = agentic_repair.repair_patch(
+                task, f"approved card is waiting for missing {branch}",
+                category="missing-branch",
+                directive=f"Reconstruct missing branch {branch} for the same task from artifacts, cache, patch templates, or minimal regeneration; then run checks and commit.")
+            patch["transient_retries"] = tr + 1
+            _task_patch(task, patch)
             _log(pname, slug, "REDO", f"branch missing, rebuild ({tr+1}/{cap})")
             return "redo"
         _task_patch(task, {"state": "BLOCKED",
@@ -196,13 +364,18 @@ def _integrate_card(card, slug, task, proj):
         cap = int(os.environ.get("MERGE_CONFLICT_REDO_CAP", "2"))
         if tr < cap:
             _delete_branch(repo, branch)
-            _task_patch(task, {"state": "QUEUED", "transient_retries": tr + 1,
-                               "note": f"train: rebase conflict -> redo on fresh {base} ({tr+1}/{cap})"})
+            patch = agentic_repair.repair_patch(
+                task, f"train: rebase conflict on {branch} against {base}",
+                category="conflict",
+                directive=f"Rebuild the same task on fresh {base}, resolve the conflict in code, run tests, and commit.")
+            patch["transient_retries"] = tr + 1
+            _task_patch(task, patch)
             db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:redo"})
             _log(pname, slug, "REDO", f"rebase conflict, rebuild on fresh {base} ({tr+1}/{cap})")
             return "redo"
         _task_patch(task, {"state": "CONFLICT", "note": f"train: still conflicts after {cap} redos - needs manual rebase"})
         db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:conflict-exhausted"})
+        _attribute_train_outcome(slug, task, "conflict", integrated=False)
         _log(pname, slug, "CONFLICT", f"redo cap {cap} exhausted")
         return "conflict"
 
@@ -211,6 +384,7 @@ def _integrate_card(card, slug, task, proj):
         # NEVER force-merge red work.
         _task_patch(task, {"state": "TESTFAIL", "note": f"train: tests failed on rebased {branch}: {tail[:200]}"})
         db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:TESTFAIL"})
+        _attribute_train_outcome(slug, task, "testfail", integrated=False)
         _log(pname, slug, "TESTFAIL", tail[:120])
         return "testfail"
 
@@ -221,13 +395,18 @@ def _integrate_card(card, slug, task, proj):
         cap = int(os.environ.get("MERGE_CONFLICT_REDO_CAP", "2"))
         if tr < cap:
             _delete_branch(repo, branch)
-            _task_patch(task, {"state": "QUEUED", "transient_retries": tr + 1,
-                               "note": f"train: base moved, could not ff -> redo on fresh {base} ({tr+1}/{cap})"})
+            patch = agentic_repair.repair_patch(
+                task, f"train: base moved and {branch} could not fast-forward onto {base}",
+                category="conflict",
+                directive=f"Rebuild the same task on fresh {base}, preserve the intended diff, run tests, and commit.")
+            patch["transient_retries"] = tr + 1
+            _task_patch(task, patch)
             db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:redo"})
             _log(pname, slug, "REDO", f"ff refused ({tr+1}/{cap})")
             return "redo"
         _task_patch(task, {"state": "CONFLICT", "note": f"train: base won't fast-forward after {cap} redos"})
         db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:conflict-exhausted"})
+        _attribute_train_outcome(slug, task, "ff-conflict", integrated=False)
         _log(pname, slug, "CONFLICT", "ff refused, cap exhausted")
         return "conflict"
 
@@ -238,6 +417,8 @@ def _integrate_card(card, slug, task, proj):
 
     _task_patch(task, {"state": "MERGED", "note": note})  # (6)
     db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:MERGED"})
+    _attribute_merge_outcome(slug, task)
+    _attribute_train_outcome(slug, task, "merged", integrated=True)
     approval_merge._free_branch(repo, branch)   # cleanup so worktrees never accumulate
     _log(pname, slug, "MERGED", f"-> {base}" + (f", {push_err}" if push_err else ""))
     return "merged"
@@ -272,13 +453,15 @@ def train_run():
             continue
         by_project.setdefault(t.get("project_id"), []).append((c, slug, t))
 
-    summary = {"projects": 0, "merged": 0, "redo": 0, "testfail": 0, "conflict": 0, "skipped": 0}
+    pressure = _record_pressure(by_project, projects)
+    summary = {"projects": 0, "merged": 0, "redo": 0, "testfail": 0, "conflict": 0,
+               "skipped": 0, "risk": {"low": 0, "standard": 0, "sensitive": 0},
+               "pressure": pressure}
     for pid, group in by_project.items():
         proj = projects.get(pid, {})
         summary["projects"] += 1
-        # oldest approval first: later branches always rebase onto the just-advanced base
-        group.sort(key=lambda e: str(e[0].get("created_at") or ""))
-        for card, slug, task in group:
+        for card, slug, task, risk in _select_batch(group):
+            summary["risk"][risk] += 1
             outcome = _integrate_card(card, slug, task, proj)
             if outcome == "merged":
                 summary["merged"] += 1

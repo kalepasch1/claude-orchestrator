@@ -10,7 +10,7 @@ build red), the alarm fires and a review card is created instead of failing sile
 
 Env: VERCEL_TOKEN (required), VERCEL_TEAM_ID (for team-scoped projects). Fail-soft without them.
 """
-import os, sys, json, urllib.request, urllib.parse
+import os, sys, json, urllib.request, urllib.parse, urllib.error
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
@@ -30,7 +30,40 @@ def _latest_prod(project):
         return None
     d = deps[0]
     return {"state": d.get("state") or d.get("readyState"),
-            "at": d.get("created"), "sha": (d.get("meta") or {}).get("githubCommitSha")}
+            "at": d.get("created"), "sha": (d.get("meta") or {}).get("githubCommitSha"),
+            "url": d.get("url"), "id": d.get("uid") or d.get("id")}
+
+
+def _ensure_project_mapping(app, vercel_project):
+    if not app or not vercel_project:
+        return
+    try:
+        db.update("projects", {"name": app}, {"vercel_project": vercel_project})
+    except Exception:
+        pass
+
+
+def _file_watch_issue(app, vercel_project, error):
+    try:
+        title = f"Deploy watch error: {app}"
+        auth_hint = ""
+        if isinstance(error, urllib.error.HTTPError) and error.code in (401, 403):
+            auth_hint = " The Vercel token is rejected by the API or lacks access to the team/project; set a valid VERCEL_TOKEN and VERCEL_TEAM_ID when applicable."
+        ex = db.select("approvals", {"select": "id", "project": f"eq.{app}",
+                                    "status": "eq.pending", "title": f"eq.{title}"}) or []
+        why = f"Vercel project `{vercel_project}` could not be polled: {str(error)[:500]}.{auth_hint}"
+        if ex:
+            try:
+                db.update("approvals", {"id": ex[0]["id"]}, {"why": why})
+            except Exception:
+                pass
+            return
+        db.insert("approvals", {"project": app, "kind": "proposal", "title": title,
+                  "why": why,
+                  "value": "Fix Vercel project slug/token/team mapping so deploy verification works across the fleet.",
+                  "risk": "Deploys may be green or red, but the orchestrator cannot currently prove it."})
+    except Exception:
+        pass
 
 
 def run():
@@ -42,6 +75,7 @@ def run():
         proj = r.get("vercel_project")
         if not proj:
             continue
+        _ensure_project_mapping(r.get("app"), proj)
         try:
             d = _latest_prod(proj)
             if d:
@@ -50,6 +84,7 @@ def run():
                 seen += 1
         except Exception as e:
             print(f"deploy_watch {r['app']}: {e}")
+            _file_watch_issue(r.get("app"), proj, e)
     try:
         db.rpc("refresh_deploy_alarms", {})
         alarms = db.select("deploy_health", {"select": "app", "alarm": "eq.true"}) or []
