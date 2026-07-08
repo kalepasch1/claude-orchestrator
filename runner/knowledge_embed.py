@@ -22,6 +22,12 @@ VOYAGE_MODEL = os.environ.get("VOYAGE_EMBEDDING_MODEL", "voyage-3")
 OPENAI_MODEL = os.environ.get("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
 DIM = 1536
 
+# Adaptive circuit breaker: on 429/error, skip API calls for CIRCUIT_COOLDOWN_S seconds
+# then probe once to see if the provider recovered. Zero-delay fallback to keyword search.
+_circuit = {"open_until": 0.0, "consecutive_failures": 0}
+CIRCUIT_COOLDOWN_S = 300  # 5 minutes between probes when circuit is open
+CIRCUIT_RESET_AFTER = 3   # consecutive successes to fully close the circuit
+
 
 def _http_json(url, payload, headers):
     req = urllib.request.Request(url, data=json.dumps(payload).encode(),
@@ -31,21 +37,40 @@ def _http_json(url, payload, headers):
 
 
 def embed(text):
-    """Return a 1536-d vector, or None to signal keyword fallback."""
+    """Return a 1536-d vector, or None to signal keyword fallback.
+
+    Adaptive circuit breaker: on any API error (429, timeout, DNS), immediately returns None
+    and opens the circuit for 5 minutes. During that window, ALL embed calls skip the API
+    entirely (zero-delay keyword fallback). After 5 minutes, allows ONE probe call to check
+    if the provider recovered. On success, closes the circuit.
+    """
+    import time as _time
+    now = _time.time()
+    # Circuit is open — skip API entirely, instant keyword fallback
+    if now < _circuit["open_until"]:
+        return None
     try:
+        vec = None
         if PROVIDER == "openai" and os.environ.get("OPENAI_API_KEY"):
             d = _http_json("https://api.openai.com/v1/embeddings",
                            {"model": OPENAI_MODEL, "input": text[:8000]},
                            {"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"})
-            return d["data"][0]["embedding"]
-        if PROVIDER == "voyage" and os.environ.get("VOYAGE_API_KEY"):
+            vec = d["data"][0]["embedding"]
+        elif PROVIDER == "voyage" and os.environ.get("VOYAGE_API_KEY"):
             d = _http_json("https://api.voyageai.com/v1/embeddings",
                            {"model": VOYAGE_MODEL, "input": [text[:8000]]},
                            {"Authorization": f"Bearer {os.environ['VOYAGE_API_KEY']}"})
             v = d["data"][0]["embedding"]
-            return (v + [0.0] * DIM)[:DIM]           # pad/truncate to table dim
-    except Exception:
-        pass
+            vec = (v + [0.0] * DIM)[:DIM]
+        if vec:
+            _circuit["consecutive_failures"] = 0  # success -> close circuit
+            return vec
+    except Exception as e:
+        _circuit["consecutive_failures"] += 1
+        cooldown = min(CIRCUIT_COOLDOWN_S * _circuit["consecutive_failures"], 1800)
+        _circuit["open_until"] = now + cooldown
+        print(f"[embed] circuit OPEN for {cooldown}s after error: {str(e)[:80]} "
+              f"(failures={_circuit['consecutive_failures']})")
     return None
 
 

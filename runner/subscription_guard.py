@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """
-subscription_guard.py - the HARD firewall that makes API billing structurally impossible when you
-are running on your Max subscriptions. This is the systemic fix for the ~$500 June invoice
-(Sonnet 4.6 $387 + Haiku $111), which was prepaid-credit API spend — NOT subscription usage.
+subscription_guard.py - keeps Claude work on the logged-in Max subscription path unless direct
+Anthropic API fallback is deliberately enabled.
+
+Claude Max subscription tokens are the preferred/default capacity for Claude Code. They are not
+direct API billing and should keep the orchestrator draining work. This module only blocks direct
+Anthropic API billing paths when subscription mode is on.
 
 Where that money went (all bypass the Max plan and bill the API):
   * batch_pass.py  -> Claude Batch API via a raw ANTHROPIC_API_KEY (scheduled twice daily).
@@ -19,20 +22,28 @@ enforce() (call ONCE at runner startup, before anything else):
 audit() returns what it stripped so startup can log it. is_api_allowed() is the single switch other
 modules check before doing anything that would bill the API.
 
-NOTE: the strongest control is on the ACCOUNT itself and only you can set it — turn OFF auto-recharge
-and set a $0/low monthly spend limit in the Anthropic Console. This module guarantees the ORCHESTRATOR
-never bills the API; the console setting guarantees NOTHING can, even outside this tool.
+NOTE: this does not limit Claude Max subscription usage. It only prevents accidental direct API spend
+from code paths that would bypass the subscription.
 """
 import os
 
 SUB_ON = os.environ.get("ORCH_USE_SUBSCRIPTION", "true").lower() == "true"
-# explicit, deliberate opt-in required to ever touch API billing (default: never)
+# explicit, deliberate opt-in required to ever touch Anthropic API billing (default: never)
 API_OPT_IN = os.environ.get("ORCH_ALLOW_API_BILLING", "false").lower() == "true"
 
 
 def is_api_allowed():
-    """API billing is allowed ONLY if subscription mode is off AND you explicitly opted in."""
-    return (not SUB_ON) and API_OPT_IN
+    """Anthropic API billing is allowed only after explicit purchased-credit intent.
+
+    OpenAI/Google/DeepSeek credits are routed separately by agentic_coders. Anthropic
+    API remains extra guarded because Claude subscription usage is usually better value.
+    """
+    try:
+        import control_flags
+        credits = control_flags.use_purchased_credits(False)
+    except Exception:
+        credits = os.environ.get("ORCH_USE_PURCHASED_CREDITS", "false").lower() == "true"
+    return (not SUB_ON) and API_OPT_IN and credits
 
 
 def _api_key_vars():

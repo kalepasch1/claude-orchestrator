@@ -1,0 +1,526 @@
+"""
+claim_task ordering tests. DB access is fully mocked.
+"""
+import os
+import sys
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import db
+
+
+class TestClaimTaskOrder(unittest.TestCase):
+    def setUp(self):
+        self.orig = (db.select, db._req)
+        self.claimed = []
+
+    def tearDown(self):
+        db.select, db._req = self.orig
+
+    def test_controls_ev_ranking_is_consumed_when_task_priority_absent(self):
+        tasks = [
+            {"id": "slow", "project_id": "p1", "slug": "slow", "deps": [], "created_at": "2026-01-01"},
+            {"id": "fast", "project_id": "p1", "slug": "fast", "deps": [], "created_at": "2026-01-02"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [{"id": "p1", "name": "app", "priority": 5, "concurrency_weight": 1}]
+            if table == "controls":
+                if params.get("key") == "eq.ev_ranking":
+                    return [{"value": '["fast", "slow"]'}]
+                return []
+            if table == "tasks":
+                state = params.get("state")
+                if state == "eq.QUEUED":
+                    return [dict(t) for t in tasks]
+                if state == "in.(RUNNING,RETRY)":
+                    return []
+                if state == "in.(RUNNING,DONE,MERGED)":
+                    return []
+                if state == "in.(DONE,MERGED)":
+                    return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "fast")
+        self.assertEqual(self.claimed, ["fast"])
+
+    def test_confidence_fallback_orders_when_no_ev_row(self):
+        tasks = [
+            {"id": "low", "project_id": "p1", "slug": "low", "deps": [], "confidence": 0.1, "created_at": "2026-01-01"},
+            {"id": "high", "project_id": "p1", "slug": "high", "deps": [], "confidence": 0.9, "created_at": "2026-01-02"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [{"id": "p1", "name": "app", "priority": 5, "concurrency_weight": 1}]
+            if table == "controls":
+                return []
+            if table == "tasks":
+                state = params.get("state")
+                if state == "eq.QUEUED":
+                    return [dict(t) for t in tasks]
+                if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
+                    return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "high")
+
+    def test_owner_project_priority_beats_fifo_and_thermal_noise(self):
+        tasks = [
+            {"id": "barks-old", "project_id": "p-barks", "slug": "barks-old", "deps": [],
+             "created_at": "2026-01-01"},
+            {"id": "tomorrow-new", "project_id": "p-tomorrow", "slug": "tomorrow-new", "deps": [],
+             "created_at": "2026-01-02"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [
+                    {"id": "p-barks", "name": "sustainable-barks", "priority": 1, "concurrency_weight": 99},
+                    {"id": "p-tomorrow", "name": "tomorrow", "priority": 9, "concurrency_weight": 1},
+                ]
+            if table == "controls":
+                if params.get("key") == "eq.thermal_ranking":
+                    return [{"value": '["barks-old", "tomorrow-new"]'}]
+                return []
+            if table == "tasks":
+                state = params.get("state")
+                if state == "eq.QUEUED":
+                    return [dict(t) for t in tasks]
+                if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
+                    return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "tomorrow-new")
+
+    def test_recovery_backlog_jumps_ahead_of_net_new_thermal_rank(self):
+        tasks = [
+            {"id": "new", "project_id": "p1", "slug": "net-new-feature", "deps": [],
+             "created_at": "2026-01-01"},
+            {"id": "recover", "project_id": "p1", "slug": "recover-missing-branch-old-work",
+             "deps": [], "created_at": "2026-01-02"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [{"id": "p1", "name": "app", "priority": 5, "concurrency_weight": 1}]
+            if table == "controls":
+                if params.get("key") == "eq.thermal_ranking":
+                    return [{"value": '["new", "recover"]'}]
+                return []
+            if table == "tasks":
+                state = params.get("state")
+                if state == "eq.QUEUED":
+                    return [dict(t) for t in tasks]
+                if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
+                    return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        with patch.dict(os.environ, {"ORCH_RECOVERY_JUMP_QUEUE": "true"}, clear=False):
+            task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "recover")
+        self.assertEqual(self.claimed, ["recover"])
+
+    def test_recovery_jump_can_be_disabled_for_old_ordering(self):
+        tasks = [
+            {"id": "new", "project_id": "p1", "slug": "net-new-feature", "deps": [],
+             "created_at": "2026-01-01"},
+            {"id": "recover", "project_id": "p1", "slug": "recover-missing-branch-old-work",
+             "deps": [], "created_at": "2026-01-02"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [{"id": "p1", "name": "app", "priority": 5, "concurrency_weight": 1}]
+            if table == "controls":
+                if params.get("key") == "eq.thermal_ranking":
+                    return [{"value": '["new", "recover"]'}]
+                return []
+            if table == "tasks":
+                state = params.get("state")
+                if state == "eq.QUEUED":
+                    return [dict(t) for t in tasks]
+                if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
+                    return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        with patch.dict(os.environ, {"ORCH_RECOVERY_JUMP_QUEUE": "false"}, clear=False):
+            task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "new")
+
+    def test_improvement_backlog_jumps_ahead_after_recovery_is_gone(self):
+        tasks = [
+            {"id": "new", "project_id": "p1", "slug": "net-new-feature", "deps": [],
+             "created_at": "2026-01-01"},
+            {"id": "improve", "project_id": "p1", "slug": "improve-autonomous-queue-health",
+             "deps": [], "created_at": "2026-01-02"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [{"id": "p1", "name": "app", "priority": 5, "concurrency_weight": 1}]
+            if table == "controls":
+                if params.get("key") == "eq.thermal_ranking":
+                    return [{"value": '["new", "improve"]'}]
+                return []
+            if table == "tasks":
+                state = params.get("state")
+                if state == "eq.QUEUED":
+                    return [dict(t) for t in tasks]
+                if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
+                    return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        with patch.dict(os.environ, {"ORCH_IMPROVEMENT_JUMP_QUEUE": "true"}, clear=False):
+            task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "improve")
+
+    def test_canary_evidence_jumps_ahead_of_improvement_and_net_new(self):
+        tasks = [
+            {"id": "new", "project_id": "p1", "slug": "net-new-feature", "deps": [],
+             "created_at": "2026-01-01"},
+            {"id": "improve", "project_id": "p1", "slug": "improve-autonomous-queue-health",
+             "deps": [], "created_at": "2026-01-02"},
+            {"id": "canary", "project_id": "p1", "slug": "canary-ollama-1",
+             "deps": [], "created_at": "2026-01-03", "note": "coder-canary: routing sample"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [{"id": "p1", "name": "app", "priority": 5, "concurrency_weight": 1}]
+            if table == "controls":
+                if params.get("key") == "eq.thermal_ranking":
+                    return [{"value": '["new", "improve", "canary"]'}]
+                return []
+            if table == "tasks":
+                state = params.get("state")
+                if state == "eq.QUEUED":
+                    return [dict(t) for t in tasks]
+                if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
+                    return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        with patch.dict(os.environ, {"ORCH_EVIDENCE_JUMP_QUEUE": "true",
+                                     "ORCH_IMPROVEMENT_JUMP_QUEUE": "true"}, clear=False):
+            task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "canary")
+
+    def test_recovery_still_beats_improvement_work(self):
+        tasks = [
+            {"id": "improve", "project_id": "p1", "slug": "improve-autonomous-queue-health",
+             "deps": [], "created_at": "2026-01-01"},
+            {"id": "recover", "project_id": "p1", "slug": "recover-missing-branch-old-work",
+             "deps": [], "created_at": "2026-01-02"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [{"id": "p1", "name": "app", "priority": 5, "concurrency_weight": 1}]
+            if table == "controls":
+                if params.get("key") == "eq.thermal_ranking":
+                    return [{"value": '["improve", "recover"]'}]
+                return []
+            if table == "tasks":
+                state = params.get("state")
+                if state == "eq.QUEUED":
+                    return [dict(t) for t in tasks]
+                if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
+                    return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "recover")
+
+    def test_canary_evidence_beats_recovery_to_unblock_router_learning(self):
+        tasks = [
+            {"id": "recover", "project_id": "p1", "slug": "recover-missing-branch-old-work",
+             "deps": [], "created_at": "2026-01-01"},
+            {"id": "canary", "project_id": "p1", "slug": "recover-missing-branch-canary-gemini-1",
+             "kind": "canary", "deps": [], "created_at": "2026-01-02",
+             "note": "coder-canary: historical merged-task routing sample"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [{"id": "p1", "name": "app", "priority": 5, "concurrency_weight": 1}]
+            if table == "controls":
+                return []
+            if table == "tasks":
+                state = params.get("state")
+                if state == "eq.QUEUED":
+                    return [dict(t) for t in tasks]
+                if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
+                    return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        with patch.dict(os.environ, {"ORCH_EVIDENCE_JUMP_QUEUE": "true",
+                                     "ORCH_RECOVERY_JUMP_QUEUE": "true"}, clear=False):
+            task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "canary")
+
+    def test_release_fix_beats_recovery_for_deploy_readiness(self):
+        tasks = [
+            {"id": "recover", "project_id": "p1", "slug": "recover-missing-branch-old-work",
+             "deps": [], "created_at": "2026-01-01"},
+            {"id": "relfix", "project_id": "p1", "slug": "relfix-app-07070200",
+             "deps": [], "created_at": "2026-01-02", "note": "auto-queued by release_train build-red self-heal"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [{"id": "p1", "name": "app", "priority": 5, "concurrency_weight": 1}]
+            if table == "controls":
+                return []
+            if table == "tasks":
+                state = params.get("state")
+                if state == "eq.QUEUED":
+                    return [dict(t) for t in tasks]
+                if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
+                    return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        with patch.dict(os.environ, {"ORCH_RELEASE_FIX_JUMP_QUEUE": "true",
+                                     "ORCH_RECOVERY_JUMP_QUEUE": "true"}, clear=False):
+            task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "relfix")
+
+    def test_evidence_reserved_lane_can_beat_release_fix_once(self):
+        tasks = [
+            {"id": "canary", "project_id": "p1", "slug": "canary-gemini-1",
+             "kind": "canary", "deps": [], "created_at": "2026-01-01",
+             "note": "coder-canary: historical merged-task routing sample"},
+            {"id": "relfix", "project_id": "p1", "slug": "relfix-app-07070200",
+             "deps": [], "created_at": "2026-01-02", "note": "auto-queued by release_train build-red self-heal"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [{"id": "p1", "name": "app", "priority": 5, "concurrency_weight": 1}]
+            if table == "controls":
+                return []
+            if table == "tasks":
+                state = params.get("state")
+                if state == "eq.QUEUED":
+                    return [dict(t) for t in tasks]
+                if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
+                    return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        with patch.dict(os.environ, {"ORCH_EVIDENCE_RESERVED_LANES": "1",
+                                     "ORCH_RELEASE_FIX_JUMP_QUEUE": "true"}, clear=False):
+            task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "canary")
+
+    def test_release_fix_wins_when_evidence_lane_is_already_active(self):
+        tasks = [
+            {"id": "canary", "project_id": "p1", "slug": "canary-gemini-1",
+             "kind": "canary", "deps": [], "created_at": "2026-01-01",
+             "note": "coder-canary: historical merged-task routing sample"},
+            {"id": "relfix", "project_id": "p1", "slug": "relfix-app-07070200",
+             "deps": [], "created_at": "2026-01-02", "note": "auto-queued by release_train build-red self-heal"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [{"id": "p1", "name": "app", "priority": 5, "concurrency_weight": 1}]
+            if table == "controls":
+                return []
+            if table == "tasks":
+                state = params.get("state")
+                if state == "eq.QUEUED":
+                    return [dict(t) for t in tasks]
+                if state == "in.(RUNNING,RETRY)":
+                    return [{"project_id": "p1", "slug": "canary-gpt-1", "kind": "canary",
+                             "note": "coder-canary: running"}]
+                if state in ("in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
+                    return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        with patch.dict(os.environ, {"ORCH_EVIDENCE_RESERVED_LANES": "1",
+                                     "ORCH_RELEASE_FIX_JUMP_QUEUE": "true",
+                                     "ORCH_EVIDENCE_PER_PROJECT_CODE_LANES": "2"}, clear=False):
+            task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "relfix")
+
+    def test_recovery_can_use_priority_lane_when_project_cap_is_full(self):
+        tasks = [
+            {"id": "recover", "project_id": "p1", "slug": "recover-missing-branch-old-work",
+             "deps": [], "created_at": "2026-01-01"},
+            {"id": "new", "project_id": "p2", "slug": "net-new-feature",
+             "deps": [], "created_at": "2026-01-02"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [
+                    {"id": "p1", "name": "app1", "priority": 5, "concurrency_weight": 1},
+                    {"id": "p2", "name": "app2", "priority": 5, "concurrency_weight": 1},
+                ]
+            if table == "controls":
+                return []
+            if table == "tasks":
+                state = params.get("state")
+                if state == "eq.QUEUED":
+                    return [dict(t) for t in tasks]
+                if state == "in.(RUNNING,RETRY)":
+                    return [{"project_id": "p1"}]
+                if state in ("in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
+                    return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        with patch.dict(os.environ, {"ORCH_PER_PROJECT_CODE_LANES": "1",
+                                     "ORCH_RECOVERY_PER_PROJECT_CODE_LANES": "2"}, clear=False):
+            task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "recover")
+
+    def test_ordinary_work_still_respects_project_cap(self):
+        tasks = [
+            {"id": "blocked-by-cap", "project_id": "p1", "slug": "net-new-p1",
+             "deps": [], "created_at": "2026-01-01"},
+            {"id": "other-project", "project_id": "p2", "slug": "net-new-p2",
+             "deps": [], "created_at": "2026-01-02"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [
+                    {"id": "p1", "name": "app1", "priority": 5, "concurrency_weight": 1},
+                    {"id": "p2", "name": "app2", "priority": 5, "concurrency_weight": 1},
+                ]
+            if table == "controls":
+                return []
+            if table == "tasks":
+                state = params.get("state")
+                if state == "eq.QUEUED":
+                    return [dict(t) for t in tasks]
+                if state == "in.(RUNNING,RETRY)":
+                    return [{"project_id": "p1"}]
+                if state in ("in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
+                    return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        with patch.dict(os.environ, {"ORCH_PER_PROJECT_CODE_LANES": "1"}, clear=False):
+            task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "other-project")
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

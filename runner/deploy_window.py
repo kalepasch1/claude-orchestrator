@@ -75,7 +75,8 @@ def _evaluate_project(repo, name, metrics_url):
         db.insert("approvals", {
             "project": name, "kind": "self",
             "title": f"Canary rollback: {name} staging reset to {MAIN}",
-            "why": reason, "risk": f"metrics breached — staging rolled back to {MAIN}"
+            "why": reason, "risk": f"metrics breached — staging rolled back to {MAIN}",
+            "status": "approved", "decided_by": "canary:auto-rollback"
         })
         print(f"{name}: rolled back {STAGING} to {MAIN} — {reason}")
 

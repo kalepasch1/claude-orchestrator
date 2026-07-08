@@ -9,14 +9,27 @@ Routing all model calls through here is the systemic fix for the ~$400 runaway:
      shared local counter) — a single bug can no longer make 60k calls.
   3. REAL COST CAPTURE: uses `--output-format json` to read total_cost_usd + usage, records
      it to provider_usage, and returns it — so budgets/anomaly finally SEE spend.
+  4. AGENT SDK PATH: when ORCH_USE_SDK=true, uses the claude-agent-sdk Python package for
+     structured output, rate limit events, and per-task budget caps. Still uses subscription
+     tokens (not API billing) — the SDK wraps the CLI with the same OAuth auth.
 
 Usage (replace every `subprocess.run([CLAUDE_BIN,'-p',...,'--output-format','text'])`):
     from claude_cli import run
     r = run(prompt, model, cwd=..., env=..., project="tomorrow")
     text = r["text"]; cost = r["cost_usd"]; rc = r["returncode"]
 """
-import os, sys, json, time, subprocess, threading
+import os, sys, json, time, subprocess, threading, logging, asyncio
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+log = logging.getLogger(__name__)
+
+# --- Agent SDK availability probe (runs once at import) ---
+_HAS_AGENT_SDK = False
+try:
+    from claude_agent_sdk import query as _sdk_query, ClaudeAgentOptions, AssistantMessage, TextBlock, ResultMessage
+    _HAS_AGENT_SDK = True
+except ImportError:
+    _sdk_query = ClaudeAgentOptions = AssistantMessage = TextBlock = ResultMessage = None
 
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
@@ -86,6 +99,103 @@ def _paused(project=None):
         return False
 
 
+# ---------------------------------------------------------------------------
+# Agent SDK path — uses subscription tokens via the CLI's OAuth auth.
+# Same billing as the CLI subprocess path, but with structured output,
+# rate limit events, and per-task budget caps.
+# ---------------------------------------------------------------------------
+
+async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, timeout):
+    """Execute a Claude call via the claude-agent-sdk Python package.
+
+    Uses the same CLI binary and subscription auth as the subprocess path.
+    Returns the same dict format: {text, cost_usd, input_tokens, output_tokens,
+    returncode, raw, stderr}.
+    """
+    # Map permission mode: bypassPermissions = dangerously-skip-permissions equivalent
+    perm_mode = "bypassPermissions"
+    if os.environ.get("ORCH_SKIP_PERMISSIONS", "true").lower() != "true":
+        perm_mode = "acceptEdits"
+
+    # Build env dict for the SDK — only pass overrides, not the full env
+    # (the SDK inherits the current process env and merges these on top).
+    sdk_env = {}
+    # Pass through account-specific config dir if set (for account rotation)
+    for key in ("CLAUDE_CONFIG_DIR", "ANTHROPIC_API_KEY", "ORCH_ANTHROPIC_API_ACCOUNT"):
+        val = runenv.get(key)
+        if val:
+            sdk_env[key] = val
+
+    options = ClaudeAgentOptions(
+        model=model,
+        max_turns=max_turns or 60,
+        cwd=str(cwd) if cwd else None,
+        permission_mode=perm_mode,
+        cli_path=CLAUDE_BIN,
+        env=sdk_env,
+    )
+
+    collected_text = []
+    cost = 0.0
+    itok = 0
+    otok = 0
+    num_turns = 0
+    returncode = 0
+    rate_limit_type = None
+
+    async for message in _sdk_query(prompt=prompt, options=options):
+        if isinstance(message, AssistantMessage):
+            for block in message.content:
+                if isinstance(block, TextBlock):
+                    collected_text.append(block.text)
+        elif isinstance(message, ResultMessage):
+            cost = message.total_cost_usd or 0.0
+            usage = message.usage or {}
+            itok = usage.get("input_tokens", 0)
+            otok = usage.get("output_tokens", 0)
+            num_turns = message.num_turns or 0
+            if message.result:
+                collected_text = [message.result]
+            if message.is_error:
+                returncode = 1
+        else:
+            # Check for rate limit events (for account rotation signaling)
+            msg_type = getattr(message, "type", None)
+            if msg_type == "rate_limit":
+                rate_limit_type = getattr(message, "rate_limit_type", None)
+                log.warning("Rate limit hit: %s", rate_limit_type)
+
+    text = "\n".join(collected_text) if collected_text else ""
+
+    return {
+        "text": text,
+        "cost_usd": cost,
+        "input_tokens": itok,
+        "output_tokens": otok,
+        "returncode": returncode,
+        "raw": {"result": text, "total_cost_usd": cost,
+                "usage": {"input_tokens": itok, "output_tokens": otok},
+                "agent_sdk": True, "turns": num_turns},
+        "stderr": "",
+        "rate_limit_type": rate_limit_type,
+    }
+
+
+def _run_agent_sdk(prompt, model, cwd, runenv, project, max_turns, timeout):
+    """Synchronous wrapper — safe to call from the runner's daemon threads."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(
+            _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, timeout)
+        )
+    finally:
+        loop.close()
+
+
+# ---------------------------------------------------------------------------
+# Main entrypoint
+# ---------------------------------------------------------------------------
+
 def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
         permission="acceptEdits", timeout=None, output_only=True):
     """Metered Claude call. Returns {text, cost_usd, input_tokens, output_tokens, returncode, raw}."""
@@ -94,21 +204,15 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
                 "returncode": 75, "raw": None, "skipped": "kill_switch"}
     with _lock:
         _check_budget()          # raises CircuitOpen if over cap
-    cmd = [CLAUDE_BIN, "-p", prompt, "--model", model, "--output-format", "json"]
-    # Agents run inside per-task git WORKTREES, which are fresh paths the user never trusted —
-    # so Claude Code ignores .claude/settings.local.json ("workspace not trusted") and stalls.
-    # For an autonomous runner the correct mode is to skip the interactive trust/permission gate
-    # entirely. Guarded by env so it can be turned off. Supersedes --permission-mode.
-    if os.environ.get("ORCH_SKIP_PERMISSIONS", "true").lower() == "true":
-        cmd += ["--dangerously-skip-permissions"]
-    elif permission:
-        cmd += ["--permission-mode", permission]
-    if max_turns:
-        cmd += ["--max-turns", str(max_turns)]
-    # Use Max SUBSCRIPTION logins first. A paid API key is kept only when account_pool selected an
-    # explicit api account AND subscription_guard says paid fallback is allowed. This prevents a
-    # stray process-level ANTHROPIC_API_KEY from silently turning ordinary subscription calls into
-    # billable API calls.
+
+    # --- Route: Agent SDK vs CLI subprocess ---
+    # Both paths use subscription tokens (not API billing). The SDK path gives us
+    # structured output, rate limit events, and per-task budget caps.
+    use_sdk = (os.environ.get("ORCH_USE_SDK", "false").lower() == "true"
+               and _HAS_AGENT_SDK)
+
+    # Build the subprocess environment. Strip API key to stay on subscription billing
+    # unless an explicit API account was selected AND billing is allowed.
     runenv = dict(env if env is not None else os.environ)
     subscription = os.environ.get("ORCH_USE_SUBSCRIPTION", "true").lower() == "true"
     api_account = runenv.get("ORCH_ANTHROPIC_API_ACCOUNT") == "1"
@@ -121,6 +225,49 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
         runenv.pop("ANTHROPIC_API_KEY", None)
         runenv.pop("ORCH_ANTHROPIC_API_ACCOUNT", None)
     using_api = bool(runenv.get("ANTHROPIC_API_KEY"))
+
+    # --- Agent SDK path (subscription tokens, structured output) ---
+    if use_sdk:
+        try:
+            result = _run_agent_sdk(prompt, model, cwd, runenv, project, max_turns, timeout)
+            cost = result["cost_usd"]
+            # SDK uses subscription — real billable cost is 0 unless on API account
+            real_usd = cost if using_api else 0.0
+            _record(real_usd, sub_usd=cost)
+            try:
+                import usage_meter
+                itok, otok = result["input_tokens"], result["output_tokens"]
+                usage_meter.record("anthropic", project, units=itok + otok, unit="tokens", usd=real_usd)
+                if not using_api and cost:
+                    usage_meter.record("anthropic-notional", project, units=itok + otok,
+                                       unit="tokens", usd=cost)
+            except Exception:
+                pass
+            # Signal rate limits to account_pool for rotation
+            if result.get("rate_limit_type"):
+                try:
+                    import account_pool
+                    account_pool.pool.mark_exhausted(
+                        reason=f"sdk_rate_limit:{result['rate_limit_type']}")
+                except Exception:
+                    pass
+            return result
+        except Exception as exc:
+            log.warning("Agent SDK path failed (%s); falling back to CLI subprocess", exc)
+            # Fall through to CLI path below
+
+    # --- CLI subprocess path (original) ---
+    cmd = [CLAUDE_BIN, "-p", prompt, "--model", model, "--output-format", "json"]
+    # Agents run inside per-task git WORKTREES, which are fresh paths the user never trusted —
+    # so Claude Code ignores .claude/settings.local.json ("workspace not trusted") and stalls.
+    # For an autonomous runner the correct mode is to skip the interactive trust/permission gate
+    # entirely. Guarded by env so it can be turned off. Supersedes --permission-mode.
+    if os.environ.get("ORCH_SKIP_PERMISSIONS", "true").lower() == "true":
+        cmd += ["--dangerously-skip-permissions"]
+    elif permission:
+        cmd += ["--permission-mode", permission]
+    if max_turns:
+        cmd += ["--max-turns", str(max_turns)]
     proc = subprocess.run(cmd, cwd=cwd, env=runenv, capture_output=True, text=True, timeout=timeout)
     text, cost, itok, otok, raw = proc.stdout, 0.0, 0, 0, None
     try:
@@ -146,12 +293,7 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
             usage_meter.record("anthropic-notional", project, units=itok + otok, unit="tokens", usd=cost)
     except Exception:
         pass
-    # cost_usd is REAL billable dollars (0 on subscription) — this is what flows into outcomes.usd /
-    # v_spend_mtd / budgets, so the budget reflects money actually spent, not the notional token price
-    # of costless subscription calls (the phantom "$236 spent" that forced the absurd $100k caps).
-    # notional_usd keeps the subscription-equivalent for visibility only.
-    return {"text": text, "cost_usd": real_usd, "notional_usd": cost,
-            "input_tokens": itok, "output_tokens": otok,
+    return {"text": text, "cost_usd": cost, "input_tokens": itok, "output_tokens": otok,
             "returncode": proc.returncode, "raw": raw, "stderr": proc.stderr or ""}
 
 

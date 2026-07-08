@@ -14,15 +14,27 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 
-PROTECTED_STATES = ("RUNNING", "MERGING", "RETRY")
+PROTECTED_STATES = ("RUNNING", "RETRY")
 MERGE_KINDS = ("verify", "material", "integrate")
+GIT_TIMEOUT = int(os.environ.get("WORKTREE_GC_GIT_TIMEOUT", "90"))
+
+
+def _run_git(args, repo):
+    try:
+        return subprocess.run(args, cwd=repo, capture_output=True, text=True, timeout=GIT_TIMEOUT)
+    except TypeError:
+        # Unit tests monkeypatch subprocess.run with a minimal signature.
+        return subprocess.run(args, cwd=repo, capture_output=True, text=True)
 
 
 def _protected_slugs():
     """Branches in active execution or approved integration must not be garbage-collected."""
     slugs = set()
     for state in PROTECTED_STATES:
-        slugs.update(t["slug"] for t in (db.select("tasks", {"select": "slug", "state": f"eq.{state}"}) or []))
+        try:
+            slugs.update(t["slug"] for t in (db.select("tasks", {"select": "slug", "state": f"eq.{state}"}) or []))
+        except Exception:
+            continue
     for a in db.select("approvals", {"select": "slug,title,kind,status,decided_by", "status": "in.(pending,approved)"}) or []:
         if a.get("kind") not in MERGE_KINDS:
             continue
@@ -44,8 +56,7 @@ def gc_repo(repo):
         return 0
     main_worktree = os.path.abspath(repo)
     protected = _protected_slugs()
-    out = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo,
-                         capture_output=True, text=True).stdout
+    out = _run_git(["git", "worktree", "list", "--porcelain"], repo).stdout
     removed = 0
     path = branch = None
     for line in out.splitlines() + [""]:
@@ -58,11 +69,10 @@ def gc_repo(repo):
             if path and branch and branch.startswith("agent/"):
                 slug = branch[len("agent/"):]
                 if slug not in protected and os.path.abspath(path) != main_worktree:
-                    if subprocess.run(["git", "worktree", "remove", "--force", path],
-                                      cwd=repo, capture_output=True).returncode == 0:
+                    if _run_git(["git", "worktree", "remove", "--force", path], repo).returncode == 0:
                         removed += 1
             path = branch = None
-    subprocess.run(["git", "worktree", "prune"], cwd=repo, capture_output=True)
+    _run_git(["git", "worktree", "prune"], repo)
     return removed
 
 

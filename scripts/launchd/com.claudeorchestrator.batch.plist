@@ -9,7 +9,7 @@
     <string>com.claudeorchestrator.batch</string>
     <key>ProgramArguments</key>
     <array>
-        <string>HOME_DIR/Applications/ClaudeRunner.app/Contents/MacOS/run</string>
+        <string>__APP_DIR__/Contents/MacOS/ClaudeRunner</string>
         <string>batch</string>
     </array>
     <key>EnvironmentVariables</key>

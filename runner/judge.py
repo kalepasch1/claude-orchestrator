@@ -21,8 +21,11 @@ N_JUDGES = int(os.environ.get("JUDGE_PANEL_SIZE", "2"))
 
 # cheapest capable reviewer per provider
 REVIEWERS = {
-    "openai": "gpt-4o-mini", "google": "gemini-2.0-flash", "deepseek": "deepseek-chat",
-    "local": os.environ.get("OLLAMA_MODEL", "llama3.1"), "claude": "claude-haiku-4-5-20251001",
+    "openai": os.environ.get("JUDGE_OPENAI_MODEL", "gpt-5.4-mini"),
+    "google": os.environ.get("JUDGE_GOOGLE_MODEL", "gemini-2.5-flash"),
+    "deepseek": os.environ.get("JUDGE_DEEPSEEK_MODEL", "deepseek-v4-flash"),
+    "local": os.environ.get("OLLAMA_MODEL", "llama3.1"),
+    "claude": "claude-haiku-4-5-20241022",
 }
 
 PROMPT = """You are a pragmatic code reviewer for a fast-moving solo shop (not a FAANG gate). Review
@@ -59,13 +62,22 @@ def review(task_prompt, diff, author_model="claude-opus-4-8", project=None, max_
     prompt = PROMPT.replace("{task}", (task_prompt or "")[:2000]).replace("{diff}", (diff or "")[:max_chars])
     panel = []
     for prov in _panel_providers(author_model):
-        model = REVIEWERS.get(prov, "claude-haiku-4-5-20251001")
+        try:
+            import verifier_marketplace
+            prov, model = verifier_marketplace.choose("review", need=6, author_model=author_model)
+        except Exception:
+            model = REVIEWERS.get(prov, "claude-haiku-4-5-20251001")
         r = mg.complete(prov, model, prompt, project=project)
         try:
             d = json.loads(re.search(r"\{.*\}", r["text"], re.S).group(0))
         except Exception:
             d = {"verdict": "pass", "score": 6, "notes": "unparseable review", "legal_counsel_required": False, "legal_risk": ""}
         d["by"] = f"{prov}:{model}"; d["cost_usd"] = r.get("cost_usd", 0)
+        try:
+            import verifier_marketplace
+            verifier_marketplace.record(d["by"], d.get("verdict"))
+        except Exception:
+            pass
         panel.append(d)
     if not panel:
         return {"verdict": "pass", "score": 6, "notes": "no judges available",

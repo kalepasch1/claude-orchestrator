@@ -33,6 +33,7 @@ and deprioritized, but remain QUEUED so the implementation pipeline continues.
 import os, sys, json, math
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import thermal_map
 
 TOP_N = 50                 # tasks that receive an explicit priority write
 CONTROLS_TOP = 100         # ids stored in the controls ev_ranking row
@@ -71,6 +72,11 @@ def score(task, ctx):
     if project in ("beethoven", "orchestrator", "ORCHESTRATOR"):
         s = max(s, 20.0) * float(os.environ.get("ORCH_SELF_IMPROVE_BOOST", "3.0"))
     return s
+
+
+def thermal_score(task, ctx):
+    """Expected merged value per minute. This is the queue's primary heat signal."""
+    return thermal_map.score(task, ctx)
 
 
 def load_ctx():
@@ -128,7 +134,7 @@ def _scored_queue(limit=500, ctx=None):
     for t in tasks:
         if not t.get("project"):
             t["project"] = names.get(t.get("project_id"), "")
-    scored = [(score(t, ctx), t) for t in tasks]
+    scored = [(thermal_score(t, ctx), t) for t in tasks]
     scored.sort(key=lambda p: (-p[0], p[1].get("created_at") or "", str(p[1].get("id"))))
     return scored
 
@@ -152,16 +158,23 @@ def apply_ranking(scored=None):
     top = scored[:TOP_N]
     if _has_priority_column():
         n = 0
-        for idx, (_, t) in enumerate(top):
+        for idx, (heat, t) in enumerate(top):
             try:
-                db.update("tasks", {"id": t["id"]}, {"priority": idx + 1})
+                db.update("tasks", {"id": t["id"]},
+                          {"priority": idx + 1,
+                           "thermal_score": round(float(heat), 6),
+                           "estimated_minutes": round(thermal_map.estimate_minutes(t), 2)})
                 n += 1
             except Exception:
-                pass
+                try:
+                    db.update("tasks", {"id": t["id"]}, {"priority": idx + 1})
+                    n += 1
+                except Exception:
+                    pass
         return {"storage": "priority", "count": n}
     try:
         ids = [t["id"] for _, t in scored[:CONTROLS_TOP]]
-        db.insert("controls", {"key": "ev_ranking", "value": json.dumps(ids)}, upsert=True)
+        db.insert("controls", {"key": "thermal_ranking", "value": json.dumps(ids)}, upsert=True)
         return {"storage": "controls", "count": len(ids)}
     except Exception:
         pass

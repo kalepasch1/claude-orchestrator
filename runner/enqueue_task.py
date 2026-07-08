@@ -14,18 +14,24 @@ Idempotent: skips if a task with the same (project_id, slug) is already open/don
 import os, sys, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import pipeline_contract
 
 
-def project_id_by_name(name):
+def project_by_name(name):
     rows = db.select("projects", {"select": "id,name,repo_path"}) or []
     for p in rows:
         if p.get("name") == name:
-            return p["id"]
+            return p
     # tolerate the '2080' folder name too
     for p in rows:
         if name in (p.get("repo_path") or ""):
-            return p["id"]
+            return p
     return None
+
+
+def project_id_by_name(name):
+    p = project_by_name(name)
+    return p["id"] if p else None
 
 
 def already_present(project_id, slug):
@@ -37,19 +43,25 @@ def already_present(project_id, slug):
 
 def main(path):
     spec = json.load(open(path))
-    pid = project_id_by_name(spec["project"])
-    if not pid:
+    proj = project_by_name(spec["project"])
+    if not proj:
         sys.exit(f"[enqueue] project '{spec['project']}' not found in projects table. "
                  f"Register it first (name + repo_path).")
+    pid = proj["id"]
     if already_present(pid, spec["slug"]):
         print(f"[enqueue] task '{spec['slug']}' already exists for project — skipping.")
         return
     row = {
         "project_id": pid,
         "slug": spec["slug"],
-        "prompt": spec["prompt"],
+        "prompt": pipeline_contract.wrap_prompt(spec["prompt"], project=proj.get("name") or spec["project"],
+                                                kind=spec.get("kind", "build"),
+                                                source=spec.get("source", "json-enqueue"),
+                                                slug=spec["slug"],
+                                                material=bool(spec.get("material"))),
         "kind": spec.get("kind", "build"),
         "state": spec.get("state", "QUEUED"),
+        "note": pipeline_contract.note(spec.get("note", ""), source=spec.get("source", "json-enqueue")),
     }
     if spec.get("model"):
         row["model"] = spec["model"]

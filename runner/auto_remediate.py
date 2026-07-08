@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import legal_filter
 import pipeline_contract
+import agentic_repair
 
 CAP = int(os.environ.get("REMEDIATION_CAP", "3"))
 # HARD TERMINAL CAP: a task remediated this many times without ever merging is almost certainly
@@ -32,17 +33,20 @@ HARD_CAP = int(os.environ.get("REMEDIATION_HARD_CAP", "6"))
 MAX_REMEDIATION_PROMPT_CHARS = int(os.environ.get("ORCH_MAX_REMEDIATION_PROMPT_CHARS", "16000"))
 RECOVERY_MARK = "auto-remediate:reclaimed-20260703"
 DIRECTIVE_MARKER = "AUTO-REMEDIATION DIRECTIVE"
-_BUDGET = re.compile(r"budget cap|call cap|hourly \$ cap|daily \$ cap|cost circuit", re.I)
-_TRANSIENT = re.compile(r"budget cap|connection reset|urlopen|errno|timeout|overload|503|high demand|rate.?limit", re.I)
+_BUDGET = re.compile(r"budget cap|budget guard|budget/capacity guard|backlog offloaded|call cap|hourly \$ cap|daily \$ cap|cost circuit", re.I)
+_CAPACITY = re.compile(r"capacity circuit|account exhausted|usage limit|claude.*limit|subscription.*limit", re.I)
+_TRANSIENT = re.compile(r"budget cap|budget guard|capacity circuit|connection reset|urlopen|errno|timeout|overload|503|high demand|rate.?limit", re.I)
 _NOOP = re.compile(r"no committable|changed nothing|no file changes|agent run failed", re.I)
 _REVIEW = re.compile(r"verify:|judge:|quality gate", re.I)
 _CONFLICT = re.compile(r"conflict", re.I)
 _MISSING_BRANCH = re.compile(r"branch.*missing|no longer exists|approved.*agent/", re.I)
-_HUMAN = re.compile(r"credential needed|missing credential|auth failure|secret|api key|two-key", re.I)
+_HUMAN = re.compile(r"credential needed|missing credential|auth failure|secret|missing api key|api key required|hardcoded.*api key|two-key", re.I)
 _CAP_CARD = re.compile(r"blocked after \d+ auto-fixes|can't self-revise|needs a look:|re-scope needed", re.I)
 _PARKED = re.compile(r"ev-parked|near-zero expected value|preflight: predicted no committable|permission denial|tool use", re.I)
 _TOO_LONG = re.compile(r"prompt is too long|context.*limit|single-exchange conversation cannot be compacted", re.I)
 _READY_UNCOMMITTED = re.compile(r"ready to commit|git commit|changes are safe|implementation is complete", re.I)
+_ENV_BUILDFAIL = re.compile(r"integrate BUILDFAIL|production build red|build error", re.I)
+_MISSING_BUILD_TOOL = re.compile(r"\b(yarn|pnpm|nuxt|nuxi|next|vite|prisma|vue-tsc):?\s*(command not found|not found)|cannot find module ['\"](@nuxt/|nuxt|nuxi|next|vite|prisma)", re.I)
 _QUOTED_SLUG = re.compile(r"'([^']+)'")
 
 
@@ -57,9 +61,10 @@ def run(limit=120):
     recovered_cards = recover_pending_manual_reviews()
     restored_noops = recover_auto_closed_noops()
     shelf_dec, shelf_req = recover_shelved()   # auto-process the shelved pile — no manual requeue needed
+    offloaded_backlog = offload_budget_capacity_backlog()
     blocked = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,base_branch,log_tail,state",
                                   "state": "in.(BLOCKED,CONFLICT,TESTFAIL)", "limit": str(limit)}) or []
-    requeued = escalated = revised = reclaimed = left = shelved = decomposed = 0
+    requeued = escalated = revised = reclaimed = left = shelved = decomposed = agentic_repairs = 0
     for t in blocked:
         note = t.get("note") or ""
         signal = f"{note}\n{t.get('log_tail') or ''}"
@@ -91,34 +96,47 @@ def run(limit=120):
         upd = {"state": "QUEUED", "remediation_count": rc + 1, "account": None, "updated_at": "now()"}
 
         if _TOO_LONG.search(signal):
-            upd["prompt"] = _implementation_prompt(t, signal, "Previous prompt exceeded the model context limit; use this compacted instruction and inspect files directly.")
-            upd["model"] = _escalate(t.get("model"))
-            upd["note"] = f"auto-remediate: compacted overlong prompt ({rc + 1})"
+            upd = agentic_repair.repair_patch(
+                t, signal, category="oversized",
+                directive="Previous prompt exceeded the model context limit; use this compacted instruction and inspect files directly.")
             db.update("tasks", {"id": t["id"]}, upd)
-            reclaimed += 1
+            reclaimed += 1; agentic_repairs += 1
             continue
 
         if _PARKED.search(signal):
-            upd["prompt"] = _implementation_prompt(t, signal, "This was incorrectly parked as non-actionable; implement the smallest concrete useful improvement now.")
-            upd["model"] = _escalate(_escalate(t.get("model")))
-            upd["note"] = f"auto-remediate: unparked for implementation ({rc + 1})"
+            upd = agentic_repair.repair_patch(
+                t, signal, category="rework",
+                directive="This was incorrectly parked as non-actionable; implement the smallest concrete useful improvement now.")
             db.update("tasks", {"id": t["id"]}, upd)
-            reclaimed += 1
+            reclaimed += 1; agentic_repairs += 1
             continue
 
         if _CONFLICT.search(signal):
-            upd["prompt"] = _implementation_prompt(t, signal, "Recover from the merge/build conflict on a fresh branch and complete the implementation.")
-            upd["model"] = _escalate(_escalate(t.get("model")))
-            upd["note"] = f"auto-remediate: conflict recovery queued ({rc + 1})"
+            upd = agentic_repair.repair_patch(
+                t, signal, category="conflict",
+                directive="Recover from the merge/build conflict on a fresh branch and complete the implementation.")
             db.update("tasks", {"id": t["id"]}, upd)
-            requeued += 1
+            requeued += 1; agentic_repairs += 1
             continue
 
-        if _BUDGET.search(signal):
+        if _BUDGET.search(signal) or _CAPACITY.search(signal):
+            upd = agentic_repair.repair_patch(
+                t, signal, category="capacity", prefer_non_claude=True,
+                directive="Capacity or budget blocked the previous run. Continue the same task through the selected non-Claude/local coder and finish the implementation.")
             upd["remediation_count"] = 0
-            upd["note"] = "auto-remediate: budget guard converted to subscription/failover route"
+            upd["note"] = upd.get("note", "") + "; non-Claude failover"
             db.update("tasks", {"id": t["id"]}, upd)
-            requeued += 1
+            requeued += 1; agentic_repairs += 1
+            continue
+
+        if _ENV_BUILDFAIL.search(signal) and _MISSING_BUILD_TOOL.search(signal):
+            upd = agentic_repair.repair_patch(
+                t, signal, category="buildfail",
+                directive=("Dependency prewarm/install cache is now available. Re-run on a fresh warmed worktree; "
+                           "if the build still fails, fix only real source/type errors and avoid changing package managers unless required."))
+            upd["build_fail_count"] = 0
+            db.update("tasks", {"id": t["id"]}, upd)
+            requeued += 1; agentic_repairs += 1
             continue
 
         if _requires_human_hold(t, signal):
@@ -128,53 +146,145 @@ def run(limit=120):
         # A repeated no-op means the instruction was too vague or context was lost. Keep it in the cue
         # with an explicit implementation directive instead of marking it DONE.
         if (_NOOP.search(signal) and rc >= 1) or _READY_UNCOMMITTED.search(signal):
-            upd["prompt"] = _implementation_prompt(t, signal, "The prior run found/created work but did not leave a committable branch. Verify the diff, commit it, and let merge train integrate it.")
-            upd["model"] = _escalate(_escalate(t.get("model")))
-            upd["note"] = f"auto-remediate: reclaimed no-op; implement fully ({rc + 1})"
+            upd = agentic_repair.repair_patch(
+                t, signal, category="noop",
+                directive="The prior run found or created work but did not leave a committable branch. Verify the diff, commit it, and let merge train integrate it.")
             db.update("tasks", {"id": t["id"]}, upd)
-            reclaimed += 1
+            reclaimed += 1; agentic_repairs += 1
             continue
 
         if rc >= CAP:
-            upd["prompt"] = _implementation_prompt(t, note, f"Remediation cap {CAP} reached; finish the implementation instead of escalating to manual review.")
-            upd["model"] = _escalate(_escalate(t.get("model")))
-            upd["note"] = f"auto-remediate: cap reached; reclaimed for full implementation ({rc + 1})"
+            upd = agentic_repair.repair_patch(
+                t, signal, category="rework",
+                directive=f"Remediation cap {CAP} reached. Do not buffer this task; complete the implementation through the agentic coder and make the checks green.")
             db.update("tasks", {"id": t["id"]}, upd)
-            reclaimed += 1
+            reclaimed += 1; agentic_repairs += 1
             continue
 
         if rc == 0 and (_TRANSIENT.search(signal) or _CONFLICT.search(signal) or _MISSING_BRANCH.search(signal)):
-            upd["note"] = f"auto-remediate: retry (1/{CAP}) — {note[:70]}"
-            requeued += 1
+            category = "missing-branch" if _MISSING_BRANCH.search(signal) else ("conflict" if _CONFLICT.search(signal) else "transient")
+            upd = agentic_repair.repair_patch(
+                t, signal, category=category,
+                directive="Resolve the concrete transient/branch/conflict issue in the same task instead of retrying blindly.")
+            requeued += 1; agentic_repairs += 1
         elif rc == 0:
             # first real failure -> escalate model + sharpen with the specific reason
-            upd["prompt"] = ((t.get("prompt") or "") +
-                             f"\n\nPRIOR ATTEMPT FAILED — address specifically: {note[:250]}\n"
-                             f"Make a concrete, tested change and COMMIT it; do not return with no edits.")
-            upd["model"] = _escalate(t.get("model"))
-            upd["note"] = f"auto-remediate: escalate+sharpen (1/{CAP})"
-            escalated += 1
+            upd = agentic_repair.repair_patch(
+                t, signal, category="rework",
+                directive="Prior attempt failed. Address the specific failure, make a concrete tested change, and commit it.")
+            escalated += 1; agentic_repairs += 1
         else:
             # 2nd+ failure -> RE-PLAN the task from scratch instead of burning another blind retry
             new_prompt = _revise(t, note)
             if new_prompt:
-                upd["prompt"] = new_prompt
-                upd["note"] = f"auto-remediate: re-planned (2/{CAP})"
+                upd = agentic_repair.repair_patch(
+                    {**t, "prompt": new_prompt}, signal, category="rework",
+                    directive="Use this revised smaller implementation plan and complete it through the agentic coder.")
                 revised += 1
+                agentic_repairs += 1
             else:
-                upd["prompt"] = _implementation_prompt(t, note, "Planner could not rewrite this; implement the smallest useful fix directly.")
-                upd["model"] = _escalate(_escalate(t.get("model")))
-                upd["note"] = f"auto-remediate: fallback implementation prompt ({rc + 1})"
-                reclaimed += 1
+                upd = agentic_repair.repair_patch(
+                    t, signal, category="rework",
+                    directive="Planner could not rewrite this. Implement the smallest useful fix directly and commit it.")
+                reclaimed += 1; agentic_repairs += 1
         db.update("tasks", {"id": t["id"]}, upd)
-    print(f"auto_remediate: retry {requeued}, escalate {escalated}, re-plan {revised}, "
+    print(f"auto_remediate: agentic-repair {agentic_repairs}, retry {requeued}, escalate {escalated}, re-plan {revised}, "
           f"reclaimed {reclaimed}, decomposed {decomposed}, shelved {shelved}, "
           f"shelf-recovered {shelf_dec}dec/{shelf_req}req, recovered-cards {recovered_cards}, "
-          f"restored-noops {restored_noops}, left {left}")
+          f"restored-noops {restored_noops}, offloaded-backlog {offloaded_backlog}, left {left}")
     return {"requeued": requeued, "escalated": escalated, "revised": revised,
             "reclaimed": reclaimed, "decomposed": decomposed, "shelved": shelved,
+            "agentic_repairs": agentic_repairs,
             "shelf_decomposed": shelf_dec, "shelf_requeued": shelf_req,
-            "recovered_cards": recovered_cards, "restored_noops": restored_noops, "left": left}
+            "recovered_cards": recovered_cards, "restored_noops": restored_noops,
+            "offloaded_backlog": offloaded_backlog, "left": left}
+
+
+_NON_CLAUDE_CACHE = {"t": 0.0, "coder": None}
+
+
+def _non_claude_coder(task=None):
+    """Best current non-Claude agentic coder for failover. Prefer free/local, then cheaper paid."""
+    import time
+    if time.time() - _NON_CLAUDE_CACHE["t"] < 60 and _NON_CLAUDE_CACHE["coder"]:
+        return _NON_CLAUDE_CACHE["coder"]
+    try:
+        import agentic_coders
+        pool = []
+        task = task or {}
+        for spec in agentic_coders._pool():
+            name = spec.get("name")
+            if name == "claude":
+                continue
+            if not agentic_coders._within_cap(spec):
+                continue
+            if not agentic_coders._allowed_by_terms(spec, agentic_coders._task_sensitivity(task)):
+                continue
+            pool.append(spec)
+        if not pool:
+            return None
+        def _cost(c):
+            return int(c.get("cost") if c.get("cost") is not None else 9)
+        picked = sorted(pool, key=lambda c: (_cost(c), -int(c.get("cap") or 0), c.get("name") or ""))[0].get("name")
+        _NON_CLAUDE_CACHE.update({"t": time.time(), "coder": picked})
+        return picked
+    except Exception:
+        return None
+
+
+def _force_non_claude(patch, task, signal=""):
+    coder = _non_claude_coder(task)
+    if coder:
+        patch["force_coder"] = coder
+        patch["model"] = coder
+    else:
+        patch["model"] = _non_claude_model(task.get("model"))
+    prompt = patch.get("prompt")
+    if prompt:
+        return
+    if signal:
+        patch["prompt"] = _implementation_prompt(
+            task, signal,
+            "Claude capacity or budget blocked this task. Use the selected non-Claude/local coder path; make a concrete change and commit it.")
+
+
+def _non_claude_model(model):
+    try:
+        import agentic_coders
+        coder = _non_claude_coder({})
+        if coder:
+            return coder
+    except Exception:
+        pass
+    return model if model and "claude" not in str(model).lower() else "ollama"
+
+
+def offload_budget_capacity_backlog(limit=500):
+    """Convert already-queued Claude budget/capacity rows to explicit non-Claude routes."""
+    try:
+        rows = db.select("tasks", {"select": "id,slug,prompt,note,model,force_coder,material,kind,project_id,base_branch,log_tail",
+                                   "state": "in.(QUEUED,RETRY,BLOCKED)", "limit": str(limit)}) or []
+    except Exception:
+        return 0
+    changed = 0
+    for t in rows:
+        note = t.get("note") or ""
+        signal = f"{note}\n{t.get('log_tail') or ''}"
+        if not (_BUDGET.search(signal) or _CAPACITY.search(signal)):
+            continue
+        preferred = _non_claude_coder(t)
+        existing = str(t.get("force_coder") or t.get("model") or "").lower()
+        if (existing and "claude" not in existing and "haiku" not in existing and "sonnet" not in existing and "opus" not in existing
+                and (not preferred or existing == preferred)):
+            continue
+        patch = agentic_repair.repair_patch(
+            t, signal, category="capacity", prefer_non_claude=True,
+            directive="This backlog row was blocked by Claude budget/capacity. Continue the same task through a non-Claude/local coder and finish it.")
+        patch["remediation_count"] = 0
+        patch["note"] = "agentic-repair:capacity; backlog offloaded from Claude budget/capacity guard"
+        db.update("tasks", {"id": t["id"]}, patch)
+        changed += 1
+    return changed
 
 
 def recover_pending_manual_reviews(limit=500):
@@ -203,11 +313,10 @@ def recover_pending_manual_reviews(limit=500):
             _close_review_card(card, f"task already {state}")
             recovered += 1
             continue
-        patch = {"state": "QUEUED", "account": None, "updated_at": "now()",
-                 "remediation_count": 0,
-                 "prompt": _implementation_prompt(task, note, "Recovered from stale manual-review card; implement now."),
-                 "model": _escalate(_escalate(task.get("model"))),
-                 "note": "auto-remediate: reclaimed pending manual review; implementing fully"}
+        patch = agentic_repair.repair_patch(
+            task, note, category="rework",
+            directive="Recovered from stale manual-review card. Continue the same task through the agentic coder and implement it fully.")
+        patch["remediation_count"] = 0
         db.update("tasks", {"id": task["id"]}, patch)
         _close_review_card(card, "requeued matching task for implementation")
         recovered += 1
@@ -216,6 +325,8 @@ def recover_pending_manual_reviews(limit=500):
 
 def recover_auto_closed_noops(limit=500):
     """Put tasks that were incorrectly marked DONE for no-op retries back into the cue."""
+    if os.environ.get("ORCH_RECOVER_AUTO_CLOSED_NOOPS", "false").lower() not in ("1", "true", "yes", "on"):
+        return 0
     rows = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,log_tail",
                                "state": "eq.DONE", "limit": str(limit)}) or []
     restored = 0
@@ -236,11 +347,9 @@ def recover_auto_closed_noops(limit=500):
             continue
         # Preserve (increment) the counter across restores so repeat no-ops converge to the hard cap.
         db.update("tasks", {"id": task["id"]},
-                  {"state": "QUEUED", "account": None, "updated_at": "now()",
-                   "remediation_count": rc + 1,
-                   "prompt": _implementation_prompt(task, note, "This was incorrectly removed from the cue; implement the underlying work."),
-                   "model": _escalate(_escalate(task.get("model"))),
-                   "note": "auto-remediate: restored incorrectly auto-closed no-op task"})
+                  agentic_repair.repair_patch(
+                      task, note, category="noop",
+                      directive="This was incorrectly removed from active work. Continue the same task, implement the underlying change, run checks, and commit."))
         restored += 1
     return restored
 
@@ -279,9 +388,16 @@ def _close_review_card(card, reason):
 
 
 def _requires_human_hold(task, note):
-    text = " ".join(str(task.get(k) or "") for k in ("slug", "prompt", "log_tail")) + " " + str(note or "")
-    if _HUMAN.search(text):
+    evidence = " ".join(str(task.get(k) or "") for k in ("slug", "log_tail")) + " " + str(note or "")
+    if _HUMAN.search(evidence):
         return True
+    prompt = "\n".join(
+        line for line in str(task.get("prompt") or "").splitlines()
+        if "legal gate:" not in line.lower()
+        and "owner-only when" not in line.lower()
+        and "merge/release:" not in line.lower()
+    )
+    text = " ".join([str(task.get("slug") or ""), prompt, str(note or "")])
     return legal_filter.requires_owner_approval(text=text)
 
 
@@ -387,10 +503,11 @@ def recover_shelved(limit=200):
                 decomposed += 1
                 continue
         # atomic/small (or already a decomposition product): requeue fresh with a concrete impl prompt
-        db.update("tasks", {"id": t["id"]}, {"state": "QUEUED", "remediation_count": 0, "account": None,
-                  "updated_at": "now()",
-                  "prompt": _implementation_prompt(t, note, "Recovered from shelf; make the smallest complete change and commit it now."),
-                  "note": "auto-remediate: recovered from shelf"})
+        patch = agentic_repair.repair_patch(
+            t, note, category="rework",
+            directive="Recovered from shelf. Make the smallest complete change through the agentic coder and commit it now.")
+        patch["remediation_count"] = 0
+        db.update("tasks", {"id": t["id"]}, patch)
         requeued += 1
     return decomposed, requeued
 

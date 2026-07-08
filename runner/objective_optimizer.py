@@ -83,7 +83,9 @@ def _propose(obj):
     # candidate levers (env-backed, read live by hot_reload) — try one not tried recently
     levers = [
         ("ORCH_OPUS_MAX_SHARE", lambda v: round(min(0.15, float(v or 0.10) + 0.02), 2), "allow slightly more Opus if value/$ is high"),
-        ("ORCH_DIVERSIFY_MODELS", lambda v: "true" if (v or "true") == "false" else "true", "keep provider diversification on"),
+        ("ORCH_DIVERSIFY_MODELS",
+         lambda v: "false" if os.environ.get("ORCH_CONFIDENTIAL_MODE", "false").lower() == "true" else ("true" if (v or "false") == "false" else "false"),
+         "experiment with provider diversification only outside confidential mode"),
         ("MERGE_TRAIN_MAX", lambda v: str(min(12, int(v or 8) + 2)), "bigger merge trains = more throughput/$"),
         ("SELFTUNE_STEP", lambda v: str(round(min(0.1, float(v or 0.05) + 0.01), 2)), "faster confidence adaptation"),
     ]

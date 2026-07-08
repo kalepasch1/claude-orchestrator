@@ -5,11 +5,12 @@ queue_janitor.py - automates the manual cleanup session of 2026-07-02, every cyc
   1. SCHEDULER HEARTBEAT - writes runner_heartbeats independently of the main loop
      (the 6/30-7/02 outage was invisible because db.heartbeat() only ran in the main
      loop, which wedged while the scheduler thread kept going).
-  2. WEDGED MAIN LOOP - tasks stuck RUNNING longer than STUCK_RUNNING_H are requeued
-     (capped) and the owner is notified once: the exact "semi-alive runner" failure.
+  2. WEDGED MAIN LOOP - tasks stuck RUNNING longer than STUCK_RUNNING_H are reassigned
+     to same-task agentic repair (capped) and the owner is notified once: the exact
+     "semi-alive runner" failure.
   3. EMPTY/FAILED RUNS - BLOCKED tasks whose notes show the empty-diff/prompt-delivery
      class ("no committable changes", "agent run failed", "diff is empty", ...) are
-     requeued automatically instead of waiting for a human to notice.
+     converted into agentic repair automatically instead of waiting for a human to notice.
   4. STRANDED APPROVALS - BLOCKED "awaiting your approval" tasks are released into
      automatic batching instead of getting fresh code-merge cards.
   5. STALE GIT LOCKS - leftover .git/*.lock files older than LOCK_STALE_MIN in local
@@ -23,6 +24,7 @@ duplicate cards), and audited via notes/notifications. No model spend.
 import os, sys, glob, time, socket
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import agentic_repair
 
 STUCK_RUNNING_H = float(os.environ.get("JANITOR_STUCK_RUNNING_H", "2"))
 LOCK_STALE_MIN = float(os.environ.get("JANITOR_LOCK_STALE_MIN", "15"))
@@ -42,6 +44,19 @@ EMPTY_RUN_MARKERS = ("no committable changes", "empty diff", "diff is empty",
 def _note_matches_empty(note):
     n = (note or "").lower()
     return any(m in n for m in EMPTY_RUN_MARKERS)
+
+
+def _repair_task(task, category, detail, prefer_non_claude=False):
+    directive = (
+        "Resume this same task through an agentic coder. Inspect the existing branch/worktree/artifacts, "
+        "preserve useful prior work, repair the technical issue, run the relevant checks, and commit."
+    )
+    patch = agentic_repair.repair_patch(
+        task, detail, category=category, directive=directive, prefer_non_claude=prefer_non_claude
+    )
+    if "transient_retries" in task:
+        patch["transient_retries"] = int(task.get("transient_retries") or 0)
+    db.update("tasks", {"id": task["id"]}, patch)
 
 
 def scheduler_heartbeat():
@@ -70,16 +85,21 @@ def requeue_stuck_running():
             continue
         attempts = int(t.get("transient_retries") or 0)
         if attempts >= REQUEUE_CAP:
-            db.update("tasks", {"id": t["id"]}, {"state": "BLOCKED",
-                      "note": f"janitor: stuck RUNNING {STUCK_RUNNING_H}h+ and requeue cap hit — needs a look"})
+            _repair_task(
+                t,
+                "orphaned-running",
+                (t.get("note") or "") + f"\nTask was stuck RUNNING >{STUCK_RUNNING_H}h and hit the janitor retry cap. Do a final same-task repair and finish it.",
+            )
         else:
-            db.update("tasks", {"id": t["id"]},
-                      {"state": "QUEUED", "transient_retries": attempts + 1,
-                       "note": (t.get("note") or "") + f" [janitor: was stuck RUNNING >{STUCK_RUNNING_H}h — requeued]"})
+            _repair_task(
+                {**t, "transient_retries": attempts + 1},
+                "orphaned-running",
+                (t.get("note") or "") + f"\nTask was stuck RUNNING >{STUCK_RUNNING_H}h; resume and complete, do not restart blindly.",
+            )
         try:
             db.insert("notifications", {"channel": "digest", "audience": os.environ.get("APPROVAL_PUSH_EMAIL", "kalepasch@gmail.com"),
                                         "kind": "janitor", "title": f"[janitor] unstuck '{t.get('slug')}' (main loop was wedged)",
-                                        "body": "Task sat in RUNNING past the wedge threshold; requeued automatically.", "sent": False})
+                                        "body": "Task sat in RUNNING past the wedge threshold; assigned to same-task agentic repair.", "sent": False})
         except Exception:
             pass
         fixed += 1
@@ -91,7 +111,7 @@ def release_orphaned_running():
 
     A RUNNING task untouched for ORPHAN_RUNNING_MIN minutes has exceeded the agentic coder timeout, so
     its worker is gone; the claim is dead but still holds a lane. Requeue it (account cleared) so the
-    fleet can re-run it, capped by transient_retries so a genuinely long task can't ping-pong forever.
+    fleet can repair it, capped by transient_retries so a genuinely long task can't ping-pong forever.
     This is what stops a Mac restart from stranding in-flight work and starving the whole fleet."""
     fixed = 0
     cutoff = time.time() - ORPHAN_RUNNING_MIN * 60
@@ -105,12 +125,17 @@ def release_orphaned_running():
             continue
         attempts = int(t.get("transient_retries") or 0)
         if attempts >= REQUEUE_CAP:
-            db.update("tasks", {"id": t["id"]}, {"state": "BLOCKED", "account": None,
-                      "note": f"janitor: orphaned RUNNING >{ORPHAN_RUNNING_MIN:.0f}m and requeue cap hit — needs a look"})
+            _repair_task(
+                t,
+                "orphaned-running",
+                (t.get("note") or "") + f"\nTask was orphaned RUNNING >{ORPHAN_RUNNING_MIN:.0f}m and hit the janitor cap. Resume/fix/commit rather than asking for manual intervention.",
+            )
         else:
-            db.update("tasks", {"id": t["id"]},
-                      {"state": "QUEUED", "account": None, "transient_retries": attempts + 1,
-                       "note": (t.get("note") or "") + f" [janitor: orphaned RUNNING >{ORPHAN_RUNNING_MIN:.0f}m — released]"})
+            _repair_task(
+                {**t, "transient_retries": attempts + 1},
+                "orphaned-running",
+                (t.get("note") or "") + f"\nTask was orphaned RUNNING >{ORPHAN_RUNNING_MIN:.0f}m; resume existing work and finish.",
+            )
         fixed += 1
     return fixed
 
@@ -142,17 +167,19 @@ def recover_stuck_merging():
 
 
 def requeue_empty_runs():
-    """The empty-diff/prompt-delivery class: requeue instead of waiting on a human."""
+    """The empty-diff/prompt-delivery class: repair via coder instead of waiting on a human."""
     fixed = 0
     for t in db.select("tasks", {"select": "*", "state": "eq.BLOCKED"}) or []:
         if not _note_matches_empty(t.get("note")):
             continue
         if "[janitor-requeued]" in (t.get("note") or "") and int(t.get("transient_retries") or 0) >= REQUEUE_CAP:
             continue
-        db.update("tasks", {"id": t["id"]},
-                  {"state": "QUEUED", "attempt": int(t.get("attempt") or 0) + 1,
-                   "transient_retries": int(t.get("transient_retries") or 0) + 1,
-                   "note": (t.get("note") or "") + " [janitor-requeued]"})
+        _repair_task(
+            {**t, "attempt": int(t.get("attempt") or 0) + 1,
+             "transient_retries": int(t.get("transient_retries") or 0) + 1},
+            "noop",
+            (t.get("note") or "") + "\nPrevious run produced no committable changes; make the smallest concrete implementation and commit.",
+        )
         fixed += 1
     return fixed
 
@@ -163,9 +190,11 @@ def refile_stranded_approvals():
     for t in db.select("tasks", {"select": "*", "state": "eq.BLOCKED"}) or []:
         if "awaiting your approval" not in (t.get("note") or ""):
             continue
-        db.update("tasks", {"id": t["id"]},
-                  {"state": "QUEUED", "account": None,
-                   "note": "janitor: stale code-merge approval removed; requeued for automatic QA/merge"})
+        _repair_task(
+            t,
+            "approval",
+            "Stale code-merge approval was removed. Continue the same task through automatic QA/merge and commit any missing work.",
+        )
         made += 1
     return made
 
@@ -198,7 +227,7 @@ def run():
     refiled = refile_stranded_approvals()
     locks = clear_stale_git_locks()
     print(f"queue_janitor: heartbeat={'ok' if hb else 'FAIL'} orphans-released={orphans} unstuck={stuck} "
-          f"merge-released={merging} empty-requeued={empty} cards-refiled={refiled} locks-cleared={locks}")
+          f"merge-released={merging} empty-agentic-repair={empty} cards-refiled={refiled} locks-cleared={locks}")
     return orphans + stuck + merging + empty + refiled + locks
 
 

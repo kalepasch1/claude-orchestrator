@@ -9,6 +9,7 @@ moving instead of surfacing "blocked_task" interruptions.
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import pipeline_contract
 try:
     import app_triage
 except Exception:
@@ -32,7 +33,7 @@ def run():
     for t in rows:
         if _protected(t.get("slug", "")):
             continue
-        prompt = (t.get("prompt") or "")[:1500]
+        prompt = pipeline_contract.original_request(t.get("prompt") or "")[:1500]
         ask = ("You are a build-task triager. Will this task result in an actual committable code/file "
                "change in a repo? Reply strictly 'YES' or 'NO: <short reason>'. Vague, duplicate, "
                "already-done, discussion-only, or under-specified tasks => NO.\n\nTASK:\n" + prompt)

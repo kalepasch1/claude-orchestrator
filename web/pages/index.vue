@@ -13,6 +13,39 @@ async function signOut() { await supabase.auth.signOut() }
 
 // ── data ──────────────────────────────────────────────────────────────────
 const tasks = ref<any[]>([])
+type QueueCounters = {
+  states: Record<string, number>
+  totalTasks: number
+  unknownStateTotal: number
+  recoveryQueued: number
+  improvementsQueued: number
+  canariesActive: number
+  releaseFixQueued: number
+  releaseFixRunning: number
+  sampled: number
+  updatedAt: string | null
+  error: string | null
+}
+const QUEUE_COUNT_STATES = [
+  'QUEUED', 'RUNNING', 'RETRY', 'DONE', 'MERGED', 'BLOCKED',
+  'CONFLICT', 'TESTFAIL', 'QUARANTINED', 'DECOMPOSED', 'SHELVED', 'WAITING',
+]
+const BLOCKED_QUEUE_STATES = ['BLOCKED', 'CONFLICT', 'TESTFAIL']
+const RELEASE_FIX_PREFIXES = ['relfix-', 'qafix-', 'deployfix-', 'buildfix-']
+const emptyQueueCounters = (): QueueCounters => ({
+  states: {},
+  totalTasks: 0,
+  unknownStateTotal: 0,
+  recoveryQueued: 0,
+  improvementsQueued: 0,
+  canariesActive: 0,
+  releaseFixQueued: 0,
+  releaseFixRunning: 0,
+  sampled: 0,
+  updatedAt: null,
+  error: null,
+})
+const queueCounts = ref<QueueCounters>(emptyQueueCounters())
 const approvals = ref<any[]>([])
 const outcomes = ref<any[]>([])
 const runners = ref<any[]>([])
@@ -27,6 +60,7 @@ const capabilities = ref<any[]>([])
 const capInstances = ref<any[]>([])
 const capProvenance = ref<any[]>([])
 const radarProposals = ref<any[]>([])
+const proofPacks = ref<any>({ commonBrain: [], receipts: [], error: null })
 // Mission Control: epoch ms of the last realtime event observed (header live-strip).
 const lastEventAt = ref<number | null>(null)
 let chart: any = null
@@ -61,6 +95,34 @@ async function productize(proposal: any) {
 // Operator sign-offs only. Code-merge approvals are intentionally hidden because code
 // mergers are automatic after tests + verification + judge; production deploys are batch-gated.
 const OPERATOR_KINDS = ['operator', 'legal', 'secret', 'deploy']
+const PROJECT_PRIORITY_ALIASES: Record<string, number> = {
+  orchestrator: 1,
+  beethoven: 1,
+  tomorrow: 2,
+  apparently: 3,
+  smarter: 4,
+  'pareto-2080': 5,
+  pareto: 5,
+  '2080': 5,
+  hisanta: 6,
+  'santas-secret-workshop': 6,
+  galop: 7,
+  racefeed: 7,
+  'sustainable-barks': 8,
+  sustainablebarks: 8,
+}
+function projectPriorityRank(name: any) {
+  const key = String(name || '').trim().toLowerCase()
+  return PROJECT_PRIORITY_ALIASES[key] ?? 9
+}
+function projectNameSort(a: any, b: any) {
+  const pa = projectPriorityRank(a)
+  const pb = projectPriorityRank(b)
+  return pa === pb ? String(a || '').localeCompare(String(b || '')) : pa - pb
+}
+function sortProjects(rows: any[]) {
+  return [...rows].sort((a, b) => projectNameSort(a?.name, b?.name))
+}
 const isCodeMergeApproval = (a: any) =>
   Boolean(a.slug || /\bmerge of\b/i.test(String(a.title || '')))
 const approvalText = (a: any) => `${a.title || ''} ${a.why || ''}`.toLowerCase()
@@ -76,9 +138,9 @@ const operatorApprovals = computed(() => approvals.value.filter(isOperatorApprov
 // Per-project filter for the operator section — clear one repo's gates without the others in the way.
 const operatorProjectFilter = ref('all')
 const operatorProjects = computed(() =>
-  [...new Set(operatorApprovals.value.map(a => a.project).filter(Boolean))].sort())
+  [...new Set(operatorApprovals.value.map(a => a.project).filter(Boolean))].sort(projectNameSort))
 const filteredOperatorApprovals = computed(() => operatorProjectFilter.value === 'all'
-  ? operatorApprovals.value
+  ? [...operatorApprovals.value].sort((a, b) => projectNameSort(a.project, b.project))
   : operatorApprovals.value.filter(a => a.project === operatorProjectFilter.value))
 // If the selected project's gates all clear, fall back to "all" so the dropdown never sticks on an empty view.
 watch(operatorProjects, projs => {
@@ -90,14 +152,28 @@ watch(operatorProjects, projs => {
 // One-click: approve every operator gate currently in view (respects the project filter).
 // Two-key cards only record the caller's first approval — a second person still has to confirm.
 const bulkApproving = ref(false)
+const approvalError = ref('')
 async function approveAllOperator() {
   const items = [...filteredOperatorApprovals.value]
   if (!items.length) return
   const scope = operatorProjectFilter.value === 'all' ? 'all projects' : operatorProjectFilter.value
   if (!confirm(`Approve ${items.length} operator sign-off(s) for ${scope}?\nTwo-key items will only record your first approval.`)) return
   bulkApproving.value = true
-  try { for (const a of items) await decide(a.id, 'approved') }
-  finally { bulkApproving.value = false }
+  approvalError.value = ''
+  const failures: string[] = []
+  try {
+    for (const a of items) {
+      try { await decide(a.id, 'approved', false) }
+      catch (e: any) { failures.push(`${a.project || 'portfolio'}: ${e?.message || e}`) }
+    }
+    await loadAll()
+    if (failures.length) {
+      approvalError.value = `${failures.length} sign-off(s) failed: ${failures.slice(0, 3).join(' · ')}`
+      alert(approvalError.value)
+    }
+  } finally {
+    bulkApproving.value = false
+  }
 }
 
 // ── autonomy layer ────────────────────────────────────────────────────────
@@ -105,6 +181,7 @@ const loops = ref<any[]>([])
 const sessions = ref<any[]>([])
 const resourceGauge = ref<any>({})
 const recentPrunes = ref<any[]>([])
+const savingsEvents = ref<any[]>([])
 const feedbackItems = ref<any[]>([])
 const newFeedback = reactive({ category: 'other', severity: 'med', observation: '', suggestion: '' })
 const feedbackSaving = ref(false)
@@ -135,9 +212,93 @@ async function askNL() {
 }
 
 // ── load ──────────────────────────────────────────────────────────────────
+async function exactTaskCount(applyFilters?: (query: any) => any) {
+  let query: any = supabase.from('tasks').select('id', { count: 'exact', head: true })
+  if (applyFilters) query = applyFilters(query)
+  const { count, error } = await query
+  if (error) throw error
+  return count || 0
+}
+
+async function exactPrefixCount(prefix: string, state?: string) {
+  return exactTaskCount(q => {
+    let next = q.like('slug', `${prefix}%`)
+    if (state) next = next.eq('state', state)
+    return next
+  })
+}
+
+function countersFromRows(rows: any[]): QueueCounters | null {
+  if (!rows?.length) return null
+  const states: Record<string, number> = {}
+  const totals: Record<string, number> = {}
+  const prefixes: Record<string, number> = {}
+  for (const row of rows) {
+    const bucket = String(row.bucket || '')
+    const name = String(row.name || '')
+    const n = Number(row.n || 0)
+    if (!bucket || !name) continue
+    if (bucket === 'state') states[name] = n
+    else if (bucket === 'total') totals[name] = n
+    else if (bucket === 'prefix') prefixes[name] = n
+  }
+  if (!Object.keys(states).length && !totals.tasks) return null
+  const knownStateTotal = Object.values(states).reduce((sum, n) => sum + Number(n || 0), 0)
+  const totalTasks = totals.tasks || knownStateTotal
+  return {
+    ...emptyQueueCounters(),
+    states,
+    totalTasks,
+    unknownStateTotal: Math.max(0, totalTasks - knownStateTotal),
+    recoveryQueued: prefixes.recovery_queued || 0,
+    improvementsQueued: prefixes.improvements_queued || 0,
+    canariesActive: prefixes.canaries_active || 0,
+    releaseFixQueued: prefixes.release_fix_queued || 0,
+    releaseFixRunning: prefixes.release_fix_running || 0,
+    updatedAt: new Date().toISOString(),
+  }
+}
+
+async function loadQueueCounters(): Promise<QueueCounters> {
+  try {
+    const view = await supabase.from('v_task_queue_counters').select('bucket,name,n')
+    if (!view.error) {
+      const fromView = countersFromRows(view.data || [])
+      if (fromView) return fromView
+    }
+    const statePairs = await Promise.all(
+      QUEUE_COUNT_STATES.map(async state => [state, await exactTaskCount(q => q.eq('state', state))] as const),
+    )
+    const states = Object.fromEntries(statePairs)
+    const totalTasks = await exactTaskCount()
+    const [recoveryQueued, improvementsQueued, canariesActive, releaseQueuedParts, releaseRunningParts] = await Promise.all([
+      exactPrefixCount('recover-missing-branch-', 'QUEUED'),
+      exactPrefixCount('improve-', 'QUEUED'),
+      exactTaskCount(q => q.like('slug', 'canary-%').in('state', ['QUEUED', 'RUNNING'])),
+      Promise.all(RELEASE_FIX_PREFIXES.map(prefix => exactPrefixCount(prefix, 'QUEUED'))),
+      Promise.all(RELEASE_FIX_PREFIXES.map(prefix => exactPrefixCount(prefix, 'RUNNING'))),
+    ])
+    const knownStateTotal = Object.values(states).reduce((n, v) => n + Number(v || 0), 0)
+    return {
+      ...emptyQueueCounters(),
+      states,
+      totalTasks,
+      unknownStateTotal: Math.max(0, totalTasks - knownStateTotal),
+      recoveryQueued,
+      improvementsQueued,
+      canariesActive,
+      releaseFixQueued: releaseQueuedParts.reduce((n, v) => n + v, 0),
+      releaseFixRunning: releaseRunningParts.reduce((n, v) => n + v, 0),
+      updatedAt: new Date().toISOString(),
+    }
+  } catch (e: any) {
+    return { ...emptyQueueCounters(), error: e?.message || String(e), updatedAt: new Date().toISOString() }
+  }
+}
+
 async function loadAll() {
   const [t, a, o, r, p, b, r2, h, g, i, tx, caps, cinst, cprov, rprops,
-         lps, sess, fb, pspend, creds, ctrl, prunes] = await Promise.all([
+         lps, sess, fb, pspend, creds, ctrl, prunes, savings, qcounts, proof] = await Promise.all([
     supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(200),
     supabase.from('approvals').select('*').eq('status', 'pending').order('created_at'),
     supabase.from('outcomes').select('model,usd,project,tests_passed,integrated,created_at,slug').order('created_at').limit(2000),
@@ -161,9 +322,12 @@ async function loadAll() {
     supabase.from('credential_requests').select('*').order('created_at', { ascending: false }).limit(20),
     supabase.from('controls').select('*'),
     supabase.from('resource_events').select('kind,detail,action,created_at').eq('kind', 'prune').order('created_at', { ascending: false }).limit(10),
+    supabase.from('resource_events').select('value,detail,action,created_at').eq('kind', 'savings').order('created_at', { ascending: false }).limit(200),
+    loadQueueCounters(),
+    $fetch('/api/fleet/proof-packs').catch((e: any) => ({ commonBrain: [], receipts: [], error: e?.message || String(e) })),
   ])
   tasks.value = t.data || []; approvals.value = (a.data || []).filter(isOperatorApproval)
-  outcomes.value = o.data || []; runners.value = r.data || []; projects.value = p.data || []
+  outcomes.value = o.data || []; runners.value = r.data || []; projects.value = sortProjects(p.data || [])
   budgets.value = b.data || []; runs.value = r2.data || []; health.value = h.data || []
   goals.value = g.data || []; inbox.value = (i.data || []).filter(isActionInboxItem); txns.value = tx.data || []
   capabilities.value = caps.data || []
@@ -176,6 +340,9 @@ async function loadAll() {
   providerSpend.value = pspend.data || []
   credRequests.value = creds.data || []
   recentPrunes.value = prunes.data || []
+  savingsEvents.value = savings.data || []
+  proofPacks.value = proof || { commonBrain: [], receipts: [], error: null }
+  queueCounts.value = { ...(qcounts || emptyQueueCounters()), sampled: tasks.value.length }
   const ctrlRows = ctrl.data || []
   globalPaused.value = ctrlRows.some((c: any) => c.scope === 'global' && c.paused)
   // latest disk gauge from resource_events
@@ -190,33 +357,27 @@ async function loadAll() {
 }
 
 // ── approvals ─────────────────────────────────────────────────────────────
-async function decide(id: string, status: 'approved' | 'denied') {
+async function decide(id: string, status: 'approved' | 'denied', reload = true) {
   const a = approvals.value.find(x => x.id === id)
   if (!a) return
+  approvalError.value = ''
+  const approver = user.value?.email || email.value || 'dashboard'
 
-  if (status === 'approved' && a.approvals_required >= 2) {
-    if (!a.decided_by) {
-      // First approval: record approver, leave status pending
-      await supabase.from('approvals').update({ decided_by: user.value?.email }).eq('id', id)
-      a.decided_by = user.value?.email   // update local copy to re-render
-      return
-    }
-    if (a.decided_by === user.value?.email) {
-      alert('You already approved this. A different team member must provide the second approval.')
-      return
-    }
-    // Second approval from a different user → flip to approved
-    await supabase.from('approvals').update({
-      status: 'approved',
-      second_approver: user.value?.email,
-      decided_at: new Date().toISOString(),
-    }).eq('id', id)
-  } else {
-    await supabase.from('approvals').update({
-      status, decided_at: new Date().toISOString(), decided_by: user.value?.email,
-    }).eq('id', id)
+  try {
+    const res = await $fetch<any>('/api/approvals/decide', {
+      method: 'POST',
+      body: { id, status, approver },
+    })
+    const next = res?.approval
+    if (next?.status === 'pending') Object.assign(a, next)
+    else approvals.value = approvals.value.filter(x => x.id !== id)
+    if (reload) await loadAll()
+  } catch (e: any) {
+    const message = e?.data?.message || e?.message || String(e)
+    approvalError.value = message
+    alert(`Approval update failed: ${message}`)
+    throw e
   }
-  approvals.value = approvals.value.filter(x => x.id !== id)
 }
 
 // ── tasks ─────────────────────────────────────────────────────────────────
@@ -450,6 +611,16 @@ const loopHealth = computed(() => {
 })
 
 const spend = computed(() => outcomes.value.reduce((s, o) => s + Number(o.usd || 0), 0))
+const savingsKpi = computed(() => {
+  let tokens = 0
+  let minutes = 0
+  for (const e of savingsEvents.value) {
+    tokens += Number(e.value || 0)
+    const m = String(e.action || '').match(/minutes=([\d.]+)/)
+    if (m) minutes += Number(m[1] || 0)
+  }
+  return { tokens, minutes }
+})
 // Cost split: `*-notional` providers are token cost COVERED by the fixed Claude Max plan
 // (no cash). Everything else is REAL out-of-pocket API cash. Sourced from v_provider_spend_mtd.
 const isNotional = (p: any) => String(p ?? '').includes('notional')
@@ -465,17 +636,21 @@ const spendSplitByProject = computed(() => {
   }
   return m
 })
-// INTEGRATE BUILD-PASS / MERGE-RATE KPI: of real (non-churn) completed outcomes, what fraction merged
-// (integrated). This is the number that should climb as the build self-heal + coder-switch take hold.
+// MERGE-RATE KPI: after work reaches a passing QA/build state, it should merge 100%.
+// Raw failed attempts are tracked separately as attemptYield; they should not make the production
+// merge-rate read as 2% when the real control problem is passed work waiting for integration.
 const isChurn = (slug: any) => { const s = String(slug ?? ''); return s.startsWith('cont-') || s.startsWith('batch-mech') }
 const integrateKpi = computed(() => {
-  const m: Record<string, { completed: number; integrated: number; usd: number }> = {}
-  let c = 0, i = 0, usd = 0
+  const m: Record<string, { completed: number; integrated: number; attempts: number; usd: number }> = {}
+  let c = 0, i = 0, attempts = 0, attemptIntegrated = 0, usd = 0
   for (const o of outcomes.value) {
     if (isChurn(o.slug)) continue
     const p = o.project || '(none)'
-    ;(m[p] ??= { completed: 0, integrated: 0, usd: 0 })
-    m[p].completed++; c++; m[p].usd += Number(o.usd || 0); usd += Number(o.usd || 0)
+    ;(m[p] ??= { completed: 0, integrated: 0, attempts: 0, usd: 0 })
+    m[p].attempts++; attempts++; m[p].usd += Number(o.usd || 0); usd += Number(o.usd || 0)
+    if (o.integrated) attemptIntegrated++
+    if (!(o.tests_passed || o.integrated)) continue
+    m[p].completed++; c++
     if (o.integrated) { m[p].integrated++; i++ }
   }
   const byProject = Object.entries(m)
@@ -483,13 +658,24 @@ const integrateKpi = computed(() => {
                               usdPerMerge: v.integrated ? v.usd / v.integrated : null }))
     .sort((a, b) => b.completed - a.completed)
   // $/merged-change is the north-star: drive it DOWN.
-  return { overall: c ? i / c : 0, completed: c, integrated: i, usd, usdPerMerge: i ? usd / i : null, byProject }
+  return {
+    overall: c ? i / c : 1,
+    completed: c,
+    integrated: i,
+    attempts,
+    attemptYield: attempts ? attemptIntegrated / attempts : 0,
+    usd,
+    usdPerMerge: i ? usd / i : null,
+    byProject,
+  }
 })
 const byModel = computed(() => {
   const m: Record<string, number> = {}
   for (const o of outcomes.value) m[o.model] = (m[o.model] || 0) + Number(o.usd || 0)
   return Object.entries(m).sort((a, b) => b[1] - a[1])
 })
+const commonBrainProofRows = computed(() => proofPacks.value?.commonBrain || [])
+const recentProofReceipts = computed(() => proofPacks.value?.receipts || [])
 
 // ── live log lines for LogView ──────────────────────────────────────────────
 // Flattens the most recent tasks' `log_tail` text blobs into typed LogLine[].
@@ -529,11 +715,45 @@ const logLines = computed(() => {
 const deployableTasks = computed(() =>
   tasks.value.filter(t => !['BLOCKED', 'CONFLICT', 'TESTFAIL'].includes(String(t.state || '').toUpperCase()))
 )
-const repairingTaskCount = computed(() =>
-  tasks.value.filter(t => ['BLOCKED', 'CONFLICT', 'TESTFAIL'].includes(String(t.state || '').toUpperCase())).length
+const exactState = (state: string) => Number(queueCounts.value.states?.[state] || 0)
+const exactQueued = computed(() => exactState('QUEUED'))
+const exactRunning = computed(() => exactState('RUNNING'))
+const exactRetry = computed(() => exactState('RETRY'))
+const exactBlockedLike = computed(() => BLOCKED_QUEUE_STATES.reduce((n, state) => n + exactState(state), 0))
+const exactBacklogCount = computed(() =>
+  ['QUEUED', 'RETRY', 'BLOCKED', 'CONFLICT', 'TESTFAIL', 'QUARANTINED', 'WAITING']
+    .reduce((n, state) => n + exactState(state), 0)
+)
+const exactTotalTasks = computed(() => Number(queueCounts.value.totalTasks || 0))
+const exactCountsLoaded = computed(() => Boolean(queueCounts.value.updatedAt && !queueCounts.value.error))
+const repairingTaskCount = computed(() => exactCountsLoaded.value
+  ? exactBlockedLike.value
+  : tasks.value.filter(t => ['BLOCKED', 'CONFLICT', 'TESTFAIL'].includes(String(t.state || '').toUpperCase())).length
 )
 const liveRunnerCount = computed(() => runners.value.filter(alive).length)
 const runnerFleetTarget = computed(() => Math.max(8, liveRunnerCount.value || 0))
+const hiddenBacklog = computed(() => exactTotalTasks.value > tasks.value.length)
+const queueCoveragePct = computed(() => exactTotalTasks.value
+  ? Math.min(100, Math.round((tasks.value.length / exactTotalTasks.value) * 100))
+  : 100
+)
+const queueSummaryTiles = computed(() => [
+  { label: 'Queued', value: exactQueued.value, tone: exactQueued.value ? 'text-amber-300' : 'text-slate-300' },
+  { label: 'Running', value: exactRunning.value, tone: exactRunning.value ? 'text-blue-300' : 'text-slate-300' },
+  { label: 'Retry', value: exactRetry.value, tone: exactRetry.value ? 'text-amber-300' : 'text-slate-300' },
+  { label: 'Blocked', value: exactBlockedLike.value, tone: exactBlockedLike.value ? 'text-red-300' : 'text-slate-300' },
+  { label: 'Done', value: exactState('DONE'), tone: exactState('DONE') ? 'text-green-300' : 'text-slate-300' },
+  { label: 'Merged', value: exactState('MERGED'), tone: exactState('MERGED') ? 'text-green-300' : 'text-slate-300' },
+])
+const priorityQueueTiles = computed(() => [
+  { label: 'Recovery', value: queueCounts.value.recoveryQueued, tone: queueCounts.value.recoveryQueued ? 'text-cyan-300' : 'text-slate-300' },
+  { label: 'Release fix', value: queueCounts.value.releaseFixQueued + queueCounts.value.releaseFixRunning, tone: (queueCounts.value.releaseFixQueued + queueCounts.value.releaseFixRunning) ? 'text-red-300' : 'text-slate-300' },
+  { label: 'Improvement', value: queueCounts.value.improvementsQueued, tone: queueCounts.value.improvementsQueued ? 'text-indigo-300' : 'text-slate-300' },
+  { label: 'Canary active', value: queueCounts.value.canariesActive, tone: queueCounts.value.canariesActive ? 'text-emerald-300' : 'text-slate-300' },
+])
+function fmtInt(n: any) {
+  return Number(n || 0).toLocaleString()
+}
 
 const stateColor: Record<string, string> = {
   RUNNING: 'bg-blue-500/20 text-blue-300', DONE: 'bg-green-500/20 text-green-300',
@@ -619,7 +839,7 @@ watch(user, u => { if (u) loadAll() })
         </span>
         <h1 class="text-lg font-semibold">Claude Orchestrator</h1>
         <span class="text-slate-500 text-sm">
-          {{ liveRunnerCount }}/{{ runnerFleetTarget }} live lanes · {{ approvals.length }} pending · <span class="font-mono text-slate-300" title="Token cost covered by your Claude Max plan — not cash">${{ coveredMtd.toFixed(2) }}</span> Max-covered · <span class="font-mono text-emerald-400" title="Real out-of-pocket API cash, month-to-date">${{ cashMtd.toFixed(2) }}</span> cash · <span class="font-mono" :class="integrateKpi.overall >= 0.15 ? 'text-emerald-400' : 'text-amber-400'" title="Integrate merge-rate: real (non-churn) completed tasks that merged. Should climb as the gauntlet-collapse + build mandate engage.">{{ (integrateKpi.overall * 100).toFixed(0) }}%</span> merge-rate ({{ integrateKpi.integrated }}/{{ integrateKpi.completed }}) · <span class="font-mono" :class="(integrateKpi.usdPerMerge ?? 99) <= 2 ? 'text-emerald-400' : 'text-amber-400'" title="NORTH STAR: $ per merged change. Drive this DOWN.">{{ integrateKpi.usdPerMerge == null ? '—' : ('$' + integrateKpi.usdPerMerge.toFixed(2)) }}</span>/merge
+          {{ liveRunnerCount }}/{{ runnerFleetTarget }} live lanes · <span class="font-mono" :class="exactBacklogCount ? 'text-amber-300' : 'text-emerald-400'" title="Exact full-table backlog count from SQL">{{ fmtInt(exactBacklogCount) }}</span> backlog · {{ approvals.length }} pending · <span class="font-mono text-slate-300" title="Token cost covered by your Claude Max plan — not cash">${{ coveredMtd.toFixed(2) }}</span> Max-covered · <span class="font-mono text-emerald-400" title="Real out-of-pocket API cash, month-to-date">${{ cashMtd.toFixed(2) }}</span> cash · <span class="font-mono text-cyan-300" title="Estimated prompt/result cache and patch-template savings from recent resource events">{{ Math.round(savingsKpi.tokens).toLocaleString() }}</span> tok avoided · <span class="font-mono" :class="integrateKpi.overall >= 1 ? 'text-emerald-400' : 'text-amber-400'" title="Post-QA merge-rate: passed/non-churn work that actually integrated. Target is 100%; failed drafting attempts are tracked separately as attempt yield.">{{ (integrateKpi.overall * 100).toFixed(0) }}%</span> merge-rate ({{ integrateKpi.integrated }}/{{ integrateKpi.completed }}) · <span class="font-mono" :class="(integrateKpi.usdPerMerge ?? 99) <= 2 ? 'text-emerald-400' : 'text-amber-400'" title="NORTH STAR: $ per merged change. Drive this DOWN.">{{ integrateKpi.usdPerMerge == null ? '—' : ('$' + integrateKpi.usdPerMerge.toFixed(2)) }}</span>/merge
         </span>
         <span class="flex-1"></span>
         <button @click="signOut" class="text-slate-400 text-sm hover:text-white">Sign out</button>
@@ -633,6 +853,83 @@ watch(user, u => { if (u) loadAll() })
         :outcomes="outcomes"
         :spend="spend"
         :last-event-at="lastEventAt" />
+
+      <!-- Shared proof packs -->
+      <section class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-6">
+        <div class="flex items-center gap-2 mb-3">
+          <h2 class="text-xs uppercase tracking-wider text-slate-500">Shared proof packs</h2>
+          <span class="text-xs text-slate-500">Common Brain - CADE - receipts</span>
+          <span class="flex-1"></span>
+          <span v-if="proofPacks.error" class="text-xs text-red-300">{{ proofPacks.error }}</span>
+          <span v-else class="text-xs text-slate-500">{{ commonBrainProofRows.length }} brain deployments - {{ recentProofReceipts.length }} receipts</span>
+        </div>
+        <div v-if="commonBrainProofRows.length" class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead>
+              <tr class="text-slate-500 text-left border-b border-slate-800">
+                <th class="pb-2 pr-3">App</th>
+                <th class="pb-2 pr-3">Task</th>
+                <th class="pb-2 pr-3">Status</th>
+                <th class="pb-2 pr-3">Outcome</th>
+                <th class="pb-2 pr-3">Avoided</th>
+                <th class="pb-2 pr-3">Review fails</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="row in commonBrainProofRows.slice(0, 8)" :key="row.task_slug"
+                  class="border-b border-slate-800/60 last:border-0">
+                <td class="py-1.5 pr-3 text-slate-300 font-medium">{{ row.product }}</td>
+                <td class="py-1.5 pr-3 text-slate-400 font-mono">{{ row.task_slug }}</td>
+                <td class="py-1.5 pr-3">
+                  <span class="px-2 py-0.5 rounded-full text-[10px] font-bold"
+                        :class="row.status === 'merged' ? 'bg-green-900/60 text-green-300' : row.status === 'failed' ? 'bg-red-900/60 text-red-300' : 'bg-slate-800 text-slate-300'">
+                    {{ row.status }}
+                  </span>
+                </td>
+                <td class="py-1.5 pr-3 text-slate-400">{{ row.outcome || 'pending' }}</td>
+                <td class="py-1.5 pr-3 text-cyan-300">{{ Number(row.tokens_avoided || 0).toLocaleString() }} tok - {{ Number(row.minutes_avoided || 0).toFixed(1) }}m</td>
+                <td class="py-1.5 pr-3" :class="Number(row.review_failures || 0) ? 'text-amber-300' : 'text-slate-500'">{{ row.review_failures || 0 }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else class="text-slate-600 italic text-sm">No Common Brain proof-pack deployments recorded yet.</div>
+        <div v-if="recentProofReceipts.length" class="mt-3 flex flex-wrap gap-2">
+          <span v-for="r in recentProofReceipts.slice(0, 5)" :key="r.id"
+                class="text-[10px] bg-slate-800 text-slate-400 rounded-full px-2 py-0.5 font-mono"
+                :title="r.reason">
+            {{ String(r.digest || r.id).slice(0, 18) }} - {{ r.decision }}
+          </span>
+        </div>
+      </section>
+
+      <!-- ── Exact full-queue counters ── -->
+      <section class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-6">
+        <div class="flex items-center gap-2 mb-3 flex-wrap">
+          <h2 class="text-xs uppercase tracking-wider text-slate-500">Full queue SQL counters</h2>
+          <span class="text-xs font-mono" :class="hiddenBacklog ? 'text-amber-300' : 'text-slate-500'">
+            sample {{ fmtInt(tasks.length) }}/{{ fmtInt(exactTotalTasks || tasks.length) }} · {{ queueCoveragePct }}%
+          </span>
+          <span v-if="queueCounts.unknownStateTotal" class="text-xs text-amber-300">
+            {{ fmtInt(queueCounts.unknownStateTotal) }} unknown-state
+          </span>
+          <span class="flex-1"></span>
+          <span v-if="queueCounts.error" class="text-xs text-red-300">{{ queueCounts.error }}</span>
+          <span v-else class="text-xs text-slate-500">updated {{ queueCounts.updatedAt ? ago(queueCounts.updatedAt) : '—' }}</span>
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 mb-3">
+          <div v-for="item in queueSummaryTiles" :key="item.label" class="border border-slate-800 rounded-lg px-3 py-2">
+            <div class="text-[10px] uppercase tracking-wider text-slate-500">{{ item.label }}</div>
+            <div class="font-mono tabular-nums text-lg leading-tight" :class="item.tone">{{ fmtInt(item.value) }}</div>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <div v-for="item in priorityQueueTiles" :key="item.label" class="border border-slate-800 rounded-lg px-3 py-2">
+            <div class="text-[10px] uppercase tracking-wider text-slate-500">{{ item.label }}</div>
+            <div class="font-mono tabular-nums text-lg leading-tight" :class="item.tone">{{ fmtInt(item.value) }}</div>
+          </div>
+        </div>
+      </section>
 
       <!-- ── Improvement command center ── -->
       <section class="bg-slate-900 border border-slate-700 rounded-xl p-4 mb-6">
@@ -716,6 +1013,7 @@ watch(user, u => { if (u) loadAll() })
         <span class="text-slate-400 normal-case tracking-normal">secrets · deploys · OAuth · legal</span>
         <span v-if="operatorApprovals.length"
               class="text-[10px] bg-sky-900/60 text-sky-300 rounded-full px-2 py-0.5 font-bold">{{ filteredOperatorApprovals.length }}/{{ operatorApprovals.length }}</span>
+        <span v-if="approvalError" class="text-[10px] text-red-300 normal-case tracking-normal">{{ approvalError }}</span>
         <span class="flex-1"></span>
         <select v-if="operatorProjects.length > 1" v-model="operatorProjectFilter"
                 class="bg-slate-800 border border-slate-700 rounded-lg px-2 py-1 text-xs text-slate-200 normal-case tracking-normal">
@@ -844,6 +1142,12 @@ watch(user, u => { if (u) loadAll() })
       <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Live activity</h2>
       <div class="mb-6">
         <LogView title="Runner activity" :lines="logLines" height="18rem" />
+      </div>
+
+      <!-- ── Proof-Pack Portfolio ── -->
+      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Proof-pack portfolio</h2>
+      <div class="mb-6">
+        <ProofPackViewer />
       </div>
 
       <!-- ── Tasks ── -->
@@ -1065,6 +1369,16 @@ watch(user, u => { if (u) loadAll() })
           <div class="bg-slate-800 rounded-lg p-3">
             <div class="text-lg font-semibold text-slate-200">Current throttle</div>
             <div class="text-xs text-slate-500 mt-0.5">see runner env</div>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 gap-3 text-center mb-4">
+          <div class="bg-slate-800 rounded-lg p-3">
+            <div class="text-lg font-semibold text-cyan-300">{{ Math.round(savingsKpi.tokens).toLocaleString() }}</div>
+            <div class="text-xs text-slate-500 mt-0.5">Tokens avoided</div>
+          </div>
+          <div class="bg-slate-800 rounded-lg p-3">
+            <div class="text-lg font-semibold text-cyan-300">{{ savingsKpi.minutes.toFixed(1) }}</div>
+            <div class="text-xs text-slate-500 mt-0.5">Minutes avoided</div>
           </div>
         </div>
         <div v-if="recentPrunes.length">

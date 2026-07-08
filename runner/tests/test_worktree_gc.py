@@ -49,7 +49,7 @@ branch refs/heads/agent/keep-task
 """
         db = MagicMock()
         db.select.side_effect = [
-            [], [], [],
+            [], [],
             [{"slug": "keep-task", "kind": "integrate", "status": "approved", "decided_by": None}],
         ]
         calls = []

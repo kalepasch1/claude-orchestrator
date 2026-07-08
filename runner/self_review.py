@@ -18,7 +18,7 @@ Run: python3 self_review.py        (wire to the 02:00 launchd agent / a Supabase
 """
 import os, sys, json, subprocess, collections
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import db, claude_cli
+import db
 
 REVIEW_MODEL = os.environ.get("SELF_REVIEW_MODEL", "claude-opus-4-8")
 
@@ -36,11 +36,29 @@ def stats():
     retries = sum((r.get("attempts") or 1) - 1 for r in rows)
     for r in rows:
         spend[r["model"]] += float(r.get("usd") or 0)
+    try:
+        tasks = db.select("tasks", {"select": "state,slug,note", "limit": "1000"}) or []
+    except Exception:
+        tasks = []
+    queue_states = collections.Counter(t.get("state") for t in tasks)
+    recovery = collections.Counter(t.get("state") for t in tasks
+                                   if str(t.get("slug") or "").startswith("recover-missing-branch-"))
+    pressure = ""
+    try:
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            ".runtime", "merge_train_pressure.json")
+        if os.path.isfile(path):
+            pressure = open(path).read()[:2000]
+    except Exception:
+        pass
     summary = {
         "tasks": n, "fail_rate": round(fails / n, 3), "rate_limit_rate": round(rl / n, 3),
         "verify_or_integrate_block_rate": round(not_integrated / n, 3),
         "total_retries": retries, "spend_by_model": {k: round(v, 2) for k, v in spend.items()},
-        "model_mix": dict(by_model)}
+        "model_mix": dict(by_model),
+        "queue_states": dict(queue_states),
+        "recovery_backlog": dict(recovery),
+        "merge_train_pressure": pressure}
     return summary, json.dumps(summary, indent=2)
 
 
@@ -61,8 +79,12 @@ def run():
     if not summary:
         print(text); return
     try:
-        r = claude_cli.run(PROMPT + text, REVIEW_MODEL,
-                           timeout=int(os.environ.get("SELF_REVIEW_TIMEOUT", "300")))
+        import model_policy, model_gateway
+        prov, model, _ = model_policy.choose("plan", agentic=False, need=8)
+        r = model_gateway.complete(prov, model, PROMPT + text,
+                                   timeout=int(os.environ.get("SELF_REVIEW_TIMEOUT", "300")),
+                                   operation="self_review", task_class="plan",
+                                   project="orchestrator")
         out = r["text"]
     except Exception as e:
         print("self-review model call failed:", e); return

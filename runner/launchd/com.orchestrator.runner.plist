@@ -1,29 +1,22 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- macOS supervision for the runner (interim, until it moves to a cloud VM).
-     Install:
-       cp runner/launchd/com.orchestrator.runner.plist ~/Library/LaunchAgents/
-       launchctl load  ~/Library/LaunchAgents/com.orchestrator.runner.plist
-       launchctl start com.orchestrator.runner
-     KeepAlive=true => macOS auto-respawns it if it crashes or the terminal closes.
-     Pair with `caffeinate -s` (or Amphetamine) so the Mac never sleeps the process. -->
+<!-- TEMPLATE. Prefer scripts/setup-scheduler.sh, which substitutes HOME_DIR/REPO_PATH and installs
+     the Full-Disk-Access app wrapper. KeepAlive=true => macOS auto-respawns the runner. -->
 <plist version="1.0">
 <dict>
   <key>Label</key><string>com.orchestrator.runner</string>
-  <key>WorkingDirectory</key><string>/Users/kpasch/Documents/beethoven/claude-orchestrator/runner</string>
-  <!-- Run without a login shell: runner.py/db.py load runner/.env directly, and avoiding -l keeps
-       ~/.zprofile from starting a second copy while launchd owns this one. -->
+  <!-- Launch the FDA-granted app wrapper; launchd cannot reliably read scripts under Documents. -->
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/zsh</string>
-    <string>-fc</string>
-    <string>exec python3 runner.py</string>
+    <string>__APP_DIR__/Contents/MacOS/ClaudeRunner</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
     <key>ENABLE_PROACTIVE_LOOPS</key><string>true</string>
-    <key>CLAUDE_ORCH_HOME</key><string>/Users/kpasch/Documents/beethoven/claude-orchestrator/.runtime</string>
-    <key>ORCH_LOG_DIR</key><string>/Users/kpasch/Documents/beethoven/claude-orchestrator/.runtime/logs</string>
+    <key>CLAUDE_ORCH_HOME</key><string>REPO_PATH/.runtime</string>
+    <key>ORCH_LOG_DIR</key><string>REPO_PATH/.runtime/logs</string>
     <key>ORCH_LOGICAL_RUNNERS</key><string>true</string>
+    <key>ORCH_KEEPALIVE_STAY_RESIDENT</key><string>true</string>
+    <key>ORCH_KEEPALIVE_DUPLICATE_POLL_SECONDS</key><string>60</string>
     <key>ORCH_RUNNER_FLEET_TARGET</key><string>8</string>
     <key>ORCH_PUSH_ON_MERGE</key><string>false</string>
     <key>ORCH_PUSH_ON_RELEASE</key><string>true</string>
@@ -34,7 +27,7 @@
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
-  <key>StandardOutPath</key><string>/Users/kpasch/Documents/beethoven/claude-orchestrator/.runtime/logs/runner-launchd.log</string>
-  <key>StandardErrorPath</key><string>/Users/kpasch/Documents/beethoven/claude-orchestrator/.runtime/logs/runner-launchd.log</string>
+  <key>StandardOutPath</key><string>REPO_PATH/.runtime/logs/runner-launchd.log</string>
+  <key>StandardErrorPath</key><string>REPO_PATH/.runtime/logs/runner-launchd.log</string>
 </dict>
 </plist>

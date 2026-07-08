@@ -102,6 +102,8 @@ class TestCleanMerge(TrainCase):
         self.assertEqual(tps[-1]["state"], "MERGED")
         cps = self.card_updates("c1")
         self.assertEqual(cps[-1]["decided_by"], "train:MERGED")
+        self.assertTrue(any(tbl == "outcomes" and m.get("slug") == "feat-x" and p.get("integrated") is True
+                            for tbl, m, p in self.updates))
 
     def test_merge_never_forced_when_tests_green_but_ff_and_rebase_used(self):
         """The train's git surface is rebase + ff only — verify both were invoked."""
@@ -137,11 +139,12 @@ class TestSkipsHandledCards(TrainCase):
         self.assertEqual(summary["merged"], 0)
         self.assertEqual(self.updates, [])
 
-    def test_card_without_slug_marked(self):
+    def test_card_without_code_merge_slug_ignored(self):
         self.cards = [{"id": "c1", "kind": "integrate", "status": "approved",
                        "decided_by": None, "title": "no slug here", "created_at": "x"}]
-        merge_train.train_run()
-        self.assertEqual(self.card_updates("c1")[-1]["decided_by"], "train:no-slug")
+        summary = merge_train.train_run()
+        self.assertEqual(summary["merged"], 0)
+        self.assertEqual(self.card_updates("c1"), [])
 
 
 # ── G: branch-missing recovery ───────────────────────────────────────────────
@@ -235,6 +238,20 @@ class TestSerialization(TrainCase):
         self.assertEqual(order, ["agent/feat-a", "agent/feat-b"],
                          "train must process oldest approval first")
 
+    def test_low_risk_batches_before_sensitive(self):
+        self.cards = [_card("c1", "pricing-auth-change", kind="material", created_at="2026-01-01T00:00:00"),
+                      _card("c2", "docs-cleanup", created_at="2026-01-02T00:00:00")]
+        self.tasks = [_task("t1", "pricing-auth-change"),
+                      {**_task("t2", "docs-cleanup"), "kind": "docs"}]
+        order = []
+        self.mocks["_rebase_onto_base"].side_effect = \
+            lambda repo, branch, base: order.append(branch) or True
+        summary = merge_train.train_run()
+        self.assertEqual(summary["merged"], 2)
+        self.assertEqual(order, ["agent/docs-cleanup", "agent/pricing-auth-change"])
+        self.assertEqual(summary["risk"]["low"], 1)
+        self.assertEqual(summary["risk"]["sensitive"], 1)
+
     def test_one_project_failure_does_not_block_other_project(self):
         self.cards = [_card("c1", "feat-a", created_at="2026-01-01T00:00:00"),
                       _card("c2", "feat-b", created_at="2026-01-02T00:00:00")]
@@ -268,6 +285,40 @@ class TestPushGate(unittest.TestCase):
             err = merge_train._push_base("/repo", "main")
         self.assertEqual(err, "")
         mock_git.assert_called_once()
+
+
+class TestEnsureIntegrationCard(unittest.TestCase):
+
+    def test_creates_approved_card_once(self):
+        fake = MagicMock()
+        fake.select.return_value = []
+        with patch.object(merge_train, "db", fake):
+            created = merge_train.ensure_integration_card("alpha", "feat-x")
+        self.assertTrue(created)
+        fake.insert.assert_called_once()
+        row = fake.insert.call_args.args[1]
+        self.assertEqual(row["status"], "approved")
+        self.assertEqual(row["slug"], "feat-x")
+        self.assertEqual(row["title"], "merge of feat-x")
+
+    def test_existing_live_card_is_not_duplicated(self):
+        fake = MagicMock()
+        fake.select.return_value = [_card("c1", "feat-x", decided_by=None)]
+        with patch.object(merge_train, "db", fake):
+            created = merge_train.ensure_integration_card("alpha", "feat-x")
+        self.assertFalse(created)
+        fake.insert.assert_not_called()
+
+    def test_pending_existing_card_is_promoted_to_approved(self):
+        fake = MagicMock()
+        card = _card("c1", "feat-x", decided_by=None)
+        card["status"] = "pending"
+        fake.select.return_value = [card]
+        with patch.object(merge_train, "db", fake):
+            created = merge_train.ensure_integration_card("alpha", "feat-x")
+        self.assertFalse(created)
+        fake.update.assert_called_once()
+        self.assertEqual(fake.update.call_args.args[2]["status"], "approved")
 
 
 if __name__ == "__main__":

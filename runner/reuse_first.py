@@ -17,6 +17,7 @@ import os, re, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import pipeline_contract
 
 try:
     import knowledge_embed
@@ -75,9 +76,18 @@ def _hit(row, sim):
 def find_reusable(task):
     """Return {"source_slug","project","similarity","summary"} for the best prior
     solution matching this task's prompt, or None."""
-    prompt = str((task or {}).get("prompt") or "")
+    prompt = pipeline_contract.original_request(str((task or {}).get("prompt") or ""))
     if not prompt.strip():
         return None
+    try:
+        import merged_diff_library
+        hits = merged_diff_library.find(task, limit=1)
+        if hits:
+            h = hits[0]
+            return {"source_slug": h["slug"], "project": h["project"] or "merged",
+                    "similarity": h["similarity"], "summary": h["summary"]}
+    except Exception:
+        pass
     # tier 1: vector search via pgvector (only when an embed provider is configured)
     vec = None
     if knowledge_embed is not None:
@@ -121,7 +131,15 @@ def find_reusable(task):
 
 def rewrite_prompt(task, hit):
     """Prepend the REUSE FIRST directive + source pointer to the task prompt."""
-    return ("REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.\n"
+    extra = ""
+    try:
+        import merged_diff_library
+        extra = merged_diff_library.directive(task)
+        if extra:
+            extra += "\n\n"
+    except Exception:
+        pass
+    return (extra + "REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.\n"
             f"SOURCE: {hit['project']}/{hit['source_slug']}\n"
             f"SUMMARY: {hit['summary']}\n\n"
             + str((task or {}).get("prompt") or ""))

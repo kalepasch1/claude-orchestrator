@@ -8,34 +8,77 @@ import os, sys, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
+REMOTE_QUARANTINE_BY = "remote-quarantine"
+
+
+def _is_remote_quarantine(row):
+    return (row.get("updated_by") or "") == REMOTE_QUARANTINE_BY
+
+
+def _match(scope, project):
+    if project:
+        return {"scope": scope, "project": project}
+    return {"scope": scope}
+
+
+def _write_control(row):
+    """Write pause/resume intent against both historical controls-table shapes.
+
+    The live table often has one row per scope instead of append-only decisions. In that shape a
+    POST/upsert can silently fail to become the latest decision, so update matching rows first and
+    insert only if no representation comes back.
+    """
+    match = _match(row["scope"], row.get("project"))
+    patch = {k: v for k, v in row.items() if k not in match}
+    try:
+        updated = db.update("controls", match, patch)
+        if updated:
+            return updated
+    except Exception:
+        pass
+    try:
+        return db.insert("controls", row, upsert=True)
+    except Exception as e:
+        try:
+            return db.update("controls", match, patch)
+        except Exception as e2:
+            print(f"kill_switch write skipped ({e}; fallback {e2})")
+            return None
+
 
 def is_paused(project=None):
     # LATEST decision wins per scope (rows can duplicate; old paused rows must not win).
-    rows = db.select("controls", {"select": "scope,project,paused,updated_at",
+    rows = db.select("controls", {"select": "scope,project,paused,updated_at,updated_by",
                                   "order": "updated_at.desc"}) or []
     for r in rows:                       # first global row = most recent global decision
+        if _is_remote_quarantine(r):
+            continue
         if r["scope"] == "global":
             if r.get("paused"):
                 return True
             break
     if project:
         for r in rows:
+            if _is_remote_quarantine(r):
+                continue
             if r["scope"] == "project" and r.get("project") == project:
                 return bool(r.get("paused"))
     return False
 
 
 def pause(scope="global", project=None, reason="manual stop", by="dashboard"):
-    db.insert("controls", {"scope": scope, "project": project, "paused": True,
-                           "reason": reason, "updated_by": by,
-                           "updated_at": datetime.datetime.utcnow().isoformat()}, upsert=True)
+    row = {"scope": scope, "project": project, "paused": True,
+           "reason": reason, "updated_by": by,
+           "updated_at": datetime.datetime.utcnow().isoformat()}
+    _write_control(row)
     return f"PAUSED {scope}{'/' + project if project else ''}"
 
 
 def resume(scope="global", project=None, by="dashboard"):
-    db.insert("controls", {"scope": scope, "project": project, "paused": False,
-                           "updated_by": by, "updated_at": datetime.datetime.utcnow().isoformat()},
-              upsert=True)
+    row = {"scope": scope, "project": project, "paused": False,
+           "reason": f"resumed by {by}",
+           "updated_by": by, "updated_at": datetime.datetime.utcnow().isoformat()}
+    _write_control(row)
     return f"RESUMED {scope}{'/' + project if project else ''}"
 
 

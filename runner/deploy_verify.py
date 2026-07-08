@@ -1,20 +1,36 @@
 #!/usr/bin/env python3
 """
-deploy_verify.py - guarantees a bad Vercel prod deploy never means downtime. After release_train pushes
-the prod branch, this polls the Vercel deployment for that commit:
-  * success -> mark the release deployed, record to_sha as the project's last_good_sha (rollback point),
-    close the loop.
-  * failed/error -> AUTO-ROLLBACK: reset the prod branch to last_good_sha and force-push, so the last
-    known-good deploy is restored. (Vercel keeps the previous successful deploy serving until a new one
-    succeeds, so users see no downtime; this also restores git so the next release starts clean.)
-Vercel's API needs VERCEL_TOKEN (read + deploy). Guarded: without a token it just records status from git
-push success and leaves rollback to you. Schedule every ~2 min.
+deploy_verify.py - confirms Vercel production deploys and rolls back bad ones.
+
+After release_train pushes a production branch, this polls the matching Vercel
+deployment for that release commit:
+  * READY -> mark release deployed and record the commit as last-good.
+  * ERROR/CANCELED/stuck-unconfirmed -> queue a deploy-fix task, restore git to
+    last-good when possible, and file an approvals card.
+
+Vercel keeps the previous successful deployment serving until a new one is
+READY, so rollback mainly restores git to the known-good state for the next
+release attempt.
 """
-import os, sys, json, urllib.request, urllib.error, subprocess
+import datetime
+import json
+import os
+import subprocess
+import sys
+import urllib.parse
+import urllib.error
+import urllib.request
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 VBASE = "https://api.vercel.com"
+TERMINAL_GOOD = {"READY"}
+TERMINAL_BAD = {"ERROR", "CANCELED", "FAILED"}
+
+
+class VercelAuthError(RuntimeError):
+    pass
 
 
 def _vget(path):
@@ -22,81 +38,199 @@ def _vget(path):
     if not tok:
         return None
     req = urllib.request.Request(VBASE + path, headers={"Authorization": f"Bearer {tok}"})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        return json.loads(r.read().decode())
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        if e.code in (401, 403):
+            raise VercelAuthError(f"Vercel API auth failed ({e.code})")
+        raise
 
 
-def _latest_deploy_state(vercel_project):
-    """Return ('READY'|'ERROR'|'BUILDING'|..., url) for the project's most recent prod deployment."""
+def _deploy_health_map():
+    out = {}
+    try:
+        for row in db.select("deploy_health", {"select": "app,vercel_project,git_branch"}) or []:
+            if row.get("app"):
+                out[row["app"]] = row
+    except Exception:
+        pass
+    return out
+
+
+def _vercel_project(project, project_row=None, health=None):
+    """Resolve Vercel project slug/id from canonical deploy_health first."""
+    project_row = project_row or {}
+    health = health if health is not None else _deploy_health_map()
+    h = health.get(project) or {}
+    return h.get("vercel_project") or project_row.get("vercel_project") or project
+
+
+def _latest_deploy(vercel_project, sha=None):
+    """Return matching production deployment, preferring the release commit SHA."""
     try:
         team = os.environ.get("VERCEL_TEAM_ID", "")
-        q = f"/v6/deployments?app={vercel_project}&target=production&limit=1" + (f"&teamId={team}" if team else "")
-        d = _vget(q) or {}
-        deps = d.get("deployments", [])
-        if deps:
-            return deps[0].get("state") or deps[0].get("readyState"), deps[0].get("url")
+        qs = {"app": vercel_project, "target": "production", "limit": "12"}
+        if team:
+            qs["teamId"] = team
+        data = _vget("/v6/deployments?" + urllib.parse.urlencode(qs)) or {}
+        deps = data.get("deployments") or []
+        if not deps:
+            return None
+        if sha:
+            short = str(sha)[:12]
+            for dep in deps:
+                meta = dep.get("meta") or {}
+                dsha = meta.get("githubCommitSha") or meta.get("githubCommitRef")
+                if dsha and (str(dsha) == str(sha) or str(dsha).startswith(short)):
+                    return dep
+        return deps[0]
+    except VercelAuthError as e:
+        return {"_auth_error": str(e), "state": "AUTH_ERROR"}
     except Exception as e:
         print(f"deploy_verify: vercel query failed ({e})")
-    return None, None
+        return None
+
+
+def _latest_deploy_state(vercel_project, sha=None):
+    """Compatibility helper: return (state, url)."""
+    dep = _latest_deploy(vercel_project, sha=sha)
+    if not dep:
+        return None, None
+    return dep.get("state") or dep.get("readyState"), dep.get("url")
+
+
+def _deployment_events(deployment_id):
+    if not deployment_id:
+        return ""
+    try:
+        team = os.environ.get("VERCEL_TEAM_ID", "")
+        path = f"/v2/deployments/{deployment_id}/events" + (f"?teamId={team}" if team else "")
+        data = _vget(path) or {}
+        events = data.get("events") or data.get("logs") or []
+        lines = []
+        for event in events[-80:]:
+            payload = event.get("payload") if isinstance(event, dict) else None
+            msg = payload.get("text") if isinstance(payload, dict) else None
+            msg = msg or event.get("text") or event.get("message") or event.get("type")
+            if msg:
+                lines.append(str(msg))
+        return "\n".join(lines)[-3000:]
+    except Exception:
+        return ""
+
+
+def _git(repo, *args):
+    return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True)
 
 
 def _rollback(project, repo, prod, last_good):
-    _git = lambda *a: subprocess.run(["git", *a], cwd=repo, capture_output=True, text=True)
-    _git("branch", "-f", prod, last_good)
+    _git(repo, "branch", "-f", prod, last_good)
     if os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() == "true":
-        _git("push", "--force-with-lease", "origin", prod)
+        _git(repo, "push", "--force-with-lease", "origin", prod)
     print(f"deploy_verify: ROLLED BACK {project} {prod} -> {last_good[:8]}")
 
 
+def _queue_deploy_fix(project_row, release, state, vercel_project, log_tail=""):
+    try:
+        if not project_row.get("id"):
+            return
+        existing = db.select("tasks", {"select": "slug", "project_id": f"eq.{project_row.get('id')}",
+                                       "state": "in.(QUEUED,RUNNING,RETRY,BLOCKED)"}) or []
+        if any(str(e.get("slug") or "").startswith("deployfix-") for e in existing):
+            return
+        slug = f"deployfix-{release['project']}-{datetime.datetime.utcnow().strftime('%m%d%H%M')}"
+        prompt = (
+            "The Vercel production deploy for this app failed or could not be confirmed. "
+            "Fix the smallest build/deploy issue and make the production build pass. "
+            "Do not add product features. Preserve existing behavior.\n\n"
+            f"Vercel project: {vercel_project}\n"
+            f"Release status: {state or 'unconfirmed'}\n"
+            f"Release commit: {release.get('to_sha') or ''}\n\n"
+            "# Vercel/build log tail:\n" + (log_tail or release.get("note") or "")[-3000:]
+        )
+        try:
+            import pipeline_contract
+            prompt = pipeline_contract.wrap_prompt(prompt, project=release["project"], kind="bugfix",
+                                                   source="vercel-deploy-verify", slug=slug, material=False)
+        except Exception:
+            pass
+        db.insert("tasks", {"project_id": project_row.get("id"), "slug": slug, "prompt": prompt,
+                  "base_branch": project_row.get("default_base") or project_row.get("prod_branch") or "main",
+                  "kind": "bugfix", "state": "QUEUED", "deps": [], "material": False,
+                  "note": "auto-queued by deploy_verify Vercel failure"})
+    except Exception as e:
+        print(f"deploy_verify: queue deploy-fix failed for {release.get('project')}: {e}")
+
+
+def _file_auth_issue(project, vercel_project, error):
+    try:
+        title = "Vercel auth blocked deploy verification"
+        ex = db.select("approvals", {"select": "id", "project": f"eq.{project}",
+                                    "status": "eq.pending", "title": f"eq.{title}"}) or []
+        if ex:
+            return
+        db.insert("approvals", {"project": project, "kind": "operator", "title": title,
+                  "why": f"Vercel project `{vercel_project}` cannot be queried: {error}. "
+                         "The current VERCEL_TOKEN is rejected before project lookup.",
+                  "value": "Set a valid Vercel token, and VERCEL_TEAM_ID if these projects live under a team, so deploy verification and rollback can operate.",
+                  "risk": "Deploy status is unknown; no rollback was attempted because this is an auth failure, not a confirmed bad deploy.",
+                  "command": "Set VERCEL_TOKEN in runner/.env; optionally set VERCEL_TEAM_ID, then rerun deploy_watch/deploy_verify."})
+    except Exception:
+        pass
+
+
+def _age_minutes(row):
+    try:
+        created = datetime.datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
+        return (datetime.datetime.now(datetime.timezone.utc) - created).total_seconds() / 60
+    except Exception:
+        return 0
+
+
 def run():
-    pend = db.select("releases", {"select": "*", "deploy_status": "in.(building,pending)",
+    pend = db.select("releases", {"select": "*", "deploy_status": "in.(building,pending,verification_blocked)",
                                   "order": "created_at.desc", "limit": "20"}) or []
     projs = {p["name"]: p for p in (db.select("projects", {"select": "*"}) or [])}
-    import datetime
+    health = _deploy_health_map()
     stuck_min = int(os.environ.get("DEPLOY_STUCK_MIN", "15"))
-    for r in pend:
-        p = projs.get(r["project"], {})
-        vproj = p.get("vercel_project") or r["project"]
-        state, url = _latest_deploy_state(vproj)
-        # SAFETY-NET ROLLBACK: if we can't confirm success and the release has been pending/building
-        # too long (Vercel token missing, project-name mismatch, or a genuinely failed build), revert
-        # to last-good so prod is never left on a broken/unknown deploy. Vercel keeps the prior good
-        # deploy serving, so this restores git to match with zero downtime.
-        if state not in ("READY",):
-            try:
-                created = datetime.datetime.fromisoformat(str(r["created_at"]).replace("Z", "+00:00"))
-                age_min = (datetime.datetime.now(datetime.timezone.utc) - created).total_seconds() / 60
-            except Exception:
-                age_min = 0
-            if state in ("ERROR", "CANCELED") or (state is None and age_min > stuck_min):
-                repo = p.get("repo_path", ""); last_good = p.get("last_good_sha") or r.get("from_sha")
-                if repo and last_good and os.path.isdir(repo):
-                    _rollback(r["project"], repo, p.get("prod_branch") or "main", last_good)
-                db.update("releases", {"id": r["id"]}, {"deploy_status": "rolled_back",
-                          "note": f"auto-rollback: state={state or 'unconfirmed'} age={age_min:.0f}m -> {(last_good or '')[:8]}"})
-                db.insert("approvals", {"project": r["project"], "kind": "self",
-                          "title": f"Prod deploy reverted: {r['project']}",
-                          "why": f"Deploy {state or 'unconfirmed'} after {age_min:.0f}m; restored last-good. No downtime.",
-                          "value": "Failing change is out of prod; build gate should now catch it pre-merge.",
-                          "risk": "None — prod on last-good.", "command": ""})
+    for release in pend:
+        project = release["project"]
+        p = projs.get(project, {})
+        vproj = _vercel_project(project, p, health)
+        dep = _latest_deploy(vproj, sha=release.get("to_sha"))
+        if (dep or {}).get("_auth_error"):
+            _file_auth_issue(project, vproj, dep["_auth_error"])
+            db.update("releases", {"id": release["id"]},
+                      {"deploy_status": "verification_blocked",
+                       "note": f"vercel auth blocked verification; no rollback attempted: {dep['_auth_error']}"})
             continue
-        if state is None:
-            continue  # (unreachable now, kept for clarity)
-        if state in ("READY",):
-            db.update("releases", {"id": r["id"]},
+        state = (dep or {}).get("state") or (dep or {}).get("readyState")
+        url = (dep or {}).get("url")
+
+        if state in TERMINAL_GOOD:
+            db.update("releases", {"id": release["id"]},
                       {"deploy_status": "success", "vercel_url": url, "deployed_at": "now()"})
-            db.update("projects", {"name": r["project"]}, {"last_good_sha": r["to_sha"]})
-            print(f"deploy_verify: {r['project']} deploy OK ({url})")
-        elif state in ("ERROR", "CANCELED"):
-            repo = p.get("repo_path", ""); last_good = p.get("last_good_sha") or r.get("from_sha")
+            db.update("projects", {"name": project}, {"last_good_sha": release["to_sha"],
+                      "vercel_project": vproj})
+            print(f"deploy_verify: {project} deploy OK ({url})")
+            continue
+
+        age_min = _age_minutes(release)
+        if state in TERMINAL_BAD or (state is None and age_min > stuck_min):
+            log_tail = _deployment_events((dep or {}).get("uid") or (dep or {}).get("id"))
+            _queue_deploy_fix(p, release, state, vproj, log_tail=log_tail)
+            repo = p.get("repo_path") or ""
+            last_good = p.get("last_good_sha") or release.get("from_sha")
             if repo and last_good and os.path.isdir(repo):
-                _rollback(r["project"], repo, p.get("prod_branch") or "main", last_good)
-            db.update("releases", {"id": r["id"]}, {"deploy_status": "rolled_back",
-                      "note": f"vercel {state} -> rolled back to {(last_good or '')[:8]}"})
-            db.insert("approvals", {"project": r["project"], "kind": "self",
-                      "title": f"Prod deploy failed + auto-rolled-back: {r['project']}",
-                      "why": f"Vercel deploy {state}; restored {(last_good or '')[:8]}. No downtime (previous deploy kept serving).",
-                      "value": "Investigate the failing change; it's out of prod.", "risk": "None — prod is on last-good.",
+                _rollback(project, repo, p.get("prod_branch") or "main", last_good)
+            db.update("releases", {"id": release["id"]}, {"deploy_status": "rolled_back",
+                      "note": f"auto-rollback: state={state or 'unconfirmed'} age={age_min:.0f}m -> {(last_good or '')[:8]}"})
+            db.insert("approvals", {"project": project, "kind": "self",
+                      "title": f"Prod deploy reverted: {project}",
+                      "why": f"Deploy {state or 'unconfirmed'} after {age_min:.0f}m; restored last-good where available.",
+                      "value": "Failing change is out of prod; a deploy-fix task was queued.",
+                      "risk": "Low — Vercel keeps the previous good deployment serving.",
                       "command": ""})
     return len(pend)
 

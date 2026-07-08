@@ -6,10 +6,9 @@ only escalating to expensive ones when value would be materially and critically 
 
 Two dimensions:
   1. AGENTIC vs NON-AGENTIC.
-     - agentic (edit files in a worktree, run tools) can ONLY be done by Claude Code today ->
-       use the Claude Max SUBSCRIPTION (flat, $0/call), Haiku-first, escalate Sonnet->Opus only
-       on retry/high-complexity. If the subscription is rate-limited/exhausted, rotate Claude
-       accounts (account_pool); if all exhausted, fall back to API Claude (billed) or QUEUE.
+     - agentic (edit files in a worktree, run tools) is routed through agentic_coders:
+       Claude Code plus any configured/local/API coder available through the headless aider loop.
+       Claude is no longer assumed to be the only coding backend.
      - non-agentic (QA/review/rating/planning/mechanical text) -> cheapest available capable
        provider across ALL providers (local Ollama = free, then DeepSeek/Gemini-Flash/4o-mini).
   2. COST TRANCHES (ascending all-in cost). Always pick the lowest tranche that clears the task's
@@ -29,12 +28,12 @@ TRANCHES = [
     # self-hosted STRONG tier (e.g. qwen2.5-coder:32b on Mac #2 or a cheap GPU): $0 and capable enough
     # for qa/review/plan — pushes more non-agentic load off paid APIs. Active when OLLAMA_STRONG_MODEL set.
     ("local",    os.environ.get("OLLAMA_STRONG_MODEL", ""),  "free",   7),
-    ("deepseek", "deepseek-chat",                            "cheap",  6),
-    ("google",   "gemini-2.0-flash",                         "cheap",  6),
-    ("openai",   "gpt-4o-mini",                              "cheap",  6),
+    ("deepseek", os.environ.get("DEEPSEEK_CHEAP_MODEL", "deepseek-v4-flash"), "cheap",  7),
+    ("google",   os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),          "cheap",  8),
+    ("openai",   os.environ.get("OPENAI_CHEAP_MODEL", "gpt-5.4-mini"),       "cheap",  7),
     ("claude",   "claude-haiku-4-5-20251001",                "sub",    6),   # subscription $0/call
-    ("openai",   "gpt-4o",                                   "mid",    8),
-    ("claude",   "claude-sonnet-4-6",                        "sub",    8),   # subscription $0/call
+    ("openai",   os.environ.get("OPENAI_STRONG_MODEL", "gpt-5.5"),           "mid",    9),
+    ("claude",   os.environ.get("ORCH_ESCALATION_MODEL", "claude-sonnet-4-6"), "sub",  8),   # subscription $0/call
     ("claude",   "claude-opus-4-8",                          "sub",    10),  # subscription but heavy tokens
 ]
 TRANCHES = [t for t in TRANCHES if t[1]]  # drop the strong-local row when not configured
@@ -44,25 +43,58 @@ NEED = {"mechanical": 5, "qa": 6, "review": 6, "rating": 5, "plan": 7,
         "build": 6, "hard": 9, "security": 9, "legal": 9}
 
 
-def choose(task_class="build", agentic=True, need=None, prefer_free=True):
-    """Return (provider, model, reason). Cheapest capable, subscription/free-first."""
+def choose(task_class="build", agentic=True, need=None, prefer_free=True, sensitivity="standard",
+           project_id=None):
+    """Return (provider, model, reason). Cheapest capable, subscription/free-first.
+    Reads project cost_bias (0=normal, 1=cheap, 2=cheapest) from DB to tighten tier selection."""
     need = need if need is not None else NEED.get(task_class, 6)
+    # --- cost_bias feedback: cost_slo writes this; we consume it here ---
+    cost_bias = 0
+    if project_id:
+        try:
+            import db
+            rows = db.select("projects", {"select": "cost_bias", "id": f"eq.{project_id}", "limit": "1"})
+            if rows and rows[0].get("cost_bias") is not None:
+                cost_bias = int(rows[0]["cost_bias"])
+        except Exception:
+            pass
+    # bias=1 -> prefer free/sub tiers (exclude "mid"+"expensive"), bias=2 -> free/sub only
+    _TIER_ALLOW = {0: None, 1: {"free", "sub", "cheap"}, 2: {"free", "sub"}}
     avail = set(mg.available())            # providers with a key/host present
     if agentic:
-        # only Claude Code can run the agentic loop; Haiku-first, escalate by need
-        if need >= 9:
-            return "claude", "claude-opus-4-8", "agentic + hard/critical -> Opus (subscription)"
-        if need >= 8:
-            return "claude", "claude-sonnet-4-6", "agentic standard -> Sonnet (subscription)"
-        return "claude", "claude-haiku-4-5-20251001", "agentic simple -> Haiku (subscription, cheapest)"
+        try:
+            import agentic_coders
+            task = {"kind": task_class, "material": need >= 8, "deps": [], "_need": need}
+            r = agentic_coders.route(task)
+            return r["provider"], r["model"], f"agentic {task_class}: selected coder {r['coder']} (cap={r.get('cap')}, cost={r.get('cost')})"
+        except Exception:
+            if need >= 9:
+                return "claude", "claude-opus-4-8", "agentic fallback -> Opus"
+            if need >= 8:
+                return "claude", "claude-sonnet-4-6", "agentic fallback -> Sonnet"
+            return "claude", "claude-haiku-4-5-20251001", "agentic fallback -> Haiku"
+    try:
+        import model_catalog
+        c = model_catalog.choose(task_class, need=need,
+                                 sensitivity=sensitivity or "standard",
+                                 available_providers=avail)
+        if c:
+            return c["provider"], c["model"], (
+                f"non-agentic {task_class}: model-level optimizer rotating -> "
+                f"{c['provider']}:{c['model']} ({c['tier']})")
+    except Exception:
+        pass
     # non-agentic: two strategies.
+    tier_allow = _TIER_ALLOW.get(cost_bias)
     capable = [(prov, model, tier, cap) for prov, model, tier, cap in TRANCHES
-               if prov in avail and cap >= need]
+               if prov in avail and cap >= need
+               and (tier_allow is None or tier in tier_allow)]
     # DIVERSIFY MODE (default ON): actively ROTATE across all capable providers so the whole stack —
     # local(Ollama), DeepSeek, Google(Gemini), OpenAI, Claude — gets exercised and benchmarked, instead
     # of always defaulting to the single cheapest. Cost stays bounded (only cheap/free tiers + the
     # key_broker $/day cap). Turn off with ORCH_DIVERSIFY_MODELS=false to go pure cheapest-first.
-    if capable and os.environ.get("ORCH_DIVERSIFY_MODELS", "true").lower() == "true":
+    diversify_default = "false" if os.environ.get("ORCH_CONFIDENTIAL_MODE", "false").lower() == "true" else "false"
+    if capable and os.environ.get("ORCH_DIVERSIFY_MODELS", diversify_default).lower() == "true":
         # one entry per distinct provider (cheapest model for each), then round-robin by a persistent counter
         seen, ring = set(), []
         for prov, model, tier, cap in capable:

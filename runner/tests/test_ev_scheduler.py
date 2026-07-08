@@ -161,7 +161,9 @@ class TestApplyRanking(_MockDB):
         # best task gets priority 1 (lower = claimed first)
         table, match, patch = self.updates[0]
         self.assertEqual(table, "tasks")
-        self.assertEqual(patch, {"priority": 1})
+        self.assertEqual(patch["priority"], 1)
+        self.assertIn("thermal_score", patch)
+        self.assertIn("estimated_minutes", patch)
         self.assertEqual(self.inserts, [], "no controls row when priority column exists")
 
     def test_controls_fallback_when_no_priority_column(self):
@@ -171,7 +173,7 @@ class TestApplyRanking(_MockDB):
         self.assertEqual(len(self.inserts), 1)
         table, row, upsert = self.inserts[0]
         self.assertEqual(table, "controls")
-        self.assertEqual(row["key"], "ev_ranking")
+        self.assertEqual(row["key"], "thermal_ranking")
         self.assertTrue(upsert, "controls ev_ranking row must be upserted")
         self.assertEqual(len(json.loads(row["value"])), 3)
         self.assertEqual(self.updates, [])

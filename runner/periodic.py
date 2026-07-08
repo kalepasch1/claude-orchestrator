@@ -16,8 +16,58 @@ Usage:
   python3 periodic.py txn
 """
 import os, sys, subprocess, time
+try:
+    import fcntl
+except Exception:
+    fcntl = None
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_RUNTIME = os.path.join(_ROOT, ".runtime")
+_PERIODIC_LOCK_DIR = os.path.join(_RUNTIME, "periodic-locks")
+if os.environ.get("ORCH_CANONICAL_RUNTIME_HOME", "true").lower() in ("1", "true", "yes", "on"):
+    os.environ["CLAUDE_ORCH_HOME"] = _RUNTIME
+_TOOL_PATHS = (
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    os.path.expanduser("~/.local/bin"),
+    os.path.expanduser("~/Library/Python/3.9/bin"),
+    os.path.expanduser("~/Library/Python/3.11/bin"),
+    os.path.expanduser("~/Library/Python/3.12/bin"),
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+)
+
+
+def _ensure_tool_path():
+    path = os.environ.get("PATH", "")
+    parts = [p for p in path.split(os.pathsep) if p]
+    for p in reversed(_TOOL_PATHS):
+        if os.path.isdir(p) and p not in parts:
+            parts.insert(0, p)
+    os.environ["PATH"] = os.pathsep.join(parts)
+
+
+def _run_job_locked(job):
+    """Prevent slow periodic jobs from overlapping their next scheduled invocation."""
+    if fcntl is None or os.environ.get("ORCH_PERIODIC_JOB_LOCKS", "true").lower() not in ("1", "true", "yes", "on"):
+        return JOBS[job]()
+    os.makedirs(_PERIODIC_LOCK_DIR, exist_ok=True)
+    lock_path = os.path.join(_PERIODIC_LOCK_DIR, f"{job}.lock")
+    with open(lock_path, "a+") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError):
+            print(f"periodic {job}: skipped; previous invocation still running")
+            return None
+        lock.seek(0)
+        lock.truncate()
+        lock.write(f"{os.getpid()} {int(time.time())}\n")
+        lock.flush()
+        return JOBS[job]()
 
 
 def run_spec():
@@ -132,6 +182,7 @@ def run_unstick():
     its whole dependency subtree again. Terminal blocks (agent/verify/judge/legal) are left alone.
     This automates the manual requeue that was needed to un-jam `tomorrow`."""
     import retry_policy
+    import agentic_repair
     limit = int(os.environ.get("UNSTICK_LIMIT", "60"))
     blocked = db.select("tasks", {"select": "id,slug,note,transient_retries,project_id",
                                   "state": "eq.BLOCKED", "limit": str(limit * 3)}) or []
@@ -141,9 +192,11 @@ def run_unstick():
         if d["action"] == "requeue":
             if requeued >= limit:
                 break
-            db.update("tasks", {"id": t["id"]},
-                      {"state": "QUEUED", "note": d["note"],
-                       "transient_retries": d["transient_retries"], "updated_at": "now()"})
+            patch = agentic_repair.repair_patch(
+                t, t.get("note") or "", category="transient", prefer_non_claude=True,
+                directive="This task was blocked by a transient/provider/runtime issue. Resume the same task through the selected coder, repair/fail over as needed, and finish it.")
+            patch["transient_retries"] = d["transient_retries"]
+            db.update("tasks", {"id": t["id"]}, patch)
             requeued += 1
         elif retry_policy.classify(t.get("note") or "") == "transient":
             capped += 1  # transient but over the retry cap -> leave for a human
@@ -172,6 +225,9 @@ def run_batchmech():
 
 def run_releasetrain():
     """Accumulate agent work on staging, QA it, release to prod (main/master) as a batch."""
+    if os.environ.get("AUTOPILOT_RELEASE_TRAIN_ONLY_HOTLANE", "true").lower() in ("1", "true", "yes", "on"):
+        print("releasetrain: skipped; hot-lane release_blocker_agent owns release attempts")
+        return {"skipped": "hotlane_only"}
     import release_train; release_train.run()
 
 
@@ -227,6 +283,11 @@ def run_objective():
 def run_remediate():
     """Drive BLOCKED to zero: requeue transient/conflict, escalate+sharpen review/no-op fails, human-card the rest."""
     import auto_remediate; auto_remediate.run()
+
+
+def run_quarantine():
+    """Park terminal blockers and queue safe local/value reworks so the backlog keeps draining."""
+    import blocker_quarantine; blocker_quarantine.run()
 
 
 def run_selfcheck():
@@ -386,6 +447,18 @@ def run_dedup():
     task_dedup.apply()
 
 
+def run_contcompact():
+    """Collapse low-signal cont-* shards into a few consolidated continuation tasks."""
+    import continuation_compactor
+    continuation_compactor.run()
+
+
+def run_backlogcompact():
+    """Collapse stale broad queued work into project-level backlog batches."""
+    import backlog_compactor
+    backlog_compactor.run()
+
+
 def run_canaryecon():
     """Promote/rollback canaries on live production cost + quality."""
     import canary_economics
@@ -432,6 +505,36 @@ def run_preflight():
     """Cheap-model triage for queued tasks before spending agentic coder time."""
     import preflight_gate
     preflight_gate.run()
+
+
+def run_agentmarket():
+    """Role-aware cross-app model mesh: bids, settlement functions, and app-specific implementation batches."""
+    import agent_market
+    agent_market.run()
+
+
+def run_promptbankruptcy():
+    """Detect losing prompt patterns and force restructuring instead of expensive retries."""
+    import prompt_bankruptcy
+    prompt_bankruptcy.run()
+
+
+def run_modelportfolios():
+    """Refresh per-domain model champions by merge yield and cost."""
+    import model_portfolios
+    model_portfolios.run()
+
+
+def run_modelslashing():
+    """Summarize model/vendor penalties that lower future allocation share."""
+    import model_slashing
+    model_slashing.run()
+
+
+def run_commonbrain():
+    """Deployable common brain: CADE + agent market + proof + outcome flywheel recipes for each app."""
+    import common_brain
+    common_brain.run()
 
 
 def run_cluster():
@@ -496,6 +599,8 @@ JOBS = {
     "billingguard": run_billingguard,
     "learnmerges": run_learnmerges,
     "dedup": run_dedup,
+    "contcompact": run_contcompact,
+    "backlogcompact": run_backlogcompact,
     "canaryecon": run_canaryecon,
     "forecast": run_forecast,
     "arbitrage": run_arbitrage,
@@ -520,6 +625,7 @@ JOBS = {
     "committeekg": run_committeekg,
     "committeemeta": run_committeemeta,
     "remediate": run_remediate,
+    "quarantine": run_quarantine,
     "selfcheck": run_selfcheck,
     "objective": run_objective,
     "revattr": run_revattr,
@@ -537,16 +643,40 @@ JOBS = {
     "releasetrain": run_releasetrain,
     "deployverify": run_deployverify,
     "preflight": run_preflight,
+    "agentmarket": run_agentmarket,
+    "promptbankruptcy": run_promptbankruptcy,
+    "modelportfolios": run_modelportfolios,
+    "modelslashing": run_modelslashing,
+    "commonbrain": run_commonbrain,
 }
 
 if __name__ == "__main__":
+    _ensure_tool_path()
     job = sys.argv[1] if len(sys.argv) > 1 else "help"
     if job not in JOBS:
         print(f"usage: periodic.py {'|'.join(JOBS)}")
         sys.exit(1)
+    try:
+        import drain_policy
+        reason = drain_policy.skip_reason(job)
+        if reason:
+            print(f"periodic {job}: skipped ({reason}; draining backlog first)")
+            sys.exit(0)
+    except Exception as e:
+        print(f"periodic {job}: drain policy unavailable ({e})")
     # honor the kill switch: model-spending jobs don't run while paused.
     # these only read outcomes / move task state / edit thresholds — they never spend tokens
-    _SAFE_WHEN_PAUSED = {"roi", "txn", "unstick", "dagfix", "selftune", "batchmech"}
+    _SAFE_WHEN_PAUSED = {
+        "resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn",
+        "approval_policy.py", "queue_janitor.py", "unstick", "dagfix", "batchmech",
+        "selftune", "cluster", "governor", "costslo", "promote", "prewarm",
+        "billingguard", "dedup", "canaryecon", "forecast", "arbitrage", "autoscale",
+        "contcompact", "backlogcompact",
+        "bizradar", "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",
+        "stripe", "ownerreport", "worktreegc", "remediate", "selfcheck",
+        "quarantine", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain",
+        "release_kpi.py", "integrate_kpi.py", "fleet_control.py",
+    }
     if job not in _SAFE_WHEN_PAUSED:
         try:
             import kill_switch
@@ -555,4 +685,4 @@ if __name__ == "__main__":
                 sys.exit(0)
         except Exception:
             pass
-    JOBS[job]()
+    _run_job_locked(job)

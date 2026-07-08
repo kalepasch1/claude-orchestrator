@@ -16,7 +16,7 @@ WHOLE fleet from one place (Mission Control / the DB) and never touch a second m
 
 Pure DB + git; no model spend. Fail-soft: any error is swallowed so it can never wedge the runner.
 """
-import os, sys, time, socket, subprocess
+import os, sys, time, socket, subprocess, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
@@ -57,14 +57,35 @@ def _git(*args, timeout=120):
     return subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True, timeout=timeout)
 
 
+def _host_aliases():
+    aliases = {HOST}
+    if HOST.endswith(".local"):
+        aliases.add(HOST[:-6])
+    else:
+        aliases.add(HOST + ".local")
+    return aliases
+
+
+def _target_matches(target):
+    return target == "all" or target in _host_aliases()
+
+
+def _control_done(target, handled, params):
+    if target != "all":
+        return True
+    expected = set((params or {}).get("expected_hosts") or [])
+    if not expected:
+        return False
+    return expected.issubset(set(handled or []))
+
+
 def _restart():
-    """Release the singleton lock and exit; keepalive.sh respawns a fresh runner with new code/config."""
-    try:
-        lock = os.path.join(REPO, ".runtime", "runner.lock")
-        if os.path.exists(lock):
-            os.remove(lock)
-    except Exception:
-        pass
+    """Exit; keepalive.sh respawns a fresh runner with new code/config.
+
+    Do not unlink runner.lock here. The running process holds an flock on that file; deleting it
+    creates a new inode that another supervisor can lock before this process exits, causing two
+    runners to operate on the same machine. Exiting naturally releases the existing flock.
+    """
     print(f"fleet_control: restart requested — exiting for keepalive respawn ({HOST})", flush=True)
     os._exit(0)
 
@@ -79,7 +100,10 @@ def self_update():
     _last_pull["t"] = time.time()
     try:
         before = _git("rev-parse", "HEAD").stdout.strip()
-        _git("pull", "--ff-only")
+        pulled = _git("pull", "--ff-only")
+        if pulled.returncode != 0:
+            msg = (pulled.stderr or pulled.stdout or "git pull failed").strip()
+            raise RuntimeError(msg[-500:])
         after = _git("rev-parse", "HEAD").stdout.strip()
         if before and after and before != after:
             print(f"fleet_control: auto-pulled {before[:8]}->{after[:8]} on {HOST}", flush=True)
@@ -102,24 +126,47 @@ def process_controls():
     for r in rows:
         target = str(r.get("target") or "all")
         handled = r.get("handled_by") or []
-        if target not in ("all", HOST) or HOST in handled:
+        aliases = _host_aliases()
+        if not _target_matches(target) or any(h in handled for h in aliases):
             continue
         action = str(r.get("action") or "").lower()
         try:
             if action == "reload_config":
                 load_config()
             elif action == "git_pull":
-                _git("pull", "--ff-only")
+                pulled = _git("pull", "--ff-only")
+                if pulled.returncode != 0:
+                    msg = (pulled.stderr or pulled.stdout or "git pull failed").strip()
+                    raise RuntimeError(msg[-500:])
+            elif action == "restart":
+                pass
+            else:
+                raise RuntimeError(f"unknown fleet action: {action}")
             # ack this host
+            new_handled = list(dict.fromkeys(handled + [HOST]))
+            params = r.get("params") or {}
             db.update("fleet_control", {"id": r["id"]},
-                      {"handled_by": handled + [HOST], "done": (target == HOST)})
+                      {
+                          "handled_by": new_handled,
+                          "done": _control_done(target, new_handled, params),
+                          "last_error": None,
+                          "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                      })
             done += 1
-            if action == "git_pull" and (r.get("params") or {}).get("restart", True):
+            if action == "git_pull" and params.get("restart", True):
                 _restart()
             if action == "restart":
                 _restart()
         except Exception as e:
             print(f"fleet_control: action '{action}' failed on {HOST}: {e}")
+            try:
+                db.update("fleet_control", {"id": r["id"]}, {
+                    "attempts": int(r.get("attempts") or 0) + 1,
+                    "last_error": str(e)[:1000],
+                    "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                })
+            except Exception:
+                pass
     return done
 
 

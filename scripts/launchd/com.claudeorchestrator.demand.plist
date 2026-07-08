@@ -7,7 +7,7 @@
     <string>com.claudeorchestrator.demand</string>
     <key>ProgramArguments</key>
     <array>
-        <string>HOME_DIR/Applications/ClaudeRunner.app/Contents/MacOS/run</string>
+        <string>__APP_DIR__/Contents/MacOS/ClaudeRunner</string>
         <string>demand_mining.py</string>
     </array>
     <key>EnvironmentVariables</key>

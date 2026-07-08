@@ -27,9 +27,14 @@ SEEDED = [
 
 def record(project, slug, kind, approach, root_cause, lesson):
     keywords = kw.toks(f"{approach} {root_cause} {lesson}")[:30]
-    db.insert("failures", {"project": project, "slug": slug, "kind": kind,
-                           "approach": approach[:2000], "root_cause": root_cause[:2000],
-                           "lesson": lesson[:1000], "keywords": keywords})
+    try:
+        db.insert("failures", {"project": project, "slug": slug, "kind": kind,
+                               "approach": approach[:2000], "root_cause": root_cause[:2000],
+                               "lesson": lesson[:1000], "keywords": keywords})
+    except Exception as e:
+        # Learning telemetry must never turn a fixable task into BLOCKED. Duplicate lessons and
+        # transient PostgREST 409s are safe to ignore; the next successful run can record again.
+        print(f"regression.record skipped for {project}/{slug}: {e}")
 
 
 def lessons_for(prompt, k=4):

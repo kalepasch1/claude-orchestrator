@@ -19,6 +19,7 @@ Safety:
 import os, sys, re, subprocess, fnmatch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import agentic_repair
 
 MARK = "merge-handler"          # decided_by sentinel => already processed
 MARK_AUTO = "auto-policy"       # decided_by for auto-approved cards
@@ -190,6 +191,10 @@ def run():
             return
     except Exception:
         pass
+    if os.environ.get("ORCH_CANONICAL_INTEGRATION", "true").lower() in ("true", "1", "yes"):
+        import merge_train
+        print("approval_merge: delegated to canonical merge_train")
+        return merge_train.train_run()
 
     # Process both approved cards and pending code-merge cards. Legal/operator cards should not
     # reach this handler; material "Legal review needed" cards intentionally lack a merge slug.
@@ -253,8 +258,11 @@ def run():
             continue
 
         if not _branch_exists(repo, branch):
-            db.update("tasks", {"id": t["id"]}, {"state": "BLOCKED",
-                      "note": f"approved, but {branch} no longer exists - re-queue to rebuild"})
+            patch = agentic_repair.repair_patch(
+                t, f"approved, but {branch} no longer exists",
+                category="missing-branch",
+                directive=f"Reconstruct missing branch {branch} for this same task from artifacts/cache/templates or regenerate the minimal equivalent patch, run checks, and commit.")
+            db.update("tasks", {"id": t["id"]}, patch)
             db.update("approvals", {"id": c["id"]}, {"decided_by": f"{MARK}:branch-missing"})
             _notify(f"[merge] '{slug}' approved but branch {branch} is gone — re-queue to rebuild.")
             handled += 1
@@ -283,9 +291,12 @@ def run():
             cap = int(os.environ.get("MERGE_CONFLICT_REDO_CAP", "2"))
             if tr < cap:
                 subprocess.run(["git", "branch", "-D", branch], cwd=repo, capture_output=True)
-                db.update("tasks", {"id": t["id"]},
-                          {"state": "QUEUED", "transient_retries": tr + 1,
-                           "note": f"merge conflict -> redo on fresh {base} ({tr+1}/{cap})"})
+                patch = agentic_repair.repair_patch(
+                    t, f"merge conflict integrating {branch} into {base}",
+                    category="conflict",
+                    directive=f"Resolve the merge conflict by rebuilding the same task on fresh {base}, run tests, and commit.")
+                patch["transient_retries"] = tr + 1
+                db.update("tasks", {"id": t["id"]}, patch)
                 # re-open the card as pending so it flows again once rebuilt+judged
                 db.update("approvals", {"id": c["id"]}, {"decided_by": f"{MARK}:redo"})
                 _notify(f"[merge] {slug}: conflict — rebuilding on fresh {base} ({tr+1}/{cap})")

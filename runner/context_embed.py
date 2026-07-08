@@ -24,6 +24,13 @@ import knowledge_embed as ke
 CACHE_FILE = ".orch-context-cache.json"
 MAX_CHARS   = 8000    # hard cap sent to API per file (tokens ~= chars/4)
 BATCH_SIZE  = 96      # stay well under Voyage's 128 limit
+# The cache key is "filepath:mtime" — every edit to a file used to leave its PREVIOUS
+# mtime's vector in the cache forever (nothing ever evicted it), so a heavily self-edited
+# repo (the orchestrator repo editing itself is the extreme case) grows this file without
+# bound — 14MB / 877 stale entries observed on 2026-07-08. MAX_ENTRIES caps total size;
+# per-file staleness is pruned inline in _save_cache below so old mtimes for the SAME file
+# never accumulate in the first place.
+MAX_ENTRIES = int(os.environ.get("ORCH_CONTEXT_CACHE_MAX_ENTRIES", "2000"))
 MMR_LAMBDA  = float(os.environ.get("CONTEXT_MMR_LAMBDA", "0.7"))   # relevance weight
 HYBRID_ALPHA= float(os.environ.get("CONTEXT_HYBRID_ALPHA", "0.7")) # cosine weight
 
@@ -158,6 +165,43 @@ def _save_cache(repo, cache):
             json.dump(cache, f)
     except Exception:
         pass
+
+
+def distill(repo, max_entries=None):
+    """Prune the on-disk cache: drop stale mtime versions + cap total size (oldest first).
+    Safe to run anytime — a cache miss just means one extra embed call, never wrong data.
+    Returns {"before": n, "after": n, "dropped_stale": n, "dropped_capacity": n}."""
+    max_entries = max_entries if max_entries is not None else MAX_ENTRIES
+    cache = _load_cache(repo)
+    before = len(cache)
+
+    latest_by_file = {}
+    for key in cache:
+        fp, sep, mtime = key.rpartition(":")
+        if not sep:
+            continue
+        try:
+            mt = float(mtime)
+        except ValueError:
+            continue
+        if fp not in latest_by_file or mt > latest_by_file[fp][1]:
+            latest_by_file[fp] = (key, mt)
+    keep_keys = {k for k, _ in latest_by_file.values()}
+    dropped_stale = before - len(keep_keys)
+    cache = {k: v for k, v in cache.items() if k in keep_keys}
+
+    dropped_capacity = 0
+    if len(cache) > max_entries:
+        # dict preserves insertion order; oldest-inserted keys are evicted first
+        overflow = len(cache) - max_entries
+        for key in list(cache.keys())[:overflow]:
+            cache.pop(key, None)
+            dropped_capacity += 1
+
+    _save_cache(repo, cache)
+    after = len(cache)
+    return {"before": before, "after": after,
+            "dropped_stale": dropped_stale, "dropped_capacity": dropped_capacity}
 
 
 # ── cosine / keyword helpers ──────────────────────────────────────────────────

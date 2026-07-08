@@ -12,6 +12,7 @@
     "./federated": "./src/federated/index.ts",
     "./orchestrator": "./src/orchestratorClient/index.ts",
     "./cade": "./src/cade/index.ts",
+    "./commonBrain": "./src/commonBrain/index.ts",
     "./fleetAdmin": "./src/fleetAdmin/index.ts"
   },
   "scripts": {
