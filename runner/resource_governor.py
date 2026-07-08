@@ -351,7 +351,8 @@ def dashboard_gauge():
 
 def _global_pause_reason():
     try:
-        rows = db.select("controls", {"select": "paused,reason", "scope": "eq.global"}) or []
+        rows = db.select("controls", {"select": "paused,reason", "scope": "eq.global",
+                                      "order": "updated_at.desc", "limit": "1"}) or []
         if rows and rows[0].get("paused"):
             return rows[0].get("reason") or ""
     except Exception:
