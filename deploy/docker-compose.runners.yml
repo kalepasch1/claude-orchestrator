@@ -1,0 +1,35 @@
+# docker-compose.runners.yml - example N-runner fan-out.
+#
+# This is a STARTING POINT, not a turnkey deploy — read deploy/CLOUD_RUNNERS.md first,
+# especially the subscription-auth section. Each runner needs its own /data volume with
+# a working `claude login` session; sharing one auth session across containers will just
+# make them fight over the same rate limit instead of adding capacity.
+#
+# Usage: docker compose -f docker-compose.runners.yml up -d --scale runner=3
+version: "3.9"
+
+services:
+  runner:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.runner
+    environment:
+      - RUNNER_HOSTNAME=${RUNNER_HOSTNAME:-cloud-runner}
+      - ORCH_USE_SUBSCRIPTION=true
+      - ORCH_ALLOW_API_BILLING=false
+      - MAX_PARALLEL=${MAX_PARALLEL:-5}
+      # Supabase creds: prefer a per-deploy secret manager over plain env in production.
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+    volumes:
+      - runner-data:/data
+      # one repo checkout per runner (NOT shared — worktrees assume exclusive access):
+      - ${REPOS_HOST_PATH:-./repos}:/app/repos
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+volumes:
+  runner-data:
