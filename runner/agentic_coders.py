@@ -431,6 +431,31 @@ def _task_difficulty(task):
     return "hard"
 
 
+def _task_urgency(task):
+    """'high'/'normal'/'low' from scheduler-written priority and thermal_score fields.
+
+    High-urgency tasks prefer Claude (reliability over cost); low-urgency tasks are
+    good offload candidates regardless of offload-share env knobs.
+    """
+    priority = int(task.get("priority") or 0)
+    thermal = float(task.get("thermal_score") or 0.0)
+    if priority >= 80 or thermal >= 5.0:
+        return "high"
+    if priority <= 10 and thermal < 0.1:
+        return "low"
+    return "normal"
+
+
+def _capacity_utilization():
+    """Fleet token budget utilization 0..1 from capacity_pacer. Fail-soft → 0."""
+    try:
+        import capacity_pacer
+        status = capacity_pacer.should_claim()
+        return float(status.get("utilization_pct", 0)) / 100.0
+    except Exception:
+        return 0.0
+
+
 def _task_sensitivity(task):
     explicit = str(task.get("sensitivity") or "").strip().lower()
     if explicit:
@@ -516,6 +541,10 @@ def pick(task, slot_index=0):
                            key=lambda c: -c["cap"])
         return strongest[0]["name"] if strongest else "claude"
 
+    # HIGH URGENCY: bypass cost optimisation — reliability matters more than savings for P0/thermal tasks.
+    if _task_urgency(task) == "high" and any(c["name"] == "claude" for c in usable):
+        return "claude"
+
     # LEARNED ROUTER: prefer the coder that empirically converts THIS task-kind to merges most cheaply
     # ($/merge from our own outcomes). Returns None until there's enough signal, so it refines the
     # heuristic rather than fighting it; never overrides material (those stay on Claude below).
@@ -557,11 +586,15 @@ def pick(task, slot_index=0):
         ranked = sorted(usable, key=lambda c: (adjusted_cost(c), -c["cap"]))
         return ranked[0]["name"] if ranked else "claude"
     h = _stable_share(task)
+    utilization = _capacity_utilization()
     if diff == "easy" and by_cost:
         try:
             share = float(os.environ.get("ORCH_EASY_OFFLOAD_SHARE", "0.6"))
         except ValueError:
             share = 0.6
+        # Near-budget: offload more aggressively to non-Claude coders to preserve capacity.
+        if utilization > 0.75:
+            share = min(1.0, share + (utilization - 0.75) * 2.0)
         if h < share:
             return by_cost[0]["name"]      # cheapest capable coder (free/local first) does easy work
         return "claude"
