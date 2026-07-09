@@ -187,53 +187,65 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
         outcome = pr_integrate.wait_and_merge(repo, branch)
         return {"MERGED": "MERGED", "CHECKS_FAILED": "TESTFAIL", "OPEN": "BLOCKED"}.get(outcome, "BLOCKED")
     # local ff-merge
-    # FIX: free the branch from its leftover agent worktree first, or `git rebase` fails with
-    # "already checked out" — which was being mislabeled as CONFLICT and blocked ALL auto-merges.
-    try:
-        import approval_merge
-        approval_merge._free_branch(repo, branch)
-    except Exception:
-        pass
-    # clean fast-forward when the branch is strictly ahead of base (the normal case) — no rebase needed
-    ahead = subprocess.run(["git", "merge-base", "--is-ancestor", base, branch],
-                           cwd=repo, capture_output=True).returncode == 0
-    if not ahead:
-        # Isolated worktree, never repo's own checkout — see approval_merge._rebase_isolated's
-        # docstring for why (a direct `git rebase base branch` here left the orchestrator's own
-        # primary checkout parked on a stray branch, which is very likely the root cause of the
-        # 2026-07-08 finding that repo's checked-out branch kept changing between checks).
-        import approval_merge
-        if not approval_merge._rebase_isolated(repo, base, branch):
+    # CONCURRENCY FIX (2026-07-08 merge-stall root cause): this legacy path and merge_train's
+    # canonical path both mutate the SAME shared repo's git refs (branch pointers, rebases,
+    # fast-forwards). Multiple worker threads can reach here for the same repo at once (one
+    # thread per RUNNING task). Without a lock, concurrent rebases/ff-merges raced each other,
+    # producing spurious conflicts. Serialize per-repo; see repo_lock.py for the full incident
+    # writeup. On contention, treat as a transient conflict so the task's normal redo path
+    # (not a hard failure) picks it back up next cycle instead of stalling silently.
+    import repo_lock
+    with repo_lock.hold(repo, timeout=120) as got_lock:
+        if not got_lock:
+            print(f"[integrate] {slug}: repo busy (another integration holds the lock) — treating as redo-able conflict")
             return "CONFLICT"
-    # BUILD GATE: run the project's REAL production build on the branch; do NOT merge if it's red.
-    # This is the fix for "merges succeed but every Vercel deploy fails" — build-breaking code can no
-    # longer reach main/master. Skips only when no build command is detected.
-    try:
-        import build_gate
-        bcmd = build_gate.detect_build_cmd(repo)
-        if bcmd:
-            ok, blog = build_gate.run_build(repo, branch, bcmd)
-            if not ok:
-                print(f"[integrate] build RED for {branch} -> not merging: {blog[-160:]}")
-                try:
-                    import build_fixer
-                    build_fixer.save_log(slug, blog)   # keep the log for a model-generated fix directive
-                except Exception:
-                    pass
-                return "BUILDFAIL"
-    except Exception as _be:
-        print(f"[integrate] build gate skipped ({_be})")
-    # merge into `base` without needing it checked out (HEAD may be another branch)
-    if subprocess.run(["git", "fetch", ".", f"{branch}:{base}"], cwd=repo, capture_output=True).returncode != 0:
-        return "CONFLICT"
-    if os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() == "true":
-        subprocess.run(["git", "push", "origin", base], cwd=repo, capture_output=True)
-    try:
-        import approval_merge
-        approval_merge._free_branch(repo, branch)
-    except Exception:
-        pass
-    return "MERGED"
+        # FIX: free the branch from its leftover agent worktree first, or `git rebase` fails with
+        # "already checked out" — which was being mislabeled as CONFLICT and blocked ALL auto-merges.
+        try:
+            import approval_merge
+            approval_merge._free_branch(repo, branch)
+        except Exception:
+            pass
+        # clean fast-forward when the branch is strictly ahead of base (the normal case) — no rebase needed
+        ahead = subprocess.run(["git", "merge-base", "--is-ancestor", base, branch],
+                               cwd=repo, capture_output=True).returncode == 0
+        if not ahead:
+            # Isolated worktree, never repo's own checkout — see approval_merge._rebase_isolated's
+            # docstring for why (a direct `git rebase base branch` here left the orchestrator's own
+            # primary checkout parked on a stray branch, which is very likely the root cause of the
+            # 2026-07-08 finding that repo's checked-out branch kept changing between checks).
+            import approval_merge
+            if not approval_merge._rebase_isolated(repo, base, branch):
+                return "CONFLICT"
+        # BUILD GATE: run the project's REAL production build on the branch; do NOT merge if it's red.
+        # This is the fix for "merges succeed but every Vercel deploy fails" — build-breaking code can no
+        # longer reach main/master. Skips only when no build command is detected.
+        try:
+            import build_gate
+            bcmd = build_gate.detect_build_cmd(repo)
+            if bcmd:
+                ok, blog = build_gate.run_build(repo, branch, bcmd)
+                if not ok:
+                    print(f"[integrate] build RED for {branch} -> not merging: {blog[-160:]}")
+                    try:
+                        import build_fixer
+                        build_fixer.save_log(slug, blog)   # keep the log for a model-generated fix directive
+                    except Exception:
+                        pass
+                    return "BUILDFAIL"
+        except Exception as _be:
+            print(f"[integrate] build gate skipped ({_be})")
+        # merge into `base` without needing it checked out (HEAD may be another branch)
+        if subprocess.run(["git", "fetch", ".", f"{branch}:{base}"], cwd=repo, capture_output=True).returncode != 0:
+            return "CONFLICT"
+        if os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() == "true":
+            subprocess.run(["git", "push", "origin", base], cwd=repo, capture_output=True)
+        try:
+            import approval_merge
+            approval_merge._free_branch(repo, branch)
+        except Exception:
+            pass
+        return "MERGED"
 
 
 def _detect_prod_branch(repo, proj):
