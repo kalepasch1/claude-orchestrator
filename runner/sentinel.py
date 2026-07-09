@@ -106,6 +106,29 @@ def offline_deploy_sweep(st):
                      stderr=subprocess.STDOUT, cwd=REPO)
 
 
+def dedupe_queued():
+    """Quarantine duplicate QUEUED rows sharing (project, slug) — the intake path is not
+    concurrency-safe across two Macs + recovery hooks racing the same drop (observed 5x
+    duplication on 2026-07-09). Keep the newest row per slug."""
+    import collections
+    import db
+    rows = db.select("tasks", {"select": "id,slug,project_id,created_at",
+                               "state": "eq.QUEUED", "limit": "4000",
+                               "order": "created_at.desc"}) or []
+    groups = collections.defaultdict(list)
+    for r in rows:
+        groups[(r.get("project_id"), r.get("slug"))].append(r)
+    q = 0
+    for g in groups.values():
+        for dup in g[1:]:
+            db.update("tasks", {"id": dup["id"]},
+                      {"state": "QUARANTINED",
+                       "note": "sentinel-dedupe: duplicate QUEUED row (intake race); kept newest"})
+            q += 1
+    if q:
+        log("dedupe", f"quarantined {q} duplicate QUEUED rows")
+
+
 def on_db_recovery():
     log("db-recovered", "re-ingesting intake + re-asserting fleet_config baseline")
     try:
@@ -113,6 +136,10 @@ def on_db_recovery():
                        capture_output=True, timeout=300, cwd=HERE)
     except Exception as e:
         log("intake-ingest-failed", e)
+    try:
+        dedupe_queued()
+    except Exception as e:
+        log("dedupe-failed", e)
     try:
         baseline = os.path.join(REPO, "scripts", "fleet_config_baseline.json")
         if os.path.isfile(baseline):

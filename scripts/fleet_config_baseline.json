@@ -5,6 +5,7 @@
   "ORCH_SUPABASE_RETRIES": "4",
   "ORCH_SHARE_AGENT_BRANCHES": "true",
   "ORCH_AUTO_PULL": "true",
+  "ORCH_EASY_OFFLOAD_SHARE": "0.9",
   "ORCH_CODE_MERGE_TARGET": "dev",
   "ORCH_STAGING_BRANCH": "orchestrator/dev",
   "ORCH_PUSH_ON_MERGE": "true",
