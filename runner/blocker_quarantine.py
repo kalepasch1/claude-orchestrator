@@ -79,12 +79,24 @@ def _clean_note_for_classification(note):
     return text
 
 
+_REWORK_PREFIX = re.compile(r"^(?:rework-[a-z]+-)+", re.I)
+
+
 def _blocker_signal(task):
+    raw_slug = str(task.get("slug") or "")
+    slug = _REWORK_PREFIX.sub("", raw_slug)
+    note = _clean_note_for_classification(task.get("note"))
+    log_tail = str(task.get("log_tail") or "")
+    # strip the task's own full slug from evidence so the quarantine history embedded in branch
+    # names / notes never re-triggers its own prior category on repair attempts
+    if raw_slug:
+        note = note.replace(raw_slug, "")
+        log_tail = log_tail.replace(raw_slug, "")
     return "\n".join(
         (
-            str(task.get("slug") or ""),
-            _clean_note_for_classification(task.get("note")),
-            str(task.get("log_tail") or ""),
+            slug,
+            note,
+            log_tail,
             str(task.get("kind") or ""),
             str(task.get("state") or ""),
         )
