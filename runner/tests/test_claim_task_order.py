@@ -521,6 +521,115 @@ class TestClaimTaskOrder(unittest.TestCase):
             task = db.claim_task("runner-1")
         self.assertEqual(task["id"], "other-project")
 
+    def test_rework_backlog_jumps_ahead_of_net_new_thermal_rank(self):
+        """STARVATION FIX regression test: rework-* tasks (blocker_quarantine's legal/secret/
+        security replacements) matched no jump-queue category, so a task like this sat QUEUED
+        for 2+ days at attempt=0 while an always-present recovery/release-fix backlog kept
+        winning every tie-break. rework_rank gives it a bounded jump-queue tier of its own."""
+        tasks = [
+            {"id": "new", "project_id": "p1", "slug": "net-new-feature", "deps": [],
+             "created_at": "2026-01-01"},
+            {"id": "rework", "project_id": "p1", "slug": "rework-secret-old-work",
+             "deps": [], "created_at": "2026-01-02"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [{"id": "p1", "name": "app", "priority": 5, "concurrency_weight": 1}]
+            if table == "controls":
+                if params.get("key") == "eq.thermal_ranking":
+                    return [{"value": '["new", "rework"]'}]
+                return []
+            if table == "tasks":
+                state = params.get("state")
+                if state == "eq.QUEUED":
+                    return [dict(t) for t in tasks]
+                if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
+                    return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        with patch.dict(os.environ, {"ORCH_QUARANTINE_REWORK_JUMP_QUEUE": "true"}, clear=False):
+            task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "rework")
+        self.assertEqual(self.claimed, ["rework"])
+
+    def test_recovery_still_beats_rework_when_both_present(self):
+        """Recovery is 'already mostly solved work' (existing comment); rework needs a fresh
+        agent run. Recovery should keep winning the tie-break over rework when both backlogs
+        exist simultaneously."""
+        tasks = [
+            {"id": "rework", "project_id": "p1", "slug": "rework-secret-old-work",
+             "deps": [], "created_at": "2026-01-01"},
+            {"id": "recover", "project_id": "p1", "slug": "recover-missing-branch-x",
+             "deps": [], "created_at": "2026-01-02"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [{"id": "p1", "name": "app", "priority": 5, "concurrency_weight": 1}]
+            if table == "controls":
+                return []
+            if table == "tasks":
+                state = params.get("state")
+                if state == "eq.QUEUED":
+                    return [dict(t) for t in tasks]
+                if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
+                    return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "recover")
+
+    def test_rework_jump_can_be_disabled(self):
+        tasks = [
+            {"id": "new", "project_id": "p1", "slug": "net-new-feature", "deps": [],
+             "created_at": "2026-01-01"},
+            {"id": "rework", "project_id": "p1", "slug": "rework-secret-old-work",
+             "deps": [], "created_at": "2026-01-02"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [{"id": "p1", "name": "app", "priority": 5, "concurrency_weight": 1}]
+            if table == "controls":
+                return []
+            if table == "tasks":
+                state = params.get("state")
+                if state == "eq.QUEUED":
+                    return [dict(t) for t in tasks]
+                if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
+                    return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        with patch.dict(os.environ, {"ORCH_QUARANTINE_REWORK_JUMP_QUEUE": "false"}, clear=False):
+            task = db.claim_task("runner-1")
+        # oldest-first (created_at) with no jump-queue tier active
+        self.assertEqual(task["id"], "new")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

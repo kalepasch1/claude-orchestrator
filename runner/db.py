@@ -81,6 +81,7 @@ RECOVERY_PREFIX = "recover-missing-branch-"
 CANARY_PREFIX = "canary-"
 IMPROVEMENT_PREFIX = "improve-"
 RELEASE_FIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-", "copyfix-")
+REWORK_PREFIX = "rework-"
 CLAIM_SCAN_LIMIT = int(os.environ.get("ORCH_CLAIM_SCAN_LIMIT", "1000") or 1000)
 PROJECT_PRIORITY_ORDER = {
     "orchestrator": 1,
@@ -289,6 +290,10 @@ def _is_improvement_task(t):
     return str((t or {}).get("slug") or "").startswith(IMPROVEMENT_PREFIX)
 
 
+def _is_quarantine_rework_task(t):
+    return str((t or {}).get("slug") or "").startswith(REWORK_PREFIX)
+
+
 def _is_evidence_task(t):
     slug = str((t or {}).get("slug") or "")
     note = str((t or {}).get("note") or "").lower()
@@ -383,6 +388,15 @@ def claim_task(runner_id):
         os.environ.get("ORCH_RECOVERY_JUMP_QUEUE", "true").lower() in ("true", "1", "yes", "on")
         and any(_is_recovery_task(t) for t in queued)
     )
+    # STARVATION FIX: rework-* tasks (blocker_quarantine's legal/secret/security replacements)
+    # matched none of the existing jump-queue categories, so they always lost every tie-break to
+    # recovery/release-fix/improvement/evidence work -- which is effectively always present given
+    # fleet volume. Result: a 2-day-old rework-* task sat at attempt=0, never claimed, while its
+    # backlog kept growing. Give it its own bounded jump-queue tier so it actually gets a turn.
+    rework_backlog = (
+        os.environ.get("ORCH_QUARANTINE_REWORK_JUMP_QUEUE", "true").lower() in ("true", "1", "yes", "on")
+        and any(_is_quarantine_rework_task(t) for t in queued)
+    )
     release_fix_backlog = (
         os.environ.get("ORCH_RELEASE_FIX_JUMP_QUEUE", "true").lower() in ("true", "1", "yes", "on")
         and any(_is_release_fix_task(t) for t in queued)
@@ -428,6 +442,13 @@ def claim_task(runner_id):
         # claim it ahead of net-new work regardless of stale thermal/priority rows.
         return 0 if (recovery_backlog and _is_recovery_task(t)) else (1 if recovery_backlog else 0)
 
+    def _rework_rank(t):
+        # Quarantine rework: safer to give these a real turn than let them starve indefinitely
+        # behind an always-full recovery/release-fix backlog (see rework_backlog comment above).
+        # Ranked below recovery/release-fix (those are more time-critical) but ahead of generic
+        # thermal-ranked net-new work, so the backlog actually drains instead of only growing.
+        return 0 if (rework_backlog and _is_quarantine_rework_task(t)) else (1 if rework_backlog else 0)
+
     def _release_fix_rank(t):
         # Red release gates are the only thing between completed work and Vercel review. Drain those
         # before recovery so green staged batches can ship overnight.
@@ -469,6 +490,8 @@ def claim_task(runner_id):
             return max(per_project_limit, int(os.environ.get("ORCH_EVIDENCE_PER_PROJECT_CODE_LANES", "2")))
         if _is_improvement_task(t):
             return max(per_project_limit, int(os.environ.get("ORCH_IMPROVEMENT_PER_PROJECT_CODE_LANES", "2")))
+        if _is_quarantine_rework_task(t):
+            return max(per_project_limit, int(os.environ.get("ORCH_QUARANTINE_REWORK_PER_PROJECT_CODE_LANES", "2")))
         return per_project_limit
 
     queued.sort(key=lambda t: (_evidence_reserve_rank(t),                        # reserve one vendor-evidence lane
@@ -477,6 +500,7 @@ def claim_task(runner_id):
                                _release_fix_urgency(t),                          # hot gate fixes before stale EV noise
                                _evidence_rank(t),                                # bounded canaries unblock learned routing
                                _recovery_rank(t),                                # recover tested work next
+                               _rework_rank(t),                                  # then quarantine-recovered work
                                _improvement_rank(t),                             # then drain improve-* work
                                _churn(t),                                        # real work before churn
                                _thermal_rank(t),                                 # EV/min thermal map

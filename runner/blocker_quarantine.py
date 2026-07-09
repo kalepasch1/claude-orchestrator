@@ -79,10 +79,38 @@ def _clean_note_for_classification(note):
     return text
 
 
+_REWORK_PREFIX_RE = re.compile(r"^rework-(?:[a-z]+-)?", re.I)
+
+
+def _strip_rework_noise(slug, max_strips=10):
+    """Strip leading 'rework-<category>-' (or bare 'rework-') segments so a task's OWN
+    replacement history never re-triggers its own classification.
+
+    blocker_quarantine renames a quarantined task to e.g. 'rework-secret-<original>'. If that
+    replacement later fails for ANY reason (a real conflict, a flaky test, an unrelated build
+    error), classify() re-scans its slug -- which now contains the literal word 'secret' from
+    the PREVIOUS rework, independent of the new failure's actual cause. That reclassifies it as
+    'secret' again, renames it to 'rework-secret-rework-secret-<original>', and repeats forever.
+    Observed in production: chains of 5+ nested 'rework-legal-rework-legal-...' on one task.
+    Stripping the prefix before classification breaks the self-reference; the ORIGINAL slug
+    (project/feature name) is still available for genuine signal."""
+    s = str(slug or "")
+    for _ in range(max_strips):
+        stripped = _REWORK_PREFIX_RE.sub("", s, count=1)
+        if stripped == s:
+            break
+        s = stripped
+    return s
+
+
+def _rework_depth(slug):
+    return len(re.findall(r"rework-", str(slug or ""), re.I))
+
+
 def _blocker_signal(task):
     return "\n".join(
         (
-            str(task.get("slug") or ""),
+            _strip_rework_noise(task.get("slug")),
             _clean_note_for_classification(task.get("note")),
             str(task.get("log_tail") or ""),
             str(task.get("kind") or ""),
@@ -91,16 +119,41 @@ def _blocker_signal(task):
     )
 
 
+def _evidence_signal(task):
+    """Note + log_tail ONLY -- no slug, no prompt. For secret/security specifically, a project's
+    or feature's NAME is not evidence of an actual leak. 'santas-secret-workshop' (a real project
+    name) or 'rework-secret-<prior-rework>' (this task's own quarantine history) both contain the
+    literal word 'secret' with zero relation to whether THIS failure actually exposed one.
+    Genuine secret/security blockers are described in the failure note or log
+    ("CRON_SECRET exposure in committed config", "gitleaks: hardcoded key detected"), which is
+    exactly what this signal keeps.
+
+    One more self-reference path: automated messages (train rebase-conflict notes, branch-missing
+    notes) often echo the task's OWN slug/branch name verbatim, e.g. "conflict on
+    agent/rework-secret-<slug>". That embeds the word "secret" in the evidence text with zero
+    relation to the actual failure (a plain rebase conflict here). Strip the task's own slug out
+    of the evidence before scanning so its own name can't self-trigger classification."""
+    note = _clean_note_for_classification(task.get("note"))
+    log_tail = str(task.get("log_tail") or "")
+    slug = str(task.get("slug") or "")
+    if slug:
+        note = note.replace(slug, "")
+        log_tail = log_tail.replace(slug, "")
+    return "\n".join((note, log_tail))
+
+
 def classify(task):
     blocker = _blocker_signal(task)
+    evidence = _evidence_signal(task)
     text = blocker + "\n" + str(task.get("prompt") or "")
     state = str(task.get("state") or "").upper()
-    # Secret/security classification must come from the blocker evidence, not a broad prompt
-    # word like an app name. Misclassifying QA failures as secret work makes agents fix the
-    # wrong thing and slows the drain.
-    if _SECRET.search(blocker):
+    # Secret/security classification must come from the blocker EVIDENCE (note/log), never from
+    # a slug or prompt that merely contains the word "secret"/"security" as part of an app or
+    # feature name. Misclassifying QA failures (or a project's own branding) as secret work
+    # sends the wrong directive to the agent and manufactures a self-reinforcing quarantine loop.
+    if _SECRET.search(evidence):
         return "secret"
-    if _SECURITY.search(blocker):
+    if _SECURITY.search(evidence):
         return "security"
     if _LEGAL.search(text):
         return "legal"
@@ -393,11 +446,34 @@ def run(limit=DEFAULT_LIMIT):
     created = parked = skipped = 0
     repaired_original = 0
     categories = collections.Counter()
+    max_depth = int(os.environ.get("ORCH_QUARANTINE_MAX_REWORK_DEPTH", "2"))
+    escalated = 0
     for task in rows:
         if MARK in str(task.get("note") or ""):
             skipped += 1
             continue
         category = classify(task)
+        # DEPTH CAP: a task whose slug already carries 2+ nested "rework-" segments has already
+        # been through this pipeline that many times without landing. Spawning yet another nested
+        # replacement is how a single flaky/misclassified task became a 5-deep
+        # "rework-legal-rework-legal-rework-legal-..." chain in production, manufacturing
+        # QUARANTINED rows forever. Once the cap is hit, stop reworking automatically and put a
+        # human in the loop instead.
+        if category in REPLACEMENT_CATEGORIES and _rework_depth(task.get("slug")) >= max_depth:
+            note = (f"{MARK}: escalated after {max_depth}+ rework attempts (category={category}); "
+                    f"needs human review instead of another auto-rework. "
+                    f"Last blocker: {(task.get('note') or task.get('log_tail') or '')[:300]}")[:900]
+            try:
+                db.update("tasks", {"id": task["id"]}, {"state": "BLOCKED", "account": None,
+                                                         "updated_at": "now()", "note": note})
+                db.insert("approvals", {"project": str(task.get("project_id") or ""), "kind": "quarantine_escalation",
+                                        "title": f"{task.get('slug')}: stuck in {category} rework loop, needs a human",
+                                        "status": "pending", "detail": note,
+                                        "risk": "auto-rework kept respawning without resolving; likely misclassified or a genuine blocker only a human can clear"})
+                escalated += 1
+            except Exception:
+                skipped += 1
+            continue
         if category not in REPLACEMENT_CATEGORIES:
             try:
                 _repair_original(task, category)
@@ -441,6 +517,7 @@ def run(limit=DEFAULT_LIMIT):
         "parked": parked,
         "repaired_original": repaired_original,
         "skipped": skipped,
+        "escalated": escalated,
         "categories": dict(categories),
         "coder": os.environ.get("ORCH_QUARANTINE_CODER") or "ollama",
         "local_only": os.environ.get("ORCH_QUARANTINE_LOCAL_ONLY", "true").lower() in ("1", "true", "yes", "on"),
