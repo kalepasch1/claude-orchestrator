@@ -19,10 +19,17 @@ WHOLE fleet from one place (Mission Control / the DB) and never touch a second m
 
 Pure DB + git; no model spend. Fail-soft: any error is swallowed so it can never wedge the runner.
 """
-import os, sys, time, socket, subprocess, datetime
+import os, sys, time, socket, subprocess, datetime, asyncio, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import kill_switch
+
+try:
+    import websockets
+    import websockets.exceptions
+    _WEBSOCKETS_AVAILABLE = True
+except ImportError:
+    _WEBSOCKETS_AVAILABLE = False
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOST = socket.gethostname()
@@ -221,6 +228,117 @@ def tick():
         self_update()
     except Exception as e:
         print(f"fleet_control: tick error ({e})")
+
+
+class FleetWebSocketServer:
+    """WebSocket server for real-time fleet runner connections."""
+
+    def __init__(self, port=None, heartbeat_interval=None):
+        self._port = port if port is not None else int(os.environ.get("FLEET_WS_PORT", "8765"))
+        self._heartbeat_interval = (
+            heartbeat_interval if heartbeat_interval is not None
+            else float(os.environ.get("FLEET_WS_PING_INTERVAL", "30"))
+        )
+        self._sessions = {}        # hostname -> websocket
+        self._lock = asyncio.Lock()
+        self._subscriptions = {}   # channel -> [callback]
+        self._server = None
+
+    async def start(self):
+        if not _WEBSOCKETS_AVAILABLE:
+            raise RuntimeError("websockets package required: pip install websockets")
+        self._server = await websockets.serve(self._handle_connection, "0.0.0.0", self._port)
+
+    async def stop(self):
+        if self._server:
+            self._server.close()
+            await self._server.wait_closed()
+        async with self._lock:
+            for ws in list(self._sessions.values()):
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+            self._sessions.clear()
+
+    async def _handle_connection(self, websocket):
+        hostname = None
+        try:
+            raw = await asyncio.wait_for(websocket.recv(), timeout=10)
+            try:
+                msg = json.loads(raw)
+                hostname = msg.get("hostname") or str(websocket.remote_address[0])
+            except Exception:
+                hostname = str(websocket.remote_address[0])
+            async with self._lock:
+                self._sessions[hostname] = websocket
+            recv_task = asyncio.create_task(self._recv_loop(websocket))
+            beat_task = asyncio.create_task(self._heartbeat_loop(websocket))
+            _done, pending = await asyncio.wait([recv_task, beat_task], return_when=asyncio.FIRST_COMPLETED)
+            for t in pending:
+                t.cancel()
+                try:
+                    await t
+                except (asyncio.CancelledError, Exception):
+                    pass
+        except Exception:
+            pass
+        finally:
+            if hostname:
+                async with self._lock:
+                    if self._sessions.get(hostname) is websocket:
+                        del self._sessions[hostname]
+
+    async def _recv_loop(self, websocket):
+        async for raw in websocket:
+            try:
+                msg = json.loads(raw)
+                channel = msg.get("channel")
+                if channel:
+                    for cb in list(self._subscriptions.get(channel, [])):
+                        try:
+                            result = cb(channel, msg)
+                            if asyncio.iscoroutine(result):
+                                await result
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+    async def _heartbeat_loop(self, websocket):
+        while True:
+            await asyncio.sleep(self._heartbeat_interval)
+            try:
+                pong_waiter = await websocket.ping()
+                await asyncio.wait_for(asyncio.shield(pong_waiter), timeout=10)
+            except asyncio.TimeoutError:
+                try:
+                    await websocket.close(1001, "heartbeat timeout")
+                except Exception:
+                    pass
+                return
+            except Exception:
+                return
+
+    def subscribe(self, channel, callback):
+        self._subscriptions.setdefault(channel, []).append(callback)
+
+    async def publish(self, channel, message):
+        payload = json.dumps({"channel": channel, "data": message})
+        for cb in list(self._subscriptions.get(channel, [])):
+            try:
+                result = cb(channel, message)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                pass
+        async with self._lock:
+            sockets = list(self._sessions.values())
+        for ws in sockets:
+            try:
+                await ws.send(payload)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
