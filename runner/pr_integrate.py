@@ -11,11 +11,15 @@ blocked your bilateral PR, and gives partners a real review trail.
 """
 import os, subprocess, json, time
 import supabase_twin
+import preview_canary
 
 AUTO_MERGE = os.environ.get("PR_AUTO_MERGE", "true").lower() == "true"
 POLL = int(os.environ.get("PR_CHECK_POLL", "30"))
 MAX_WAIT = int(os.environ.get("PR_CHECK_MAX_WAIT", "1800"))
 TWIN_ENABLED = os.environ.get("SUPABASE_ACCESS_TOKEN") and os.environ.get("SUPABASE_PROJECT_REF")
+# VERCEL_PROJECT: the Vercel project slug to poll for preview deployments.
+# Fail-soft: canary is skipped (verdict=skip) when this is absent.
+VERCEL_PROJECT = os.environ.get("VERCEL_PROJECT", "")
 
 
 def _gh(args, cwd, **kw):
@@ -42,6 +46,23 @@ def open_pr(repo, branch, base, slug, verify_notes, test_summary):
                 supabase_twin.vercel_env_update(num, twin["db_host"])
         except Exception as e:
             print(f"pr_integrate: twin creation warning ({e})")
+
+    # instant preview canary: poll Vercel until the preview deploy is READY, then health-check it
+    if VERCEL_PROJECT and num:
+        try:
+            canary = preview_canary.check(VERCEL_PROJECT, branch)
+            verdict = canary.get("verdict", "skip")
+            if verdict != "skip":
+                icon = "✅" if verdict == "pass" else "❌"
+                url = canary.get("url") or ""
+                reason = canary.get("reason") or ""
+                comment = (f"{icon} **Preview canary**: {verdict}"
+                           + (f" — {url}" if url else "")
+                           + (f"\n> {reason}" if reason else ""))
+                _gh(["pr", "comment", str(num), "--body", comment], repo)
+            print(f"pr_integrate: preview canary verdict={verdict} url={canary.get('url')}")
+        except Exception as e:
+            print(f"pr_integrate: preview canary warning ({e})")
 
     return {"ok": True, "pr": num}
 
