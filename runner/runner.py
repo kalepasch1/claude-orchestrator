@@ -101,7 +101,12 @@ MAX_AGENT_PROMPT_CHARS = int(os.environ.get("ORCH_MAX_AGENT_PROMPT_CHARS", "3600
 def projects(project_id=None):
     global _projects
     if not _projects or (project_id and project_id not in _projects):
-        _projects = {p["id"]: p for p in db.select("projects") or []}
+        rows = db.select("projects") or []
+        # Resolve each project's repo_path to THIS machine's clone (a second Mac stores the same
+        # repos under a different home). Read-time only — never written back to the shared row.
+        for p in rows:
+            p["repo_path"] = db.localize_repo_path(p.get("repo_path"))
+        _projects = {p["id"]: p for p in rows}
     return _projects
 
 
