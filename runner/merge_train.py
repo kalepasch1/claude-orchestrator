@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
 import agentic_repair
+import repo_lock         # per-repo mutex: concurrent train_run() calls must not race git refs
 
 MARK = "train"                                   # decided_by prefix => handled by the train
 SKIP_PREFIXES = ("merge-handler", "train")       # cards already handled by any integration path
@@ -63,11 +64,10 @@ def _materialize_branch(repo, branch):
     Fail-soft on offline/no-remote — falls back to local-only behavior."""
     if _branch_exists(repo, branch):
         return True
+    if not repo or not os.path.isdir(repo):
+        return False
     try:
         _git(repo, "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}", timeout=120)
-    except Exception:
-        pass
-    try:
         if _git(repo, "rev-parse", "--verify", f"refs/remotes/origin/{branch}").returncode != 0:
             return False
         return _git(repo, "branch", branch, f"refs/remotes/origin/{branch}").returncode == 0 \
@@ -89,16 +89,15 @@ def _refresh_base(repo, base):
 
 
 def _rebase_onto_base(repo, branch, base):
-    """Step 2: rebase the branch onto the CURRENT base. Frees any leftover agent worktree first
-    (approval_merge._free_branch — git refuses to rebase a branch checked out elsewhere, and that
-    error used to be mislabeled CONFLICT). Returns True on success, False on a real conflict."""
+    """Step 2: rebase the branch onto the CURRENT base in an ISOLATED worktree
+    (approval_merge._rebase_isolated). The old `git rebase base branch` form checked the branch
+    out in the repo's OWN primary checkout, and an aborted rebase left the main checkout parked
+    on an agent branch — the runner then executed stale agent-branch code for hours (root cause
+    of the 2026-07-08/09 checkout-drift incidents). Never mutate the main checkout here."""
     approval_merge._free_branch(repo, branch)
     if _git(repo, "merge-base", "--is-ancestor", base, branch).returncode == 0:
         return True  # already based on current base
-    if _git(repo, "rebase", base, branch, timeout=300).returncode != 0:
-        _git(repo, "rebase", "--abort")
-        return False
-    return True
+    return approval_merge._rebase_isolated(repo, base, branch)
 
 
 def _run_tests(repo, test_cmd):
@@ -141,11 +140,31 @@ def _ff_base(repo, branch, base):
 
 
 def _push_base(repo, base):
-    """Step 5: push only when explicitly enabled. Returns '' or an error tail."""
+    """Step 5: push only when explicitly enabled. Returns '' or an error tail.
+
+    On a non-fast-forward rejection (origin moved while we merged — e.g. the other Mac pushed),
+    reconcile once in an ISOLATED worktree: fetch origin/base, rebase local base's extra commits
+    onto it, retry the push. Still failing -> return the error; the CALLER must NOT mark the task
+    MERGED (a failed push previously counted as a merge and desynced the DB from GitHub)."""
     if os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() != "true":
         return ""
     r = _git(repo, "push", "origin", base, timeout=300)
-    return "" if r.returncode == 0 else "PUSHFAIL:" + (r.stderr or "")[-120:]
+    if r.returncode == 0:
+        return ""
+    err = (r.stderr or "")
+    if "non-fast-forward" in err or "fetch first" in err or "rejected" in err:
+        try:
+            _git(repo, "fetch", "origin", base, timeout=120)
+            if approval_merge._rebase_isolated(repo, f"origin/{base}", base):
+                r2 = _git(repo, "push", "origin", base, timeout=300)
+                if r2.returncode == 0:
+                    return ""
+                err = (r2.stderr or "")
+            else:
+                return "PUSHFAIL:reconcile-rebase-conflict:" + err[-120:]
+        except Exception as e:
+            err = f"{e} | {err}"
+    return "PUSHFAIL:" + err[-120:]
 
 
 def _detect_prod_branch(repo, proj):
@@ -277,18 +296,32 @@ def _attribute_train_outcome(slug, task, outcome, integrated=False):
 
 
 def _select_batch(group):
-    annotated = [(card, slug, task, _risk_level(card, task)) for card, slug, task in group]
+    """Return the project's cards sorted (risk band, then age), DEDUPED by slug.
+
+    Duplicate cards for one slug (240 were found for a single slug) used to flood
+    every batch: keep the NEWEST card per slug and terminally mark the rest so
+    they are never picked again. Cap enforcement moved to train_run, which only
+    charges the cap for REAL integration attempts (merged/testfail/conflict) —
+    non-actionable outcomes (waiting/redo/branch-missing) no longer starve cards
+    whose branches actually exist (the 96%-pass / 2.75%-merge blockade)."""
+    newest_by_slug = {}
+    for card, slug, task in group:
+        cur = newest_by_slug.get(slug)
+        if cur is None or str(card.get("created_at") or "") > str(cur[0].get("created_at") or ""):
+            newest_by_slug[slug] = (card, slug, task)
+    for card, slug, task in group:
+        keep = newest_by_slug.get(slug)
+        if keep is not None and card.get("id") != keep[0].get("id"):
+            try:
+                db.update("approvals", {"id": card["id"]},
+                          {"decided_by": f"{MARK}:dup-card", "status": "approved"})
+            except Exception:
+                pass
+    annotated = [(card, slug, task, _risk_level(card, task))
+                 for card, slug, task in newest_by_slug.values()]
     annotated.sort(key=lambda e: ({"low": 0, "standard": 1, "sensitive": 2}[e[3]],
                                   str(e[0].get("created_at") or "")))
-    caps = {"low": LOW_RISK_BATCH, "standard": STANDARD_BATCH, "sensitive": SENSITIVE_BATCH}
-    used = {"low": 0, "standard": 0, "sensitive": 0}
-    selected = []
-    for card, slug, task, risk in annotated:
-        if used[risk] >= caps[risk]:
-            continue
-        used[risk] += 1
-        selected.append((card, slug, task, risk))
-    return selected
+    return annotated
 
 
 def ensure_integration_card(project, slug, *, kind="integrate", title=None, why=None,
@@ -304,7 +337,8 @@ def ensure_integration_card(project, slug, *, kind="integrate", title=None, why=
     cards = db.select("approvals", {"select": "id,slug,title,kind,status,decided_by",
                                     "kind": f"in.({','.join(MERGE_KINDS)})",
                                     "status": "in.(pending,approved)",
-                                    "limit": "2000"}) or []
+                                    "order": "created_at.desc",  # newest first — unordered scans missed dupes past the limit (240 dupes of one slug)
+                                    "limit": os.environ.get("MERGE_CARD_DEDUP_SCAN", "4000")}) or []
     for c in cards:
         if str(c.get("decided_by") or "").startswith(SKIP_PREFIXES):
             continue
@@ -389,6 +423,10 @@ def _integrate_card(card, slug, task, proj):
             return "redo"
         _task_patch(task, {"state": "BLOCKED",
                            "note": f"train: approved, but {branch} is still missing after {cap} rebuilds"})
+        # Terminal for THIS card: mark it handled so it stops re-entering every pick cycle
+        # (a completed recovery task files a fresh card). Unmarked missing-branch cards were
+        # re-selected on every run and starved cards whose branches exist.
+        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:branch-missing"})
         _log(pname, slug, "BLOCKED", "branch missing")
         return "branch-missing"
 
@@ -449,16 +487,23 @@ def _integrate_card(card, slug, task, proj):
         return "conflict"
 
     push_err = _push_base(repo, base)                             # (5)
-    note = f"train: MERGED into {base}"
     if push_err:
-        note += f" ({push_err})"
+        # PUSH-VERIFICATION GATE: a merge is not MERGED until origin actually has it. A failed
+        # push previously only annotated the note while the task still went MERGED — DB said
+        # shipped, GitHub master never advanced (observed 2026-07-09 02:23). Leave the card
+        # undecided so the next train run retries; rebase/tests/ff are idempotent by then.
+        _task_patch(task, {"state": "DONE",
+                           "note": f"train: merged into local {base}; PUSH PENDING ({push_err})"})
+        _attribute_train_outcome(slug, task, "push-pending", integrated=False)
+        _log(pname, slug, "PUSH-PENDING", push_err[:120])
+        return "push-pending"
 
-    _task_patch(task, {"state": "MERGED", "note": note})  # (6)
+    _task_patch(task, {"state": "MERGED", "note": f"train: MERGED into {base}"})  # (6)
     db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:MERGED"})
     _attribute_merge_outcome(slug, task)
     _attribute_train_outcome(slug, task, "merged", integrated=True)
     approval_merge._free_branch(repo, branch)   # cleanup so worktrees never accumulate
-    _log(pname, slug, "MERGED", f"-> {base}" + (f", {push_err}" if push_err else ""))
+    _log(pname, slug, "MERGED", f"-> {base}")
     return "merged"
 
 
@@ -495,22 +540,47 @@ def train_run():
     summary = {"projects": 0, "merged": 0, "redo": 0, "testfail": 0, "conflict": 0,
                "skipped": 0, "risk": {"low": 0, "standard": 0, "sensitive": 0},
                "pressure": pressure}
+    caps = {"low": LOW_RISK_BATCH, "standard": STANDARD_BATCH, "sensitive": SENSITIVE_BATCH}
+    ATTEMPT_OUTCOMES = ("merged", "testfail", "conflict", "push-pending")  # real attempts (tests ran) consume the cap
+    scan_cap = int(os.environ.get("MERGE_TRAIN_SCAN_PER_PROJECT", "200"))
     for pid, group in by_project.items():
         proj = projects.get(pid, {})
         summary["projects"] += 1
-        for card, slug, task, risk in _select_batch(group):
-            summary["risk"][risk] += 1
-            outcome = _integrate_card(card, slug, task, proj)
-            if outcome == "merged":
-                summary["merged"] += 1
-            elif outcome == "redo":
-                summary["redo"] += 1
-            elif outcome == "testfail":
-                summary["testfail"] += 1
-            elif outcome == "conflict":
-                summary["conflict"] += 1
-            else:
-                summary["skipped"] += 1
+        used = {"low": 0, "standard": 0, "sensitive": 0}
+        scanned = 0
+        # CONCURRENCY FIX (2026-07-08 merge-stall root cause): train_run() can be invoked
+        # concurrently for the SAME project -- the 60s scheduler AND, inline, one call per
+        # worker thread the instant its task finishes (runner.py integrate() -> train_run()).
+        # Without this lock, two concurrent passes over the same project raced on the shared
+        # repo's git refs (rebase/branch -f/fast-forward), producing spurious rebase conflicts
+        # that were not real content conflicts. Serialize per-repo so only one train ever
+        # touches a given project's working copy at a time. On a busy repo where another
+        # thread is mid-train, skip this cycle rather than block indefinitely -- the next
+        # scheduled pass (or the next task completion) will pick it back up.
+        repo_path = proj.get("repo_path", "")
+        with repo_lock.hold(repo_path, timeout=120) as got_lock:
+            if not got_lock:
+                summary["skipped"] += len(group)
+                print(f"merge_train: {proj.get('name') or pid} busy (another train holds the repo lock) — skipping this cycle")
+                continue
+            for card, slug, task, risk in _select_batch(group):
+                if used[risk] >= caps[risk] or scanned >= scan_cap:
+                    continue
+                scanned += 1
+                summary["risk"][risk] += 1
+                outcome = _integrate_card(card, slug, task, proj)
+                if outcome in ATTEMPT_OUTCOMES:
+                    used[risk] += 1
+                if outcome == "merged":
+                    summary["merged"] += 1
+                elif outcome == "redo":
+                    summary["redo"] += 1
+                elif outcome == "testfail":
+                    summary["testfail"] += 1
+                elif outcome == "conflict":
+                    summary["conflict"] += 1
+                else:
+                    summary["skipped"] += 1
     print(f"merge_train: {summary['merged']} merged, {summary['redo']} redo, "
           f"{summary['testfail']} testfail, {summary['conflict']} conflict, "
           f"{summary['skipped']} skipped across {summary['projects']} project(s)")
