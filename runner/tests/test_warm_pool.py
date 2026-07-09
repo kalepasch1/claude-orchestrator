@@ -3,11 +3,14 @@ import os
 import sys
 import time
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from warm_pool import WarmPool, _build_context, _read_claude_md, SLOT_TTL
+import warm_pool as _warm_pool_module
 
 
 def _repo(claude_md=None):
@@ -227,6 +230,200 @@ class BuildContextTest(unittest.TestCase):
         d = _repo("   \n   \t  ")
         prefix, _ = _build_context(d)
         self.assertEqual(prefix, "")
+
+
+class WarmPoolThreadSafetyTest(unittest.TestCase):
+    """Thread-safety tests for WarmPool: concurrent access, lock contention, race conditions."""
+
+    # ── helpers ────────────────────────────────────────────────────────────────
+
+    def _run_threads(self, fn, n=20):
+        """Run *fn* on *n* threads, return list of results (exceptions as values)."""
+        barrier = threading.Barrier(n)
+        results = [None] * n
+
+        def worker(idx):
+            barrier.wait()        # synchronize start to maximize contention
+            try:
+                results[idx] = fn(idx)
+            except Exception as exc:
+                results[idx] = exc
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+        return results
+
+    # ── 1. concurrent acquire on same repo ────────────────────────────────────
+
+    def test_concurrent_acquire_same_repo_no_exceptions(self):
+        d = _repo("# Concurrent same")
+        pool = WarmPool(pool_size=5)
+        results = self._run_threads(lambda _: pool.acquire(d), n=20)
+        errors = [r for r in results if isinstance(r, Exception)]
+        self.assertEqual(errors, [], f"Exceptions raised: {errors}")
+
+    def test_concurrent_acquire_same_repo_consistent_result(self):
+        """All threads should get an identical prefix for the same repo."""
+        d = _repo("# Consistent")
+        pool = WarmPool(pool_size=5)
+        results = self._run_threads(lambda _: pool.acquire(d), n=20)
+        unique = set(r for r in results if not isinstance(r, Exception))
+        self.assertEqual(len(unique), 1, f"Got multiple distinct prefixes: {unique}")
+
+    # ── 2. concurrent acquire on different repos ───────────────────────────────
+
+    def test_concurrent_acquire_different_repos_pool_limit_respected(self):
+        """Pool size must never be exceeded under concurrent writes."""
+        repos = [_repo(f"# Repo {i}") for i in range(20)]
+        pool = WarmPool(pool_size=3)
+        self._run_threads(lambda i: pool.acquire(repos[i]), n=20)
+        self.assertLessEqual(pool.stats()["loaded"], 3)
+
+    # ── 3. race between acquire and invalidate ─────────────────────────────────
+
+    def test_concurrent_acquire_and_invalidate_no_deadlock(self):
+        """acquire() and invalidate() racing on the same repo must not deadlock or raise."""
+        d = _repo("# Race target")
+        pool = WarmPool(pool_size=5)
+        stop = threading.Event()
+        errors = []
+
+        def invalidator():
+            while not stop.is_set():
+                pool.invalidate(d)
+                time.sleep(0.001)
+
+        t = threading.Thread(target=invalidator, daemon=True)
+        t.start()
+        try:
+            results = self._run_threads(lambda _: pool.acquire(d), n=10)
+            errors = [r for r in results if isinstance(r, Exception)]
+        finally:
+            stop.set()
+            t.join(timeout=2)
+        self.assertEqual(errors, [])
+
+    # ── 4. race between acquire and set_enabled(False) ────────────────────────
+
+    def test_concurrent_acquire_while_disabling_returns_str(self):
+        """Disabling mid-flight must not raise; every result is a str."""
+        d = _repo("# Disable race")
+        pool = WarmPool(pool_size=5)
+        pool.acquire(d)   # warm it first
+
+        ready = threading.Barrier(11)
+
+        def acquire_worker(_):
+            ready.wait()
+            return pool.acquire(d)
+
+        def disable_worker():
+            ready.wait()
+            pool.set_enabled(False)
+
+        t = threading.Thread(target=disable_worker)
+        t.start()
+        results = self._run_threads(acquire_worker, n=10)
+        t.join(timeout=2)
+        for r in results:
+            self.assertIsInstance(r, str, f"Expected str, got {r!r}")
+
+    # ── 5. stats consistency under concurrent access ───────────────────────────
+
+    def test_stats_internally_consistent_under_concurrent_load(self):
+        """stats() must always report loaded ≤ pool_size, even during concurrent writes."""
+        repos = [_repo(f"# Stats {i}") for i in range(30)]
+        pool = WarmPool(pool_size=4)
+
+        inconsistencies = []
+
+        def worker(i):
+            pool.acquire(repos[i % len(repos)])
+            st = pool.stats()
+            if st["loaded"] > st["pool_size"]:
+                inconsistencies.append(st)
+
+        self._run_threads(worker, n=30)
+        self.assertEqual(inconsistencies, [],
+                         f"Stats inconsistency detected: {inconsistencies[:3]}")
+
+    # ── 6. concurrent invalidate — no deadlock ────────────────────────────────
+
+    def test_concurrent_invalidate_same_repo_no_deadlock(self):
+        d = _repo("# Multi-invalidate")
+        pool = WarmPool(pool_size=5)
+        pool.acquire(d)
+        results = self._run_threads(lambda _: pool.invalidate(d), n=20)
+        errors = [r for r in results if isinstance(r, Exception)]
+        self.assertEqual(errors, [])
+        self.assertEqual(pool.stats()["loaded"], 0)
+
+    # ── 7. module-level singleton thread safety ────────────────────────────────
+
+    def test_module_singleton_acquire_thread_safe(self):
+        """Module-level acquire()/invalidate()/stats() share one singleton — no exceptions."""
+        d = _repo("# Module singleton")
+        errors = []
+
+        def worker(_):
+            _warm_pool_module.acquire(d)
+            _warm_pool_module.stats()
+            _warm_pool_module.invalidate(d)
+
+        results = self._run_threads(worker, n=15)
+        errors = [r for r in results if isinstance(r, Exception)]
+        self.assertEqual(errors, [])
+
+    # ── 8. preload + acquire concurrently ─────────────────────────────────────
+
+    def test_concurrent_preload_and_acquire_no_exception(self):
+        repos = [_repo(f"# PA {i}") for i in range(5)]
+        pool = WarmPool(pool_size=5)
+
+        ready = threading.Barrier(2)
+        results = []
+
+        def preloader():
+            ready.wait()
+            pool.preload(repos)
+
+        def acquirer():
+            ready.wait()
+            return [pool.acquire(r) for r in repos]
+
+        t = threading.Thread(target=preloader)
+        t.start()
+        out = acquirer()
+        t.join(timeout=5)
+
+        # all results must be strings (not exceptions)
+        for v in out:
+            self.assertIsInstance(v, str)
+
+    # ── 9. pool stays bounded under heavy write contention ────────────────────
+
+    def test_pool_bounded_under_heavy_concurrent_writes(self):
+        """Stress: 50 threads each writing a unique repo, pool capped at 5."""
+        repos = [_repo(f"# Heavy {i}") for i in range(50)]
+        pool = WarmPool(pool_size=5)
+        self._run_threads(lambda i: pool.acquire(repos[i]), n=50)
+        st = pool.stats()
+        self.assertLessEqual(st["loaded"], 5)
+        self.assertGreaterEqual(st["loaded"], 0)
+
+    # ── 10. hits counter is monotonically non-negative under concurrent reads ──
+
+    def test_hits_counter_non_negative_after_concurrent_reads(self):
+        d = _repo("# Hits thread")
+        pool = WarmPool(pool_size=5)
+        pool.acquire(d)
+        self._run_threads(lambda _: pool.acquire(d), n=30)
+        st = pool.stats()
+        if st["repos"]:
+            self.assertGreaterEqual(st["repos"][0]["hits"], 0)
 
 
 if __name__ == "__main__":

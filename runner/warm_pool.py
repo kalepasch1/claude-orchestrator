@@ -183,6 +183,11 @@ class WarmPool:
         # Build context outside the lock (disk I/O)
         prefix, cs = _build_context(repo)
         with self._lock:
+            # Re-enforce size limit: concurrent threads may have inserted while we were on disk.
+            if repo not in self._slots:
+                while len(self._slots) >= self._size:
+                    oldest = min(self._slots, key=lambda r: self._slots[r].loaded_at)
+                    del self._slots[oldest]
             self._slots[repo] = _Slot(repo, prefix, cs)
 
     def _maybe_health_sweep(self):
