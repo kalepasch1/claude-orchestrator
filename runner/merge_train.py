@@ -26,11 +26,15 @@ MERGE_CONFLICT_REDO_CAP). Test failures mark the task TESTFAIL — the train NEV
 Idempotent: handled cards get decided_by='train:*'; cards already handled by this train or by
 the legacy merge-handler are skipped.
 """
-import datetime, json, os, re, sys, subprocess
+import datetime, json, os, re, sys, subprocess, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
 import agentic_repair
+try:
+    import pipeline_metrics as _pm
+except Exception:
+    _pm = None
 
 MARK = "train"                                   # decided_by prefix => handled by the train
 SKIP_PREFIXES = ("merge-handler", "train")       # cards already handled by any integration path
@@ -414,8 +418,17 @@ def _integrate_card(card, slug, task, proj):
         _log(pname, slug, "CONFLICT", f"redo cap {cap} exhausted")
         return "conflict"
 
+    _t0 = time.monotonic()
     ok, tail = _run_tests(repo, _test_cmd_for(proj, repo))  # (3)
+    _dur_ms = int((time.monotonic() - _t0) * 1000)
     if not ok:
+        if _pm:
+            try:
+                _pm.record(slug, task.get("kind") or "unknown",
+                           ok=False, duration_ms=_dur_ms, gate_decision="TESTFAIL",
+                           gate_reason=tail[:200])
+            except Exception:
+                pass
         # NEVER force-merge red work.
         _task_patch(task, {"state": "TESTFAIL", "note": f"train: tests failed on rebased {branch}: {tail[:200]}"})
         db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:TESTFAIL"})
@@ -454,6 +467,12 @@ def _integrate_card(card, slug, task, proj):
     db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:MERGED"})
     _attribute_merge_outcome(slug, task)
     _attribute_train_outcome(slug, task, "merged", integrated=True)
+    if _pm:
+        try:
+            _pm.record(slug, task.get("kind") or "unknown",
+                       ok=True, duration_ms=_dur_ms, gate_decision="MERGED")
+        except Exception:
+            pass
     approval_merge._free_branch(repo, branch)   # cleanup so worktrees never accumulate
     _log(pname, slug, "MERGED", f"-> {base}" + (f", {push_err}" if push_err else ""))
     return "merged"
@@ -508,6 +527,11 @@ def train_run():
                 summary["conflict"] += 1
             else:
                 summary["skipped"] += 1
+    if _pm:
+        try:
+            summary["test_pipeline"] = _pm.get_health(lookback_minutes=60)
+        except Exception:
+            pass
     print(f"merge_train: {summary['merged']} merged, {summary['redo']} redo, "
           f"{summary['testfail']} testfail, {summary['conflict']} conflict, "
           f"{summary['skipped']} skipped across {summary['projects']} project(s)")
