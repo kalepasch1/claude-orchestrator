@@ -329,14 +329,15 @@ def _learned_route(project, operation, task_class, sensitivity):
 def complete(provider, model, prompt, project=None, timeout=90, operation="completion",
              task_class="unknown", fallback=True, record_op=True):
     """Non-agentic completion via any provider (for QA/review/rating/planning)."""
-    if _confidential_mode():
+    confidential = _confidential_mode()
+    if confidential:
         # In confidential mode a prompt may be intentionally scoped for one vendor/local model.
         # Do not resend it to a second provider after a transient failure unless the caller opts out
         # of confidential mode for this process.
         fallback = False
     sensitivity = _sensitivity(prompt)
     learned = _learned_route(project, operation, task_class, sensitivity)
-    if learned and learned[0] != provider:
+    if learned and learned[0] != provider and not confidential:
         provider, model, learned_reason = learned
     else:
         learned_reason = ""
