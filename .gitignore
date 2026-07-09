@@ -18,3 +18,15 @@ runner/.env.bak*
 # runner log (huge, machine-local — never commit)
 runner/runner.log
 .aider*
+
+# Preview deployment files
+preview_deploy.py
+preview-deploy-*.py
+deploy-preview-*.py
+
+# Agent branch deployment ignores
+agent-branch-*.py
+agent-branch-*.sh
+
+# Vercel deployment ignores (based on the patch template reference)
+.vercel
