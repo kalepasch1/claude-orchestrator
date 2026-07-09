@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import deploy_verify
 import deploy_watch
+import preview_canary
 import release_train
 
 
@@ -147,6 +148,85 @@ class TestReleaseTrainVercel(unittest.TestCase):
                                                       "prod could not fast-forward")
         self.assertTrue(any(t == "tasks" and r["slug"].startswith("relfix-app-")
                             for t, r in fake.inserts))
+
+
+class TestPreviewCanary(unittest.TestCase):
+    def test_query_preview_returns_none_without_token(self):
+        """No hardcoded fallback: absent VERCEL_TOKEN must yield None without hitting the network."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("VERCEL_TOKEN", None)
+            with patch("urllib.request.urlopen", side_effect=AssertionError("must not open URL")) as mock_open:
+                result = preview_canary.query_preview("my-project", "orchestrator/dev")
+        self.assertIsNone(result)
+
+    def test_run_skips_gracefully_without_token(self):
+        """run() is a no-op when VERCEL_TOKEN is absent — does not raise."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("VERCEL_TOKEN", None)
+            result = preview_canary.run()
+        self.assertEqual(result["checked"], 0)
+
+    def test_no_hardcoded_secret_in_module_source(self):
+        """Prove that no long opaque token literal is embedded in preview_canary.py."""
+        import inspect
+        src = inspect.getsource(preview_canary)
+        import re
+        # Flag any bare string that looks like a token (>= 20 alphanum/dash/underscore chars)
+        suspicious = re.findall(r'["\'][A-Za-z0-9_\-]{20,}["\']', src)
+        # Allow the VBASE URL constant and nothing else
+        suspicious = [s for s in suspicious if "vercel.com" not in s and "api.vercel" not in s]
+        self.assertEqual(suspicious, [],
+                         f"Possible hardcoded secret in preview_canary.py: {suspicious}")
+
+    def test_query_preview_matches_branch(self):
+        """query_preview returns the deployment whose ref matches the requested branch."""
+        deployments = [
+            {"state": "READY", "url": "preview-main.vercel.app",
+             "meta": {"githubCommitRef": "main"}},
+            {"state": "BUILDING", "url": "preview-dev.vercel.app",
+             "meta": {"githubCommitRef": "orchestrator/dev"}},
+        ]
+        with patch.dict(os.environ, {"VERCEL_TOKEN": "tok"}), \
+             patch.object(preview_canary, "_vget", return_value={"deployments": deployments}):
+            dep = preview_canary.query_preview("my-project", "orchestrator/dev")
+        self.assertIsNotNone(dep)
+        self.assertEqual(dep["url"], "preview-dev.vercel.app")
+
+    def test_query_preview_returns_none_for_unknown_branch(self):
+        deployments = [
+            {"state": "READY", "url": "preview-main.vercel.app",
+             "meta": {"githubCommitRef": "main"}},
+        ]
+        with patch.dict(os.environ, {"VERCEL_TOKEN": "tok"}), \
+             patch.object(preview_canary, "_vget", return_value={"deployments": deployments}):
+            dep = preview_canary.query_preview("my-project", "orchestrator/dev")
+        self.assertIsNone(dep)
+
+    def test_run_files_approval_on_failed_preview(self):
+        fake = FakeDB()
+        fake.rows["deploy_health"] = [
+            {"app": "app", "vercel_project": "app-proj", "git_branch": "orchestrator/dev"}
+        ]
+        with patch.dict(os.environ, {"VERCEL_TOKEN": "tok"}), \
+             patch.object(preview_canary, "db", fake), \
+             patch.object(preview_canary, "query_preview",
+                          return_value={"state": "ERROR", "url": "bad.vercel.app"}):
+            preview_canary.run()
+        self.assertTrue(any(t == "approvals" and r["title"] == "Preview build failed: app"
+                            for t, r in fake.inserts))
+
+    def test_run_updates_deploy_health_on_ready_preview(self):
+        fake = FakeDB()
+        fake.rows["deploy_health"] = [
+            {"app": "app", "vercel_project": "app-proj", "git_branch": "orchestrator/dev"}
+        ]
+        with patch.dict(os.environ, {"VERCEL_TOKEN": "tok"}), \
+             patch.object(preview_canary, "db", fake), \
+             patch.object(preview_canary, "query_preview",
+                          return_value={"state": "READY", "url": "ok.vercel.app"}):
+            preview_canary.run()
+        self.assertTrue(any(t == "deploy_health" and p.get("preview_state") == "ready"
+                            for t, _, p in fake.updates))
 
 
 if __name__ == "__main__":
