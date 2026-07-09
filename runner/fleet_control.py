@@ -27,6 +27,13 @@ import kill_switch
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOST = socket.gethostname()
 _last_pull = {"t": 0.0}
+_ws_server = None
+
+
+def set_websocket_server(ws):
+    """Inject a WebSocket server so update_fleet_config can publish ConfigChanged events."""
+    global _ws_server
+    _ws_server = ws
 
 # only these config keys may be pushed fleet-wide (never secrets). Anything containing a credential
 # marker is rejected outright.
@@ -55,6 +62,47 @@ def load_config():
     except Exception:
         pass
     return n
+
+
+def update_fleet_config(key, value):
+    """Upsert a fleet config key and publish a ConfigChanged event for ORCH_* keys.
+
+    Emits to 'config/*' via the injected WebSocket server when:
+      - the key starts with ORCH_
+      - the new value differs from what was stored
+      - a WebSocket server has been registered via set_websocket_server()
+    Fail-soft: errors in event emission are swallowed.
+    """
+    if not _safe_key(key):
+        raise ValueError(f"refusing unsafe fleet config key: {key}")
+    new_value = str(value)
+    old_value = None
+    try:
+        rows = db.select("fleet_config", {"select": "value", "key": f"eq.{key}", "limit": "1"}) or []
+        if rows:
+            old_value = str(rows[0].get("value") or "")
+    except Exception:
+        pass
+    row = {
+        "key": key,
+        "value": new_value,
+        "updated_by": HOST,
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    db.insert("fleet_config", row, upsert=True)
+    if _ws_server is not None and key.upper().startswith("ORCH_") and new_value != old_value:
+        try:
+            _ws_server.publish_event("config/*", {
+                "event_type": "config_changed",
+                "key": key,
+                "old_value": old_value,
+                "new_value": new_value,
+                "timestamp": int(time.time() * 1000),
+                "publisher": "fleet_control",
+            })
+        except Exception:
+            pass
+    return row
 
 
 def _git(*args, timeout=120):
