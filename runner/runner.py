@@ -1586,9 +1586,12 @@ _SCHEDULE = [
     ("txn-300",       "txn",                "interval", 300),
     ("policy-45",     "approval_policy.py", "interval", 45),    # owner policy: auto-approve all but narrow legal
     ("janitor-300",   "queue_janitor.py",   "interval", 300),   # auto-clear blockers: wedged runs, empty diffs, stranded cards, stale locks
+    ("dbrecover-60",  "db_recovery_sprint.py","interval", 60),   # when Supabase 522 clears, sprint drain/release immediately
+    ("resmesh-60",    "resilience_mesh.py", "interval", 60),    # keep local/vendor/deploy prep moving during Supabase/vendor outages
     ("train-60",      "merge_train.py",     "interval", 60),    # canonical approved-card cleanup train
     ("mergestall-900","merge_stall_monitor.py","interval",900), # alert if merges stop landing despite a real backlog (2026-07-08 incident safeguard)
     ("sweep-90",      "integration_sweeper.py","interval",90),  # passed-tests-but-not-integrated -> canonical train
+    ("sentinel-300",  "sentinel.py",        "interval", 300),   # self-healing: DB-outage offline sweeps, checkout drift, runner singleton, RAM clamp, stale code
     ("ownermodel-300","owner_decision_model.py","interval",300),# draft/auto-apply gated decisions from owner precedent
     ("ev-900",        "ev_scheduler.py",    "interval", 900),   # EV-per-token queue ordering + zero-EV parking
     ("codercanary-1800","coder_canary.py",  "interval", 1800),  # force low-risk per-coder samples for learned routing
@@ -1733,7 +1736,8 @@ _sched_last: dict = {}
 # Jobs that NEVER call a model and are safe (even desirable) to run while paused:
 # protect the Mac, and keep read-only spend/health telemetry flowing.
 _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn",
-                     "approval_policy.py", "queue_janitor.py",
+                     "approval_policy.py", "queue_janitor.py", "db_recovery_sprint.py",
+                     "resilience_mesh.py",
                      "integration_sweeper.py", "merge_train.py",
                      "unstick", "dagfix", "batchmech", "selftune", "cluster",
                      "governor", "costslo", "promote", "prewarm", "billingguard",

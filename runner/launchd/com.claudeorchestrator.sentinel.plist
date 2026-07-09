@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Self-healing sentinel: independent of the runner so it can revive a dead runner.
+     Install: cp to ~/Library/LaunchAgents/ then `launchctl load` (or setup-scheduler.sh). -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.claudeorchestrator.sentinel</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/ClaudeRunner.app/Contents/MacOS/ClaudeRunner</string>
+        <string>sentinel.py</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>/Users/kpasch/Documents/beethoven/claude-orchestrator/runner</string>
+    <key>StartInterval</key>
+    <integer>120</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/kpasch/Library/Logs/claude-orchestrator/sentinel.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/kpasch/Library/Logs/claude-orchestrator/sentinel.err</string>
+</dict>
+</plist>

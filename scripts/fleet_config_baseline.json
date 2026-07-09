@@ -1,0 +1,12 @@
+{
+  "ORCH_DRAIN_MODE": "true",
+  "ORCH_DRAIN_SKIP_JOBS": "scout,spec,bizradar,roadmap,newapp,committees,committeeboard,committeewatch,committeemeta,committeedocket,committeedigest,committeeminutes,committeekg,committeecal,committeerollout,agentmarket,commonbrain,demand_mining.py,capability_radar.py,feedback_review.py,experiment_portfolio.py,predictive_scheduler.py,coder_canary.py,model_historical_canary.py,improve,meta_loop.py",
+  "ORCH_LEAN_MODE": "true",
+  "ORCH_SUPABASE_RETRIES": "4",
+  "ORCH_SHARE_AGENT_BRANCHES": "true",
+  "ORCH_AUTO_PULL": "true",
+  "ORCH_CODE_MERGE_TARGET": "dev",
+  "ORCH_STAGING_BRANCH": "orchestrator/dev",
+  "ORCH_PUSH_ON_MERGE": "true",
+  "ORCH_PUSH_ON_RELEASE": "true"
+}
