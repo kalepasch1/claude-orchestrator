@@ -62,6 +62,13 @@ class ReuseIntelligenceTest(unittest.TestCase):
         self.assertFalse(task_slicer.should_slice({"slug": "qafix-app-slice-1", "prompt": prompt}))
         self.assertFalse(task_slicer.should_slice({"slug": "rework-testfail-app", "prompt": prompt}))
 
+    def test_task_slicer_does_not_slice_canary_tasks(self):
+        # canary- slugs must never be sliced: the groomer treats canary-gpt-1-slice-1
+        # as a duplicate queued slug and blocks it, stalling the coder-routing lane.
+        prompt = "- one\n- two\n- three\n- four\n- five\n- six\n- seven\n"
+        self.assertFalse(task_slicer.should_slice({"slug": "canary-gpt-1", "prompt": prompt}))
+        self.assertFalse(task_slicer.should_slice({"slug": "canary-claude-3", "prompt": prompt}))
+
     def test_model_catalog_prefers_free_capable_model(self):
         with patch.object(model_catalog.model_gateway, "available", return_value=["local", "openai"]), \
              patch.object(model_catalog, "_empirical_score", return_value=0.0):

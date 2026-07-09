@@ -13,7 +13,7 @@ MAX_DEPTH = int(os.environ.get("ORCH_SLICE_MAX_DEPTH", "1"))
 MARK = "auto-sliced-before-agent"
 PROTECTED_PREFIXES = (
     "qafix-", "relfix-", "buildfix-", "deployfix-",
-    "recover-missing-branch-", "rework-",
+    "recover-missing-branch-", "rework-", "canary-",
 )
 
 
