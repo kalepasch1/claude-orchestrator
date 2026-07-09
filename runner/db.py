@@ -5,7 +5,7 @@ The runner uses the SERVICE ROLE key so it bypasses RLS. Set:
     SUPABASE_URL=https://<ref>.supabase.co
     SUPABASE_SERVICE_KEY=<service-role key>   (keep secret; never ship to the web app)
 """
-import os, json, socket, time, urllib.request, urllib.parse, urllib.error
+import os, re, json, socket, time, urllib.request, urllib.parse, urllib.error
 
 # Load runner/.env directly from Python so launchd agents pick up all env vars
 # (EMBED_PROVIDER, ANTHROPIC_API_KEY, etc.) even when the shell wrapper can't
@@ -102,6 +102,37 @@ PROJECT_PRIORITY_ORDER = {
 
 def _project_rank_name(name):
     return PROJECT_PRIORITY_ORDER.get(str(name or "").strip().lower(), 9)
+
+
+def localize_repo_path(repo_path):
+    """Resolve a project's stored repo_path to THIS machine's actual clone.
+
+    projects.repo_path is one shared absolute path (e.g. /Users/kpasch/Documents/foo). On the
+    machine that owns that path it exists as-is; on a second Mac the same repo lives under a
+    different home (e.g. /Users/mandypasch/Documents/foo). Rewrite the /Users/<user>/ home prefix
+    to THIS user's home when a clone actually exists there, so one shared task queue is runnable on
+    any Mac that has the repos at the same sub-path. No-op on the owning machine (stored path
+    already exists) and no-op when there is no local clone (the claim guard then skips the task, so
+    a runner never grabs work it cannot run). Opt out with ORCH_REPO_LOCALIZE=false.
+    """
+    if not repo_path or os.environ.get("ORCH_REPO_LOCALIZE", "true").lower() in ("false", "0", "no"):
+        return repo_path
+    if os.path.isdir(repo_path):
+        return repo_path  # stored path is valid on this host (the owning machine)
+    m = re.match(r"^/Users/[^/]+/(.*)$", repo_path)
+    if m:
+        cand = os.path.join(os.path.expanduser("~"), m.group(1))
+        if os.path.isdir(cand):
+            return cand
+    return repo_path  # no local equivalent — leave unchanged; caller/guard handles absence
+
+
+def repo_runnable_here(repo_path):
+    """True if a task's project can run on this machine: it has no repo (uses cwd) or a local clone
+    exists (possibly via localize_repo_path). Used by claim_task to enforce host affinity."""
+    if not repo_path:
+        return True
+    return os.path.isdir(localize_repo_path(repo_path))
 
 
 def _req(method, path, body=None, headers=None, params=None):
@@ -275,13 +306,18 @@ def claim_task(runner_id):
     cost-per-merge by roi.py) and then FIFO. This makes the highest expected-value work run first
     under any capacity limit — and stays correct across MULTIPLE machines because the final claim
     is an atomic optimistic PATCH (state=QUEUED -> RUNNING), so two runners never double-claim."""
-    prio, roi_w, project_names, paused_pids = {}, {}, {}, set()
+    prio, roi_w, project_names, paused_pids, local_repo_pids = {}, {}, {}, set(), None
     try:
-        projs = select("projects", {"select": "id,name,priority,concurrency_weight"}) or []
+        projs = select("projects", {"select": "id,name,priority,concurrency_weight,repo_path"}) or []
         prio = {p["id"]: (p.get("priority") if p.get("priority") is not None else 5) for p in projs}
         roi_w = {p["id"]: (p.get("concurrency_weight") if p.get("concurrency_weight") is not None else 1)
                  for p in projs}
         project_names = {p["id"]: p.get("name") for p in projs}
+        # HOST AFFINITY: projects whose repo is actually present on THIS machine (after localizing
+        # the shared /Users/<owner>/ path to this home). A runner must not claim a task whose repo
+        # it lacks — it would flip QUEUED->RUNNING, fail for lack of a checkout, and steal the task
+        # from the machine that CAN run it. None => couldn't compute (fail open, old behavior).
+        local_repo_pids = {p["id"] for p in projs if repo_runnable_here(p.get("repo_path"))}
         name2id = {p["name"]: p["id"] for p in projs}
         paused_names = {c["project"] for c in (select("controls", {"select": "project,paused,updated_by",
                         "scope": "eq.project", "paused": "is.true"}) or [])
@@ -294,6 +330,17 @@ def claim_task(runner_id):
                               "order": "created_at.asc",
                               "limit": str(CLAIM_SCAN_LIMIT)}) or []
     queued = [t for t in queued if t.get("project_id") not in paused_pids]  # skip paused projects
+    # HOST AFFINITY: only claim tasks whose project repo exists on this machine. No-op on the
+    # machine that owns the repos (all present) and when localization is disabled; prevents a
+    # second Mac from grabbing-and-failing work it has no checkout for. Gated + fail-open.
+    if (local_repo_pids is not None
+            and os.environ.get("ORCH_CLAIM_REQUIRE_LOCAL_REPO", "true").lower() in ("true", "1", "yes")):
+        before = len(queued)
+        queued = [t for t in queued if t.get("project_id") in local_repo_pids]
+        if before and not queued:
+            print(f"[claim] no locally-runnable tasks: {before} queued, but no project repo is present "
+                  f"on {socket.gethostname()} (host affinity). Idle until a runnable repo exists.",
+                  flush=True)
     per_project_limit = max(1, int(os.environ.get("ORCH_PER_PROJECT_CODE_LANES", "1")))
     active_by_project = {}
     active_evidence = 0
