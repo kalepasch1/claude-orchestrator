@@ -331,21 +331,10 @@ def create_merged_diff_from_patch(
         b_lines = patched.splitlines(keepends=True)
         return ''.join(_difflib.unified_diff(a_lines, b_lines, fromfile='base', tofile='patched'))
 
-    # Three-way: merge patched vs target relative to base
-    base_lines = base_content.splitlines(keepends=True)
+    # Three-way: diff patched against target to surface remaining divergence
     patched_lines = patched.splitlines(keepends=True)
     target_lines = target_content.splitlines(keepends=True)
-
-    # Use Differ to build merged view: accept patch additions, keep target where unchanged
-    sm_base_patched = _difflib.SequenceMatcher(None, base_lines, patched_lines)
-    sm_base_target = _difflib.SequenceMatcher(None, base_lines, target_lines)
-
-    patch_adds = {n for tag, i1, i2, j1, j2 in sm_base_patched.get_opcodes()
-                  if tag in ('replace', 'insert') for n in range(j1, j2)}
-
-    merged = list(_difflib.unified_diff(base_lines, patched_lines, fromfile='base', tofile='merged'))
-    diff_out = ''.join(_difflib.unified_diff(target_lines, patched_lines, fromfile='target', tofile='merged'))
-    return diff_out
+    return ''.join(_difflib.unified_diff(target_lines, patched_lines, fromfile='target', tofile='merged'))
 
 
 if __name__ == "__main__":
