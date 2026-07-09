@@ -766,3 +766,18 @@
 +
 +---
 +BEFORE YOU FINISH (required): run the project's production build and, if present, its tests (e.g. `npm run build` then the test command). If ANYTHING fails, fix it and re-run until the build is GREEN. Make the smallest correct change and reuse existing code. Do not finish with a red build, and do not finish by only describing changes — actually apply your edits to the files.
+
+# 2026-07-09 15:57:49.036513
++PATCH TEMPLATE 55d5ee3d39a3
++Intent: acceptance apparently automate because beethoven branch build cause comprehensive concrete count create database diagnostic document examine expected improve large management means merge missing missing_branch
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt: none found; keep the patch template reusable.
++[patch-template:55d5ee3d39a3]
++
++Understand and document the missing-branch problem: (1) Read the merge-train pressure state and queue schema to understand what 'missing_branch' means (branch expected in DB but not in git?). (2) Examine the database schema (branch tracking tables, merge-train state). (3) Write a diagnostic script that reports the root cause for each missing-branch count in tomorrow/beethoven/smarter/apparently projects. (4) Create a comprehensive test case that reproduces the missing-branch state for one project. Acceptance: written diagnostic output showing what's missing and why, plus a test that reproduces one concrete missing-branch scenario.
++
++(Sub-task 1/4 of 'improve-automate-branch-management-with-git-auto', auto-split because the parent was too large to build in one pass.)

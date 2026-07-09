@@ -13,7 +13,7 @@ that structurally by SERIALIZING integration per project:
         2. rebase agent/<slug> onto the CURRENT base (freeing any leftover agent worktree first,
            via approval_merge._free_branch — the phantom-CONFLICT root cause)
         3. run the project's test command on the rebased branch
-        4. fast-forward the base to the branch (no force, no no-ff surprises)
+        4. fast-forward the base to the rebased branch (no force, no no-ff surprises)
         5. optionally push (ORCH_PUSH_ON_MERGE=true; normally false for dev batching)
         6. mark task MERGED + card decided_by='train:MERGED'
 
@@ -384,6 +384,8 @@ def _integrate_card(card, slug, task, proj):
             _task_patch(task, patch)
             _log(pname, slug, "REDO", f"branch missing, rebuild ({tr+1}/{cap})")
             return "redo"
+        # Add diagnostic logging for missing branch issue
+        print(f"DIAGNOSTIC: Missing branch {branch} after {cap} rebuild attempts in project {pname}")
         _task_patch(task, {"state": "BLOCKED",
                            "note": f"train: approved, but {branch} is still missing after {cap} rebuilds"})
         _log(pname, slug, "BLOCKED", "branch missing")
