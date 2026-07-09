@@ -62,6 +62,19 @@ class ReuseIntelligenceTest(unittest.TestCase):
         self.assertFalse(task_slicer.should_slice({"slug": "qafix-app-slice-1", "prompt": prompt}))
         self.assertFalse(task_slicer.should_slice({"slug": "rework-testfail-app", "prompt": prompt}))
 
+    def test_task_slicer_slices_are_ordered_no_forward_deps(self):
+        # each slice's deps must only reference earlier slugs, never later ones
+        prompt = "- one\n- two\n- three\n- four\n- five\n- six\n- seven\n- eight\n"
+        task = {"id": "p", "slug": "build-feature", "prompt": prompt}
+        parts = task_slicer.slice_task(task)
+        self.assertGreaterEqual(len(parts), 2)
+        seen_slugs = set()
+        for part in parts:
+            for dep in part.get("deps") or []:
+                self.assertIn(dep, seen_slugs, f"slice {part['slug']} depends on a later/unknown slug {dep!r}")
+            seen_slugs.add(part["slug"])
+            self.assertTrue(part["prompt"].strip(), f"slice {part['slug']} has empty prompt")
+
     def test_model_catalog_prefers_free_capable_model(self):
         with patch.object(model_catalog.model_gateway, "available", return_value=["local", "openai"]), \
              patch.object(model_catalog, "_empirical_score", return_value=0.0):
