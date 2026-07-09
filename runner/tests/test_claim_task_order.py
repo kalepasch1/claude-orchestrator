@@ -35,7 +35,7 @@ class TestClaimTaskOrder(unittest.TestCase):
                 return []
             if table == "tasks":
                 state = params.get("state")
-                if state == "eq.QUEUED":
+                if state in ("eq.QUEUED", "in.(QUEUED,TESTING)"):
                     return [dict(t) for t in tasks]
                 if state == "in.(RUNNING,RETRY)":
                     return []
@@ -70,7 +70,7 @@ class TestClaimTaskOrder(unittest.TestCase):
                 return []
             if table == "tasks":
                 state = params.get("state")
-                if state == "eq.QUEUED":
+                if state in ("eq.QUEUED", "in.(QUEUED,TESTING)"):
                     return [dict(t) for t in tasks]
                 if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
                     return []
@@ -107,7 +107,7 @@ class TestClaimTaskOrder(unittest.TestCase):
                 return []
             if table == "tasks":
                 state = params.get("state")
-                if state == "eq.QUEUED":
+                if state in ("eq.QUEUED", "in.(QUEUED,TESTING)"):
                     return [dict(t) for t in tasks]
                 if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
                     return []
@@ -141,7 +141,7 @@ class TestClaimTaskOrder(unittest.TestCase):
                 return []
             if table == "tasks":
                 state = params.get("state")
-                if state == "eq.QUEUED":
+                if state in ("eq.QUEUED", "in.(QUEUED,TESTING)"):
                     return [dict(t) for t in tasks]
                 if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
                     return []
@@ -177,7 +177,7 @@ class TestClaimTaskOrder(unittest.TestCase):
                 return []
             if table == "tasks":
                 state = params.get("state")
-                if state == "eq.QUEUED":
+                if state in ("eq.QUEUED", "in.(QUEUED,TESTING)"):
                     return [dict(t) for t in tasks]
                 if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
                     return []
@@ -212,7 +212,7 @@ class TestClaimTaskOrder(unittest.TestCase):
                 return []
             if table == "tasks":
                 state = params.get("state")
-                if state == "eq.QUEUED":
+                if state in ("eq.QUEUED", "in.(QUEUED,TESTING)"):
                     return [dict(t) for t in tasks]
                 if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
                     return []
@@ -249,7 +249,7 @@ class TestClaimTaskOrder(unittest.TestCase):
                 return []
             if table == "tasks":
                 state = params.get("state")
-                if state == "eq.QUEUED":
+                if state in ("eq.QUEUED", "in.(QUEUED,TESTING)"):
                     return [dict(t) for t in tasks]
                 if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
                     return []
@@ -285,7 +285,7 @@ class TestClaimTaskOrder(unittest.TestCase):
                 return []
             if table == "tasks":
                 state = params.get("state")
-                if state == "eq.QUEUED":
+                if state in ("eq.QUEUED", "in.(QUEUED,TESTING)"):
                     return [dict(t) for t in tasks]
                 if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
                     return []
@@ -318,7 +318,7 @@ class TestClaimTaskOrder(unittest.TestCase):
                 return []
             if table == "tasks":
                 state = params.get("state")
-                if state == "eq.QUEUED":
+                if state in ("eq.QUEUED", "in.(QUEUED,TESTING)"):
                     return [dict(t) for t in tasks]
                 if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
                     return []
@@ -352,7 +352,7 @@ class TestClaimTaskOrder(unittest.TestCase):
                 return []
             if table == "tasks":
                 state = params.get("state")
-                if state == "eq.QUEUED":
+                if state in ("eq.QUEUED", "in.(QUEUED,TESTING)"):
                     return [dict(t) for t in tasks]
                 if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
                     return []
@@ -387,7 +387,7 @@ class TestClaimTaskOrder(unittest.TestCase):
                 return []
             if table == "tasks":
                 state = params.get("state")
-                if state == "eq.QUEUED":
+                if state in ("eq.QUEUED", "in.(QUEUED,TESTING)"):
                     return [dict(t) for t in tasks]
                 if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"):
                     return []
@@ -422,7 +422,7 @@ class TestClaimTaskOrder(unittest.TestCase):
                 return []
             if table == "tasks":
                 state = params.get("state")
-                if state == "eq.QUEUED":
+                if state in ("eq.QUEUED", "in.(QUEUED,TESTING)"):
                     return [dict(t) for t in tasks]
                 if state == "in.(RUNNING,RETRY)":
                     return [{"project_id": "p1", "slug": "canary-gpt-1", "kind": "canary",
@@ -463,7 +463,7 @@ class TestClaimTaskOrder(unittest.TestCase):
                 return []
             if table == "tasks":
                 state = params.get("state")
-                if state == "eq.QUEUED":
+                if state in ("eq.QUEUED", "in.(QUEUED,TESTING)"):
                     return [dict(t) for t in tasks]
                 if state == "in.(RUNNING,RETRY)":
                     return [{"project_id": "p1"}]
@@ -502,7 +502,7 @@ class TestClaimTaskOrder(unittest.TestCase):
                 return []
             if table == "tasks":
                 state = params.get("state")
-                if state == "eq.QUEUED":
+                if state in ("eq.QUEUED", "in.(QUEUED,TESTING)"):
                     return [dict(t) for t in tasks]
                 if state == "in.(RUNNING,RETRY)":
                     return [{"project_id": "p1"}]

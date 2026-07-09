@@ -269,12 +269,28 @@ def _is_evidence_task(t):
             or "routing sample" in note)
 
 
+def test_trigger(task_id):
+    """Atomically transition a QUEUED task to TESTING to signal that the test suite has been
+    initiated. Called immediately after enqueue so tests start before a runner claims the task.
+    Returns the updated row on success, None if the task was already claimed or in another state.
+    Fail-soft: any DB error returns None so callers never break on test-trigger failure."""
+    try:
+        res = _req("PATCH", "/rest/v1/tasks",
+                   body={"state": "TESTING", "updated_at": "now()"},
+                   headers={"Prefer": "return=representation"},
+                   params={"id": f"eq.{task_id}", "state": "eq.QUEUED"})
+        return res[0] if res else None
+    except Exception:
+        return None
+
+
 def claim_task(runner_id):
-    """Atomically grab one QUEUED task whose deps are satisfied. ECONOMIC ORDERING: within a
-    project-priority band, prefer higher-ROI projects (projects.concurrency_weight, set from
-    cost-per-merge by roi.py) and then FIFO. This makes the highest expected-value work run first
-    under any capacity limit — and stays correct across MULTIPLE machines because the final claim
-    is an atomic optimistic PATCH (state=QUEUED -> RUNNING), so two runners never double-claim."""
+    """Atomically grab one QUEUED or TESTING task whose deps are satisfied. ECONOMIC ORDERING:
+    within a project-priority band, prefer higher-ROI projects (projects.concurrency_weight, set
+    from cost-per-merge by roi.py) and then FIFO. This makes the highest expected-value work run
+    first under any capacity limit — and stays correct across MULTIPLE machines because the final
+    claim is an atomic optimistic PATCH (state=QUEUED/TESTING -> RUNNING), so two runners never
+    double-claim."""
     prio, roi_w, project_names, paused_pids = {}, {}, {}, set()
     try:
         projs = select("projects", {"select": "id,name,priority,concurrency_weight"}) or []
@@ -289,8 +305,8 @@ def claim_task(runner_id):
         paused_pids = {name2id[n] for n in paused_names if n in name2id}
     except Exception:
         pass
-    queued = select("tasks", {"select": "id,slug,project_id,deps,confidence,created_at,kind,note",
-                              "state": "eq.QUEUED",
+    queued = select("tasks", {"select": "id,slug,project_id,deps,confidence,created_at,kind,note,state",
+                              "state": "in.(QUEUED,TESTING)",
                               "order": "created_at.asc",
                               "limit": str(CLAIM_SCAN_LIMIT)}) or []
     queued = [t for t in queued if t.get("project_id") not in paused_pids]  # skip paused projects
@@ -446,11 +462,12 @@ def claim_task(runner_id):
         if pid and active_by_project.get(pid, 0) >= _project_lane_limit(t):
             continue
         if all(d in done for d in (t.get("deps") or [])):
-            # optimistic claim: flip to RUNNING only if still QUEUED
+            # optimistic claim: flip to RUNNING only if still QUEUED or TESTING
+            cur_state = t.get("state", "QUEUED")
             res = _req("PATCH", "/rest/v1/tasks",
                        body={"state": "RUNNING", "account": runner_id, "updated_at": "now()"},
                        headers={"Prefer": "return=representation"},
-                       params={"id": f"eq.{t['id']}", "state": "eq.QUEUED"})
+                       params={"id": f"eq.{t['id']}", "state": f"eq.{cur_state}"})
             if res:
                 if pid:
                     active_by_project[pid] = active_by_project.get(pid, 0) + 1
