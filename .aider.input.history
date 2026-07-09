@@ -1,0 +1,54 @@
+
+# 2026-07-09 11:40:26.208994
++## SCOUT ANALYSIS
++Relevant files: runner/db.py, runner/tests/test_db.py
++Entry points: runner.db.claim_task
++Complexity: medium
++
++## IMPLEMENTATION PLAN
++1. modify `runner/db.py`: Integrate or re-apply the previously implemented Marginal Value Scheduling logic into the `claim_task()` function. This involves:
++1.  **Expected Value Calculation:** Add or ensure the presence of logic to compute the expected value for each task slot using the formula `(revenue × success_prob) / cost`.
++2.  **Live Data Sourcing:** Ensure `revenue` is sourced live from the `app_revenue` table, and `success_prob` and `cost` are derived from the `outcomes` table or related data sources, integrating data across the whole portfolio.
++3.  **Task Ordering:** Modify the task selection query to order tasks primarily by this computed expected value in descending order. Special attention must be paid to how this new primary ordering interacts with or replaces any existing prioritization rules (e.g., churn deprioritization mentioned in the prior summary) to ensure existing behavior is preserved where appropriate, or updated according to the explicit intent of ordering *every slot* by this metric.
++This re-integration addresses the failure context of an `HTTP Error 409: Conflict` on a previous merge attempt, ensuring the feature is correctly applied.
++2. modify `runner/tests/test_db.py`: Add new, targeted unit tests for `test_db.claim_task()` to verify the correct functioning of the Marginal Value Scheduling. These tests should:
++1.  **Mock Data:** Set up mock `app_revenue` and `outcomes` data to simulate various revenue, success probability, and cost scenarios.
++2.  **Ordering Verification:** Assert that `claim_task` correctly orders and selects tasks based on the `(revenue × success_prob) / cost` formula.
++3.  **Edge Cases:** Include test cases for scenarios such as zero revenue, zero cost, equal expected values, and tasks with missing data.
++4.  **Regression Prevention:** Ensure that all existing tests for `claim_task` continue to pass, confirming that the new ordering logic does not introduce regressions or alter unrelated existing behaviors.
++
++Test strategy: Add comprehensive unit tests in `runner/tests/test_db.py` specifically for `runner.db.claim_task()`. These tests will utilize mocked `app_revenue` and `outcomes` data to precisely control inputs for revenue, success probability, and cost. Test cases will verify that tasks are ordered and claimed strictly according to the `(revenue × success_prob) / cost` calculation, ensuring accuracy across various data combinations and edge cases. Additionally, existing tests for `claim_task` will be re-run to confirm that the new ordering logic integrates without causing regressions and preserves other required existing behaviors.
++Risks: **Performance Impact:** The live recomputation of expected value across the entire portfolio for each `claim_task` call could introduce significant latency, especially with large `app_revenue` and `outcomes` tables. Performance benchmarking and potential optimization (e.g., caching, indexing, materialized views) will be crucial.; **Conflict Resolution & Behavioral Preservation:** Given the previous merge conflict and the existing mention of 'Churn deprioritization', carefully integrating the new primary ordering logic while preserving other intended existing behaviors (as per 'preserve existing behavior' acceptance criteria) requires thorough review and testing to avoid unintended side effects or subtle ordering rule conflicts.; **Data Consistency & Availability:** The accuracy of the task ordering heavily depends on the freshness and consistency of data in `app_revenue` and `outcomes`. Ensuring these sources are reliable and up-to-date is critical for the scheduler's effectiveness.
++
++## TASK
++PATCH TEMPLATE 2a24a405e408
++Intent: across analysis app_revenue artifacts batch branch build calculation change changes checks churn claim_task commit complete comprehensive computes conflict context creation deleted deprioritization directive economic
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt: none found; keep the patch template reusable.
++[patch-template:2a24a405e408]
++
++runner/db.claim_task: order every slot by expected (revenue x success-prob / cost) across the whole portfolio, recomputed live from revenue_attribution + outcomes. Tests.
++
++AUTO-REMEDIATION DIRECTIVE
++Recover from the merge/build conflict on a fresh branch and complete the implementation.
++Failure context: runner exception: HTTP Error 409: Conflict
++. The marginal-value-scheduler feature has been fully implemented in `db.claim_task()`. Here's a summary of what was done:
++
++## Implementation Summary
++
++**Feature:** Marginal Value Scheduling for task ordering
++
++**Key Changes:**
++1. **Expected Value Calculation** (`db.py`): Computes `(revenue × success_prob) / cost` for each project using live data from `app_revenue` and `outcomes` tables
++2. **Smart Sorting**: Tasks are now ordered by:
++   - Churn deprioritization (cont-* and batch-mech tasks sorted last)
++   - Fair round-robin (least-recently-served projects first)
++   - Priority level
++   - **Expected value** (new - highest economic value first)
++   - ROI weight and creation time
++3. **Comprehensive Tests** (`test_marginal_value_scheduler.py`): 5 test cas
++Do not stop at analysis or manual review. Make the smallest complete code change, restore any missing/deleted branch or worktree artifacts if needed, run the relevant checks, and commit the implementation.
