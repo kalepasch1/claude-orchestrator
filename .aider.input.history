@@ -766,3 +766,80 @@
 +
 +---
 +BEFORE YOU FINISH (required): run the project's production build and, if present, its tests (e.g. `npm run build` then the test command). If ANYTHING fails, fix it and re-run until the build is GREEN. Make the smallest correct change and reuse existing code. Do not finish with a red build, and do not finish by only describing changes — actually apply your edits to the files.
+
+# 2026-07-09 15:48:45.668754
++PATCH TEMPLATE 89d59afd97d8
++Intent: 0398eb6 07062319 07071626 11c8886f5af3 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 79ca9d54 865741a 8e31575 919b0d6 9b4aea43284e a3245a1 acceptance adapt adding agent agentic analogous analysis analytics artifacts
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt:
++- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-3 sim=0.47: PATCH TEMPLATE 9b4aea43284e
++Intent: 0398eb6 07062319 07071626 11c8886f5af3 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 79ca9d54 865741a 8e31575 919b0d6 a3245a1 acceptance adapt adding agent agentic analysis artifacts automatic beethoven before
++Acceptance: preserve existing behavior, make the smallest me
++- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 sim=0.461: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.273).
++Prior intent: PATCH TEMPLATE e47542c3d860
++Intent: 0398eb6 07071626 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 865741a 8e31575 919b0d6 a3245a1 acceptance 
++[patch-template:89d59afd97d8]
++
++PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-3 (similarity 0.463).
++Prior intent: PATCH TEMPLATE 9b4aea43284e
++Intent: 0398eb6 07062319 07071626 11c8886f5af3 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 79ca9d54 865741a 8e31575 919b0d6 a3245a1 acceptance adapt adding agent agentic analysis artifacts automatic beethoven before
++Acceptance: preserve existing behavior, make the smallest me
++Relevant prior diff excerpt:
++
++
++MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-3 similarity=0.225: PATCH TEMPLATE 9b4aea43284e
++Intent: 0398eb6 07062319 07071626 11c8886f5af3 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 79ca9d54 865741a 8e31575 919b0d6 a3245a1 acceptance adapt adding agent agentic analysis artifacts automatic beethoven before
++Acceptance: preserve existing behavior, make the smallest me
++SOURCE beethoven/recover-missing-branch-relfix-beethoven-07071626 similarity=0.217: PATCH TEMPLATE e47542c3d860
++Intent: 0398eb6 07071626 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 865741a 8e31575 919b0d6 a3245a1 acceptance agent agentic analysis artifacts automatic beethoven before behavior below blocking boundary branch
++Acceptance: preserve existing behavior, make the smallest mergea
++
++REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
++SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-3
++SUMMARY: PATCH TEMPLATE 9b4aea43284e
++Intent: 0398eb6 07062319 07071626 11c8886f5af3 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 79ca9d54 865741a 8e31575 919b0d6 a3245a1 acceptance adapt adding agent agentic analysis artifacts automatic beethoven before
++Acceptance: preserve existing behavior, make the smallest me
++
++- Locate the existing owner module/function before adding new files.
++- Prior merged patterns to adapt: none found; keep the patch template reusable.
++- Use queued recovery task recover-missing-branch-cade-contracts-slice-2-slice-1 as the acceptance style, but make only one tiny safe analogous change.
++- 3.
++- Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
++- If dependencies/build tools are missing, repair the repo setup or install path minimally.
++- Failure context:
++```
++verify pass (conf=0.75); integrate=BLOCKED (local)
++Analytics have been permanently disabled.
++
++Parent task: canary-gemini-4
++
++[reuse-first: matched qafix-pareto-2080-07062319-slice-1-slice-1-slice-3]
++
++AGENTIC-REPAIR DIRECTIVE
++Repair category: noop
++Original task slug: canary-gemini-4-slice-3
++
++This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
++
++The prior run found or created work but did not leave a committable branch. Verify the diff, commit it, and let merge train integrate it.
++
++Required completion behavior:
++- Reproduce or inspect the concrete failure before changing broad strategy.
++- If dependencies/build tools are missing, repair the repo setup or install path minimally.
++- If tests/build fail, fix source/config/tests until the relevant checks are green.
++- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
++- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
++
++Failure context:
++```
++agent run failed after 3 error-retries
++Not logged in · Please run /login
++Ignoring 8 permissions.allow entries from .claude/settings.local.json: this workspace has not been trusted. Run Claude Code interactively here once and accept the trust dialog, or set projects["/Users/mandypasch/Documents/beethoven/claude-orchestrator"].hasTrustDialogAccepted: true in /Users/mandypasch/.claude-smrter/.claude.json.
++
++```
++
