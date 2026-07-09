@@ -766,3 +766,38 @@
 +
 +---
 +BEFORE YOU FINISH (required): run the project's production build and, if present, its tests (e.g. `npm run build` then the test command). If ANYTHING fails, fix it and re-run until the build is GREEN. Make the smallest correct change and reuse existing code. Do not finish with a red build, and do not finish by only describing changes — actually apply your edits to the files.
+
+# 2026-07-09 18:56:11.478427
++PATCH TEMPLATE 78b173a31d0c
++Intent: 07062319 07071626 8b92d078e856 acceptance adapt alter analysis areas because beethoven before behavior blocks branch branches build cache canary clear codebase commit conflicts current dealing
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt:
++- pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi sim=0.308: PATCH TEMPLATE 8b92d078e856
++Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
++Acceptance: preserve existing behavior,
++- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 sim=0.273: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
++[patch-template:78b173a31d0c]
++
++MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi similarity=0.149: PATCH TEMPLATE 8b92d078e856
++Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
++Acceptance: preserve existing behavior,
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 similarity=0.139: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
++
++REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
++SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi
++SUMMARY: PATCH TEMPLATE 8b92d078e856
++Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
++Acceptance: preserve existing behavior,
++
++Inspect the codebase related to `patch-template` to understand its current behavior when dealing with source/target branches. Focus on identifying how it identifies, uses, and reacts to missing or stale branches. Document specific failure points or error messages related to `missing-branch` scenarios, including how `rebase conflicts` might manifest from these. Also, investigate any existing mechanisms for branch recovery or regeneration (e.g., `merged-diff library`, `patch-transplant/cache hints`). The goal is to produce a detailed analysis report outlining the current state, identified gaps, and potential areas for improvement. Repair any missing dependencies or repo setup minimally to enable this analysis. The output should be a clear report (e.g., markdown file or detailed commit message) outlining the current state, specific failure paths for missing/stale branches, and references to relevant code sections.
++
++(Sub-task 1/4 of 'canary-gpt-1-slice-2', auto-split because the parent was too large to build in one pass.)
++
++[reuse-first: matched qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi]
