@@ -15,6 +15,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import merge_train
 
+try:
+    import branch_prediction_predictor as _bp_predictor
+    _ML_AVAILABLE = True
+except Exception:
+    _ML_AVAILABLE = False
+
 LIMIT = int(os.environ.get("INTEGRATION_SWEEPER_LIMIT", "80"))
 RUN_TRAIN = os.environ.get("INTEGRATION_SWEEPER_RUN_TRAIN", "true").lower() in ("true", "1", "yes")
 RECOVERY_PREFIX = "recover-missing-branch-"
@@ -409,6 +415,49 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
     print(f"integration_sweeper: queued={queued} missing_branch={missing} "
           f"recovery_queued={recovery} skipped={skipped} train={train}")
     return out
+
+
+def identify_stale_branches(limit=200):
+    """Use the ML predictor to flag branches that are likely stale.
+
+    Returns list of dicts with slug, project_id, ml_probability, and decision.
+    Advisory only — does not modify any DB state.  Returns [] on any error.
+    """
+    if not _ML_AVAILABLE:
+        return []
+    try:
+        if not _bp_predictor._service.is_loaded():
+            _bp_predictor._service.load_model()
+        rows = db.select("tasks", {
+            "select": "id,slug,project_id,state,created_at,updated_at",
+            "state": "in.(DONE,BLOCKED)",
+            "order": "updated_at.asc",
+            "limit": str(limit),
+        }) or []
+        now = datetime.datetime.utcnow()
+        stale = []
+        for t in rows:
+            created_at = t.get("created_at")
+            updated_at = t.get("updated_at") or created_at
+            age = _age_seconds(created_at) / 86400.0
+            inactive = _age_seconds(updated_at) / 86400.0
+            pred = _bp_predictor._service.predict_branch_status(
+                branch_age_days=age,
+                days_since_activity=inactive,
+                task_state_queued=0,
+                task_state_running=0,
+                project_queue_depth_norm=0.0,
+            )
+            if pred["decision"] == "stale":
+                stale.append({
+                    "slug": t.get("slug"),
+                    "project_id": t.get("project_id"),
+                    "ml_probability": round(pred["probability"], 4),
+                    "decision": pred["decision"],
+                })
+        return stale
+    except Exception:
+        return []
 
 
 run = sweep
