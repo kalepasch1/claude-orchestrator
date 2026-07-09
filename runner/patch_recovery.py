@@ -162,8 +162,55 @@ def _template_adaptation(repo, slug, branch, base, project=None):
             return {"ok": False, "method": "template", "branch": branch,
                     "reason": "no similar merged diff found"}
 
-        # Try applying the similar diff
-        return _replay_stored_patch(repo, slug, branch, base)
+        # Apply the found similar diff directly (not the missing original slug's patch).
+        patch = best_match.get("patch_diff", "")
+        if not patch or len(patch.strip()) < 10:
+            return {"ok": False, "method": "template", "branch": branch,
+                    "reason": "similar diff found but patch_diff is empty"}
+        return _apply_patch_to_branch(repo, patch, branch, base)
+    except Exception as e:
+        return {"ok": False, "method": "template", "branch": branch, "reason": str(e)[:200]}
+
+
+def _apply_patch_to_branch(repo, patch, branch, base):
+    """Create a fresh branch from base, apply an arbitrary patch string, and commit."""
+    try:
+        if not os.path.isdir(repo):
+            return {"ok": False, "method": "template", "branch": branch,
+                    "reason": f"repo path not accessible: {repo}"}
+        _git(repo, "branch", "-D", branch)
+        _git(repo, "branch", branch, base)
+        wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt",
+                          f"template-{branch.replace('/', '-')}")
+        os.makedirs(os.path.dirname(wt), exist_ok=True)
+        _free_branch(repo, branch)
+        r = _git(repo, "worktree", "add", "-f", wt, branch, timeout=120)
+        if r.returncode != 0:
+            return {"ok": False, "method": "template", "branch": branch,
+                    "reason": f"worktree setup failed: {r.stderr[:200]}"}
+        try:
+            proc = subprocess.run(["git", "apply", "--3way", "-"], cwd=wt,
+                                  input=patch, capture_output=True, text=True, timeout=120)
+            if proc.returncode != 0:
+                return {"ok": False, "method": "template", "branch": branch,
+                        "reason": f"template patch apply failed: {proc.stderr[:200]}"}
+            env = {**os.environ,
+                   "GIT_AUTHOR_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Kale Aaron Pasch"),
+                   "GIT_AUTHOR_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "kalepasch@gmail.com"),
+                   "GIT_COMMITTER_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Kale Aaron Pasch"),
+                   "GIT_COMMITTER_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "kalepasch@gmail.com")}
+            subprocess.run(["git", "add", "-A"], cwd=wt, env=env, capture_output=True)
+            subprocess.run(["git", "commit", "--no-verify", "-m", f"template-recovery: {branch}"],
+                           cwd=wt, env=env, capture_output=True)
+            ahead = subprocess.run(["git", "rev-list", "--count", f"{base}..HEAD"],
+                                   cwd=wt, capture_output=True, text=True)
+            if int((ahead.stdout or "0").strip() or "0") > 0:
+                return {"ok": True, "method": "template", "branch": branch}
+            return {"ok": False, "method": "template", "branch": branch,
+                    "reason": "template patch produced no commits"}
+        finally:
+            subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=repo,
+                           capture_output=True, timeout=30)
     except Exception as e:
         return {"ok": False, "method": "template", "branch": branch, "reason": str(e)[:200]}
 
