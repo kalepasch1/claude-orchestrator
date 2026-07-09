@@ -70,7 +70,13 @@ def _has_upstream():
 
 
 def _dirty_worktree():
-    return bool(_git("status", "--porcelain").stdout.strip())
+    # Only TRACKED modifications should block auto-pull. Untracked files (stray build caches,
+    # logs, generated test artifacts) do NOT prevent a --ff-only pull — git itself refuses only
+    # if an incoming file would overwrite an untracked one. Counting untracked files here (plain
+    # `status --porcelain` lists them as `??`) permanently disabled auto-pull on any clone that
+    # had a single leftover file, which is what kept machines chronically stale despite
+    # ORCH_AUTO_PULL=true. Exclude untracked so a --ff-only pull can proceed.
+    return bool(_git("status", "--porcelain", "--untracked-files=no").stdout.strip())
 
 
 def _pull_safe():
