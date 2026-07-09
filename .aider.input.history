@@ -766,3 +766,35 @@
 +
 +---
 +BEFORE YOU FINISH (required): run the project's production build and, if present, its tests (e.g. `npm run build` then the test command). If ANYTHING fails, fix it and re-run until the build is GREEN. Make the smallest correct change and reuse existing code. Do not finish with a red build, and do not finish by only describing changes — actually apply your edits to the files.
+
+# 2026-07-09 14:19:58.890720
++## SCOUT ANALYSIS
++Relevant files: Makefile, package.json, jest.config.js, src/models/user.ts, src/utils/math_helpers.ts, src/algorithms/recommendation_engine.ts, tests/unit/
++Entry points: make test-unit, jest.config.js
++Complexity: high
++
++## IMPLEMENTATION PLAN
++1. modify `package.json`: Add 'jest', 'ts-jest', and '@types/jest' as development dependencies to enable TypeScript testing with Jest. Add a 'test-unit' script that executes Jest with the configured settings.
++2. create `jest.config.js`: Configure Jest to use 'ts-jest' for TypeScript files. Set 'testMatch' to 'tests/unit/**/*.test.ts' to locate unit test files. Enable 'collectCoverage', specify 'coverageDirectory' as 'coverage', and configure 'collectCoverageFrom' to target all 'src/**/*.ts' files while excluding 'node_modules'. Set 'coverageThreshold' to ensure 80% line, statement, function, and branch coverage for the 'src/' directory.
++3. modify `Makefile`: Add a new 'test-unit' target that runs the 'npm run test-unit' command, leveraging the script defined in 'package.json'.
++4. create `tests/unit/user.model.test.ts`: Implement unit tests for 'src/models/user.ts'. This will involve testing user model instantiation with valid and invalid data, validation logic for user properties (e.g., email format, password strength, required fields), getters and setters, and any methods defined on the User model (e.g., hashPassword, comparePassword). Ensure a comprehensive set of test cases to contribute to the 50 total unit tests and target 80% coverage of 'src/models/user.ts'.
++5. create `tests/unit/math_helpers.test.ts`: Implement unit tests for 'src/utils/math_helpers.ts'. This will involve testing each utility function with typical valid inputs, edge cases (e.g., zero, negative numbers, large numbers, floating-point precision), and specific behavior for invalid inputs. Ensure a comprehensive set of test cases to contribute to the 50 total unit tests and target 80% coverage of 'src/utils/math_helpers.ts'.
++6. create `tests/unit/recommendation_engine.test.ts`: Implement unit tests for 'src/algorithms/recommendation_engine.ts'. This will involve testing the core recommendation algorithm with various input datasets (e.g., empty, small, diverse, edge-case data), different recommendation scenarios (e.g., for new users, existing users, items with no interactions), and the structure and content of the generated recommendations. Ensure a comprehensive set of test cases to contribute significantly to the 50 total unit tests and target 80% coverage of 'src/algorithms/recommendation_engine.ts'.
++
++Test strategy: The primary acceptance test involves running `make test-unit` to execute all unit tests. Verification will confirm that all tests pass and that the generated coverage report (e.g., in `coverage/lcov-report/index.html`) shows ≥80% code coverage across the `src/` directory. During development, Jest's watch mode can be utilized for continuous feedback.
++Risks: Achieving 80%+ code coverage on potentially complex or untestable existing code within `src/` files (especially `src/algorithms/recommendation_engine.ts`) may require significant effort in refactoring or detailed mocking.; Ensuring that 'at least 50 unit tests' are meaningful, distinct, and add value rather than being trivial or redundant will require careful test design.; Potential configuration challenges with Jest and `ts-jest` related to module resolution or path aliases, if the project has a complex setup.
++
++## TASK
++PATCH TEMPLATE eb7a50c79b92
++Intent: acceptance algorithms assertion automated because build business comprehensive coverage covering create directory enhanced fixtures framework functions improve large least libraries logic models parent report
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt: none found; keep the patch template reusable.
++[patch-template:eb7a50c79b92]
++
++Set up a comprehensive unit testing framework with test fixtures, assertion libraries, and coverage reporting. Create at least 50 unit tests covering core business logic (e.g., data models, utility functions, core algorithms). Target 80%+ code coverage. Acceptance test: run `make test-unit` and verify all tests pass with coverage report showing ≥80% on src/ directory.
++
++(Sub-task 1/4 of 'improve-enhanced-automated-testing-framework', auto-split because the parent was too large to build in one pass.)
