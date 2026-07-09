@@ -132,7 +132,11 @@ def emit_operator_cards(proj_name, operator, src):
 def ingest_file(path, projects_by_name):
     text = open(path, encoding="utf-8", errors="replace").read()
     tasks, operator = parse(text)
-    existing = {t["slug"] for t in (db.select("tasks", {"select": "slug"}) or [])}
+    # Only block re-ingestion for tasks in live/completed states. Tasks in failure states
+    # (QUARANTINED, DECOMPOSED, SHELVED, BLOCKED, CONFLICT, TESTFAIL, WAITING) allow
+    # re-ingestion so branch-creation attempts are not permanently blocked by prior failures.
+    existing = {t["slug"] for t in (db.select("tasks", {"select": "slug",
+                "state": "in.(QUEUED,RUNNING,RETRY,DONE,MERGED)"}) or [])}
     created, skipped = 0, 0
     for t in tasks:
         proj = projects_by_name.get(t["project"])
@@ -212,7 +216,9 @@ def decompose_freeform(text, repo_root, default_project):
 
 
 def _queue_dropbox_tasks(rendered, projects_by_name):
-    existing = {t["slug"] for t in (db.select("tasks", {"select": "slug"}) or [])}
+    # Same state filter as ingest_file: only live/completed states block re-ingestion.
+    existing = {t["slug"] for t in (db.select("tasks", {"select": "slug",
+                "state": "in.(QUEUED,RUNNING,RETRY,DONE,MERGED)"}) or [])}
     created, skipped = 0, 0
     for t in rendered:
         proj = projects_by_name.get(t["project"])

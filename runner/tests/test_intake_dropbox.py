@@ -124,6 +124,21 @@ class QueueDropboxTasksTest(unittest.TestCase):
         self.assertEqual(created, 0)
         self.assertEqual(skipped, 1)
 
+    def test_quarantined_slug_allows_reingestion(self):
+        # A slug in a terminal failure state (QUARANTINED, SHELVED, etc.) must NOT block
+        # re-ingestion — only live/completed states (QUEUED, RUNNING, RETRY, DONE, MERGED) do.
+        rendered = [{"project": "beethoven", "slug": "dropbox-x-t1", "material": False,
+                    "model": None, "depends": [], "proof": "", "prompt": "do it"}]
+        projects = {"beethoven": {"id": "p1", "default_base": "main"}}
+        inserted = []
+        # db.select returns empty (no live/completed tasks) — quarantined task not in filter
+        db_mock = types.SimpleNamespace(select=lambda *a, **kw: [],
+                                        insert=lambda t, r: inserted.append(r))
+        with patch.object(iw, "db", db_mock):
+            created, skipped = iw._queue_dropbox_tasks(rendered, projects)
+        self.assertEqual(created, 1)
+        self.assertEqual(skipped, 0)
+
     def test_skips_unknown_project(self):
         rendered = [{"project": "nosuchproject", "slug": "dropbox-x-t1", "material": False,
                     "model": None, "depends": [], "proof": "", "prompt": "do it"}]
