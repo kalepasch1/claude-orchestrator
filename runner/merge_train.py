@@ -89,16 +89,15 @@ def _refresh_base(repo, base):
 
 
 def _rebase_onto_base(repo, branch, base):
-    """Step 2: rebase the branch onto the CURRENT base. Frees any leftover agent worktree first
-    (approval_merge._free_branch — git refuses to rebase a branch checked out elsewhere, and that
-    error used to be mislabeled CONFLICT). Returns True on success, False on a real conflict."""
+    """Step 2: rebase the branch onto the CURRENT base in an ISOLATED worktree
+    (approval_merge._rebase_isolated). The old `git rebase base branch` form checked the branch
+    out in the repo's OWN primary checkout, and an aborted rebase left the main checkout parked
+    on an agent branch — the runner then executed stale agent-branch code for hours (root cause
+    of the 2026-07-08/09 checkout-drift incidents). Never mutate the main checkout here."""
     approval_merge._free_branch(repo, branch)
     if _git(repo, "merge-base", "--is-ancestor", base, branch).returncode == 0:
         return True  # already based on current base
-    if _git(repo, "rebase", base, branch, timeout=300).returncode != 0:
-        _git(repo, "rebase", "--abort")
-        return False
-    return True
+    return approval_merge._rebase_isolated(repo, base, branch)
 
 
 def _run_tests(repo, test_cmd):
@@ -141,11 +140,31 @@ def _ff_base(repo, branch, base):
 
 
 def _push_base(repo, base):
-    """Step 5: push only when explicitly enabled. Returns '' or an error tail."""
+    """Step 5: push only when explicitly enabled. Returns '' or an error tail.
+
+    On a non-fast-forward rejection (origin moved while we merged — e.g. the other Mac pushed),
+    reconcile once in an ISOLATED worktree: fetch origin/base, rebase local base's extra commits
+    onto it, retry the push. Still failing -> return the error; the CALLER must NOT mark the task
+    MERGED (a failed push previously counted as a merge and desynced the DB from GitHub)."""
     if os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() != "true":
         return ""
     r = _git(repo, "push", "origin", base, timeout=300)
-    return "" if r.returncode == 0 else "PUSHFAIL:" + (r.stderr or "")[-120:]
+    if r.returncode == 0:
+        return ""
+    err = (r.stderr or "")
+    if "non-fast-forward" in err or "fetch first" in err or "rejected" in err:
+        try:
+            _git(repo, "fetch", "origin", base, timeout=120)
+            if approval_merge._rebase_isolated(repo, f"origin/{base}", base):
+                r2 = _git(repo, "push", "origin", base, timeout=300)
+                if r2.returncode == 0:
+                    return ""
+                err = (r2.stderr or "")
+            else:
+                return "PUSHFAIL:reconcile-rebase-conflict:" + err[-120:]
+        except Exception as e:
+            err = f"{e} | {err}"
+    return "PUSHFAIL:" + err[-120:]
 
 
 def _detect_prod_branch(repo, proj):
@@ -468,16 +487,23 @@ def _integrate_card(card, slug, task, proj):
         return "conflict"
 
     push_err = _push_base(repo, base)                             # (5)
-    note = f"train: MERGED into {base}"
     if push_err:
-        note += f" ({push_err})"
+        # PUSH-VERIFICATION GATE: a merge is not MERGED until origin actually has it. A failed
+        # push previously only annotated the note while the task still went MERGED — DB said
+        # shipped, GitHub master never advanced (observed 2026-07-09 02:23). Leave the card
+        # undecided so the next train run retries; rebase/tests/ff are idempotent by then.
+        _task_patch(task, {"state": "DONE",
+                           "note": f"train: merged into local {base}; PUSH PENDING ({push_err})"})
+        _attribute_train_outcome(slug, task, "push-pending", integrated=False)
+        _log(pname, slug, "PUSH-PENDING", push_err[:120])
+        return "push-pending"
 
-    _task_patch(task, {"state": "MERGED", "note": note})  # (6)
+    _task_patch(task, {"state": "MERGED", "note": f"train: MERGED into {base}"})  # (6)
     db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:MERGED"})
     _attribute_merge_outcome(slug, task)
     _attribute_train_outcome(slug, task, "merged", integrated=True)
     approval_merge._free_branch(repo, branch)   # cleanup so worktrees never accumulate
-    _log(pname, slug, "MERGED", f"-> {base}" + (f", {push_err}" if push_err else ""))
+    _log(pname, slug, "MERGED", f"-> {base}")
     return "merged"
 
 
@@ -515,7 +541,7 @@ def train_run():
                "skipped": 0, "risk": {"low": 0, "standard": 0, "sensitive": 0},
                "pressure": pressure}
     caps = {"low": LOW_RISK_BATCH, "standard": STANDARD_BATCH, "sensitive": SENSITIVE_BATCH}
-    ATTEMPT_OUTCOMES = ("merged", "testfail", "conflict")  # only real attempts consume the cap
+    ATTEMPT_OUTCOMES = ("merged", "testfail", "conflict", "push-pending")  # real attempts (tests ran) consume the cap
     scan_cap = int(os.environ.get("MERGE_TRAIN_SCAN_PER_PROJECT", "200"))
     for pid, group in by_project.items():
         proj = projects.get(pid, {})
