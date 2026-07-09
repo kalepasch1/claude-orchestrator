@@ -28,12 +28,12 @@ MODELS = {
                               deprecated=("deepseek-chat", "deepseek-reasoner")), "cap": 9, "tier": "cheap"},
     ],
     "google": [
-        {"model": _configured("GEMINI_CHEAP_MODEL", "gemini-2.5-flash-lite-preview-09-2025",
-                              deprecated=("gemini-2.0-",)), "cap": 6, "tier": "cheap"},
-        {"model": _configured("GEMINI_MODEL", "gemini-2.5-flash",
-                              deprecated=("gemini-2.0-",)), "cap": 8, "tier": "cheap"},
-        {"model": _configured("GEMINI_STRONG_MODEL", "gemini-2.5-pro",
-                              deprecated=("gemini-2.0-",)), "cap": 9, "tier": "mid"},
+        {"model": _configured("GEMINI_CHEAP_MODEL", "gemini-4.0-flash-lite",
+                              deprecated=("gemini-2.0-", "gemini-2.5-")), "cap": 6, "tier": "cheap"},
+        {"model": _configured("GEMINI_MODEL", "gemini-4.0-flash",
+                              deprecated=("gemini-2.0-", "gemini-2.5-")), "cap": 8, "tier": "cheap"},
+        {"model": _configured("GEMINI_STRONG_MODEL", "gemini-4.0-pro",
+                              deprecated=("gemini-2.0-", "gemini-2.5-")), "cap": 9, "tier": "mid"},
     ],
     "openai": [
         {"model": os.environ.get("OPENAI_CHEAP_MODEL", "gpt-5.4-nano"), "cap": 5, "tier": "cheap"},

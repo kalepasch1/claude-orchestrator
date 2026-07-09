@@ -126,10 +126,22 @@ class ModelRoutingTest(unittest.TestCase):
              patch.object(catalog, "_empirical_score", return_value=0.0):
             cheap = catalog.choose("review", need=5)
             hard = catalog.choose("security", need=9)
-        self.assertIn(cheap["model"], {"gpt-5.4-nano", "gemini-2.5-flash-lite-preview-09-2025", "deepseek-v4-flash"})
+        self.assertIn(cheap["model"], {"gpt-5.4-nano", "gemini-4.0-flash-lite", "deepseek-v4-flash"})
         self.assertGreaterEqual(hard["cap"], 9)
 
     def test_model_catalog_ignores_deprecated_env_models(self):
+        catalog = __import__("model_catalog")
+        with patch.dict(os.environ, {"GEMINI_MODEL": "gemini-2.5-flash"}, clear=False), \
+             patch.object(model_gateway, "available", return_value=["google"]):
+            catalog = importlib.reload(catalog)
+            with patch.object(catalog, "_empirical_score", return_value=0.0):
+                models = [c["model"] for c in catalog.available()]
+                pick = catalog.choose("plan", need=7)
+        importlib.reload(catalog)
+        self.assertNotIn("gemini-2.5-flash", models)
+        self.assertEqual(pick["model"], "gemini-4.0-flash")
+
+    def test_model_catalog_ignores_gemini_2x_deprecated_env_models(self):
         catalog = __import__("model_catalog")
         with patch.dict(os.environ, {"GEMINI_MODEL": "gemini-2.0-flash"}, clear=False), \
              patch.object(model_gateway, "available", return_value=["google"]):
@@ -139,7 +151,7 @@ class ModelRoutingTest(unittest.TestCase):
                 pick = catalog.choose("plan", need=7)
         importlib.reload(catalog)
         self.assertNotIn("gemini-2.0-flash", models)
-        self.assertEqual(pick["model"], "gemini-2.5-flash")
+        self.assertEqual(pick["model"], "gemini-4.0-flash")
 
     def test_non_agentic_review_routes_to_external_before_claude_when_sparse(self):
         with patch.object(model_policy.mg, "available", return_value=["claude", "deepseek", "google", "openai"]), \
