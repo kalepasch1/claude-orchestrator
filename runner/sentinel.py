@@ -309,6 +309,13 @@ def main():
                 on_db_recovery()
             except Exception as e:
                 log("recovery-error", e)
+        else:
+            # standing dedupe: the intake path is not concurrency-safe across machines even
+            # while the DB is up (two watchers racing one drop) — sweep duplicates each cycle.
+            try:
+                dedupe_queued()
+            except Exception as e:
+                log("dedupe-error", e)
         try:
             train_guard()
         except Exception as e:
