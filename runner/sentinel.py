@@ -219,11 +219,28 @@ def runner_guard(st):
 
 # ── 4. RAM clamp guard ────────────────────────────────────────────────────────
 
+def _available_ram_gb():
+    """Reclaimable-aware availability. macOS parks most RAM as inactive/speculative file
+    cache that the kernel returns on demand, so counting only 'Pages free' made this guard
+    fire near-constantly (free hovers <1GB on a healthy box) and thrash-unload 9GB models
+    that the next local call reloaded (observed 2026-07-09: 5 clamps in 6 min).
+    free + inactive + speculative + purgeable approximates what a new allocation can claim."""
+    vm = sh("vm_stat").stdout
+    page = re.search(r"page size of (\d+) bytes", vm)
+    page_bytes = int(page.group(1)) if page else 16384
+    total = 0
+    for name in ("free", "inactive", "speculative", "purgeable"):
+        m = re.search(rf"Pages {name}:\s+(\d+)", vm)
+        if m:
+            total += int(m.group(1))
+    if total == 0:
+        return 99.0  # vm_stat parse failure — fail-soft: never clamp on bad data
+    return total * page_bytes / 1e9
+
+
 def ram_guard():
     try:
-        vm = sh("vm_stat").stdout
-        m = re.search(r"Pages free:\s+(\d+)", vm)
-        free_gb = int(m.group(1)) * 16384 / 1e9 if m else 99
+        free_gb = _available_ram_gb()
         if free_gb >= RAM_GUARD_FREE_GB:
             return
         ps = sh("ollama", "ps").stdout.splitlines()[1:]
@@ -237,7 +254,7 @@ def ram_guard():
                     continue
         models.sort(reverse=True)
         if models and models[0][0] >= 8:
-            log("ram-clamp", f"free {free_gb:.1f}GB — unloading {models[0][1]} ({models[0][0]}GB)")
+            log("ram-clamp", f"avail {free_gb:.1f}GB — unloading {models[0][1]} ({models[0][0]}GB)")
             sh("ollama", "stop", models[0][1], timeout=90)
     except Exception as e:
         log("ram-guard-error", e)
