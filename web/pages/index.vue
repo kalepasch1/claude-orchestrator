@@ -317,7 +317,7 @@ async function loadAll() {
     // autonomy layer
     supabase.from('loops').select('*').order('project'),
     supabase.from('session_actions').select('*').in('status', ['paused', 'finished']).order('created_at', { ascending: false }).limit(50),
-    supabase.from('orchestrator_feedback').select('category,severity,status').limit(500),
+    supabase.from('orchestrator_feedback').select('id,created_at,source,category,severity,observation,suggestion,status').order('created_at', { ascending: false }).limit(200),
     supabase.from('v_provider_spend_mtd').select('*'),
     supabase.from('credential_requests').select('*').order('created_at', { ascending: false }).limit(20),
     supabase.from('controls').select('*'),
@@ -803,6 +803,7 @@ onMounted(() => {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'runner_heartbeats' }, onRealtime)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'runs' }, onRealtime)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'txns' }, onRealtime)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orchestrator_feedback' }, onRealtime)
       .subscribe()
   }
 })
@@ -853,6 +854,9 @@ watch(user, u => { if (u) loadAll() })
         :outcomes="outcomes"
         :spend="spend"
         :last-event-at="lastEventAt" />
+
+      <!-- ── Configuration Feedback Panel ── -->
+      <ConfigurationFeedbackPanel :items="feedbackItems.slice(0, 20)" />
 
       <!-- Shared proof packs -->
       <section class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-6">
