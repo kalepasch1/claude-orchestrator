@@ -53,6 +53,13 @@ _AIDER_HEADLESS_FLAGS = [
 ]
 
 
+def _truthy(name, default=True):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.lower() in ("1", "true", "yes", "on")
+
+
 def _aider_available():
     """Return True when the generic headless coding CLI is importable/runnable."""
     global _AIDER_OK
@@ -172,6 +179,18 @@ def _auto_coders():
                     or _explicit_full_offload_requested())
     paid_cap = float(os.environ.get("ORCH_PAID_AGENTIC_DAILY_USD", "25") or 25)
     coders = []
+    if "local" in available:
+        try:
+            import ollama_catalog
+            locals_ = ollama_catalog.candidates()
+        except Exception:
+            locals_ = [{"model": os.environ.get("OLLAMA_MODEL", "llama3.1"),
+                        "cap": int(os.environ.get("ORCH_LOCAL_AGENTIC_CAP", "5"))}]
+        for idx, lc in enumerate(sorted(locals_, key=lambda c: (-int(c.get("cap") or 0), c.get("model") or ""))[:4]):
+            name = "ollama" if idx == 0 else f"ollama-{idx + 1}"
+            coders.append({"name": name, "cmd": _aider_cmd("ollama/" + lc["model"]),
+                           "cost": 0, "cap": int(lc.get("cap") or 5),
+                           "daily_usd": 0, "est_usd": 0.0})
     if not paid_enabled:
         return coders
     if "deepseek" in available:
@@ -179,10 +198,10 @@ def _auto_coders():
                        "cost": 2, "cap": int(os.environ.get("DEEPSEEK_AGENTIC_CAP", "7")), "daily_usd": paid_cap, "est_usd": 0.02})
     if "google" in available:
         coders.append({"name": "gemini", "cmd": _aider_cmd("gemini/" + (os.environ.get("GEMINI_AGENTIC_MODEL") or os.environ.get("GEMINI_MODEL") or "gemini-2.5-flash")),
-                       "cost": 2, "cap": int(os.environ.get("GEMINI_AGENTIC_CAP", "6")), "daily_usd": paid_cap, "est_usd": 0.02})
+                       "cost": 2, "cap": int(os.environ.get("GEMINI_AGENTIC_CAP", "8")), "daily_usd": paid_cap, "est_usd": 0.02})
     if "openai" in available:
         coders.append({"name": "gpt-mini", "cmd": _aider_cmd("openai/" + os.environ.get("OPENAI_CHEAP_AGENTIC_MODEL", "gpt-5.4-mini")),
-                       "cost": 2, "cap": int(os.environ.get("OPENAI_AGENTIC_CAP", "7")), "daily_usd": paid_cap, "est_usd": 0.03})
+                       "cost": 2, "cap": 7, "daily_usd": paid_cap, "est_usd": 0.03})
         coders.append({"name": "gpt", "cmd": _aider_cmd("openai/" + os.environ.get("OPENAI_AGENTIC_MODEL", "gpt-5.5")),
                        "cost": 3, "cap": int(os.environ.get("OPENAI_AGENTIC_CAP", "9")), "daily_usd": paid_cap, "est_usd": 0.10})
     return coders
@@ -229,7 +248,7 @@ def _pool():
                          "daily_usd": float(c.get("daily_usd", 0) or 0), "est_usd": float(c.get("est_usd", 0.02) or 0)})
     except Exception as e:
         print(f"agentic_coders: bad ORCH_EXTRA_CODERS ({e}) — ignoring extras")
-    # SAFETY / SELF-HEALING: only keep a coder whose CLI is installed AND its provider (key or local
+    # SAFETY / SELF-HEALING: only keep a coder whose CLI is installed AND whose provider (key or local
     # server) is actually reachable. Without this, configuring a coder before its cred/server exists would
     # route real tasks to a backend that instantly fails on every call — turning "no cheap models" into
     # "broken tasks + tanked throughput". Each cheap coder (ollama/gemini/deepseek/gpt) therefore lights
@@ -405,7 +424,7 @@ def _task_difficulty(task):
         return "hard"
     if kind in ("mechanical", "chore", "bugfix", "docs", "test", "cleanup", "canary"):
         return "easy"
-    if "haiku" in str(task.get("prompt") or "").lower():
+    if "haiku" in str(task.get("model") or "").lower():
         return "easy"
     if len(str(task.get("prompt") or "")) < 600:
         return "easy"
@@ -467,6 +486,8 @@ def pick(task, slot_index=0):
             return float(c["cost"]) + model_slashing.penalty_for(c.get("name"))
         except Exception:
             return float(c["cost"])
+
+    by_cost = sorted([c for c in usable if c["name"] != "claude"], key=lambda c: (adjusted_cost(c), -c["cap"]))
 
     forced = str(task.get("force_coder") or "").strip()
     if forced:
