@@ -372,6 +372,36 @@ def _owner_bias():
         return 0.0
 
 
+def _matches_owner_calls(title, recommendation):
+    """Compares the current recommendation against past owner decisions on similar subjects."""
+    try:
+        # Get recent owner overrides
+        overrides = db.select("owner_overrides", {"select": "subject_title,owner_decision",
+                                                  "order": "created_at.desc", "limit": "50"}) or []
+        if not overrides:
+            return None
+
+        current_pos = not str(recommendation or "").startswith(("HOLD", "ESCALATE"))
+        key = set(re.findall(r"[a-z]{4,}", (title or "").lower()))
+
+        for o in overrides:
+            past_title = o.get("subject_title") or ""
+            past_owner_decision = o.get("owner_decision") or ""
+
+            kk = set(re.findall(r"[a-z]{4,}", past_title.lower()))
+            if len(key & kk) >= 3: # Sufficient keyword overlap for similarity
+                # owner_decision "approved" implies a positive stance, "override" implies a negative stance
+                past_owner_pos = (past_owner_decision == "approved")
+                
+                if current_pos == past_owner_pos:
+                    return f"matches owner's prior '{past_owner_decision}' on '{past_title}'"
+                else:
+                    return f"contradicts owner's prior '{past_owner_decision}' on '{past_title}'"
+        return None
+    except Exception:
+        return None
+
+
 def deliberate(committee, subject_type, subject_id, title, body, app=None):
     """Run one committee as a multi-seat, multi-round drafting panel -> a single consensus opinion."""
     name = committee["name"]; mandate = committee.get("mandate", "")
@@ -610,6 +640,9 @@ def review(subject_type, subject_id, title, body, app=None):
             auto_ok = False; experiment = False
             escalate = True; rec = "ESCALATE (north-star drift)"
 
+    # Add the "matches owner's past calls" signal
+    owner_match_signal = _matches_owner_calls(title, rec)
+
     # CADE: consensus %, faction clustering, contributors, materiality — the substance of the 1-pager.
     consensus_pct, factions, contributors = _consensus(panel)
     materiality = _materiality(panel, critical, legal_veto)
@@ -621,7 +654,8 @@ def review(subject_type, subject_id, title, body, app=None):
            "alignment": align, "drift": (align_info or {}).get("drift"),
            "consensus_pct": consensus_pct, "consensus_lo": lo, "consensus_hi": hi,
            "factions": factions, "contributors": contributors, "pivotal": _pivotal(panel),
-           "materiality": materiality, "title": title, "body": body, "panel": panel}
+           "materiality": materiality, "title": title, "body": body, "panel": panel,
+           "owner_match_signal": owner_match_signal}
     out["adv_discount"] = _adv_discount(out)
     out["consistency"] = _consistency(subject_type, title, rec)
     return out
@@ -856,7 +890,7 @@ def replay_determination(det_id):
     if not rows:
         return {"error": "not found"}
     d = rows[0]
-    fresh = review(d.get("subject_type") or "proposal", None, d.get("title"), d.get("body") or d.get("title"))
+    fresh = review("proposal", None, d.get("title"), d.get("body") or d.get("title"))
     changed = (fresh.get("recommendation") != d.get("recommendation") or
                abs((fresh.get("consensus_pct") or 0) - float(d.get("consensus_pct") or 0)) >= 0.1)
     return {"then": {"recommendation": d.get("recommendation"), "consensus_pct": float(d.get("consensus_pct") or 0)},
@@ -1031,6 +1065,8 @@ def deliberation_onepager(agg):
     L.append(f"**Outcome:** {agg.get('recommendation')}  |  **Consensus:** "
              f"{round((cons or 0)*100)}%{ci} (floor {round(floor*100)}%)  |  **Confidence (EV):** "
              f"{conf_str}  |  **Materiality:** {agg.get('materiality')}")
+    if agg.get("owner_match_signal"):
+        L.append(f"**Owner alignment:** {agg['owner_match_signal']}")
     if agg.get("pivotal"):
         L.append("")
         L.append(f"**Decision hinges on:** {agg['pivotal'].get('expert')} "
@@ -1180,6 +1216,8 @@ def _note(agg):
                  f" Mitigation: {pm.get('mitigation','')}")[:400]
     if agg.get("rollout") == "canary":
         note += " Rollout: staged canary (auto-ramp/rollback on metrics)."
+    if agg.get("owner_match_signal"):
+        note += f" Owner alignment: {agg['owner_match_signal']}."
     return note
 
 
@@ -1411,7 +1449,7 @@ def board_review():
                                          "state": "eq.QUEUED", "limit": "20"}) or []:
                 bumped += 1  # priority column removed from tasks schema
     print(f"committees.board_review: allocated {len(alloc)} apps, bumped {bumped} tasks toward {top and top.get('app')}")
-    return {"apps": len(alloc), "top": top and top.get("app"), "bumped": bumped}
+    return {"apps": len(alloc), "top": top and top.get('app'), "bumped": bumped}
 
 
 def board_bandit():
@@ -1644,8 +1682,8 @@ def board_minutes():
                  f"EXPERIMENTS: {[(e['slug'],e['status'],e.get('lift')) for e in exps]}").strip() or summary
     db.insert("board_minutes", {"headline": summary, "body": text[:3000]})
     try:
-        db.insert("inbox", {"kind": "board_minutes", "title": "Committee board minutes", "body": text[:3000],
-                  "status": "unread"})
+        db.insert("inbox", {"kind": "board_minutes", "title": "Weekly committee dissent digest",
+                  "body": text[:3000], "status": "unread"})
     except Exception:
         pass
     print(f"committees.board_minutes: {summary}")

@@ -766,3 +766,274 @@
 +
 +---
 +BEFORE YOU FINISH (required): run the project's production build and, if present, its tests (e.g. `npm run build` then the test command). If ANYTHING fails, fix it and re-run until the build is GREEN. Make the smallest correct change and reuse existing code. Do not finish with a red build, and do not finish by only describing changes — actually apply your edits to the files.
+
+# 2026-07-08 15:44:02.536395
++## SCOUT ANALYSIS
++Relevant files: 5b9fc495-ba8d-4ef3-8538-2fa8e68dd784/patch-template-recover-missing-branch-privacy-trust-panel, beethoven/agent/recover-missing-branch-committee-owner-preference
++Entry points: recover_missing_branch
++Complexity: medium
++
++## TASK
++PATCH TEMPLATE 7a38c4952a52
++Intent: 2fa8e68dd784 5b9fc495 5d94292ad905 78c3c27dbc00 acceptance active actually adapt adding agent aggregate appetite approvals audit before behavior behavioral below branch build cache calls canonical check
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt: none found; keep the patch template reusable.
++[patch-template:7a38c4952a52]
++
++REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
++SOURCE: 5b9fc495-ba8d-4ef3-8538-2fa8e68dd784/patch-template-recover-missing-branch-privacy-trust-panel
++SUMMARY: PATCH TEMPLATE f2aed1a44242
++Intent: 5d94292ad905 acceptance active adapt adding agent audit before behavior below branch build cache canonical check client commit context conventions craft distill drafting egress equivalent
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new 
++
++Recover tested-but-not-integrated work whose agent branch is missing.
++Goal: recreate the smallest equivalent patch, commit it on agent/recover-missing-branch-committee-owner-preference, run the project build/tests, and let the canonical merge train integrate it.
++Do not add new scope. Prefer cache/transplant/template context below before drafting.
++
++Original slug: committee-owner-preference
++Original task note: judge: unparseable review | Missing test file for critical decision-making logic — tests are mentioned but not present in the diff, risking silent behavioral regressions in a solo shop where owner relies on 
++
++PATCH TEMPLATE 78c3c27dbc00
++Intent: actually aggregate appetite approvals calls committees decisions learn matches owner rejections runner signal surface tests toward weight would
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt: none found; keep the patch template reusable.
++
++Original prompt:
++runner/committees.py: learn the OWNER's risk appetite from past approvals/rejections and pre-weight the aggregate toward decisions the owner would actually make; surface a "matches your past calls" signal. Tests.
++
++[reuse-first: matched patch-template-recover-missing-branch-privacy-trust-panel]
++
++AGENTIC-REPAIR DIRECTIVE
++Repair category: conflict
++Original task slug: recover-missing-branch-committee-owner-preference
++
++This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
++
++Rebuild the same task on fresh master, resolve the conflict in code, run tests, and commit.
++
++Required completion behavior:
++- Reproduce or inspect the concrete failure before changing broad strategy.
++- If dependencies/build tools are missing, repair the repo setup or install path minimally.
++- If tests/build fail, fix source/config/tests until the relevant checks are green.
++- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
++- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
++
++Failure context:
++```
++train: rebase conflict on agent/recover-missing-branch-committee-owner-preference against master
++```
++
+
+# 2026-07-08 17:06:46.513168
++## SCOUT ANALYSIS
++Relevant files: 5b9fc495-ba8d-4ef3-8538-2fa8e68dd784/patch-template-recover-missing-branch-privacy-trust-panel, beethoven/agent/recover-missing-branch-committee-owner-preference
++Entry points: recover_missing_branch
++Complexity: medium
++
++## TASK
++PATCH TEMPLATE 7a38c4952a52
++Intent: 2fa8e68dd784 5b9fc495 5d94292ad905 78c3c27dbc00 acceptance active actually adapt adding agent aggregate appetite approvals audit before behavior behavioral below branch build cache calls canonical check
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt: none found; keep the patch template reusable.
++[patch-template:7a38c4952a52]
++
++REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
++SOURCE: 5b9fc495-ba8d-4ef3-8538-2fa8e68dd784/patch-template-recover-missing-branch-privacy-trust-panel
++SUMMARY: PATCH TEMPLATE f2aed1a44242
++Intent: 5d94292ad905 acceptance active adapt adding agent audit before behavior below branch build cache canonical check client commit context conventions craft distill drafting egress equivalent
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new 
++
++Recover tested-but-not-integrated work whose agent branch is missing.
++Goal: recreate the smallest equivalent patch, commit it on agent/recover-missing-branch-committee-owner-preference, run the project build/tests, and let the canonical merge train integrate it.
++Do not add new scope. Prefer cache/transplant/template context below before drafting.
++
++Original slug: committee-owner-preference
++Original task note: judge: unparseable review | Missing test file for critical decision-making logic — tests are mentioned but not present in the diff, risking silent behavioral regressions in a solo shop where owner relies on 
++
++PATCH TEMPLATE 78c3c27dbc00
++Intent: actually aggregate appetite approvals calls committees decisions learn matches owner rejections runner signal surface tests toward weight would
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt: none found; keep the patch template reusable.
++
++Original prompt:
++runner/committees.py: learn the OWNER's risk appetite from past approvals/rejections and pre-weight the aggregate toward decisions the owner would actually make; surface a "matches your past calls" signal. Tests.
++
++[reuse-first: matched patch-template-recover-missing-branch-privacy-trust-panel]
++
++AGENTIC-REPAIR DIRECTIVE
++Repair category: orphaned-running
++Original task slug: recover-missing-branch-committee-owner-preference
++
++This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
++
++Resume this same task through an agentic coder. Inspect the existing branch/worktree/artifacts, preserve useful prior work, repair the technical issue, run the relevant checks, and commit.
++
++Required completion behavior:
++- Reproduce or inspect the concrete failure before changing broad strategy.
++- If dependencies/build tools are missing, repair the repo setup or install path minimally.
++- If tests/build fail, fix source/config/tests until the relevant checks are green.
++- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
++- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
++
++Failure context:
++```
++pipeline: 4-stage (large complex task)
++Task was orphaned RUNNING >20m and hit the janitor cap. Resume/fix/commit rather than asking for manual intervention.
++```
++
+
+# 2026-07-08 19:50:31.787478
++## SCOUT ANALYSIS
++Relevant files: 5b9fc495-ba8d-4ef3-8538-2fa8e68dd784/patch-template-recover-missing-branch-privacy-trust-panel, beethoven/agent/recover-missing-branch-committee-owner-preference
++Entry points: recover_missing_branch
++Complexity: medium
++
++## TASK
++PATCH TEMPLATE 7a38c4952a52
++Intent: 2fa8e68dd784 5b9fc495 5d94292ad905 78c3c27dbc00 acceptance active actually adapt adding agent aggregate appetite approvals audit before behavior behavioral below branch build cache calls canonical check
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt: none found; keep the patch template reusable.
++[patch-template:7a38c4952a52]
++
++REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
++SOURCE: 5b9fc495-ba8d-4ef3-8538-2fa8e68dd784/patch-template-recover-missing-branch-privacy-trust-panel
++SUMMARY: PATCH TEMPLATE f2aed1a44242
++Intent: 5d94292ad905 acceptance active adapt adding agent audit before behavior below branch build cache canonical check client commit context conventions craft distill drafting egress equivalent
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new 
++
++Recover tested-but-not-integrated work whose agent branch is missing.
++Goal: recreate the smallest equivalent patch, commit it on agent/recover-missing-branch-committee-owner-preference, run the project build/tests, and let the canonical merge train integrate it.
++Do not add new scope. Prefer cache/transplant/template context below before drafting.
++
++Original slug: committee-owner-preference
++Original task note: judge: unparseable review | Missing test file for critical decision-making logic — tests are mentioned but not present in the diff, risking silent behavioral regressions in a solo shop where owner relies on 
++
++PATCH TEMPLATE 78c3c27dbc00
++Intent: actually aggregate appetite approvals calls committees decisions learn matches owner rejections runner signal surface tests toward weight would
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt: none found; keep the patch template reusable.
++
++Original prompt:
++runner/committees.py: learn the OWNER's risk appetite from past approvals/rejections and pre-weight the aggregate toward decisions the owner would actually make; surface a "matches your past calls" signal. Tests.
++
++[reuse-first: matched patch-template-recover-missing-branch-privacy-trust-panel]
++
++AGENTIC-REPAIR DIRECTIVE
++Repair category: orphaned-running
++Original task slug: recover-missing-branch-committee-owner-preference
++
++This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
++
++Resume this same task through an agentic coder. Inspect the existing branch/worktree/artifacts, preserve useful prior work, repair the technical issue, run the relevant checks, and commit.
++
++Required completion behavior:
++- Reproduce or inspect the concrete failure before changing broad strategy.
++- If dependencies/build tools are missing, repair the repo setup or install path minimally.
++- If tests/build fail, fix source/config/tests until the relevant checks are green.
++- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
++- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
++
++Failure context:
++```
++pipeline: 4-stage (large complex task)
++Task was orphaned RUNNING >20m and hit the janitor cap. Resume/fix/commit rather than asking for manual intervention.
++```
++
+
+# 2026-07-08 21:38:44.634252
++## SCOUT ANALYSIS
++Relevant files: 5b9fc495-ba8d-4ef3-8538-2fa8e68dd784/patch-template-recover-missing-branch-privacy-trust-panel, beethoven/agent/recover-missing-branch-committee-owner-preference
++Entry points: recover_missing_branch
++Complexity: medium
++
++## TASK
++PATCH TEMPLATE 7a38c4952a52
++Intent: 2fa8e68dd784 5b9fc495 5d94292ad905 78c3c27dbc00 acceptance active actually adapt adding agent aggregate appetite approvals audit before behavior behavioral below branch build cache calls canonical check
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt: none found; keep the patch template reusable.
++[patch-template:7a38c4952a52]
++
++REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
++SOURCE: 5b9fc495-ba8d-4ef3-8538-2fa8e68dd784/patch-template-recover-missing-branch-privacy-trust-panel
++SUMMARY: PATCH TEMPLATE f2aed1a44242
++Intent: 5d94292ad905 acceptance active adapt adding agent audit before behavior below branch build cache canonical check client commit context conventions craft distill drafting egress equivalent
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new 
++
++Recover tested-but-not-integrated work whose agent branch is missing.
++Goal: recreate the smallest equivalent patch, commit it on agent/recover-missing-branch-committee-owner-preference, run the project build/tests, and let the canonical merge train integrate it.
++Do not add new scope. Prefer cache/transplant/template context below before drafting.
++
++Original slug: committee-owner-preference
++Original task note: judge: unparseable review | Missing test file for critical decision-making logic — tests are mentioned but not present in the diff, risking silent behavioral regressions in a solo shop where owner relies on 
++
++PATCH TEMPLATE 78c3c27dbc00
++Intent: actually aggregate appetite approvals calls committees decisions learn matches owner rejections runner signal surface tests toward weight would
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt: none found; keep the patch template reusable.
++
++Original prompt:
++runner/committees.py: learn the OWNER's risk appetite from past approvals/rejections and pre-weight the aggregate toward decisions the owner would actually make; surface a "matches your past calls" signal. Tests.
++
++[reuse-first: matched patch-template-recover-missing-branch-privacy-trust-panel]
++
++AGENTIC-REPAIR DIRECTIVE
++Repair category: orphaned-running
++Original task slug: recover-missing-branch-committee-owner-preference
++
++This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
++
++Resume this same task through an agentic coder. Inspect the existing branch/worktree/artifacts, preserve useful prior work, repair the technical issue, run the relevant checks, and commit.
++
++Required completion behavior:
++- Reproduce or inspect the concrete failure before changing broad strategy.
++- If dependencies/build tools are missing, repair the repo setup or install path minimally.
++- If tests/build fail, fix source/config/tests until the relevant checks are green.
++- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
++- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
++
++Failure context:
++```
++pipeline: 4-stage (large complex task)
++Task was orphaned RUNNING >20m and hit the janitor cap. Resume/fix/commit rather than asking for manual intervention.
++```
++
