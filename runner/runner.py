@@ -548,6 +548,15 @@ def run_task(t):
                 model = model_router.HAIKU
             elif bias >= 1 and model == model_router.OPUS:
                 model = model_router.SONNET
+            # COLOSSEUM ROUTING: on the first attempt, let competition standings bias model selection.
+            # Only claude-vendor picks are applied; non-claude providers fall through unchanged.
+            if attempt == 1 and os.environ.get("ORCH_COLOSSEUM_ROUTE", "").lower() in ("true", "1", "yes"):
+                try:
+                    _col_vendor, _col_model = colosseum.pick_implementer(t)
+                    if _col_vendor == "claude" and _col_model:
+                        model = _col_model
+                except Exception:
+                    pass
             coder = "claude" if t.get("_force_claude") else agentic_coders.pick(t, slot_index=attempt - 1)
             try:
                 _coder_route = agentic_coders.route({**t, "force_coder": coder})
