@@ -61,6 +61,9 @@ const capInstances = ref<any[]>([])
 const capProvenance = ref<any[]>([])
 const radarProposals = ref<any[]>([])
 const proofPacks = ref<any>({ commonBrain: [], receipts: [], error: null })
+// Real-time log lines from run_logs table (slice-1 streaming).
+const runLogRows = ref<any[]>([])
+const RUN_LOGS_MAX = 500
 // Mission Control: epoch ms of the last realtime event observed (header live-strip).
 const lastEventAt = ref<number | null>(null)
 let chart: any = null
@@ -678,16 +681,14 @@ const commonBrainProofRows = computed(() => proofPacks.value?.commonBrain || [])
 const recentProofReceipts = computed(() => proofPacks.value?.receipts || [])
 
 // ── live log lines for LogView ──────────────────────────────────────────────
-// Flattens the most recent tasks' `log_tail` text blobs into typed LogLine[].
-// Level is inferred from a leading token (ERROR/WARN/DEBUG); default info.
-// TODO(bind-stream): replace with a dedicated run_logs table + realtime channel
-// for true per-line streaming instead of polling the task log_tail snapshot.
-const logLines = computed(() => {
+// Prefers run_logs realtime rows (slice-1 streaming); falls back to flattening
+// log_tail snapshots for tasks that pre-date the run_logs table.
+function _parseLogTailLines(tasks: any[]): LogLine[] {
   const out: LogLine[] = []
-  const recent = [...tasks.value]
+  const recent = [...tasks]
     .filter(t => t.log_tail)
     .slice(0, 12)
-    .reverse() // oldest first so the tail reads top→bottom
+    .reverse()
   for (const t of recent) {
     const base = t.updated_at || t.created_at
     const baseMs = base ? new Date(base).getTime() : undefined
@@ -710,6 +711,18 @@ const logLines = computed(() => {
     }
   }
   return out
+}
+
+const logLines = computed<LogLine[]>(() => {
+  if (runLogRows.value.length > 0) {
+    return runLogRows.value.map(r => ({
+      ts: r.created_at,
+      level: (r.level as LogLine['level']) || 'info',
+      message: r.message,
+      source: r.task_slug,
+    }))
+  }
+  return _parseLogTailLines(tasks.value)
 })
 
 const deployableTasks = computed(() =>
@@ -794,15 +807,36 @@ const radarBySlug = computed(() => {
 // Wraps loadAll so every realtime event also stamps the Mission Control clock.
 function onRealtime() { lastEventAt.value = Date.now(); loadAll() }
 
+async function loadRunLogs() {
+  try {
+    const rows = await supabase
+      .from('run_logs')
+      .select('id,task_id,task_slug,runner_id,level,message,created_at')
+      .order('created_at', { ascending: false })
+      .limit(RUN_LOGS_MAX)
+    if (rows.data) {
+      runLogRows.value = [...rows.data].reverse()
+    }
+  } catch { /* fail-soft: LogView falls back to log_tail */ }
+}
+
 onMounted(() => {
   if (user.value) {
     loadAll()
+    loadRunLogs()
     supabase.channel('orch')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, onRealtime)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'approvals' }, onRealtime)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'runner_heartbeats' }, onRealtime)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'runs' }, onRealtime)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'txns' }, onRealtime)
+      .subscribe()
+    supabase.channel('run-logs')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'run_logs' },
+        (payload: any) => {
+          lastEventAt.value = Date.now()
+          runLogRows.value = [...runLogRows.value, payload.new].slice(-RUN_LOGS_MAX)
+        })
       .subscribe()
   }
 })

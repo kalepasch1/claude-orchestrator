@@ -212,6 +212,26 @@ def rpc(fn, args):
     return _req("POST", f"/rest/v1/rpc/{fn}", body=args)
 
 
+def append_run_log(task_id: str, task_slug: str, message: str,
+                   level: str = "info", runner_id: str = "") -> None:
+    """Insert a single log line into run_logs for real-time web streaming.
+
+    Fail-soft: network/DB errors are silently swallowed so a logging failure
+    never interrupts task execution.
+    """
+    _VALID_LEVELS = {"debug", "info", "warn", "error"}
+    try:
+        insert("run_logs", {
+            "task_id": str(task_id),
+            "task_slug": str(task_slug),
+            "runner_id": str(runner_id or ""),
+            "level": level if level in _VALID_LEVELS else "info",
+            "message": str(message)[:4000],
+        })
+    except Exception:
+        pass
+
+
 def _ev_rank_map():
     """Best-effort EV ranking fallback.
 
