@@ -21,7 +21,7 @@ queue_janitor.py - automates the manual cleanup session of 2026-07-02, every cyc
 Everything is bounded, idempotent (the approvals_one_pending_per_issue index blocks
 duplicate cards), and audited via notes/notifications. No model spend.
 """
-import os, sys, glob, time, socket
+import os, sys, glob, time, socket, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import agentic_repair
@@ -199,8 +199,26 @@ def refile_stranded_approvals():
     return made
 
 
+def _lock_has_live_holder(lock_path):
+    """True if any live process currently has this lock file open.
+
+    2026-07-10: age alone isn't sufficient proof a lock is abandoned -- a legitimately
+    slow git operation (large gc, long rebase) could still be running past LOCK_STALE_MIN,
+    and removing the lock out from under it risks a corrupted index. Verified manually via
+    `lsof` before clearing a stale Sustainable_Barks lock that day; this makes that check
+    automatic. Fail closed: if lsof itself can't be run, assume held and leave it alone --
+    a lock that lingers an extra cycle is far cheaper than one yanked from a live writer.
+    """
+    try:
+        out = subprocess.run(["lsof", "-t", lock_path], capture_output=True, text=True, timeout=10)
+        return bool(out.stdout.strip())
+    except Exception:
+        return True
+
+
 def clear_stale_git_locks():
-    """Remove .git/*.lock files older than LOCK_STALE_MIN in repos on this machine."""
+    """Remove .git/*.lock files older than LOCK_STALE_MIN in repos on this machine, but
+    only once no live process still has the file open (see _lock_has_live_holder)."""
     cleared = 0
     cutoff = time.time() - LOCK_STALE_MIN * 60
     for p in db.select("projects", {"select": "repo_path"}) or []:
@@ -209,10 +227,14 @@ def clear_stale_git_locks():
             continue
         for lock in glob.glob(os.path.join(repo, ".git", "*.lock")):
             try:
-                if os.path.getmtime(lock) < cutoff:
-                    os.remove(lock)
-                    cleared += 1
-                    print(f"janitor: removed stale {lock}")
+                if os.path.getmtime(lock) >= cutoff:
+                    continue
+                if _lock_has_live_holder(lock):
+                    print(f"janitor: {lock} is stale by age but still held by a live process -- leaving it")
+                    continue
+                os.remove(lock)
+                cleared += 1
+                print(f"janitor: removed stale {lock}")
             except Exception:
                 pass
     return cleared
