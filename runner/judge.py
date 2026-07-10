@@ -25,7 +25,7 @@ REVIEWERS = {
     "google": os.environ.get("JUDGE_GOOGLE_MODEL", "gemini-2.0-flash"),
     "deepseek": os.environ.get("JUDGE_DEEPSEEK_MODEL", "deepseek-v4-flash"),
     "local": os.environ.get("OLLAMA_MODEL", "llama3.1"),
-    "claude": "claude-haiku-4-5-20241022",
+    "claude": "claude-haiku-4-5-20251001",
 }
 
 PROMPT = """You are a pragmatic code reviewer for a fast-moving solo shop (not a FAANG gate). Review

@@ -409,5 +409,38 @@ class ModelRoutingTest(unittest.TestCase):
             self.assertEqual(agentic_coders.pick(task), "ollama-2")
 
 
+    def test_judge_panel_uses_cheapest_providers_first(self):
+        import judge
+        with patch.object(model_gateway, "available", return_value=["local", "deepseek", "google", "openai", "claude"]):
+            providers = judge._panel_providers("claude-opus-4-8")
+        # local and deepseek are cheaper than google/openai; claude (author family) is excluded first
+        self.assertEqual(providers[:2], ["local", "deepseek"])
+
+    def test_judge_panel_excludes_author_family_when_alternatives_exist(self):
+        import judge
+        with patch.object(model_gateway, "available", return_value=["deepseek", "claude"]):
+            providers = judge._panel_providers("claude-sonnet-4-6")
+        self.assertNotIn("claude", providers)
+        self.assertIn("deepseek", providers)
+
+    def test_judge_panel_falls_back_to_author_family_when_only_option(self):
+        import judge
+        with patch.object(model_gateway, "available", return_value=["claude"]):
+            providers = judge._panel_providers("claude-sonnet-4-6")
+        self.assertEqual(providers, ["claude"])
+
+    def test_judge_reviewers_use_cheap_models(self):
+        import judge
+        # Each provider's default reviewer must be the cheapest tier, never a premium model
+        self.assertIn("mini", judge.REVIEWERS["openai"].lower())
+        self.assertIn("flash", judge.REVIEWERS["google"].lower())
+        self.assertIn("flash", judge.REVIEWERS["deepseek"].lower())
+        self.assertIn("haiku", judge.REVIEWERS["claude"].lower())
+
+    def test_judge_claude_reviewer_uses_current_haiku(self):
+        import judge
+        self.assertEqual(judge.REVIEWERS["claude"], "claude-haiku-4-5-20251001")
+
+
 if __name__ == "__main__":
     unittest.main()
