@@ -766,3 +766,69 @@
 +
 +---
 +BEFORE YOU FINISH (required): run the project's production build and, if present, its tests (e.g. `npm run build` then the test command). If ANYTHING fails, fix it and re-run until the build is GREEN. Make the smallest correct change and reuse existing code. Do not finish with a red build, and do not finish by only describing changes — actually apply your edits to the files.
+
+# 2026-07-09 21:31:35.304593
++PATCH TEMPLATE 2a3c12e46a1f
++Intent: 07060650 07062319 1677fc0f7242 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt adding affected after agentledger approval assertion automate based because before behavior being brief briefly build
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt:
++- pareto-2080/qafix-pareto-2080-07062319-slice-5-fix-agentledger-test sim=0.683: PATCH TEMPLATE 1677fc0f7242
++Intent: 07060650 07062319 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being brief briefly build changed classes concrete correct
++Acceptance: preserve existing behavior, make the smalle
++- pareto-2080/qafix-pareto-2080-07062319-slice-5-add-bookingsaga-tests sim=0.453: PATCH TEMPLATE a862edc20dad
++Intent: 0398eb6 056af630dd5f 07060650 07062319 07071626 08c555ef32c3f7b6e04b6ac596540427ae250a95 11c8886f5af3 11d71349c477 148d45efebad 1565ms 170834ms 1ad7cbc 20251001 2105ms 234917ms 27d8ff8 2807983 310833ms 322125ms 441917ms 4a3feba 4ff7ba380eac 4pbjwpmj431__2jrjyb3bq7
++[patch-template:2a3c12e46a1f]
++
++PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch pareto-2080/qafix-pareto-2080-07062319-slice-5-fix-agentledger-test (similarity 0.605).
++Prior intent: PATCH TEMPLATE 1677fc0f7242
++Intent: 07060650 07062319 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being brief briefly build changed classes concrete correct
++Acceptance: preserve existing behavior, make the smalle
++Relevant prior diff excerpt:
++
++
++MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-identify-affected-lines similarity=0.171: PATCH TEMPLATE 4ff7ba380eac
++Intent: 07060650 07062319 6096aa2b a5f8e22456b6 based because being brief build changed descriptions exactly identified large lines modifications module numbers owner parent pareto patch pinpoint previous
++Acceptance: preserve existing behavior, make the smallest mergeable
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-locate-owner-module similarity=0.149: PATCH TEMPLATE 9f821ef2b6cc
++Intent: 07060650 07062319 6096aa2b a5f8e22456b6 because briefly build classes examine explain function functions identify intends large modify module owner parent pareto patch primary provided purpose
++Acceptance: preserve existing behavior, make the smallest mergeable dif
++
++REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
++SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-2-identify-affected-lines
++SUMMARY: PATCH TEMPLATE 4ff7ba380eac
++Intent: 07060650 07062319 6096aa2b a5f8e22456b6 based because being brief build changed descriptions exactly identified large lines modifications module numbers owner parent pareto patch pinpoint previous
++Acceptance: preserve existing behavior, make the smallest mergeable
++
++- Locate the existing owner module/function before adding new files.
++- Prior merged patterns to adapt:
++- Context/gap: Manual review of code changes by team members for correctness and safety before merging.
++
++Parent task: improve-automate-code-review-and-approval-proces
++
++[reuse-first: matched qafix-pareto-2080-07062319-slice-2-identify-affected-lines]
++
++AGENTIC-REPAIR DIRECTIVE
++Repair category: runner-exception
++Original task slug: improve-automate-code-review-and-approval-proces-slice-3
++
++This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
++
++The runner hit a transient technical exception. Resume the same task, preserve prior work, repair the root cause or use provider failover, and finish through build/test/commit.
++
++Required completion behavior:
++- Reproduce or inspect the concrete failure before changing broad strategy.
++- If dependencies/build tools are missing, repair the repo setup or install path minimally.
++- If tests/build fail, fix source/config/tests until the relevant checks are green.
++- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
++- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
++
++Failure context:
++```
++runner exception: [Errno 2] No such file or directory: '/Users/kpasch/Documents/beethoven/claude-orchestrator'
++```
++
