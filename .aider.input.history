@@ -766,3 +766,69 @@
 +
 +---
 +BEFORE YOU FINISH (required): run the project's production build and, if present, its tests (e.g. `npm run build` then the test command). If ANYTHING fails, fix it and re-run until the build is GREEN. Make the smallest correct change and reuse existing code. Do not finish with a red build, and do not finish by only describing changes — actually apply your edits to the files.
+
+# 2026-07-10 09:12:12.693489
++PATCH TEMPLATE 3956df06d4a5
++Intent: 07060650 07062319 1677fc0f7242 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion attempt based because before behavior being branch brief briefly build changed
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt:
++- pareto-2080/qafix-pareto-2080-07062319-slice-5-fix-agentledger-test sim=0.672: PATCH TEMPLATE 1677fc0f7242
++Intent: 07060650 07062319 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being brief briefly build changed classes concrete correct
++Acceptance: preserve existing behavior, make the smalle
++- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-5-inspect-local-branches sim=0.536: PATCH TEMPLATE 490564c811b3
++Intent: 07060650 07062319 1677fc0f7242 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being branch branches brief briefly build cache
++Acceptance: preserve existing behavior, make the smal
++[patch-template:3956df06d4a5]
++
++PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch pareto-2080/qafix-pareto-2080-07062319-slice-5-fix-agentledger-test (similarity 0.593).
++Prior intent: PATCH TEMPLATE 1677fc0f7242
++Intent: 07060650 07062319 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being brief briefly build changed classes concrete correct
++Acceptance: preserve existing behavior, make the smalle
++Relevant prior diff excerpt:
++
++
++MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-identify-affected-lines similarity=0.132: PATCH TEMPLATE 4ff7ba380eac
++Intent: 07060650 07062319 6096aa2b a5f8e22456b6 based because being brief build changed descriptions exactly identified large lines modifications module numbers owner parent pareto patch pinpoint previous
++Acceptance: preserve existing behavior, make the smallest mergeable
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-locate-owner-module similarity=0.129: PATCH TEMPLATE 9f821ef2b6cc
++Intent: 07060650 07062319 6096aa2b a5f8e22456b6 because briefly build classes examine explain function functions identify intends large modify module owner parent pareto patch primary provided purpose
++Acceptance: preserve existing behavior, make the smallest mergeable dif
++
++REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
++SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-2-identify-affected-lines
++SUMMARY: PATCH TEMPLATE 4ff7ba380eac
++Intent: 07060650 07062319 6096aa2b a5f8e22456b6 based because being brief build changed descriptions exactly identified large lines modifications module numbers owner parent pareto patch pinpoint previous
++Acceptance: preserve existing behavior, make the smallest mergeable
++
++Adapt proven prior diff to create initial patch template, then attempt to integrate it on top of current codebase.
++
++(Sub-task 1/1 of 'recover-missing-branch-committee-owner-preference', auto-split because the parent was too large to build in one pass.)
++
++[reuse-first: matched qafix-pareto-2080-07062319-slice-2-identify-affected-lines]
++
++AGENTIC-REPAIR DIRECTIVE
++Repair category: orphaned-running
++Original task slug: recover-missing-branch-committee-owner-preference-split-patch-transplant-into-2-
++
++This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
++
++Resume this same task through an agentic coder. Inspect the existing branch/worktree/artifacts, preserve useful prior work, repair the technical issue, run the relevant checks, and commit.
++
++Required completion behavior:
++- Reproduce or inspect the concrete failure before changing broad strategy.
++- If dependencies/build tools are missing, repair the repo setup or install path minimally.
++- If tests/build fail, fix source/config/tests until the relevant checks are green.
++- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
++- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
++
++Failure context:
++```
++pipeline: 4-stage (large complex task)
++Task was orphaned RUNNING >20m; resume existing work and finish.
++```
++
