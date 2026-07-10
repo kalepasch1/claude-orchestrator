@@ -162,6 +162,7 @@ Pages occupied by compressor: 5.
              patch.object(resource_governor, "set_throttle", side_effect=lambda n: throttle.append(n) or n), \
              patch.object(resource_governor, "RAM_FLOOR_GB", 6.0), \
              patch.object(resource_governor, "PER_TASK_GB", 3.0), \
+             patch.object(resource_governor, "RAM_HARD", 82.0), \
              patch.object(resource_governor, "current_limit", side_effect=[8, 2, 10]):
             gauge = resource_governor.govern()
 
