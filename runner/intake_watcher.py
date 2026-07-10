@@ -40,6 +40,7 @@ import os, sys, re, glob, json, datetime, shutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import pipeline_contract
+import autoclear as _autoclear
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 INTAKE = os.path.abspath(os.path.join(HERE, "..", "intake"))
@@ -108,6 +109,7 @@ def emit_operator_cards(proj_name, operator, src):
         return 0
     existing_titles = {a.get("title") for a in
                        (db.select("approvals", {"select": "title", "project": f"eq.{proj_name}"}) or [])}
+    rules = _autoclear.load_rules()
     created = 0
     for o in operator:
         short = (o[:88] + "…") if len(o) > 88 else o
@@ -118,12 +120,22 @@ def emit_operator_cards(proj_name, operator, src):
         kind = ("legal" if any(k in low for k in ("counsel", "legal", "sign-off", "sign off", "execute"))
                 else "secret" if any(k in low for k in ("secret", "env", "api key", "oauth", "token", "credential"))
                 else "operator")
-        db.insert("approvals", {
+        detail = f"{o}\n\n(from intake/{src})"
+        card_row = {"project": proj_name, "kind": kind, "title": title, "detail": detail,
+                    "approvals_required": 1}
+        decision, rule_id = _autoclear.autoclear_decision(card_row, rules)
+        row = {
             "project": proj_name, "kind": kind, "title": title,
             "why": "Needs a human — secrets / deploys / OAuth / legal sign-off the runner can't do.",
             "value": "Unblocks dependent tasks once done; Approve = authorized/completed, Deny = not yet.",
             "risk": "Dependent tasks stay blocked until this is approved.",
-            "detail": f"{o}\n\n(from intake/{src})"})
+            "detail": detail,
+        }
+        if decision == "approved":
+            row["status"] = "approved"
+            row["decided_by"] = f"auto-rule:{rule_id}"
+            row["decided_at"] = datetime.datetime.utcnow().isoformat()
+        db.insert("approvals", row)
         existing_titles.add(title)
         created += 1
     return created
