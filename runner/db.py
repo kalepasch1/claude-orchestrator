@@ -74,8 +74,8 @@ _ensure_tool_path()
 
 URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
-HTTP_TIMEOUT = float(os.environ.get("ORCH_SUPABASE_TIMEOUT", "90") or 90)
-HTTP_RETRIES = int(os.environ.get("ORCH_SUPABASE_RETRIES", "2") or 2)
+HTTP_TIMEOUT = float(os.environ.get("ORCH_SUPABASE_TIMEOUT", "15") or 15)
+HTTP_RETRIES = int(os.environ.get("ORCH_SUPABASE_RETRIES", "1") or 1)
 HTTP_RETRY_STATUSES = {429, 500, 502, 503, 504, 521, 522, 523}  # incl. Cloudflare origin-down codes so monitors ride through Supabase capacity blips instead of silently no-op'ing
 RECOVERY_PREFIX = "recover-missing-branch-"
 CANARY_PREFIX = "canary-"
@@ -202,6 +202,24 @@ def count(table, params=None):
 
 
 def insert(table, row, upsert=False):
+    # IDEMPOTENT TASK ENQUEUE (2026-07-10): the queue has no UNIQUE(project_id, slug) constraint,
+    # so ~20 different generators that db.insert("tasks", ...) directly kept creating duplicate
+    # QUEUED rows (5-at-a-time, recurring — the sentinel dedupe was firing 45x/24h just cleaning up
+    # after them). Guard at the single choke point: if a task with this (project_id, slug) already
+    # exists in a live/settled state, skip the insert. Opt out with row["_allow_dup"]=True.
+    if (table == "tasks" and isinstance(row, dict) and not upsert
+            and row.get("slug") and row.get("project_id") and not row.pop("_allow_dup", False)):
+        try:
+            existing = select("tasks", {
+                "select": "*",
+                "project_id": f"eq.{row['project_id']}",
+                "slug": f"eq.{row['slug']}",
+                "state": "in.(QUEUED,RUNNING,RETRY,DONE,MERGED,BLOCKED,DECOMPOSED)",
+                "limit": "1"}) or []
+            if existing:
+                return existing  # already enqueued/handled — return it, don't duplicate
+        except Exception:
+            pass  # fail-soft: never let the guard block a legitimate insert
     h = {"Prefer": "return=representation" + (",resolution=merge-duplicates" if upsert else "")}
     try:
         return _req("POST", f"/rest/v1/{table}", body=row, headers=h)
