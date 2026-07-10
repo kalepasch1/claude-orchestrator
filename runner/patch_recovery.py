@@ -328,6 +328,9 @@ def _apply_diff_to_branch(repo, slug, branch, base, diff, source):
     """Apply a known diff to a fresh branch off base. Returns recover-style dict."""
     wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", f"regen-{slug}")
     try:
+        wt_parent = os.path.dirname(wt)
+        if wt_parent:
+            os.makedirs(wt_parent, exist_ok=True)
         _git(repo, "branch", "-D", branch)
         _git(repo, "branch", branch, base)
         _free_branch(repo, branch)
@@ -368,6 +371,9 @@ def _create_intent_stub(repo, slug, branch, base, intent_words, template_id=None
     """Create a minimal stub branch with recovery metadata. Last resort."""
     wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", f"stub-{slug}")
     try:
+        wt_parent = os.path.dirname(wt)
+        if wt_parent:
+            os.makedirs(wt_parent, exist_ok=True)
         _free_branch(repo, branch)
         _git(repo, "branch", "-D", branch)
         _git(repo, "branch", branch, base)
@@ -406,7 +412,11 @@ def _create_intent_stub(repo, slug, branch, base, intent_words, template_id=None
 # ---------------------------------------------------------------------------
 
 def _git(repo, *args, timeout=60):
-    return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, timeout=timeout)
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", ""),
+    }
+    return subprocess.run(["git", *args], cwd=repo, env=env, capture_output=True, text=True, timeout=timeout)
 
 
 def _free_branch(repo, branch):

@@ -407,6 +407,7 @@ class CreateIntentStubTest(unittest.TestCase):
         with patch.object(pr, "_free_branch"), \
              patch.object(pr, "_git", return_value=_proc(0)), \
              patch("os.path.join", wraps=os.path.join), \
+             patch("os.makedirs"), \
              patch("builtins.open", unittest.mock.mock_open()), \
              patch("subprocess.run", return_value=_proc(0)):
             result = pr._create_intent_stub(REPO, SLUG, BRANCH, BASE,
@@ -417,6 +418,7 @@ class CreateIntentStubTest(unittest.TestCase):
     def test_commit_failure_returns_failed(self):
         with patch.object(pr, "_free_branch"), \
              patch.object(pr, "_git", return_value=_proc(0)), \
+             patch("os.makedirs"), \
              patch("builtins.open", unittest.mock.mock_open()), \
              patch("subprocess.run", side_effect=[
                  _proc(0),  # git add
@@ -431,6 +433,7 @@ class CreateIntentStubTest(unittest.TestCase):
     def test_worktree_add_failure_returns_failed(self):
         with patch.object(pr, "_free_branch"), \
              patch.object(pr, "_git") as g, \
+             patch("os.makedirs"), \
              patch("subprocess.run", return_value=_proc(0)):
             g.side_effect = [
                 _proc(0),  # branch -D
@@ -451,6 +454,7 @@ class CreateIntentStubTest(unittest.TestCase):
 
         with patch.object(pr, "_free_branch"), \
              patch.object(pr, "_git", return_value=_proc(0)), \
+             patch("os.makedirs"), \
              patch("builtins.open", fake_open), \
              patch("subprocess.run", return_value=_proc(0)):
             pr._create_intent_stub(REPO, SLUG, BRANCH, BASE, [])
