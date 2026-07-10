@@ -424,18 +424,19 @@ def govern():
                     except Exception:
                         pass
             else:
+                # CLAMP, don't global-PAUSE. A global memory pause proved to be a sticky,
+                # oscillating fleet-killer (2026-07-10): it latched on a transient load spike and
+                # the resume never caught the recovery window, freezing everything for hours even
+                # at 30GB free. Clamping throttle to 1 is self-correcting, and the per-task
+                # can_claim() gate already blocks new claims when RAM is genuinely low — so a hard
+                # global pause is redundant AND dangerous. Never global-pause for memory again;
+                # lift any stale auto:low-memory pause instead.
                 set_throttle(1)
-                if cur_reason is None:  # not already paused by anyone
-                    why = ("kernel memory pressure warn/critical" if pressure_bad
-                           else f"available RAM {free_ram}GB below floor {eff_floor}GB")
+                if cur_reason == "auto:low-memory":
                     try:
                         import kill_switch
-                        kill_switch.pause(scope="global", reason="auto:low-memory", by="governor")
-                        db.insert("approvals", {"project": "ORCHESTRATOR", "kind": "self",
-                            "title": f"Low memory: {free_ram}GB free — orchestrator paused",
-                            "why": why + "; paused new work to avoid a Mac crash.",
-                            "value": "Prevents an out-of-memory restart.",
-                            "risk": "Orchestrator auto-resumes when memory recovers."})
+                        kill_switch.resume(scope="global", by="governor")
+                        print("governor: lifting stale auto:low-memory pause — clamping instead")
                     except Exception:
                         pass
                 print(f"governor: LOW MEMORY {free_ram}GB free (floor {eff_floor}, "
