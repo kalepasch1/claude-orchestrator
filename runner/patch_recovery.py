@@ -79,10 +79,10 @@ def _replay_stored_patch(repo, slug, branch, base):
 
         # Commit
         env = {**os.environ,
-               "GIT_AUTHOR_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Kale Aaron Pasch"),
-               "GIT_AUTHOR_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "kalepasch@gmail.com"),
-               "GIT_COMMITTER_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Kale Aaron Pasch"),
-               "GIT_COMMITTER_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "kalepasch@gmail.com")}
+               "GIT_AUTHOR_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
+               "GIT_AUTHOR_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local"),
+               "GIT_COMMITTER_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
+               "GIT_COMMITTER_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local")}
         subprocess.run(["git", "add", "-A"], cwd=wt, env=env, capture_output=True)
         subprocess.run(["git", "commit", "--no-verify", "-m", f"patch-recovery: {slug}"],
                        cwd=wt, env=env, capture_output=True)
