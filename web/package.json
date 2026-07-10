@@ -21,5 +21,8 @@
     "@types/node": "^26.1.0",
     "typescript": "^6.0.3",
     "vue-tsc": "^3.3.6"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

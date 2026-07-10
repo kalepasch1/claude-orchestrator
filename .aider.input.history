@@ -766,3 +766,101 @@
 +
 +---
 +BEFORE YOU FINISH (required): run the project's production build and, if present, its tests (e.g. `npm run build` then the test command). If ANYTHING fails, fix it and re-run until the build is GREEN. Make the smallest correct change and reuse existing code. Do not finish with a red build, and do not finish by only describing changes — actually apply your edits to the files.
+
+# 2026-07-10 01:17:22.287868
++PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 (similarity 0.34).
++Prior intent: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
++Relevant prior diff excerpt:
++
++
++REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
++SOURCE: 99f45988-68cc-430d-8228-5fac0ef2b876/patch-template-relfix-beethoven-07061350
++SUMMARY: PATCH TEMPLATE 78949c4096ba
++Intent: 06t13_49_47_819z 4pbjwpmj431__2jrjyb3bq7w0000gn _logs access analysis appears arises artifacts attempt backlog backup based being blocked blocking branch budget build capacity change changes check checking checkout
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/
++
++PATCH TEMPLATE 78949c4096ba
++Intent: 06t13_49_47_819z 4pbjwpmj431__2jrjyb3bq7w0000gn _logs access analysis appears arises artifacts attempt backlog backup based being blocked blocking branch budget build capacity change changes check checking checkout
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt: none found; keep the patch template reusable.
++[patch-template:78949c4096ba]
++
++The production build for this app is RED and is BLOCKING release. Make `npm run build` pass with the SMALLEST possible change (fix types/imports/syntax). Do NOT add features.
++
++# Build error (tail):
++npm error code ENOENT
++npm error syscall open
++npm error path /private/var/folders/l4/4pbjwpmj431__2jrjyb3bq7w0000gn/T/build-ex2yi9_i/package.json
++npm error errno -2
++npm error enoent Could not read package.json: Error: ENOENT: no such file or directory, open '/private/var/folders/l4/4pbjwpmj431__2jrjyb3bq7w0000gn/T/build-ex2yi9_i/package.json'
++npm error enoent This is related to npm not being able to find a file.
++npm error enoent
++npm error A complete log of this run can be found in: /Users/kpasch/.npm/_logs/2026-07-06T13_49_47_819Z-debug-0.log
++
++# The previous attempt FAILED the production build. Fix the build first, per this analysis from local:llama3.1:
++Based on the error message, it appears that `npm` is trying to access a temporary package.json file in a directory, but can't find it.
++
++Here's a possible fix:
++
++* The issue likely arises from an incomplete merge or conflict resolution. 
++* Check the merged files from commit e6ce948d183485c56459f4d8668fcc8c25fab8f5.
++* Specifically, verify that the `package.json` file in the root of the project is present and correctly formatted.
++
++To resolve this issue, you can try:
++
++* Checking out a previous commit where the build was successful (e.g., `git checkout e6ce948d183485c56459f4d8668fcc8c25fab8f5`) to confirm that the problem lies in the recent changes.
++* If the `package.json` file is missing or corrupted, restore it from a previous backup or recreate it from scratch.
++
++AUTO-REMEDIATION DIRECTIVE
++Claude capacity or budget blocked this task. Use the selected non-Claude/local coder path; make a concrete change and commit it.
++Failure context: auto-remediate: backlog offloaded from Claude budget/capacity guard
++
++Do not stop at analysis or manual review. Make the smallest complete code change, restore any missing/deleted branch or worktree artifacts if needed, run the relevant checks, and commit the implementation.
++
++PRIOR ATTEMPT FAILED — address specifically: verify pass (conf=0.85); integrate=BLOCKED (local)
++Make a concrete, tested change and COMMIT it; do not return with no edits.
++
++[reuse-first: matched patch-template-relfix-beethoven-07061350]
++
++STRUCTURAL QUARANTINE REWORK
++Original task: relfix-beethoven-07061350
++Replacement task: rework-buildfail-relfix-beethoven-07061350-dabfa6b
++Blocked category: buildfail
++Blocked context: verify pass (conf=0.85); integrate=BLOCKED (local) | advisory (shipped on green build): verify: Removed tests in runner/tests/test_idea_decomposition.py; judge: Introduce new functionality without proper testing and validation. Consider adding more tests to ensure correctness. | Introduce new functionality without proper testing and valida
++
++This is a build-green recovery task. Fix only the source/config/dependency issue needed for the production build to pass. Reuse dependency prewarm/cache and avoid package-manager churn unless the detected repo setup requires it.
++
++Execution rules:
++- Prefer reuse before drafting: search existing repo helpers, merged-diff library, patch templates, and sibling patterns.
++- Keep the diff small and independently mergeable.
++- Run the relevant build/test/QA command and commit the patch.
++- Do not reintroduce the blocker that caused quarantine.
++
++AGENTIC-REPAIR DIRECTIVE
++Repair category: noop
++Original task slug: rework-buildfail-relfix-beethoven-07061350-dabfa6b
++
++This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
++
++Resume this same task through an agentic coder. Inspect the existing branch/worktree/artifacts, preserve useful prior work, repair the technical issue, run the relevant checks, and commit.
++
++Required completion behavior:
++- Reproduce or inspect the concrete failure before changing broad strategy.
++- If dependencies/build tools are missing, repair the repo setup or install path minimally.
++- If tests/build fail, fix source/config/tests until the relevant checks are green.
++- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
++- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
++
++Failure context:
++```
++agent run failed after 3 error-retries
++Previous run produced no committable changes; make the smallest concrete implementation and commit.
++```
++
