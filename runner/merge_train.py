@@ -27,7 +27,7 @@ MERGE_CONFLICT_REDO_CAP). Test failures mark the task TESTFAIL — the train NEV
 Idempotent: handled cards get decided_by='train:*'; cards already handled by this train or by
 the legacy merge-handler are skipped.
 """
-import datetime, json, os, re, sys, subprocess
+import datetime, json, os, re, sys, subprocess, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
@@ -125,15 +125,37 @@ def _ensure_node_deps(repo):
     'cannot find module' — an ENVIRONMENT failure, not a code failure, that was TESTFAIL-ing
     all JS/TS merges (2026-07-10: smarter 'cannot find module vue'). Lazily install deps once
     per repo per process when they're absent. Idempotent; fail-soft (let the test surface the
-    real error if install fails)."""
+    real error if install fails).
+
+    2026-07-10: this walks the WHOLE repo tree and used to give each nested package.json its
+    own fresh MERGE_TRAIN_NPM_TIMEOUT (default 600s) budget. In a repo with several nested
+    packages, that's several independent 600s budgets stacked sequentially -- a single train
+    process (holding that repo's exclusive lock the entire time) sat idle for 74+ minutes
+    across a handful of installs, well past any one install's own timeout, blocking every
+    other project's merges in that same train run. Now enforces one CUMULATIVE budget
+    (MERGE_TRAIN_NPM_TOTAL_TIMEOUT, default 900s) across all installs triggered by a single
+    call, so a monorepo with many nested packages can't multiply timeouts into an effectively
+    unbounded hold on the repo lock."""
+    total_budget = float(os.environ.get("MERGE_TRAIN_NPM_TOTAL_TIMEOUT", "900"))
+    per_install_cap = int(os.environ.get("MERGE_TRAIN_NPM_TIMEOUT", "600"))
+    deadline = time.monotonic() + total_budget
     try:
         for root, _dirs, files in os.walk(repo):
             if ".git" in root or "/node_modules" in root:
                 _dirs[:] = [d for d in _dirs if d != "node_modules" and d != ".git"]
             if "package.json" in files and not os.path.isdir(os.path.join(root, "node_modules")):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break  # cumulative budget exhausted; leave any further packages uninstalled
                 cmd = "npm ci" if os.path.isfile(os.path.join(root, "package-lock.json")) else "npm install"
-                subprocess.run(["bash", "-lc", cmd], cwd=root, capture_output=True,
-                               text=True, timeout=int(os.environ.get("MERGE_TRAIN_NPM_TIMEOUT", "600")))
+                try:
+                    subprocess.run(["bash", "-lc", cmd], cwd=root, capture_output=True,
+                                   text=True, timeout=min(per_install_cap, remaining))
+                except subprocess.TimeoutExpired:
+                    # this one install is over budget -- move on rather than let a single
+                    # slow/hung install consume the entire remaining cumulative budget doing
+                    # nothing else useful.
+                    continue
     except Exception:
         pass
 
