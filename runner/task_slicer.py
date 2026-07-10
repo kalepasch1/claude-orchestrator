@@ -56,11 +56,45 @@ def slice_task(task):
     return parts
 
 
+def _slice_exists(task, slug):
+    """True if a slice row with this slug already exists for the task's project (any state)."""
+    try:
+        rows = db.select("tasks", {"select": "id",
+                                   "project_id": f"eq.{task.get('project_id')}",
+                                   "slug": f"eq.{slug}",
+                                   "limit": "1"}) or []
+        return bool(rows)
+    except Exception:
+        # DB unreachable: report absent so the normal path (which is also fail-soft) proceeds.
+        return False
+
+
 def pre_agent_hook(task):
     if not isinstance(task, dict) or not should_slice(task):
         return False
     parts = slice_task(task)
     if len(parts) < 2:
+        return False
+    # Idempotency guard (2026-07-10): the parent used to flip to DECOMPOSED only AFTER the
+    # slice inserts. Any DB blip on that final update left a QUEUED parent that re-sliced on
+    # the next claim, re-inserting the same 5 slugs — the dominant source of sentinel-dedupe
+    # quarantines (235/255 quarantined rows on 2026-07-09/10 were *-slice-N). If slices
+    # already exist, just finish flipping the parent.
+    if _slice_exists(task, parts[0]["slug"]):
+        try:
+            db.update("tasks", {"id": task["id"]},
+                      {"state": "DECOMPOSED", "updated_at": "now()",
+                       "note": f"{MARK}: slices already present; parent flip retried"})
+        except Exception:
+            pass
+        return True
+    # Flip the parent BEFORE inserting slices so a mid-insert failure can never leave a
+    # QUEUED parent alongside live slices. If the flip itself fails, do nothing this cycle.
+    try:
+        db.update("tasks", {"id": task["id"]},
+                  {"state": "DECOMPOSED", "updated_at": "now()",
+                   "note": f"{MARK}: spawning {len(parts)} sub-subtasks"})
+    except Exception:
         return False
     inserted = 0
     for part in parts:
@@ -70,15 +104,23 @@ def pre_agent_hook(task):
                "deps": part["deps"], "base_branch": task.get("base_branch"),
                "note": f"{MARK}: parent={task.get('slug')}"}
         try:
+            if _slice_exists(task, part["slug"]):
+                inserted += 1  # already landed on a previous attempt
+                continue
             _insert_task(row)
             inserted += 1
         except Exception:
             pass
-    if inserted:
-        db.update("tasks", {"id": task["id"]}, {"state": "DECOMPOSED", "updated_at": "now()",
-                                                "note": f"{MARK}: spawned {inserted} sub-subtasks"})
-        return True
-    return False
+    if not inserted:
+        # Nothing landed — restore the parent so the work isn't silently lost.
+        try:
+            db.update("tasks", {"id": task["id"]},
+                      {"state": "QUEUED", "updated_at": "now()",
+                       "note": f"{MARK}: slice inserts failed; parent restored"})
+        except Exception:
+            pass
+        return False
+    return True
 
 
 def _insert_task(row):
