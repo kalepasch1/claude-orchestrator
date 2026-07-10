@@ -4,7 +4,7 @@
 
 REPO="${CLAUDE_ORCH_REPO:-__REPO_PATH__}"
 if [[ "$REPO" == "__REPO_PATH__" || ! -d "$REPO/runner" ]]; then
-    for cand in "$HOME/Documents/beethoven/claude-orchestrator" "$HOME/claude-orchestrator"; do
+    for cand in "$HOME/claude-orchestrator" "$HOME/Documents/beethoven/claude-orchestrator"; do
         if [[ -d "$cand/runner" ]]; then
             REPO="$cand"
             break
