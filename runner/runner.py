@@ -1924,6 +1924,11 @@ def _fire_periodic(job: str) -> None:
                 return False
         except Exception:
             pass
+    # Don't stack a new instance on top of one that's still running -- see _is_still_running
+    # for why this was missing and what it caused (2026-07-10, train-60/merge_train.py pileup).
+    if _is_still_running(job):
+        print(f"[sched] {job} still running from last cycle — skipping this launch", flush=True)
+        return False
     _dir = os.path.dirname(os.path.abspath(__file__))
     _home = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
     cmd = ([sys.executable, os.path.join(_dir, job)] if job.endswith(".py")
@@ -1946,8 +1951,10 @@ def _fire_periodic(job: str) -> None:
             break
         except Exception:
             continue
-    # Reap any stale previous instance of this job before launching
-    _reap_stale_periodic(job, 3600)  # default 1h TTL for unknown intervals
+    # Reap any stale previous instance of this job before launching. Scaled to the job's own
+    # configured interval (was hardcoded 3600s for every job regardless of cadence -- a 60s
+    # job wouldn't be reaped for 5 hours; see _is_still_running for the incident this caused).
+    _reap_stale_periodic(job, _JOB_INTERVAL.get(job, 3600))
     try:
         if _log:
             with open(_log + ".log", "a") as lf, open(_log + ".err", "a") as ef:
@@ -1962,6 +1969,39 @@ def _fire_periodic(job: str) -> None:
         return False
 
 _PERIODIC_PIDS = {}  # job_name -> (pid, launch_time)
+
+# job script -> its own configured interval (seconds), built from _SCHEDULE. Used so the
+# stale-reap threshold scales with how often a job is actually supposed to run, instead of a
+# single hardcoded default that's wildly wrong for fast-cadence jobs (see _is_still_running).
+_JOB_INTERVAL = {job: args for (_key, job, stype, args) in _SCHEDULE if stype == "interval"}
+
+
+def _is_still_running(job):
+    """True if the previously-launched instance of this job is still alive.
+
+    2026-07-10: train-60 (merge_train.py, 60s cadence) piled up 8+ concurrent instances over
+    several hours -- _reap_stale_periodic only killed an instance once it had run for
+    expected_interval*5, but it was ALWAYS called with a hardcoded 3600s default regardless of
+    the job's real interval, so a 60s-cadence job wasn't reaped until it had run for 5 HOURS.
+    Meanwhile nothing stopped a brand-new instance from being Popen'd every single tick on top
+    of the still-running one -- there was no "skip if already running" check at all, only
+    "kill if grotesquely stale". Each merge_train.py instance can legitimately take several
+    minutes when multiple projects are repo-lock-busy (up to 120s of polling per busy project),
+    so with a 60s scheduler tick they were guaranteed to overlap and accumulate. Any interval
+    job whose runtime can exceed its own interval has this same latent bug. Fix: don't launch a
+    new instance while the last one is still alive; let it finish (or let the properly-scaled
+    reaper below kill it if it's truly stuck) instead of stacking duplicates."""
+    info = _PERIODIC_PIDS.get(job)
+    if not info:
+        return False
+    pid, _launch_t = info
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        del _PERIODIC_PIDS[job]
+        return False
+
 
 def _reap_stale_periodic(job, expected_interval):
     """Kill periodic children that have been running > 5x their expected interval."""
