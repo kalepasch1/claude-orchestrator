@@ -17,6 +17,24 @@ Branch-detection and regeneration utilities (zero-spend, standalone):
 import os, subprocess, json, re
 import db
 
+
+def _git_commit_env():
+    """Return a minimal env dict for git commit operations.
+
+    Reads fleet-wide identity vars (non-sensitive: name/email for commits only).
+    Does not spread os.environ — only passes what git needs to commit.
+    """
+    _name = os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent")
+    _email = os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local")
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", ""),
+        "GIT_AUTHOR_NAME": _name,
+        "GIT_AUTHOR_EMAIL": _email,
+        "GIT_COMMITTER_NAME": _name,
+        "GIT_COMMITTER_EMAIL": _email,
+    }
+
 def recover(repo, slug, base, project=None):
     """Attempt mechanical recovery of a missing branch. Returns dict with:
     - ok: bool — whether recovery succeeded
@@ -78,11 +96,7 @@ def _replay_stored_patch(repo, slug, branch, base):
                         "reason": f"patch apply failed: {proc.stderr[:200]}"}
 
         # Commit
-        env = {**os.environ,
-               "GIT_AUTHOR_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
-               "GIT_AUTHOR_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local"),
-               "GIT_COMMITTER_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
-               "GIT_COMMITTER_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local")}
+        env = _git_commit_env()
         subprocess.run(["git", "add", "-A"], cwd=wt, env=env, capture_output=True)
         subprocess.run(["git", "commit", "--no-verify", "-m", f"patch-recovery: {slug}"],
                        cwd=wt, env=env, capture_output=True)
@@ -328,11 +342,7 @@ def _apply_diff_to_branch(repo, slug, branch, base, diff, source):
             return {"ok": False, "method": "cache_replay", "branch": branch,
                     "reason": f"diff apply failed: {proc.stderr[:200]}"}
 
-        env = {**os.environ,
-               "GIT_AUTHOR_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
-               "GIT_AUTHOR_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local"),
-               "GIT_COMMITTER_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
-               "GIT_COMMITTER_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local")}
+        env = _git_commit_env()
         subprocess.run(["git", "add", "-A"], cwd=wt, env=env, capture_output=True)
         r2 = subprocess.run(["git", "commit", "--no-verify", "-m",
                             f"regen-from-cache({source}): {slug}"],
@@ -375,11 +385,7 @@ def _create_intent_stub(repo, slug, branch, base, intent_words, template_id=None
             f.write(f"intent: {intent_text}\n")
             f.write(f"base: {base}\n")
 
-        env = {**os.environ,
-               "GIT_AUTHOR_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
-               "GIT_AUTHOR_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local"),
-               "GIT_COMMITTER_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
-               "GIT_COMMITTER_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local")}
+        env = _git_commit_env()
         subprocess.run(["git", "add", stub_path], cwd=wt, env=env, capture_output=True)
         r2 = subprocess.run(["git", "commit", "--no-verify", "-m",
                             f"recovery-intent-stub: {slug}\n\nintent: {intent_text}"],
