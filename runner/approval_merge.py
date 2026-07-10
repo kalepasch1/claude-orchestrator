@@ -62,8 +62,31 @@ def _touches_sensitive_paths(repo, branch, base):
         return True  # Err on side of caution
 
 
+def _last_outcome_tests_passed(task_id):
+    """True if the task's most recent outcome has tests_passed=True.
+
+    Fail-open: if there is no outcome yet (task hasn't run or outcomes are unavailable),
+    return True so the auto-approve path is not blocked on missing history.
+    """
+    if not task_id:
+        return True
+    try:
+        rows = db.select("outcomes", {"select": "tests_passed",
+                                       "task_id": f"eq.{task_id}",
+                                       "order": "created_at.desc", "limit": "1"}) or []
+        if rows:
+            return bool(rows[0].get("tests_passed"))
+    except Exception:
+        pass
+    return True  # no outcome row yet → don't block
+
+
 def _should_autoapprove(card, task):
-    """Check if a card should be auto-approved (low-risk criteria)."""
+    """Check if a card should be auto-approved (low-risk criteria).
+
+    Gates: kind must be integrate/material, task kind must be build/bugfix, and the
+    agent's most recent outcome must have tests_passed=True (automated code review).
+    """
     if not AUTOAPPROVE_ENABLED:
         return False
     # Low-risk: card kind in (integrate, material)
@@ -72,6 +95,9 @@ def _should_autoapprove(card, task):
     # Task kind must be build or bugfix (not research, efficiency, self)
     task_kind = task.get("kind", "").lower()
     if task_kind not in ("build", "bugfix"):
+        return False
+    # Automated code review: only auto-approve if the agent's last run passed tests.
+    if not _last_outcome_tests_passed(task.get("id")):
         return False
     return True
 
