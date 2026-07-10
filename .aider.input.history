@@ -766,3 +766,58 @@
 +
 +---
 +BEFORE YOU FINISH (required): run the project's production build and, if present, its tests (e.g. `npm run build` then the test command). If ANYTHING fails, fix it and re-run until the build is GREEN. Make the smallest correct change and reuse existing code. Do not finish with a red build, and do not finish by only describing changes — actually apply your edits to the files.
+
+# 2026-07-10 09:25:16.372108
++PATCH TEMPLATE 671ab9d3a40d
++Intent: 07060650 07062319 08t04 193582 4ff7ba380eac 54d2cfd622ef 5fac0ef2b876 6096aa2b 794a8f13492b 99f45988 a5f8e22456b6 acceptance adapt affected allowing apparently assigned assignment automated automatically backlog based because beethoven
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt:
++- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-2-fix-source-config-tests sim=0.426: PATCH TEMPLATE af84c7190272
++Intent: 07060650 07062319 1677fc0f7242 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being brief briefly build changed checks classes
++Acceptance: preserve existing behavior, make the sma
++- pareto-2080/qafix-pareto-2080-07062319-slice-2-identify-affected-lines sim=0.424: PATCH TEMPLATE 4ff7ba380eac
++Intent: 07060650 07062319 6096aa2b a5f8e22456b6 based because being brief build changed descriptions exactly identified large lines modifications module numbers owner parent pareto patch pinpoint previous
++Acceptance: preserve existing behavior, make the smallest mergeable
++[patch-template:671ab9d3a40d]
++
++PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch pareto-2080/qafix-pareto-2080-07062319-slice-2-identify-affected-lines (similarity 0.189).
++Prior intent: PATCH TEMPLATE 4ff7ba380eac
++Intent: 07060650 07062319 6096aa2b a5f8e22456b6 based because being brief build changed descriptions exactly identified large lines modifications module numbers owner parent pareto patch pinpoint previous
++Acceptance: preserve existing behavior, make the smallest mergeable
++Relevant prior diff excerpt:
++
++
++- PATCH TEMPLATE 794a8f13492b
++Intent: 08t04 193582 54d2cfd622ef 5fac0ef2b876 99f45988 acceptance adapt allowing apparently assigned assignment automated automatically backlog based beethoven behavior blocked bottleneck bottlenecks branch branches build change
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++- 3.
++- Implementation slots:
++1.
++- [reuse-first: matched patch-template-improve-automated-branch-management-system]
++
++Parent task: improve-improve-orchestration-with-ai-ml-for-dyn
++
++AGENTIC-REPAIR DIRECTIVE
++Repair category: runner-exception
++Original task slug: improve-improve-orchestration-with-ai-ml-for-dyn-slice-1
++
++This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
++
++The runner hit a transient technical exception. Resume the same task, preserve prior work, repair the root cause or use provider failover, and finish through build/test/commit.
++
++Required completion behavior:
++- Reproduce or inspect the concrete failure before changing broad strategy.
++- If dependencies/build tools are missing, repair the repo setup or install path minimally.
++- If tests/build fail, fix source/config/tests until the relevant checks are green.
++- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
++- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
++
++Failure context:
++```
++runner exception: [Errno 2] No such file or directory: '/Users/kpasch/Documents/beethoven/claude-orchestrator'
++```
++
