@@ -39,6 +39,7 @@ A PROMPT-*.md that already IS canonical format is left untouched here (nothing t
 import os, sys, re, glob, json, datetime, shutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import intake_gate
 import pipeline_contract
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -140,6 +141,10 @@ def ingest_file(path, projects_by_name):
             print(f"intake: unknown project '{t['project']}' (slug {t['slug']}) — skipped")
             skipped += 1; continue
         if t["slug"] in existing:
+            skipped += 1; continue
+        ok, reason = intake_gate.should_queue(t, proj)
+        if not ok:
+            print(f"intake: {t['slug']} rejected — {reason}")
             skipped += 1; continue
         raw_prompt = (t["prompt"] + (f"\n\nProof: {t['proof']}" if t["proof"] else ""))
         row = {"project_id": proj["id"], "slug": t["slug"],
