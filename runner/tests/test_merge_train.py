@@ -75,7 +75,11 @@ class TrainCase(unittest.TestCase):
         if table == "projects":
             return list(PROJECTS)
         if table == "tasks":
-            slug = (params or {}).get("slug", "eq.").split("eq.", 1)[1]
+            raw = (params or {}).get("slug", "eq.")
+            if raw.startswith("in.("):
+                slugs = raw[len("in.("):-1].split(",")
+                return [t for t in self.tasks if t["slug"] in slugs]
+            slug = raw.split("eq.", 1)[1]
             return [t for t in self.tasks if t["slug"] == slug]
         if table == "controls":
             return []
@@ -145,6 +149,43 @@ class TestSkipsHandledCards(TrainCase):
         summary = merge_train.train_run()
         self.assertEqual(summary["merged"], 0)
         self.assertEqual(self.card_updates("c1"), [])
+
+    def test_freshly_attributed_card_is_still_processed(self):
+        """Regression guard (2026-07-10): ensure_integration_card() stamps every fresh card's
+        decided_by with an ATTRIBUTION prefix ("canonical-train:sweeper" / "canonical-train:runner")
+        at creation time -- this is who queued it, not a verdict. A prior same-day fix (#6)
+        treated any non-empty decided_by as "already handled", which meant _pick_cards() could
+        never see a freshly-created card again: zero cards picked, forever. Cards decided by
+        "canonical-train:*" must still be picked up and merged."""
+        for source in ("canonical-train:sweeper", "canonical-train:runner"):
+            with self.subTest(source=source):
+                self.updates = []
+                self.cards = [_card("c1", "feat-x", decided_by=source)]
+                self.tasks = [_task("t1", "feat-x")]
+                summary = merge_train.train_run()
+                self.assertEqual(summary["merged"], 1)
+                self.assertEqual(self.card_updates("c1")[-1]["decided_by"], "train:MERGED")
+
+    def test_resolve_tasks_batched_into_single_query(self):
+        """_resolve_task's old per-card db.select("tasks", {"slug": "eq.<slug>"}) call was one
+        network round-trip per card; with thousands of eligible cards per cycle that stalled
+        every train invocation. Verify train_run() now issues one batched tasks query
+        (slug=in.(...)) covering every candidate card instead of N separate eq. queries."""
+        self.cards = [_card("c1", "feat-x"), _card("c2", "feat-y")]
+        self.tasks = [_task("t1", "feat-x"), _task("t2", "feat-y", project_id="p2")]
+        tasks_selects = []
+        real_select = self._select
+
+        def counting_select(table, params=None):
+            if table == "tasks":
+                tasks_selects.append(params)
+            return real_select(table, params)
+
+        self.mock_db.select.side_effect = counting_select
+        summary = merge_train.train_run()
+        self.assertEqual(summary["merged"], 2)
+        self.assertEqual(len(tasks_selects), 1, "expected exactly one batched tasks query, not one per card")
+        self.assertTrue(tasks_selects[0]["slug"].startswith("in.("))
 
 
 # ── G: branch-missing recovery ───────────────────────────────────────────────
