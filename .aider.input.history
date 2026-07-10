@@ -766,3 +766,77 @@
 +
 +---
 +BEFORE YOU FINISH (required): run the project's production build and, if present, its tests (e.g. `npm run build` then the test command). If ANYTHING fails, fix it and re-run until the build is GREEN. Make the smallest correct change and reuse existing code. Do not finish with a red build, and do not finish by only describing changes — actually apply your edits to the files.
+
+# 2026-07-10 00:57:42.574242
++## SCOUT ANALYSIS
++Relevant files: beethoven/qafix-qafix-2/index.ts
++Entry points: qafix-qafix-2
++Complexity: low
++
++## TASK
++PATCH TEMPLATE 875a186bea3f
++Intent: 07062319 07071626 20251001 8b92d078e856 acceptance active adapt added advice after agentic allows alter america analysis artifacts author batch because beethoven before behavior blocked blocker
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt:
++- pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi sim=0.273: PATCH TEMPLATE 8b92d078e856
++Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
++Acceptance: preserve existing behavior,
++- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 sim=0.227: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
++[patch-template:875a186bea3f]
++
++MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi similarity=0.171: PATCH TEMPLATE 8b92d078e856
++Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
++Acceptance: preserve existing behavior,
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 similarity=0.156: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
++
++REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
++SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi
++SUMMARY: PATCH TEMPLATE 8b92d078e856
++Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
++Acceptance: preserve existing behavior,
++
++## ORCHESTRATION PIPELINE CONTRACT
++- source: blocker-quarantine
++- project: selected app
++- task class: security (need 9, risk security)
++- preflight triage: claude:claude-haiku-4-5-20251001 (explore (299 samples))
++- strategy planner: local:llama3.1 (qpd leader q=6.85 $0.0 (n=4))
++- agentic coder: ollama using author model claude-sonnet-4-6
++- independent QA route: openai:gpt-5.4-nano (qpd leader q=8.0 $0.0 (n=1))
++- QA panel: local:llama3.1, deepseek:deepseek-chat
++- legal gate: owner-only when the change would force licensing/registration/custody/transmission/advice or needs a secret
++- merge/release: auto-merge to orchestrator/dev after tests, verify, judge; production release via batch train
++- coordination rule: reconcile with active loop-generated work, reuse prior solutions first, do not delete or overwrite unrelated queued improvements, and leave recovered work in the queue until shipped.
++## END ORCHESTRATION PIPELINE CONTRACT
++
++# Original improvement request
++You've hit your session limit · resets 11:10pm (America/New_York)
++
++AUTO-REMEDIATION DIRECTIVE
++Remediation cap 3 reached; finish the implementation instead of escalating to manual review.
++Failure context: verify: This diff only adds task planning documents (.md files) and an empty wtest file. No source code, tests, or build artifacts are changed or added; the dependent files listed are documentation and planning files, not executable code requiring tests. However, the doc files request secrets (DARWIN_SIGNING_PRIVATE_KEY_PEM) and material schema migrations that bypass normal review, which is a process/security concern.
++Do not stop at analysis or manual review. Make the smallest complete code change, restore any missing/deleted branch or worktree artifacts if needed, run the relevant checks, and commit the implementation.
++
++STRUCTURAL QUARANTINE REWORK
++Original task: speculative-cheap-first-routing
++Replacement task: rework-oversized-speculative-cheap-first-routing-d064fc2
++Blocked category: oversized
++Blocked context: shelved: 6 remediations without merge — needs human re-scope. [ev-low-priority: near-zero expected value — keep queued, run when capacity allows]
++
++The task exhausted retries because it is too broad. Implement the first independently mergeable slice only, with clear acceptance checks. Leave later slices discoverable in the final note instead of broadening this patch.
++
++Execution rules:
++- Prefer reuse before drafting: search existing repo helpers, merged-diff library, patch templates, and sibling patterns.
++- Keep the diff small and independently mergeable.
++- Run the relevant build/test/QA command and commit the patch.
++- Do not reintroduce the blocker that caused quarantine.
++
++
++[reuse-first: matched qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi]
