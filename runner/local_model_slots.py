@@ -186,6 +186,38 @@ def maybe_unload_after(model):
     return False
 
 
+def wait_for_ram(model, free_fn=None, sleep_fn=time.sleep, now_fn=time.time):
+    """Admission gate: wait (bounded) until free RAM fits the model + headroom.
+
+    Loading a 24GB coder while node lanes hold the RAM guarantees a sentinel ram-clamp
+    mid-generation, a caller retry, and a reload — the observed clamp/reload thrash loop
+    (2026-07-09/10). Waiting a bounded time for lanes to drain breaks the loop. Fail-soft:
+    on timeout or if free RAM can't be read, admit anyway (sentinel remains the backstop).
+    Returns (admitted_clean, waited_s)."""
+    try:
+        headroom = float(os.environ.get("ORCH_OLLAMA_ADMIT_HEADROOM_GB", "3"))
+        max_wait = float(os.environ.get("ORCH_OLLAMA_ADMIT_WAIT_S", "90"))
+    except ValueError:
+        headroom, max_wait = 3.0, 90.0
+    if max_wait <= 0:
+        return True, 0.0
+    if free_fn is None:
+        free_fn = _free_ram_gb
+    need = ram_gb(model) + headroom
+    start = now_fn()
+    while True:
+        free = None
+        try:
+            free = free_fn()
+        except Exception:
+            pass
+        if free is None or free >= need:
+            return True, now_fn() - start
+        if now_fn() - start >= max_wait:
+            return False, now_fn() - start
+        sleep_fn(min(5.0, max(0.1, max_wait / 6)))
+
+
 @contextlib.contextmanager
 def slot(model, operation="local_completion"):
     if not is_heavy(model) or not _truthy("ORCH_OLLAMA_SLOT_SCHEDULER", True):
@@ -199,6 +231,17 @@ def slot(model, operation="local_completion"):
         fcntl.flock(f, fcntl.LOCK_EX)
         waited_ms = int((time.time() - start) * 1000)
         unloaded = unload_others(model)
+        admitted, ram_waited_s = wait_for_ram(model)
+        if not admitted:
+            try:
+                import db
+                db.insert("resource_events", {
+                    "kind": "ollama_admit_timeout", "value": int(ram_waited_s),
+                    "detail": f"{operation} {model}",
+                    "action": "admitted anyway after bounded wait (fail-soft)",
+                })
+            except Exception:
+                pass
         try:
             yield {"locked": True, "waited_ms": waited_ms, "unloaded": unloaded}
         finally:

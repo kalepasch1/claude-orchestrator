@@ -188,16 +188,24 @@ def _local(model, prompt, timeout=90):
             model = (ollama_catalog.best("completion", need=5) or {}).get("model") or os.environ.get("OLLAMA_MODEL", "llama3.1")
         except Exception:
             model = os.environ.get("OLLAMA_MODEL", "llama3.1")
+    # Cap the context window: without an explicit num_ctx Ollama uses the Modelfile default,
+    # which for large coders (qwen3-coder:30b) balloons KV cache to ~2x model size (observed
+    # 44GB resident on 2026-07-10) and drives the sentinel ram-clamp thrash. Gateway prompts
+    # are short, so a modest window loses nothing. ORCH_OLLAMA_NUM_CTX=0 disables the cap.
+    try:
+        num_ctx = int(os.environ.get("ORCH_OLLAMA_NUM_CTX", "16384"))
+    except ValueError:
+        num_ctx = 16384
+    body = {"model": model, "prompt": prompt, "stream": False,
+            "keep_alive": os.environ.get("ORCH_OLLAMA_KEEP_ALIVE", "0")}
+    if num_ctx > 0:
+        body["options"] = {"num_ctx": num_ctx}
     try:
         import local_model_slots
         with local_model_slots.slot(model, operation="local_completion"):
-            d = _post(f"{host}/api/generate", {}, {"model": model, "prompt": prompt, "stream": False,
-                                                    "keep_alive": os.environ.get("ORCH_OLLAMA_KEEP_ALIVE", "0")},
-                      timeout=timeout)
+            d = _post(f"{host}/api/generate", {}, body, timeout=timeout)
     except Exception:
-        d = _post(f"{host}/api/generate", {}, {"model": model, "prompt": prompt, "stream": False,
-                                                "keep_alive": os.environ.get("ORCH_OLLAMA_KEEP_ALIVE", "0")},
-                  timeout=timeout)
+        d = _post(f"{host}/api/generate", {}, body, timeout=timeout)
     return d.get("response", ""), 0.0
 
 
