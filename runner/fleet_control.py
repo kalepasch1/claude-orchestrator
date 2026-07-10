@@ -23,6 +23,9 @@ import os, sys, time, socket, subprocess, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import kill_switch
+import log_util
+
+log = log_util.get_logger(__name__)
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOST = socket.gethostname()
@@ -52,8 +55,8 @@ def load_config():
             if k and v is not None and _safe_key(k):
                 os.environ[k] = str(v)
                 n += 1
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("fleet_config load failed: %s", e)
     return n
 
 
