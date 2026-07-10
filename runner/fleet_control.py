@@ -23,6 +23,7 @@ import os, sys, time, socket, subprocess, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import kill_switch
+import config_approval
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOST = socket.gethostname()
@@ -44,12 +45,13 @@ def _safe_key(k):
 
 
 def load_config():
-    """Apply central fleet_config into this process's env (safe keys only)."""
+    """Apply central fleet_config into this process's env (safe keys only, gated keys skipped)."""
     n = 0
     try:
+        blocked = config_approval.blocked_keys()
         for row in (db.select("fleet_config", {"select": "key,value"}) or []):
             k, v = row.get("key"), row.get("value")
-            if k and v is not None and _safe_key(k):
+            if k and v is not None and _safe_key(k) and k not in blocked:
                 os.environ[k] = str(v)
                 n += 1
     except Exception:
@@ -216,6 +218,7 @@ def process_controls():
 def tick():
     """One coordination cycle — call from the main loop and/or the scheduler. Fail-soft."""
     try:
+        config_approval.sweep()
         load_config()
         process_controls()
         self_update()
