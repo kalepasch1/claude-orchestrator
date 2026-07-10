@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Resource-medic: autonomous RAM/memory/thrash/loop remediation. Independent of the runner
+     so it can remediate even a dead/wedged runner. Install: cp to ~/Library/LaunchAgents/,
+     then `launchctl load`. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.claudeorchestrator.medic</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Applications/ClaudeRunner.app/Contents/MacOS/ClaudeRunner</string>
+        <string>resource_medic.py</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>WorkingDirectory</key>
+    <string>/Users/kpasch/Documents/beethoven/claude-orchestrator/runner</string>
+    <key>StartInterval</key>
+    <integer>90</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/kpasch/Library/Logs/claude-orchestrator/medic.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/kpasch/Library/Logs/claude-orchestrator/medic.err</string>
+</dict>
+</plist>
