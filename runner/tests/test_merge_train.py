@@ -132,6 +132,34 @@ class TestSkipsHandledCards(TrainCase):
         self.assertEqual(summary["merged"], 0)
         self.assertEqual(self.updates, [])
 
+    def test_any_nonempty_decided_by_skipped(self):
+        """Regression: SKIP_PREFIXES only recognized "merge-handler"/"train", but
+        ensure_integration_card() itself defaults decided_by="canonical-train", and other
+        subsystems (auto-policy, ab-edge, owner-model/-bulk, dashboard emails) write their own
+        prefixes too. None of those matched, so already-decided cards were re-fetched and
+        re-resolved every cycle -- 71,905 approved rows in prod, all already decided, zero
+        genuinely pending. Any non-empty decided_by must be treated as already handled,
+        regardless of which prefix wrote it."""
+        for decided_by in ("canonical-train:runner", "auto-policy:owner-20260702",
+                           "ab-edge:auto-promote", "kalepasch@gmail.com", "owner-bulk"):
+            with self.subTest(decided_by=decided_by):
+                self.cards = [_card("c1", "feat-x", decided_by=decided_by)]
+                self.tasks = [_task("t1", "feat-x")]
+                self.updates = []
+                summary = merge_train.train_run()
+                self.assertEqual(summary["merged"], 0)
+                self.assertEqual(self.updates, [], f"decided_by={decided_by!r} must be skipped")
+
+    def test_pick_cards_filters_at_db_level(self):
+        """_pick_cards() should ask the DB for decided_by IS NULL, not fetch everything and
+        filter in Python -- the whole point of the fix is avoiding an N+1 resolve loop over
+        thousands of already-decided rows."""
+        merge_train._pick_cards()
+        approvals_calls = [c for c in self.mock_db.select.call_args_list if c.args[0] == "approvals"]
+        self.assertTrue(approvals_calls, "expected a db.select('approvals', ...) call")
+        params = approvals_calls[-1].args[1] if len(approvals_calls[-1].args) > 1 else approvals_calls[-1].kwargs.get("params")
+        self.assertEqual(params.get("decided_by"), "is.null")
+
     def test_non_merge_kind_ignored(self):
         self.cards = [_card("c1", "feat-x", kind="proposal")]
         self.tasks = [_task("t1", "feat-x")]
