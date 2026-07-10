@@ -1636,6 +1636,7 @@ _SCHEDULE = [
     ("mergestall-900","merge_stall_monitor.py","interval",900), # alert if merges stop landing despite a real backlog (2026-07-08 incident safeguard)
     ("sweep-90",      "integration_sweeper.py","interval",90),  # passed-tests-but-not-integrated -> canonical train
     ("sentinel-300",  "sentinel.py",        "interval", 300),   # self-healing: DB-outage offline sweeps, checkout drift, runner singleton, RAM clamp, stale code
+    ("medic-90",      "resource_medic.py",  "interval", 90),    # autonomous resource bots: predictive OOM guard, thrash-hunter (durable model exclusion / lane lowering), process hygiene, loop breaker
     ("ownermodel-300","owner_decision_model.py","interval",300),# draft/auto-apply gated decisions from owner precedent
     ("ev-900",        "ev_scheduler.py",    "interval", 900),   # EV-per-token queue ordering + zero-EV parking
     ("codercanary-1800","coder_canary.py",  "interval", 1800),  # force low-risk per-coder samples for learned routing
@@ -1781,7 +1782,7 @@ _sched_last: dict = {}
 # protect the Mac, and keep read-only spend/health telemetry flowing.
 _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn",
                      "approval_policy.py", "queue_janitor.py", "db_recovery_sprint.py",
-                     "resilience_mesh.py",
+                     "resilience_mesh.py", "resource_medic.py", "sentinel.py",
                      "integration_sweeper.py", "merge_train.py",
                      "unstick", "dagfix", "batchmech", "selftune", "cluster",
                      "governor", "costslo", "promote", "prewarm", "billingguard",
