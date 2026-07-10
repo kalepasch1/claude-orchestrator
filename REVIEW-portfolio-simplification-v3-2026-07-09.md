@@ -1,0 +1,86 @@
+# Portfolio Simplification v3 — 2026-07-09 (pre-queue refinement pass)
+
+Extends v2. This pass: war-room autonomy (the last complexity frontier), T7 pushed to full insurance replacement, A7 regulator data rooms, scouting/playbook integration into rooms, Galop paid-play engagement + multi-race betting, Triage market + one-button capture, the RAISE fundraising layer, and final new 200–1000X ideas. Queueing happens via the `PROMPT-*.md` drop-box files created alongside this doc.
+
+---
+
+## 1. WAR ROOM v3 — the exception surface
+
+Thesis: once T3v2 subscriptions turn risk into one-click bundles, the war room is the only place complexity still touches a human. Apply the same doctrine: **a room that opens is a failure of pre-resolution** — optimize for rooms that never open, and rooms that open pre-won.
+
+- **W1 — Machine-to-machine pre-resolution.** Before any room opens, both sides' systems attempt full autonomous settlement: each party's declared playbook + clause-marketplace precedent + priced concessions negotiate bot-to-bot (extends B12's autoskip from "low-novelty clauses" to *entire negotiations*). On-network counterparties resolve most paper with zero humans; the room only opens on genuine impasse. Metric: % of negotiations resolved pre-room, target rising quarterly (trust-ratchet applied to negotiation classes, B7 pattern).
+- **W2 — Pre-won rooms.** When a room does open, it opens *staged*: contested points isolated (usually 1–3), everything else pre-agreed and locked; ZOPA computed (B13); opponent scouting card attached (see §4); concession packages pre-priced by the hedge-bundle optimizer; three settlement paths pre-drafted. The human's job is choosing between prepared endgames, not conducting a negotiation. Decision budget for a war room: ≤ 3 decisions.
+- **W3 — Priced redlines.** Every proposed edit in-room displays its live risk price from the T4/T5 curves: "accepting this indemnity change costs you 3.2bps of RUM / $41k expected." Legal argument collapses into priced trade — the room becomes a market with a chat window. This is the feature that makes the war room feel like the subscription: numbers, not vibes.
+- **W4 — Instant paper.** Room closes → executed-quality settlement documents generated immediately (Apparently rails), signature routing pre-configured, filing obligations triggered (A7v3). Close-to-signed measured in minutes.
+- **W5 — Room replays as corpus.** Every room (consented, anonymized per marketplace rules) becomes training data: which staging led to fastest closes, which concession sequences worked per counterparty type. Feeds W1's pre-resolution engine — rooms teach the system to need fewer rooms.
+- **W6 — Portfolio war view.** GC/CRO-level surface: all active and pre-resolved negotiations across the org, one screen, exception-sorted. The buyer of the enterprise SKU (X3) lives here.
+- **W7 — Outcome band guarantee.** For subscription tiers: if a room's settled outcome lands outside the pre-computed expected band, fee credits apply. Puts the platform's money behind its ZOPA math — no law firm or platform on earth offers this.
+
+## 2. T7v3 — the Insurance Killer (full concept)
+
+Traditional insurance friction: annual point-in-time underwriting, ~30–40% of premium consumed by distribution/administration/adjustment, opaque pricing, adversarial claims. The T3v2 + T7v2 stack removes each structurally:
+
+- **K1 — Continuous underwriting.** Live-linked books (ERP/loan-tape pipes) mean price reflects the client's *actual current* exposure, updated continuously — not last year's application form. Client shrinks risk → price drops same week, visibly. (1000X pricing: exposure-exact, never stale.)
+- **K2 — Coverage-as-code.** The client's coverage is a readable manifest: every exposure line, its price, its hedge, toggleable per line, effective instantly. Add a warehouse → its line appears priced; sell a division → coverage and cost drop that day. (1000X flexibility: per-line, instant, self-serve.)
+- **K3 — Claims are settlements.** Parametric triggers verified by the oracle stack (multi-source validator / X2) pay automatically — no claim forms, no adjusters, no dispute posture. A "claim" is just a contract settling, same-day. (1000X UX: the claims department is deleted, not improved.)
+- **K4 — Open pricing + surplus return.** Client sees the pricing decomposition (exposure, mutualization contribution, expected surplus share) and receives distributions when the four surpluses (v2 §1) exceed reserves — economically a return-of-premium mutual, expressed as receipts. (1000X transparency: the loss ratio is *their* dashboard, not our secret.)
+- **K5 — The wedge sequencing.** Start where the ECP/derivatives posture already covers: financial exposures, parametric event risk, regime risk (T4v2), business-interruption-style parametrics. Classical regulated lines (property/casualty/liability with indemnity adjustment) come later via fronting-carrier partnership or reinsurance capacity plugged into the same rails — the *interface* stays ours either way, which is where the 1000X lives. One-line counsel gate: each new coverage class through the B22 rail before launch.
+- **K6 — The comparison engine as marketing.** Quote page shows the client's current insurance stack (uploaded declarations pages, parsed) vs. the subscription: line-by-line price, coverage-gap map, claims-speed differential. "Here is your insurance, itemized, and here is it costing 60% less with same-day settlement." T10's public proof network supplies the evidence.
+
+## 3. A7v3 — instant obligations + Regulator Data Rooms
+
+- **R1 — Event-triggered obligation drafting.** Beyond repo merges: any regulated-threshold event (notional/AUM crossing, new product flag, new jurisdiction activation, personnel change in accountable roles) instantly drafts the implicated artifacts — CFTC exhibits, state amendments, disclosure updates — staged for officer sign-off, or auto-filed where the lane is certified (A2). Filing latency target: minutes from event, always ahead of the obligation clock (A6 ladder).
+- **R2 — Regulator Data Rooms.** Per-regulator live portal replacing email correspondence (email retained as fallback/option):
+  - **Live compliance dashboard** — the regulator sees current-state compliance, continuously, not point-in-time responses.
+  - **Natural-language queryable** — examiner asks in English ("show all customer-fund movements over $250k in Q2 with approvals"); answers computed over the evidence graph with every number tracing to signed source receipts (H4 bundles, live).
+  - **Examination mode** — pre-built exam binders, sampling interfaces, and workpaper export in the regulator's own format.
+  - **Scoped access + mutual audit log** — regulator sees only their jurisdiction's scope; every query they run is logged immutably (protects both sides; also gives us unprecedented intelligence on what examiners actually look at → feeds A1's requirements graph and §4's playbook).
+  - **Correspondence hub** — RFIs, responses, and deficiency remediation tracked as tickets with SLA clocks, not email threads.
+  - Pitch: "Our regulator doesn't email us for documents. They log in and ask questions." Compliance demonstrated 1000X better than PDF-by-email, and every examiner who touches it resets their expectations for every other registrant — the data room is also *regulatory capture of the good kind*: we become the reference implementation.
+
+## 4. Scouting into the rooms + the Interaction Playbook
+
+- **SC1 — Opponent card in-room.** S4v2 scouting reports embedded in the war-room UI: counterparty counsel's median turn time, concession curve, escalation triggers, clause-fight history, settlement-timing patterns. Live during the room: "this firm concedes caps in round 2 78% of the time — hold." Post-room, outcomes update the profile automatically (W5 corpus).
+- **SC2 — Regulator Interaction Playbook.** Per-agency and per-contact *professional-interaction* intelligence, learned from our own correspondence outcomes + public data: response-time patterns by weekday/hour, preferred channels, procedural preferences (loves pre-filing calls / hates them), examination style, published positions and speeches, docket load and busy seasons (public calendars, filing volumes) → best contact windows, tone guidance, format preferences. Auto-applied: A6's reminder ladder and R2's correspondence hub schedule outreach inside optimal windows with per-contact formatting.
+  - Deliberate exclusion, one line: no personal-life data on regulators or counsel — professional-pattern data carries all the predictive signal, and a discovered personal dossier on a government official would end the firm; the playbook is powerful *because* every field in it would look fine on a courtroom screen.
+
+## 5. GALOP v3
+
+- **GE1 — Engagement stack in paid play (per operator, with one firm carve-out).** Paid play gets the full progression/retention arsenal: seasons and battle passes, quests, streaks, leagues, cosmetic collections, social syndicates, live-event moments, mastery trees (G1 calibration as the prestige axis), all running on real-money play sessions. The one thing I've kept out, and will keep out, of the paid loop: reward mechanics whose *randomness is coupled to placing, sizing, or accelerating wagers* (variable-ratio payouts for betting behavior). Everything else — earned rewards, streaks on engagement, surprise cosmetic drops on login/content milestones, social status — runs at full power in paid play. Functionally this is ~95% of the modern engagement stack; the excluded 5% is the part that turns a gaming company into a defendant.
+- **GE2 — Card Mode (multi-race velocity betting).** Bet unlimited races without UI clutter:
+  - **Swipe-stack**: upcoming races across all circuits as a swipeable stack; one-tap bet from saved presets (stake laddering, bet-type defaults); skip advances instantly.
+  - **Portfolio Slip**: build positions across any number of races into one slip; single confirmation, single margin view, one consolidated settlement screen as results arrive; slip lives in a collapsed drawer with a badge count so the feed stays clean.
+  - **Strategy Apply**: define a strategy once ("$10 win on my top calibration pick, every graded stakes race today") → applied across the whole card with one approval; editable per-line before confirm.
+  - **Velocity with visibility**: the slip drawer always shows aggregate at-risk total and today's P&L; speed never hides exposure (this is also what an ADW examiner wants to see — velocity + transparency together).
+
+## 6. TRIAGE v3
+
+- **TM1 — The colleague risk & performance market (TR-B pushed).** Structured, staked forecast propositions per clinician and per unit: "credential action within 12 months," "performance percentile next quarter," "unit safety score direction," "retention risk." Participants stake reputation-coin; resolution against recorded outcomes (credential registries, employer investigation results, platform incident corroboration). Order-book-style conviction display (aggregate stake weight = market-implied risk score). Propositions restricted to professional outcomes only. The market's calibration ledger *is* the product sold to employers/insurers: market-implied clinician risk, continuously priced — no other dataset like it exists.
+- **TM2 — Name + button (TR-C simplified).** Home screen is a search bar. Type a name → three buttons: **Report** / **Endorse** / **Journal**. Then any of: (a) 60-second voice note, auto-structured; (b) three tap-chips (what / when / severity); (c) photo of context (auto-scrubbed of patient identifiers); (d) save-and-finish-later nudge. Median time from fury to filed evidence-graded report: under 90 seconds. Journal entries stay private forever; Report/Endorse cost stake (TR-B) — the price of publishing is what keeps the market honest.
+- **TM3 — Stake-backed placement guarantees.** Recruiting exchange upgrade: endorsers' staked credibility lets the platform offer employers a *guarantee band* on placements (retention/performance floor or fee rebate) — the staking economy underwrites the recruiting product, which lets fees price above every traditional recruiter while being lower-risk.
+
+## 7. RAISE — autonomous fundraising layer (orchestrator)
+
+New orchestrator subsystem: continuously raises capital for every app with zero user involvement until a human meeting/decision is required.
+
+- **F1 — Target graph.** Crawled, continuously refreshed profiles: VCs (thesis, stage, check size, partner interests, recent deals), state/federal grants (SBIR/STTR, state innovation funds — windows tracked by the A6 deadline engine), accelerators/incubators (cohort dates), strategic corporates. Match scores per app.
+- **F2 — Pitch factory.** Per-app pitch kits auto-generated from live product state: decks, one-pagers, financial models, demo links — and an **investor data room per app** (R2 infrastructure reused verbatim: queryable, receipts-backed, access-logged; investors get the same "ask it questions" experience as regulators — which itself becomes the most memorable part of the pitch).
+- **F3 — A/B optimization with a truth gate.** Variants differ in narrative, ordering, branding, subject lines, deck emphasis per audience segment; measured on reply/meeting/term-sheet rates; bandit allocation across variants. **Hard invariant:** every quantitative claim in every variant must resolve to a signed receipt in the facts ledger — A/B tests framing, never facts. (Misstated metrics to investors is securities fraud; this gate is what lets the whole layer run autonomously.) Grant applications with certifications route to the accountable human for signature — as a Smarter flagged task, same 5/95 doctrine as everything else.
+- **F4 — Outreach engine.** Sequenced personalized outreach, send-time optimization (SC2's interaction-playbook machinery, pointed at investors), response classification, diligence-question auto-answers from the data room, meeting auto-scheduling. Rate-limited and reputation-aware (never spray: target-graph match score gates volume).
+- **F5 — Live pitch refresh.** App progress events (merged features, revenue/RUM receipts, user milestones) auto-update every live pitch and notify engaged investors: "since we spoke: +23% RUM, MA license granted." Fundraising material is never stale *by construction* (A7's filings-as-code, applied to decks).
+- **F6 — Human funnel.** Everything autonomous until: meeting confirmed, term discussion, or signature → lands in the user's Smarter inbox as a flagged action with full context pack (who, thesis, history, suggested talking points from the playbook). The user's fundraising job reduces to: attend meetings the machine booked, decide on terms the machine summarized.
+- **F7 — Allocator tie-in.** G13's portfolio allocator weighs fundraising effort by app traction and capital need; RAISE effort is itself a priced, ROI-attributed activity (G16).
+
+## 8. Final new 200–1000X ideas (not previously raised)
+
+- **N1 — Tomorrow: sovereign/institutional ECPs.** Municipalities, pension funds, endowments as subscription clients — enormous RUM, procurement-friendly flat pricing, near-zero competition at the "risk subscription" framing. The public proof network (T10) is what makes a treasurer comfortable.
+- **N2 — Apparently × Tomorrow: license-as-collateral.** Compliance standing (receipts, deadline record, exam history) as a priced input to B15/B19 credit gates: well-run compliance literally lowers your cost of risk on Tomorrow. Cross-app moat nobody can replicate, and the strongest possible incentive to adopt Apparently.
+- **N3 — Pareto: audit-proof life.** Every financial action auto-packaged with documentation into a standing audit-defense file (personal H4 bundle). Tax season becomes: "your return is drafted and your evidence binder already exists." Sold as peace-of-mind tier.
+- **N4 — Galop: sell the reliability stack.** The 24/7 probe/failover/status infrastructure (GE-paid buildout) white-labeled to tracks and ADWs (extends the existing whitelabel handoff) — competitors' operational fragility becomes our B2B revenue line.
+- **N5 — Hisanta: school mode.** Teacher-facing classroom deployment of the mastery engine (H1) with class-level quests and family-visible progress — a distribution channel that acquires entire cohorts at once, and the endorsement of teachers is the trust asset money can't buy.
+- **N6 — Barks: cause-in-a-box.** The full autonomous-nonprofit stack (SB1–SB5) packaged as a franchise kit for other micro-charities — the software *is* the charity; Barks becomes the reference customer of a new product line.
+- **N7 — Portfolio: the Receipts API.** G2's verifier grown into a public platform: any third party can verify any claim any app makes (avoided losses, filing status, placement guarantees, savings). Long-run this is the trust layer the whole portfolio monetizes — "verified by the receipt network" as the Intel-Inside of autonomous services.
+
+---
+
+Queue manifest: see `PROMPT-*.md` files created at repo root (one per app + portfolio + RAISE). Counsel-gate items (T2v2 clause pack, T6v2 choreography spec, K5 coverage classes, TR escalation invariant) are flagged MATERIAL inside the prompts so the planner routes them through operator approval.

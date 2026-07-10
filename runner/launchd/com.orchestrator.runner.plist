@@ -18,8 +18,14 @@
     <key>ORCH_KEEPALIVE_STAY_RESIDENT</key><string>true</string>
     <key>ORCH_KEEPALIVE_DUPLICATE_POLL_SECONDS</key><string>60</string>
     <key>ORCH_RUNNER_FLEET_TARGET</key><string>8</string>
+    <key>ORCH_BATCH_DEV_RELEASE</key><string>true</string>
+    <key>ORCH_CODE_MERGE_TARGET</key><string>dev</string>
+    <key>ORCH_STAGING_BRANCH</key><string>orchestrator/dev</string>
+    <key>ORCH_PUSH_ON_DEV_MERGE</key><string>true</string>
     <key>ORCH_PUSH_ON_MERGE</key><string>false</string>
     <key>ORCH_PUSH_ON_RELEASE</key><string>true</string>
+    <key>RELEASE_MIN_BATCH</key><string>5</string>
+    <key>RELEASE_INTERVAL_HOURS</key><string>2</string>
     <key>SESSION_AUTO_CONTINUE</key><string>true</string>
     <key>SESSION_FORCE_CONTINUE</key><string>true</string>
     <!-- add VERCEL_TOKEN / SUPABASE_ACCESS_TOKEN / provider keys here or rely on runner/.env -->

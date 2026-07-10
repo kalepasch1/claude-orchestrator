@@ -27,16 +27,16 @@ const tone = computed(() => props.accent === 'sky'
     <p v-if="a.why" class="text-sm mt-2"><span class="text-xs font-semibold uppercase mr-2" :class="tone.label">Why</span>{{ a.why }}</p>
     <p v-if="a.value" class="text-sm mt-1"><span class="text-xs font-semibold uppercase mr-2" :class="tone.label">Value</span>{{ a.value }}</p>
     <p v-if="a.risk" class="text-sm mt-1"><span class="text-xs font-semibold uppercase mr-2" :class="tone.label">Risk</span>{{ a.risk }}</p>
-    <pre v-if="a.detail" class="bg-black/40 border border-slate-700 rounded-md p-2 mt-2 text-xs text-slate-300 overflow-auto max-h-44 whitespace-pre-wrap font-mono">{{ a.detail }}</pre>
+    <pre v-if="a.detail" class="bg-slate-800/50 border border-slate-700 rounded-md p-2 mt-2 text-xs text-slate-300 overflow-auto max-h-44 whitespace-pre-wrap font-mono">{{ a.detail }}</pre>
     <p v-if="a.approvals_required >= 2 && a.decided_by" class="text-xs text-green-400 mt-2">
       ✓ First approval: {{ a.decided_by }} — one more needed from a different user
     </p>
     <div class="flex gap-2 mt-3">
       <button @click="$emit('decide', a.id, 'approved')"
-              class="bg-green-600 hover:bg-green-500 rounded-lg px-4 py-1.5 font-semibold text-sm">
+              class="bg-[#2f6b46] hover:bg-[#3a7d54] text-white rounded-lg px-4 py-1.5 font-semibold text-sm">
         {{ a.approvals_required >= 2 && !a.decided_by ? 'Approve (1st)' : a.approvals_required >= 2 && a.decided_by !== userEmail ? 'Approve (2nd)' : 'Approve' }}
       </button>
-      <button @click="$emit('decide', a.id, 'denied')" class="bg-red-600 hover:bg-red-500 rounded-lg px-4 py-1.5 font-semibold text-sm">Deny</button>
+      <button @click="$emit('decide', a.id, 'denied')" class="bg-[#a83a2a] hover:bg-[#bf4632] text-white rounded-lg px-4 py-1.5 font-semibold text-sm">Deny</button>
     </div>
   </div>
 </template>

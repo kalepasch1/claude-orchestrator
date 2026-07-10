@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """DB-independent deployment sweep (2026-07-09). Supabase is down; deployments must not be.
 
-For each fleet repo: fetch origin, find origin/agent/* branches with commits not in the base
-branch, and for each candidate (newest-first, capped): rebase it onto base in an ISOLATED
-worktree, run the repo's test/build gate there, fast-forward base, push with one non-ff
-reconcile retry. Every action is journaled to .runtime/git_deploy_sweep.jsonl so task rows can
-be reconciled when the DB returns. Idempotent: already-merged branches are skipped; the merge
-train redoing one of these later is a no-op.
+For each fleet repo: fetch origin, find origin/agent/* branches with commits not in the integration
+target, and for each candidate (newest-first, capped): rebase it onto that target in an ISOLATED
+worktree, run the repo's test/build gate there, fast-forward the unified dev/staging branch, and push
+with one non-ff reconcile retry. Every action is journaled to .runtime/git_deploy_sweep.jsonl so task
+rows can be reconciled when the DB returns. Idempotent: already-staged branches are skipped; release
+train later batch-QA's staging and promotes to prod.
 
 Usage: python3 scripts/git_deploy_sweep.py [repo_name ...]   (default: all)
 """
@@ -31,6 +31,9 @@ REPOS = {  # name -> (path, base, gate_cmd or None=detect)
 PER_REPO_CAP = int(os.environ.get("SWEEP_PER_REPO_CAP", "10"))
 GATE_TIMEOUT = int(os.environ.get("SWEEP_GATE_TIMEOUT", "1500"))
 KNOWN_FLAKY = {"pareto-2080": 2}  # allowed pre-existing failures (local Prisma-binary mismatch)
+STAGING_BRANCH = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
+DIRECT_PROD = os.environ.get("ORCH_SWEEP_DIRECT_PROD", "false").lower() in ("1", "true", "yes", "on")
+PUSH_STAGING = os.environ.get("ORCH_SWEEP_PUSH_STAGING", os.environ.get("ORCH_PUSH_ON_DEV_MERGE", "true")).lower() in ("1", "true", "yes", "on")
 
 
 def log(repo, branch, action, detail=""):
@@ -44,6 +47,25 @@ def log(repo, branch, action, detail=""):
 
 def git(cwd, *args, timeout=120):
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=timeout)
+
+
+def target_branch(base):
+    return base if DIRECT_PROD else STAGING_BRANCH
+
+
+def ensure_remote_target(repo_path, base, target):
+    git(repo_path, "fetch", "origin", base, timeout=120)
+    if git(repo_path, "fetch", "origin", target, timeout=120).returncode == 0:
+        return True
+    base_sha = git(repo_path, "rev-parse", f"origin/{base}").stdout.strip()
+    if not base_sha:
+        return False
+    if target != base and not PUSH_STAGING:
+        return False
+    created = git(repo_path, "push", "origin", f"{base_sha}:refs/heads/{target}", timeout=300)
+    if created.returncode != 0:
+        return False
+    return git(repo_path, "fetch", "origin", target, timeout=120).returncode == 0
 
 
 def gate(cwd, cmd, allowed_failures=0):
@@ -63,9 +85,11 @@ def gate(cwd, cmd, allowed_failures=0):
 
 
 def candidates(repo_path, base):
+    target = target_branch(base)
+    if not ensure_remote_target(repo_path, base, target):
+        return []
     git(repo_path, "fetch", "origin", "--prune",
         f"+refs/heads/agent/*:refs/remotes/origin/agent/*", timeout=180)
-    git(repo_path, "fetch", "origin", base, timeout=120)
     out = git(repo_path, "for-each-ref", "--sort=-committerdate",
               "--format=%(refname:short)", "refs/remotes/origin/agent/").stdout
     res = []
@@ -73,7 +97,7 @@ def candidates(repo_path, base):
         ref = ref.strip()
         if not ref:
             continue
-        ahead = git(repo_path, "rev-list", "--count", f"origin/{base}..{ref}").stdout.strip()
+        ahead = git(repo_path, "rev-list", "--count", f"origin/{target}..{ref}").stdout.strip()
         if ahead and ahead != "0":
             res.append(ref)
     return res
@@ -81,31 +105,39 @@ def candidates(repo_path, base):
 
 def integrate(name, repo, base, gate_cmd, ref):
     short = ref.replace("refs/remotes/", "").replace("origin/", "")
+    target = target_branch(base)
+    if not ensure_remote_target(repo, base, target):
+        log(name, short, "SKIP", f"target {target} unavailable")
+        return False
     wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", "sweep")
     git(repo, "worktree", "remove", "--force", wt)
     os.makedirs(os.path.dirname(wt), exist_ok=True)
     if git(repo, "worktree", "add", "--detach", "-f", wt, ref).returncode != 0:
         log(name, short, "SKIP", "worktree add failed"); return False
     try:
-        if git(wt, "rebase", f"origin/{base}", timeout=300).returncode != 0:
+        if git(wt, "rebase", f"origin/{target}", timeout=300).returncode != 0:
             git(wt, "rebase", "--abort")
-            log(name, short, "CONFLICT", "rebase onto base failed"); return False
+            log(name, short, "CONFLICT", f"rebase onto {target} failed"); return False
         ok, tail = gate(wt, gate_cmd, KNOWN_FLAKY.get(name, 0))
         if not ok:
             log(name, short, "GATE-RED", tail); return False
         sha = git(wt, "rev-parse", "HEAD").stdout.strip()
-        push = git(repo, "push", "origin", f"{sha}:refs/heads/{base}", timeout=300)
+        if target != base and not PUSH_STAGING:
+            log(name, short, "HELD", f"green but staging push disabled for {target}")
+            return False
+        push = git(repo, "push", "origin", f"{sha}:refs/heads/{target}", timeout=300)
         if push.returncode != 0 and ("non-fast-forward" in (push.stderr or "") or "fetch first" in (push.stderr or "")):
-            git(repo, "fetch", "origin", base, timeout=120)
-            if git(wt, "rebase", f"origin/{base}", timeout=300).returncode == 0:
+            git(repo, "fetch", "origin", target, timeout=120)
+            if git(wt, "rebase", f"origin/{target}", timeout=300).returncode == 0:
                 ok2, tail2 = gate(wt, gate_cmd, KNOWN_FLAKY.get(name, 0))
                 if ok2:
                     sha = git(wt, "rev-parse", "HEAD").stdout.strip()
-                    push = git(repo, "push", "origin", f"{sha}:refs/heads/{base}", timeout=300)
+                    push = git(repo, "push", "origin", f"{sha}:refs/heads/{target}", timeout=300)
         if push.returncode != 0:
             log(name, short, "PUSH-FAIL", (push.stderr or "")[-150:]); return False
-        git(repo, "fetch", "origin", base, timeout=120)  # update local view
-        log(name, short, "DEPLOYED", f"{base} -> {sha[:9]} (gate {tail})")
+        git(repo, "fetch", "origin", target, timeout=120)  # update local view
+        action = "DEPLOYED" if target == base else "STAGED"
+        log(name, short, action, f"{target} -> {sha[:9]} (gate {tail})")
         return True
     finally:
         git(repo, "worktree", "remove", "--force", wt)
@@ -123,7 +155,8 @@ def main():
         for ref in refs:
             if integrate(name, repo, base, gate_cmd, ref):
                 total += 1
-    log("-", "-", "DONE", f"{total} branches deployed to base")
+    mode = "prod" if DIRECT_PROD else f"staging:{STAGING_BRANCH}"
+    log("-", "-", "DONE", f"{total} branches integrated to {mode}")
 
 
 if __name__ == "__main__":

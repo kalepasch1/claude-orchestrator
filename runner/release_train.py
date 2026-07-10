@@ -13,17 +13,22 @@ Flow per project:
   2. merge every judge-passed agent branch into staging (conflicts resolved ONCE here, not vs a moving
      prod). Agents also BRANCH FROM staging (see setup-worktrees base) so their base is always current.
   3. QA staging: run the project's test/build command.
-  4. if green AND >= MIN_BATCH new changes: record last_good = prod tip, merge staging -> prod, push.
+  4. if green AND batch/cadence gates are satisfied: record last_good = prod tip, merge staging -> prod, push.
      deploy_verify then confirms Vercel success or rolls back to last_good.
 """
 import os, sys, subprocess, datetime, json, tempfile
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+RUNNER_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(RUNNER_DIR)
+RUNTIME_DIR = os.environ.get("CLAUDE_ORCH_HOME", os.path.join(REPO_ROOT, ".runtime"))
+RELEASE_FLOW_FILE = os.path.join(RUNTIME_DIR, "release_flow.json")
+sys.path.insert(0, RUNNER_DIR)
 import db
 
-# SHIP-FAST defaults: deploy green work continuously (>=1 change, >=15 min since last release),
-# not a 72h/20 bulk hold. Overridable via env; the build/test green-gate still runs first.
-MIN_BATCH = int(os.environ.get("RELEASE_MIN_BATCH", "1"))
-RELEASE_INTERVAL_HOURS = float(os.environ.get("RELEASE_INTERVAL_HOURS", "0.25"))
+# BATCH-DEV defaults: ship agent work to the unified staging branch quickly, but promote
+# prod in QA'd batches. This avoids improvement-by-improvement Vercel churn while keeping
+# the queue draining. Hotfix lanes can still override these envs explicitly.
+MIN_BATCH = int(os.environ.get("RELEASE_MIN_BATCH", os.environ.get("ORCH_RELEASE_BATCH_MIN", "5")))
+RELEASE_INTERVAL_HOURS = float(os.environ.get("RELEASE_INTERVAL_HOURS", os.environ.get("ORCH_RELEASE_INTERVAL_HOURS", "2")))
 STAGING = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
 RELEASE_FIX_PREFIXES = ("relfix-", "buildfix-", "deployfix-")
 QA_FIX_PREFIXES = ("qafix-",)
@@ -33,6 +38,39 @@ RED_GATE_COOLDOWN_MIN = float(os.environ.get("ORCH_RELEASE_RED_GATE_COOLDOWN_MIN
 # release_kpi writes this: the set of apps whose recent prod deploys keep failing, so we promote their
 # tests to a HARD release gate until they recover (self-tuning loop). Read fail-soft.
 _GATE_FILE = os.path.join(tempfile.gettempdir(), "orch-release-gate.json")
+
+
+def _truthy(name, default=False):
+    val = os.environ.get(name)
+    if val is None:
+        return bool(default)
+    return str(val).lower() in ("1", "true", "yes", "on")
+
+
+def _record_release_flow(project, status, **extra):
+    """Small local status file so dashboard/autopilot can show staged-vs-prod release state."""
+    try:
+        os.makedirs(RUNTIME_DIR, exist_ok=True)
+        state = {}
+        if os.path.exists(RELEASE_FLOW_FILE):
+            try:
+                with open(RELEASE_FLOW_FILE, encoding="utf-8") as f:
+                    state = json.load(f) or {}
+            except Exception:
+                state = {}
+        state[project] = {
+            "at": datetime.datetime.utcnow().isoformat() + "Z",
+            "status": status,
+            "staging_branch": STAGING,
+            "release_min_batch": MIN_BATCH,
+            "release_interval_hours": RELEASE_INTERVAL_HOURS,
+            "prod_push_enabled": _truthy("ORCH_PUSH_ON_RELEASE", True),
+            **extra,
+        }
+        with open(RELEASE_FLOW_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2, sort_keys=True)
+    except Exception:
+        pass
 
 
 def _detect_test_cmd(repo):
@@ -342,10 +380,21 @@ def _release_base_ref(repo, prod):
 
 
 def _ensure_staging(repo, prod):
-    # create/refresh staging off prod without disturbing the checked-out worktree
+    # create/refresh staging without disturbing the checked-out worktree. Prefer remote
+    # staging when another Mac has already pushed a batch into the shared integration branch.
+    try:
+        _git(repo, "fetch", "origin", prod, timeout=120)
+        _git(repo, "fetch", "origin", STAGING, timeout=120)
+    except Exception:
+        pass
+    remote_staging = f"refs/remotes/origin/{STAGING}"
+    has_remote_staging = _git(repo, "rev-parse", "--verify", remote_staging).returncode == 0
     if _git(repo, "rev-parse", "--verify", STAGING).returncode != 0:
-        _git(repo, "branch", STAGING, prod)
+        _git(repo, "branch", STAGING, remote_staging if has_remote_staging else prod)
     else:
+        if (has_remote_staging
+                and _git(repo, "merge-base", "--is-ancestor", STAGING, remote_staging).returncode == 0):
+            _git(repo, "fetch", ".", f"{remote_staging}:refs/heads/{STAGING}")
         # fast-forward staging to include any new prod commits (keeps it current, avoids drift)
         _git(repo, "fetch", ".", f"{prod}:{STAGING}") if _git(repo, "merge-base", "--is-ancestor", STAGING, prod).returncode == 0 else None
 
@@ -425,9 +474,12 @@ def run_for(project):
     # count staging changes vs the deployable prod tip, not necessarily a stale checked-out local branch
     ahead = _git(repo, "rev-list", "--count", f"{release_base}..{STAGING}").stdout.strip() or "0"
     if int(ahead) < MIN_BATCH:
+        _record_release_flow(project, "staging-held-batch", prod=prod, staged=merged, ahead=int(ahead))
         return {"project": project, "prod": prod, "staged": merged, "ahead": ahead, "note": "below batch size"}
     due, due_note = _release_due(project)
     if not due:
+        _record_release_flow(project, "staging-held-cadence", prod=prod, staged=merged,
+                             ahead=int(ahead), note=due_note)
         return {"project": project, "prod": prod, "staged": merged, "ahead": ahead, "note": due_note}
     # PUBLIC COPY/IP GATE: anything added to public-facing pages/components/content must describe
     # value at a general abstraction level. Specific proprietary mechanisms, AI vendor routing, IP
@@ -447,11 +499,15 @@ def run_for(project):
             _insert_failed_release(project, "copy", ahead, release_base_sha, staging_sha,
                                    f"public-copy disclosure gate red — self-heal queued: "
                                    f"{public_copy_guard.format_findings(findings)[:160]}")
+            _record_release_flow(project, "staging-red-copy", prod=prod, ahead=int(ahead),
+                                 note="public copy exposes protected IP/legal strategy")
             return {"project": project, "copy": "RED",
                     "note": "public copy exposes protected IP/legal strategy; copy-fix task queued"}
     except Exception as e:
         _insert_failed_release(project, "copy", ahead, release_base_sha, staging_sha,
                                f"public-copy disclosure gate failed closed: {str(e)[:160]}")
+        _record_release_flow(project, "staging-red-copy", prod=prod, ahead=int(ahead),
+                             note="public-copy gate failed closed")
         return {"project": project, "copy": "FAILED", "note": "public-copy gate failed closed"}
     # QA staging tests. The BUILD gate below is always the hard release gate. Tests GATE the release
     # too when the app has a genuine, runnable suite (AUTO-DETECTED from package.json), when the owner
@@ -483,6 +539,8 @@ def run_for(project):
                     _self_heal_qa(p, project, repo, STAGING, qlog)
                     _insert_failed_release(project, "qa", ahead, release_base_sha, staging_sha,
                                            f"staging QA dependency prewarm failed — self-heal queued: {qlog[-160:]}")
+                    _record_release_flow(project, "staging-red-qa", prod=prod, ahead=int(ahead),
+                                         note="dependency prewarm failed")
                     return {"project": project, "qa": "FAILED", "note": "dependency prewarm failed; held"}
             except Exception:
                 pass
@@ -497,6 +555,8 @@ def run_for(project):
             _self_heal_qa(p, project, repo, STAGING, qlog)
             _insert_failed_release(project, "qa", ahead, release_base_sha, staging_sha,
                                    f"staging QA failed (tests required) — self-heal queued: {qlog[-160:]}")
+            _record_release_flow(project, "staging-red-qa", prod=prod, ahead=int(ahead),
+                                 note="staging tests failed")
             return {"project": project, "qa": "FAILED", "note": "staging not green; held"}
     # BUILD GATE on the whole staging batch: the real prod build must be green before we release to
     # prod (this is what stops the Vercel deploy failures — no green build, no release).
@@ -514,6 +574,8 @@ def run_for(project):
                 _self_heal_build(p, project, repo, STAGING, blog)  # queue a targeted build-fix task
                 _insert_failed_release(project, "build", ahead, release_base_sha, staging_sha,
                                        f"staging BUILD red — self-heal queued: {blog[-120:]}")
+                _record_release_flow(project, "staging-red-build", prod=prod, ahead=int(ahead),
+                                     note="staging build failed")
                 return {"project": project, "build": "RED", "note": "staging build not green; build-fix task queued"}
     except Exception:
         pass
@@ -528,11 +590,15 @@ def run_for(project):
         _self_heal_release_conflict(p, project, repo, prod, refresh_note)
         _insert_failed_release(project, "refresh", ahead, release_base_sha, staging_sha,
                                f"staging/prod refresh failed — self-heal queued: {refresh_note[-160:]}")
+        _record_release_flow(project, "staging-red-refresh", prod=prod, ahead=int(ahead),
+                             note=refresh_note[-300:])
         return {"project": project, "note": "staging/prod refresh failed; relfix queued"}
     last_good = release_base_sha
     db.update("projects", {"name": project}, {"last_good_sha": last_good})
-    push_on = os.environ.get("ORCH_PUSH_ON_RELEASE", os.environ.get("ORCH_PUSH_ON_MERGE", "false")).lower() == "true"
+    push_on = _truthy("ORCH_PUSH_ON_RELEASE", True)
     to_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
+    _record_release_flow(project, "prod-promoting" if push_on else "prod-ready-local",
+                         prod=prod, ahead=int(ahead), from_sha=last_good, to_sha=to_sha)
     if not push_on:
         ff = _git(repo, "fetch", ".", f"{STAGING}:{prod}")
         if ff.returncode != 0:
@@ -540,6 +606,8 @@ def run_for(project):
             _self_heal_release_conflict(p, project, repo, prod, flog or "prod could not fast-forward from staging")
             _insert_failed_release(project, "push", ahead, release_base_sha, staging_sha,
                                    "prod could not fast-forward from staging — self-heal queued")
+            _record_release_flow(project, "prod-local-ff-failed", prod=prod, ahead=int(ahead),
+                                 note=(flog or "prod could not fast-forward from staging")[-300:])
             return {"project": project, "note": "prod could not fast-forward from staging; relfix queued"}
         to_sha = _git(repo, "rev-parse", prod).stdout.strip()
     ver = _next_version()
@@ -558,6 +626,9 @@ def run_for(project):
         else:
             plog = ((pr.stdout or "")[-1000:] + "\n" + (pr.stderr or "")[-1000:]).strip()
             _self_heal_release_conflict(p, project, repo, prod, plog or "push staging to prod failed")
+        _record_release_flow(project, "prod-pushed" if pushed else "prod-push-failed",
+                             prod=prod, ahead=int(ahead), from_sha=last_good, to_sha=to_sha,
+                             note="" if pushed else ((pr.stderr or pr.stdout)[-300:] if (pr.stderr or pr.stdout) else "push failed"))
         db.update("releases", {"project": project, "to_sha": to_sha},
                   {"deploy_status": "building" if pushed else "failed",
                    "note": "" if pushed else ((pr.stderr or pr.stdout)[-160:] if (pr.stderr or pr.stdout) else "push failed")})

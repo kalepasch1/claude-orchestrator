@@ -278,8 +278,18 @@ class TestPushGate(unittest.TestCase):
         self.assertEqual(err, "")
         mock_git.assert_not_called()
 
-    def test_push_runs_when_enabled(self):
-        with patch.dict(os.environ, {"ORCH_PUSH_ON_MERGE": "true"}), \
+    def test_dev_push_runs_by_default(self):
+        with patch.dict(os.environ, {}, clear=False), \
+             patch.object(merge_train, "_git") as mock_git:
+            os.environ.pop("ORCH_PUSH_ON_DEV_MERGE", None)
+            mock_git.return_value = MagicMock(returncode=0, stderr="")
+            err = merge_train._push_base("/repo", "orchestrator/dev")
+        self.assertEqual(err, "")
+        mock_git.assert_called_once()
+
+    def test_direct_prod_push_requires_explicit_override(self):
+        with patch.dict(os.environ, {"ORCH_PUSH_ON_MERGE": "true",
+                                     "ORCH_ALLOW_DIRECT_PROD_MERGE": "true"}), \
              patch.object(merge_train, "_git") as mock_git:
             mock_git.return_value = MagicMock(returncode=0, stderr="")
             err = merge_train._push_base("/repo", "main")

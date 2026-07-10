@@ -32,17 +32,30 @@ SUB_ON = os.environ.get("ORCH_USE_SUBSCRIPTION", "true").lower() == "true"
 API_OPT_IN = os.environ.get("ORCH_ALLOW_API_BILLING", "false").lower() == "true"
 
 
+def _truthy(v):
+    return str(v).strip().lower() in ("1", "true", "yes", "on", "enabled")
+
+
+def _env_purchased_credits(default=False):
+    for key in ("ORCH_USE_PURCHASED_CREDITS", "ORCH_USE_PAID_AGENTIC_CREDITS"):
+        if key in os.environ:
+            return _truthy(os.environ.get(key))
+    return bool(default)
+
+
 def is_api_allowed():
     """Anthropic API billing is allowed only after explicit purchased-credit intent.
 
     OpenAI/Google/DeepSeek credits are routed separately by agentic_coders. Anthropic
     API remains extra guarded because Claude subscription usage is usually better value.
     """
-    try:
-        import control_flags
-        credits = control_flags.use_purchased_credits(False)
-    except Exception:
-        credits = os.environ.get("ORCH_USE_PURCHASED_CREDITS", "false").lower() == "true"
+    credits = _env_purchased_credits(False)
+    if os.environ.get("ORCH_STARTUP_DB_CONTROL_FLAGS", "false").lower() in ("1", "true", "yes", "on"):
+        try:
+            import control_flags
+            credits = control_flags.use_purchased_credits(credits)
+        except Exception:
+            pass
     return (not SUB_ON) and API_OPT_IN and credits
 
 

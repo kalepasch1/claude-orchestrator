@@ -22,3 +22,4 @@ runner/runner.log
 # machine-local build caches — keep the worktree clean so fleet auto-pull isn't blocked
 .npm-cache/
 .pip-cache/
+.orch-context-cache.json

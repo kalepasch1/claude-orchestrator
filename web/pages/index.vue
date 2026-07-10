@@ -6,9 +6,18 @@ const supabase = useSupabaseClient<any>()
 const user = useSupabaseUser()
 
 // ── auth ──────────────────────────────────────────────────────────────────
-const email = ref('')
-const sent = ref(false)
-async function signIn() { await supabase.auth.signInWithOtp({ email: email.value }); sent.value = true }
+const signingIn = ref(false)
+async function signInWithGoogle() {
+  signingIn.value = true
+  try {
+    await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined },
+    })
+  } finally {
+    signingIn.value = false
+  }
+}
 async function signOut() { await supabase.auth.signOut() }
 
 // ── data ──────────────────────────────────────────────────────────────────
@@ -61,9 +70,11 @@ const capInstances = ref<any[]>([])
 const capProvenance = ref<any[]>([])
 const radarProposals = ref<any[]>([])
 const proofPacks = ref<any>({ commonBrain: [], receipts: [], error: null })
+const resilience = ref<any>({ mesh: null, db: null, spoolDepth: 0 })
 // Mission Control: epoch ms of the last realtime event observed (header live-strip).
 const lastEventAt = ref<number | null>(null)
 let chart: any = null
+let refreshTimer: ReturnType<typeof setInterval> | null = null
 
 // Chart accents — mirror the `chart-line` / `chart-axis` tailwind tokens
 // (tailwind.config.js). Single source of truth for the canvas hexes.
@@ -298,7 +309,7 @@ async function loadQueueCounters(): Promise<QueueCounters> {
 
 async function loadAll() {
   const [t, a, o, r, p, b, r2, h, g, i, tx, caps, cinst, cprov, rprops,
-         lps, sess, fb, pspend, creds, ctrl, prunes, savings, qcounts, proof] = await Promise.all([
+         lps, sess, fb, pspend, creds, ctrl, prunes, savings, qcounts, proof, resilienceData] = await Promise.all([
     supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(200),
     supabase.from('approvals').select('*').eq('status', 'pending').order('created_at'),
     supabase.from('outcomes').select('model,usd,project,tests_passed,integrated,created_at,slug').order('created_at').limit(2000),
@@ -325,6 +336,7 @@ async function loadAll() {
     supabase.from('resource_events').select('value,detail,action,created_at').eq('kind', 'savings').order('created_at', { ascending: false }).limit(200),
     loadQueueCounters(),
     $fetch('/api/fleet/proof-packs').catch((e: any) => ({ commonBrain: [], receipts: [], error: e?.message || String(e) })),
+    $fetch('/api/fleet/resilience').catch((e: any) => ({ mesh: null, db: null, spoolDepth: 0, error: e?.message || String(e) })),
   ])
   tasks.value = t.data || []; approvals.value = (a.data || []).filter(isOperatorApproval)
   outcomes.value = o.data || []; runners.value = r.data || []; projects.value = sortProjects(p.data || [])
@@ -342,6 +354,7 @@ async function loadAll() {
   recentPrunes.value = prunes.data || []
   savingsEvents.value = savings.data || []
   proofPacks.value = proof || { commonBrain: [], receipts: [], error: null }
+  resilience.value = resilienceData || { mesh: null, db: null, spoolDepth: 0 }
   queueCounts.value = { ...(qcounts || emptyQueueCounters()), sampled: tasks.value.length }
   const ctrlRows = ctrl.data || []
   globalPaused.value = ctrlRows.some((c: any) => c.scope === 'global' && c.paused)
@@ -361,7 +374,7 @@ async function decide(id: string, status: 'approved' | 'denied', reload = true) 
   const a = approvals.value.find(x => x.id === id)
   if (!a) return
   approvalError.value = ''
-  const approver = user.value?.email || email.value || 'dashboard'
+  const approver = user.value?.email || 'dashboard'
 
   try {
     const res = await $fetch<any>('/api/approvals/decide', {
@@ -751,6 +764,15 @@ const priorityQueueTiles = computed(() => [
   { label: 'Improvement', value: queueCounts.value.improvementsQueued, tone: queueCounts.value.improvementsQueued ? 'text-indigo-300' : 'text-slate-300' },
   { label: 'Canary active', value: queueCounts.value.canariesActive, tone: queueCounts.value.canariesActive ? 'text-emerald-300' : 'text-slate-300' },
 ])
+const resilienceMesh = computed(() => resilience.value?.mesh || {})
+const resilienceDb = computed(() => resilience.value?.db || resilienceMesh.value?.db || {})
+const resilienceOffline = computed(() => resilienceMesh.value?.mode === 'offline-continuity' || resilienceDb.value?.ok === false)
+const resilienceVendors = computed(() => {
+  const v = resilienceMesh.value?.vendors || {}
+  return [...new Set([...(v.available_providers || []), ...(v.agentic_coders || [])])].filter(Boolean)
+})
+const resiliencePrewarm = computed(() => resilienceMesh.value?.actions?.prewarm || {})
+const resilienceSupervisor = computed(() => resilienceMesh.value?.supervisor || {})
 function fmtInt(n: any) {
   return Number(n || 0).toLocaleString()
 }
@@ -804,9 +826,21 @@ onMounted(() => {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'runs' }, onRealtime)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'txns' }, onRealtime)
       .subscribe()
+    refreshTimer = setInterval(loadAll, 30000)
   }
 })
-watch(user, u => { if (u) loadAll() })
+watch(user, u => {
+  if (u) {
+    loadAll()
+    if (!refreshTimer) refreshTimer = setInterval(loadAll, 30000)
+  } else if (refreshTimer) {
+    clearInterval(refreshTimer)
+    refreshTimer = null
+  }
+})
+onBeforeUnmount(() => {
+  if (refreshTimer) clearInterval(refreshTimer)
+})
 </script>
 
 <template>
@@ -814,15 +848,21 @@ watch(user, u => { if (u) loadAll() })
 
     <!-- sign in -->
     <div v-if="!user" class="max-w-sm mx-auto pt-32 px-6">
-      <h1 class="text-xl font-semibold mb-1">Claude Orchestrator</h1>
-      <p class="text-slate-400 text-sm mb-6">Sign in to monitor builds and approve changes.</p>
-      <div v-if="!sent" class="space-y-3">
-        <input v-model="email" type="email" placeholder="you@team.com"
-               class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2" />
-        <button @click="signIn" class="w-full bg-blue-600 hover:bg-blue-500 rounded-lg py-2 font-semibold">
-          Send magic link</button>
+      <div class="bg-surface border border-border-subtle rounded-2xl p-8">
+        <h1 class="font-serif text-2xl text-ink mb-1">Claude Orchestrator</h1>
+        <p class="text-slate-500 text-sm mb-7">Sign in to monitor builds and approve changes.</p>
+        <button @click="signInWithGoogle" :disabled="signingIn"
+                class="w-full flex items-center justify-center gap-2.5 bg-[#fdfbf6] hover:bg-[#f6f3ec]
+                       disabled:opacity-50 border border-[#d9d3c1] rounded-lg py-2.5 font-medium text-sm text-ink transition-colors">
+          <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+            <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 0 1-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z"/>
+            <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.81.54-1.85.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 0 0 9 18z"/>
+            <path fill="#FBBC05" d="M3.97 10.72A5.4 5.4 0 0 1 3.68 9c0-.6.1-1.18.29-1.72V4.95H.96A9 9 0 0 0 0 9c0 1.45.35 2.83.96 4.05l3.01-2.33z"/>
+            <path fill="#EA4335" d="M9 3.58c1.32 0 2.51.46 3.44 1.35l2.59-2.59C13.46.89 11.43 0 9 0A9 9 0 0 0 .96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"/>
+          </svg>
+          {{ signingIn ? 'Redirecting…' : 'Continue with Google' }}
+        </button>
       </div>
-      <p v-else class="text-green-400 text-sm">Check your email for the sign-in link.</p>
     </div>
 
     <!-- dashboard -->
@@ -837,12 +877,12 @@ watch(user, u => { if (u) loadAll() })
           <span class="relative inline-flex w-2 h-2 rounded-full"
                 :class="runners.some(alive) ? 'bg-green-400 dot-breathe' : 'bg-red-400'"></span>
         </span>
-        <h1 class="text-lg font-semibold">Claude Orchestrator</h1>
+        <h1 class="font-serif text-lg text-ink">Claude Orchestrator</h1>
         <span class="text-slate-500 text-sm">
           {{ liveRunnerCount }}/{{ runnerFleetTarget }} live lanes · <span class="font-mono" :class="exactBacklogCount ? 'text-amber-300' : 'text-emerald-400'" title="Exact full-table backlog count from SQL">{{ fmtInt(exactBacklogCount) }}</span> backlog · {{ approvals.length }} pending · <span class="font-mono text-slate-300" title="Token cost covered by your Claude Max plan — not cash">${{ coveredMtd.toFixed(2) }}</span> Max-covered · <span class="font-mono text-emerald-400" title="Real out-of-pocket API cash, month-to-date">${{ cashMtd.toFixed(2) }}</span> cash · <span class="font-mono text-cyan-300" title="Estimated prompt/result cache and patch-template savings from recent resource events">{{ Math.round(savingsKpi.tokens).toLocaleString() }}</span> tok avoided · <span class="font-mono" :class="integrateKpi.overall >= 1 ? 'text-emerald-400' : 'text-amber-400'" title="Post-QA merge-rate: passed/non-churn work that actually integrated. Target is 100%; failed drafting attempts are tracked separately as attempt yield.">{{ (integrateKpi.overall * 100).toFixed(0) }}%</span> merge-rate ({{ integrateKpi.integrated }}/{{ integrateKpi.completed }}) · <span class="font-mono" :class="(integrateKpi.usdPerMerge ?? 99) <= 2 ? 'text-emerald-400' : 'text-amber-400'" title="NORTH STAR: $ per merged change. Drive this DOWN.">{{ integrateKpi.usdPerMerge == null ? '—' : ('$' + integrateKpi.usdPerMerge.toFixed(2)) }}</span>/merge
         </span>
         <span class="flex-1"></span>
-        <button @click="signOut" class="text-slate-400 text-sm hover:text-white">Sign out</button>
+        <button @click="signOut" class="text-slate-400 text-sm hover:text-ink">Sign out</button>
       </header>
 
       <!-- ── Mission Control live strip ── -->
@@ -853,6 +893,52 @@ watch(user, u => { if (u) loadAll() })
         :outcomes="outcomes"
         :spend="spend"
         :last-event-at="lastEventAt" />
+
+      <!-- Resilience continuity -->
+      <section class="bg-slate-900 border rounded-xl p-4 mb-6"
+               :class="resilienceOffline ? 'border-amber-600/60' : 'border-slate-800'">
+        <div class="flex items-center gap-2 mb-3 flex-wrap">
+          <h2 class="text-xs uppercase tracking-wider text-slate-500">Resilience mesh</h2>
+          <span class="text-xs font-mono"
+                :class="resilienceOffline ? 'text-amber-300' : 'text-emerald-300'">
+            {{ resilienceMesh.mode || 'warming' }}
+          </span>
+          <span class="text-xs text-slate-500">updated {{ resilienceMesh.updated_at ? ago(resilienceMesh.updated_at) : 'pending' }}</span>
+          <span class="flex-1"></span>
+          <span class="text-xs" :class="resilienceDb.ok === false ? 'text-amber-300' : 'text-emerald-300'">
+            DB {{ resilienceDb.ok === false ? 'deferred' : 'available' }}
+          </span>
+        </div>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <div class="border border-slate-800 rounded-lg px-3 py-2">
+            <div class="text-[10px] uppercase tracking-wider text-slate-500">Spool</div>
+            <div class="font-mono tabular-nums text-lg leading-tight" :class="Number(resilience.spoolDepth || 0) ? 'text-amber-300' : 'text-slate-300'">
+              {{ fmtInt(resilience.spoolDepth || resilienceMesh.spool_depth || 0) }}
+            </div>
+          </div>
+          <div class="border border-slate-800 rounded-lg px-3 py-2">
+            <div class="text-[10px] uppercase tracking-wider text-slate-500">Vendors</div>
+            <div class="font-mono tabular-nums text-lg leading-tight text-cyan-300">
+              {{ fmtInt(resilienceVendors.length) }}
+            </div>
+          </div>
+          <div class="border border-slate-800 rounded-lg px-3 py-2">
+            <div class="text-[10px] uppercase tracking-wider text-slate-500">Repos warmed</div>
+            <div class="font-mono tabular-nums text-lg leading-tight" :class="resiliencePrewarm.ok === false ? 'text-amber-300' : 'text-emerald-300'">
+              {{ fmtInt((resiliencePrewarm.results || []).length) }}
+            </div>
+          </div>
+          <div class="border border-slate-800 rounded-lg px-3 py-2">
+            <div class="text-[10px] uppercase tracking-wider text-slate-500">Duplicate lanes</div>
+            <div class="font-mono tabular-nums text-lg leading-tight" :class="(resilienceSupervisor.duplicate_runner_pids || []).length ? 'text-red-300' : 'text-slate-300'">
+              {{ fmtInt((resilienceSupervisor.duplicate_runner_pids || []).length + (resilienceSupervisor.duplicate_keepalive_pids || []).length) }}
+            </div>
+          </div>
+        </div>
+        <div v-if="resilienceDb.error" class="mt-2 text-xs text-amber-300 truncate" :title="resilienceDb.error">
+          {{ resilienceDb.error }}
+        </div>
+      </section>
 
       <!-- Shared proof packs -->
       <section class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-6">
@@ -953,7 +1039,7 @@ watch(user, u => { if (u) loadAll() })
           <textarea v-model="newTask.prompt" placeholder="Describe the improvement, product change, bug fix, or new concept to generate and implement…" rows="3"
                     class="md:col-span-3 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm"></textarea>
           <button @click="queueTask" :disabled="queueLoading || !newTask.prompt.trim()"
-                  class="md:col-span-3 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 rounded-lg py-2 font-semibold text-sm">
+                  class="md:col-span-3 bg-[#20201c] hover:bg-[#33322c] disabled:opacity-40 text-[#f6f3ec] rounded-lg py-2 font-semibold text-sm">
             {{ queueLoading ? 'Routing…' : 'Route, implement, QA, and merge' }}
           </button>
         </div>
@@ -965,7 +1051,7 @@ watch(user, u => { if (u) loadAll() })
           <input v-model="nlQuery" @keydown.enter="askNL" placeholder="Ask a question: 'which projects are shipping today?' or 'where is money going?'"
                  class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm" />
           <button @click="askNL" :disabled="nlLoading"
-                  class="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 rounded-lg px-4 py-2 text-sm font-semibold">
+                  class="bg-[#3d3a6b] hover:bg-[#4a4680] disabled:opacity-40 text-white rounded-lg px-4 py-2 text-sm font-semibold">
             {{ nlLoading ? '…' : 'Ask' }}</button>
         </div>
         <p v-if="nlAnswer" class="mt-3 text-sm text-slate-300 whitespace-pre-wrap border-t border-slate-800 pt-3">{{ nlAnswer }}</p>
@@ -1021,7 +1107,7 @@ watch(user, u => { if (u) loadAll() })
           <option v-for="p in operatorProjects" :key="p" :value="p">{{ p }}</option>
         </select>
         <button v-if="filteredOperatorApprovals.length" @click="approveAllOperator" :disabled="bulkApproving"
-                class="bg-sky-600 hover:bg-sky-500 disabled:opacity-50 rounded-lg px-3 py-1 text-xs font-semibold text-white normal-case tracking-normal">
+                class="bg-[#1f5c56] hover:bg-[#276f68] disabled:opacity-50 rounded-lg px-3 py-1 text-xs font-semibold text-white normal-case tracking-normal">
           {{ bulkApproving ? 'Approving…' : `Approve all${operatorProjectFilter === 'all' ? '' : ' (' + operatorProjectFilter + ')'} · ${filteredOperatorApprovals.length}` }}
         </button>
       </h2>
@@ -1036,7 +1122,7 @@ watch(user, u => { if (u) loadAll() })
         <input v-model="newTxn.id" placeholder="txn-id (kebab)" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm" />
         <input v-model="newTxn.name" placeholder="Name" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm" />
         <input v-model="newTxn.description" placeholder="Description (optional)" class="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm" />
-        <button @click="createTxn" class="bg-indigo-600 hover:bg-indigo-500 rounded-lg px-4 py-2 text-sm font-semibold">Create</button>
+        <button @click="createTxn" class="bg-[#3d3a6b] hover:bg-[#4a4680] text-white rounded-lg px-4 py-2 text-sm font-semibold">Create</button>
       </div>
       <div v-if="txns.length" class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-3 text-sm">
         <div v-for="tx in txns" :key="tx.id" class="flex items-center gap-2 py-1 border-b border-slate-800 last:border-0">
@@ -1163,7 +1249,7 @@ watch(user, u => { if (u) loadAll() })
           <span class="flex-1"></span>
           <span v-if="t.note" class="text-slate-500 text-xs">{{ t.note }}</span>
         </div>
-        <pre v-if="t.log_tail" class="bg-black/40 border border-slate-800 rounded-md p-2 mt-2 text-xs text-slate-400 overflow-auto max-h-32 whitespace-pre-wrap font-mono">{{ t.log_tail }}</pre>
+        <pre v-if="t.log_tail" class="bg-slate-800/50 border border-slate-800 rounded-md p-2 mt-2 text-xs text-slate-400 overflow-auto max-h-32 whitespace-pre-wrap font-mono">{{ t.log_tail }}</pre>
       </div>
 
       <!-- ── Runs history ── -->
@@ -1330,7 +1416,7 @@ watch(user, u => { if (u) loadAll() })
           <div class="mt-2 flex gap-2">
             <button v-if="s.status === 'paused' && s.next_action"
                     @click="runSession(s)" :disabled="sessionRunning[s.id]"
-                    class="text-xs bg-blue-700 hover:bg-blue-600 disabled:opacity-40 text-white rounded px-3 py-1 font-semibold">
+                    class="text-xs bg-[#1f5c56] hover:bg-[#276f68] disabled:opacity-40 text-white rounded px-3 py-1 font-semibold">
               {{ sessionRunning[s.id] ? 'Queuing…' : 'Run it' }}
             </button>
           </div>
@@ -1433,7 +1519,7 @@ watch(user, u => { if (u) loadAll() })
           <textarea v-model="newFeedback.suggestion" placeholder="Suggestion (optional)"
                     rows="1" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm mb-2"></textarea>
           <button @click="submitFeedback" :disabled="feedbackSaving"
-                  class="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 rounded-lg px-4 py-2 text-sm font-semibold">
+                  class="bg-[#3d3a6b] hover:bg-[#4a4680] disabled:opacity-40 text-white rounded-lg px-4 py-2 text-sm font-semibold">
             {{ feedbackSaving ? 'Saving…' : 'Submit feedback' }}
           </button>
         </div>
@@ -1444,11 +1530,11 @@ watch(user, u => { if (u) loadAll() })
         <h2 class="text-xs uppercase tracking-wider text-slate-500">Spend &amp; Keys</h2>
         <span class="flex-1"></span>
         <button v-if="!globalPaused" @click="stopAll" :disabled="stopLoading"
-                class="bg-red-700 hover:bg-red-600 disabled:opacity-40 text-white rounded-lg px-4 py-1.5 text-sm font-bold transition-colors">
+                class="bg-[#a83a2a] hover:bg-[#bf4632] disabled:opacity-40 text-white rounded-lg px-4 py-1.5 text-sm font-bold transition-colors">
           {{ stopLoading ? 'Stopping…' : '⏹ STOP ALL' }}
         </button>
         <button v-else @click="resumeAll" :disabled="stopLoading"
-                class="bg-green-700 hover:bg-green-600 disabled:opacity-40 text-white rounded-lg px-4 py-1.5 text-sm font-bold transition-colors">
+                class="bg-[#2f6b46] hover:bg-[#3a7d54] disabled:opacity-40 text-white rounded-lg px-4 py-1.5 text-sm font-bold transition-colors">
           {{ stopLoading ? 'Resuming…' : '▶ Resume' }}
         </button>
       </div>

@@ -50,14 +50,42 @@ _TERMINAL = re.compile(
 
 
 def classify(note: str) -> str:
-    """Return 'transient' or 'terminal' for a BLOCKED/exception note."""
+    """Return 'transient' or 'terminal' for a BLOCKED/exception note.
+
+    Checks the adaptive outcome tracker first; falls back to static regexes
+    so that novel error messages improve classification over time rather than
+    always defaulting to 'terminal' until someone adds a new regex.
+    """
     n = note or ""
-    # terminal signatures win: a judge/verify/legal decision is never "transient"
+    # terminal signatures always win — judge/verify/legal are never transient
     if _TERMINAL.search(n):
         return "terminal"
+    # adaptive layer: learned outcome history overrides the default before regex
+    try:
+        import error_outcome_tracker
+        suggestion = error_outcome_tracker.suggest(n)
+        if suggestion:
+            return suggestion
+    except Exception:
+        pass
     if _TRANSIENT.search(n):
         return "transient"
     return "terminal"  # unknown -> treat as terminal (safer; a human sees it)
+
+
+def record_outcome(note: str, succeeded: bool) -> None:
+    """Record whether a task that was classified from this error note succeeded.
+
+    Call this after a retried task resolves (merged or permanently failed) so
+    the adaptive layer can improve future classification of similar errors.
+    Fail-soft: any exception is silently swallowed.
+    """
+    try:
+        import error_outcome_tracker
+        was_transient = classify(note) == "transient"
+        error_outcome_tracker.record(note, was_transient, succeeded)
+    except Exception:
+        pass
 
 
 def backoff_seconds(transient_retries: int) -> float:

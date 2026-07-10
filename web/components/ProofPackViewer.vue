@@ -79,13 +79,13 @@ function timeAgo(ts: number) {
   <div class="bg-slate-900 border border-slate-700 rounded-xl p-4">
     <div class="flex items-center gap-2 mb-4">
       <span class="text-lg font-bold">Proof-Pack Portfolio</span>
-      <button @click="load(); loadStandings()" class="ml-auto text-xs text-slate-400 hover:text-white">↻ Refresh</button>
+      <button @click="load(); loadStandings()" class="ml-auto text-xs text-slate-400 hover:text-slate-100">↻ Refresh</button>
     </div>
 
     <!-- Stats cards -->
     <div class="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
       <div class="bg-slate-800 rounded-lg p-3 text-center">
-        <div class="text-2xl font-bold text-white">{{ stats.total || 0 }}</div>
+        <div class="text-2xl font-bold text-slate-100">{{ stats.total || 0 }}</div>
         <div class="text-xs text-slate-400">Total Deployments</div>
       </div>
       <div class="bg-slate-800 rounded-lg p-3 text-center">

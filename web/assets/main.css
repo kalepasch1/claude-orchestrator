@@ -2,8 +2,8 @@
 @tailwind components;
 @tailwind utilities;
 
-:root { color-scheme: dark; }
-body { background: #0b0e14; color: #e6edf3; }
+:root { color-scheme: light; }
+body { background: #f6f3ec; color: #20201c; font-family: 'Inter', ui-sans-serif, system-ui, sans-serif; }
 
 /* Soft "breathing" pulse for live-status dots — calmer than animate-ping. */
 @keyframes breathe {

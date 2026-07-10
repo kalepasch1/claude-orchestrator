@@ -126,7 +126,11 @@ def _git(repo, *args):
 
 def _rollback(project, repo, prod, last_good):
     _git(repo, "branch", "-f", prod, last_good)
-    if os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() == "true":
+    push_rollback = os.environ.get(
+        "ORCH_PUSH_ON_ROLLBACK",
+        os.environ.get("ORCH_PUSH_ON_RELEASE", "true"),
+    ).lower() in ("1", "true", "yes", "on")
+    if push_rollback:
         _git(repo, "push", "--force-with-lease", "origin", prod)
     print(f"deploy_verify: ROLLED BACK {project} {prod} -> {last_good[:8]}")
 

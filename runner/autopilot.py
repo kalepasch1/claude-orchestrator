@@ -383,11 +383,14 @@ def release_blocker_agent():
     try:
         old_min_batch = os.environ.get("RELEASE_MIN_BATCH")
         old_interval = os.environ.get("RELEASE_INTERVAL_HOURS")
-        os.environ["RELEASE_MIN_BATCH"] = "1"
-        os.environ["RELEASE_INTERVAL_HOURS"] = "0"
+        flush_now = os.environ.get("AUTOPILOT_RELEASE_BLOCKER_FLUSH", "false").lower() in ("1", "true", "yes", "on")
+        if flush_now:
+            os.environ["RELEASE_MIN_BATCH"] = "1"
+            os.environ["RELEASE_INTERVAL_HOURS"] = "0"
         import release_train
-        release_train.MIN_BATCH = 1
-        release_train.RELEASE_INTERVAL_HOURS = 0
+        if flush_now:
+            release_train.MIN_BATCH = 1
+            release_train.RELEASE_INTERVAL_HOURS = 0
         out["release_train"] = release_train.run()
     except Exception as e:
         out["release_train_error"] = str(e)[:300]
@@ -400,6 +403,12 @@ def release_blocker_agent():
             os.environ.pop("RELEASE_INTERVAL_HOURS", None)
         else:
             os.environ["RELEASE_INTERVAL_HOURS"] = old_interval
+        try:
+            import release_train
+            release_train.MIN_BATCH = int(os.environ.get("RELEASE_MIN_BATCH", os.environ.get("ORCH_RELEASE_BATCH_MIN", "5")))
+            release_train.RELEASE_INTERVAL_HOURS = float(os.environ.get("RELEASE_INTERVAL_HOURS", os.environ.get("ORCH_RELEASE_INTERVAL_HOURS", "2")))
+        except Exception:
+            pass
     try:
         import deploy_verify
         out["deploy_verify"] = deploy_verify.run()
