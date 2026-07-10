@@ -6,8 +6,14 @@
   "ORCH_SHARE_AGENT_BRANCHES": "true",
   "ORCH_AUTO_PULL": "true",
   "ORCH_EASY_OFFLOAD_SHARE": "0.9",
+  "ORCH_BATCH_DEV_RELEASE": "true",
   "ORCH_CODE_MERGE_TARGET": "dev",
   "ORCH_STAGING_BRANCH": "orchestrator/dev",
-  "ORCH_PUSH_ON_MERGE": "true",
-  "ORCH_PUSH_ON_RELEASE": "true"
+  "ORCH_PUSH_ON_DEV_MERGE": "true",
+  "ORCH_PUSH_ON_MERGE": "false",
+  "ORCH_PUSH_ON_RELEASE": "true",
+  "RELEASE_MIN_BATCH": "5",
+  "RELEASE_INTERVAL_HOURS": "2",
+  "MAX_PARALLEL_CEILING": "4",
+  "RAM_FLOOR_GB": "8.0"
 }
