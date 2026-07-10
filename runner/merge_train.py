@@ -63,6 +63,8 @@ def _materialize_branch(repo, branch):
     Fail-soft on offline/no-remote — falls back to local-only behavior."""
     if _branch_exists(repo, branch):
         return True
+    if not repo or not os.path.isdir(repo):
+        return False
     try:
         _git(repo, "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}", timeout=120)
         if _git(repo, "rev-parse", "--verify", f"refs/remotes/origin/{branch}").returncode != 0:
