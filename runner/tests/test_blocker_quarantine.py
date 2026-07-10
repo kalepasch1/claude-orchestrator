@@ -172,6 +172,55 @@ class BlockerQuarantineTest(unittest.TestCase):
             blocker_quarantine._rework_depth("rework-legal-rework-legal-rework-legal-x"), 3
         )
 
+    def test_domain_vocab_token_credential_mention_is_not_secret(self):
+        """Production bug: beethoven's own subject matter is API token/credential POOL
+        MANAGEMENT, so a totally unrelated failure whose log/prompt happens to mention
+        "token" or "credential" (ordinary domain vocabulary, not a leak) was misclassified
+        as 'secret'. Observed in production: 'groomed: duplicate queued slug' and 'agent run
+        failed after 3 error-retries' both got quarantined as secret. Classification must
+        require actual violation-indicating language (hardcoded/exposed/leaked/committed),
+        not bare presence of the word."""
+        task = {
+            "id": "t9",
+            "slug": "cont-801b8665",
+            "state": "BLOCKED",
+            "kind": "build",
+            "prompt": "Harden the credential pool's acquire() singleton against races.",
+            "note": "groomed: duplicate queued slug",
+            "log_tail": "token pool acquire() returned stale credential; retrying",
+        }
+        self.assertEqual(blocker_quarantine.classify(task), "rework")
+
+    def test_licensing_topic_mention_is_not_legal(self):
+        """Same false-positive pattern as secret/token: a fleet that routes across many AI
+        model providers legitimately discusses provider 'licensing' and 'compliance'
+        constantly. Bare topical mentions must not trigger the legal-blocker classifier --
+        only actual 'legal review required'/regulatory-blocker language should."""
+        task = {
+            "id": "t10",
+            "slug": "provider-parallel-rate-aware-routing",
+            "state": "BLOCKED",
+            "kind": "build",
+            "prompt": "Add per-provider rate limits based on each model's licensing terms and compliance tier.",
+            "note": "groomed: duplicate queued slug",
+            "log_tail": "",
+        }
+        self.assertEqual(blocker_quarantine.classify(task), "rework")
+
+    def test_genuine_secret_leak_still_classified_correctly(self):
+        """Guard against overcorrecting: an actual hardcoded-secret finding must still route
+        to the secret rework path."""
+        task = {
+            "id": "t11",
+            "slug": "intake-provider-key",
+            "state": "BLOCKED",
+            "kind": "build",
+            "prompt": "Wire up the new provider API key.",
+            "note": "gitleaks: hardcoded API key detected in server/utils/provider.ts",
+            "log_tail": "",
+        }
+        self.assertEqual(blocker_quarantine.classify(task), "secret")
+
     def test_deep_rework_chain_escalates_to_human_instead_of_respawning(self):
         """Depth-cap safety net: even if a classifier edge case still produces a secret/legal/
         security category on an already-deeply-reworked task, the pipeline must stop respawning

@@ -24,16 +24,44 @@ MARK = "blocker-quarantine"
 REPLACEMENT_CATEGORIES = {"legal", "secret", "security"}
 
 _LEGAL = re.compile(
-    r"\b(legal review|legal counsel|upl|unauthorized practice|regulatory|licen[cs]ing|"
-    r"securities|broker[- ]dealer|investment advice|insurance|money transmission|"
-    r"tax|cpa|filing|compliance opinion|practice of law)\b",
+    r"\blegal review\b|\blegal counsel\b|\bunauthorized practice of law\b|\bupl violation\b|"
+    r"\bregulatory (?:blocker|gate|violation|requirement)\b|"
+    r"\b(?:requires?|needs?) (?:a )?(?:formal )?(?:legal|compliance) (?:review|opinion|sign-?off|approval)\b|"
+    r"\bbroker[- ]dealer registration\b|\bmoney transmission licen[cs]e\b|"
+    r"\bsecurities (?:law|registration|violation)\b|"
+    r"\bcompliance opinion\b|\bpractice of law\b",
     re.I,
 )
-_SECRET = re.compile(
-    r"\b(secret|api key|token|private key|credential|password|cron_secret|webhook secret|"
-    r"hardcoded.*(?:key|secret|token)|leak)\b|\.claude/settings\.local\.json",
+# 2026-07-10: beethoven's own subject matter is API token/credential *pool management*
+# (module-level singleton acquire()/_pool.acquire() patterns, env vars like
+# CRON_SECRET/API_KEY_HASH_SECRET) -- so bare mentions of "token", "credential", "secret",
+# or "licensing" in a failure's log/prompt are normal domain vocabulary, not evidence of an
+# actual leak. The old bare-keyword regex misclassified ~22% of beethoven's QUARANTINED
+# backlog (158/709: "groomed: duplicate queued slug", "agent run failed after 3
+# error-retries", etc., none of them actual secret/legal issues) into secret/legal rework,
+# burning the constrained local-only coder track and masking the tasks' real failure. Now
+# require an actual violation-indicating word (hardcoded/exposed/leaked/committed/etc.) near
+# the secret-related term, not just its presence.
+_SECRET_VIOLATION_CONTEXT = re.compile(
+    r"\b(hardcoded|expos(?:ed|ure|ing)|leak(?:ed|age)?|committed|plaintext|logged|printed|"
+    r"detected|checked[- ]in|gitleaks|trufflehog)\b",
     re.I,
 )
+_SECRET_TERM = re.compile(
+    r"\b(secret|api key|token|private key|credential|password)\b|cron_secret|webhook secret",
+    re.I,
+)
+_SECRET_EXPLICIT = re.compile(
+    r"hardcoded.*(?:key|secret|token)|\.claude/settings\.local\.json|gitleaks|trufflehog|"
+    r"\bleak(?:ed|age)?\b",
+    re.I,
+)
+
+
+def _is_secret(evidence):
+    if _SECRET_EXPLICIT.search(evidence):
+        return True
+    return bool(_SECRET_TERM.search(evidence) and _SECRET_VIOLATION_CONTEXT.search(evidence))
 _SECURITY = re.compile(
     r"\b(security regression|rls|hmac|csrf|xss|sql injection|input validation|"
     r"broad allowlist|overbroad permission|sensitive log|unsafe fallback)\b",
@@ -151,7 +179,7 @@ def classify(task):
     # a slug or prompt that merely contains the word "secret"/"security" as part of an app or
     # feature name. Misclassifying QA failures (or a project's own branding) as secret work
     # sends the wrong directive to the agent and manufactures a self-reinforcing quarantine loop.
-    if _SECRET.search(evidence):
+    if _is_secret(evidence):
         return "secret"
     if _SECURITY.search(evidence):
         return "security"
