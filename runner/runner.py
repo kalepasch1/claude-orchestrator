@@ -1468,6 +1468,11 @@ def run_task(t):
                 except Exception:
                     pass
                 back = min(300, 2 ** attempt * 5)
+                try:
+                    import provider_rate_tracker
+                    provider_rate_tracker.record_rate_limit(coder, cooldown_s=back)
+                except Exception:
+                    pass
                 set_state(t["id"], state="RETRY", note=f"rate-limited, backoff {back}s")
                 time.sleep(min(back, 30)); continue
 
