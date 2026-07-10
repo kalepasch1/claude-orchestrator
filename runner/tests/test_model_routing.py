@@ -160,6 +160,7 @@ class ModelRoutingTest(unittest.TestCase):
             return {"text": "ok", "cost_usd": 0.01, "provider": provider, "model": model}
 
         with patch.object(model_gateway, "available", return_value=["deepseek", "google", "openai", "claude"]), \
+             patch.object(model_gateway, "_learned_route", return_value=None), \
              patch.object(model_gateway, "_call_provider", side_effect=fake_call):
             res = model_gateway.complete("deepseek", "deepseek-chat", "hello", record_op=False)
 
@@ -251,6 +252,7 @@ class ModelRoutingTest(unittest.TestCase):
         }
         with patch.dict(os.environ, env, clear=False), \
              patch.object(agentic_coders, "_aider_available", return_value=True), \
+             patch.object(agentic_coders, "_coder_ready", return_value=True), \
              patch.object(agentic_coders, "_within_cap", return_value=True), \
              patch.object(agentic_coders, "_AIDER_OK", True), \
              patch("model_gateway.available", return_value=["claude", "local", "deepseek", "google", "openai"]):
@@ -300,7 +302,9 @@ class ModelRoutingTest(unittest.TestCase):
         task = {"slug": "easy-docs", "kind": "docs", "prompt": "update docs", "deps": []}
         with patch.dict(os.environ, env, clear=False), \
              patch.object(agentic_coders, "_aider_available", return_value=True), \
+             patch.object(agentic_coders, "_coder_ready", return_value=True), \
              patch.object(agentic_coders, "_within_cap", return_value=True), \
+             patch.object(router_stats, "best_coder", return_value=None), \
              patch("model_gateway.available", return_value=["claude", "deepseek", "openai"]):
             self.assertNotEqual(agentic_coders.pick(task), "claude")
 
@@ -403,6 +407,7 @@ class ModelRoutingTest(unittest.TestCase):
              patch.object(agentic_coders, "_allowed_by_terms", return_value=True), \
              patch.object(agentic_coders, "_task_sensitivity", return_value="standard"), \
              patch.object(agentic_coders, "_heavy_running_counts", return_value={"qwen3-coder:30b": 2}), \
+             patch.object(router_stats, "best_coder", return_value=None), \
              patch.dict(os.environ, {"ORCH_HEAVY_OLLAMA_RUNNING_CAP": "1",
                                      "ORCH_HARD_OFFLOAD_SHARE": "1",
                                      "ORCH_USE_PAID_AGENTIC_CREDITS": "true"}, clear=False):
