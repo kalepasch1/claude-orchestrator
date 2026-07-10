@@ -14,7 +14,8 @@ that structurally by SERIALIZING integration per project:
            via approval_merge._free_branch — the phantom-CONFLICT root cause)
         3. run the project's test command on the rebased branch
         4. fast-forward the base to the branch (no force, no no-ff surprises)
-        5. optionally push (ORCH_PUSH_ON_MERGE=true; normally false for dev batching)
+        5. push the unified dev/staging branch when enabled (ORCH_PUSH_ON_DEV_MERGE=true);
+           direct prod pushes are blocked unless ORCH_ALLOW_DIRECT_PROD_MERGE=true
         6. mark task MERGED + card decided_by='train:MERGED'
 
 Because the base only advances through the train, every later branch rebases onto the
@@ -48,6 +49,25 @@ LOW_RISK_KINDS = {"docs", "chore", "lint", "format", "mechanical", "test", "test
 
 
 # ── git plumbing (each step never assumes what's checked out) ─────────────────
+
+def _truthy(name, default=False):
+    val = os.environ.get(name)
+    if val is None:
+        return bool(default)
+    return str(val).lower() in ("1", "true", "yes", "on")
+
+
+def _staging_branch():
+    return os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
+
+
+def _push_enabled_for_base(base):
+    staging = _staging_branch()
+    if base == staging:
+        return _truthy("ORCH_PUSH_ON_DEV_MERGE", True)
+    if _truthy("ORCH_BATCH_DEV_RELEASE", True) and not _truthy("ORCH_ALLOW_DIRECT_PROD_MERGE", False):
+        return False
+    return _truthy("ORCH_PUSH_ON_MERGE", False)
 
 def _git(repo, *args, timeout=60):
     return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, timeout=timeout)
@@ -100,17 +120,49 @@ def _rebase_onto_base(repo, branch, base):
     return approval_merge._rebase_isolated(repo, base, branch)
 
 
+def _ensure_node_deps(repo):
+    """A node repo whose node_modules is missing makes every test/typecheck fail with
+    'cannot find module' — an ENVIRONMENT failure, not a code failure, that was TESTFAIL-ing
+    all JS/TS merges (2026-07-10: smarter 'cannot find module vue'). Lazily install deps once
+    per repo per process when they're absent. Idempotent; fail-soft (let the test surface the
+    real error if install fails)."""
+    try:
+        for root, _dirs, files in os.walk(repo):
+            if ".git" in root or "/node_modules" in root:
+                _dirs[:] = [d for d in _dirs if d != "node_modules" and d != ".git"]
+            if "package.json" in files and not os.path.isdir(os.path.join(root, "node_modules")):
+                cmd = "npm ci" if os.path.isfile(os.path.join(root, "package-lock.json")) else "npm install"
+                subprocess.run(["bash", "-lc", cmd], cwd=root, capture_output=True,
+                               text=True, timeout=int(os.environ.get("MERGE_TRAIN_NPM_TIMEOUT", "600")))
+    except Exception:
+        pass
+
+
 def _run_tests(repo, test_cmd):
     """Step 3: run the gate. Returns (ok, tail-of-output)."""
     if not test_cmd:
         return True, "no test_cmd configured"
+    if "npm" in test_cmd or "vitest" in test_cmd or "vue-tsc" in test_cmd or "tsc" in test_cmd or "jest" in test_cmd:
+        _ensure_node_deps(repo)
     try:
         r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
                            text=True, timeout=TEST_TIMEOUT)
     except subprocess.TimeoutExpired:
         return False, f"tests timed out after {TEST_TIMEOUT}s"
     if r.returncode != 0:
-        return False, ((r.stdout or "")[-300:] + (r.stderr or "")[-300:]).strip()
+        tail = ((r.stdout or "")[-300:] + (r.stderr or "")[-300:]).strip()
+        # One retry after a forced install if the failure looks like missing deps (env, not code).
+        if any(s in tail.lower() for s in ("cannot find module", "module not found", "eresolve", "command not found")):
+            _ensure_node_deps(repo)
+            try:
+                r2 = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
+                                    text=True, timeout=TEST_TIMEOUT)
+                if r2.returncode == 0:
+                    return True, "green (after dep install)"
+                return False, ((r2.stdout or "")[-300:] + (r2.stderr or "")[-300:]).strip()
+            except subprocess.TimeoutExpired:
+                return False, f"tests timed out after {TEST_TIMEOUT}s"
+        return False, tail
     return True, "green"
 
 
@@ -140,13 +192,13 @@ def _ff_base(repo, branch, base):
 
 
 def _push_base(repo, base):
-    """Step 5: push only when explicitly enabled. Returns '' or an error tail.
+    """Step 5: push only when enabled for this base. Returns '' or an error tail.
 
     On a non-fast-forward rejection (origin moved while we merged — e.g. the other Mac pushed),
     reconcile once in an ISOLATED worktree: fetch origin/base, rebase local base's extra commits
     onto it, retry the push. Still failing -> return the error; the CALLER must NOT mark the task
     MERGED (a failed push previously counted as a merge and desynced the DB from GitHub)."""
-    if os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() != "true":
+    if not _push_enabled_for_base(base):
         return ""
     r = _git(repo, "push", "origin", base, timeout=300)
     if r.returncode == 0:
@@ -184,7 +236,7 @@ def _normalize_task_base(repo, proj, requested):
 def _integration_base(repo, proj, task_base):
     if os.environ.get("ORCH_CODE_MERGE_TARGET", "dev").lower() not in ("dev", "staging", "integration"):
         return task_base
-    dev = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
+    dev = _staging_branch()
     try:
         if _git(repo, "rev-parse", "--verify", dev).returncode != 0:
             _git(repo, "branch", dev, _detect_prod_branch(repo, proj))
