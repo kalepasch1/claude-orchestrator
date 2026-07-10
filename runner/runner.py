@@ -1260,7 +1260,7 @@ def run_task(t):
                 if _conf_result and "decision" in _conf_result:
                     decision = _conf_result["decision"]
                     conf = {k: v for k, v in _conf_result.items() if k != "decision"}
-                elif USE_CONFIDENCE:
+                elif os.environ.get("CONFIDENCE_GATE", "true").lower() == "true":  # read live so auto-approve toggles without restart
                     try:
                         proj_thresh = proj.get("confidence_threshold")
                         decision, conf = confidence.gate(wt, base, threshold=proj_thresh, project=name)
