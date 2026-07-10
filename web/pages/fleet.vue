@@ -67,6 +67,7 @@
 </template>
 
 <script setup lang="ts">
+const supabase = useSupabaseClient<any>()
 const busy = ref(false)
 const kpi = ref<any>(null)
 const approvals = ref<any[]>([])
@@ -100,7 +101,13 @@ async function refreshAll() {
     attMeets.value = att?.verification?.meetsBar ?? false
   } finally { busy.value = false }
 }
-onMounted(refreshAll)
+
+onMounted(() => {
+  refreshAll()
+  supabase.channel('fleet')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'fleet_approvals' }, refreshAll)
+    .subscribe()
+})
 </script>
 
 <style scoped>
