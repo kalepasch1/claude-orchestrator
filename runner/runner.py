@@ -17,7 +17,7 @@ Run on your Mac:
 
 It NEVER force-merges: verify-fail or test-fail creates an approval card and stops.
 """
-import os, sys, time, json, socket, subprocess, threading, datetime, hashlib
+import os, sys, time, json, socket, subprocess, threading, datetime, hashlib, faulthandler, signal
 
 # Auto-load .env from the runner's own directory (works regardless of CWD)
 _RUNNER_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,6 +33,40 @@ if os.path.isfile(_env_path):
                 os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
 if os.environ.get("ORCH_CANONICAL_RUNTIME_HOME", "true").lower() in ("1", "true", "yes", "on"):
     os.environ["CLAUDE_ORCH_HOME"] = _CANONICAL_RUNTIME_HOME
+
+
+_LOCK_FD = None
+_EARLY_SINGLETON_LOCKED = False
+
+
+def _acquire_singleton():
+    """Guarantee ONE runner per machine, before any import-time DB/network work."""
+    global _LOCK_FD
+    import fcntl
+    home = os.environ.get("CLAUDE_ORCH_HOME", _CANONICAL_RUNTIME_HOME)
+    os.makedirs(home, exist_ok=True)
+    lock_path = os.environ.get("ORCH_RUNNER_LOCK_FILE") or os.path.join(home, "runner.lock")
+    _LOCK_FD = open(lock_path, "a+")
+    try:
+        fcntl.flock(_LOCK_FD, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _LOCK_FD.seek(0)
+        _LOCK_FD.truncate()
+        _LOCK_FD.write(str(os.getpid()))
+        _LOCK_FD.flush()
+        return True
+    except (BlockingIOError, OSError):
+        return False
+
+
+if __name__ == "__main__":
+    try:
+        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+    except Exception:
+        pass
+    if not _acquire_singleton():
+        print("another runner already holds the lock — exiting (singleton guard).")
+        sys.exit(0)
+    _EARLY_SINGLETON_LOCKED = True
 
 sys.path.insert(0, _RUNNER_DIR)
 import db, bandit, verify, caching, account_pool, cost_ledger, model_router, candidate_shared
@@ -93,7 +127,12 @@ REUSE_FIRST = ("\n\n## Reuse before you draft (cost discipline)\n"
     "'CANDIDATE-SHARED: <what>' in your final message so it can be promoted to a shared capability "
     "instead of re-drafted per app. Prefer the smallest diff that reuses existing code.")
 POOL = account_pool.AccountPool()
-_sem = threading.Semaphore(MAX_PARALLEL)
+# Size the concurrency semaphore HIGH so it is never the binding constraint — the real, LIVE
+# limit is eff_limit (min of env MAX_PARALLEL and the governor) checked every dispatch loop
+# (line ~2227). A boot-time Semaphore(MAX_PARALLEL) silently capped the whole machine at whatever
+# MAX_PARALLEL happened to be at boot (a stale/low value throttled a 48GB box to 4 lanes on
+# 2026-07-10). Governing via eff_limit means fleet_config MAX_PARALLEL changes take effect live.
+_sem = threading.Semaphore(int(os.environ.get("ORCH_SEM_MAX", "48")))
 _projects = {}
 MAX_AGENT_PROMPT_CHARS = int(os.environ.get("ORCH_MAX_AGENT_PROMPT_CHARS", "36000"))
 
@@ -243,7 +282,12 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
         # merge into `base` without needing it checked out (HEAD may be another branch)
         if subprocess.run(["git", "fetch", ".", f"{branch}:{base}"], cwd=repo, capture_output=True).returncode != 0:
             return "CONFLICT"
-        if os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() == "true":
+        staging = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
+        batch_release = os.environ.get("ORCH_BATCH_DEV_RELEASE", "true").lower() in ("1", "true", "yes", "on")
+        direct_prod_allowed = os.environ.get("ORCH_ALLOW_DIRECT_PROD_MERGE", "false").lower() in ("1", "true", "yes", "on")
+        push_dev = os.environ.get("ORCH_PUSH_ON_DEV_MERGE", "true").lower() in ("1", "true", "yes", "on")
+        push_prod = os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() == "true"
+        if (base == staging and push_dev) or (base != staging and push_prod and (not batch_release or direct_prod_allowed)):
             subprocess.run(["git", "push", "origin", base], cwd=repo, capture_output=True)
         try:
             import approval_merge
@@ -1949,7 +1993,6 @@ def _reap_zombie_tasks():
 
 
 def _scheduler_tick() -> None:
-    _reap_zombie_tasks()
     now = time.time()
     dt = datetime.datetime.now()
     for key, job, stype, args in _SCHEDULE:
@@ -1970,6 +2013,7 @@ def _scheduler_tick() -> None:
                     print(f"[sched] {job}", flush=True)
             except Exception as e:
                 print(f"[sched] {job} error: {e}", flush=True)
+    _reap_zombie_tasks()
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -2019,35 +2063,6 @@ def _run_task_safe(t):
         _block_or_retry(t, f"runner exception: {e}"[:300])
 
 
-_LOCK_FD = None
-
-
-def _acquire_singleton():
-    """Guarantee ONE runner per machine. Multiple runners each size concurrency off total
-    free RAM independently, so N runners can start N×MAX_PARALLEL heavy tasks at once and
-    crash the Mac (and they share/exhaust the call budget). An exclusive file lock makes any
-    extra launch (double-start, launchd relaunch) exit immediately. The lock auto-releases
-    when the holding process dies, so a crash frees it."""
-    global _LOCK_FD
-    import fcntl
-    home = os.environ.get("CLAUDE_ORCH_HOME", _CANONICAL_RUNTIME_HOME)
-    os.makedirs(home, exist_ok=True)
-    lock_path = os.environ.get("ORCH_RUNNER_LOCK_FILE") or os.path.join(home, "runner.lock")
-    # Open without truncating first. Losing contenders used to open with "w", fail the
-    # flock, and still erase the active PID. That made startup hooks think no runner was
-    # alive and spawn duplicate keepalives forever.
-    _LOCK_FD = open(lock_path, "a+")
-    try:
-        fcntl.flock(_LOCK_FD, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        _LOCK_FD.seek(0)
-        _LOCK_FD.truncate()
-        _LOCK_FD.write(str(os.getpid()))
-        _LOCK_FD.flush()
-        return True
-    except (BlockingIOError, OSError):
-        return False
-
-
 _FLEET = {"t": 0.0}  # throttle for the in-loop fleet_control gateway tick
 
 
@@ -2085,7 +2100,7 @@ def _ensure_agentic_deps():
 
 
 def main():
-    if not _acquire_singleton():
+    if not _EARLY_SINGLETON_LOCKED and not _acquire_singleton():
         print("another runner already holds the lock — exiting (singleton guard).")
         return
     # HARD BILLING FIREWALL (first thing, before any model path): on Max subscription mode this strips
@@ -2112,13 +2127,6 @@ def main():
                   f"You will be charged API rates. Unset ORCH_ALLOW_API_BILLING to block.")
     except Exception as _e:
         print(f"[billing-firewall] guard failed to load: {_e}")
-    try:
-        import control_flags
-        control_flags.ensure_use_purchased_credits_row(
-            os.environ.get("ORCH_USE_PURCHASED_CREDITS", os.environ.get("ORCH_USE_PAID_AGENTIC_CREDITS", "false")).lower()
-            in ("1", "true", "yes", "on"))
-    except Exception as _e:
-        print(f"[controls] purchased-credit flag setup skipped: {_e}")
     print(f"runner {RUNNER_ID} online -> {os.environ.get('SUPABASE_URL','(set SUPABASE_URL)')}")
     # FAST-START: run dependency check + self-check in background threads so the main loop
     # starts claiming tasks within seconds instead of waiting 30-120s for synchronous I/O.
@@ -2134,8 +2142,17 @@ def main():
             startup_selfcheck.run(RUNNER_ID)
         except Exception as _e:
             print(f"[self-check] failed: {_e}")
+    def _bg_controls():
+        try:
+            import control_flags
+            control_flags.ensure_use_purchased_credits_row(
+                os.environ.get("ORCH_USE_PURCHASED_CREDITS", os.environ.get("ORCH_USE_PAID_AGENTIC_CREDITS", "false")).lower()
+                in ("1", "true", "yes", "on"))
+        except Exception as _e:
+            print(f"[controls] purchased-credit flag setup skipped: {_e}")
     threading.Thread(target=_bg_ensure_deps, daemon=True, name="bg-deps").start()
     threading.Thread(target=_bg_selfcheck, daemon=True, name="bg-selfcheck").start()
+    threading.Thread(target=_bg_controls, daemon=True, name="bg-controls").start()
     print("[fast-start] deps + self-check running in background — claiming tasks immediately")
     global _sched_bg_running
     _sched_bg_running = False
@@ -2148,8 +2165,23 @@ def main():
     _restart_log_t = 0.0
     import resource_governor
     print("[main-loop] entering main loop", flush=True)
+    try:
+        if _fire_periodic("resilience_mesh.py"):
+            print("[sched] resilience_mesh.py", flush=True)
+    except Exception as e:
+        print(f"[sched] resilience_mesh.py error: {e}", flush=True)
     while True:
         active = [th for th in active if th.is_alive()]
+        if time.time() - _sched_t >= 60 and not _sched_bg_running:
+            _sched_t = time.time()
+            def _bg_sched():
+                global _sched_bg_running
+                try:
+                    _scheduler_tick()
+                finally:
+                    _sched_bg_running = False
+            _sched_bg_running = True
+            threading.Thread(target=_bg_sched, daemon=True, name="bg-sched").start()
         # HOT RELOAD: pick up changed modules + .env live, so improvements take effect with NO restart.
         if time.time() - _reload_t > 5:
             _reload_t = time.time()
@@ -2267,16 +2299,6 @@ def main():
                         th.start(); active.append(th); continue
         except Exception as e:
             print("poll error:", e)
-        if time.time() - _sched_t >= 60 and not _sched_bg_running:
-            _sched_t = time.time()
-            def _bg_sched():
-                global _sched_bg_running
-                try:
-                    _scheduler_tick()
-                finally:
-                    _sched_bg_running = False
-            _sched_bg_running = True
-            threading.Thread(target=_bg_sched, daemon=True, name="bg-sched").start()
         time.sleep(POLL)
 
 
