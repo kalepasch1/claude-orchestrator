@@ -119,14 +119,20 @@ def dedupe_queued():
     for r in rows:
         groups[(r.get("project_id"), r.get("slug"))].append(r)
     q = 0
-    for g in groups.values():
+    culprits = []
+    for (pid, slug), g in groups.items():
+        if len(g) <= 1:
+            continue
+        # capture the source note of a survivor so the enqueuer that keeps making dupes is named
+        src = (g[0].get("note") or "")[:50]
+        culprits.append(f"{slug[:32]}(x{len(g)}|{src})")
         for dup in g[1:]:
             db.update("tasks", {"id": dup["id"]},
                       {"state": "QUARANTINED",
-                       "note": "sentinel-dedupe: duplicate QUEUED row (intake race); kept newest"})
+                       "note": "sentinel-dedupe: duplicate QUEUED row; kept newest"})
             q += 1
     if q:
-        log("dedupe", f"quarantined {q} duplicate QUEUED rows")
+        log("dedupe", f"quarantined {q} dup rows; sources: {'; '.join(culprits[:6])}")
 
 
 def on_db_recovery():

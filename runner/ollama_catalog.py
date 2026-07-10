@@ -191,7 +191,17 @@ def _is_heavy_for_hot_lane(model):
         total = None
     if total is None:
         return True  # unknown headroom -> stay cautious, canary-only
-    return total < (need + _heavy_hot_lane_headroom_gb())
+    # CRITICAL FIX (2026-07-10): reserve the CONCURRENT LANE budget, not just a flat headroom.
+    # The old check (total < need + 12) let qwen3-coder:30b (24GB) into the hot lane on a 48GB box
+    # because 24+12 < 48 — ignoring that N lanes of node/test work already consume the RAM. Result:
+    # the 30B loaded, crashed free RAM to <1GB, got clamped, reloaded next task = 110 clamp
+    # events/24h + OOM restarts. A heavy single model may only enter the hot lane when it fits
+    # ALONGSIDE the running fleet: total >= need + (lanes * per_task) + floor.
+    lanes = float(os.environ.get("MAX_PARALLEL", "10") or 10)
+    per_task = float(os.environ.get("PER_TASK_GB", "2.0") or 2.0)
+    floor = float(os.environ.get("RAM_FLOOR_GB", "8.0") or 8.0)
+    lane_budget = max(lanes * per_task, _heavy_hot_lane_headroom_gb())
+    return total < (need + lane_budget + floor)
 
 
 def _is_canary_only(candidate):
