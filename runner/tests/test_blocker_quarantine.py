@@ -149,6 +149,18 @@ class BlockerQuarantineTest(unittest.TestCase):
         self.assertIn("503", src,
                       "handler must return 503 when SLACK_SIGNING_SECRET is not configured")
 
+    def test_slack_notify_bot_token_is_fail_secure(self):
+        """slack-notify edge function must return 503 when SLACK_BOT_TOKEN is unset."""
+        import pathlib
+        ts_path = pathlib.Path(__file__).parent.parent.parent / "supabase" / "functions" / "slack-notify" / "index.ts"
+        src = ts_path.read_text()
+        self.assertNotIn('Bearer ${Deno.env.get("SLACK_BOT_TOKEN")}', src,
+                         "must not read token inline — use a module-level constant with a guard")
+        self.assertIn("503", src,
+                      "handler must return 503 when SLACK_BOT_TOKEN is not configured")
+        self.assertNotIn("Bearer undefined", src,
+                         "must not silently send 'Bearer undefined' when token is missing")
+
     def test_quarantine_wrapper_does_not_bias_repair_classification(self):
         task = {
             "id": "t5",
