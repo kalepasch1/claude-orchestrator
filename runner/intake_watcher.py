@@ -131,6 +131,21 @@ def emit_operator_cards(proj_name, operator, src):
 
 def ingest_file(path, projects_by_name):
     text = open(path, encoding="utf-8", errors="replace").read()
+    # FREEFORM IN intake/: a non-canonical drop (no PROJECT: header) is a plain-English intent —
+    # decompose it through the same planner path as repo-root PROMPT-*.md instead of parsing it
+    # as canonical (which yields 0 tasks and silently archives it — the operator-workflow trap).
+    if text.strip() and not is_canonical(text):
+        default_project = _default_project_for_dropbox(text, projects_by_name)
+        try:
+            rendered = decompose_freeform(text, REPO_ROOT, default_project)
+            created, skipped = _queue_dropbox_tasks(rendered, projects_by_name)
+            print(f"intake: freeform '{os.path.basename(path)}' -> {created} queued via planner "
+                  f"(project={default_project})")
+            return created, skipped
+        except Exception as e:
+            # Do NOT archive an intent we failed to decompose — re-raise so run() leaves the file
+            # in place to retry (planner may just need CLAUDE_BIN or a transient DB read).
+            raise RuntimeError(f"freeform decompose failed: {e}")
     tasks, operator = parse(text)
     existing = {t["slug"] for t in (db.select("tasks", {"select": "slug"}) or [])}
     created, skipped = 0, 0
