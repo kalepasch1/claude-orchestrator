@@ -10,7 +10,7 @@ const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 function verify(ts: string, sig: string, raw: string): boolean {
-  if (!SIGNING) return true; // allow if unset (dev); set it in prod
+  if (!SIGNING) return false; // fail-closed: missing secret rejects all requests
   if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
   const mac = "v0=" + createHmac("sha256", SIGNING).update(`v0:${ts}:${raw}`).digest("hex");
   return mac === sig;
