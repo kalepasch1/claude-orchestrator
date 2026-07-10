@@ -18,6 +18,8 @@ PROTECTED_PREFIXES = (
 
 
 def should_slice(task):
+    if not isinstance(task, dict):
+        return False
     if os.environ.get("ORCH_AUTO_SLICE", "true").lower() not in ("1", "true", "yes", "on"):
         return False
     if MARK in str(task.get("note") or ""):
