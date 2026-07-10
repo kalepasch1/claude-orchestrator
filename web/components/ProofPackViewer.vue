@@ -14,11 +14,11 @@ const loading = ref(true)
 async function load() {
   loading.value = true
   try {
-    const { data } = await client
+    const { data } = await (client
       .from('controls')
       .select('value')
       .eq('key', 'common_brain_deployments')
-      .single()
+      .single() as Promise<{ data: { value: any } | null; error: any }>)
     if (data?.value) {
       const store = typeof data.value === 'string' ? JSON.parse(data.value) : data.value
       deployments.value = (store.deployments || []).slice(-50).reverse()
@@ -36,11 +36,11 @@ onMounted(load)
 const standings = ref<any[]>([])
 async function loadStandings() {
   try {
-    const { data } = await client
+    const { data } = await (client
       .from('controls')
       .select('value')
       .eq('key', 'cade_tournaments')
-      .single()
+      .single() as Promise<{ data: { value: any } | null; error: any }>)
     if (data?.value) {
       const store = typeof data.value === 'string' ? JSON.parse(data.value) : data.value
       const s = store.standings || {}

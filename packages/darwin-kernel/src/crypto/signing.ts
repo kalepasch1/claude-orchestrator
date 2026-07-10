@@ -49,7 +49,7 @@ function loadKeys(): { priv: KeyObject | null; pubPem: string } {
     const { privateKey } = generateKeyPairSync('ed25519');
     cachedPrivate = privateKey;
   }
-  cachedPublicPem = createPublicKey(cachedPrivate).export({ type: 'spki', format: 'pem' }).toString();
+  cachedPublicPem = createPublicKey(cachedPrivate as any).export({ type: 'spki', format: 'pem' }).toString();
   return { priv: cachedPrivate, pubPem: cachedPublicPem };
 }
 
