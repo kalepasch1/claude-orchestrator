@@ -441,6 +441,31 @@ class ModelRoutingTest(unittest.TestCase):
         import judge
         self.assertEqual(judge.REVIEWERS["claude"], "claude-haiku-4-5-20251001")
 
+    def test_judge_panel_respects_n_judges_cap(self):
+        import judge
+        with patch.object(model_gateway, "available", return_value=["local", "deepseek", "google", "openai"]), \
+             patch.object(judge, "N_JUDGES", 1):
+            providers = judge._panel_providers("gpt-4")
+        self.assertEqual(len(providers), 1)
+        self.assertEqual(providers[0], "local")
+
+    def test_agentic_disabled_local_model_filtered_from_pool(self):
+        env = {
+            "ORCH_AUTO_AGENTIC_CODERS": "true",
+            "ORCH_USE_PAID_AGENTIC_CREDITS": "false",
+            "ORCH_DISABLED_OLLAMA_AGENTIC_MODELS": "llama3.1",
+        }
+        with patch.dict(os.environ, env, clear=False), \
+             patch.object(agentic_coders, "_aider_available", return_value=True), \
+             patch("model_gateway.available", return_value=["local"]), \
+             patch.object(ollama_catalog, "candidates", return_value=[
+                 {"provider": "local", "model": "llama3.1", "cap": 5, "tier": "free"},
+                 {"provider": "local", "model": "qwen3-coder:30b", "cap": 8, "tier": "free"},
+             ]):
+            names = agentic_coders.available()
+        self.assertNotIn("llama3.1", " ".join(str(n) for n in names))
+        self.assertIn("ollama", names)
+
 
 if __name__ == "__main__":
     unittest.main()
