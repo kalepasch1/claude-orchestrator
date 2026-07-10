@@ -3,9 +3,13 @@
 
 Before agentic coding starts, turn the task intent and nearest merged diffs into
 a compact scaffold. The scaffold is also stored best-effort for future reuse.
+
+Branch recovery: if the task's branch is missing or stale when pre_claim_hook
+is called, recovery is attempted via patch_recovery before the template is built.
 """
 import hashlib
 import json
+import logging
 import os
 import re
 import sys
@@ -13,6 +17,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+
+log = logging.getLogger(__name__)
 
 MARK = "[patch-template:"
 WORD = re.compile(r"[a-z0-9_]{4,}", re.I)
@@ -90,10 +96,66 @@ def inject_prompt(task):
     return {**task, "prompt": new_prompt}
 
 
+def _get_project(project_id):
+    """Fetch project row for repo_path and default_base. Returns dict or None."""
+    if not project_id:
+        return None
+    try:
+        rows = db.select("projects", {"select": "id,name,repo_path,default_base",
+                                      "id": f"eq.{project_id}"})
+        return (rows or [None])[0]
+    except Exception:
+        return None
+
+
+def _ensure_branch(task):
+    """Detect missing branch and attempt recovery. Fail-soft: never raises."""
+    try:
+        import patch_recovery
+        slug = task.get("slug") or ""
+        if not slug:
+            return
+        proj = _get_project(task.get("project_id"))
+        repo = (proj or {}).get("repo_path") or ""
+        if not repo or not os.path.isdir(repo):
+            return
+        base = task.get("base_branch") or (proj or {}).get("default_base") or "main"
+
+        detection = patch_recovery.detect_branch(repo, slug)
+        if detection["found"]:
+            return
+
+        # Branch missing — attempt mechanical recovery before the template is built
+        intent_words = _words(task.get("prompt") or "")
+        template_id = _id(task)
+
+        # Try patch-first recovery (stored patch → reflog → template adaptation)
+        result = patch_recovery.recover(repo, slug, base, project=task.get("project_id"))
+        if result["ok"]:
+            log.info("patch_templates: branch recovered via %s for %s", result["method"], slug)
+            return
+
+        # Fall back to regeneration from intent (cache replay → intent stub)
+        result = patch_recovery.regenerate_from_intent(
+            repo, slug, base, intent_words, template_id=template_id
+        )
+        if result["ok"]:
+            log.info("patch_templates: branch regenerated via %s for %s", result["method"], slug)
+        else:
+            log.warning(
+                "patch_templates: branch recovery failed for %s (%s) — "
+                "suggest re-scoping or manual intervention",
+                slug, result.get("reason", "unknown"),
+            )
+    except Exception as exc:
+        log.debug("patch_templates._ensure_branch: %s", exc)
+
+
 def pre_claim_hook(task):
     try:
         if not isinstance(task, dict) or MARK in str(task.get("prompt") or ""):
             return task
+        _ensure_branch(task)
         template_id, body = build(task)
         new_prompt = body + f"\n{MARK}{template_id}]\n\n" + str(task.get("prompt") or "")
         db.update("tasks", {"id": task["id"]}, {"prompt": new_prompt})
