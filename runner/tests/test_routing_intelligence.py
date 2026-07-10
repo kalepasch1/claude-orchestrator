@@ -67,6 +67,59 @@ class RoutingIntelligenceTest(unittest.TestCase):
              patch.object(router_stats, "_CACHE", {"t": 0.0, "table": {}}):
             self.assertEqual(router_stats.best_coder("build", ["wasteful", "efficient"]), "efficient")
 
+    def test_router_rewards_deployed_over_test_only(self):
+        """Router should prefer a coder that deploys over one that integrates but never ships."""
+        n = router_stats.MIN_SAMPLES
+        rows = []
+        for i in range(n):
+            # integrator: passes tests and integrates, but deploy never follows
+            rows.append({"model": "integrator", "kind": "build",
+                         "tests_passed": i < int(n * 0.7), "integrated": i < int(n * 0.5),
+                         "deployed": False, "deploy_status": None, "train_outcome": None,
+                         "usd": 0.01, "wall_ms": 60000, "attempts": 1,
+                         "input_tokens": 1000, "output_tokens": 500,
+                         "diff_bytes": 1000, "review_failures": 0, "slug": f"int{i}"})
+            # deployer: fewer tests, fewer integrations, but what integrates also deploys
+            rows.append({"model": "deployer", "kind": "build",
+                         "tests_passed": i < int(n * 0.5), "integrated": i < int(n * 0.3),
+                         "deployed": i < int(n * 0.3), "deploy_status": "success" if i < int(n * 0.3) else None,
+                         "train_outcome": None,
+                         "usd": 0.01, "wall_ms": 60000, "attempts": 1,
+                         "input_tokens": 1000, "output_tokens": 500,
+                         "diff_bytes": 1000, "review_failures": 0, "slug": f"dep{i}"})
+        db = MagicMock()
+        db.select.return_value = rows
+        with patch.object(router_stats, "db", db), \
+             patch.object(router_stats, "_CACHE", {"t": 0.0, "table": {}}):
+            result = router_stats.best_coder("build", ["integrator", "deployer"])
+        self.assertEqual(result, "deployer")
+
+    def test_router_penalizes_train_failures(self):
+        """Router should penalize coders whose work fails train integration (train_outcome=testfail)."""
+        n = router_stats.MIN_SAMPLES
+        rows = []
+        for i in range(n):
+            # train-failing coder: tests pass locally but always fails the merge train
+            rows.append({"model": "train-breaker", "kind": "build",
+                         "tests_passed": True, "integrated": False,
+                         "deployed": False, "deploy_status": None, "train_outcome": "testfail",
+                         "usd": 0.01, "wall_ms": 60000, "attempts": 1,
+                         "input_tokens": 1000, "output_tokens": 500,
+                         "diff_bytes": 1000, "review_failures": 0, "slug": f"tb{i}"})
+            # solid coder: integrates and deploys most of the time
+            rows.append({"model": "solid", "kind": "build",
+                         "tests_passed": True, "integrated": True,
+                         "deployed": True, "deploy_status": "success", "train_outcome": "merged",
+                         "usd": 0.01, "wall_ms": 60000, "attempts": 1,
+                         "input_tokens": 1000, "output_tokens": 500,
+                         "diff_bytes": 1000, "review_failures": 0, "slug": f"sol{i}"})
+        db = MagicMock()
+        db.select.return_value = rows
+        with patch.object(router_stats, "db", db), \
+             patch.object(router_stats, "_CACHE", {"t": 0.0, "table": {}}):
+            result = router_stats.best_coder("build", ["train-breaker", "solid"])
+        self.assertEqual(result, "solid")
+
     def test_router_dedupes_repeated_route_evidence_backfill_rows(self):
         duplicate = {"model": "ollama:m", "kind": "build", "integrated": True,
                      "tests_passed": True, "usd": 0.0, "wall_ms": 0,
