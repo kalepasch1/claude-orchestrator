@@ -329,10 +329,10 @@ def _apply_diff_to_branch(repo, slug, branch, base, diff, source):
                     "reason": f"diff apply failed: {proc.stderr[:200]}"}
 
         env = {**os.environ,
-               "GIT_AUTHOR_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Kale Aaron Pasch"),
-               "GIT_AUTHOR_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "kalepasch@gmail.com"),
-               "GIT_COMMITTER_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Kale Aaron Pasch"),
-               "GIT_COMMITTER_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "kalepasch@gmail.com")}
+               "GIT_AUTHOR_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
+               "GIT_AUTHOR_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local"),
+               "GIT_COMMITTER_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
+               "GIT_COMMITTER_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local")}
         subprocess.run(["git", "add", "-A"], cwd=wt, env=env, capture_output=True)
         r2 = subprocess.run(["git", "commit", "--no-verify", "-m",
                             f"regen-from-cache({source}): {slug}"],
@@ -376,10 +376,10 @@ def _create_intent_stub(repo, slug, branch, base, intent_words, template_id=None
             f.write(f"base: {base}\n")
 
         env = {**os.environ,
-               "GIT_AUTHOR_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Kale Aaron Pasch"),
-               "GIT_AUTHOR_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "kalepasch@gmail.com"),
-               "GIT_COMMITTER_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Kale Aaron Pasch"),
-               "GIT_COMMITTER_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "kalepasch@gmail.com")}
+               "GIT_AUTHOR_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
+               "GIT_AUTHOR_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local"),
+               "GIT_COMMITTER_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
+               "GIT_COMMITTER_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local")}
         subprocess.run(["git", "add", stub_path], cwd=wt, env=env, capture_output=True)
         r2 = subprocess.run(["git", "commit", "--no-verify", "-m",
                             f"recovery-intent-stub: {slug}\n\nintent: {intent_text}"],
