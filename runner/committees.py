@@ -372,6 +372,31 @@ def _owner_bias():
         return 0.0
 
 
+def _matches_owner_calls(title, recommendation):
+    """Compare the current recommendation against past owner decisions on similar subjects.
+    Returns a human-readable signal string, or None if no close match exists."""
+    try:
+        overrides = db.select("owner_overrides", {"select": "subject_title,owner_decision",
+                                                  "order": "created_at.desc", "limit": "50"}) or []
+        if not overrides:
+            return None
+        current_pos = not str(recommendation or "").startswith(("HOLD", "ESCALATE"))
+        key = set(re.findall(r"[a-z]{4,}", (title or "").lower()))
+        for o in overrides:
+            past_title = o.get("subject_title") or ""
+            past_decision = o.get("owner_decision") or ""
+            kk = set(re.findall(r"[a-z]{4,}", past_title.lower()))
+            if len(key & kk) >= 3:
+                past_pos = (past_decision == "approved")
+                if current_pos == past_pos:
+                    return f"matches owner's prior '{past_decision}' on '{past_title}'"
+                else:
+                    return f"contradicts owner's prior '{past_decision}' on '{past_title}'"
+        return None
+    except Exception:
+        return None
+
+
 def deliberate(committee, subject_type, subject_id, title, body, app=None):
     """Run one committee as a multi-seat, multi-round drafting panel -> a single consensus opinion."""
     name = committee["name"]; mandate = committee.get("mandate", "")
@@ -614,6 +639,7 @@ def review(subject_type, subject_id, title, body, app=None):
     consensus_pct, factions, contributors = _consensus(panel)
     materiality = _materiality(panel, critical, legal_veto)
     lo, hi = _consensus_ci(panel, consensus_pct)
+    owner_match_signal = _matches_owner_calls(title, rec)
     out = {"aggregate": agg, "recommendation": rec, "opposed_by": opposed, "dissents": dissents,
            "conflicts": conflicts, "arbitration": arbitration, "owner_bar": round(bar, 2),
            "critical": critical, "contentious": contentious, "auto_ok": auto_ok, "escalate": escalate,
@@ -621,7 +647,8 @@ def review(subject_type, subject_id, title, body, app=None):
            "alignment": align, "drift": (align_info or {}).get("drift"),
            "consensus_pct": consensus_pct, "consensus_lo": lo, "consensus_hi": hi,
            "factions": factions, "contributors": contributors, "pivotal": _pivotal(panel),
-           "materiality": materiality, "title": title, "body": body, "panel": panel}
+           "materiality": materiality, "title": title, "body": body, "panel": panel,
+           "owner_match_signal": owner_match_signal}
     out["adv_discount"] = _adv_discount(out)
     out["consistency"] = _consistency(subject_type, title, rec)
     return out
@@ -1037,6 +1064,8 @@ def deliberation_onepager(agg):
                  f"({agg['pivotal'].get('current')}) — {agg['pivotal'].get('note')}")
     if agg.get("consistency"):
         L.append(f"**⟳ Consistency:** {agg['consistency']}")
+    if agg.get("owner_match_signal"):
+        L.append(f"**Owner alignment:** {agg['owner_match_signal']}")
     if contested:
         L.append("")
         L.append(f"> ⚠️ **CONTENTION — consensus below your {round(floor*100)}% floor. Review the "
@@ -1180,6 +1209,8 @@ def _note(agg):
                  f" Mitigation: {pm.get('mitigation','')}")[:400]
     if agg.get("rollout") == "canary":
         note += " Rollout: staged canary (auto-ramp/rollback on metrics)."
+    if agg.get("owner_match_signal"):
+        note += f" Owner alignment: {agg['owner_match_signal']}."
     return note
 
 
