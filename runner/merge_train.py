@@ -35,8 +35,7 @@ import agentic_repair
 import repo_lock         # per-repo mutex: concurrent train_run() calls must not race git refs
 
 MARK = "train"                                   # decided_by prefix => handled by the train
-SKIP_PREFIXES = ("merge-handler", "train")       # legacy prefix check, kept for readability in logs
-                                                  # actual gate is _already_decided() below
+SKIP_PREFIXES = ("merge-handler", "train")       # cards already handled by any integration path
 MERGE_KINDS = ("verify", "material", "integrate")
 TEST_CMD = os.environ.get("TEST_CMD", "npm test")
 TEST_TIMEOUT = int(os.environ.get("MERGE_TRAIN_TEST_TIMEOUT", "1800"))
@@ -393,7 +392,7 @@ def ensure_integration_card(project, slug, *, kind="integrate", title=None, why=
                                     "order": "created_at.desc",  # newest first — unordered scans missed dupes past the limit (240 dupes of one slug)
                                     "limit": os.environ.get("MERGE_CARD_DEDUP_SCAN", "4000")}) or []
     for c in cards:
-        if _already_decided(c):
+        if str(c.get("decided_by") or "").startswith(SKIP_PREFIXES):
             continue
         cslug = approval_merge._slug_from(c)
         if cslug == slug:
@@ -420,40 +419,16 @@ def ensure_integration_card(project, slug, *, kind="integrate", title=None, why=
 
 # ── the train ─────────────────────────────────────────────────────────────────
 
-def _already_decided(card):
-    """True if ANY process has already rendered a verdict on this card's decided_by field.
-
-    BUG (2026-07-10): _pick_cards()/ensure_integration_card()'s dedupe scan used to only skip
-    cards whose decided_by started with one of two hardcoded prefixes (SKIP_PREFIXES). But
-    ensure_integration_card() itself defaults decided_by="canonical-train" (not "train"), and
-    several other subsystems (auto-policy, ab-edge, owner-model/-bulk, human emails via the
-    dashboard) also write decided_by once a card is settled. None of those matched
-    SKIP_PREFIXES, so merge_train re-fetched and re-resolved thousands of already-decided
-    cards every single cycle (71,905 approved rows in prod, ALL of them already had a non-null
-    decided_by -- zero were genuinely pending). That N+1 resolve loop (one network round-trip
-    per card in _resolve_task) is what stalled every train invocation for minutes at a time,
-    causing overlapping runs to queue up on the repo lock and merge throughput to collapse to
-    ~1/hour. Fix: any non-empty decided_by means a decision has already been made -- skip it,
-    regardless of who/what wrote it. Verified against live data: sampled cards with non-legacy
-    decided_by prefixes all resolved to tasks in DECOMPOSED/QUEUED/BLOCKED state, never DONE --
-    none were ever eligible for merge_train to act on in the first place.
-    """
-    return bool(str(card.get("decided_by") or "").strip())
-
-
 def _pick_cards():
     """Approved merge-kind cards not yet handled by any integration path."""
     cards = db.select("approvals", {"select": "*", "status": "eq.approved",
                                     "kind": f"in.({','.join(MERGE_KINDS)})",
-                                    "decided_by": "is.null",  # filter at the DB, not after fetching --
-                                                              # was pulling 3000 already-decided rows
-                                                              # per cycle and N+1-resolving each one
                                     "order": "created_at.desc",
                                     "limit": os.environ.get("MERGE_TRAIN_SCAN_LIMIT", "3000")}) or []
     return [c for c in cards
             if c.get("kind") in MERGE_KINDS
             and approval_merge._is_code_merge_card(c)
-            and not _already_decided(c)]
+            and not str(c.get("decided_by") or "").startswith(SKIP_PREFIXES)]
 
 
 def _resolve_task(card):

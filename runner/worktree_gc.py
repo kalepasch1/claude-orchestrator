@@ -69,6 +69,15 @@ def gc_repo(repo):
             if path and branch and branch.startswith("agent/"):
                 slug = branch[len("agent/"):]
                 if slug not in protected and os.path.abspath(path) != main_worktree:
+                    # DURABILITY: push the branch to origin before reclaiming the worktree, so the
+                    # work survives on the remote even if the runner's fail-soft share push never
+                    # landed. This is what stops the recover-missing-branch churn at the source —
+                    # a GC'd branch is always fetchable by the other Mac / the merge train.
+                    if os.environ.get("ORCH_SHARE_AGENT_BRANCHES", "true").lower() in ("true", "1", "yes", "on"):
+                        on_origin = _run_git(["git", "show-ref", "--verify", "--quiet",
+                                              f"refs/remotes/origin/{branch}"], repo).returncode == 0
+                        if not on_origin:
+                            _run_git(["git", "push", "-u", "origin", f"{branch}:{branch}"], repo)
                     if _run_git(["git", "worktree", "remove", "--force", path], repo).returncode == 0:
                         removed += 1
             path = branch = None

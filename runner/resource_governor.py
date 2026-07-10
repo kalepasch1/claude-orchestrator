@@ -244,6 +244,37 @@ def _is_branch_unmerged(branch, repo):
         return True  # assume unmerged if we can't check
 
 
+def _agent_branch_safe_on_origin(branch, repo):
+    """Return True only if it is SAFE to delete this local agent branch — i.e. its work is
+    durably on origin. Safe iff the branch itself exists on origin, OR its tip commit is an
+    ancestor of an origin integration branch (already merged upstream). This is the fix for the
+    recover-missing-branch churn: a fail-soft branch-share push (runner.py) can leave a branch
+    local-only; deleting it here then loses the work fleet-wide. Never delete unshared work."""
+    try:
+        tip = subprocess.run(["git", "rev-parse", "--verify", "--quiet", branch],
+                             cwd=repo, capture_output=True, text=True, timeout=10).stdout.strip()
+        if not tip:
+            return True  # no such local branch / no commits — nothing to protect
+        # 1) branch present on origin as-is?
+        if subprocess.run(["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
+                          cwd=repo, capture_output=True, timeout=10).returncode == 0:
+            return True
+        # 2) tip already integrated into an origin branch (dev/staging/prod)?
+        targets = [t for t in (os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev"),
+                               os.environ.get("ORCH_CODE_MERGE_TARGET", "dev"),
+                               "main", "master") if t]
+        for tgt in targets:
+            ref = f"refs/remotes/origin/{tgt}"
+            if subprocess.run(["git", "show-ref", "--verify", "--quiet", ref],
+                              cwd=repo, capture_output=True, timeout=10).returncode == 0:
+                if subprocess.run(["git", "merge-base", "--is-ancestor", tip, ref],
+                                  cwd=repo, capture_output=True, timeout=10).returncode == 0:
+                    return True
+        return False
+    except Exception:
+        return False  # fail-closed: if unsure, do NOT delete
+
+
 def prune():
     freed_notes = []
     # 1) merged agent worktrees + git worktree prune
@@ -269,9 +300,16 @@ def prune():
                     if _is_branch_unmerged(b, repo):
                         freed_notes.append(f"SKIPPED (unmerged) {b}")
                         continue
+                    # SAFETY: never delete a local agent branch whose work isn't durably on origin
+                    # (fail-soft share push can leave it local-only → deleting loses work fleet-wide).
+                    origin_safe = _agent_branch_safe_on_origin(b, repo)
                     subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=repo, capture_output=True)
-                    subprocess.run(["git", "branch", "-D", b], cwd=repo, capture_output=True)
-                    freed_notes.append(f"worktree {b}")
+                    if origin_safe:
+                        subprocess.run(["git", "branch", "-D", b], cwd=repo, capture_output=True)
+                        freed_notes.append(f"worktree {b}")
+                    else:
+                        # keep the branch ref (cheap), just reclaim the worktree dir
+                        freed_notes.append(f"worktree {b} (branch kept: not on origin)")
 
         # 2) build caches (safe to delete; rebuilt on demand)
         for cache in ("**/.nuxt", "**/.output", "**/dist", "**/.next"):

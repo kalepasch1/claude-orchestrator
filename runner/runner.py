@@ -1292,13 +1292,29 @@ def run_task(t):
             # Fail-soft: offline/no-remote keeps the old local-only behavior. Env-gated so it
             # can be disabled fleet-wide via the config gateway if a repo must stay local.
             if os.environ.get("ORCH_SHARE_AGENT_BRANCHES", "true").lower() in ("true", "1", "yes", "on"):
-                try:
-                    _pr = subprocess.run(["git", "push", "-u", "origin", f"agent/{slug}"],
-                                         cwd=repo, capture_output=True, text=True, timeout=180)
-                    if _pr.returncode != 0:
-                        print(f"[branch-share] push agent/{slug} failed (non-fatal): {(_pr.stderr or '')[-160:]}")
-                except Exception as _pe:
-                    print(f"[branch-share] push agent/{slug} skipped: {_pe}")
+                # Durable share: retry the push (transient network/non-ff during outages was the root
+                # cause of local-only branches that later got GC'd → recover-missing-branch churn).
+                # Verify the ref actually landed on origin; if it never does, leave a durable marker
+                # so the branch is NOT eligible for local GC (governor now refuses to delete unshared).
+                _shared = False
+                for _attempt in range(3):
+                    try:
+                        _pr = subprocess.run(["git", "push", "-u", "origin", f"agent/{slug}"],
+                                             cwd=repo, capture_output=True, text=True, timeout=180)
+                        if _pr.returncode == 0:
+                            _shared = True
+                            break
+                        # non-ff (branch already on origin ahead) counts as shared
+                        if "already exists" in (_pr.stderr or "") or "up-to-date" in (_pr.stderr or "").lower():
+                            _shared = True
+                            break
+                        print(f"[branch-share] push agent/{slug} attempt {_attempt+1} failed: {(_pr.stderr or '')[-160:]}")
+                    except Exception as _pe:
+                        print(f"[branch-share] push agent/{slug} attempt {_attempt+1} error: {_pe}")
+                    time.sleep(2 * (_attempt + 1))
+                if not _shared:
+                    print(f"[branch-share] WARNING agent/{slug} not shared to origin after retries; "
+                          f"branch kept local (governor will not GC unshared branches)")
 
             result = integrate(repo, f"agent/{slug}", base, test_cmd, slug, v["notes"], "passed", project=name)
             POOL.mark_ok(acct)

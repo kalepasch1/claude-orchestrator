@@ -60,6 +60,31 @@ def _branch_exists_anywhere(repo, branch):
     return _branch_exists(repo, f"refs/remotes/origin/{branch}")
 
 
+def _already_integrated(repo, slug):
+    """True if this slug's work already landed in an origin integration branch. When a branch is
+    missing because it was legitimately merged (and later GC'd), rebuilding it is pure waste — this
+    lets the sweeper CLOSE the original instead of filing (and re-filing forever) recovery churn."""
+    if not repo or not slug:
+        return False
+    targets = [t for t in (os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev"),
+                           os.environ.get("ORCH_CODE_MERGE_TARGET", "dev"),
+                           "main", "master") if t]
+    needle = str(slug)[:48]
+    for tgt in targets:
+        ref = f"origin/{tgt}"
+        try:
+            if subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref], cwd=repo,
+                              capture_output=True).returncode != 0:
+                continue
+            g = subprocess.run(["git", "log", "--oneline", "-30000", "--grep", needle, ref],
+                               cwd=repo, capture_output=True, text=True, timeout=60)
+            if g.returncode == 0 and g.stdout.strip():
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _normalize_base(repo, proj, requested):
     for b in (requested, proj.get("default_base"), proj.get("prod_branch"), "main", "master"):
         if b and _branch_exists(repo, b):
@@ -203,6 +228,23 @@ def _reuse_context(task, proj, repo, base):
     return "\n\n".join(p for p in parts if p)
 
 
+def _has_live_recovery(project_id, slug):
+    """True if a recovery for this slug is still in flight (QUEUED/RUNNING/RETRY). A QUARANTINED or
+    otherwise terminal recovery does NOT count — that means recovery is exhausted, so the original
+    should be closed rather than re-counted as missing_branch on every sweep (phantom pressure)."""
+    root = _recovery_root(f"{RECOVERY_PREFIX}{slug}") if not str(slug).startswith(RECOVERY_PREFIX) else _recovery_root(slug)
+    for pat in (f"{RECOVERY_PREFIX}{slug}", f"rework-%-{RECOVERY_PREFIX}{slug}%"):
+        try:
+            rows = db.select("tasks", {"select": "state", "project_id": f"eq.{project_id}",
+                                       "slug": (f"eq.{pat}" if not pat.endswith("%") else f"like.{pat}"),
+                                       "state": "in.(QUEUED,RUNNING,RETRY)", "limit": "1"}) or []
+            if rows:
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def _queue_recovery(task, proj, recovery_index=None):
     slug = task.get("slug")
     if not slug or _existing_recovery_indexed(task.get("project_id"), slug, recovery_index):
@@ -222,7 +264,15 @@ def _queue_recovery(task, proj, recovery_index=None):
         "Original prompt:\n"
         f"{task.get('prompt') or ''}"
     )
-    force = task.get("force_coder") or "ollama"
+    # Coder choice: material/complex work must NOT be force-pinned to local ollama — that is exactly
+    # why 160+ recoveries quarantined (ollama can't rebuild things like implement-platform). Only
+    # keep a cheap local coder when the original explicitly used one; otherwise let the router pick a
+    # capable coder (force_coder=None). Material work never gets forced onto ollama.
+    orig = task.get("force_coder")
+    if task.get("material"):
+        force = None if (not orig or orig == "ollama") else orig
+    else:
+        force = orig or "ollama"
     row = {"project_id": task.get("project_id"), "slug": recovery_slug, "prompt": prompt,
            "base_branch": base, "kind": task.get("kind") or "bugfix", "state": "QUEUED",
            "deps": [], "material": bool(task.get("material")),
@@ -318,9 +368,25 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
         proj = projects.get(t.get("project_id")) or {}
         repo = proj.get("repo_path", "")
         if not _branch_exists_anywhere(repo, f"agent/{slug}"):
-            missing += 1
+            # Branch gone. If the work already landed upstream, CLOSE it (no rebuild) — this is what
+            # kills the phantom missing_branch recount + endless recovery churn on merged work.
+            if _already_integrated(repo, slug):
+                if t.get("state") != "MERGED":
+                    db.update("tasks", {"id": t["id"]},
+                              {"state": "MERGED",
+                               "note": "integration_sweeper: work already in integration branch; closed (branch GC'd)"})
+                continue
             if _queue_recovery(t, proj, recovery_index=recovery_index):
+                missing += 1
                 recovery += 1
+            elif _has_live_recovery(t.get("project_id"), slug):
+                missing += 1  # rebuild still in flight — leave the original open
+            else:
+                # branch gone, not integrated, and recovery is exhausted (quarantined/dead): stop
+                # re-counting + re-sweeping this forever. Close it so pressure reflects reality.
+                db.update("tasks", {"id": t["id"]},
+                          {"state": "QUARANTINED",
+                           "note": "integration_sweeper: branch lost and recovery exhausted; closed to stop phantom missing_branch churn"})
             continue
         created = merge_train.ensure_integration_card(
             proj.get("name") or str(t.get("project_id")),
