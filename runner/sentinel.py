@@ -215,6 +215,63 @@ def runner_guard(st):
             if lock_pid and p != lock_pid:
                 log("extra-keepalive-killed", p)
                 sh("kill", "-9", p)
+    # LIVENESS (not just existence): a runner process can be ALIVE but WEDGED — its main
+    # claim/heartbeat loop blocked while the periodic scheduler keeps forking jobs. Detect it
+    # by heartbeat staleness for THIS host and cycle the process (keepalive respawns fresh).
+    # Root cause of the 2026-07-09 incident: runner hung ~9h, no heartbeat, 0 merges, queue grew.
+    try:
+        import socket, db
+        host = socket.gethostname()
+        rows = db.select("runner_heartbeats", {"select": "hostname,last_seen",
+                                               "order": "last_seen.desc", "limit": "50"}) or []
+        mine = [r for r in rows if r.get("hostname") == host]  # primary row (lanes are suffixed)
+        stale_s = int(os.environ.get("SENTINEL_HEARTBEAT_STALE_S", "900"))
+        if mine:
+            last = str(mine[0].get("last_seen") or "").replace("Z", "+00:00")
+            try:
+                import datetime as _dt
+                dt = _dt.datetime.fromisoformat(last)
+                nowu = _dt.datetime.now(_dt.timezone.utc) if dt.tzinfo else _dt.datetime.utcnow()
+                age = (nowu - dt).total_seconds()
+            except Exception:
+                age = 0
+            if age > stale_s and runners:
+                log("runner-wedged", f"heartbeat stale {int(age)}s but process alive — cycling {runners[0]}")
+                sh("kill", "-9", runners[0])  # keepalive respawns on current code
+    except Exception as e:
+        log("liveness-check-error", e)
+
+
+# ── 3b. zombie agent reaper ───────────────────────────────────────────────────
+
+def zombie_agent_reaper():
+    """Kill orphaned coding-agent processes that outran any sane task timeout. A single agent
+    task never legitimately runs for hours; a multi-hour gemini/aider/codex/claude-exec is a
+    stuck zombie holding RAM (2026-07-09: a gemini ran 35h reserving a 24GB heap). Never touch
+    the orchestrator's own python runner or this sentinel."""
+    max_min = int(os.environ.get("SENTINEL_AGENT_MAX_MIN", "150"))
+    out = sh("ps", "-axo", "pid=,etimes=,command=").stdout.splitlines()
+    reaped = 0
+    for line in out:
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        pid, etimes, cmd = parts
+        try:
+            secs = int(etimes)
+        except ValueError:
+            continue
+        if secs < max_min * 60:
+            continue
+        low = cmd.lower()
+        is_agent = any(t in low for t in ("/gemini", "bin/gemini", "aider", "codex exec",
+                                          "claude --", "claude exec", " grok"))
+        # never reap the fleet's own python processes or ollama server
+        if is_agent and "runner.py" not in low and "sentinel.py" not in low and "ollama serve" not in low:
+            log("zombie-agent-reaped", f"pid={pid} age={secs//60}min {cmd[:60]}")
+            sh("kill", "-9", pid)
+            reaped += 1
+    return reaped
 
 
 # ── 4. RAM clamp guard ────────────────────────────────────────────────────────
@@ -312,6 +369,10 @@ def main():
         runner_guard(st)
     except Exception as e:
         log("runner-guard-error", e)
+    try:
+        zombie_agent_reaper()
+    except Exception as e:
+        log("zombie-reaper-error", e)
     try:
         ram_guard()
     except Exception as e:
