@@ -83,7 +83,7 @@ def run():
     total = sum(v["count"] for proj in data.values() for v in proj.values())
 
     payload = {
-        "generated_at": datetime.datetime.utcnow().isoformat(),
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "total_blocked": total,
         "by_project": data,
     }

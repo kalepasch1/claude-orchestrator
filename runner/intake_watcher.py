@@ -42,6 +42,10 @@ import db
 import pipeline_contract
 import autoclear as _autoclear
 
+# ── intake retry cap (T9 hardening) ──
+_retry_counts = {}  # path -> int
+_MAX_INTAKE_RETRIES = int(os.environ.get("ORCH_MAX_INTAKE_RETRIES", "3"))
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 INTAKE = os.path.abspath(os.path.join(HERE, "..", "intake"))
 PROCESSED = os.path.join(INTAKE, "processed")
@@ -355,10 +359,20 @@ def run():
             c, s = ingest_file(f, projects_by_name)
             stamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
             shutil.move(f, os.path.join(PROCESSED, f"{stamp}-{os.path.basename(f)}"))
+            _retry_counts.pop(f, None)
             print(f"intake: {os.path.basename(f)} -> {c} queued, {s} skipped")
             total += c
         except Exception as e:
-            print(f"intake: failed on {f}: {e}")  # leave the file in place to retry
+            _retry_counts[f] = _retry_counts.get(f, 0) + 1
+            if _retry_counts[f] > _MAX_INTAKE_RETRIES:
+                failed_dir = os.path.join(os.path.dirname(f), "failed")
+                os.makedirs(failed_dir, exist_ok=True)
+                dest = os.path.join(failed_dir, os.path.basename(f))
+                shutil.move(f, dest)
+                print(f"intake: moved {os.path.basename(f)} to failed/ after {_MAX_INTAKE_RETRIES} retries")
+                _retry_counts.pop(f, None)
+            else:
+                print(f"intake: failed on {f}: {e}")  # leave the file in place to retry
     return total + dropbox_total
 
 

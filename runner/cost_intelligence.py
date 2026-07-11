@@ -102,7 +102,7 @@ REUSE_CODERS = ("zero-token", "compiled-intent")
 
 
 def _iso_days_ago(days):
-    return (datetime.datetime.utcnow() - datetime.timedelta(days=days)).isoformat()
+    return (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).isoformat()
 
 
 def _select_outcomes(window_days):
@@ -376,7 +376,7 @@ def compute(window_days=30):
         blended_cost_per_unit_value = round(total_usd / total_units_of_value, 4)
 
     return {
-        "generated_at": datetime.datetime.utcnow().isoformat(),
+        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "window_days": window_days,
         "direct": direct,
         "indirect": indirect,

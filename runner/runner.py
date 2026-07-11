@@ -18,6 +18,8 @@ Run on your Mac:
 It NEVER force-merges: verify-fail or test-fail creates an approval card and stops.
 """
 import os, sys, time, json, socket, subprocess, threading, datetime, hashlib, faulthandler, signal
+import log as _log_mod
+_log = _log_mod.get("runner")
 
 # Auto-load .env from the runner's own directory (works regardless of CWD)
 _RUNNER_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -61,8 +63,8 @@ def _acquire_singleton():
 if __name__ == "__main__":
     try:
         faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
-    except Exception:
-        pass
+    except Exception as e:
+        _log.debug("hook faulthandler failed: %s", e)
     if not _acquire_singleton():
         print("another runner already holds the lock — exiting (singleton guard).")
         sys.exit(0)
@@ -221,8 +223,8 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
                 db.insert("resource_events", {"kind": "zero_trust_fallback",
                     "detail": f"slug={slug} error={str(e)[:200]}",
                     "action": "legacy_merge", "created_at": "now()"})
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook zero_trust_event failed: %s", e)
     # PR-native: push, open PR, let YOUR CI (sfc/gitleaks/vercel) gate, auto-merge on green.
     if INTEGRATION_MODE == "pr":
         r = pr_integrate.open_pr(repo, branch, base, slug, verify_notes, test_summary)
@@ -248,8 +250,8 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
         try:
             import approval_merge
             approval_merge._free_branch(repo, branch)
-        except Exception:
-            pass
+        except Exception as e:
+            _log.debug("hook free_branch failed: %s", e)
         # clean fast-forward when the branch is strictly ahead of base (the normal case) — no rebase needed
         ahead = subprocess.run(["git", "merge-base", "--is-ancestor", base, branch],
                                cwd=repo, capture_output=True).returncode == 0
@@ -274,8 +276,8 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
                     try:
                         import build_fixer
                         build_fixer.save_log(slug, blog)   # keep the log for a model-generated fix directive
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _log.debug("hook build_fixer failed: %s", e)
                     return "BUILDFAIL"
         except Exception as _be:
             print(f"[integrate] build gate skipped ({_be})")
@@ -292,8 +294,8 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
         try:
             import approval_merge
             approval_merge._free_branch(repo, branch)
-        except Exception:
-            pass
+        except Exception as e:
+            _log.debug("hook free_branch failed: %s", e)
         return "MERGED"
 
 
@@ -447,8 +449,8 @@ def run_task(t):
             if task_slicer.pre_agent_hook(t):
                 print(f"[slice] {t.get('slug')}: split before agentic spend", flush=True)
                 return
-        except Exception:
-            pass
+        except Exception as e:
+            _log.debug("hook task_slicer failed: %s", e)
         proj = projects(t["project_id"]).get(t["project_id"], {})
         repo = proj.get("repo_path", os.getcwd())
         name = proj.get("name", "repo")
@@ -459,6 +461,9 @@ def run_task(t):
         slug = t["slug"]
         kind = t.get("kind", "build")
         test_cmd = proj.get("test_cmd") or os.environ.get("TEST_CMD", "npm test")
+        _plan = None
+        _domain_post = None
+        _cost_val = 0
 
         # kill switch: stop all spend on this project (or globally) at a click
         if kill_switch.is_paused(name):
@@ -475,8 +480,8 @@ def run_task(t):
             if not toolchain_gate.is_ready_cached(t["project_id"]):
                 set_state(t["id"], state="QUEUED", note="held: project toolchain not ready (see toolchain-repair task)")
                 time.sleep(2); return
-        except Exception:
-            pass  # never block claiming on a broken check
+        except Exception as e:
+            _log.debug("hook toolchain_gate failed: %s", e)  # never block claiming on a broken check
 
         # budget guardrail: telemetry by default; hard-stops only when explicitly enabled
         if not budget.allow(name):
@@ -494,8 +499,8 @@ def run_task(t):
             try:
                 db.insert("resource_events", {"kind": "waste_guard", "detail": waste_reason,
                                               "action": "observed_continue", "created_at": "now()"})
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook waste_guard_event failed: %s", e)
 
         task_body = pipeline_contract.original_request(t["prompt"])
 
@@ -523,8 +528,8 @@ def run_task(t):
                 prompt = brain_compiler.inject_plan(prompt, _brain_plan)
                 prompt = _cap_agent_prompt(prompt)
                 set_state(t["id"], note=f"brain-compiler: {len(_brain_plan.get('patches', []))} repo-specific patch steps")
-        except Exception:
-            pass
+        except Exception as e:
+            _log.debug("hook brain_compiler failed: %s", e)
         t0 = time.time()
 
         # deterministic replay: re-run a captured run snapshot
@@ -625,8 +630,8 @@ def run_task(t):
             # inject this project's external-provider secrets (values never logged)
             try:
                 env.update(secrets_manager.inject_env(name))
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook secrets_manager failed: %s", e)
             # Agentic file edits go through the coder seam. Claude Code remains the default
             # backend because it enforces the spend circuit; configured second coders can take
             # independent safe tasks and fall back to Claude on failure.
@@ -642,14 +647,15 @@ def run_task(t):
                     draft_prompt = plan_stage.inject(prompt, _plan_text, _plan_model)
                     draft_prompt = _cap_agent_prompt(draft_prompt)
                     set_state(t["id"], note=f"strategy: {_plan_model} -> draft: {coder}")
-            except Exception:
+            except Exception as e:
+                _log.debug("hook plan_stage failed: %s", e)
                 draft_prompt = prompt  # fail-soft: never block drafting on the plan step
             try:
                 import adaptive_probe
                 draft_prompt = adaptive_probe.inject(t, draft_prompt, project=name)
                 draft_prompt = _cap_agent_prompt(draft_prompt)
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook adaptive_probe failed: %s", e)
             # MERGED-DIFF COMPILER: retrieve prior merged diffs and generate a patch plan.
             # This converts "invent from scratch" into "adapt a proven template" — 100X-500X cheaper.
             try:
@@ -657,31 +663,46 @@ def run_task(t):
                 if _plan and _plan.get("has_plan"):
                     draft_prompt = diff_compiler.inject_plan(draft_prompt, _plan)
                     set_state(t["id"], note=f"diff-compiler: {len(_plan.get('templates',[]))} templates (conf={_plan.get('confidence',0):.0%})")
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook diff_compiler failed: %s", e)
             try:
                 _mesh = mesh_optimizer.prepare_prompt(
                     t, draft_prompt, project=name, repo=repo, base=base,
                     coder=coder, visible_model=visible_model,
-                    diff_plan=_plan if '_plan' in dir() else None,
+                    diff_plan=_plan,
                     assignment={"task_class": kind, "implementer": {"confidence": 0.65}},
                 )
                 draft_prompt = _mesh.get("prompt") or draft_prompt
                 t["_mesh_domain"] = _mesh.get("domain")
                 if _mesh.get("note"):
                     set_state(t["id"], note=f"mesh-optimizer: {_mesh['note']}")
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook mesh_optimizer failed: %s", e)
+            # QUEUE PRE-OPTIMIZATION: check if background daemon already pre-computed
+            # expensive hooks for this task while it was idle in the queue.
+            _preopt_notes = []
+            _extras = ""
+            try:
+                import queue_preopt
+                _preopt = queue_preopt.get(t["id"])
+                if _preopt and _preopt.get("stages"):
+                    draft_prompt, _extras, _preopt_notes = queue_preopt.apply_cached(
+                        t["id"], draft_prompt, t, repo, name, attempt)
+                    if _preopt_notes:
+                        set_state(t["id"], note=f"preopt: {', '.join(_preopt_notes)}")
+            except Exception as e:
+                _log.debug("hook queue_preopt failed: %s", e)
             # CONTEXT + PRECEDENT: give the headless agent what an interactive session has — a repo map +
             # this project's conventions, and the most-similar change that already MERGED (adapt a proven
             # pattern instead of inventing). Both are pure retrieval (no tokens) and lift first-pass yield.
-            _extras = ""
-            try:
-                import context_pack, precedent
-                _extras += context_pack.block(repo)
-                _extras += precedent.hint(t, repo, project_id=t.get("project_id"))
-            except Exception:
-                _extras = ""
+            # Skip if pre-optimization already supplied these.
+            if "preopt:context_pack" not in _preopt_notes:
+                try:
+                    import context_pack, precedent
+                    _extras += context_pack.block(repo)
+                    _extras += precedent.hint(t, repo, project_id=t.get("project_id"))
+                except Exception:
+                    pass
             # BUILD-TO-GREEN MANDATE: make the agent iterate to a mergeable state ITSELF (edit -> build ->
             # fix -> re-build -> commit), the way an interactive VSCode session does — so it returns green,
             # mergeable work instead of a draft a downstream committee rejects and recycles. The build is
@@ -691,7 +712,7 @@ def run_task(t):
             # instead of naive head/tail truncation (50X-200X token savings).
             try:
                 draft_prompt = smart_compress.compress(
-                    draft_prompt, diff_plan=_plan if '_plan' in dir() else None,
+                    draft_prompt, diff_plan=_plan,
                     task_contract=task_body, templates=(_plan or {}).get("templates"))
             except Exception:
                 draft_prompt = _cap_agent_prompt(draft_prompt)
@@ -712,8 +733,8 @@ def run_task(t):
                             try:
                                 import approval_merge
                                 approval_merge._free_branch(repo, branch_ref)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                _log.debug("hook free_branch failed: %s", e)
                             os.makedirs(os.path.dirname(wt), exist_ok=True)
                             subprocess.run(["git", "worktree", "add", "-f", wt, branch_ref],
                                            cwd=repo, capture_output=True, timeout=180)
@@ -732,8 +753,8 @@ def run_task(t):
                     integrated = True
                     record(t, name, slug, kind, visible_model, acct, attempt, True, True, r.get("text", ""), t0, cost={"usd": 0})
                     return
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook zero_token_patch failed: %s", e)
             # INTENT COMPILER: check if task matches a compiled deterministic script
             try:
                 _compiled = intent_compiler.get_compiled(t, wt if os.path.isdir(wt) else repo)
@@ -747,31 +768,31 @@ def run_task(t):
                         integrated = True
                         record(t, name, slug, kind, visible_model, acct, attempt, True, True, r["text"], t0, cost={"usd": 0})
                         return
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook intent_compiler failed: %s", e)
             # FAST-PATH: graduated autonomy fast-path (L3/L4 skip hooks)
             _fast = {}
             try:
-                _fp_domain = model_portfolios.classify(t, (_plan or {}).get("files", [])) if '_plan' in dir() else "backend"
+                _fp_domain = model_portfolios.classify(t, (_plan or {}).get("files", [])) if _plan is not None else "backend"
                 _fp_agent = f"{coder}:{visible_model}" if coder != "claude" else f"claude:{visible_model}"
                 _fast = fast_path.check(t, _fp_agent, _fp_domain)
                 if _fast.get("skip_all"):
                     set_state(t["id"], note=f"fast-path L4: skipping all pre-hooks")
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook fast_path failed: %s", e)
             # ENSEMBLE PREDICTOR: combined failure prediction from all signals
             if not _fast.get("skip_pre_hooks"):
                 try:
                     _ens_agent = f"{coder}:{visible_model}" if coder != "claude" else f"claude:{visible_model}"
-                    _ens_domain = model_portfolios.classify(t, (_plan or {}).get("files", [])) if '_plan' in dir() else "backend"
+                    _ens_domain = model_portfolios.classify(t, (_plan or {}).get("files", [])) if _plan is not None else "backend"
                     _ensemble = ensemble_predictor.predict(t, _ens_agent, _ens_domain, visible_model,
-                                                           diff_plan=_plan if '_plan' in dir() else None)
+                                                           diff_plan=_plan)
                     if _ensemble.get("should_skip"):
                         set_state(t["id"], state="QUEUED",
                                   note=f"ensemble-predictor: {_ensemble['recommended_action']} (conf={_ensemble['confidence']:.0%}, {_ensemble['signal_count']} signals)")
                         time.sleep(5); return
-                except Exception:
-                    pass
+                except Exception as e:
+                    _log.debug("hook ensemble_predictor failed: %s", e)
             # UNIFIED KNOWLEDGE: single query across all knowledge stores
             _uk = {}
             if not _fast.get("skip_all"):
@@ -780,8 +801,8 @@ def run_task(t):
                     if _uk.get("matches"):
                         draft_prompt = unified_knowledge._apply_match(draft_prompt, _uk["matches"][0])
                         set_state(t["id"], note=f"unified-knowledge: {len(_uk['matches'])} matches, best={_uk['matches'][0].get('source', '?')} (conf={_uk['matches'][0].get('confidence', 0):.0%})")
-                except Exception:
-                    pass
+                except Exception as e:
+                    _log.debug("hook unified_knowledge failed: %s", e)
             # ADAPTIVE PIPELINE: collapse stages when cached results found
             if not _fast.get("skip_all"):
                 try:
@@ -789,99 +810,161 @@ def run_task(t):
                     if _ap.get("collapsed"):
                         draft_prompt = _ap.get("enriched_prompt", draft_prompt)
                         set_state(t["id"], note=f"adaptive-pipeline: collapsed {len(_ap['collapsed'])} stages, saving ~{_ap.get('estimated_savings_tokens', 0)} tokens")
-                except Exception:
-                    pass
-            # ── REMAINING PRE-HOOKS (all skipped when fast-path L4 skip_all) ──
+                except Exception as e:
+                    _log.debug("hook adaptive_pipeline failed: %s", e)
+            # ── REMAINING PRE-HOOKS (parallelized, all skipped when fast-path L4 skip_all) ──
             _pipeline_cost = 0
             if not _fast.get("skip_all"):
-                # CADE FAILURE FINGERPRINTS: check model viability BEFORE enrichment
-                try:
-                    if cade_tournaments.should_avoid(visible_model, t):
-                        _fp_summary = cade_tournaments.get_failure_summary(visible_model)
-                        set_state(t["id"], note=f"cade: avoiding {visible_model} ({_fp_summary.get('recent_failures', 0)} recent failures)")
-                except Exception:
-                    pass
-                # MODEL SLASHING: apply penalties early (before spending on enrichment)
-                try:
-                    _slash_agent = f"{coder}:{visible_model}" if coder != "claude" else f"claude:{visible_model}"
-                    _slash_penalty = model_slashing.penalty_for(_slash_agent)
-                    if _slash_penalty > 2.0:
-                        set_state(t["id"], note=f"model-slashing: {_slash_agent} penalty={_slash_penalty:.2f}")
-                except Exception:
-                    pass
-                # OUTPUT RECYCLING: inject partial work from prior failed attempt
-                # (skip if unified_knowledge already found matches — avoids double-query)
-                try:
-                    if not (_uk and _uk.get("matches")):
-                        _recycled = output_recycling.get_recycled(t["id"])
-                        if _recycled:
-                            draft_prompt = output_recycling.inject_recycled(draft_prompt, _recycled)
+                from concurrent.futures import ThreadPoolExecutor, as_completed
+                _uk_has_matches = bool(_uk and _uk.get("matches"))
+
+                # ── TIER 0: read-only hooks (parallel, no prompt mutation) ──────────
+                def _hook_cade():
+                    try:
+                        if cade_tournaments.should_avoid(visible_model, t):
+                            _fp_summary = cade_tournaments.get_failure_summary(visible_model)
+                            set_state(t["id"], note=f"cade: avoiding {visible_model} ({_fp_summary.get('recent_failures', 0)} recent failures)")
+                    except Exception as e:
+                        _log.debug("hook cade_fingerprints failed: %s", e)
+
+                def _hook_slashing():
+                    try:
+                        _slash_agent = f"{coder}:{visible_model}" if coder != "claude" else f"claude:{visible_model}"
+                        _slash_penalty = model_slashing.penalty_for(_slash_agent)
+                        if _slash_penalty > 2.0:
+                            set_state(t["id"], note=f"model-slashing: {_slash_agent} penalty={_slash_penalty:.2f}")
+                    except Exception as e:
+                        _log.debug("hook model_slashing failed: %s", e)
+
+                def _hook_budget():
+                    try:
+                        _domain_budget = model_portfolios.classify(t, (_plan or {}).get("files", [])) if _plan is not None else "backend"
+                        _budget = adaptive_budget.predict_budget(t, _domain_budget, diff_plan=_plan)
+                        if _budget.get("confidence", 0) > 0.3:
+                            set_state(t["id"], note=f"adaptive-budget: {_budget['max_tokens']} tokens ({_budget['source']}, saves {_budget.get('savings_pct', 0):.0f}%)")
+                    except Exception as e:
+                        _log.debug("hook adaptive_budget failed: %s", e)
+
+                # ── TIER 1: enrichment hooks (query phase parallel, apply serial) ──
+                def _query_recycling():
+                    try:
+                        if not _uk_has_matches:
+                            _recycled = output_recycling.get_recycled(t["id"])
+                            if _recycled:
+                                return {"hook": "output_recycling", "data": _recycled}
+                    except Exception as e:
+                        _log.debug("hook output_recycling failed: %s", e)
+                    return None
+
+                def _query_transfer():
+                    try:
+                        if not _uk_has_matches:
+                            _transfer = transfer_learning.find_transfer(t, current_project=name)
+                            if _transfer:
+                                return {"hook": "transfer_learning", "data": _transfer}
+                    except Exception as e:
+                        _log.debug("hook transfer_learning failed: %s", e)
+                    return None
+
+                def _query_distillation():
+                    try:
+                        if not _uk_has_matches:
+                            _distilled = prompt_distillation.find_distilled(t, current_project=name)
+                            if _distilled:
+                                return {"hook": "prompt_distillation", "data": _distilled}
+                    except Exception as e:
+                        _log.debug("hook prompt_distillation failed: %s", e)
+                    return None
+
+                def _query_debate():
+                    try:
+                        if os.environ.get("ORCH_COLOSSEUM_DEBATE", "").lower() in ("true", "1", "yes"):
+                            _debate_result = debate_compress.compressed_debate(t, project=name)
+                            if _debate_result:
+                                return {"hook": "debate_compress", "data": _debate_result}
+                    except Exception as e:
+                        _log.debug("hook debate_compress failed: %s", e)
+                    return None
+
+                def _query_cross_templates():
+                    try:
+                        if not _uk_has_matches:
+                            _xp_templates = cross_project_templates.find_templates(t, current_project=name)
+                            if _xp_templates:
+                                return {"hook": "cross_project_templates", "data": _xp_templates}
+                    except Exception as e:
+                        _log.debug("hook cross_project_templates failed: %s", e)
+                    return None
+
+                def _query_session_cache():
+                    try:
+                        if not _uk_has_matches:
+                            # session_cache.warm_start needs draft_prompt — run serially below
+                            return {"hook": "session_cache", "data": True}
+                    except Exception as e:
+                        _log.debug("hook session_cache failed: %s", e)
+                    return None
+
+                # Run Tier 0 + Tier 1 queries concurrently
+                _hook_workers = int(os.environ.get("ORCH_HOOK_WORKERS", "6"))
+                _enrichments = []
+                with ThreadPoolExecutor(max_workers=_hook_workers) as _pool:
+                    _futures = {
+                        # Tier 0 (fire-and-forget, no return value needed)
+                        _pool.submit(_hook_cade): "cade",
+                        _pool.submit(_hook_slashing): "slashing",
+                        _pool.submit(_hook_budget): "budget",
+                        # Tier 1 (collect results for serial apply)
+                        _pool.submit(_query_recycling): "recycling",
+                        _pool.submit(_query_transfer): "transfer",
+                        _pool.submit(_query_distillation): "distillation",
+                        _pool.submit(_query_debate): "debate",
+                        _pool.submit(_query_cross_templates): "cross_templates",
+                        _pool.submit(_query_session_cache): "session_cache",
+                    }
+                    for fut in as_completed(_futures):
+                        try:
+                            result = fut.result()
+                            if result and isinstance(result, dict) and result.get("hook"):
+                                _enrichments.append(result)
+                        except Exception as e:
+                            _log.debug("hook %s future failed: %s", _futures[fut], e)
+
+                # ── Apply Tier 1 enrichment results serially (prompt mutation) ──────
+                for _enr in _enrichments:
+                    _hook_name = _enr["hook"]
+                    _hook_data = _enr["data"]
+                    try:
+                        if _hook_name == "output_recycling":
+                            draft_prompt = output_recycling.inject_recycled(draft_prompt, _hook_data)
                             set_state(t["id"], note="output-recycling: injecting partial work from prior attempt")
-                except Exception:
-                    pass
-                # ADAPTIVE TOKEN BUDGET: predict optimal output budget
-                try:
-                    _domain_budget = model_portfolios.classify(t, (_plan or {}).get("files", [])) if '_plan' in dir() else "backend"
-                    _budget = adaptive_budget.predict_budget(t, _domain_budget, diff_plan=_plan if '_plan' in dir() else None)
-                    if _budget.get("confidence", 0) > 0.3:
-                        set_state(t["id"], note=f"adaptive-budget: {_budget['max_tokens']} tokens ({_budget['source']}, saves {_budget.get('savings_pct', 0):.0f}%)")
-                except Exception:
-                    pass
-                # TRANSFER LEARNING: inject proven cross-project patterns
-                # (skip if unified_knowledge already covered this store)
-                try:
-                    if not (_uk and _uk.get("matches")):
-                        _transfer = transfer_learning.find_transfer(t, current_project=name)
-                        if _transfer:
-                            draft_prompt = transfer_learning.inject_transfer(draft_prompt, _transfer)
-                            set_state(t["id"], note=f"transfer-learning: pattern from {_transfer['source_project']} (conf={_transfer['confidence']:.0%})")
-                except Exception:
-                    pass
-                # PROMPT DISTILLATION: use distilled prompt if available
-                # (skip if unified_knowledge already covered this store)
-                try:
-                    if not (_uk and _uk.get("matches")):
-                        _distilled = prompt_distillation.find_distilled(t, current_project=name)
-                        if _distilled:
-                            draft_prompt = prompt_distillation.apply_distilled(draft_prompt, _distilled)
-                            set_state(t["id"], note=f"distilled: {_distilled.get('merge_count', 0)} merges, {_distilled.get('compression_ratio', 1):.0%} compression")
-                except Exception:
-                    pass
-                # DEBATE COMPRESSION: inject compressed pre-implementation debate
-                try:
-                    if os.environ.get("ORCH_COLOSSEUM_DEBATE", "").lower() in ("true", "1", "yes"):
-                        _debate_result = debate_compress.compressed_debate(t, project=name)
-                        if _debate_result:
-                            draft_prompt = debate_compress.inject_debate(draft_prompt, _debate_result)
-                except Exception:
-                    pass
-                # CROSS-PROJECT TEMPLATES: inject proven patterns from other repos
-                # (skip if unified_knowledge already covered this store)
-                try:
-                    if not (_uk and _uk.get("matches")):
-                        _xp_templates = cross_project_templates.find_templates(t, current_project=name)
-                        if _xp_templates:
-                            draft_prompt = cross_project_templates.inject_cross_templates(draft_prompt, _xp_templates)
-                            set_state(t["id"], note=f"cross-templates: {len(_xp_templates)} matches from {_xp_templates[0].get('source_project','?')}")
-                except Exception:
-                    pass
-                # SESSION CACHE: warm start from prior attempt context
-                # (skip if unified_knowledge already covered this store)
-                try:
-                    if not (_uk and _uk.get("matches")):
-                        draft_prompt = session_cache.warm_start(t, attempt, draft_prompt)
-                except Exception:
-                    pass
+                        elif _hook_name == "transfer_learning":
+                            draft_prompt = transfer_learning.inject_transfer(draft_prompt, _hook_data)
+                            set_state(t["id"], note=f"transfer-learning: pattern from {_hook_data['source_project']} (conf={_hook_data['confidence']:.0%})")
+                        elif _hook_name == "prompt_distillation":
+                            draft_prompt = prompt_distillation.apply_distilled(draft_prompt, _hook_data)
+                            set_state(t["id"], note=f"distilled: {_hook_data.get('merge_count', 0)} merges, {_hook_data.get('compression_ratio', 1):.0%} compression")
+                        elif _hook_name == "debate_compress":
+                            draft_prompt = debate_compress.inject_debate(draft_prompt, _hook_data)
+                        elif _hook_name == "cross_project_templates":
+                            draft_prompt = cross_project_templates.inject_cross_templates(draft_prompt, _hook_data)
+                            set_state(t["id"], note=f"cross-templates: {len(_hook_data)} matches from {_hook_data[0].get('source_project','?')}")
+                        elif _hook_name == "session_cache":
+                            draft_prompt = session_cache.warm_start(t, attempt, draft_prompt)
+                    except Exception as e:
+                        _log.debug("hook %s apply failed: %s", _hook_name, e)
+
+                # ── TIER 2: final hooks (serial, order-dependent) ──────────────────
                 # PROMPT BANKRUPTCY: restructure AFTER all enrichment (operates on final prompt)
                 try:
                     if prompt_bankruptcy.is_bankrupt(t):
                         draft_prompt = prompt_bankruptcy.restructure(t, draft_prompt, project=name)
                         set_state(t["id"], note="prompt-bankruptcy: restructured after repeated failures")
-                except Exception:
-                    pass
+                except Exception as e:
+                    _log.debug("hook prompt_bankruptcy failed: %s", e)
                 # MULTI-AGENT PIPELINE: run scout+planner for complex tasks
                 try:
-                    _pipe_check = multi_agent_pipeline.should_pipeline(t, diff_plan=_plan if '_plan' in dir() else None)
+                    _pipe_check = multi_agent_pipeline.should_pipeline(t, diff_plan=_plan)
                     if _pipe_check.get("pipeline") and _pipe_check["stages"] >= 2:
                         _scout = multi_agent_pipeline.run_scout(t, name, repo)
                         _planner_result = None
@@ -890,16 +973,16 @@ def run_task(t):
                         draft_prompt = multi_agent_pipeline.build_enriched_prompt(t, _scout, _planner_result)
                         _pipeline_cost = multi_agent_pipeline.pipeline_cost(_scout, _planner_result)
                         set_state(t["id"], note=f"pipeline: {_pipe_check['stages']}-stage ({_pipe_check['reason']})")
-                except Exception:
-                    pass
+                except Exception as e:
+                    _log.debug("hook multi_agent_pipeline failed: %s", e)
                 # LIVE BIDDING: auction among models for best approach (Phase 2 colosseum)
                 try:
                     if os.environ.get("ORCH_LIVE_BIDDING", "").lower() in ("true", "1", "yes"):
                         _auction = live_bidding.auction(t, project=name)
                         if _auction and _auction.get("winner"):
                             draft_prompt = live_bidding.inject_auction_context(draft_prompt, _auction)
-                except Exception:
-                    pass
+                except Exception as e:
+                    _log.debug("hook live_bidding failed: %s", e)
             try:
                 if _integrating_existing:
                     print(f"[integrate-existing] {slug}: branch ahead of {base} -> skip agent, integrate directly", flush=True)
@@ -926,8 +1009,8 @@ def run_task(t):
                 # when another coder route exists, otherwise leave the task queued for cooldown.
                 try:
                     POOL.mark_exhausted(acct)
-                except Exception:
-                    pass
+                except Exception as e:
+                    _log.debug("hook mark_exhausted failed: %s", e)
                 if len(agentic_coders.available()) > 1:
                     failover = _next_non_claude_coder(t, exclude=t.get("_failed_coders") or ())
                     patch = {"state": "RETRY", "note": f"capacity circuit -> non-Claude failover route ({e})"}
@@ -957,13 +1040,13 @@ def run_task(t):
             # bidirectional learning: harvest the agent's feedback about the orchestration
             try:
                 feedback.extract_and_store(out, project=name, slug=slug, task_id=t["id"])
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook feedback failed: %s", e)
             # auto-resolve missing credentials (prompts you only if payment/manual is needed)
             try:
                 credential_broker.detect_from_output(out, name)
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook credential_broker failed: %s", e)
 
             if any(s in low for s in EXHAUST):
                 nxt = POOL.mark_exhausted(acct)
@@ -977,8 +1060,8 @@ def run_task(t):
                                       force_coder=failover, model=failover)
                             attempt -= 1
                             continue
-                except Exception:
-                    pass
+                except Exception as e:
+                    _log.debug("hook claude_exhausted_failover failed: %s", e)
                 set_state(t["id"], state="RETRY", note=f"account exhausted -> {nxt}")
                 if nxt and nxt != (acct or {}).get("name"):
                     attempt -= 1
@@ -1051,8 +1134,8 @@ def run_task(t):
                             prompt = session_proof.reinjection_prompt(t)
                             set_state(t["id"], state="RUNNING", note="session-proof: stall detected — re-injecting prompt")
                             continue
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _log.debug("hook session_proof failed: %s", e)
                     nochange_nudge = (
                         f"\n\n## NO FILE CHANGES DETECTED — YOU MUST EDIT FILES (retry {_nochange_count + 1}/2)\n"
                         f"Your previous attempt produced no committable file changes. "
@@ -1086,8 +1169,8 @@ def run_task(t):
                         prompt = session_proof.reinjection_prompt(t)
                         set_state(t["id"], state="RUNNING", note=f"session-proof failed ({'; '.join(proof.get('reasons', [])[:2])}) — retrying once")
                         continue
-                except Exception:
-                    pass
+                except Exception as e:
+                    _log.debug("hook session_proof_verify failed: %s", e)
 
             # blast radius: find dependents of changed files, pass to verifier
             radius = blast_radius.radius_after(wt, base)
@@ -1105,13 +1188,13 @@ def run_task(t):
             # GRADUATED AUTONOMY: proven (task_class × domain × model) triples skip gates
             _autonomy_skip = {}
             try:
-                _ga_domain = model_portfolios.classify(t, (_plan or {}).get("files", [])) if '_plan' in dir() else "backend"
+                _ga_domain = model_portfolios.classify(t, (_plan or {}).get("files", [])) if _plan is not None else "backend"
                 _ga_agent = f"{coder}:{visible_model}" if coder != "claude" else f"claude:{visible_model}"
                 _autonomy_skip, _ga_level = graduated_autonomy.should_skip_gates(t, _ga_agent, _ga_domain)
                 if _ga_level >= 3:
                     set_state(t["id"], note=f"graduated-autonomy: trust level {_ga_level} — skipping gates")
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook graduated_autonomy failed: %s", e)
 
             # CACHE GATE BYPASS: if result_cache hit on same base commit, ALL gates already passed.
             _cache_bypass = False
@@ -1120,19 +1203,19 @@ def run_task(t):
                     _cache_bypass = True
                     cache_gate_bypass.record_bypass(t["id"], sig, name, slug)
                     set_state(t["id"], note="cache-gate-bypass: identical prior run passed all gates")
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook cache_gate_bypass failed: %s", e)
 
             # SPECULATIVE EXEC: for template-matched tasks, agent already ran build — skip redundant gate
             _spec_skip = False
             try:
                 _spec_skip_ok, _spec_reason = speculative_exec.can_skip_build_gate(
-                    out, t, diff_plan=_plan if '_plan' in dir() else None)
+                    out, t, diff_plan=_plan)
                 if _spec_skip_ok:
                     _spec_skip = True
                     set_state(t["id"], note=f"speculative-exec: {_spec_reason}")
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook speculative_exec failed: %s", e)
 
             if _autonomy_skip.get("skip_all"):
                 # Graduated autonomy Level 4: skip ALL gates — proven pattern
@@ -1161,10 +1244,10 @@ def run_task(t):
                             ["git", "diff", "--name-only", f"{base}...HEAD"],
                             cwd=wt, text=True, errors="replace")[:20000]
                         t["_touched_files"] = [x for x in _files_for_judge.splitlines() if x.strip()]
-                    except Exception:
-                        pass
-                except Exception:
-                    pass
+                    except Exception as e:
+                        _log.debug("hook diff_name_only failed: %s", e)
+                except Exception as e:
+                    _log.debug("hook diff_for_judge failed: %s", e)
 
                 try:
                     _gate_results = parallel_gates.run_gates(
@@ -1325,8 +1408,8 @@ def run_task(t):
                 try:
                     import merged_diff_library
                     merged_diff_library.record(name, slug, kind, t.get("prompt", ""), repo, base, "HEAD")
-                except Exception:
-                    pass
+                except Exception as e:
+                    _log.debug("hook merged_diff_library failed: %s", e)
             # BUILDFAIL is not a task state — record it as BLOCKED with a build-fix note so auto_remediate
             # re-plans it (fix the build errors) instead of shipping build-breaking code.
             state_val = "BLOCKED" if result == "BUILDFAIL" else result
@@ -1354,8 +1437,8 @@ def run_task(t):
                     _esc = f" [escalated to coder '{_second}' after {_bfc} build fails]"
                 try:
                     db.update("tasks", {"id": t["id"]}, _patch)
-                except Exception:
-                    pass
+                except Exception as e:
+                    _log.debug("hook build_fail_update failed: %s", e)
                 _note = ("integrate BUILDFAIL — production build red; fix build/type errors before merge. "
                          + _fix + _esc)[:1800]
             else:
@@ -1367,8 +1450,8 @@ def run_task(t):
                     # clean slate on success so a later unrelated fail starts fresh
                     try:
                         db.update("tasks", {"id": t["id"]}, {"build_fail_count": 0, "force_coder": None})
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _log.debug("hook clean_slate_update failed: %s", e)
             if result in ("CONFLICT", "TESTFAIL", "BUILDFAIL"):
                 _cat = {"CONFLICT": "conflict", "TESTFAIL": "testfail", "BUILDFAIL": "buildfail"}[result]
                 if _agentic_repair_continue(
@@ -1397,85 +1480,85 @@ def run_task(t):
                     "tokens_in": run_cost.get("input_tokens", 0) if isinstance(run_cost, dict) else 0,
                     "tokens_out": run_cost.get("output_tokens", 0) if isinstance(run_cost, dict) else 0,
                 })
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook colosseum failed: %s", e)
             # PROMPT BANKRUPTCY: record outcome for lineage tracking
             try:
                 prompt_bankruptcy.record_attempt(t, success=integrated)
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook prompt_bankruptcy_record failed: %s", e)
             # MODEL PORTFOLIOS: update domain-specific reputation
             try:
                 _domain_post = model_portfolios.classify(t, (_plan or {}).get("files", []))
                 _agent_post = f"{coder}:{visible_model}" if coder != "claude" else f"claude:{visible_model}"
                 _cost_val = run_cost.get("usd", 0) if isinstance(run_cost, dict) else 0
                 model_portfolios.update(_agent_post, _domain_post, integrated, _cost_val, time.time() - t0)
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook model_portfolios failed: %s", e)
             # MODEL SLASHING: record outcome for penalty tracking
             try:
                 _slash_id = f"{coder}:{visible_model}" if coder != "claude" else f"claude:{visible_model}"
                 _cost_s = run_cost.get("usd", 0) if isinstance(run_cost, dict) else 0
                 model_slashing.record(_slash_id, merged=integrated, tests_passed=True,
                                        rollback=False, cost_usd=_cost_s,
-                                       domain=_domain_post if '_domain_post' in dir() else "general")
-            except Exception:
-                pass
+                                       domain=_domain_post if _domain_post is not None else "general")
+            except Exception as e:
+                _log.debug("hook model_slashing_record failed: %s", e)
             # INTENT GRAPH: record task → files → outcome for future replay
             try:
-                _ig_files = (_plan or {}).get("files", []) if '_plan' in dir() else []
+                _ig_files = (_plan or {}).get("files", [])
                 _ig_diff_hash = hashlib.sha256(out[-5000:].encode()).hexdigest()[:16] if out else ""
                 intent_graph.record(t, _ig_files, _ig_diff_hash, {
-                    "merged": integrated, "cost_usd": _cost_val if '_cost_val' in dir() else 0,
+                    "merged": integrated, "cost_usd": _cost_val,
                     "wall_s": time.time() - t0, "model": visible_model, "rollback": False,
                 })
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook intent_graph failed: %s", e)
             # CROSS-PROJECT TEMPLATES: index this merge for other projects
             try:
-                _ig_files_xp = (_plan or {}).get("files", []) if '_plan' in dir() else []
+                _ig_files_xp = (_plan or {}).get("files", [])
                 cross_project_templates.index_merge(t, name, _ig_files_xp,
                     diff_summary=out[-500:] if out else "", merge_rate=1.0 if integrated else 0)
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook cross_project_templates_index failed: %s", e)
             # GRADUATED AUTONOMY: record outcome for trust level tracking
             try:
-                _ga_d = model_portfolios.classify(t, []) if '_plan' not in dir() else _ga_domain
+                _ga_d = model_portfolios.classify(t, []) if _plan is None else _ga_domain
                 _ga_a = f"{coder}:{visible_model}" if coder != "claude" else f"claude:{visible_model}"
                 graduated_autonomy.record_outcome(t, _ga_a, _ga_d, merged=integrated, rollback=False)
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook graduated_autonomy_record failed: %s", e)
             # SESSION CACHE: save session context for potential retry warm start
             try:
                 _sc_ctx = session_cache.extract_session_context(out, error="" if integrated else "integration failed")
                 _sc_ctx["model"] = visible_model
                 _sc_ctx["cost_usd"] = run_cost.get("usd", 0) if isinstance(run_cost, dict) else 0
                 session_cache.save_session(t["id"], attempt, _sc_ctx)
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook session_cache_save failed: %s", e)
             # ADAPTIVE BUDGET: record actual output length for future predictions
             try:
                 _out_tokens = run_cost.get("output_tokens", 0) if isinstance(run_cost, dict) else 0
                 if _out_tokens > 0:
-                    _dom_ab = model_portfolios.classify(t, []) if '_domain_post' not in dir() else _domain_post
+                    _dom_ab = model_portfolios.classify(t, []) if _domain_post is None else _domain_post
                     adaptive_budget.record_output(t, _dom_ab, _out_tokens)
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook adaptive_budget_record failed: %s", e)
             # PROMPT DISTILLATION: distill winning prompts into minimal templates
             try:
                 if integrated:
-                    _ig_files_pd = (_plan or {}).get("files", []) if '_plan' in dir() else []
+                    _ig_files_pd = (_plan or {}).get("files", [])
                     _cost_pd = run_cost.get("usd", 0) if isinstance(run_cost, dict) else 0
                     prompt_distillation.distill(t, out, _ig_files_pd, project=name, cost_usd=_cost_pd)
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook prompt_distillation_distill failed: %s", e)
             # OUTPUT RECYCLING: recycle partial work from failures
             try:
                 if not integrated:
                     output_recycling.recycle(t["id"], wt if os.path.isdir(wt) else repo,
                                              out, error="integration failed")
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook output_recycling_recycle failed: %s", e)
             # CADE TOURNAMENTS: update standings + failure fingerprints
             try:
                 cade_tournaments.record_tournament_outcome(visible_model, won=integrated)
@@ -1483,7 +1566,7 @@ def run_task(t):
                     _err_fp = (out or "")[-300:] if out else "unknown failure"
                     cade_tournaments.record_failure(coder, visible_model, _err_fp, t)
                 if integrated:
-                    _ig_files_wb = (_plan or {}).get("files", []) if '_plan' in dir() else []
+                    _ig_files_wb = (_plan or {}).get("files", [])
                     _wb_cost = run_cost.get("usd", 0) if isinstance(run_cost, dict) else 0
                     _wb_tin = run_cost.get("input_tokens", 0) if isinstance(run_cost, dict) else 0
                     _wb_tout = run_cost.get("output_tokens", 0) if isinstance(run_cost, dict) else 0
@@ -1491,21 +1574,21 @@ def run_task(t):
                         t, {"merged": integrated, "diff_summary": (out or "")[-500:]},
                         project=name, merged_files=_ig_files_wb,
                         model=visible_model, coder=coder,
-                        domain=_domain_post if '_domain_post' in dir() else "general",
+                        domain=_domain_post if _domain_post is not None else "general",
                         wall_s=time.time() - t0, cost_usd=_wb_cost,
                         tokens_in=_wb_tin, tokens_out=_wb_tout)
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook cade_tournaments failed: %s", e)
             # PORTFOLIO REBALANCER: record outcome for $/merged-line cost curves
             try:
-                _pr_domain = _domain_post if '_domain_post' in dir() else "general"
+                _pr_domain = _domain_post if _domain_post is not None else "general"
                 _pr_cost = run_cost.get("usd", 0) if isinstance(run_cost, dict) else 0
                 _pr_lines = len(t.get("_touched_files") or []) * 50  # rough estimate
                 portfolio_rebalancer.record_outcome(
                     visible_model, _pr_domain, integrated, _pr_cost,
                     _pr_lines, wall_s=time.time() - t0)
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook portfolio_rebalancer failed: %s", e)
             # CAPACITY PACER: record token spend for budget pacing
             try:
                 _cp_tokens = 0
@@ -1514,24 +1597,24 @@ def run_task(t):
                 if _cp_tokens > 0:
                     _cp_cost = run_cost.get("usd", 0) if isinstance(run_cost, dict) else 0
                     capacity_pacer.record_spend(acct or "unknown", _cp_tokens, _cp_cost)
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook capacity_pacer failed: %s", e)
             # PROOF PROPAGATION: after merge, propagate to other projects
             try:
                 if integrated:
-                    _pp_files = (_plan or {}).get("files", []) if '_plan' in dir() else []
+                    _pp_files = (_plan or {}).get("files", [])
                     _pp_diff = ""
                     try:
                         _pp_diff = subprocess.check_output(
                             ["git", "diff", f"{base}...HEAD", "--stat"],
                             cwd=wt, text=True, errors="replace")[:2000]
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _log.debug("hook diff_stat failed: %s", e)
                     _pp_results = proof_propagation.propagate(t, name, _pp_files, _pp_diff)
                     if _pp_results:
                         set_state(t["id"], note=f"propagated to {len(_pp_results)} projects")
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook proof_propagation failed: %s", e)
             # BANKRUPTCY DECOMPOSE: on failure, auto-decompose if bankrupt
             try:
                 if not integrated:
@@ -1540,8 +1623,8 @@ def run_task(t):
                         _bd_subs = bankruptcy_decompose.decompose(t, name, wt if os.path.isdir(wt) else repo)
                         if _bd_subs:
                             set_state(t["id"], note=f"bankrupt → decomposed into {len(_bd_subs)} sub-tasks")
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook bankruptcy_decompose failed: %s", e)
             record(t, name, slug, kind, visible_model, acct, attempt, True, integrated, out, t0, cost=run_cost)
             return
         set_state(t["id"], state="BLOCKED", note="exhausted retries")
@@ -1917,8 +2000,8 @@ def _fire_periodic(job: str) -> None:
         if queue_velocity.is_generator_paused(job):
             print(f"[sched] {job} paused by queue-velocity PID controller", flush=True)
             return False
-    except Exception:
-        pass
+    except Exception as e:
+        _log.debug("hook queue_velocity failed: %s", e)
     # honor the kill switch for every scheduled job that could spend tokens, so a global
     # pause stops ALL spend (not just the main task loop) without restarting the runner.
     if job not in _SAFE_WHEN_PAUSED:
@@ -1926,8 +2009,8 @@ def _fire_periodic(job: str) -> None:
             if kill_switch.is_paused():
                 print(f"[sched] {job} skipped (paused)", flush=True)
                 return False
-        except Exception:
-            pass
+        except Exception as e:
+            _log.debug("hook kill_switch failed: %s", e)
     # Don't stack a new instance on top of one that's still running -- see _is_still_running
     # for why this was missing and what it caused (2026-07-10, train-60/merge_train.py pileup).
     if _is_still_running(job):
@@ -2022,8 +2105,8 @@ def _reap_stale_periodic(job, expected_interval):
         try:
             os.kill(pid, 9)
             print(f"[reaper] killed stale periodic child {job} (pid {pid}, ran {int(time.time()-launch_t)}s)")
-        except Exception:
-            pass
+        except Exception as e:
+            _log.debug("hook reap_stale failed: %s", e)
         del _PERIODIC_PIDS[job]
 
 
@@ -2038,7 +2121,7 @@ def _reap_zombie_tasks():
     try:
         running = db.select("tasks", {"select": "id,slug,updated_at", "state": "eq.RUNNING",
                                        "limit": "100"}) or []
-        cutoff = (datetime.datetime.utcnow() - datetime.timedelta(minutes=30)).isoformat()
+        cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=30)).isoformat()
         reclaimed = 0
         for t in running:
             if (t.get("updated_at") or "") < cutoff:
@@ -2102,11 +2185,12 @@ def _block_or_retry(t, note):
             return "requeue"
         set_state(t["id"], state="BLOCKED", note=d["note"], transient_retries=d["transient_retries"])
         return "block"
-    except Exception:
+    except Exception as e:
+        _log.debug("hook block_or_retry_fallback failed: %s", e)
         try:
             set_state(t["id"], state="BLOCKED", note=(note or "")[:300])
-        except Exception:
-            pass
+        except Exception as e:
+            _log.debug("hook run_task_safe_log failed: %s", e)
         return "block"
 
 
@@ -2120,8 +2204,8 @@ def _run_task_safe(t):
         try:
             import traceback
             set_state(t["id"], log_tail=traceback.format_exc()[-2000:])
-        except Exception:
-            pass
+        except Exception as e2:
+            _log.debug("hook run_task_safe_log failed: %s", e2)
         _block_or_retry(t, f"runner exception: {e}"[:300])
 
 
@@ -2182,8 +2266,8 @@ def main():
                                  f"Max plan. If this key is unused, delete it from .env and the Console.",
                              value="Prevents a repeat of the ~$500 API invoice.",
                              risk="None — subscription usage is unaffected.")
-                except Exception:
-                    pass
+                except Exception as e:
+                    _log.debug("hook billing_firewall failed: %s", e)
         else:
             print(f"[billing-firewall] WARNING: API billing is ALLOWED ({g.get('reason')}). "
                   f"You will be charged API rates. Unset ORCH_ALLOW_API_BILLING to block.")
@@ -2215,7 +2299,14 @@ def main():
     threading.Thread(target=_bg_ensure_deps, daemon=True, name="bg-deps").start()
     threading.Thread(target=_bg_selfcheck, daemon=True, name="bg-selfcheck").start()
     threading.Thread(target=_bg_controls, daemon=True, name="bg-controls").start()
-    print("[fast-start] deps + self-check running in background — claiming tasks immediately")
+    # QUEUE PRE-OPTIMIZATION: start background daemon that pre-computes expensive
+    # hook results for QUEUED tasks so they execute faster when claimed.
+    try:
+        import queue_preopt
+        queue_preopt.start()
+    except Exception as _e:
+        print(f"[queue-preopt] daemon start skipped: {_e}")
+    print("[fast-start] deps + self-check + queue-preopt running in background — claiming tasks immediately")
     global _sched_bg_running
     _sched_bg_running = False
     active = []
@@ -2250,8 +2341,8 @@ def main():
             try:
                 import hot_reload
                 hot_reload.maybe_reload()
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook hot_reload failed: %s", e)
         # SELF-DEPLOY: graceful exec-into-new-code when self_deploy requested it (canary-gated)
         # and no tasks are mid-flight; keepalive.sh restarts us into the new commit.
         try:
@@ -2273,8 +2364,8 @@ def main():
             pass
         except SystemExit:
             raise
-        except Exception:
-            pass
+        except Exception as e:
+            _log.debug("hook self_deploy failed: %s", e)
         try:
             db.heartbeat(RUNNER_ID, socket.gethostname(), len(active))
             # FLEET GATEWAY: load central config (fleet_config) + honor control actions (restart / pull)
@@ -2286,8 +2377,8 @@ def main():
                 if time.time() - _FLEET["t"] >= float(os.environ.get("ORCH_FLEET_TICK_S", "60")):
                     _FLEET["t"] = time.time()
                     fleet_control.tick()
-            except Exception:
-                pass
+            except Exception as e:
+                _log.debug("hook fleet_control failed: %s", e)
             # live throttle: the resource governor lowers this under disk/RAM pressure
             # read MAX_PARALLEL live from env each loop so concurrency is tunable via .env + hot_reload
             # WITHOUT a restart (RAM permitting; resource_governor still clamps to protect the Mac).
@@ -2315,8 +2406,8 @@ def main():
                             if time.time() - _mem_log_t > 120:
                                 print(f"[capacity-pacer] holding: {_cp.get('reason','')}")
                                 _mem_log_t = time.time()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        _log.debug("hook capacity_pacer_claim failed: %s", e)
                     if not _cp_ok:
                         t = None
                         pass  # skip claiming this cycle
@@ -2328,18 +2419,18 @@ def main():
                         try:
                             import reuse_first
                             t = reuse_first.pre_claim_hook(t)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            _log.debug("hook reuse_first failed: %s", e)
                         try:
                             import patch_transplant
                             t = patch_transplant.pre_claim_hook(t)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            _log.debug("hook patch_transplant failed: %s", e)
                         try:
                             import patch_templates
                             t = patch_templates.pre_claim_hook(t)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            _log.debug("hook patch_templates failed: %s", e)
                         # PATCH-FIRST RECOVERY: for recovery tasks, try stored patch replay/reflog
                         # before spending tokens on a full agent run (10X-100X cheaper).
                         try:
@@ -2355,8 +2446,8 @@ def main():
                                               note=f"patch-recovery: {_rec['method']} (zero-spend)")
                                     print(f"[patch-recovery] {slug}: recovered via {_rec['method']}")
                                     continue
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            _log.debug("hook patch_recovery failed: %s", e)
                         th = threading.Thread(target=_run_task_safe, args=(t,), daemon=True)
                         th.start(); active.append(th); continue
         except Exception as e:

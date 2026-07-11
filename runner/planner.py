@@ -53,7 +53,8 @@ def plan(master: str, repo: str = None) -> list:
         cmd_path = os.path.join(repo, "CLAUDE.md")
         if os.path.isfile(cmd_path):
             try:
-                txt = open(cmd_path).read()
+                with open(cmd_path) as _f:
+                    txt = _f.read()
                 marker = "## Learned from merged work"
                 if marker in txt:
                     lesson = txt[txt.index(marker):][:3000]

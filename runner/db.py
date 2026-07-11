@@ -5,7 +5,7 @@ The runner uses the SERVICE ROLE key so it bypasses RLS. Set:
     SUPABASE_URL=https://<ref>.supabase.co
     SUPABASE_SERVICE_KEY=<service-role key>   (keep secret; never ship to the web app)
 """
-import os, re, json, socket, time, datetime, urllib.request, urllib.parse, urllib.error
+import os, re, json, socket, time, datetime, threading, urllib.request, urllib.parse, urllib.error
 
 # Load runner/.env directly from Python so launchd agents pick up all env vars
 # (EMBED_PROVIDER, ANTHROPIC_API_KEY, etc.) even when the shell wrapper can't
@@ -323,6 +323,37 @@ def _is_evidence_task(t):
             or "routing sample" in note)
 
 
+# ── done-slug cache (T4 hardening) ─────────────────────────────────
+_done_cache_lock = threading.Lock()
+_done_cache = {"slugs": set(), "ts": 0.0, "ttl": 60.0}
+
+
+def _done_slugs():
+    """Return cached set of DONE/MERGED slugs, refreshing every 60s."""
+    now = time.time()
+    if now - _done_cache["ts"] < _done_cache["ttl"]:
+        return _done_cache["slugs"]
+    with _done_cache_lock:
+        # double-check after acquiring lock
+        if now - _done_cache["ts"] < _done_cache["ttl"]:
+            return _done_cache["slugs"]
+        rows = select("tasks", {
+            "select": "slug",
+            "state": "in.(DONE,MERGED)",
+            "limit": "10000",
+        }) or []
+        _done_cache["slugs"] = {r["slug"] for r in rows}
+        _done_cache["ts"] = time.time()
+        return _done_cache["slugs"]
+
+
+def invalidate_done_cache():
+    """Clear the done-slug cache (for tests and after state transitions)."""
+    with _done_cache_lock:
+        _done_cache["slugs"] = set()
+        _done_cache["ts"] = 0.0
+
+
 def claim_task(runner_id):
     """Atomically grab one QUEUED task whose deps are satisfied. ECONOMIC ORDERING: within a
     project-priority band, prefer higher-ROI projects (projects.concurrency_weight, set from
@@ -529,7 +560,7 @@ def claim_task(runner_id):
                                prio.get(t.get("project_id"), 5),
                                -float(roi_w.get(t.get("project_id"), 1) or 1),
                                t.get("created_at") or ""))
-    done = {t["slug"] for t in select("tasks", {"select": "slug", "state": "in.(DONE,MERGED)"})}
+    done = _done_slugs()
     for t in queued or []:
         pid = t.get("project_id")
         if pid and active_by_project.get(pid, 0) >= _project_lane_limit(t):
@@ -543,6 +574,13 @@ def claim_task(runner_id):
             if res:
                 if pid:
                     active_by_project[pid] = active_by_project.get(pid, 0) + 1
+                # Invalidate pre-optimization cache for claimed task
+                try:
+                    import queue_preopt
+                    queue_preopt.invalidate(t["id"])
+                except Exception:
+                    pass
+                invalidate_done_cache()
                 return res[0]
     return None
 

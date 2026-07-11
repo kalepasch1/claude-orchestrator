@@ -388,13 +388,15 @@ def prune():
 
 def set_throttle(n):
     n = max(1, min(n, _ceiling()))
-    open(THROTTLE_FILE, "w").write(str(n))
+    with open(THROTTLE_FILE, "w") as f:
+        f.write(str(n))
     return n
 
 
 def current_limit():
     try:
-        return max(1, min(int(open(THROTTLE_FILE).read().strip()), _ceiling()))
+        with open(THROTTLE_FILE) as f:
+            return max(1, min(int(f.read().strip()), _ceiling()))
     except Exception:
         return _ceiling()
 
