@@ -22,6 +22,7 @@ Everything is bounded, idempotent (the approvals_one_pending_per_issue index blo
 duplicate cards), and audited via notes/notifications. No model spend.
 """
 import os, sys, glob, time, socket, subprocess
+import repo_hygiene
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import agentic_repair
@@ -240,6 +241,24 @@ def clear_stale_git_locks():
     return cleared
 
 
+def clean_stray_js_across_projects():
+    """Periodic sweep (all registered repos on this machine) for untracked compiled .js
+    files shadowing their .ts source in ESM projects -- see repo_hygiene.py. This catches
+    the residue BEFORE an agent's own build/test attempt hits it, not just before
+    merge_train's test gate (which has its own call to the same helper). 2026-07-10:
+    tomorrow's server/ tree accumulated 4106 such files on one machine before this existed."""
+    cleaned = 0
+    for p in db.select("projects", {"select": "repo_path"}) or []:
+        repo = p.get("repo_path") or ""
+        if not repo or not os.path.isdir(os.path.join(repo, ".git")):
+            continue
+        try:
+            cleaned += len(repo_hygiene.clean_stray_js_duplicates(repo))
+        except Exception:
+            continue
+    return cleaned
+
+
 def run():
     hb = scheduler_heartbeat()
     orphans = release_orphaned_running()
@@ -248,9 +267,11 @@ def run():
     empty = requeue_empty_runs()
     refiled = refile_stranded_approvals()
     locks = clear_stale_git_locks()
+    stray_js = clean_stray_js_across_projects()
     print(f"queue_janitor: heartbeat={'ok' if hb else 'FAIL'} orphans-released={orphans} unstuck={stuck} "
-          f"merge-released={merging} empty-agentic-repair={empty} cards-refiled={refiled} locks-cleared={locks}")
-    return orphans + stuck + merging + empty + refiled + locks
+          f"merge-released={merging} empty-agentic-repair={empty} cards-refiled={refiled} locks-cleared={locks} "
+          f"stray-js-cleaned={stray_js}")
+    return orphans + stuck + merging + empty + refiled + locks + stray_js
 
 
 if __name__ == "__main__":

@@ -33,6 +33,7 @@ import db
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
 import agentic_repair
 import repo_lock         # per-repo mutex: concurrent train_run() calls must not race git refs
+import repo_hygiene      # strip stray untracked .js shadowing .ts before every test run
 
 MARK = "train"                                   # decided_by prefix => handled by the train
 SKIP_PREFIXES = ("merge-handler", "train")       # cards already handled by any integration path
@@ -165,6 +166,17 @@ def _run_tests(repo, test_cmd):
     if not test_cmd:
         return True, "no test_cmd configured"
     if "npm" in test_cmd or "vitest" in test_cmd or "vue-tsc" in test_cmd or "tsc" in test_cmd or "jest" in test_cmd:
+        # 2026-07-10: a leftover untracked compiled .js shadowing its .ts source (local build
+        # residue, invisible to git status) broke every test run touching it -- twice today,
+        # once at 10 files (beethoven, tracked -- needed a human) and once at 4106 (tomorrow,
+        # all untracked). This strips only the untracked kind before every test run so the
+        # gate can't be blocked by this class of bug again. See repo_hygiene.py.
+        try:
+            cleaned = repo_hygiene.clean_stray_js_duplicates(repo)
+            if cleaned:
+                print(f"merge_train: cleaned {len(cleaned)} stray untracked .js file(s) shadowing .ts in {repo}")
+        except Exception:
+            pass
         _ensure_node_deps(repo)
     try:
         r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
