@@ -40,7 +40,15 @@ MARK = "train"                                   # decided_by prefix => handled 
 SKIP_PREFIXES = ("merge-handler", "train")       # cards already handled by any integration path
 MERGE_KINDS = ("verify", "material", "integrate")
 TEST_CMD = os.environ.get("TEST_CMD", "npm test")
-TEST_TIMEOUT = int(os.environ.get("MERGE_TRAIN_TEST_TIMEOUT", "1800"))
+
+def _test_timeout():
+    """Read at call time so fleet_config changes take effect without restart."""
+    try:
+        return int(os.environ.get("MERGE_TRAIN_TEST_TIMEOUT", "300"))
+    except ValueError:
+        return 300
+
+TEST_TIMEOUT = _test_timeout()  # backward-compat module-level ref
 MERGING_STATE = os.environ.get("MERGE_TRAIN_STATE", "RUNNING")
 LOW_RISK_BATCH = int(os.environ.get("MERGE_TRAIN_LOW_RISK_BATCH", "8"))
 STANDARD_BATCH = int(os.environ.get("MERGE_TRAIN_STANDARD_BATCH", "3"))
@@ -276,6 +284,7 @@ def _run_tests(repo, test_cmd):
     """Step 3: run the gate. Returns (ok, tail-of-output)."""
     if not test_cmd:
         return True, "no test_cmd configured"
+    timeout = _test_timeout()
     if "npm" in test_cmd or "vitest" in test_cmd or "vue-tsc" in test_cmd or "tsc" in test_cmd or "jest" in test_cmd:
         # 2026-07-10: a leftover untracked compiled .js shadowing its .ts source (local build
         # residue, invisible to git status) broke every test run touching it -- twice today,
@@ -291,9 +300,9 @@ def _run_tests(repo, test_cmd):
         _ensure_node_deps(repo)
     try:
         r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
-                           text=True, timeout=TEST_TIMEOUT)
+                           text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        return False, f"tests timed out after {TEST_TIMEOUT}s"
+        return False, f"tests timed out after {timeout}s"
     if r.returncode != 0:
         tail = ((r.stdout or "")[-300:] + (r.stderr or "")[-300:]).strip()
         # One retry after a forced install if the failure looks like missing deps (env, not code).
@@ -301,12 +310,12 @@ def _run_tests(repo, test_cmd):
             _ensure_node_deps(repo)
             try:
                 r2 = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
-                                    text=True, timeout=TEST_TIMEOUT)
+                                    text=True, timeout=timeout)
                 if r2.returncode == 0:
                     return True, "green (after dep install)"
                 return False, ((r2.stdout or "")[-300:] + (r2.stderr or "")[-300:]).strip()
             except subprocess.TimeoutExpired:
-                return False, f"tests timed out after {TEST_TIMEOUT}s"
+                return False, f"tests timed out after {timeout}s"
         return False, tail
     return True, "green"
 
