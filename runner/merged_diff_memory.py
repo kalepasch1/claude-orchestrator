@@ -20,8 +20,8 @@ import hashlib
 import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import db
 import learn_from_merges
+import merged_diff_library
 
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 MEMORY_ROOT = os.environ.get("CLAUDE_MEMORY_ROOT",
@@ -98,10 +98,9 @@ def _extract_patterns_from_commit(repo, commit_hash):
             return None  # silently skip; quality gate already logged
 
         # Extract patterns
-        from merged_diff_library import _frameworks
         rules = _extract_rules(msg_out)
-        frameworks = _frameworks(full_text)
-        files = learn_from_merges._changed_files(repo, f"{commit_hash}^", commit_hash)
+        frameworks = merged_diff_library._frameworks(full_text)
+        files = merged_diff_library._changed_files(repo, f"{commit_hash}^", commit_hash)
 
         return {
             "commit": commit_hash,
@@ -116,14 +115,17 @@ def _extract_patterns_from_commit(repo, commit_hash):
 
 
 def _extract_rules(text):
-    """Extract do/avoid bullet points from commit message or diff."""
+    """Extract do/avoid bullet points from commit message or diff.
+
+    Returns rules with full text including bullet and keyword (for dedup by set union).
+    """
     lines = (text or "").split("\n")
     rules = []
     for line in lines:
         stripped = line.strip()
         # Match bullet points that look like conventions/rules
         if re.match(r"^\s*(?:[-*•]|\d+[.)])\s+(?:DO|AVOID|DO NOT|NEVER|ALWAYS)\b", line, re.I):
-            rules.append(stripped.lstrip("*-•0123456789.). "))
+            rules.append(stripped)
     return rules
 
 
