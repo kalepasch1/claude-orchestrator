@@ -33,7 +33,11 @@ class BlockerQuarantineTest(unittest.TestCase):
         inserted = fake_db.insert.call_args_list[0].args[1]
         self.assertEqual(inserted["state"], "QUEUED")
         self.assertEqual(inserted["force_coder"], "ollama")
-        self.assertEqual(inserted["sensitivity"], "crown_jewel")
+        # 2026-07-10: legal is now unconditionally "confidential" (checked before the
+        # ORCH_QUARANTINE_LOCAL_ONLY env var), not "crown_jewel" -- provider_terms.py treats
+        # them identically (both local-only), so this is a same-behavior literal update, not a
+        # loosening of the safety guarantee. See _sensitivity()'s docstring.
+        self.assertEqual(inserted["sensitivity"], "confidential")
         self.assertIn("non-regulated safe variant", inserted["prompt"])
         self.assertIn("licensed-professional or owner approval gate", inserted["prompt"])
         patch_row = fake_db.update.call_args.args[2]
@@ -220,6 +224,35 @@ class BlockerQuarantineTest(unittest.TestCase):
             "log_tail": "",
         }
         self.assertEqual(blocker_quarantine.classify(task), "secret")
+
+    def test_sensitive_categories_are_always_confidential_regardless_of_local_only_flag(self):
+        """secret/security/legal must stay local-only (confidential) no matter how
+        ORCH_QUARANTINE_LOCAL_ONLY is set -- this is the safety-preserving half of the fix."""
+        task = {"id": "t20", "slug": "x", "note": "", "log_tail": "", "prompt": "", "kind": "build"}
+        for category in ("secret", "security", "legal"):
+            for env_val in ("true", "false"):
+                with patch.dict(os.environ, {"ORCH_QUARANTINE_LOCAL_ONLY": env_val}, clear=False):
+                    self.assertEqual(blocker_quarantine._sensitivity(task, category), "confidential")
+
+    def test_nonsensitive_category_forced_local_only_when_env_true(self):
+        task = {"id": "t21", "slug": "x", "note": "", "log_tail": "", "prompt": "", "kind": "build"}
+        with patch.dict(os.environ, {"ORCH_QUARANTINE_LOCAL_ONLY": "true"}, clear=False):
+            self.assertEqual(blocker_quarantine._sensitivity(task, "buildfail"), "crown_jewel")
+            self.assertEqual(blocker_quarantine._sensitivity(task, "testfail"), "crown_jewel")
+            self.assertEqual(blocker_quarantine._sensitivity(task, "rework"), "crown_jewel")
+
+    def test_nonsensitive_category_uses_dynamic_privacy_check_when_env_false(self):
+        """2026-07-10 fix: with ORCH_QUARANTINE_LOCAL_ONLY=false, non-sensitive categories must
+        NOT be force-routed to the single-threaded local model lock -- they fall through to the
+        same dynamic privacy.sensitivity() check ordinary (non-quarantine) tasks use, freeing
+        them to use the full concurrent coder pool."""
+        task = {"id": "t22", "slug": "ordinary-build-fix", "note": "cannot find module",
+                "log_tail": "", "prompt": "fix the build", "kind": "build"}
+        with patch.dict(os.environ, {"ORCH_QUARANTINE_LOCAL_ONLY": "false"}, clear=False), \
+             patch.object(blocker_quarantine.privacy, "sensitivity", return_value="standard") as mock_priv:
+            result = blocker_quarantine._sensitivity(task, "buildfail")
+        self.assertEqual(result, "standard")
+        mock_priv.assert_called_once()
 
     def test_deep_rework_chain_escalates_to_human_instead_of_respawning(self):
         """Depth-cap safety net: even if a classifier edge case still produces a secret/legal/

@@ -356,11 +356,26 @@ def _forced_coder(category):
 
 
 def _sensitivity(task, category):
+    """2026-07-10: ORCH_QUARANTINE_LOCAL_ONLY defaulting true used to short-circuit BEFORE the
+    category check below ever ran, forcing crown_jewel (local-only) sensitivity onto EVERY
+    quarantine-rework task regardless of category. provider_terms.py treats 'confidential' and
+    'crown_jewel' identically (both restrict to local/ollama only), so genuinely sensitive
+    categories (secret/security/legal) were already correctly local-only via the category
+    branch below -- but non-sensitive categories (buildfail, testfail, missing-branch, noop,
+    oversized, generic rework) were ALSO getting force-routed to local-only, and from there into
+    local_model_slots' single-heavy-model-at-a-time lock (fcntl.flock, one inference at a time,
+    fleet-wide on that machine). With quarantine now producing thousands of replacement tasks
+    (beethoven alone: 700+), that single lock became the dominant fleet throughput bottleneck
+    (RUNNING stuck at 3-8 despite a 15-slot scheduler ceiling) even while paid-API budget sat at
+    0% utilization. Now checks category FIRST: sensitive categories are unconditionally
+    confidential/local-only (unchanged behavior), and only non-sensitive categories consult
+    ORCH_QUARANTINE_LOCAL_ONLY / the dynamic privacy check, so they CAN use the full concurrent
+    coder pool like ordinary tasks do once that env var allows it."""
+    if category in ("secret", "security", "legal"):
+        return "confidential"
     local_only = os.environ.get("ORCH_QUARANTINE_LOCAL_ONLY", "true").lower() in ("1", "true", "yes", "on")
     if local_only:
         return "crown_jewel"
-    if category in ("secret", "security", "legal"):
-        return "confidential"
     return privacy.sensitivity(_signal(task))
 
 
