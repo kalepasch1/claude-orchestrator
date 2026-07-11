@@ -110,6 +110,14 @@ def set_state(task_id, **kw):
     db.update("tasks", {"id": task_id}, kw)
 
 
+def emit_task_log(slug, level, message):
+    """Emit a structured log entry to run_logs (Supabase Realtime pushes it to the dashboard)."""
+    try:
+        db.insert("run_logs", {"source": slug, "level": level, "message": str(message)[:2000]})
+    except Exception:
+        pass
+
+
 def _next_non_claude_coder(task, exclude=()):
     """Pick the cheapest capable non-Claude coder, usually local Ollama, excluding failed backends."""
     excluded = set(exclude or ())
@@ -557,6 +565,7 @@ def run_task(t):
             acct = POOL.current()
             set_state(t["id"], state="RUNNING", model=visible_model, attempt=attempt,
                       account=(acct or {}).get("name"), note=f"agentic coder: {coder}")
+            emit_task_log(slug, "info", f"attempt {attempt} started ({visible_model})")
             subprocess.run([os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"), slug, base],
                            cwd=repo, capture_output=True)
             wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", slug)
@@ -893,6 +902,10 @@ def run_task(t):
             out = (r["text"] or "") + ("\n" + r["stderr"] if r.get("stderr") else "")
             low = out.lower()
             set_state(t["id"], log_tail=out[-2000:])
+            _first_line = next((l.strip() for l in out.split('\n') if l.strip()), "")[:200]
+            if _first_line:
+                _log_level = "error" if any(s in low for s in EXHAUST + RATE) else "info"
+                emit_task_log(slug, _log_level, _first_line)
             # bidirectional learning: harvest the agent's feedback about the orchestration
             try:
                 feedback.extract_and_store(out, project=name, slug=slug, task_id=t["id"])

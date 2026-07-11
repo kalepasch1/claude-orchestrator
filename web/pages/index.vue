@@ -678,12 +678,24 @@ const commonBrainProofRows = computed(() => proofPacks.value?.commonBrain || [])
 const recentProofReceipts = computed(() => proofPacks.value?.receipts || [])
 
 // ── live log lines for LogView ──────────────────────────────────────────────
-// Flattens the most recent tasks' `log_tail` text blobs into typed LogLine[].
-// Level is inferred from a leading token (ERROR/WARN/DEBUG); default info.
-// TODO(bind-stream): replace with a dedicated run_logs table + realtime channel
-// for true per-line streaming instead of polling the task log_tail snapshot.
+// Live entries pushed from run_logs via Supabase Realtime (INSERT events).
+// Falls back to flattening tasks[].log_tail for historical lines.
+const recentRunLogs = ref<LogLine[]>([])
+
+function onRunLog(payload: any) {
+  const row = payload.new ?? payload
+  if (!row?.message) return
+  const level = (['debug', 'info', 'warn', 'error'].includes(row.level) ? row.level : 'info') as LogLine['level']
+  const entry: LogLine = { ts: row.ts, level, message: row.message, source: row.source }
+  recentRunLogs.value = [entry, ...recentRunLogs.value].slice(0, 200)
+}
+
 const logLines = computed(() => {
-  const out: LogLine[] = []
+  // Live run_logs entries come first (newest → oldest already reversed for display)
+  const live: LogLine[] = [...recentRunLogs.value].reverse()
+
+  // Fallback: flatten log_tail snapshots from recent tasks
+  const tail: LogLine[] = []
   const recent = [...tasks.value]
     .filter(t => t.log_tail)
     .slice(0, 12)
@@ -706,10 +718,12 @@ const logLines = computed(() => {
       } else if (/\b(fail|failed|exception|traceback|429|rate.?limit)\b/i.test(line)) {
         level = 'error'
       }
-      out.push({ ts: baseMs, level, message, source: t.slug })
+      tail.push({ ts: baseMs, level, message, source: t.slug })
     }
   }
-  return out
+
+  // Prefer live stream; fall back to tail when no live entries yet
+  return live.length > 0 ? live : tail
 })
 
 const deployableTasks = computed(() =>
@@ -803,6 +817,7 @@ onMounted(() => {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'runner_heartbeats' }, onRealtime)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'runs' }, onRealtime)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'txns' }, onRealtime)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'run_logs' }, onRunLog)
       .subscribe()
   }
 })
