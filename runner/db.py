@@ -5,7 +5,7 @@ The runner uses the SERVICE ROLE key so it bypasses RLS. Set:
     SUPABASE_URL=https://<ref>.supabase.co
     SUPABASE_SERVICE_KEY=<service-role key>   (keep secret; never ship to the web app)
 """
-import os, re, json, socket, time, urllib.request, urllib.parse, urllib.error
+import os, re, json, socket, time, datetime, urllib.request, urllib.parse, urllib.error
 
 # Load runner/.env directly from Python so launchd agents pick up all env vars
 # (EMBED_PROVIDER, ANTHROPIC_API_KEY, etc.) even when the shell wrapper can't
@@ -547,6 +547,31 @@ def claim_task(runner_id):
     return None
 
 
+_last_heartbeat_prune = 0.0
+HEARTBEAT_PRUNE_INTERVAL_S = int(os.environ.get("ORCH_HEARTBEAT_PRUNE_INTERVAL_S", "600"))
+HEARTBEAT_PRUNE_AGE_S = int(os.environ.get("ORCH_HEARTBEAT_PRUNE_AGE_S", str(24 * 3600)))
+
+
+def _prune_stale_heartbeats():
+    """runner_heartbeats upserts on runner_id, but runner_id is PID-based -- every runner
+    restart (crash, keepalive respawn, sentinel-triggered cycle) mints a new runner_id and thus a
+    new row that's never cleaned up. Left unbounded, the table accumulates one dead row-family per
+    restart forever, which previously made an unordered/unbounded fleet.status() scan miss
+    genuinely live lanes. Rate-limited (once per HEARTBEAT_PRUNE_INTERVAL_S per process) and
+    fail-soft so a prune hiccup never blocks a heartbeat write."""
+    global _last_heartbeat_prune
+    now = time.time()
+    if now - _last_heartbeat_prune < HEARTBEAT_PRUNE_INTERVAL_S:
+        return
+    _last_heartbeat_prune = now
+    try:
+        cutoff = (datetime.datetime.now(datetime.timezone.utc)
+                  - datetime.timedelta(seconds=HEARTBEAT_PRUNE_AGE_S)).isoformat()
+        _req("DELETE", "/rest/v1/runner_heartbeats", params={"last_seen": f"lt.{cutoff}"})
+    except Exception:
+        pass
+
+
 def heartbeat(runner_id, hostname, active):
     insert("runner_heartbeats",
            {"runner_id": runner_id, "hostname": hostname, "active_tasks": active,
@@ -563,3 +588,4 @@ def heartbeat(runner_id, hostname, active):
                    upsert=True)
     except Exception:
         pass
+    _prune_stale_heartbeats()

@@ -19,11 +19,24 @@ git pull --ff-only || echo "   (git pull skipped/failed — continuing with loca
 
 echo "==> 2/6  size the runner to THIS Mac's RAM (fixes idle/claims-nothing)"
 TOTAL_GB=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 8000000000) / 1000000000 ))
-LANES=$(( (TOTAL_GB - 4) / 3 )); [ "$LANES" -lt 1 ] && LANES=1
-echo "   total RAM ${TOTAL_GB}GB -> $LANES lanes"
+# 2026-07-11: this used to bake in a one-shot, never-revisited PER_TASK_GB=3.0 / RAM_FLOOR_GB=4.0
+# straight into the local .env. resource_governor.py's concurrency ceiling used to be a frozen
+# module-level constant too, so even a later central fleet_config tuning push couldn't override
+# it without a process restart -- the two bugs together left Mac 2 permanently stuck at a stale,
+# conservative ~16-lane ceiling with a mem-budget clamp keeping it near ~4 active tasks (25%
+# utilization) while a hand-tuned Mac 1 ran near-saturated. resource_governor.py now reads
+# PER_TASK_GB/RAM_FLOOR_GB/MAX_PARALLEL_CEILING live from env every call (no restart needed), and
+# its runtime mem-budget clamp (current_limit() in govern()) already prevents overcommitting RAM
+# regardless of how high this static ceiling is set -- so it's safe to size lanes generously here
+# and let the governor throttle dynamically off real free RAM. Use the same PER_TASK_GB Mac 1 was
+# hand-tuned to; sync it fleet-wide going forward with: fleetctl.py set PER_TASK_GB 0.5
+PER_TASK_GB_DEFAULT="0.5"
+RAM_FLOOR_GB_DEFAULT="4.0"
+LANES=$(( (TOTAL_GB - 4) * 2 )); [ "$LANES" -lt 1 ] && LANES=1
+echo "   total RAM ${TOTAL_GB}GB -> $LANES lanes (ceiling only; runtime concurrency is still governed live by free RAM)"
 setenv() { local k="${1%%=*}"; if grep -q "^$k=" "$ENVF"; then sed -i '' "s|^$k=.*|$1|" "$ENVF"; else echo "$1" >> "$ENVF"; fi; }
 setenv "MAX_PARALLEL=$LANES"; setenv "MAX_PARALLEL_CEILING=$LANES"
-setenv "PER_TASK_GB=3.0"; setenv "RAM_FLOOR_GB=4.0"
+setenv "PER_TASK_GB=$PER_TASK_GB_DEFAULT"; setenv "RAM_FLOOR_GB=$RAM_FLOOR_GB_DEFAULT"
 setenv "ORCH_AUTO_PULL=true"; setenv "ORCH_AUTO_PULL_RESTART=true"; setenv "ORCH_AUTO_PULL_MIN=2"
 setenv "ORCH_FLEET_TICK_S=30"; setenv "ORCH_KEEPALIVE_STAY_RESIDENT=true"
 setenv "ORCH_KEEPALIVE_DUPLICATE_POLL_SECONDS=60"

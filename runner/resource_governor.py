@@ -15,18 +15,48 @@ import db
 
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 THROTTLE_FILE = os.path.join(HOME, "throttle")
-CEILING = int(os.environ.get("MAX_PARALLEL_CEILING", "12"))
-DISK_SOFT = float(os.environ.get("DISK_SOFT_PCT", "80"))   # prune above this
-DISK_HARD = float(os.environ.get("DISK_HARD_PCT", "90"))   # throttle to 1 + alert
-RAM_HARD = float(os.environ.get("RAM_HARD_PCT", "82"))
-# Hard low-memory brake: if fewer than this many GB are available, PAUSE new task claims
-# entirely (a single heavy task — e.g. an 8GB typecheck — could otherwise crash the Mac).
-# 1.5GB was too low — macOS is already swapping/thrashing by then. Default 3GB, and the
-# effective floor scales UP with machine size (see effective_floor_gb).
-RAM_FLOOR_GB = float(os.environ.get("RAM_FLOOR_GB", "6.0"))
-# Headroom to reserve per concurrent task. A new task is only started if free RAM exceeds
-# (floor + PER_TASK_GB), so concurrency is implicitly capped by available memory.
-PER_TASK_GB = float(os.environ.get("PER_TASK_GB", "1.5"))
+
+# 2026-07-11: CEILING/DISK_*/RAM_* used to be module-level constants snapshotted ONCE at import
+# time. fleet_control.load_config() pushes fleet-wide tuning (MAX_PARALLEL_CEILING, PER_TASK_GB,
+# RAM_FLOOR_GB, ...) into os.environ live every loop, but a long-running process never re-read
+# these frozen constants -- so a machine whose runner started before the last central tuning push
+# (e.g. one that hadn't been restarted recently) stayed stuck on whatever conservative defaults
+# it booted with, silently diverging from a machine that started fresh. This is the same class of
+# bug already fixed for runner.py's MAX_PARALLEL (see runner.py's eff_limit comment: "a stale/low
+# value throttled a 48GB box to 4 lanes"). Root-caused here: Mac 2 was clamped to ~4 concurrent
+# tasks against a 16-lane ceiling because its resource_governor process never picked up a tuned
+# PER_TASK_GB/RAM_FLOOR_GB pushed centrally after it last started. Read all of these live from
+# env on every call instead of freezing them at import.
+def _ceiling():
+    return int(os.environ.get("MAX_PARALLEL_CEILING", "12"))
+
+
+def _disk_soft():
+    return float(os.environ.get("DISK_SOFT_PCT", "80"))   # prune above this
+
+
+def _disk_hard():
+    return float(os.environ.get("DISK_HARD_PCT", "90"))   # throttle to 1 + alert
+
+
+def _ram_hard():
+    return float(os.environ.get("RAM_HARD_PCT", "82"))
+
+
+def _ram_floor_gb():
+    # Hard low-memory brake: if fewer than this many GB are available, PAUSE new task claims
+    # entirely (a single heavy task — e.g. an 8GB typecheck — could otherwise crash the Mac).
+    # 1.5GB was too low — macOS is already swapping/thrashing by then. Default 3GB, and the
+    # effective floor scales UP with machine size (see effective_floor_gb).
+    return float(os.environ.get("RAM_FLOOR_GB", "6.0"))
+
+
+def _per_task_gb():
+    # Headroom to reserve per concurrent task. A new task is only started if free RAM exceeds
+    # (floor + PER_TASK_GB), so concurrency is implicitly capped by available memory.
+    return float(os.environ.get("PER_TASK_GB", "1.5"))
+
+
 LOG_KEEP_DAYS = int(os.environ.get("LOG_KEEP_DAYS", "7"))
 PRUNE_NODE_MODULES = os.environ.get("PRUNE_NODE_MODULES", "false").lower() == "true"
 PRUNE_DOCKER = os.environ.get("PRUNE_DOCKER", "false").lower() == "true"
@@ -121,7 +151,7 @@ def effective_floor_gb():
     normally runs with most RAM committed to cache — on a large-RAM Mac that pushed the floor
     so high the runner never claimed. The kernel memory-pressure brake is the real anti-crash
     guard; this floor just keeps a sane emergency reserve.) Tune via RAM_FLOOR_GB in .env."""
-    return RAM_FLOOR_GB
+    return _ram_floor_gb()
 
 
 def mem_pressure_ok():
@@ -153,7 +183,7 @@ def pressure_should_block(free_gb=None, floor_gb=None):
     if free_gb is None:
         return True
     extra_tasks = float(os.environ.get("ORCH_PRESSURE_EXTRA_TASKS", "1.0") or 1.0)
-    return free_gb < floor_gb + (PER_TASK_GB * extra_tasks)
+    return free_gb < floor_gb + (_per_task_gb() * extra_tasks)
 
 
 def can_claim(n_active=0):
@@ -161,14 +191,16 @@ def can_claim(n_active=0):
     the gaps between the slower periodic govern() ticks. Returns (ok, reason)."""
     free = ram_free_gb()
     floor = effective_floor_gb()
-    if free is not None and free < floor + PER_TASK_GB:
-        return False, f"low RAM {free}GB free < need {floor + PER_TASK_GB}GB (floor {floor}+task {PER_TASK_GB})"
+    per_task = _per_task_gb()
+    if free is not None and free < floor + per_task:
+        return False, f"low RAM {free}GB free < need {floor + per_task}GB (floor {floor}+task {per_task})"
     if pressure_should_block(free, floor):
         return False, "kernel memory pressure warn/critical with low RAM headroom"
     try:
         used, _ = disk_pct()
-        if used >= DISK_HARD:
-            return False, f"disk {used}% >= hard {DISK_HARD}%"
+        hard = _disk_hard()
+        if used >= hard:
+            return False, f"disk {used}% >= hard {hard}%"
     except Exception:
         pass
     return True, "ok"
@@ -220,7 +252,7 @@ def _predicted_disk_pct(horizon_seconds=None):
     predicted = slope * (now + horizon_seconds) + intercept
     if slope <= 0:
         return predicted, None  # not growing
-    secs_to_hard = (DISK_HARD - (slope * now + intercept)) / slope
+    secs_to_hard = (_disk_hard() - (slope * now + intercept)) / slope
     return predicted, secs_to_hard / 3600
 
 
@@ -355,16 +387,16 @@ def prune():
 
 
 def set_throttle(n):
-    n = max(1, min(n, CEILING))
+    n = max(1, min(n, _ceiling()))
     open(THROTTLE_FILE, "w").write(str(n))
     return n
 
 
 def current_limit():
     try:
-        return max(1, min(int(open(THROTTLE_FILE).read().strip()), CEILING))
+        return max(1, min(int(open(THROTTLE_FILE).read().strip()), _ceiling()))
     except Exception:
-        return CEILING
+        return _ceiling()
 
 
 def dashboard_gauge():
@@ -380,10 +412,10 @@ def dashboard_gauge():
         pass
     return {
         "disk_pct": used, "free_gb": free_gb,
-        "ram_pct": ram, "throttle": current_limit(), "ceiling": CEILING,
+        "ram_pct": ram, "throttle": current_limit(), "ceiling": _ceiling(),
         "ram_free_gb": ram_free_gb(), "ollama_loaded": ollama_loaded,
         "predicted_disk_pct_2h": pred_pct, "hours_to_hard": hours_to_hard,
-        "disk_soft": DISK_SOFT, "disk_hard": DISK_HARD,
+        "disk_soft": _disk_soft(), "disk_hard": _disk_hard(),
     }
 
 
@@ -430,6 +462,11 @@ def govern():
         pass
 
     eff_floor = effective_floor_gb()
+    per_task = _per_task_gb()
+    ceiling = _ceiling()
+    disk_soft = _disk_soft()
+    disk_hard = _disk_hard()
+    ram_hard = _ram_hard()
     pressure_bad = pressure_should_block(free_ram, eff_floor)
     if free_ram is not None:
         cur_reason = _global_pause_reason()
@@ -452,7 +489,7 @@ def govern():
             free_ram = ram_free_gb()
             ram = ram_pct()
             pressure_bad = pressure_should_block(free_ram, eff_floor)
-            if free_ram is not None and free_ram >= eff_floor + PER_TASK_GB and not pressure_bad:
+            if free_ram is not None and free_ram >= eff_floor + per_task and not pressure_bad:
                 cur_reason = _global_pause_reason()
                 if cur_reason == "auto:low-memory":
                     try:
@@ -490,16 +527,16 @@ def govern():
 
     # Predictive check: prune now if trend says we'll hit DISK_HARD within the window
     pred_pct, hours_to_hard = _predicted_disk_pct()
-    if hours_to_hard is not None and 0 < hours_to_hard < PREDICT_WINDOW_H and used < DISK_HARD:
-        print(f"governor: predictive prune — at trend rate disk will hit {DISK_HARD}% in {hours_to_hard:.1f}h")
-        _event("predict", pred_pct, f"will breach {DISK_HARD}% in {hours_to_hard:.1f}h", "predictive prune")
+    if hours_to_hard is not None and 0 < hours_to_hard < PREDICT_WINDOW_H and used < disk_hard:
+        print(f"governor: predictive prune — at trend rate disk will hit {disk_hard}% in {hours_to_hard:.1f}h")
+        _event("predict", pred_pct, f"will breach {disk_hard}% in {hours_to_hard:.1f}h", "predictive prune")
         prune()
         used, free_gb = disk_pct()
 
-    if used >= DISK_SOFT:
+    if used >= disk_soft:
         prune()
         used, free_gb = disk_pct()                      # recheck after prune
-    if used >= DISK_HARD or (ram is not None and ram >= RAM_HARD):
+    if used >= disk_hard or (ram is not None and ram >= ram_hard):
         set_throttle(1); action = "throttle->1"
         _event("throttle", used, f"disk {used}% ram {ram}", "throttle to 1")
         try:
@@ -509,16 +546,16 @@ def govern():
                 "value": "Prevents a crash.", "risk": "Throughput reduced until pressure eases."})
         except Exception:
             pass
-    elif used < DISK_SOFT - 10 and (ram is None or ram < RAM_HARD - 12) and (free_ram is None or free_ram > RAM_FLOOR_GB + 3):
-        set_throttle(CEILING); action = f"throttle->{CEILING}"
-    elif (ram is None or ram < RAM_HARD - 8) and (free_ram is None or free_ram > RAM_FLOOR_GB + 2):
+    elif used < disk_soft - 10 and (ram is None or ram < ram_hard - 12) and (free_ram is None or free_ram > eff_floor + 3):
+        set_throttle(ceiling); action = f"throttle->{ceiling}"
+    elif (ram is None or ram < ram_hard - 8) and (free_ram is None or free_ram > eff_floor + 2):
         set_throttle(current_limit() + 1); action = "ease up"
     else:
         action = "hold (memory elevated)"
     # Memory-budget clamp: never allow more concurrent tasks than free RAM can hold,
     # regardless of what the disk/ram branches above decided.
     if free_ram is not None:
-        mem_budget = max(1, int((free_ram - eff_floor) / PER_TASK_GB))
+        mem_budget = max(1, int((free_ram - eff_floor) / per_task))
         if current_limit() > mem_budget:
             set_throttle(mem_budget)
             action += f"; mem-clamp->{mem_budget}"
@@ -526,11 +563,11 @@ def govern():
     latest_free = g.get("ram_free_gb")
     latest_ram = g.get("ram_pct")
     if (latest_free is not None
-            and used < DISK_SOFT - 10
-            and (latest_ram is None or latest_ram < RAM_HARD - 12)
+            and used < disk_soft - 10
+            and (latest_ram is None or latest_ram < ram_hard - 12)
             and not pressure_should_block(latest_free, eff_floor)):
-        recovered_budget = max(1, int((latest_free - eff_floor) / PER_TASK_GB))
-        recovered_target = min(CEILING, recovered_budget)
+        recovered_budget = max(1, int((latest_free - eff_floor) / per_task))
+        recovered_target = min(ceiling, recovered_budget)
         if recovered_target > current_limit():
             set_throttle(recovered_target)
             action += f"; mem-recover->{recovered_target}"
