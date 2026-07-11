@@ -48,13 +48,13 @@ def _ram_floor_gb():
     # entirely (a single heavy task — e.g. an 8GB typecheck — could otherwise crash the Mac).
     # 1.5GB was too low — macOS is already swapping/thrashing by then. Default 3GB, and the
     # effective floor scales UP with machine size (see effective_floor_gb).
-    return float(os.environ.get("RAM_FLOOR_GB", "6.0"))
+    return float(os.environ.get("RAM_FLOOR_GB", "2.0"))
 
 
 def _per_task_gb():
     # Headroom to reserve per concurrent task. A new task is only started if free RAM exceeds
     # (floor + PER_TASK_GB), so concurrency is implicitly capped by available memory.
-    return float(os.environ.get("PER_TASK_GB", "1.5"))
+    return float(os.environ.get("PER_TASK_GB", "0.15"))
 
 
 LOG_KEEP_DAYS = int(os.environ.get("LOG_KEEP_DAYS", "7"))

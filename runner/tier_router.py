@@ -47,10 +47,20 @@ _API_PROVIDERS = [
     {"provider": "anthropic","model": "claude-sonnet-4-6", "coder": "aider", "cost_rank": 4},
 ]
 
-# Subscription providers and their model tiers
+# Subscription providers and their model tiers — calibrated per task difficulty.
+# With 3 Claude Max plans, we have abundant subscription credits across all Claude
+# models. Route easy/mechanical → Haiku ($0, fast), standard → Sonnet ($0, balanced),
+# hard/critical → Opus ($0, max capability). All subscription = $0 marginal cost.
 _SUB_PROVIDERS = [
+    # Claude Haiku: fast, cheap-token, great for mechanical/docs/lint/easy tasks
+    {"provider": "claude",  "model": "claude-haiku-4-5-20251001", "coder": "claude-cli",
+     "tiers": {"fast"}},
+    # Claude Sonnet: balanced, good for standard build/mid-complexity
     {"provider": "claude",  "model": "claude-sonnet-4-6", "coder": "claude-cli",
-     "tiers": {"fast", "mid", "heavy"}},
+     "tiers": {"mid"}},
+    # Claude Opus: maximum capability for hard/critical/security/architecture tasks
+    {"provider": "claude",  "model": "claude-opus-4-8", "coder": "claude-cli",
+     "tiers": {"heavy"}},
     {"provider": "chatgpt", "model": "gpt-4o",            "coder": "aider",
      "tiers": {"fast", "mid"}},
     {"provider": "gemini",  "model": "gemini-2.5-pro",    "coder": "aider",
@@ -142,6 +152,30 @@ class TierRouter:
         diff = self._task_difficulty(task)
         model_tier = _DIFF_MODEL.get(diff, "fast")
         est = self._estimated_cost(task)
+
+        # --- Cowork model calibration: right-size Claude model per task ---
+        if os.environ.get("ORCH_COWORK_MODEL_CALIBRATE", "true").lower() in ("true", "1"):
+            kind = (task.get("kind") or "").lower()
+            # Mechanical/docs/lint/test → Haiku (fast, $0)
+            if kind in ("mechanical", "docs", "lint", "format", "bump", "test") or model_tier == "fast":
+                _cal_model = os.environ.get("ORCH_COWORK_EASY_MODEL", "claude-haiku-4-5-20251001")
+                if self._sub_has_capacity("claude"):
+                    return {"tier": "sub", "provider": "claude", "model": _cal_model,
+                            "coder": "claude-cli",
+                            "reason": f"cowork-calibrate: {kind or diff} → Haiku (fast/$0)"}
+            # Hard/critical/security/architecture → Opus (max capability, $0)
+            elif model_tier == "heavy" or kind in ("security", "architecture", "legal"):
+                _cal_model = os.environ.get("ORCH_COWORK_HARD_MODEL", "claude-opus-4-8")
+                if self._sub_has_capacity("claude"):
+                    return {"tier": "sub", "provider": "claude", "model": _cal_model,
+                            "coder": "claude-cli",
+                            "reason": f"cowork-calibrate: {kind or diff} → Opus (heavy/$0)"}
+            # Everything else (build, refactor, standard) → Sonnet (balanced, $0)
+            elif self._sub_has_capacity("claude"):
+                _cal_model = os.environ.get("ORCH_COWORK_MID_MODEL", "claude-sonnet-4-6")
+                return {"tier": "sub", "provider": "claude", "model": _cal_model,
+                        "coder": "claude-cli",
+                        "reason": f"cowork-calibrate: {kind or diff} → Sonnet (mid/$0)"}
 
         # --- wave_pipeline cross-task learning hint ---
         _hint_provider = task.get("_wave_provider_hint")
