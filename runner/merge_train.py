@@ -318,7 +318,7 @@ def _record_pressure(by_project, projects):
     for pid, group in by_project.items():
         proj = projects.get(pid, {})
         name = proj.get("name") or str(pid)
-        repo = proj.get("repo_path", "")
+        repo = db.localize_repo_path(proj.get("repo_path", ""))
         p = {"passed_waiting": 0, "missing_branch": 0, "oldest_wait_age_s": 0,
              "risk": {"low": 0, "standard": 0, "sensitive": 0}}
         for card, slug, task in group:
@@ -524,7 +524,15 @@ def _resolve_tasks_batch(cards):
 
 def _integrate_card(card, slug, task, proj):
     """Run one card through the train steps. Returns the outcome string for the summary."""
-    repo = proj.get("repo_path", "")
+    # 2026-07-11: proj["repo_path"] is one shared absolute path stored fleet-wide
+    # (e.g. /Users/kpasch/Documents/foo). On a second machine with a different home
+    # directory that path doesn't exist, so merge_train crashed on every single cycle
+    # there (observed: 676+ consecutive FileNotFoundError tracebacks, zero successful
+    # merges for hours, worked around same-day with a manual symlink farm on that one
+    # machine). localize_repo_path() rewrites the /Users/<user>/ prefix to THIS host's
+    # home when a local clone exists there, so this works on any machine without a
+    # manual per-host workaround.
+    repo = db.localize_repo_path(proj.get("repo_path", ""))
     pname = proj.get("name") or str(task.get("project_id"))
     task_base = _normalize_task_base(repo, proj, task.get("base_branch") or proj.get("default_base", "main"))
     branch = f"agent/{slug}"
@@ -693,7 +701,7 @@ def train_run():
         # touches a given project's working copy at a time. On a busy repo where another
         # thread is mid-train, skip this cycle rather than block indefinitely -- the next
         # scheduled pass (or the next task completion) will pick it back up.
-        repo_path = proj.get("repo_path", "")
+        repo_path = db.localize_repo_path(proj.get("repo_path", ""))
         with repo_lock.hold(repo_path, timeout=120) as got_lock:
             if not got_lock:
                 summary["skipped"] += len(group)

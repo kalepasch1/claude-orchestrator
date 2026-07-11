@@ -48,6 +48,11 @@ class TrainCase(unittest.TestCase):
         self.mock_db.select.side_effect = self._select
         self.mock_db.update.side_effect = \
             lambda table, match, patch: self.updates.append((table, match, patch))
+        # Default: behave like a machine where the stored repo_path is already correct
+        # (identity passthrough), matching db.localize_repo_path()'s real no-op behavior
+        # when os.path.isdir(repo_path) is true on this host. Tests that specifically
+        # exercise cross-host localization override this per-test.
+        self.mock_db.localize_repo_path.side_effect = lambda p: p
 
         patches = [
             patch.object(merge_train, "db", self.mock_db),
@@ -91,6 +96,51 @@ class TrainCase(unittest.TestCase):
 
     def card_updates(self, cid):
         return [p for (tbl, m, p) in self.updates if tbl == "approvals" and m.get("id") == cid]
+
+
+# ── repo_path localization (2026-07-11) ─────────────────────────────────────
+# projects.repo_path is one shared absolute path stored fleet-wide (e.g.
+# /Users/kpasch/Documents/foo). On a second machine with a different home directory
+# that path doesn't exist, so merge_train crashed with FileNotFoundError on every
+# single cycle there -- 676+ consecutive tracebacks in production, zero successful
+# merges for hours. db.localize_repo_path() rewrites the /Users/<user>/ prefix to
+# the current host's home when a local clone actually exists there. These tests
+# prove merge_train routes every repo_path read through it instead of using the
+# raw stored value.
+
+class TestRepoPathLocalization(TrainCase):
+
+    def test_integrate_card_localizes_repo_path_before_use(self):
+        self.cards = [_card("c1", "feat-x")]
+        self.tasks = [_task("t1", "feat-x")]
+        localized = "/Users/mandypasch/Documents/alpha"
+        self.mock_db.localize_repo_path.side_effect = None
+        self.mock_db.localize_repo_path.return_value = localized
+
+        merge_train.train_run()
+
+        self.mock_db.localize_repo_path.assert_any_call("/tmp/fake-repo-alpha")
+        # os.path.isdir is patched fleet-wide in setUp; confirm it was actually asked
+        # about the LOCALIZED path, not the raw stored one, proving the localized
+        # value is what flows into the no-repo/skip guard.
+        isdir_calls = [c.args[0] for c in self.mocks["isdir"].call_args_list]
+        self.assertIn(localized, isdir_calls)
+        self.assertNotIn("/tmp/fake-repo-alpha", isdir_calls)
+
+    def test_record_pressure_localizes_repo_path_before_use(self):
+        self.cards = [_card("c1", "feat-x", created_at="2026-01-01T00:00:00")]
+        self.tasks = [_task("t1", "feat-x", state="BLOCKED")]
+        localized = "/Users/mandypasch/Documents/alpha"
+        self.mock_db.localize_repo_path.side_effect = None
+        self.mock_db.localize_repo_path.return_value = localized
+
+        with patch.object(merge_train, "_materialize_branch", return_value=True) as mb:
+            merge_train.train_run()
+
+        # _record_pressure calls _materialize_branch(repo, f"agent/{slug}") for every
+        # waiting card -- confirm it received the LOCALIZED repo, not the raw stored one.
+        self.assertTrue(any(call.args[0] == localized for call in mb.call_args_list))
+        self.assertFalse(any(call.args[0] == "/tmp/fake-repo-alpha" for call in mb.call_args_list))
 
 
 # ── A: clean merge ────────────────────────────────────────────────────────────
