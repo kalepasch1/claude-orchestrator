@@ -548,9 +548,9 @@ def govern():
                 "value": "Prevents a crash.", "risk": "Throughput reduced until pressure eases."})
         except Exception:
             pass
-    elif used < disk_soft - 10 and (ram is None or ram < ram_hard - 12) and (free_ram is None or free_ram > eff_floor + 3):
+    elif used < disk_soft - 10 and (ram is None or ram < ram_hard - 5) and (free_ram is None or free_ram > eff_floor + 1):
         set_throttle(ceiling); action = f"throttle->{ceiling}"
-    elif (ram is None or ram < ram_hard - 8) and (free_ram is None or free_ram > eff_floor + 2):
+    elif (ram is None or ram < ram_hard - 3) and (free_ram is None or free_ram > eff_floor + 0.5):
         set_throttle(current_limit() + 1); action = "ease up"
     else:
         action = "hold (memory elevated)"
@@ -566,7 +566,7 @@ def govern():
     latest_ram = g.get("ram_pct")
     if (latest_free is not None
             and used < disk_soft - 10
-            and (latest_ram is None or latest_ram < ram_hard - 12)
+            and (latest_ram is None or latest_ram < ram_hard - 5)
             and not pressure_should_block(latest_free, eff_floor)):
         recovered_budget = max(1, int((latest_free - eff_floor) / per_task))
         recovered_target = min(ceiling, recovered_budget)
