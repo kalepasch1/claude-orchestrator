@@ -97,9 +97,9 @@ def _extract_patterns_from_commit(repo, commit_hash):
         if not accepted:
             return None  # silently skip; quality gate already logged
 
-        # Extract patterns using learn_from_merges helpers
+        # Extract patterns
         from merged_diff_library import _frameworks
-        rules = learn_from_merges._extract_rules(msg_out)  # defined below as helper
+        rules = _extract_rules(msg_out)
         frameworks = _frameworks(full_text)
         files = learn_from_merges._changed_files(repo, f"{commit_hash}^", commit_hash)
 
