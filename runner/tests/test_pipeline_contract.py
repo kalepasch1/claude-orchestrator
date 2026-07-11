@@ -53,6 +53,30 @@ class PipelineContractTest(unittest.TestCase):
         self.assertEqual(cls["task_class"], "legal")
         self.assertEqual(cls["need"], 9)
 
+    def test_artifact_returns_valid_json_with_expected_keys(self):
+        with patch.object(pipeline_contract.app_triage, "route", side_effect=self._route), \
+             patch.object(pipeline_contract.agentic_coders, "pick", return_value="claude"), \
+             patch.object(pipeline_contract, "_recent_context", return_value=[]), \
+             patch.object(pipeline_contract, "_qa_panel", return_value=["claude:claude-haiku-4-5-20251001"]):
+            result = pipeline_contract.artifact(
+                "Optimise queue throughput.",
+                project="beethoven",
+                kind="build",
+                source="dashboard",
+                slug="queue-opt",
+            )
+        import json
+        data = json.loads(result)
+        for key in ("task_class", "need", "risk", "coder", "author_model", "source", "project"):
+            self.assertIn(key, data)
+        self.assertEqual(data["source"], "dashboard")
+        self.assertEqual(data["project"], "beethoven")
+
+    def test_artifact_is_fail_soft(self):
+        with patch.object(pipeline_contract, "build_plan", side_effect=RuntimeError("boom")):
+            result = pipeline_contract.artifact("anything")
+        self.assertEqual(result, "{}")
+
 
 if __name__ == "__main__":
     unittest.main()
