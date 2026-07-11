@@ -14,6 +14,8 @@ import {
   domainOfCategory,
   DEFAULT_DOMAIN_POLICIES,
   AdminSeverity,
+  ownerCommitteeOf,
+  DOMAIN_COMMITTEE_OWNERS,
   type AdminAction,
   type AdminEvent,
 } from '../src/fleetAdmin/index.ts';
@@ -163,4 +165,28 @@ test('adapter registry polls all apps and isolates failures', async () => {
   const res = await reg.pollAll('2026-07-01T00:00:00.000Z');
   const galop = res.find((r) => r.product === 'galop')!;
   assert.equal(galop.events.length, 1);
+});
+
+// ---------- committee owner ----------
+test('ownerCommitteeOf maps billing action to Billing & Finance committee', () => {
+  const owner = ownerCommitteeOf(action());
+  assert.equal(owner.committee, 'Billing & Finance');
+  assert.equal(owner.domain, 'billing');
+  assert.ok(owner.defaultSeats.length > 0);
+  assert.equal(owner.chair, 'Finance Lead');
+});
+
+test('ownerCommitteeOf covers all four admin domains', () => {
+  for (const owner of Object.values(DOMAIN_COMMITTEE_OWNERS)) {
+    assert.ok(owner.committee.length > 0);
+    assert.ok(owner.chair.length > 0);
+    assert.ok(owner.defaultSeats.length >= 2);
+  }
+});
+
+test('ownerCommitteeOf fails closed to infra for unknown domain', () => {
+  // @ts-expect-error deliberately invalid domain
+  const owner = ownerCommitteeOf({ domain: 'unknown_domain' });
+  assert.equal(owner.domain, 'infra');
+  assert.equal(owner.committee, 'Site Reliability');
 });
