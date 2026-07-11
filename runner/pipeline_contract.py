@@ -15,6 +15,7 @@ still returns a deterministic contract rather than blocking task execution.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -244,6 +245,29 @@ def wrap_prompt(prompt: str, project: str = "", kind: str = "build", source: str
         return text
     plan = build_plan(text, project=project, kind=kind, source=source, slug=slug, material=material)
     return render_plan(plan) + "\n\n" + ORIGINAL_HEADER + "\n" + text
+
+
+def artifact(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
+             slug: str = "", material: bool = False) -> str:
+    """Return a compact JSON string of the storable contract fields. Fail-soft: returns '{}' on any error."""
+    try:
+        plan = build_plan(prompt, project=project, kind=kind, source=source, slug=slug, material=material)
+        storable = {
+            "task_class": plan.get("task_class"),
+            "need": plan.get("need"),
+            "risk": plan.get("risk"),
+            "coder": plan.get("coder"),
+            "author_model": plan.get("author_model"),
+            "preflight": plan.get("preflight"),
+            "strategy": plan.get("strategy"),
+            "qa": plan.get("qa"),
+            "qa_panel": plan.get("qa_panel"),
+            "source": plan.get("source"),
+            "project": plan.get("project"),
+        }
+        return json.dumps(storable, separators=(",", ":"))
+    except Exception:
+        return "{}"
 
 
 def note(existing: str = "", source: str = "unknown") -> str:
