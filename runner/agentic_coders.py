@@ -516,6 +516,16 @@ def pick(task, slot_index=0):
                            key=lambda c: -c["cap"])
         return strongest[0]["name"] if strongest else "claude"
 
+    # --- Swarm-aware routing: when tier_router says use API, return swarm coder ---
+    try:
+        if os.environ.get("ORCH_EXEC_MODE", "cli").lower() in ("hybrid", "api", "swarm"):
+            import tier_router
+            _decision = tier_router.route(task)
+            if _decision and _decision.get("tier") in ("api", "speculative"):
+                return f"swarm:{_decision.get('provider', 'deepseek')}"
+    except Exception:
+        pass
+
     # LEARNED ROUTER: prefer the coder that empirically converts THIS task-kind to merges most cheaply
     # ($/merge from our own outcomes). Returns None until there's enough signal, so it refines the
     # heuristic rather than fighting it; never overrides material (those stay on Claude below).
@@ -633,6 +643,19 @@ def _agentic_event(kind, coder, model="", project=None, value=0, action=""):
 
 def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900, **kwargs):
     """Dispatch to the chosen agentic backend, returning claude_cli-shaped output."""
+    # --- Swarm executor path: direct API calls, no CLI/aider overhead ---
+    if coder.startswith("swarm:"):
+        try:
+            import swarm_executor
+            provider = coder.split(":", 1)[1]
+            r = swarm_executor.run_swarm(prompt, model, provider=provider, cwd=cwd,
+                                         timeout=timeout, mode="agentic")
+            r["coder"] = coder
+            return r
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning("swarm path failed (%s), falling back to claude", e)
+            coder = "claude"  # fall through to normal path
     if coder == "claude":
         import claude_cli
         return claude_cli.run(prompt, model, cwd=cwd, env=env, project=project, timeout=timeout, **kwargs)

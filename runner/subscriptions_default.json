@@ -1,0 +1,50 @@
+[
+  {
+    "name": "claude-max-1",
+    "vendor": "anthropic",
+    "tier": "max",
+    "monthly_cost": 100,
+    "est_calls_hour": 80,
+    "est_calls_day": 500,
+    "models": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
+    "exec_method": "cli",
+    "machine_affinity": null,
+    "cowork_capable": true
+  },
+  {
+    "name": "claude-max-2",
+    "vendor": "anthropic",
+    "tier": "max",
+    "monthly_cost": 100,
+    "est_calls_hour": 80,
+    "est_calls_day": 500,
+    "models": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
+    "exec_method": "cli",
+    "machine_affinity": null,
+    "cowork_capable": true
+  },
+  {
+    "name": "claude-max-3",
+    "vendor": "anthropic",
+    "tier": "max",
+    "monthly_cost": 100,
+    "est_calls_hour": 80,
+    "est_calls_day": 500,
+    "models": ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"],
+    "exec_method": "cli",
+    "machine_affinity": null,
+    "cowork_capable": true
+  },
+  {
+    "name": "chatgpt-pro",
+    "vendor": "openai",
+    "tier": "pro",
+    "monthly_cost": 200,
+    "est_calls_hour": 100,
+    "est_calls_day": 600,
+    "models": ["o3", "gpt-5.5", "gpt-5.4-mini"],
+    "exec_method": "aider",
+    "machine_affinity": null,
+    "cowork_capable": false
+  }
+]

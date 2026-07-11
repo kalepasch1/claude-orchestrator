@@ -593,6 +593,16 @@ def run_task(t):
             # an intake "opus"/"sonnet" tag is treated as advisory, NOT a license to burn Opus.
             # An explicit "haiku" hint is honored (lets authors force the cheap tier).
             routed = model_router.route(t["prompt"], attempt)
+            # OUTCOME-WEIGHTED ROUTING: override with cheapest historically-successful model
+            try:
+                import outcome_router
+                _or = outcome_router.recommend(t, attempt)
+                if _or and _or.get("confidence", 0) > 0.7:
+                    routed["model"] = _or["model"]
+                    routed["reason"] = f"outcome-router: {_or['reason']}"
+                    set_state(t["id"], note=f"outcome-router: {_or['model']} (conf={_or['confidence']:.0%})")
+            except Exception as e:
+                _log.debug("hook outcome_router failed: %s", e)
             hint = (t.get("model") or "").lower()
             # YIELD-FIRST routing (optimize cost-per-MERGE, not per-call): Haiku empirically merges ~0%
             # of feature/bugfix work, so a Haiku draft is pure spend with zero return. Draft REAL coding
@@ -703,6 +713,27 @@ def run_task(t):
                     _extras += precedent.hint(t, repo, project_id=t.get("project_id"))
                 except Exception:
                     pass
+            # TASK MEMORY + HIVEMIND: inject fleet intelligence and dependency context
+            try:
+                import task_memory
+                _hive = task_memory.hivemind_query(t, name)
+                if _hive and _hive.get("insights"):
+                    draft_prompt = task_memory.inject_hivemind(draft_prompt, _hive)
+                    set_state(t["id"], note=f"hivemind: {len(_hive['insights'])} insights (conf={_hive.get('confidence', 0):.0%})")
+                _dep_ctx = task_memory.get_dependency_context(t)
+                if _dep_ctx:
+                    _extras += f"\n\n## Parent Task Context\n{_dep_ctx}\n"
+            except Exception as e:
+                _log.debug("hook task_memory failed: %s", e)
+            # MERGE VALIDATOR: check if speculative draft already passed tests
+            try:
+                import merge_validator
+                if merge_validator.fast_track_check(t["id"]):
+                    set_state(t["id"], note="merge-validator: pre-validated draft passed tests, fast-tracking")
+                    # Draft already validated — inject constraint to use it as-is
+                    _extras += "\n\n## Pre-Validated Draft Available\nA speculative draft has already passed all tests. Apply it directly unless you find issues.\n"
+            except Exception as e:
+                _log.debug("hook merge_validator failed: %s", e)
             # BUILD-TO-GREEN MANDATE: make the agent iterate to a mergeable state ITSELF (edit -> build ->
             # fix -> re-build -> commit), the way an interactive VSCode session does — so it returns green,
             # mergeable work instead of a draft a downstream committee rejects and recycles. The build is
@@ -770,6 +801,39 @@ def run_task(t):
                         return
             except Exception as e:
                 _log.debug("hook intent_compiler failed: %s", e)
+            # PATTERN COMPILER: check if pre-opt found a high-confidence pattern match
+            try:
+                import pattern_compiler
+                _pm = None
+                # Check preopt cache first (already computed while task was idle)
+                if _preopt and _preopt.get("pattern_match"):
+                    _pm = _preopt["pattern_match"]
+                else:
+                    _pm = pattern_compiler.match(t)
+                if _pm and _pm.get("confidence", 0) > 0.7:
+                    _pc_result = pattern_compiler.execute(_pm, wt if os.path.isdir(wt) else repo, t["id"])
+                    if _pc_result and _pc_result.get("success"):
+                        set_state(t["id"], note=f"pattern-compiler: deterministic replay (conf={_pm['confidence']:.0%}, pattern={_pm.get('pattern_id', '?')})")
+                        r = {"text": f"pattern-compiler replay — {_pc_result.get('files_changed', 0)} files, zero model call",
+                             "returncode": 0, "cost_usd": 0, "input_tokens": 0, "output_tokens": 0,
+                             "coder": "pattern-compiler"}
+                        integrated = True
+                        record(t, name, slug, kind, visible_model, acct, attempt, True, True, r["text"], t0, cost={"usd": 0})
+                        return
+            except Exception as e:
+                _log.debug("hook pattern_compiler failed: %s", e)
+            # CONFLICT PREDICTOR: check for file-scope overlap with active tasks
+            try:
+                import conflict_predictor
+                _conflicts = conflict_predictor.check_conflicts(t)
+                if _conflicts.get("action") == "defer":
+                    set_state(t["id"], state="QUEUED",
+                              note=f"conflict-predictor: deferring ({_conflicts['reason']})")
+                    time.sleep(10); return
+                elif _conflicts.get("conflicts"):
+                    set_state(t["id"], note=f"conflict-predictor: {len(_conflicts['conflicts'])} overlapping files, proceeding")
+            except Exception as e:
+                _log.debug("hook conflict_predictor failed: %s", e)
             # FAST-PATH: graduated autonomy fast-path (L3/L4 skip hooks)
             _fast = {}
             try:
@@ -990,10 +1054,49 @@ def run_task(t):
                          "returncode": 0, "cost_usd": 0, "input_tokens": 0, "output_tokens": 0,
                          "coder": coder}
                 else:
-                    r = agentic_coders.run(coder, draft_prompt, model,
-                                           cwd=wt if os.path.isdir(wt) else repo, env=env,
-                                           project=name, max_turns=60, permission="acceptEdits",
-                                           timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
+                    # --- SWARM TIER ROUTING: subscription-first, API-overflow ---
+                    _use_swarm = False
+                    _swarm_decision = None
+                    try:
+                        if os.environ.get("ORCH_EXEC_MODE", "cli").lower() in ("hybrid", "api", "swarm"):
+                            import tier_router
+                            _swarm_decision = tier_router.route(t)
+                            if _swarm_decision and _swarm_decision.get("tier") in ("api", "speculative"):
+                                _use_swarm = True
+                    except Exception as _tier_err:
+                        _log.debug("tier_router: %s — falling back to default coder", _tier_err)
+                    if _use_swarm and _swarm_decision:
+                        try:
+                            import swarm_executor
+                            _swarm_provider = _swarm_decision.get("provider", "claude")
+                            _swarm_model = _swarm_decision.get("model", model)
+                            _swarm_mode = "diff" if kind in ("mechanical", "chore", "cleanup", "test", "docs") else "agentic"
+                            r = swarm_executor.run_swarm(
+                                draft_prompt, _swarm_model, provider=_swarm_provider,
+                                cwd=wt if os.path.isdir(wt) else repo,
+                                timeout=int(os.environ.get("TASK_TIMEOUT", "900")),
+                                mode=_swarm_mode,
+                            )
+                            r["coder"] = f"swarm:{_swarm_provider}"
+                            try:
+                                tier_router.record_outcome(
+                                    slug, _swarm_decision["tier"], _swarm_provider,
+                                    r.get("returncode", 1) == 0, r.get("cost_usd", 0),
+                                    r.get("latency_s", 0))
+                            except Exception:
+                                pass
+                        except Exception as _sw_err:
+                            _log.warning("swarm_executor failed (%s); falling back to agentic_coders", _sw_err)
+                            r = agentic_coders.run(coder, draft_prompt, model,
+                                                   cwd=wt if os.path.isdir(wt) else repo, env=env,
+                                                   project=name, max_turns=60, permission="acceptEdits",
+                                                   timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
+                    else:
+                        # --- DEFAULT PATH: subscription CLI/SDK via agentic_coders ---
+                        r = agentic_coders.run(coder, draft_prompt, model,
+                                               cwd=wt if os.path.isdir(wt) else repo, env=env,
+                                               project=name, max_turns=60, permission="acceptEdits",
+                                               timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
                 r.setdefault("coder", coder)
             except subprocess.TimeoutExpired:
                 if _agentic_repair_continue(
@@ -1410,6 +1513,15 @@ def run_task(t):
                     merged_diff_library.record(name, slug, kind, t.get("prompt", ""), repo, base, "HEAD")
                 except Exception as e:
                     _log.debug("hook merged_diff_library failed: %s", e)
+                # TASK FUSION: if this was a fused parent task, mark children DONE
+                if kind == "fused" or "fused_children:" in str(t.get("note") or ""):
+                    try:
+                        import task_fusion
+                        _fused_count = task_fusion.mark_children_done(t["id"])
+                        if _fused_count:
+                            _log.debug("task_fusion: marked %d children DONE for parent %s", _fused_count, slug)
+                    except Exception as e:
+                        _log.debug("hook task_fusion.mark_children_done failed: %s", e)
             # BUILDFAIL is not a task state — record it as BLOCKED with a build-fix note so auto_remediate
             # re-plans it (fix the build errors) instead of shipping build-breaking code.
             state_val = "BLOCKED" if result == "BUILDFAIL" else result
@@ -1625,6 +1737,29 @@ def run_task(t):
                             set_state(t["id"], note=f"bankrupt → decomposed into {len(_bd_subs)} sub-tasks")
             except Exception as e:
                 _log.debug("hook bankruptcy_decompose failed: %s", e)
+            # OUTCOME ROUTER: record success/failure for future model routing decisions
+            try:
+                import outcome_router
+                outcome_router.record_outcome(slug, visible_model, integrated)
+            except Exception as e:
+                _log.debug("hook outcome_router.record failed: %s", e)
+            # TASK MEMORY: learn from this task's outcome for individual + hivemind intelligence
+            try:
+                import task_memory
+                _tm_cost = run_cost.get("usd", 0) if isinstance(run_cost, dict) else 0
+                _tm_wall = time.time() - t0
+                _tm_files = t.get("_touched_files", [])
+                task_memory.learn_from_outcome(
+                    t, out, visible_model, _tm_cost, _tm_wall, integrated,
+                    coder, name, _tm_files)
+            except Exception as e:
+                _log.debug("hook task_memory.learn failed: %s", e)
+            # CONFLICT PREDICTOR: record whether our prediction was correct
+            try:
+                import conflict_predictor
+                conflict_predictor.record_outcome(t["id"], not integrated, False)
+            except Exception as e:
+                _log.debug("hook conflict_predictor.record failed: %s", e)
             record(t, name, slug, kind, visible_model, acct, attempt, True, integrated, out, t0, cost=run_cost)
             return
         set_state(t["id"], state="BLOCKED", note="exhausted retries")
@@ -1878,6 +2013,9 @@ _SCHEDULE = [
     ("context-distill-3600",  "context_cache_distill.py","interval", 3600), # prune stale embedding-cache entries (unbounded growth fix)
     ("cost-intel-86400",      "cost_intelligence.py",   "interval", 86400), # daily: internal + external cost/value reports
     ("improve-roadmap-86400", "improvement_roadmap.py", "interval", 86400), # daily: 50x-500x claim, disclosed-assumption staged model
+    ("tier-stats-300",     "tier_router_tick.py",      "interval", 300),   # tier routing stats + subscription capacity report
+    ("fleet-topo-600",     "fleet_topology_tick.py",    "interval", 600),   # fleet topology optimization recommendations
+    ("sub-recommend-3600", "sub_recommend_tick.py",     "interval", 3600),  # hourly subscription cost/value analysis
 ]
 _sched_last: dict = {}
 
@@ -2450,6 +2588,19 @@ def main():
                             _log.debug("hook patch_recovery failed: %s", e)
                         th = threading.Thread(target=_run_task_safe, args=(t,), daemon=True)
                         th.start(); active.append(th); continue
+                    else:
+                        # WORK STEALING: if local queue empty, try stealing from other projects
+                        try:
+                            import work_stealer
+                            _primary_pids = list(projects().keys())
+                            if work_stealer.should_steal(RUNNER_ID, _primary_pids):
+                                _stolen = work_stealer.steal_task(RUNNER_ID, _primary_pids)
+                                if _stolen:
+                                    print(f"[work-steal] stolen {_stolen.get('slug','')} from project {_stolen.get('project_id','?')[:8]}", flush=True)
+                                    th = threading.Thread(target=_run_task_safe, args=(_stolen,), daemon=True)
+                                    th.start(); active.append(th); continue
+                        except Exception as e:
+                            _log.debug("hook work_stealer failed: %s", e)
         except Exception as e:
             print("poll error:", e)
         time.sleep(POLL)

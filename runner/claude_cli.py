@@ -243,7 +243,7 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
                                        unit="tokens", usd=cost)
             except Exception:
                 pass
-            # Signal rate limits to account_pool for rotation
+            # Signal rate limits to account_pool for rotation AND subscription_tracker
             if result.get("rate_limit_type"):
                 try:
                     import account_pool
@@ -251,10 +251,47 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
                         reason=f"sdk_rate_limit:{result['rate_limit_type']}")
                 except Exception:
                     pass
+                try:
+                    import subscription_tracker
+                    subscription_tracker.record_call("claude-max", "rate_limited", model)
+                except Exception:
+                    pass
+            else:
+                try:
+                    import subscription_tracker
+                    subscription_tracker.record_call("claude-max", "success", model)
+                except Exception:
+                    pass
             return result
         except Exception as exc:
             log.warning("Agent SDK path failed (%s); falling back to CLI subprocess", exc)
             # Fall through to CLI path below
+
+    # --- API-direct path: bypass CLI/subscription, call Anthropic Messages API ---
+    # Activated when ORCH_EXEC_MODE=api|hybrid AND subscription is exhausted.
+    # Uses the swarm executor for direct HTTP calls — no rate limits, pay-per-use.
+    if os.environ.get("ORCH_EXEC_MODE", "cli").lower() in ("api", "hybrid", "swarm"):
+        try:
+            from account_pool import claude_exhausted
+            if claude_exhausted():
+                import swarm_executor
+                log.info("Subscription exhausted — routing to API-direct via swarm_executor")
+                result = swarm_executor.run_swarm(prompt, model, provider="claude",
+                                                  cwd=cwd, timeout=timeout or 900, mode="agentic")
+                real_usd = result.get("cost_usd", 0)
+                _record(real_usd)
+                try:
+                    import usage_meter
+                    usage_meter.record("anthropic-api", project,
+                                       units=result.get("input_tokens", 0) + result.get("output_tokens", 0),
+                                       unit="tokens", usd=real_usd)
+                except Exception:
+                    pass
+                return result
+        except ImportError:
+            pass
+        except Exception as exc:
+            log.warning("API-direct path failed (%s); falling back to CLI subprocess", exc)
 
     # --- CLI subprocess path (original) ---
     cmd = [CLAUDE_BIN, "-p", prompt, "--model", model, "--output-format", "json"]
@@ -291,6 +328,16 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
         usage_meter.record("anthropic", project, units=itok + otok, unit="tokens", usd=real_usd)
         if not using_api and cost:
             usage_meter.record("anthropic-notional", project, units=itok + otok, unit="tokens", usd=cost)
+    except Exception:
+        pass
+    # Track CLI subscription usage for tier routing
+    try:
+        import subscription_tracker
+        _cli_outcome = "success" if proc.returncode == 0 else "fail"
+        # Detect rate limit signals in stderr (CLI emits "usage limit" or "rate limit" on exhaustion)
+        if proc.stderr and ("usage limit" in proc.stderr.lower() or "rate limit" in proc.stderr.lower()):
+            _cli_outcome = "rate_limited"
+        subscription_tracker.record_call("claude-max", _cli_outcome, model)
     except Exception:
         pass
     return {"text": text, "cost_usd": cost, "input_tokens": itok, "output_tokens": otok,
