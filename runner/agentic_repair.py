@@ -18,21 +18,25 @@ _DEFAULT_DIRECTIVE = (
 )
 
 
+_REPAIR_CODER_FALLBACK = "claude"
+
+
 def choose_coder(task):
     """Return the coder to use for agentic repair of this task.
 
-    Checks ORCH_AGENTIC_REPAIR_DEFAULT_CODER first; if unset, delegates to
-    agentic_coders.pick() so the full router decides. Falls back to 'ollama' if
-    the router is unavailable.
+    Priority: ORCH_AGENTIC_REPAIR_DEFAULT_CODER > agentic_coders.pick() >
+    ORCH_REPAIR_CODER_FALLBACK (default: "claude").  Never hardcodes "ollama"
+    so a missing local Ollama server cannot wedge the repair queue.
     """
     default = os.environ.get("ORCH_AGENTIC_REPAIR_DEFAULT_CODER")
     if default:
         return default
+    fallback = os.environ.get("ORCH_REPAIR_CODER_FALLBACK", _REPAIR_CODER_FALLBACK)
     try:
         import agentic_coders  # type: ignore
-        return agentic_coders.pick(task) or "ollama"
+        return agentic_coders.pick(task) or fallback
     except Exception:
-        return "ollama"
+        return fallback
 
 
 def in_session_prompt(task, failure, category="rework", directive=None):
