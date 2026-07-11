@@ -586,7 +586,16 @@ def run_task(t):
             set_state(t["id"], state=result, model=w["model"], note=f"speculative winner {w['vslug']} ({w['model']})")
             record(t, name, slug, kind, w["model"], POOL.current(), 1, True, result == "MERGED", "", t0); return
         attempt = 0
-        while attempt < 4:
+        # ADAPTIVE RETRY BUDGET: use historical success data to set max retries
+        _max_attempts = 4
+        try:
+            import retry_budget
+            _max_attempts = retry_budget.max_attempts(t)
+            if _max_attempts != 4:
+                set_state(t["id"], note=f"retry-budget: max_attempts={_max_attempts}")
+        except Exception as e:
+            _log.debug("hook retry_budget failed: %s", e)
+        while attempt < _max_attempts:
             attempt += 1
             # COST-FIRST model routing: cheapest model that can do the job, escalate one tier
             # per failed attempt. Opus is used ONLY for genuinely heavy work or after retries —
@@ -734,6 +743,24 @@ def run_task(t):
                     _extras += "\n\n## Pre-Validated Draft Available\nA speculative draft has already passed all tests. Apply it directly unless you find issues.\n"
             except Exception as e:
                 _log.debug("hook merge_validator failed: %s", e)
+            # PROMPT COMPRESSOR: deduplicate and compress before final assembly
+            try:
+                import prompt_compressor
+                _compressed = prompt_compressor.compress(draft_prompt, _extras)
+                if _compressed.get("savings", {}).get("reduction_pct", 0) > 5:
+                    draft_prompt = _compressed["prompt"]
+                    _extras = _compressed["extras"]
+                    set_state(t["id"], note=f"prompt-compressor: {_compressed['savings']['reduction_pct']:.0f}% reduction")
+            except Exception as e:
+                _log.debug("hook prompt_compressor failed: %s", e)
+            # PROMPT EVOLUTION: inject learned effective additions
+            try:
+                import prompt_evolution
+                _evolved = prompt_evolution.get_evolved_additions(t, name)
+                if _evolved:
+                    _extras += _evolved
+            except Exception as e:
+                _log.debug("hook prompt_evolution failed: %s", e)
             # BUILD-TO-GREEN MANDATE: make the agent iterate to a mergeable state ITSELF (edit -> build ->
             # fix -> re-build -> commit), the way an interactive VSCode session does — so it returns green,
             # mergeable work instead of a draft a downstream committee rejects and recycles. The build is
@@ -822,6 +849,17 @@ def run_task(t):
                         return
             except Exception as e:
                 _log.debug("hook pattern_compiler failed: %s", e)
+            # FLEET TOPOLOGY: check if this runner can handle the task's complexity
+            try:
+                import fleet_topology
+                if not fleet_topology.can_handle(t):
+                    _better = fleet_topology.best_runner_for(t)
+                    if _better:
+                        set_state(t["id"], state="QUEUED",
+                                  note=f"fleet-topology: redirecting to {_better} (better fit)")
+                        time.sleep(5); return
+            except Exception as e:
+                _log.debug("hook fleet_topology failed: %s", e)
             # CONFLICT PREDICTOR: check for file-scope overlap with active tasks
             try:
                 import conflict_predictor
@@ -1047,6 +1085,25 @@ def run_task(t):
                             draft_prompt = live_bidding.inject_auction_context(draft_prompt, _auction)
                 except Exception as e:
                     _log.debug("hook live_bidding failed: %s", e)
+            # ── WAVE PIPELINE: pre-execution hooks ──────────────────────────
+            _wave_t0 = time.time()
+            try:
+                import wave_pipeline
+                # 1. Predictive pre-fetch: warm file cache for files mentioned in prompt
+                _prefetched = wave_pipeline.prefetch_files(draft_prompt, repo)
+                if _prefetched:
+                    _log.debug("wave: pre-fetched %d files for %s", len(_prefetched), slug)
+                # 2. Cross-task learning: check if a better provider:model is known
+                _best_path = wave_pipeline.best_path_for(t)
+                if _best_path and ":" in _best_path:
+                    _bp_provider, _bp_model = _best_path.split(":", 1)
+                    _log.info("wave: cross-task learning suggests %s for %s", _best_path, slug)
+                    # Inject as hint — tier_router will pick this up
+                    t["_wave_provider_hint"] = _bp_provider
+                    t["_wave_model_hint"] = _bp_model
+            except Exception as _wave_err:
+                _log.debug("wave pre-exec hooks: %s", _wave_err)
+
             try:
                 if _integrating_existing:
                     print(f"[integrate-existing] {slug}: branch ahead of {base} -> skip agent, integrate directly", flush=True)
@@ -1140,6 +1197,19 @@ def run_task(t):
             out = (r["text"] or "") + ("\n" + r["stderr"] if r.get("stderr") else "")
             low = out.lower()
             set_state(t["id"], log_tail=out[-2000:])
+            # ── WAVE PIPELINE: post-execution cross-task learning ──────────
+            try:
+                import wave_pipeline
+                _exec_provider = r.get("coder", coder).replace("swarm:", "") if "swarm:" in r.get("coder", "") else "claude"
+                _exec_model = r.get("model", model) or model
+                wave_pipeline.record_success(
+                    t, _exec_provider, _exec_model,
+                    success=(rc == 0),
+                    latency_s=time.time() - _wave_t0,
+                    cost_usd=r.get("cost_usd", 0),
+                )
+            except Exception as _wl_err:
+                _log.debug("wave record_success: %s", _wl_err)
             # bidirectional learning: harvest the agent's feedback about the orchestration
             try:
                 feedback.extract_and_store(out, project=name, slug=slug, task_id=t["id"])
@@ -1176,6 +1246,27 @@ def run_task(t):
 
             tests_ok = rc == 0
             if not tests_ok:
+                # ERROR TAXONOMY: classify the error and select targeted remediation
+                _error_class = "unknown"
+                _remediation_prompt_extra = ""
+                try:
+                    import error_taxonomy
+                    _etx = error_taxonomy.classify(out or "", t)
+                    _error_class = _etx.get("error_class", "unknown")
+                    _remediation_prompt_extra = error_taxonomy.remediation_prompt(_error_class, out or "", t)
+                    set_state(t["id"], note=f"error-taxonomy: {_error_class} -> {_etx.get('remediation', 'escalate')}")
+                    # Check if retry_budget says this error is worth retrying
+                    try:
+                        import retry_budget
+                        _rb = retry_budget.should_retry(t, attempt, _error_class)
+                        if not _rb.get("retry", True):
+                            set_state(t["id"], state="BLOCKED",
+                                      note=f"retry-budget: skipping retry ({_rb['reason']})")
+                            record(t, name, slug, kind, visible_model, acct, attempt, False, False, out, t0, cost=run_cost); return
+                    except Exception:
+                        pass
+                except Exception as e:
+                    _log.debug("hook error_taxonomy failed: %s", e)
                 # UNIVERSAL IN-AGENT ERROR RESOLUTION: ALL coders (Claude and non-Claude alike)
                 # get up to 3 chances to fix their own errors before we rotate or block.
                 # This eliminates the constant requeue cycle — agents resolve issues themselves.
@@ -1186,10 +1277,12 @@ def run_task(t):
                     error_tail = (out or "")[-1500:]
                     error_context = (
                         f"\n\n## ATTEMPT {_err_count + 1} FAILED — FIX THE ERROR (retry {_err_count + 1}/{_max_retries})\n"
+                        f"Error classified as: {_error_class}\n"
                         f"Your previous attempt to complete this task failed with the following error. "
                         f"Diagnose and fix the root cause — do not just retry the same approach. "
                         f"If a dependency is missing, install it. If a file path is wrong, correct it. "
                         f"If a test fails, fix the code to pass the test. If an import is missing, add it.\n\n"
+                        f"{_remediation_prompt_extra}\n"
                         f"ERROR OUTPUT:\n```\n{error_tail}\n```\n"
                     )
                     t["prompt"] = t.get("_original_prompt", t.get("prompt", "")) + error_context
@@ -1760,6 +1853,28 @@ def run_task(t):
                 conflict_predictor.record_outcome(t["id"], not integrated, False)
             except Exception as e:
                 _log.debug("hook conflict_predictor.record failed: %s", e)
+            # RETRY BUDGET: record attempt outcome for future budget decisions
+            try:
+                import retry_budget
+                retry_budget.record_attempt(slug, attempt, visible_model, integrated, "")
+            except Exception as e:
+                _log.debug("hook retry_budget.record failed: %s", e)
+            # PROMPT EVOLUTION: record prompt structure → outcome for self-improvement
+            try:
+                import prompt_evolution
+                _pe_cost = run_cost.get("usd", 0) if isinstance(run_cost, dict) else 0
+                prompt_evolution.record_prompt_outcome(t, draft_prompt, visible_model, integrated, _pe_cost, attempt)
+            except Exception as e:
+                _log.debug("hook prompt_evolution.record failed: %s", e)
+            # ERROR TAXONOMY: record remediation outcome
+            try:
+                import error_taxonomy
+                error_taxonomy.record_remediation(
+                    t.get("_last_error_class", "unknown"),
+                    "retry" if integrated else "failed",
+                    integrated)
+            except Exception as e:
+                _log.debug("hook error_taxonomy.record failed: %s", e)
             record(t, name, slug, kind, visible_model, acct, attempt, True, integrated, out, t0, cost=run_cost)
             return
         set_state(t["id"], state="BLOCKED", note="exhausted retries")
@@ -2412,6 +2527,16 @@ def main():
     except Exception as _e:
         print(f"[billing-firewall] guard failed to load: {_e}")
     print(f"runner {RUNNER_ID} online -> {os.environ.get('SUPABASE_URL','(set SUPABASE_URL)')}")
+    # FLEET TOPOLOGY: register this runner's capability profile
+    try:
+        import fleet_topology
+        fleet_topology.register_profile()
+        _prof = fleet_topology.profile()
+        print(f"[fleet-topology] registered: {_prof.get('ram_gb', '?')}GB RAM, "
+              f"max_complexity={_prof.get('max_complexity', '?')}, "
+              f"tools={','.join(_prof.get('tools', []))}")
+    except Exception as e:
+        _log.debug("hook fleet_topology.register failed: %s", e)
     # FAST-START: run dependency check + self-check in background threads so the main loop
     # starts claiming tasks within seconds instead of waiting 30-120s for synchronous I/O.
     # Both are fail-soft — they log but never block the runner.
@@ -2601,6 +2726,27 @@ def main():
                                     th.start(); active.append(th); continue
                         except Exception as e:
                             _log.debug("hook work_stealer failed: %s", e)
+                        # PREDICTIVE QUEUE: generate speculative tasks when idle
+                        try:
+                            import predictive_queue
+                            for _pid, _pname in list(projects().items())[:3]:
+                                _prepo = _project_repo(_pid)
+                                if _prepo:
+                                    predictive_queue.generate_speculative_tasks(_pid, _pname, _prepo)
+                        except Exception as e:
+                            _log.debug("hook predictive_queue failed: %s", e)
+                        # PATTERN TRANSFER: scan for cross-project patterns when idle
+                        try:
+                            import pattern_transfer
+                            pattern_transfer.auto_transfer_scan()
+                        except Exception as e:
+                            _log.debug("hook pattern_transfer failed: %s", e)
+                        # PATTERN ADVERSARY: audit patterns when idle
+                        try:
+                            import pattern_adversary
+                            pattern_adversary.audit_all_patterns()
+                        except Exception as e:
+                            _log.debug("hook pattern_adversary failed: %s", e)
         except Exception as e:
             print("poll error:", e)
         time.sleep(POLL)

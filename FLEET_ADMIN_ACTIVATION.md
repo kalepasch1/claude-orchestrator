@@ -40,7 +40,24 @@ so you likely don't re-add them.
 | `SMARTER_INBOX_URL` | `https://smarter-nine.vercel.app/api/fleet/inbox` | plain |
 | `FLEET_URL_APPARENTLY` | `https://apparently.vercel.app` | plain |
 
-After deploy, open **https://web-six-chi-76.vercel.app/fleet** — Mission Control.
+| `FLEET_URL_TOMORROW` | `https://<tomorrow-vercel-url>` | plain |
+| `FLEET_URL_SMARTER` | `https://smarter-nine.vercel.app` | plain |
+| `FLEET_URL_GALOP` | `https://<galop-console-vercel-url>` | plain |
+| `FLEET_URL_HISANTA` | `https://admin-portal-nine-ochre.vercel.app` | plain |
+| `FLEET_URL_PARETO` | `https://<pareto-vercel-url>` | plain |
+| `OPS_EMAILS` | `kalepasch@gmail.com,kale@smrter.us` | plain |
+| `ANTHROPIC_API_KEY` | your Claude API key (for NL Admin) | 🔒 you paste |
+| `SUPABASE_URL_APPARENTLY` | `https://<apparently>.supabase.co` | plain |
+| `SUPABASE_SERVICE_KEY_APPARENTLY` | apparently service role key | 🔒 you paste |
+| `SUPABASE_URL_SMARTER` | `https://olaxnyrzoptjcntrrjgn.supabase.co` | plain |
+| `SUPABASE_SERVICE_KEY_SMARTER` | smarter service role key | 🔒 you paste |
+| `SUPABASE_URL_GALOP` | `https://qlzsnuspiypyejaqcdad.supabase.co` | plain |
+| `SUPABASE_SERVICE_KEY_GALOP` | galop service role key | 🔒 you paste |
+| `SUPABASE_URL_HISANTA` | `https://whhfugddqehxxbmwutsw.supabase.co` | plain |
+| `SUPABASE_SERVICE_KEY_HISANTA` | hisanta service role key | 🔒 you paste |
+
+After deploy, open **https://web-six-chi-76.vercel.app/admin** — Unified Admin Shell.
+New: **https://web-six-chi-76.vercel.app/admin/chat** — NL Admin (ask questions in plain English).
 
 ## Step 2 — Smarter (`smarter` project) + your login
 **Deploy:** commit + push the new fleet files to `kalepasch1/smarter` (git-connected → auto-builds),
@@ -56,23 +73,43 @@ or `vercel --prod` from `smarter/`.
 Google) so the Supabase auth user exists. This is the single step only you can do — the approver
 allowlist + fallback are already seeded in the DB. Then open `https://smarter-nine.vercel.app/fleet`.
 
-## Step 3 — Apparently (`apparently` project) + shadow emitter
-**Deploy:** push the adapter files to `kalepasch1/apparently` (git-connected → auto-builds).
-**Env vars page:** https://vercel.com/kalepasch1s-projects/apparently/settings/environment-variables
+## Step 3 — All child apps (same 2 env vars each)
+
+Every child app needs these two env vars. Add in each app's Vercel env settings:
 
 | Key | Value | Secret? |
 |-----|-------|---------|
-| `FLEET_SHARED_SECRET` | same value | 🔒 you paste |
+| `FLEET_SHARED_SECRET` | same value as orchestrator | 🔒 you paste |
 | `ORCHESTRATOR_INGEST_URL` | `https://web-six-chi-76.vercel.app/api/fleet/ingest` | plain |
 
-**Turn on the emitter.** Dry-run first (no writes):
-```
-cd <your path>/apparently
-node scripts/fleet-shadow-emit.mjs --dry
-```
-Then schedule it (crontab example, every 15 min):
-```
-*/15 * * * * cd <your path>/apparently && node scripts/fleet-shadow-emit.mjs >> /tmp/fleet-emit.log 2>&1
+App-specific env pages:
+- **Apparently** — https://vercel.com/kalepasch1s-projects/apparently/settings/environment-variables
+- **HiSanta** — https://vercel.com/kalepasch1s-projects/admin-portal/settings/environment-variables
+- **Tomorrow / Galop / Pareto** — find in your Vercel dashboard
+
+## Step 4 — Run fleet_policies migration
+
+Open the orchestrator Supabase SQL Editor:
+`https://supabase.com/dashboard/project/eatfwdzfurujcuwlhdgj/sql`
+
+Paste and run the contents of `web/supabase/migrations/001_fleet_policies.sql`.
+
+## Step 5 — Commit + deploy
+
+```bash
+# Repos with git: orchestrator, smarter, apparently, hisanta
+cd ~/Documents/beethoven/claude-orchestrator && git add -A && git commit -m "fleet admin: NL chat, proxy layer, policy engine, cascade engine"
+cd ~/Documents/smarter && git add -A && git commit -m "fleet admin: execute endpoint, adapter, auth hardening"
+cd ~/Documents/apparently && git add -A && git commit -m "fleet admin: execute endpoint, adapter, event wiring"
+cd ~/Documents/hisanta && git add -A && git commit -m "fleet admin: execute endpoint, CORS fix, auth fix"
+
+# Push git-connected repos (auto-deploys)
+cd ~/Documents/smarter && git push
+cd ~/Documents/apparently && git push
+cd ~/Documents/hisanta && git push
+
+# CLI deploy for orchestrator
+cd ~/Documents/beethoven/claude-orchestrator/web && npm install && vercel --prod
 ```
 
 ---

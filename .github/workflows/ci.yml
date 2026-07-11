@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    env:
+      PYTHONPATH: runner/
+      ORCH_OUTCOME_ROUTER_ENABLED: "false"
+      ORCH_CONFLICT_PREDICTOR_ENABLED: "false"
+      ORCH_TASK_MEMORY_ENABLED: "false"
+      ORCH_MERGE_VALIDATOR_ENABLED: "false"
+      ORCH_WORK_STEALING_ENABLED: "false"
+      ORCH_RETRY_BUDGET_ENABLED: "false"
+      ORCH_ERROR_TAXONOMY_ENABLED: "false"
+      ORCH_PROMPT_COMPRESSOR_ENABLED: "false"
+      ORCH_FLEET_TOPOLOGY_ENABLED: "false"
+      ORCH_PROMPT_EVOLUTION_ENABLED: "false"
+      ORCH_PATTERN_ADVERSARY_ENABLED: "false"
+      ORCH_PREDICTIVE_QUEUE_ENABLED: "false"
+      ORCH_PATTERN_TRANSFER_ENABLED: "false"
+      SUPABASE_URL: "http://localhost:0"
+      SUPABASE_KEY: "test-key"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pytest
+
+      - name: Run tests
+        run: cd runner && python -m pytest tests/ -v --tb=short

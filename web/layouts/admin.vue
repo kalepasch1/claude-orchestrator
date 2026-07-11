@@ -21,6 +21,21 @@
         <NuxtLink to="/admin/policies" class="nav-link" active-class="nav-active">
           <span class="nav-icon">&#128203;</span> Auto-Policies
         </NuxtLink>
+        <NuxtLink to="/admin/chat" class="nav-link" active-class="nav-active">
+          <span class="nav-icon">&#128172;</span> Chat
+        </NuxtLink>
+        <NuxtLink to="/admin/anomalies" class="nav-link" active-class="nav-active">
+          <span class="nav-icon">&#9888;</span> Anomalies
+        </NuxtLink>
+        <NuxtLink to="/admin/revenue" class="nav-link" active-class="nav-active">
+          <span class="nav-icon">&#128176;</span> Revenue
+        </NuxtLink>
+        <NuxtLink to="/admin/deploys" class="nav-link" active-class="nav-active">
+          <span class="nav-icon">&#128640;</span> Deploys
+        </NuxtLink>
+        <NuxtLink to="/admin/prompt-ops" class="nav-link" active-class="nav-active">
+          <span class="nav-icon">&#128221;</span> Prompt Ops
+        </NuxtLink>
 
         <!-- App sections -->
         <div v-for="app in apps" :key="app.id" class="mt-2">

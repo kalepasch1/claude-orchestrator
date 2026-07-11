@@ -467,6 +467,38 @@ def _preopt_task(t, projects):
     except Exception as e:
         _log.debug("preopt hivemind failed for %s: %s", tid, e)
 
+    # Stage 15: Retry budget pre-computation
+    try:
+        import retry_budget
+        _rb_max = retry_budget.max_attempts(t)
+        if _rb_max != 4:
+            result["retry_budget"] = {"max_attempts": _rb_max}
+            result["stages"].append("retry_budget")
+    except Exception as e:
+        _log.debug("preopt retry_budget failed for %s: %s", tid, e)
+
+    # Stage 16: Prompt compression measurement
+    try:
+        import prompt_compressor
+        _measure = prompt_compressor.measure(t.get("prompt", ""), "")
+        if _measure.get("estimated_tokens", 0) > 10000:
+            result["prompt_measurement"] = _measure
+            result["stages"].append("prompt_measurement")
+    except Exception as e:
+        _log.debug("preopt prompt_measurement failed for %s: %s", tid, e)
+
+    # Stage 17: Cross-project pattern transfer check
+    try:
+        import pattern_transfer
+        _pid = t.get("project_id")
+        if _pid:
+            _transferable = pattern_transfer.find_transferable(_pid, _pid)
+            if _transferable:
+                result["pattern_transfers"] = _transferable[:3]
+                result["stages"].append("pattern_transfer")
+    except Exception as e:
+        _log.debug("preopt pattern_transfer failed for %s: %s", tid, e)
+
     return result
 
 

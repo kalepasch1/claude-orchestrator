@@ -9,6 +9,7 @@
     "preview": "nuxt preview"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
     "@darwin/kernel": "file:../packages/darwin-kernel",
     "@nuxt/cli": "^3.36.1",
     "chart.js": "^4.5.1",

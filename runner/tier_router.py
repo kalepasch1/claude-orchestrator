@@ -143,6 +143,23 @@ class TierRouter:
         model_tier = _DIFF_MODEL.get(diff, "fast")
         est = self._estimated_cost(task)
 
+        # --- wave_pipeline cross-task learning hint ---
+        _hint_provider = task.get("_wave_provider_hint")
+        _hint_model = task.get("_wave_model_hint")
+        if _hint_provider and _hint_model:
+            # If wave_pipeline learned a better path, honor it
+            for sp in _SUB_PROVIDERS:
+                if sp["provider"] == _hint_provider and self._sub_has_capacity(sp["provider"]):
+                    return {"tier": "sub", "provider": sp["provider"], "model": _hint_model,
+                            "coder": sp["coder"],
+                            "reason": f"wave cross-task learning → {_hint_provider}:{_hint_model}"}
+            for ap in _API_PROVIDERS:
+                if ap["provider"] == _hint_provider:
+                    if self._paid_allowed():
+                        return {"tier": "api", "provider": ap["provider"], "model": _hint_model,
+                                "coder": ap["coder"],
+                                "reason": f"wave cross-task learning → api {_hint_provider}:{_hint_model}"}
+
         # --- api_only mode: skip subscription entirely ---
         if mode == "api_only":
             return self._pick_api(task, model_tier, "api_only mode")
