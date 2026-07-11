@@ -23,3 +23,4 @@ runner/runner.log
 .npm-cache/
 .pip-cache/
 .orch-context-cache.json
+runner/.env.pre-symlink-merge-*

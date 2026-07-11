@@ -20,8 +20,8 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 var __generator = (this && this.__generator) || function (thisArg, body) {
-    var _ = { label: 0, sent: function() { if (t[0] & 1) throw t[1]; return t[1]; }, trys: [], ops: [] }, f, y, t, g = Object.create((typeof Iterator === "function" ? Iterator : Object).prototype);
-    return g.next = verb(0), g["throw"] = verb(1), g["return"] = verb(2), typeof Symbol === "function" && (g[Symbol.iterator] = function() { return this; }), g;
+    var _ = { label: 0, sent: function() { if (t[0] & 1) throw t[1]; return t[1]; }, trys: [], ops: [] }, f, y, t, g;
+    return g = { next: verb(0), "throw": verb(1), "return": verb(2) }, typeof Symbol === "function" && (g[Symbol.iterator] = function() { return this; }), g;
     function verb(n) { return function (v) { return step([n, v]); }; }
     function step(op) {
         if (f) throw new TypeError("Generator is already executing.");
@@ -46,7 +46,7 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
         if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
     }
 };
-Object.defineProperty(exports, "__esModule", { value: true });
+exports.__esModule = true;
 // GET /api/fleet/approvals?status=pending — the single fleet-wide human queue.
 // Ordered by Bear's LEARNED attention (approver model), not just raw priority: things he
 // scrutinizes or is unlikely to rubber-stamp float up; reliable rubber-stamps sink (they
@@ -54,7 +54,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 var fleetSupabase_1 = require("../../utils/fleetSupabase");
 var fleetAdmin_1 = require("@darwin/kernel/fleetAdmin");
 var fleetReads_1 = require("../../utils/fleetReads");
-exports.default = defineEventHandler(function (event) { return __awaiter(void 0, void 0, void 0, function () {
+exports["default"] = defineEventHandler(function (event) { return __awaiter(void 0, void 0, void 0, function () {
     var status, sb, _a, _b, data, error, decisions, rows, profile, enriched, ordered;
     var _c;
     return __generator(this, function (_d) {

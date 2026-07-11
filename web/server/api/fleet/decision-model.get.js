@@ -9,8 +9,8 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 var __generator = (this && this.__generator) || function (thisArg, body) {
-    var _ = { label: 0, sent: function() { if (t[0] & 1) throw t[1]; return t[1]; }, trys: [], ops: [] }, f, y, t, g = Object.create((typeof Iterator === "function" ? Iterator : Object).prototype);
-    return g.next = verb(0), g["throw"] = verb(1), g["return"] = verb(2), typeof Symbol === "function" && (g[Symbol.iterator] = function() { return this; }), g;
+    var _ = { label: 0, sent: function() { if (t[0] & 1) throw t[1]; return t[1]; }, trys: [], ops: [] }, f, y, t, g;
+    return g = { next: verb(0), "throw": verb(1), "return": verb(2) }, typeof Symbol === "function" && (g[Symbol.iterator] = function() { return this; }), g;
     function verb(n) { return function (v) { return step([n, v]); }; }
     function step(op) {
         if (f) throw new TypeError("Generator is already executing.");
@@ -35,14 +35,14 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
         if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
     }
 };
-Object.defineProperty(exports, "__esModule", { value: true });
+exports.__esModule = true;
 // GET /api/fleet/decision-model — trains the learned admin-decision policy on the resolved
 // corpus and returns its weights + a few sample predictions. The corpus is the moat; this is the
 // servable model (other orgs can consume its predictions as a capability).
 var fleetAdmin_1 = require("@darwin/kernel/fleetAdmin");
 var fleetSupabase_1 = require("../../utils/fleetSupabase");
 var fleetReads_1 = require("../../utils/fleetReads");
-exports.default = defineEventHandler(function () { return __awaiter(void 0, void 0, void 0, function () {
+exports["default"] = defineEventHandler(function () { return __awaiter(void 0, void 0, void 0, function () {
     var sb, cases, model, samplePredictions;
     return __generator(this, function (_a) {
         switch (_a.label) {
@@ -54,7 +54,7 @@ exports.default = defineEventHandler(function () { return __awaiter(void 0, void
                 model = (0, fleetAdmin_1.trainDecisionModel)((0, fleetAdmin_1.samplesFromResolved)(cases));
                 samplePredictions = {
                     small_reversible_refund: (0, fleetAdmin_1.predictApprove)(model, { domain: 'billing', type: 'billing:issue_refund', amountUsd: 10, reversibility: 'reversible', blastRadius: 'single' }),
-                    large_irreversible_fleet: (0, fleetAdmin_1.predictApprove)(model, { domain: 'billing', type: 'billing:issue_refund', amountUsd: 5000, reversibility: 'irreversible', blastRadius: 'fleet' }),
+                    large_irreversible_fleet: (0, fleetAdmin_1.predictApprove)(model, { domain: 'billing', type: 'billing:issue_refund', amountUsd: 5000, reversibility: 'irreversible', blastRadius: 'fleet' })
                 };
                 return [2 /*return*/, { trainedOn: model.samples, weights: model.weights, samplePredictions: samplePredictions }];
         }

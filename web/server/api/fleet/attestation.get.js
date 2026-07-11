@@ -9,8 +9,8 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 var __generator = (this && this.__generator) || function (thisArg, body) {
-    var _ = { label: 0, sent: function() { if (t[0] & 1) throw t[1]; return t[1]; }, trys: [], ops: [] }, f, y, t, g = Object.create((typeof Iterator === "function" ? Iterator : Object).prototype);
-    return g.next = verb(0), g["throw"] = verb(1), g["return"] = verb(2), typeof Symbol === "function" && (g[Symbol.iterator] = function() { return this; }), g;
+    var _ = { label: 0, sent: function() { if (t[0] & 1) throw t[1]; return t[1]; }, trys: [], ops: [] }, f, y, t, g;
+    return g = { next: verb(0), "throw": verb(1), "return": verb(2) }, typeof Symbol === "function" && (g[Symbol.iterator] = function() { return this; }), g;
     function verb(n) { return function (v) { return step([n, v]); }; }
     function step(op) {
         if (f) throw new TypeError("Generator is already executing.");
@@ -35,13 +35,13 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
         if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
     }
 };
-Object.defineProperty(exports, "__esModule", { value: true });
+exports.__esModule = true;
 // GET /api/fleet/attestation — a signed, offline-verifiable proof-of-autonomy: the
 // answered-from-plane rate, regression record, and adversarial safe-envelope. The artifact
 // partners/auditors/acquirers verify to trust the plane's automation.
 var fleetAdmin_1 = require("@darwin/kernel/fleetAdmin");
 var fleetSupabase_1 = require("../../utils/fleetSupabase");
-exports.default = defineEventHandler(function () { return __awaiter(void 0, void 0, void 0, function () {
+exports["default"] = defineEventHandler(function () { return __awaiter(void 0, void 0, void 0, function () {
     var sb, data, actions, ns, envelope, attestation;
     return __generator(this, function (_a) {
         switch (_a.label) {
@@ -58,9 +58,9 @@ exports.default = defineEventHandler(function () { return __awaiter(void 0, void
                     periodDays: 30,
                     answeredFromPlaneRate: ns.answeredFromPlaneRate,
                     totalDecisions: ns.totalDecisions,
-                    regressions: 0, // divergence detection runs in the nightly cycle; 0 until one is recorded
+                    regressions: 0,
                     redTeamResidualHarm: envelope.residualHarm,
-                    receiptsChainVerified: true,
+                    receiptsChainVerified: true
                 });
                 return [2 /*return*/, { attestation: attestation, verification: (0, fleetAdmin_1.verifyAutonomyAttestation)(attestation) }];
         }

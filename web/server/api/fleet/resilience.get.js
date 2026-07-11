@@ -10,7 +10,7 @@ var __assign = (this && this.__assign) || function () {
     };
     return __assign.apply(this, arguments);
 };
-Object.defineProperty(exports, "__esModule", { value: true });
+exports.__esModule = true;
 var node_fs_1 = require("node:fs");
 var node_path_1 = require("node:path");
 function readJson(path, fallback) {
@@ -34,7 +34,7 @@ function lineCount(path) {
         return 0;
     }
 }
-exports.default = defineEventHandler(function () {
+exports["default"] = defineEventHandler(function () {
     var cwd = process.cwd();
     var repoRoot = cwd.endsWith('/web') ? (0, node_path_1.dirname)(cwd) : cwd;
     var runtime = (0, node_path_1.resolve)(repoRoot, '.runtime');
@@ -45,6 +45,6 @@ exports.default = defineEventHandler(function () {
         updatedAt: new Date().toISOString(),
         mesh: mesh,
         db: db,
-        spoolDepth: lineCount(spoolPath),
+        spoolDepth: lineCount(spoolPath)
     };
 });

@@ -9,8 +9,8 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 var __generator = (this && this.__generator) || function (thisArg, body) {
-    var _ = { label: 0, sent: function() { if (t[0] & 1) throw t[1]; return t[1]; }, trys: [], ops: [] }, f, y, t, g = Object.create((typeof Iterator === "function" ? Iterator : Object).prototype);
-    return g.next = verb(0), g["throw"] = verb(1), g["return"] = verb(2), typeof Symbol === "function" && (g[Symbol.iterator] = function() { return this; }), g;
+    var _ = { label: 0, sent: function() { if (t[0] & 1) throw t[1]; return t[1]; }, trys: [], ops: [] }, f, y, t, g;
+    return g = { next: verb(0), "throw": verb(1), "return": verb(2) }, typeof Symbol === "function" && (g[Symbol.iterator] = function() { return this; }), g;
     function verb(n) { return function (v) { return step([n, v]); }; }
     function step(op) {
         if (f) throw new TypeError("Generator is already executing.");
@@ -35,7 +35,7 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
         if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
     }
 };
-Object.defineProperty(exports, "__esModule", { value: true });
+exports.__esModule = true;
 // GET /api/fleet/regret — closes the loop on auto-runs. Derives implicit regret signals
 // (a chargeback / error-spike / reopened event landing on a subject AFTER we auto-acted on it)
 // and reports the per-type regret rate — the KPI that should trend to zero. These regrets also
@@ -43,9 +43,9 @@ Object.defineProperty(exports, "__esModule", { value: true });
 var fleetAdmin_1 = require("@darwin/kernel/fleetAdmin");
 var fleetSupabase_1 = require("../../utils/fleetSupabase");
 var REGRET_CATEGORY = {
-    chargeback: 'reversed_charge', error_spike: 'rollback', system_error: 'rollback', abuse_report: 'complaint',
+    chargeback: 'reversed_charge', error_spike: 'rollback', system_error: 'rollback', abuse_report: 'complaint'
 };
-exports.default = defineEventHandler(function () { return __awaiter(void 0, void 0, void 0, function () {
+exports["default"] = defineEventHandler(function () { return __awaiter(void 0, void 0, void 0, function () {
     var sb, _a, acts, evs, autos, signals, bySubject, _i, _b, e, _loop_1, _c, _d, a, report, regretCases;
     var _e, _f;
     return __generator(this, function (_g) {

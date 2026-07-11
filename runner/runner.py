@@ -1650,6 +1650,7 @@ _SCHEDULE = [
     ("resmesh-60",    "resilience_mesh.py", "interval", 60),    # keep local/vendor/deploy prep moving during Supabase/vendor outages
     ("train-60",      "merge_train.py",     "interval", 60),    # canonical approved-card cleanup train
     ("mergestall-900","merge_stall_monitor.py","interval",900), # alert if merges stop landing despite a real backlog (2026-07-08 incident safeguard)
+    ("mergecycle-300","merge_cycle.py",       "interval",300), # snapshot branch-blocked queue pressure by project/branch
     ("sweep-90",      "integration_sweeper.py","interval",90),  # passed-tests-but-not-integrated -> canonical train
     ("sentinel-300",  "sentinel.py",        "interval", 300),   # self-healing: DB-outage offline sweeps, checkout drift, runner singleton, RAM clamp, stale code
     ("medic-90",      "resource_medic.py",  "interval", 90),    # autonomous resource bots: predictive OOM guard, thrash-hunter (durable model exclusion / lane lowering), process hygiene, loop breaker
@@ -1792,6 +1793,8 @@ _SCHEDULE = [
     ("queue-bankruptcy-3600", "queue_bankruptcy.py",    "interval", 3600), # close QUEUED tasks past ORCH_TASK_BANKRUPTCY_DAYS
     ("scoreboard-600",        "scoreboard.py",          "interval", 600),  # merged/day, first-pass rate, paused-minutes, queue mix
     ("context-distill-3600",  "context_cache_distill.py","interval", 3600), # prune stale embedding-cache entries (unbounded growth fix)
+    ("cost-intel-86400",      "cost_intelligence.py",   "interval", 86400), # daily: internal + external cost/value reports
+    ("improve-roadmap-86400", "improvement_roadmap.py", "interval", 86400), # daily: 50x-500x claim, disclosed-assumption staged model
 ]
 _sched_last: dict = {}
 
@@ -1808,7 +1811,7 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      "stripe", "ownerreport", "worktreegc", "remediate", "quarantine", "selfcheck", "release_kpi.py",
                      "integrate_kpi.py", "fleet_control.py",
                      "thermal_queue.py", "model_score.py", "queue_materializer.py",
-                     "build_daemon.py", "lane_scheduler.py", "slo_controller.py",
+                     "build_daemon.py", "lane_scheduler.py", "slo_controller.py", "merge_cycle.py",
                      "colosseum.py",
                      "prompt_bankruptcy.py", "model_portfolios.py",
                      "model_slashing.py", "intent_graph.py",
@@ -1823,7 +1826,8 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      "generator_feedback.py", "exhaustion_signal.py",
                      "surge_planner.py",
                      "pause_arbiter.py", "fleet_stuck_alarm.py", "queue_bankruptcy.py",
-                     "scoreboard.py", "toolchain_gate.py", "context_cache_distill.py"}
+                     "scoreboard.py", "toolchain_gate.py", "context_cache_distill.py",
+                     "cost_intelligence.py", "improvement_roadmap.py"}
 
 # Optional autonomous-improvement jobs that are NOT yet routed through claude_cli (so their
 # spend isn't counted against the $40/day cap). OFF unless ENABLE_PROACTIVE_LOOPS=true.

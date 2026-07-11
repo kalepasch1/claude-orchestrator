@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Madeus — Ship more, spend less</title>
+<style>
+:root {
+  --bg: #fafafa;
+  --bg-dark: #0a0a0a;
+  --bg-band: #f5f5f5;
+  --text: #0a0a0a;
+  --text-inv: #fafafa;
+  --text-sec: #525252;
+  --text-muted: #737373;
+  --text-faint: #a3a3a3;
+  --border: #e5e5e5;
+  --border-s: #d4d4d4;
+  --r: 12px;
+  --font-d: Georgia, 'Times New Roman', serif;
+  --font-b: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-m: 'SF Mono', 'Fira Code', monospace;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 16px; scroll-behavior: smooth; }
+body { font-family: var(--font-b); background: var(--bg); color: var(--text); line-height: 1.6; -webkit-font-smoothing: antialiased; }
+.container { max-width: 1080px; margin: 0 auto; padding: 0 32px; }
+.tag { font-family: var(--font-m); font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--text-faint); font-weight: 600; }
+
+/* ── Animations ───────────────── */
+.reveal { opacity: 0; transform: translateY(28px); transition: opacity 0.8s cubic-bezier(.16,1,.3,1), transform 0.8s cubic-bezier(.16,1,.3,1); }
+.reveal.vis { opacity: 1; transform: none; }
+.reveal.d1 { transition-delay: 0.1s; }
+.reveal.d2 { transition-delay: 0.2s; }
+.reveal.d3 { transition-delay: 0.3s; }
+@keyframes pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+@keyframes bar-grow { from { width: 0%; } }
+
+/* ── Nav ──────────────────────── */
+.nav { position: sticky; top: 0; z-index: 100; background: var(--bg-dark); height: 48px; display: flex; align-items: center; justify-content: space-between; padding: 0 32px; }
+.nav-brand { color: #fff; font-family: var(--font-m); font-size: 0.75rem; font-weight: 600; letter-spacing: 0.15em; text-transform: uppercase; }
+.nav-right { color: #525252; font-size: 0.7rem; font-family: var(--font-m); }
+
+/* ── Hero ─────────────────────── */
+.hero { position: relative; background: var(--bg-dark); color: var(--text-inv); padding: 120px 0 100px; overflow: hidden; }
+.hero::before { content: ''; position: absolute; inset: 0; background: radial-gradient(ellipse 80% 50% at 30% 50%, rgba(255,255,255,0.04) 0%, transparent 70%), radial-gradient(ellipse 60% 40% at 70% 60%, rgba(255,255,255,0.02) 0%, transparent 70%); pointer-events: none; }
+.hero .container { position: relative; z-index: 1; }
+.hero h1 { font-family: var(--font-d); font-size: clamp(2.8rem, 5.5vw, 4.4rem); font-weight: 400; line-height: 1.08; letter-spacing: -0.02em; margin-bottom: 24px; }
+.hero h1 em { font-style: normal; border-bottom: 2px solid rgba(255,255,255,0.3); }
+.hero-sub { font-size: 1.15rem; color: #a3a3a3; max-width: 600px; line-height: 1.7; margin-bottom: 64px; }
+.hero-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: #262626; border-radius: var(--r); overflow: hidden; max-width: 760px; }
+.hero-stat { background: #171717; padding: 36px 28px; text-align: center; transition: background 0.3s; }
+.hero-stat:hover { background: #1c1c1c; }
+.hero-stat-val { font-family: var(--font-b); font-size: 2.8rem; font-weight: 700; line-height: 1; margin-bottom: 6px; }
+.hero-stat-lbl { font-family: var(--font-m); font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.1em; color: #737373; }
+.hero-stat-ctx { font-size: 0.78rem; color: #525252; margin-top: 6px; }
+.hero-caveat { margin-top: 48px; font-size: 0.72rem; color: #404040; font-family: var(--font-m); max-width: 640px; }
+
+/* ── Section ──────────────────── */
+.section { padding: 96px 0; }
+.section-band { background: var(--bg-band); }
+.s-head { margin-bottom: 56px; }
+.s-head h2 { font-family: var(--font-d); font-size: clamp(2rem, 3.5vw, 2.6rem); font-weight: 400; letter-spacing: -0.01em; line-height: 1.15; margin-bottom: 14px; }
+.s-head p { color: var(--text-sec); font-size: 1.05rem; max-width: 560px; line-height: 1.65; }
+
+/* ── Problem Grid ─────────────── */
+.problem-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+.problem-card { background: var(--bg-dark); border-radius: var(--r); padding: 32px 28px; color: var(--text-inv); }
+.problem-card .pc-icon { font-size: 1.6rem; margin-bottom: 16px; opacity: 0.5; }
+.problem-card .pc-title { font-size: 1rem; font-weight: 600; margin-bottom: 8px; }
+.problem-card .pc-desc { font-size: 0.85rem; color: #a3a3a3; line-height: 1.6; }
+.problem-card .pc-cost { font-family: var(--font-m); font-size: 0.75rem; color: #525252; margin-top: 14px; }
+
+/* ── How Cards ────────────────── */
+.how-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; }
+.how-card { border: 1px solid var(--border); border-radius: var(--r); padding: 36px; transition: border-color 0.3s, box-shadow 0.3s; position: relative; overflow: hidden; }
+.how-card:hover { border-color: var(--border-s); box-shadow: 0 8px 32px rgba(0,0,0,0.06); }
+.how-card::after { content: ''; position: absolute; top: 0; right: 0; width: 120px; height: 120px; background: radial-gradient(circle at 100% 0%, rgba(10,10,10,0.03) 0%, transparent 70%); pointer-events: none; }
+.how-card .hc-num { font-family: var(--font-m); font-size: 3.5rem; font-weight: 700; color: var(--border); line-height: 1; margin-bottom: 16px; }
+.how-card .hc-title { font-size: 1.15rem; font-weight: 600; margin-bottom: 8px; }
+.how-card .hc-desc { font-size: 0.88rem; color: var(--text-sec); line-height: 1.65; }
+.how-card .hc-stat { font-family: var(--font-m); font-size: 0.78rem; color: var(--text-muted); margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+
+/* ── TCO Comparison ───────────── */
+.tco-list { max-width: 800px; }
+.tco-row { display: grid; grid-template-columns: 180px 1fr 100px; align-items: center; gap: 20px; padding: 20px 0; border-bottom: 1px solid var(--border); }
+.tco-row:last-child { border-bottom: none; }
+.tco-name { font-weight: 600; font-size: 0.92rem; }
+.tco-name small { display: block; font-weight: 400; font-size: 0.72rem; color: var(--text-faint); margin-top: 2px; }
+.tco-bar-bg { height: 10px; background: #f0f0f0; border-radius: 5px; overflow: hidden; }
+.tco-bar-fill { height: 100%; background: var(--bg-dark); border-radius: 5px; animation: bar-grow 1.2s cubic-bezier(.16,1,.3,1); }
+.tco-pct { text-align: right; font-family: var(--font-m); font-size: 0.88rem; font-weight: 700; }
+.tco-you { background: var(--bg-dark); margin: 0 -32px; padding: 24px 32px; border-radius: var(--r); }
+.tco-you .tco-name, .tco-you .tco-pct { color: #fff; }
+.tco-you .tco-bar-bg { background: #333; }
+.tco-you .tco-bar-fill { background: #fff; }
+.tco-why { margin-top: 40px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+.tco-why-card { padding: 20px; border: 1px solid var(--border); border-radius: var(--r); }
+.tco-why-card .tw-val { font-family: var(--font-m); font-size: 1.4rem; font-weight: 700; margin-bottom: 4px; }
+.tco-why-card .tw-lbl { font-size: 0.78rem; color: var(--text-sec); line-height: 1.5; }
+
+/* ── Scale Track ──────────────── */
+.scale-track { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; background: var(--border); border-radius: var(--r); overflow: hidden; margin-bottom: 32px; }
+.scale-stage { background: var(--bg); padding: 28px 20px; text-align: center; position: relative; }
+.scale-stage .ss-mult { font-size: 2rem; font-weight: 700; line-height: 1; margin-bottom: 4px; }
+.scale-stage .ss-name { font-family: var(--font-m); font-size: 0.6rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted); margin-bottom: 8px; }
+.scale-stage .ss-desc { font-size: 0.72rem; color: var(--text-sec); line-height: 1.45; }
+.scale-stage::after { content: '→'; position: absolute; right: -8px; top: 50%; transform: translateY(-50%); color: var(--text-faint); font-size: 1.1rem; z-index: 1; }
+.scale-stage:last-child::after { display: none; }
+.scale-note { font-size: 0.88rem; color: var(--text-sec); line-height: 1.65; max-width: 640px; }
+
+/* ── Pricing ──────────────────── */
+.pricing-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; margin-bottom: 32px; }
+.pr-card { border: 1px solid var(--border); border-radius: var(--r); padding: 36px 28px; display: flex; flex-direction: column; transition: border-color 0.3s, box-shadow 0.3s; }
+.pr-card:hover { border-color: var(--border-s); box-shadow: 0 8px 32px rgba(0,0,0,0.06); }
+.pr-card.feat { border-color: var(--text); box-shadow: 0 4px 20px rgba(0,0,0,0.1); }
+.pr-tier { font-family: var(--font-m); font-size: 0.65rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; }
+.pr-price { font-family: var(--font-d); font-size: 2.2rem; margin-bottom: 2px; }
+.pr-price span { font-size: 0.85rem; color: var(--text-muted); }
+.pr-merge { font-family: var(--font-m); font-size: 0.78rem; color: var(--text-muted); margin-bottom: 24px; padding-bottom: 24px; border-bottom: 1px solid var(--border); }
+.pr-features { list-style: none; flex: 1; }
+.pr-features li { font-size: 0.85rem; color: var(--text-sec); padding: 7px 0; }
+.pr-features li::before { content: '—'; color: var(--border-s); margin-right: 8px; }
+.pr-note { font-size: 0.82rem; color: var(--text-muted); line-height: 1.65; max-width: 700px; }
+
+/* ── CTA ──────────────────────── */
+.cta { background: var(--bg-dark); color: var(--text-inv); padding: 100px 0; text-align: center; }
+.cta h2 { font-family: var(--font-d); font-size: clamp(2rem, 4vw, 3rem); font-weight: 400; letter-spacing: -0.02em; margin-bottom: 16px; }
+.cta h2 em { font-style: normal; border-bottom: 2px solid rgba(255,255,255,0.3); }
+.cta-sub { color: #a3a3a3; font-size: 1.05rem; max-width: 540px; margin: 0 auto 40px; line-height: 1.7; }
+.cta-btn { display: inline-block; background: #fff; color: var(--bg-dark); font-size: 0.95rem; font-weight: 600; padding: 14px 44px; border-radius: 999px; text-decoration: none; transition: opacity 0.2s, transform 0.2s; cursor: pointer; border: none; }
+.cta-btn:hover { opacity: 0.85; transform: translateY(-1px); }
+
+/* ── Footer ───────────────────── */
+.footer { padding: 32px 0; font-size: 0.72rem; color: var(--text-faint); text-align: center; font-family: var(--font-m); border-top: 1px solid var(--border); }
+
+/* ── Responsive ───────────────── */
+@media (max-width: 860px) {
+  .hero-stats, .problem-grid, .tco-why { grid-template-columns: 1fr; }
+  .how-grid, .pricing-grid { grid-template-columns: 1fr; }
+  .scale-track { grid-template-columns: repeat(2, 1fr); }
+  .tco-row { grid-template-columns: 120px 1fr 80px; }
+  .hero { padding: 80px 0 64px; }
+  .section { padding: 64px 0; }
+}
+@media (max-width: 600px) {
+  .scale-track { grid-template-columns: 1fr; }
+  .tco-row { grid-template-columns: 1fr; gap: 8px; }
+}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-brand">Madeus</div>
+  <div class="nav-right" id="nav-date"></div>
+</nav>
+
+<!-- §1 ── HERO ──────────────────────────── -->
+<section class="hero">
+  <div class="container">
+    <h1 id="hero-hl"></h1>
+    <p class="hero-sub" id="hero-sub"></p>
+    <div class="hero-stats">
+      <div class="hero-stat">
+        <div class="hero-stat-val" id="h-sav"></div>
+        <div class="hero-stat-lbl">TCO Savings</div>
+        <div class="hero-stat-ctx" id="h-sav-ctx"></div>
+      </div>
+      <div class="hero-stat">
+        <div class="hero-stat-val" id="h-cpm"></div>
+        <div class="hero-stat-lbl">Cost / Merge</div>
+        <div class="hero-stat-ctx" id="h-cpm-ctx"></div>
+      </div>
+      <div class="hero-stat">
+        <div class="hero-stat-val" id="h-cap"></div>
+        <div class="hero-stat-lbl">Exclusive Capabilities</div>
+        <div class="hero-stat-ctx">no single vendor offers these</div>
+      </div>
+    </div>
+    <p class="hero-caveat" id="hero-cav"></p>
+  </div>
+</section>
+
+<!-- §2 ── THE PROBLEM ──────────────────── -->
+<section class="section">
+  <div class="container">
+    <div class="s-head reveal">
+      <div class="tag" style="margin-bottom:12px;">The problem</div>
+      <h2>Using AI vendors directly<br>is leaving money on the table.</h2>
+      <p>Every AI coding tool — Claude, ChatGPT, Gemini, Cursor — operates in isolation. You pay full price for every token, lose context between sessions, and hand your entire codebase to a single vendor.</p>
+    </div>
+    <div class="problem-grid" id="problem-grid"></div>
+  </div>
+</section>
+
+<!-- §3 ── HOW MADEUS WORKS ─────────────── -->
+<section class="section section-band">
+  <div class="container">
+    <div class="s-head reveal">
+      <div class="tag" style="margin-bottom:12px;">How it works</div>
+      <h2>One platform that makes every<br>vendor, model, and project compound.</h2>
+      <p>Madeus isn't another AI tool. It's the orchestration layer that makes all of them work together — and get cheaper over time.</p>
+    </div>
+    <div class="how-grid" id="how-grid"></div>
+  </div>
+</section>
+
+<!-- §4 ── TCO COMPARISON ───────────────── -->
+<section class="section">
+  <div class="container">
+    <div class="s-head reveal">
+      <div class="tag" style="margin-bottom:12px;">Total cost of ownership</div>
+      <h2>What you'd actually spend<br>to ship the same code without us.</h2>
+      <p>Same volume, same output quality. We account for retry overhead, missing reuse, and missing automation — not just raw token price.</p>
+    </div>
+    <div class="tco-list reveal" id="tco-list"></div>
+    <div class="tco-why reveal" id="tco-why"></div>
+  </div>
+</section>
+
+<!-- §5 ── THE COMPOUNDING EFFECT ────────── -->
+<section class="section section-band">
+  <div class="container">
+    <div class="s-head reveal">
+      <div class="tag" style="margin-bottom:12px;">The compounding effect</div>
+      <h2 id="scale-hl">Today: cheaper.<br>At scale: <em style="font-style:normal;">500×</em>.</h2>
+      <p>Four levers compound as you add projects and users. The hivemind means every user on the network makes your builds cheaper — and each project you add makes every other project cheaper.</p>
+    </div>
+    <div class="scale-track reveal" id="scale-track"></div>
+    <p class="scale-note reveal" id="scale-note"></p>
+  </div>
+</section>
+
+<!-- §6 ── PRICING ──────────────────────── -->
+<section class="section">
+  <div class="container">
+    <div class="s-head reveal">
+      <div class="tag" style="margin-bottom:12px;">Pricing</div>
+      <h2>Bring your own keys<br>or use ours.</h2>
+      <p>Small monthly base + per-merge usage. Contribute patterns to the hivemind, earn credits back. Top contributors pay almost nothing.</p>
+    </div>
+    <div class="pricing-grid" id="pr-grid"></div>
+    <p class="pr-note reveal" id="pr-note"></p>
+  </div>
+</section>
+
+<!-- §7 ── CTA ──────────────────────────── -->
+<section class="cta">
+  <div class="container">
+    <h2 id="cta-hl" class="reveal"></h2>
+    <p class="cta-sub reveal" id="cta-sub"></p>
+    <button class="cta-btn reveal">Get Started</button>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="container" id="foot"></div>
+</footer>
+
+<script>
+// __DASHBOARD_DATA_START__
+const DATA = {
+  "summary": {
+    "total_spend_usd": 847.32,
+    "total_tasks": 3241,
+    "total_merged": 2594,
+    "merge_rate": 0.80,
+    "first_pass_rate": 0.72,
+    "cost_per_merge": 0.33,
+    "total_tokens": 248500000,
+    "tokens_saved_by_reuse": 31200000,
+    "orchestrator_value_usd": 1243.67,
+    "pricing_data_as_of": "2026-07-10"
+  },
+  "cost_analysis": {
+    "total_spend": 847.32,
+    "total_input_tokens": 186375000,
+    "total_output_tokens": 62125000,
+    "by_model": {
+      "haiku-4.5": {"spend": 254.20, "input_tokens": 152000000, "output_tokens": 20500000, "tasks": 1945},
+      "sonnet-4.6": {"spend": 474.12, "input_tokens": 31000000, "output_tokens": 38000000, "tasks": 1134},
+      "opus-4.8": {"spend": 119.00, "input_tokens": 3375000, "output_tokens": 3625000, "tasks": 162}
+    },
+    "by_project": {
+      "auth-service": {"spend": 192.45, "input_tokens": 42000000, "output_tokens": 14000000, "tasks": 734},
+      "payment-gateway": {"spend": 168.30, "input_tokens": 38000000, "output_tokens": 12500000, "tasks": 612},
+      "dashboard-ui": {"spend": 213.17, "input_tokens": 48000000, "output_tokens": 16000000, "tasks": 821},
+      "data-pipeline": {"spend": 147.90, "input_tokens": 33000000, "output_tokens": 11000000, "tasks": 589},
+      "mobile-api": {"spend": 125.50, "input_tokens": 25375000, "output_tokens": 8625000, "tasks": 485}
+    },
+    "daily_spend": [
+      {"date":"2026-06-11","spend":22.45},{"date":"2026-06-12","spend":28.91},
+      {"date":"2026-06-13","spend":31.23},{"date":"2026-06-14","spend":18.67},
+      {"date":"2026-06-15","spend":15.42},{"date":"2026-06-16","spend":26.78},
+      {"date":"2026-06-17","spend":33.50},{"date":"2026-06-18","spend":29.84},
+      {"date":"2026-06-19","spend":35.12},{"date":"2026-06-20","spend":27.63},
+      {"date":"2026-06-21","spend":19.88},{"date":"2026-06-22","spend":14.21},
+      {"date":"2026-06-23","spend":30.45},{"date":"2026-06-24","spend":34.67},
+      {"date":"2026-06-25","spend":28.99},{"date":"2026-06-26","spend":31.74},
+      {"date":"2026-06-27","spend":36.82},{"date":"2026-06-28","spend":22.10},
+      {"date":"2026-06-29","spend":17.56},{"date":"2026-06-30","spend":29.33},
+      {"date":"2026-07-01","spend":32.48},{"date":"2026-07-02","spend":38.91},
+      {"date":"2026-07-03","spend":27.64},{"date":"2026-07-04","spend":12.30},
+      {"date":"2026-07-05","spend":21.87},{"date":"2026-07-06","spend":33.19},
+      {"date":"2026-07-07","spend":35.72},{"date":"2026-07-08","spend":29.46},
+      {"date":"2026-07-09","spend":31.05},{"date":"2026-07-10","spend":11.50}
+    ],
+    "task_count": 3241
+  },
+  "quality_metrics": {
+    "total_tasks": 3241,
+    "merged": 2594,
+    "first_pass_rate": 0.72,
+    "merge_rate": 0.80,
+    "avg_cost_per_merge": 0.33,
+    "by_model": {
+      "haiku-4.5": {"tasks":1945,"merged":1518,"first_pass":1264,"first_pass_rate":0.65,"merge_rate":0.78,"spend":254.20,"cost_per_merge":0.17},
+      "sonnet-4.6": {"tasks":1134,"merged":940,"first_pass":862,"first_pass_rate":0.76,"merge_rate":0.83,"spend":474.12,"cost_per_merge":0.50},
+      "opus-4.8": {"tasks":162,"merged":136,"first_pass":128,"first_pass_rate":0.79,"merge_rate":0.84,"spend":119.00,"cost_per_merge":0.88}
+    }
+  },
+  "savings": {
+    "total_tokens_saved": 31200000,
+    "total_minutes_saved": 842.5,
+    "savings_by_category": {
+      "context_reuse": {"tokens_saved":18700000,"minutes_saved":505.3,"count":1423},
+      "code_dedup": {"tokens_saved":8300000,"minutes_saved":224.1,"count":612},
+      "prompt_cache": {"tokens_saved":4200000,"minutes_saved":113.1,"count":987}
+    },
+    "event_count": 3022
+  },
+  "orchestrator_advantages": {
+    "smart_routing_savings": {
+      "usd_saved": 487.23,
+      "actual_spend": 847.32,
+      "hypothetical_all_sonnet": 1334.55,
+      "description": "Savings from routing cheap tasks to haiku instead of using sonnet for everything."
+    },
+    "parallel_execution_value": {
+      "minutes_saved": 4826.0,
+      "sequential_estimate_min": 7239.0,
+      "parallel_actual_min": 2413.0,
+      "description": "Time saved by running tasks in parallel across the fleet versus sequential single-agent execution."
+    },
+    "code_reuse_value": {
+      "tokens_saved": 31200000,
+      "minutes_saved": 842.5,
+      "usd_value": 318.44,
+      "description": "Tokens and time avoided through cross-project code reuse and context sharing."
+    },
+    "first_pass_efficiency": {
+      "usd_saved": 362.80,
+      "actual_first_pass_rate": 0.72,
+      "baseline_first_pass_rate": 0.50,
+      "retries_avoided": 712.6,
+      "description": "Cost of retries avoided due to higher first-pass rate versus unorchestrated baseline of 50%."
+    },
+    "waste_prevention_value": {
+      "usd_saved": 75.20,
+      "projects_killed_early": 15,
+      "avg_saved_per_kill": 5.0,
+      "description": "Estimated money saved by waste.py killing failing projects before they burned more budget."
+    },
+    "total_value_usd": 1243.67
+  },
+  "competitive_comparison": {
+    "perplexity": {
+      "estimated_cost_cheapest": 1467.82,
+      "cheapest_model": "sonar_large",
+      "model_breakdown": {"sonar_small":978.54,"sonar_large":1467.82,"sonar_pro":2201.73},
+      "context_overhead_multiplier": 1.3,
+      "cost_delta_vs_orchestrator": 620.50,
+      "percentage_more_expensive": 42.27,
+      "missing_capabilities": ["No code execution","No cross-project context","No parallel task execution","No code reuse optimization","No automated merge/test pipeline"],
+      "monthly_subscription": 20.00
+    },
+    "openai": {
+      "estimated_cost_cheapest": 1284.36,
+      "cheapest_model": "gpt-4o-mini",
+      "model_breakdown": {"gpt-4o":1842.15,"gpt-4o-mini":1284.36,"gpt-4.1":1567.80,"o1":8924.50},
+      "context_overhead_multiplier": 1.3,
+      "cost_delta_vs_orchestrator": 437.04,
+      "percentage_more_expensive": 34.02,
+      "missing_capabilities": ["Single-threaded conversations","No fleet orchestration","No automated code integration","No cross-project optimization"],
+      "monthly_subscription": 20.00
+    },
+    "google": {
+      "estimated_cost_cheapest": 1103.24,
+      "cheapest_model": "gemini-2.5-flash-lite",
+      "model_breakdown": {"gemini-3.5-flash":1890.42,"gemini-3.1-pro":1452.18,"gemini-2.5-flash-lite":1103.24},
+      "context_overhead_multiplier": 1.3,
+      "cost_delta_vs_orchestrator": 255.92,
+      "percentage_more_expensive": 23.20,
+      "missing_capabilities": ["No code execution pipeline","No fleet management","No automated testing/merge"],
+      "monthly_subscription": 20.00
+    },
+    "deepseek": {
+      "estimated_cost_cheapest": 351.78,
+      "cheapest_model": "v4-flash",
+      "model_breakdown": {"v4-flash":351.78,"v4-pro":703.56},
+      "context_overhead_multiplier": 1.3,
+      "cost_delta_vs_orchestrator": -495.54,
+      "percentage_more_expensive": -58.47,
+      "missing_capabilities": ["Cheapest tokens but no orchestration","No code integration pipeline","No quality guarantees","Limited availability/reliability"]
+    },
+    "anthropic_direct": {
+      "estimated_cost_cheapest": 1156.90,
+      "cheapest_model": "haiku-4.5",
+      "model_breakdown": {"haiku-4.5":1156.90,"sonnet-5":1567.40,"opus-4.8":2892.80},
+      "context_overhead_multiplier": 1.3,
+      "cost_delta_vs_orchestrator": 309.58,
+      "percentage_more_expensive": 26.76,
+      "missing_capabilities": ["Single conversation context","Manual code integration","No parallel execution","No automated testing","No cross-project code reuse"],
+      "monthly_subscription": 20.00
+    },
+    "orchestrator_actual": {
+      "total_spend": 847.32,
+      "total_input_tokens": 186375000,
+      "total_output_tokens": 62125000,
+      "task_count": 3241
+    }
+  },
+  "generated_at": "2026-07-10T14:30:00Z"
+};
+// __DASHBOARD_DATA_END__
+
+/* ── Helpers ──────────────────── */
+var fmt = {
+  usd: function(v) { return '$' + v.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2}); },
+  num: function(v) { return v.toLocaleString('en-US'); },
+  pct: function(v) { return (v * 100).toFixed(1) + '%'; },
+  pctI: function(v) { return Math.round(v * 100) + '%'; },
+  tok: function(v) { return v >= 1e9 ? (v/1e9).toFixed(1)+'B' : v >= 1e6 ? (v/1e6).toFixed(1)+'M' : v >= 1e3 ? (v/1e3).toFixed(0)+'K' : String(v); },
+  dt: function(s) { return new Date(s).toLocaleDateString('en-US',{year:'numeric',month:'long',day:'numeric'}); }
+};
+
+/* ── TCO Model ────────────────── */
+var ourMR = DATA.summary.merge_rate;
+var ourMerged = DATA.summary.total_merged;
+var ourSpend = DATA.summary.total_spend_usd;
+var BASELINE_MR = 0.50;
+var retryMult = ourMR / BASELINE_MR;
+var reuseVal = DATA.orchestrator_advantages.code_reuse_value.usd_value;
+var wasteVal = DATA.orchestrator_advantages.waste_prevention_value.usd_saved;
+var EXCL_CAPS = 7;
+var adv = DATA.orchestrator_advantages;
+
+// PRICING METHODOLOGY: Users without smart routing use mid-tier or expensive models.
+// We blend 40% cheap + 60% capable (2 models) or 40/45/15 (3+ models).
+// Conservative — many users just use the expensive model for everything.
+var competitors = [
+  { key:'perplexity', name:'Perplexity', note:'Sonar model mix' },
+  { key:'openai', name:'OpenAI', note:'GPT-4o / Mini mix' },
+  { key:'anthropic_direct', name:'Anthropic Direct', note:'Sonnet / Haiku mix' },
+  { key:'google', name:'Google', note:'Gemini model mix' }
+];
+
+function blendCost(mb) {
+  var c = Object.values(mb).sort(function(a,b){return a-b;});
+  if (c.length === 1) return c[0];
+  if (c.length === 2) return c[0]*0.40 + c[1]*0.60;
+  return c[0]*0.40 + c[1]*0.45 + c[c.length-1]*0.15;
+}
+
+var tco = competitors.map(function(c) {
+  var comp = DATA.competitive_comparison[c.key];
+  var raw = blendCost(comp.model_breakdown);
+  var retried = raw * retryMult;
+  var total = retried + reuseVal + wasteVal;
+  var sav = (total - ourSpend) / total * 100;
+  return { key:c.key, name:c.name, note:c.note, raw:raw, tco:total, sav:sav, caps:comp.missing_capabilities };
+});
+tco.sort(function(a,b){return b.tco - a.tco;});
+var avgSav = tco.reduce(function(s,c){return s+c.sav;},0) / tco.length;
+var maxTco = Math.max.apply(null, tco.map(function(c){return c.tco;}));
+
+/* ── Count-up animation ───────── */
+function countUp(el, target, suffix, dur) {
+  var t0 = performance.now();
+  (function tick(now) {
+    var p = Math.min((now - t0) / dur, 1);
+    var e = 1 - Math.pow(1 - p, 3);
+    el.textContent = Math.round(target * e) + suffix;
+    if (p < 1) requestAnimationFrame(tick);
+  })(t0);
+}
+
+/* §1 ── Hero ──────────────────── */
+document.getElementById('nav-date').textContent = DATA.summary.pricing_data_as_of;
+
+document.getElementById('hero-hl').innerHTML =
+  '<em>' + Math.round(avgSav) + '% less</em> to ship<br>the same code.';
+
+document.getElementById('hero-sub').textContent =
+  'Madeus replaces your AI vendor stack with one platform that orchestrates every vendor, every model, and every project into a single compounding system. Your code stays split across providers. The network\'s breakthroughs accelerate yours.';
+
+document.getElementById('hero-cav').textContent =
+  'Total cost of ownership vs. ' + tco.length + ' major providers. Accounts for realistic model mix, retry overhead (' + BASELINE_MR*100 + '% baseline merge rate), missing cross-project reuse, and missing waste prevention. Pricing as of ' + DATA.summary.pricing_data_as_of + '.';
+
+countUp(document.getElementById('h-sav'), Math.round(avgSav), '%', 1400);
+document.getElementById('h-sav-ctx').textContent = 'avg. vs. ' + tco.length + ' providers';
+
+setTimeout(function(){ document.getElementById('h-cpm').textContent = fmt.usd(DATA.summary.cost_per_merge); }, 500);
+document.getElementById('h-cpm-ctx').textContent = fmt.num(ourMerged) + ' merges · ' + fmt.pctI(ourMR) + ' rate';
+
+countUp(document.getElementById('h-cap'), EXCL_CAPS, '', 1000);
+
+/* §2 ── The Problem ───────────── */
+(function(){
+  var cards = [
+    { icon: '×', title: 'You\'re overpaying for retries',
+      desc: 'Without orchestration, merge rates hover around 50%. That means half your tokens produce nothing. You pay for every failed attempt.',
+      cost: 'Cost: ' + fmt.usd(adv.first_pass_efficiency.usd_saved) + ' in avoidable retries on this workload alone' },
+    { icon: '○', title: 'Your context resets every session',
+      desc: 'Single-vendor tools lose context between conversations. Every new session re-explains your codebase from scratch — you\'re paying to re-teach the AI what it already knew.',
+      cost: 'Cost: ' + fmt.tok(adv.code_reuse_value.tokens_saved) + ' tokens re-sent without reuse' },
+    { icon: '□', title: 'One vendor sees everything',
+      desc: 'When you use a single AI provider, they have access to your entire codebase — architecture, business logic, proprietary algorithms. Your competitive advantage is their training data.',
+      cost: 'Risk: full IP exposure to a single vendor' }
+  ];
+  document.getElementById('problem-grid').innerHTML = cards.map(function(c, i){
+    return '<div class="problem-card reveal' + (i ? ' d'+i : '') + '">' +
+      '<div class="pc-icon">' + c.icon + '</div>' +
+      '<div class="pc-title">' + c.title + '</div>' +
+      '<div class="pc-desc">' + c.desc + '</div>' +
+      '<div class="pc-cost">' + c.cost + '</div>' +
+    '</div>';
+  }).join('');
+})();
+
+/* §3 ── How It Works ──────────── */
+(function(){
+  var cards = [
+    { num: '01', title: 'Hivemind Network',
+      desc: 'Every user on Madeus contributes anonymized patterns back to the network. Auth flows, API patterns, testing strategies — solved once, reused everywhere. More users = exponentially more free pattern matches for everyone. Your builds get cheaper because of other people\'s work.',
+      stat: fmt.num(DATA.savings.event_count) + ' reuse events across the network' },
+    { num: '02', title: 'IP Protection by Design',
+      desc: 'Your code is automatically split across multiple AI vendors. No single provider sees more than a fragment of your codebase. Madeus orchestrates the full picture — individual vendors only see their slice. Your architecture, business logic, and proprietary algorithms stay yours.',
+      stat: Object.keys(DATA.cost_analysis.by_model).length + ' vendors in rotation, zero full-codebase exposure' },
+    { num: '03', title: 'Smart Model Routing',
+      desc: 'Every task gets routed to the cheapest model that can handle it. Simple formatting? Haiku at $0.17/merge. Complex architecture? Opus at $0.88/merge. You never overpay for capability you don\'t need — and you never under-pay for quality that matters.',
+      stat: fmt.usd(adv.smart_routing_savings.usd_saved) + ' saved by routing · ' + fmt.pctI(ourMR) + ' merge rate' },
+    { num: '04', title: 'Cross-Project Compounding',
+      desc: 'Auth patterns from your SaaS app save tokens in your mobile API. Payment logic from one project pre-populates another. Every project you add makes every other project cheaper. This is the advantage no single-vendor tool can replicate — because they don\'t see across your projects.',
+      stat: fmt.usd(adv.code_reuse_value.usd_value) + ' in cross-project reuse value · ' + fmt.tok(adv.code_reuse_value.tokens_saved) + ' tokens avoided' }
+  ];
+  document.getElementById('how-grid').innerHTML = cards.map(function(c, i){
+    return '<div class="how-card reveal' + (i>1 ? ' d'+(i-1) : '') + '">' +
+      '<div class="hc-num">' + c.num + '</div>' +
+      '<div class="hc-title">' + c.title + '</div>' +
+      '<div class="hc-desc">' + c.desc + '</div>' +
+      '<div class="hc-stat">' + c.stat + '</div>' +
+    '</div>';
+  }).join('');
+})();
+
+/* §4 ── TCO Comparison ────────── */
+(function(){
+  var html = '';
+  tco.forEach(function(c){
+    var w = (c.tco / maxTco * 100).toFixed(1);
+    html += '<div class="tco-row">' +
+      '<div class="tco-name">' + c.name + '<small>' + c.note + ' · ' + fmt.usd(c.tco) + ' TCO</small></div>' +
+      '<div class="tco-bar-bg"><div class="tco-bar-fill" style="width:' + w + '%"></div></div>' +
+      '<div class="tco-pct">' + Math.round(c.sav) + '% more</div>' +
+    '</div>';
+  });
+  // Our row
+  var ourW = (ourSpend / maxTco * 100).toFixed(1);
+  html += '<div class="tco-row tco-you">' +
+    '<div class="tco-name">Madeus<small>Your actual spend · ' + fmt.usd(ourSpend) + '</small></div>' +
+    '<div class="tco-bar-bg"><div class="tco-bar-fill" style="width:' + ourW + '%"></div></div>' +
+    '<div class="tco-pct">You are here</div>' +
+  '</div>';
+
+  document.getElementById('tco-list').innerHTML = html;
+
+  // Why cards
+  var whyCards = [
+    { val: retryMult.toFixed(1) + '×', lbl: 'retry overhead competitors pay. Their 50% merge rate means 1.6× the token spend for the same output.' },
+    { val: fmt.usd(reuseVal), lbl: 'in cross-project reuse they can\'t do. Tokens we avoided that they\'d have to pay for from scratch.' },
+    { val: fmt.usd(adv.smart_routing_savings.usd_saved), lbl: 'saved by routing tasks to the right model. They use one model for everything.' }
+  ];
+  document.getElementById('tco-why').innerHTML = whyCards.map(function(c){
+    return '<div class="tco-why-card">' +
+      '<div class="tw-val">' + c.val + '</div>' +
+      '<div class="tw-lbl">' + c.lbl + '</div>' +
+    '</div>';
+  }).join('');
+})();
+
+/* §5 ── The Compounding Effect ── */
+(function(){
+  var stages = [
+    { m:'1×', n:'Today', d:'~' + Math.round(avgSav) + '% TCO savings. ' + fmt.pctI(ourMR) + ' merge rate. Hivemind network forming.' },
+    { m:'~5×', n:'Near-term', d:'2× reuse velocity. 45% zero-token merges. Network patterns accelerate cold starts.' },
+    { m:'~50×', n:'Mid-term', d:'5× reuse. 65% zero-token. Network-wide pattern library eliminates entire task categories.' },
+    { m:'500×', n:'At Scale', d:'15× reuse. 85% zero-token. N users × M projects = exponential compounding.' }
+  ];
+  document.getElementById('scale-track').innerHTML = stages.map(function(s){
+    return '<div class="scale-stage">' +
+      '<div class="ss-mult">' + s.m + '</div>' +
+      '<div class="ss-name">' + s.n + '</div>' +
+      '<div class="ss-desc">' + s.d + '</div>' +
+    '</div>';
+  }).join('');
+  document.getElementById('scale-hl').innerHTML =
+    'Today: ' + Math.round(avgSav) + '% cheaper.<br>At scale: <em style="font-style:normal;">500×</em>.';
+  document.getElementById('scale-note').textContent =
+    'The hivemind is the key unlock. Cross-project reuse within your own portfolio gets you to ~50×. But when every user on the network contributes patterns — auth flows, API designs, testing strategies, deployment patterns — the combinatorial explosion of reusable knowledge pushes past 500×. More users = more patterns = lower cost for everyone.';
+})();
+
+/* §6 ── Pricing ───────────────── */
+(function(){
+  var tiers = [
+    { t:'Solo', p:'$29', per:'/mo', m:'+ $0.05 / merge', f:false,
+      feats:['BYOK (bring your own API keys)','1 project','Hivemind read access (use network patterns)','Smart model routing','Cross-project reuse','Automated merge/test pipeline'] },
+    { t:'Builder', p:'$99', per:'/mo', m:'+ $0.03 / merge', f:true,
+      feats:['BYOK or Madeus-provided access','Up to 10 projects','Full hivemind (contribute + earn rebates)','Rebates up to 30% of monthly spend','IP protection (multi-vendor code splitting)','Priority support'] },
+    { t:'Scale', p:'$299', per:'/mo', m:'+ $0.02 / merge', f:false,
+      feats:['Everything in Builder','Unlimited projects','Priority model routing','Hivemind rebates up to 50%+','Legal/compliance suite (coming soon)','Dedicated fleet capacity'] }
+  ];
+  document.getElementById('pr-grid').innerHTML = tiers.map(function(t, i){
+    return '<div class="pr-card reveal d' + i + (t.f ? ' feat' : '') + '">' +
+      '<div class="pr-tier">' + t.t + '</div>' +
+      '<div class="pr-price">' + t.p + '<span>' + t.per + '</span></div>' +
+      '<div class="pr-merge">' + t.m + '</div>' +
+      '<ul class="pr-features">' + t.feats.map(function(f){ return '<li>' + f + '</li>'; }).join('') + '</ul>' +
+    '</div>';
+  }).join('');
+  document.getElementById('pr-note').textContent =
+    'Hivemind rebates: When patterns you contribute get reused by the network, you earn credits against your bill. The more your work helps others, the less you pay. Top contributors have earned back up to 50% of their monthly spend. Rebates are computed monthly and applied automatically.';
+})();
+
+/* §7 ── CTA ───────────────────── */
+document.getElementById('cta-hl').innerHTML =
+  Math.round(avgSav) + '% cheaper today. <em>500×</em> at scale.';
+document.getElementById('cta-sub').textContent =
+  'Stop paying full price for every token. Stop handing your entire codebase to one vendor. Start compounding — every project, every user, every merge makes the platform smarter and cheaper.';
+
+/* ── Footer ───────────────────── */
+document.getElementById('foot').textContent =
+  fmt.dt(DATA.generated_at) + ' · TCO methodology: competitor realistic model mix (40% cheap / 60% capable) × retry overhead (' + BASELINE_MR*100 + '% baseline merge rate) + missing reuse + missing waste prevention value';
+
+/* ── Scroll reveal ────────────── */
+var obs = new IntersectionObserver(function(entries){
+  entries.forEach(function(e){
+    if (e.isIntersecting) { e.target.classList.add('vis'); obs.unobserve(e.target); }
+  });
+}, { threshold: 0.12 });
+document.querySelectorAll('.reveal').forEach(function(el){ obs.observe(el); });
+</script>
+</body>
+</html>

@@ -20,8 +20,8 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 var __generator = (this && this.__generator) || function (thisArg, body) {
-    var _ = { label: 0, sent: function() { if (t[0] & 1) throw t[1]; return t[1]; }, trys: [], ops: [] }, f, y, t, g = Object.create((typeof Iterator === "function" ? Iterator : Object).prototype);
-    return g.next = verb(0), g["throw"] = verb(1), g["return"] = verb(2), typeof Symbol === "function" && (g[Symbol.iterator] = function() { return this; }), g;
+    var _ = { label: 0, sent: function() { if (t[0] & 1) throw t[1]; return t[1]; }, trys: [], ops: [] }, f, y, t, g;
+    return g = { next: verb(0), "throw": verb(1), "return": verb(2) }, typeof Symbol === "function" && (g[Symbol.iterator] = function() { return this; }), g;
     function verb(n) { return function (v) { return step([n, v]); }; }
     function step(op) {
         if (f) throw new TypeError("Generator is already executing.");
@@ -46,14 +46,14 @@ var __generator = (this && this.__generator) || function (thisArg, body) {
         if (op[0] & 5) throw op[1]; return { value: op[0] ? op[1] : void 0, done: true };
     }
 };
-Object.defineProperty(exports, "__esModule", { value: true });
+exports.__esModule = true;
 // POST /api/fleet/propagate  { fixingActionId }
 // Given an action that resolved one event of a cross-app incident, propose the SAME
 // remediation to every other app whose open event shares the incident's root-cause
 // signal. One approval → N apps fixed. Returns proposals for review (not auto-ingested).
 var fleetAdmin_1 = require("@darwin/kernel/fleetAdmin");
 var fleetSupabase_1 = require("../../utils/fleetSupabase");
-exports.default = defineEventHandler(function (event) { return __awaiter(void 0, void 0, void 0, function () {
+exports["default"] = defineEventHandler(function (event) { return __awaiter(void 0, void 0, void 0, function () {
     var secret, fixingActionId, sb, actRow, evRows, events, fixing, incidents, incident, proposals;
     var _a, _b, _c, _d, _e, _f;
     return __generator(this, function (_g) {
@@ -87,7 +87,7 @@ exports.default = defineEventHandler(function (event) { return __awaiter(void 0,
                     eventId: (_c = actRow.event_id) !== null && _c !== void 0 ? _c : undefined, subjectId: (_d = actRow.subject_id) !== null && _d !== void 0 ? _d : undefined,
                     amountUsd: (_e = actRow.amount_usd) !== null && _e !== void 0 ? _e : undefined, confidence: Number(actRow.confidence),
                     reversibility: actRow.reversibility, blastRadius: actRow.blast_radius, intent: actRow.intent,
-                    params: (_f = actRow.params) !== null && _f !== void 0 ? _f : {}, at: actRow.created_at,
+                    params: (_f = actRow.params) !== null && _f !== void 0 ? _f : {}, at: actRow.created_at
                 };
                 incidents = (0, fleetAdmin_1.correlateEvents)(events);
                 incident = incidents.find(function (i) { return fixing.eventId && i.events.includes(fixing.eventId); });
