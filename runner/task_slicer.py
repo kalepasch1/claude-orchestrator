@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Automatic sub-subtask slicing before expensive agentic work."""
+import json
 import os
 import re
 import sys
@@ -11,6 +12,7 @@ THRESHOLD = int(os.environ.get("ORCH_SLICE_PROMPT_CHARS", "2400"))
 MAX_PARTS = int(os.environ.get("ORCH_SLICE_MAX_PARTS", "5"))
 MAX_DEPTH = int(os.environ.get("ORCH_SLICE_MAX_DEPTH", "1"))
 MARK = "auto-sliced-before-agent"
+AI_SLICE_MODEL = os.environ.get("ORCH_AI_SLICE_MODEL", "claude-haiku-4-5-20251001")
 PROTECTED_PREFIXES = (
     "qafix-", "relfix-", "buildfix-", "deployfix-",
     "recover-missing-branch-", "rework-",
@@ -56,10 +58,78 @@ def slice_task(task):
     return parts
 
 
+_AI_SLICE_PROMPT = """\
+You are a task decomposition assistant for an autonomous code orchestration system.
+Break the following task prompt into {n} independent sub-tasks that can be worked
+on sequentially. Each sub-task should be a self-contained unit of work.
+
+Return ONLY a JSON array with {n} objects, each with:
+  "title": short kebab-case suffix (will be appended to the parent slug)
+  "prompt": the full sub-task prompt (copy relevant context from the parent)
+
+Keep titles under 20 chars. Do not include explanations outside the JSON.
+
+Parent slug: {slug}
+Parent prompt:
+{prompt}
+"""
+
+
+def ai_slice_task(task):
+    """Use Claude to decompose a task into semantically meaningful slices.
+
+    Returns the same format as slice_task() — list of {"slug", "prompt", "deps"} dicts —
+    or None if AI slicing is disabled, fails, or produces unusable output.
+    """
+    if os.environ.get("ORCH_AI_SLICE", "false").lower() not in ("1", "true", "yes", "on"):
+        return None
+    try:
+        import claude_cli
+    except ImportError:
+        return None
+
+    prompt = str(task.get("prompt") or "")
+    slug = str(task.get("slug") or task.get("id") or "task")
+    n = min(MAX_PARTS, max(2, len(prompt) // 800))
+    ai_prompt = _AI_SLICE_PROMPT.format(n=n, slug=slug, prompt=prompt[:6000])
+    try:
+        result = claude_cli.run(ai_prompt, AI_SLICE_MODEL, max_turns=1, timeout=60)
+        raw = (result.get("text") or "").strip()
+    except Exception:
+        return None
+
+    # Extract JSON array from the response (may have surrounding prose)
+    match = re.search(r"\[.*?\]", raw, re.DOTALL)
+    if not match:
+        return None
+    try:
+        items = json.loads(match.group(0))
+    except Exception:
+        return None
+    if not isinstance(items, list) or len(items) < 2:
+        return None
+
+    base = slug[:50]
+    parts = []
+    prev = None
+    for idx, item in enumerate(items[:MAX_PARTS]):
+        if not isinstance(item, dict):
+            continue
+        slice_slug = f"{base}-slice-{idx + 1}"
+        body = str(item.get("prompt") or "").strip()
+        if not body:
+            continue
+        deps = [prev] if prev else []
+        parts.append({"slug": slice_slug, "prompt": body, "deps": deps})
+        prev = slice_slug
+
+    return parts if len(parts) >= 2 else None
+
+
 def pre_agent_hook(task):
     if not isinstance(task, dict) or not should_slice(task):
         return False
-    parts = slice_task(task)
+    parts = ai_slice_task(task) or slice_task(task)
     if len(parts) < 2:
         return False
     inserted = 0
