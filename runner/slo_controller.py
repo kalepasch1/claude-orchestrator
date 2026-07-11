@@ -115,14 +115,14 @@ def _check_missing_branches():
         blocked = db.select("tasks", {
             "select": "id,slug",
             "state": "eq.BLOCKED",
-            "note": "like.*missing*branch*",
+            "note": "like.%missing%branch%",
             "limit": "50"
         }) or []
 
         recovery = db.select("tasks", {
             "select": "id",
             "state": "eq.QUEUED",
-            "slug": "like.recover-missing-branch-*",
+            "slug": "like.recover-missing-branch-%",
             "limit": "50"
         }) or []
 
@@ -139,7 +139,7 @@ def _check_recovery_backlog():
         recovery = db.select("tasks", {
             "select": "id",
             "state": "eq.QUEUED",
-            "slug": "like.recover-*",
+            "slug": "like.recover-%",
             "limit": "50"
         }) or []
 
@@ -155,7 +155,7 @@ def _check_release_fix_age():
         fixes = db.select("tasks", {
             "select": "id,slug,created_at",
             "state": "eq.QUEUED",
-            "slug": "like.relfix-*",
+            "slug": "like.relfix-%",
             "order": "created_at.asc",
             "limit": "5"
         }) or []
@@ -277,7 +277,7 @@ def _apply_action(action):
             blocked = db.select("tasks", {
                 "select": "id,slug",
                 "state": "eq.BLOCKED",
-                "note": "like.*missing*branch*",
+                "note": "like.%missing%branch%",
                 "limit": "20"
             }) or []
             for t in blocked:
