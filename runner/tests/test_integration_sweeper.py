@@ -111,5 +111,95 @@ class TestIntegrationSweeper(unittest.TestCase):
         self.assertEqual(fake.update.call_args.args[2]["state"], "QUARANTINED")
 
 
+class TestLocalBranchAudit(unittest.TestCase):
+    """Tests for local_branch_audit() — read-only branch state inspection."""
+
+    def _make_repo(self, tmp_path, branches=(), remote_branches=()):
+        """Return (repo, subprocess_mock) with canned git output."""
+        local_out = "\n".join(f"agent/{b}" for b in branches) + "\n"
+        remote_out = "\n".join(f"origin/agent/{b}" for b in remote_branches) + "\n"
+        def fake_run(cmd, **kw):
+            m = MagicMock()
+            m.returncode = 0
+            if "--list" in cmd and "-r" not in cmd:
+                m.stdout = local_out
+            elif "-r" in cmd:
+                m.stdout = remote_out
+            elif "worktree" in cmd:
+                m.stdout = ""
+            elif "reflog" in cmd:
+                m.stdout = ""
+            else:
+                m.stdout = ""
+            return m
+        return fake_run
+
+    def test_classifies_local_branch(self):
+        with patch("subprocess.run", self._make_repo("/repo", branches=["my-task"])), \
+             patch("os.path.isdir", return_value=True):
+            out = integration_sweeper.local_branch_audit("/repo", slugs=["my-task"])
+        self.assertEqual(len(out["local"]), 1)
+        self.assertEqual(out["local"][0]["slug"], "my-task")
+        self.assertEqual(out["missing"], [])
+
+    def test_classifies_missing_branch(self):
+        with patch("subprocess.run", self._make_repo("/repo")), \
+             patch("os.path.isdir", return_value=True):
+            out = integration_sweeper.local_branch_audit("/repo", slugs=["absent-slug"])
+        self.assertEqual(len(out["missing"]), 1)
+        self.assertEqual(out["local"], [])
+
+    def test_classifies_remote_only_branch(self):
+        with patch("subprocess.run", self._make_repo("/repo", remote_branches=["remote-only"])), \
+             patch("os.path.isdir", return_value=True):
+            out = integration_sweeper.local_branch_audit("/repo", slugs=["remote-only"])
+        self.assertEqual(len(out["remote_only"]), 1)
+        self.assertEqual(out["local"], [])
+
+    def test_fail_soft_on_empty_repo_path(self):
+        fake_db = MagicMock()
+        fake_db.select.return_value = []
+        with patch.object(integration_sweeper, "db", fake_db):
+            out = integration_sweeper.local_branch_audit("", slugs=["x"])
+        self.assertIn("missing", out)
+        self.assertEqual(out["missing"][0]["slug"], "x")
+
+    def test_fail_soft_on_missing_repo_dir(self):
+        fake_db = MagicMock()
+        fake_db.select.return_value = []
+        with patch.object(integration_sweeper, "db", fake_db):
+            out = integration_sweeper.local_branch_audit("/no/such/path", slugs=["x"])
+        self.assertIn("missing", out)
+
+    def test_db_slug_fallback_when_no_slugs_provided(self):
+        fake_db = MagicMock()
+        fake_db.select.return_value = [{"slug": "from-db"}]
+        with patch.object(integration_sweeper, "db", fake_db):
+            out = integration_sweeper.local_branch_audit("/no/such/path")
+        self.assertEqual(len(out["missing"]), 1)
+        self.assertEqual(out["missing"][0]["slug"], "from-db")
+
+    def test_stale_worktree_detection(self):
+        wt_porcelain = (
+            "worktree /some/path\nHEAD abc123\nbranch refs/heads/agent/wt-slug\n\n"
+        )
+        def fake_run(cmd, **kw):
+            m = MagicMock()
+            m.returncode = 0
+            if "worktree" in cmd:
+                m.stdout = wt_porcelain
+            else:
+                m.stdout = ""
+            return m
+        fake_db = MagicMock()
+        fake_db.select.return_value = []  # no RUNNING tasks
+        with patch("subprocess.run", fake_run), \
+             patch("os.path.isdir", return_value=True), \
+             patch.object(integration_sweeper, "db", fake_db):
+            out = integration_sweeper.local_branch_audit("/repo", slugs=["wt-slug"])
+        self.assertEqual(len(out["stale_worktrees"]), 1)
+        self.assertEqual(out["stale_worktrees"][0]["branch"], "agent/wt-slug")
+
+
 if __name__ == "__main__":
     unittest.main()
