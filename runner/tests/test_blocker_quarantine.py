@@ -254,6 +254,48 @@ class BlockerQuarantineTest(unittest.TestCase):
         self.assertEqual(result, "standard")
         mock_priv.assert_called_once()
 
+    def test_distant_token_and_detected_in_long_build_log_is_not_secret(self):
+        """Production bug (2026-07-11): _is_secret() checked _SECRET_TERM (matches bare "token")
+        and _SECRET_VIOLATION_CONTEXT (matches generic words like "detected") independently
+        against the WHOLE evidence blob. A long `nuxt build` failure log can easily contain
+        "token" in one unrelated stack frame (e.g. a CSRF/session-token module) and "detected"
+        in another (e.g. a dependency scanner's routine output), hundreds of characters apart
+        with zero relation to each other -- yet both regexes would match, producing a false
+        'secret' classification. Observed repeatedly on rework-secret-* branches failing on
+        plain `nuxt: command not found` build errors. The two terms must be near each other to
+        count as a real signal."""
+        far_apart_log = (
+            "sh: nuxt: command not found\n"
+            + ("x" * 200)
+            + "\nsome/path/auth/token/refresh.ts: import session token helper\n"
+            + ("y" * 200)
+            + "\n3 outdated dependencies detected during npm audit\n"
+        )
+        task = {
+            "id": "t12",
+            "slug": "rework-secret-relfix-beethoven-07081450-c8ff549",
+            "state": "TESTFAIL",
+            "kind": "build",
+            "prompt": "Rework: fix the build.",
+            "note": "train: tests failed on rebased agent/rework-secret-relfix-beethoven-07081450-c8ff549: > build\n> nuxt build",
+            "log_tail": far_apart_log,
+        }
+        self.assertEqual(blocker_quarantine.classify(task), "buildfail")
+
+    def test_close_proximity_token_and_violation_context_still_secret(self):
+        """The proximity tightening must not weaken genuine detection: a real violation phrase
+        near the term should still classify as secret even without an explicit-pattern match."""
+        task = {
+            "id": "t13",
+            "slug": "some-feature",
+            "state": "BLOCKED",
+            "kind": "build",
+            "prompt": "x",
+            "note": "checked-in API key token found in commit diff",
+            "log_tail": "",
+        }
+        self.assertEqual(blocker_quarantine.classify(task), "secret")
+
     def test_deep_rework_chain_escalates_to_human_instead_of_respawning(self):
         """Depth-cap safety net: even if a classifier edge case still produces a secret/legal/
         security category on an already-deeply-reworked task, the pipeline must stop respawning

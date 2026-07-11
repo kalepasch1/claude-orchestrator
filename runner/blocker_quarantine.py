@@ -58,10 +58,28 @@ _SECRET_EXPLICIT = re.compile(
 )
 
 
+# 2026-07-11: _SECRET_TERM matches the bare word "token" (routine in any auth-related codebase --
+# JWT/CSRF/session tokens) and _SECRET_VIOLATION_CONTEXT matches generic words like "detected" or
+# "logged" that appear constantly in linter/build/test output unrelated to any real leak. Checking
+# both regexes independently against the WHOLE evidence blob (which can be a long build/test log)
+# let them co-occur by pure coincidence -- e.g. a `nuxt build` failure log_tail mentioning an auth
+# "token" in one stack frame and a dependency scanner saying "N vulnerabilities detected" in
+# another, hundreds of characters apart, with zero relation to each other. Observed in production:
+# repeat `nuxt: command not found` build failures on rework-secret-* branches kept getting
+# reclassified as "secret" indefinitely. Require the two terms to actually be near each other
+# (same sentence/log line, not just the same multi-KB blob) before treating it as a real signal.
+_SECRET_PROXIMITY_CHARS = 80
+
+
 def _is_secret(evidence):
     if _SECRET_EXPLICIT.search(evidence):
         return True
-    return bool(_SECRET_TERM.search(evidence) and _SECRET_VIOLATION_CONTEXT.search(evidence))
+    for term_match in _SECRET_TERM.finditer(evidence):
+        start = max(0, term_match.start() - _SECRET_PROXIMITY_CHARS)
+        end = min(len(evidence), term_match.end() + _SECRET_PROXIMITY_CHARS)
+        if _SECRET_VIOLATION_CONTEXT.search(evidence[start:end]):
+            return True
+    return False
 _SECURITY = re.compile(
     r"\b(security regression|rls|hmac|csrf|xss|sql injection|input validation|"
     r"broad allowlist|overbroad permission|sensitive log|unsafe fallback)\b",
