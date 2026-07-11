@@ -160,6 +160,16 @@ class TierRouter:
                                 "coder": ap["coder"],
                                 "reason": f"wave cross-task learning → api {_hint_provider}:{_hint_model}"}
 
+        # --- model_cascade: start on cheapest viable model ---
+        try:
+            if os.environ.get("ORCH_MODEL_CASCADE", "true").lower() in ("true", "1"):
+                import model_cascade
+                _cascade = model_cascade.should_cascade(task)
+                if _cascade and _cascade.get("start_model"):
+                    task["_cascade_start_model"] = _cascade["start_model"]
+        except Exception:
+            pass
+
         # --- api_only mode: skip subscription entirely ---
         if mode == "api_only":
             return self._pick_api(task, model_tier, "api_only mode")

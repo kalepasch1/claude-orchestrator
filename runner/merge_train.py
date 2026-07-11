@@ -34,6 +34,7 @@ import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock f
 import agentic_repair
 import repo_lock         # per-repo mutex: concurrent train_run() calls must not race git refs
 import repo_hygiene      # strip stray untracked .js shadowing .ts before every test run
+import semantic_merge    # AST-level auto-resolution for rebase conflicts
 
 MARK = "train"                                   # decided_by prefix => handled by the train
 SKIP_PREFIXES = ("merge-handler", "train")       # cards already handled by any integration path
@@ -119,6 +120,116 @@ def _rebase_onto_base(repo, branch, base):
     if _git(repo, "merge-base", "--is-ancestor", base, branch).returncode == 0:
         return True  # already based on current base
     return approval_merge._rebase_isolated(repo, base, branch)
+
+
+def _try_semantic_merge(repo, branch, base):
+    """Attempt AST-level semantic merge when rebase fails.
+
+    Identifies files changed on both sides since their merge-base, then uses
+    semantic_merge to resolve non-overlapping edits without a full redo.
+    Returns True if ALL conflicting files were auto-merged and a new commit
+    was created on `branch` that sits on top of `base`. Returns False on any
+    failure (caller falls through to existing redo logic).
+
+    Fail-soft: any exception returns False.
+    """
+    try:
+        # find the merge-base commit
+        mb = _git(repo, "merge-base", branch, base)
+        if mb.returncode != 0:
+            return False
+        merge_base = mb.stdout.strip()
+        if not merge_base:
+            return False
+
+        # files changed on the branch side (merge-base..branch)
+        branch_diff = _git(repo, "diff", "--name-only", merge_base, branch)
+        base_diff = _git(repo, "diff", "--name-only", merge_base, base)
+        if branch_diff.returncode != 0 or base_diff.returncode != 0:
+            return False
+
+        branch_files = set(branch_diff.stdout.strip().splitlines())
+        base_files = set(base_diff.stdout.strip().splitlines())
+        conflicting = branch_files & base_files
+        if not conflicting:
+            return False  # no overlapping files — rebase should have succeeded, don't mask the real issue
+
+        # check all conflicting files can be auto-merged
+        file_contents = {}  # filepath -> (ancestor, branch_ver, base_ver)
+        for fp in conflicting:
+            ancestor = _git(repo, "show", f"{merge_base}:{fp}")
+            branch_ver = _git(repo, "show", f"{branch}:{fp}")
+            base_ver = _git(repo, "show", f"{base}:{fp}")
+            # any missing file (added/deleted on one side) — bail out, too complex
+            if ancestor.returncode != 0 or branch_ver.returncode != 0 or base_ver.returncode != 0:
+                return False
+            file_contents[fp] = (ancestor.stdout, branch_ver.stdout, base_ver.stdout)
+
+        # phase 1: check all files are mergeable before touching anything
+        for fp, (anc, bv, basev) in file_contents.items():
+            if not semantic_merge.can_auto_merge(anc, bv, basev, filepath=fp):
+                return False
+
+        # phase 2: merge all files
+        merged_contents = {}
+        for fp, (anc, bv, basev) in file_contents.items():
+            result = semantic_merge.semantic_merge(anc, bv, basev, filepath=fp)
+            if result.get("merged") is None:
+                return False
+            merged_contents[fp] = result["merged"]
+
+        # phase 3: create a new commit on branch that sits on base with merged content
+        # use a temporary worktree to avoid touching the main checkout
+        wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt",
+                          f"smerge-{branch.replace('/', '-')}")
+        try:
+            os.makedirs(os.path.dirname(wt), exist_ok=True)
+            added = subprocess.run(["git", "worktree", "add", "-f", wt, branch], cwd=repo,
+                                   capture_output=True, timeout=60)
+            if added.returncode != 0 or not os.path.isdir(wt):
+                return False
+
+            # reset the worktree branch to base (all base content), then overlay merged files
+            reset = subprocess.run(["git", "reset", "--hard", base], cwd=wt,
+                                   capture_output=True, timeout=30)
+            if reset.returncode != 0:
+                return False
+
+            # apply all branch-only changes (files branch touched that base didn't)
+            branch_only = branch_files - conflicting
+            for fp in branch_only:
+                bv = _git(repo, "show", f"{branch}:{fp}")
+                if bv.returncode != 0:
+                    return False
+                fp_abs = os.path.join(wt, fp)
+                os.makedirs(os.path.dirname(fp_abs), exist_ok=True)
+                with open(fp_abs, "w", errors="replace") as f:
+                    f.write(bv.stdout)
+                subprocess.run(["git", "add", fp], cwd=wt, capture_output=True)
+
+            # write merged content for conflicting files
+            for fp, content in merged_contents.items():
+                fp_abs = os.path.join(wt, fp)
+                os.makedirs(os.path.dirname(fp_abs), exist_ok=True)
+                with open(fp_abs, "w", errors="replace") as f:
+                    f.write(content)
+                subprocess.run(["git", "add", fp], cwd=wt, capture_output=True)
+
+            # commit
+            msg = f"train: semantic merge of {branch} onto {base} (auto-resolved {len(merged_contents)} file(s))"
+            commit = subprocess.run(["git", "commit", "--allow-empty", "-m", msg], cwd=wt,
+                                    capture_output=True, timeout=30)
+            if commit.returncode != 0:
+                return False
+            return True
+        finally:
+            try:
+                subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=repo,
+                               capture_output=True, timeout=30)
+            except Exception:
+                pass
+    except Exception:
+        return False
 
 
 def _ensure_node_deps(repo):
@@ -573,26 +684,36 @@ def _integrate_card(card, slug, task, proj):
     _task_patch(task, {"state": MERGING_STATE, "note": f"train: integrating {branch} into {base}"})
 
     if not _rebase_onto_base(repo, branch, base):                 # (2)
-        # redo-on-fresh-base: a stale branch conflicting with the advanced base should be REBUILT
-        # on the new base, not rot as CONFLICT (that's what stalled the queue before).
-        tr = int(task.get("transient_retries") or 0)
-        cap = int(os.environ.get("MERGE_CONFLICT_REDO_CAP", "2"))
-        if tr < cap:
-            _delete_branch(repo, branch)
-            patch = agentic_repair.repair_patch(
-                task, f"train: rebase conflict on {branch} against {base}",
-                category="conflict",
-                directive=f"Rebuild the same task on fresh {base}, resolve the conflict in code, run tests, and commit.")
-            patch["transient_retries"] = tr + 1
-            _task_patch(task, patch)
-            db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:redo"})
-            _log(pname, slug, "REDO", f"rebase conflict, rebuild on fresh {base} ({tr+1}/{cap})")
-            return "redo"
-        _task_patch(task, {"state": "CONFLICT", "note": f"train: still conflicts after {cap} redos - needs manual rebase"})
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:conflict-exhausted"})
-        _attribute_train_outcome(slug, task, "conflict", integrated=False)
-        _log(pname, slug, "CONFLICT", f"redo cap {cap} exhausted")
-        return "conflict"
+        # --- semantic merge attempt: try AST-level auto-resolution before expensive redo ---
+        _semantic_ok = False
+        try:
+            _semantic_ok = _try_semantic_merge(repo, branch, base)
+        except Exception:
+            pass  # fail-soft: any error → fall through to redo
+        if _semantic_ok:
+            _log(pname, slug, "SEMANTIC_MERGE", f"auto-resolved rebase conflict on {branch}")
+            # branch now sits on base with merged content — fall through to step (3): tests
+        else:
+            # redo-on-fresh-base: a stale branch conflicting with the advanced base should be REBUILT
+            # on the new base, not rot as CONFLICT (that's what stalled the queue before).
+            tr = int(task.get("transient_retries") or 0)
+            cap = int(os.environ.get("MERGE_CONFLICT_REDO_CAP", "2"))
+            if tr < cap:
+                _delete_branch(repo, branch)
+                patch = agentic_repair.repair_patch(
+                    task, f"train: rebase conflict on {branch} against {base}",
+                    category="conflict",
+                    directive=f"Rebuild the same task on fresh {base}, resolve the conflict in code, run tests, and commit.")
+                patch["transient_retries"] = tr + 1
+                _task_patch(task, patch)
+                db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:redo"})
+                _log(pname, slug, "REDO", f"rebase conflict, rebuild on fresh {base} ({tr+1}/{cap})")
+                return "redo"
+            _task_patch(task, {"state": "CONFLICT", "note": f"train: still conflicts after {cap} redos - needs manual rebase"})
+            db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:conflict-exhausted"})
+            _attribute_train_outcome(slug, task, "conflict", integrated=False)
+            _log(pname, slug, "CONFLICT", f"redo cap {cap} exhausted")
+            return "conflict"
 
     ok, tail = _run_tests(repo, _test_cmd_for(proj, repo))  # (3)
     if not ok:

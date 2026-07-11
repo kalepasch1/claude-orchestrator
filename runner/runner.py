@@ -1245,6 +1245,29 @@ def run_task(t):
                 time.sleep(min(back, 30)); continue
 
             tests_ok = rc == 0
+            # TEST QUARANTINE: separate flaky failures from real blockers
+            if not tests_ok:
+                try:
+                    if os.environ.get("ORCH_TEST_QUARANTINE", "true").lower() == "true":
+                        import test_quarantine, re
+                        # Extract failed test names from common runner patterns
+                        _failed = []
+                        for _pat in [
+                            r'FAILED\s+([\w/.:]+)',          # pytest FAILED path::test
+                            r'FAIL:\s+(test\w+)',            # unittest FAIL: test_name
+                            r'Error in .*(test_\w+)',        # generic test_ pattern
+                            r'✗\s+([\w.]+)',                 # checkmark-style runners
+                        ]:
+                            _failed.extend(re.findall(_pat, out or ""))
+                        if _failed:
+                            _qr = test_quarantine.quarantine_check(_failed, name)
+                            if not _qr["blocking"]:
+                                tests_ok = True
+                                set_state(t["id"], note=f"test-quarantine: all {len(_qr['quarantined'])} failure(s) quarantined as flaky — unblocking")
+                            elif _qr["quarantined"]:
+                                set_state(t["id"], note=f"test-quarantine: {len(_qr['quarantined'])} flaky, {len(_qr['blocking'])} blocking")
+                except Exception as _tq_err:
+                    _log.debug("hook test_quarantine failed: %s", _tq_err)
             if not tests_ok:
                 # ERROR TAXONOMY: classify the error and select targeted remediation
                 _error_class = "unknown"
