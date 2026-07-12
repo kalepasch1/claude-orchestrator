@@ -17,6 +17,7 @@ import db
 import pipeline_contract
 import privacy
 import agentic_repair
+import quarantine_triage
 
 DEFAULT_LIMIT = int(os.environ.get("ORCH_QUARANTINE_LIMIT", "120"))
 MAX_BASE_CHARS = int(os.environ.get("ORCH_QUARANTINE_PROMPT_CHARS", "12000"))
@@ -468,10 +469,29 @@ def run(limit=DEFAULT_LIMIT):
     created = parked = skipped = 0
     repaired_original = 0
     categories = collections.Counter()
+    triage_retried = 0
     for task in rows:
         if MARK in str(task.get("note") or ""):
             skipped += 1
             continue
+
+        # 3-tier triage: give the task a chance to self-recover before quarantining
+        try:
+            evidence = f"{task.get('note') or ''}\n{task.get('log_tail') or ''}"
+            verdict = quarantine_triage.triage(task, evidence)
+            if verdict["action"] in ("retry", "restart+retry"):
+                rc = int(task.get("remediation_count") or 0)
+                db.update("tasks", {"id": task["id"]}, {
+                    "state": "QUEUED", "account": None, "updated_at": "now()",
+                    "remediation_count": rc + 1,
+                    "note": (f"{MARK}: triage tier-{verdict['tier']} {verdict['category']}: "
+                             f"{verdict['summary']}")[:500],
+                })
+                triage_retried += 1
+                continue
+        except Exception:
+            pass  # fail-soft: fall through to normal quarantine path
+
         category = classify(task)
         if category not in REPLACEMENT_CATEGORIES:
             try:
@@ -519,6 +539,7 @@ def run(limit=DEFAULT_LIMIT):
         "categories": dict(categories),
         "coder": os.environ.get("ORCH_QUARANTINE_CODER") or "ollama",
         "local_only": os.environ.get("ORCH_QUARANTINE_LOCAL_ONLY", "true").lower() in ("1", "true", "yes", "on"),
+        "triage_retried": triage_retried,
         "repaired_replacements": repaired,
         "deduped_replacements": deduped,
     }

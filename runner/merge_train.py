@@ -31,6 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
 import agentic_repair
+import continuous_test_runner
 
 MARK = "train"                                   # decided_by prefix => handled by the train
 SKIP_PREFIXES = ("merge-handler", "train")       # cards already handled by any integration path
@@ -100,10 +101,26 @@ def _rebase_onto_base(repo, branch, base):
     return True
 
 
-def _run_tests(repo, test_cmd):
-    """Step 3: run the gate. Returns (ok, tail-of-output)."""
+def _run_tests(repo, test_cmd, task=None):
+    """Step 3: run the gate with continuous test integration.
+
+    Uses continuous_test_runner for flake detection and result persistence.
+    Returns (ok, tail-of-output).
+    """
     if not test_cmd:
         return True, "no test_cmd configured"
+    # Use continuous_test_runner for flake-aware testing when available
+    try:
+        result = continuous_test_runner.run_tests(repo, task=task, mode="merge-gate")
+        if result["passed"]:
+            tail = "green"
+            if result.get("flake"):
+                tail += " (flake detected, passed on retry)"
+            return True, tail
+        return False, result.get("output", "")[-600:].strip()
+    except Exception:
+        pass
+    # Fallback to direct execution
     try:
         r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
                            text=True, timeout=TEST_TIMEOUT)
@@ -416,7 +433,7 @@ def _integrate_card(card, slug, task, proj):
         _log(pname, slug, "CONFLICT", f"redo cap {cap} exhausted")
         return "conflict"
 
-    ok, tail = _run_tests(repo, _test_cmd_for(proj, repo))  # (3)
+    ok, tail = _run_tests(repo, _test_cmd_for(proj, repo), task=task)  # (3)
     if not ok:
         # NEVER force-merge red work.
         _task_patch(task, {"state": "TESTFAIL", "note": f"train: tests failed on rebased {branch}: {tail[:200]}"})

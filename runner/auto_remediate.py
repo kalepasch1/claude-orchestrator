@@ -23,6 +23,8 @@ import db
 import legal_filter
 import pipeline_contract
 import agentic_repair
+import decomposition_backpressure
+import greedy_dispatch
 
 CAP = int(os.environ.get("REMEDIATION_CAP", "3"))
 # HARD TERMINAL CAP: a task remediated this many times without ever merging is almost certainly
@@ -76,14 +78,16 @@ def run(limit=120):
         # genuinely atomic-and-stuck (or already a decomposition product) do we shelve — which should be
         # rare. Legal/material holds still route to the human path below.
         if rc >= HARD_CAP and not _requires_human_hold(t, signal):
-            if not _already_decomposed(t, note):
+            if not _already_decomposed(t, note) and decomposition_backpressure.gate(task=t):
                 subs = _decompose(t, signal)
                 if subs:
-                    n = _spawn_subtasks(t, subs)
+                    n, child_ids = _spawn_subtasks(t, subs, return_ids=True)
                     if n:
                         db.update("tasks", {"id": t["id"]},
                                   {"state": "DECOMPOSED", "account": None, "updated_at": "now()",
                                    "note": (f"too large after {rc} attempts -> auto-split into {n} sub-tasks; parent retired.")[:500]})
+                        # Immediately dispatch children to available runners
+                        greedy_dispatch.on_decomposition_complete(t, child_ids)
                         decomposed += 1
                         continue
             db.update("tasks", {"id": t["id"]},
@@ -458,23 +462,31 @@ def _decompose(task, note):
         return None
 
 
-def _spawn_subtasks(task, subs):
-    """Create child tasks for a decomposed parent. Returns count actually created."""
+def _spawn_subtasks(task, subs, return_ids=False):
+    """Create child tasks for a decomposed parent.
+
+    Returns count actually created, or (count, [child_ids]) if return_ids=True.
+    """
     made = 0
+    child_ids = []
     for i, s in enumerate(subs):
         child = f"{task['slug']}-{s['title']}"[:80]
         if db.select("tasks", {"select": "id", "slug": f"eq.{child}", "limit": "1"}):
             continue
         try:
-            db.insert("tasks", {
+            row = db.insert("tasks", {
                 "project_id": task.get("project_id"), "slug": child, "kind": "build", "state": "QUEUED",
                 "remediation_count": 0, "base_branch": task.get("base_branch") or "main",
                 "material": bool(task.get("material")),
                 "prompt": s["prompt"] + f"\n\n(Sub-task {i+1}/{len(subs)} of '{task['slug']}', auto-split because the parent was too large to build in one pass.)",
                 "note": f"auto-decomposed from {task['slug']}"})
             made += 1
+            if return_ids and isinstance(row, list) and row:
+                child_ids.append(row[0].get("id", ""))
         except Exception:
             pass
+    if return_ids:
+        return made, child_ids
     return made
 
 
