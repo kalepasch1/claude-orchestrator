@@ -342,6 +342,10 @@ def run_committeemeta():
     import committees; committees.meta_review()
 
 
+def run_cadeextras():
+    """CADE extensions harness: discover and run all cx_*.py modules in the runner directory."""
+    import cade_extras; cade_extras.run()
+
 def run_committeewatch():
     """Event-driven watch: scan external reg/security/competitor signals and re-open the docket on material ones."""
     import committees; committees.watch_scan()
@@ -644,6 +648,7 @@ JOBS = {
     "committeeminutes": run_committeeminutes,
     "committeekg": run_committeekg,
     "committeemeta": run_committeemeta,
+    "cadeextras": run_cadeextras,
     "remediate": run_remediate,
     "quarantine": run_quarantine,
     "selfcheck": run_selfcheck,
