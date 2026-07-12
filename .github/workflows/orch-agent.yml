@@ -1,0 +1,44 @@
+name: Orchestrator Agent Task
+'on':
+  repository_dispatch:
+    types:
+    - orch-agent-task
+concurrency:
+  group: orch-agent-${{ github.event.client_payload.slug }}
+  cancel-in-progress: false
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PYTHONPATH: runner/
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Install deps
+      run: pip install pytest
+    - name: Create agent branch
+      run: git checkout -b agent/${{ github.event.client_payload.slug }}
+    - name: Run agentic task
+      run: 'echo "Slug: ${{ github.event.client_payload.slug }}"
+
+        echo "Prompt: ${{ github.event.client_payload.prompt }}"
+
+        # Headless coder execution placeholder
+
+        python3 -c "print(''agent task complete'')"'
+    - name: Commit and push
+      run: 'git config user.name ''orch-agent''
+
+        git config user.email ''orch-agent@noreply''
+
+        git add -A
+
+        git diff --cached --quiet || git commit -m ''agent/${{ github.event.client_payload.slug
+        }}''
+
+        git push origin agent/${{ github.event.client_payload.slug }}'

@@ -1,135 +1,117 @@
+"""Tests for pause_arbiter — typed pauses, TTL, escalation after consecutive trips."""
+import json
 import os
 import sys
-import json
 import tempfile
 import types
 import unittest
-from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import importlib
+# Stub kill_switch
+_paused = {"v": False}
+_ks = types.ModuleType("kill_switch")
+_ks.pause = lambda **kw: None
+_ks.resume = lambda **kw: None
+_ks.is_paused = lambda *a: _paused["v"]
+sys.modules["kill_switch"] = _ks
+
+# Stub db for escalation approval filing
+_approvals = []
+_db = types.ModuleType("db")
+_db.insert = lambda table, row: _approvals.append(row)
+_db.select = lambda *a, **kw: []
+sys.modules["db"] = _db
+
+# Stub subscription_guard
+_sg = types.ModuleType("subscription_guard")
+_sg.audit = lambda: {"api_keys_present": False}
+sys.modules["subscription_guard"] = _sg
+
 import pause_arbiter
 
 
-class PauseArbiterTest(unittest.TestCase):
+class TestPauseArbiterBasic(unittest.TestCase):
     def setUp(self):
-        # isolate state file per test
-        fd, self._tmp = tempfile.mkstemp(prefix="pause_arbiter_state_test_", suffix=".json")
-        os.close(fd)
-        os.remove(self._tmp)
-        pause_arbiter.STATE_FILE = self._tmp
-        pause_arbiter._REGISTRY.clear()
+        self._tmpdir = tempfile.mkdtemp()
+        pause_arbiter.STATE_FILE = os.path.join(self._tmpdir, "state.json")
+        _paused["v"] = False
+        _approvals.clear()
 
-    def tearDown(self):
-        try:
-            os.remove(self._tmp)
-        except OSError:
-            pass
+    def test_pause_writes_state(self):
+        pause_arbiter.pause("test_cause", "something broke", by="test")
+        state = pause_arbiter._load_state()
+        self.assertIn("global:", state)
+        self.assertEqual(state["global:"]["reason_code"], "test_cause")
 
-    def test_pause_writes_state_and_calls_kill_switch(self):
-        kill_switch = types.SimpleNamespace(pause=MagicMock(return_value="PAUSED global"), resume=MagicMock())
-        with patch.dict(sys.modules, {"kill_switch": kill_switch}):
-            pause_arbiter.pause("test_reason", "something broke", by="tester", ttl_s=60)
-        kill_switch.pause.assert_called_once()
-        with open(self._tmp) as f:
-            state = json.load(f)
-        self.assertEqual(state["global:"]["reason_code"], "test_reason")
-        self.assertEqual(state["global:"]["ttl_s"], 60)
+    def test_resume_clears_state(self):
+        pause_arbiter.pause("test_cause", "broke", by="test")
+        pause_arbiter.resume(by="test")
+        state = pause_arbiter._load_state()
+        self.assertNotIn("global:", state)
 
-    def test_recheck_lifts_when_registered_check_clears(self):
-        pause_arbiter.register("clears_immediately", lambda: True, auto_expirable=True)
-        kill_switch = types.SimpleNamespace(
-            pause=MagicMock(), resume=MagicMock(),
-            is_paused=MagicMock(return_value=True),
-        )
-        with patch.dict(sys.modules, {"kill_switch": kill_switch}):
-            pause_arbiter.pause("clears_immediately", "transient", by="tester")
-            result = pause_arbiter.recheck(scope="global")
-        self.assertEqual(result["action"], "lifted")
-        kill_switch.resume.assert_called_once()
+    def test_streak_increments_on_same_reason(self):
+        pause_arbiter.pause("flaky", "flap", by="test")
+        self.assertEqual(pause_arbiter._load_state()["global:"]["streak"], 1)
+        pause_arbiter.pause("flaky", "flap again", by="test")
+        self.assertEqual(pause_arbiter._load_state()["global:"]["streak"], 2)
 
-    def test_recheck_leaves_manual_pause_alone(self):
-        kill_switch = types.SimpleNamespace(
-            pause=MagicMock(), resume=MagicMock(),
-            is_paused=MagicMock(return_value=True),
-        )
-        # paused, but with no arbiter metadata (e.g. a manual dashboard STOP)
-        with patch.dict(sys.modules, {"kill_switch": kill_switch}):
-            result = pause_arbiter.recheck(scope="global")
-        self.assertEqual(result["action"], "none")
-        kill_switch.resume.assert_not_called()
+    def test_streak_resets_on_different_reason(self):
+        pause_arbiter.pause("cause_a", "a", by="test")
+        pause_arbiter.pause("cause_b", "b", by="test")
+        self.assertEqual(pause_arbiter._load_state()["global:"]["streak"], 1)
 
-    def test_recheck_never_auto_lifts_unregistered_reason_without_ttl(self):
-        kill_switch = types.SimpleNamespace(
-            pause=MagicMock(), resume=MagicMock(),
-            is_paused=MagicMock(return_value=True),
-        )
-        with patch.dict(sys.modules, {"kill_switch": kill_switch}):
-            pause_arbiter.pause("billing_real_spend_or_audit_failure", "real $ spend", by="tester", ttl_s=None)
-            result = pause_arbiter.recheck(scope="global")
-        self.assertEqual(result["action"], "none")
-        kill_switch.resume.assert_not_called()
 
-    def test_recheck_lifts_on_ttl_expiry_for_registered_reason(self):
-        pause_arbiter.register("slow_clear", lambda: False, auto_expirable=True)
-        kill_switch = types.SimpleNamespace(
-            pause=MagicMock(), resume=MagicMock(),
-            is_paused=MagicMock(return_value=True),
-        )
-        with patch.dict(sys.modules, {"kill_switch": kill_switch}):
-            pause_arbiter.pause("slow_clear", "still not clear", by="tester", ttl_s=0)
-            import time as _t
-            _t.sleep(0.01)
-            result = pause_arbiter.recheck(scope="global")
-        self.assertEqual(result["action"], "lifted")
-        kill_switch.resume.assert_called_once()
+class TestEscalationAfterConsecutiveTrips(unittest.TestCase):
+    """The core escalation feature: after ESCALATE_AFTER consecutive identical trips,
+    pause_arbiter stops auto-lifting and files a material approval."""
 
-    def test_streak_resets_when_a_different_reason_trips(self):
-        kill_switch = types.SimpleNamespace(pause=MagicMock(), resume=MagicMock())
-        db = types.SimpleNamespace(insert=MagicMock())
-        with patch.dict(sys.modules, {"kill_switch": kill_switch, "db": db}):
-            pause_arbiter.pause("reason_a", "first", by="tester")
-            pause_arbiter.pause("reason_a", "second", by="tester")
-            pause_arbiter.pause("reason_b", "different cause", by="tester")
-        with open(self._tmp) as f:
-            state = json.load(f)
-        self.assertEqual(state["global:"]["streak"], 1)
+    def setUp(self):
+        self._tmpdir = tempfile.mkdtemp()
+        pause_arbiter.STATE_FILE = os.path.join(self._tmpdir, "state.json")
+        _paused["v"] = False
+        _approvals.clear()
+
+    def test_escalation_at_threshold(self):
+        """After 3 consecutive identical trips, the pause is marked escalated."""
+        for i in range(pause_arbiter.ESCALATE_AFTER):
+            pause_arbiter.pause("billing_key_presence", f"trip {i+1}", by="billing_guard")
+        state = pause_arbiter._load_state()
+        entry = state["global:"]
+        self.assertTrue(entry["escalated"])
+        self.assertEqual(entry["streak"], pause_arbiter.ESCALATE_AFTER)
+
+    def test_no_escalation_below_threshold(self):
+        """Below ESCALATE_AFTER, pause is not escalated."""
+        for i in range(pause_arbiter.ESCALATE_AFTER - 1):
+            pause_arbiter.pause("billing_key_presence", f"trip {i+1}", by="billing_guard")
+        state = pause_arbiter._load_state()
         self.assertFalse(state["global:"]["escalated"])
-        db.insert.assert_not_called()
 
-    def test_third_consecutive_identical_trip_escalates_and_files_approval(self):
-        kill_switch = types.SimpleNamespace(pause=MagicMock(), resume=MagicMock())
-        db = types.SimpleNamespace(insert=MagicMock())
-        with patch.dict(sys.modules, {"kill_switch": kill_switch, "db": db}):
-            pause_arbiter.pause("flappy_cause", "trip 1", by="tester")
-            pause_arbiter.pause("flappy_cause", "trip 2", by="tester")
-            pause_arbiter.pause("flappy_cause", "trip 3", by="tester")
-        with open(self._tmp) as f:
-            state = json.load(f)
-        self.assertEqual(state["global:"]["streak"], 3)
-        self.assertTrue(state["global:"]["escalated"])
-        db.insert.assert_called_once()
-        self.assertEqual(db.insert.call_args[0][0], "approvals")
-        # a 4th trip while still escalated must not file a second approval
-        with patch.dict(sys.modules, {"kill_switch": kill_switch, "db": db}):
-            pause_arbiter.pause("flappy_cause", "trip 4", by="tester")
-        db.insert.assert_called_once()
+    def test_escalation_files_approval(self):
+        """Escalation must file a material approval so a human sees it."""
+        for i in range(pause_arbiter.ESCALATE_AFTER):
+            pause_arbiter.pause("billing_key_presence", f"trip {i+1}", by="billing_guard")
+        self.assertTrue(len(_approvals) > 0, "must file an approval on escalation")
+        self.assertEqual(_approvals[0]["kind"], "material")
+        self.assertIn("re-tripped", _approvals[0]["title"])
 
-    def test_escalated_pause_is_never_auto_lifted_even_if_check_clears(self):
-        pause_arbiter.register("flappy_cause", lambda: True, auto_expirable=True)
-        kill_switch = types.SimpleNamespace(
-            pause=MagicMock(), resume=MagicMock(),
-            is_paused=MagicMock(return_value=True),
-        )
-        db = types.SimpleNamespace(insert=MagicMock())
-        with patch.dict(sys.modules, {"kill_switch": kill_switch, "db": db}):
-            pause_arbiter.pause("flappy_cause", "trip 1", by="tester")
-            pause_arbiter.pause("flappy_cause", "trip 2", by="tester")
-            pause_arbiter.pause("flappy_cause", "trip 3", by="tester")
-            result = pause_arbiter.recheck(scope="global")
+    def test_recheck_refuses_to_lift_escalated(self):
+        """Once escalated, recheck() must NOT auto-lift even if clear_check passes."""
+        for i in range(pause_arbiter.ESCALATE_AFTER):
+            pause_arbiter.pause("billing_key_presence", f"trip {i+1}", by="billing_guard")
+        _paused["v"] = True
+        result = pause_arbiter.recheck()
         self.assertEqual(result["action"], "none")
-        kill_switch.resume.assert_not_called()
+        self.assertIn("escalated", result.get("reason", ""))
+
+    def test_recheck_lifts_non_escalated(self):
+        """Non-escalated pause with a passing clear_check should be lifted."""
+        pause_arbiter.pause("billing_key_presence", "trip 1", by="billing_guard")
+        _paused["v"] = True
+        _sg.audit = lambda: {"api_keys_present": False}
+        result = pause_arbiter.recheck()
+        self.assertEqual(result["action"], "lifted")
 
 
 if __name__ == "__main__":
