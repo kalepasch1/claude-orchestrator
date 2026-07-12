@@ -595,6 +595,12 @@ def run_roi():
         print(f"roi {r['project']}: cpm=${cpm} weight={weight}")
 
 
+def run_nightsweep():
+    """Batch mechanical/doc/test tasks to cheapest providers during off-peak hours."""
+    import nightly_cheap_sweep
+    nightly_cheap_sweep.run()
+
+
 JOBS = {
     "spec": run_spec,
     "chaos": run_chaos,
@@ -668,6 +674,7 @@ JOBS = {
     "modelportfolios": run_modelportfolios,
     "modelslashing": run_modelslashing,
     "commonbrain": run_commonbrain,
+    "nightsweep": run_nightsweep,
 }
 
 if __name__ == "__main__":
@@ -694,7 +701,7 @@ if __name__ == "__main__":
         "contcompact", "backlogcompact",
         "bizradar", "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",
         "stripe", "ownerreport", "worktreegc", "remediate", "selfcheck",
-        "quarantine", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain",
+        "quarantine", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain", "nightsweep",
         "release_kpi.py", "integrate_kpi.py", "fleet_control.py",
     }
     if job not in _SAFE_WHEN_PAUSED:
