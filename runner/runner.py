@@ -102,6 +102,7 @@ import portfolio_rebalancer
 import capacity_pacer, account_partition, generator_feedback
 import exhaustion_signal, surge_planner
 import agentic_repair
+import cowork_dispatch
 
 INTEGRATION_MODE = os.environ.get("INTEGRATION_MODE", "local")  # local | pr
 USE_CACHE = os.environ.get("RESULT_CACHE", "true").lower() == "true"
@@ -2671,6 +2672,13 @@ def main():
             # read MAX_PARALLEL live from env each loop so concurrency is tunable via .env + hot_reload
             # WITHOUT a restart (RAM permitting; resource_governor still clamps to protect the Mac).
             eff_limit = min(int(os.environ.get("MAX_PARALLEL", MAX_PARALLEL)), resource_governor.current_limit())
+            # COWORK DISPATCH: reduce local lanes when Cowork is actively processing tasks,
+            # to avoid git worktree contention. Cowork throughput is 20-180X faster, so yielding
+            # local lanes when it's active maximizes total fleet throughput.
+            try:
+                eff_limit = cowork_dispatch.adjust_local_lanes(eff_limit)
+            except Exception:
+                pass
             if os.environ.get("ORCH_DRAINING_FOR_RESTART") == "1":
                 eff_limit = 0
             # global kill switch: halt all task claiming instantly
