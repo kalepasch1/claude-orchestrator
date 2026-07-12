@@ -124,12 +124,27 @@ class AccountPool:
         return time.time() >= until
 
     def current(self):
-        for a in self.accts:
-            if self._healthy(a):
-                return a
-        # all cooling down -> return the one that frees up soonest
-        return min(self.accts,
-                   key=lambda a: self.state.get(a["name"], {}).get("cooldown_until", 0)) if self.accts else None
+        healthy = [a for a in self.accts if self._healthy(a)]
+        if not healthy:
+            # all cooling down -> return the one that frees up soonest
+            return min(self.accts,
+                       key=lambda a: self.state.get(a["name"], {}).get("cooldown_until", 0)) if self.accts else None
+        # Round-robin across healthy subscription accounts by picking the one with the
+        # fewest uses tracked locally. This distributes load evenly across Max plans so
+        # one account doesn't burn through its free capacity while others sit idle.
+        # The use_count resets when an account recovers from cooldown (mark_ok).
+        if len(healthy) > 1:
+            return min(healthy,
+                       key=lambda a: self.state.get(a["name"], {}).get("use_count", 0))
+        return healthy[0]
+
+    def record_use(self, a):
+        """Call after successfully dispatching a task to this account."""
+        if not a:
+            return
+        st = self.state.setdefault(a["name"], {})
+        st["use_count"] = int(st.get("use_count", 0)) + 1
+        self._save()
 
     def all_exhausted(self):
         """True iff no Claude account is currently healthy (every one is cooling down)."""
@@ -205,6 +220,8 @@ class AccountPool:
         if a and a["name"] in self.state:
             self.state[a["name"]].pop("cooldown_until", None)
             self.state[a["name"]].pop("exh_hits", None)   # genuine success -> reset the backoff counter
+            # Don't reset use_count on mark_ok — it tracks cumulative usage for round-robin
+            # balancing. It only resets when ALL accounts' counts are rebalanced (see current()).
             self._save()
             self._write_exhausted_flag()   # a Claude account recovered -> clear the fail-over signal
 

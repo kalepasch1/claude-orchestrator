@@ -575,7 +575,8 @@ def run_task(t):
 
         # speculative N-best: race a few approaches, keep the cheapest that passes
         if kind == "speculative":
-            env = dict(os.environ); env.update(POOL.env_for(POOL.current()))
+            _spec_acct = POOL.current(); POOL.record_use(_spec_acct)
+            env = dict(os.environ); env.update(POOL.env_for(_spec_acct))
             res = speculative.run(repo, slug, base, prompt, test_cmd, env=env)
             w = res["winner"]
             if not w:
@@ -640,6 +641,7 @@ def run_task(t):
             except Exception:
                 visible_model = model if coder == "claude" else f"{coder}:{model}"
             acct = POOL.current()
+            POOL.record_use(acct)
             set_state(t["id"], state="RUNNING", model=visible_model, attempt=attempt,
                       account=(acct or {}).get("name"), note=f"agentic coder: {coder}")
             subprocess.run([os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"), slug, base],
