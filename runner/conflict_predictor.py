@@ -160,3 +160,100 @@ def record_outcome(task_id, had_conflict, was_deferred):
                 _stats["false_positives"] += 1
     except Exception as exc:
         _log.warning("record_outcome failed: %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Real-time conflict detection during merge process
+# ---------------------------------------------------------------------------
+
+_REALTIME_ENABLED = os.environ.get("ORCH_REALTIME_CONFLICT_ENABLED", "true").lower() == "true"
+_CONTENT_OVERLAP_THRESHOLD = float(os.environ.get("ORCH_CONTENT_OVERLAP_THRESHOLD", "0.5"))
+
+
+def _extract_function_names(text):
+    """Extract function/class definitions from code text for semantic overlap."""
+    if not text:
+        return set()
+    fns = set()
+    for m in re.finditer(r'(?:def|class|function|const|let|var)\s+(\w+)', text):
+        fns.add(m.group(1))
+    return fns
+
+
+def analyze_merge_conflict(base_content, branch_a_content, branch_b_content, filepath=""):
+    """Analyze a real merge conflict to classify severity and suggest resolution.
+
+    Returns {
+        "severity": "low"|"medium"|"high",
+        "conflict_type": "additive"|"divergent"|"semantic",
+        "auto_resolvable": bool,
+        "suggestion": str,
+        "overlapping_symbols": list,
+    }
+    """
+    if not _REALTIME_ENABLED:
+        return {"severity": "low", "conflict_type": "unknown",
+                "auto_resolvable": False, "suggestion": "realtime analysis disabled",
+                "overlapping_symbols": []}
+    try:
+        fns_a = _extract_function_names(branch_a_content or "")
+        fns_b = _extract_function_names(branch_b_content or "")
+        fns_base = _extract_function_names(base_content or "")
+
+        new_in_a = fns_a - fns_base
+        new_in_b = fns_b - fns_base
+        modified_both = (fns_a & fns_b) - fns_base  # new in both branches
+
+        # Additive: both branches add new, non-overlapping symbols
+        if new_in_a and new_in_b and not (new_in_a & new_in_b):
+            return {
+                "severity": "low",
+                "conflict_type": "additive",
+                "auto_resolvable": True,
+                "suggestion": "Both branches add non-overlapping code; safe to merge both additions.",
+                "overlapping_symbols": [],
+            }
+
+        # Divergent: same symbols modified differently
+        overlap = new_in_a & new_in_b
+        if overlap:
+            return {
+                "severity": "high",
+                "conflict_type": "divergent",
+                "auto_resolvable": False,
+                "suggestion": f"Both branches define: {', '.join(sorted(overlap)[:5])}. Manual review needed.",
+                "overlapping_symbols": sorted(overlap),
+            }
+
+        # Semantic: same region touched but different symbols
+        lines_a = set((branch_a_content or "").splitlines())
+        lines_b = set((branch_b_content or "").splitlines())
+        lines_base = set((base_content or "").splitlines())
+        changed_a = lines_a - lines_base
+        changed_b = lines_b - lines_base
+        common_changes = changed_a & changed_b
+
+        if common_changes:
+            ratio = len(common_changes) / max(len(changed_a | changed_b), 1)
+            severity = "high" if ratio > _CONTENT_OVERLAP_THRESHOLD else "medium"
+            return {
+                "severity": severity,
+                "conflict_type": "semantic",
+                "auto_resolvable": ratio < 0.2,
+                "suggestion": f"Content overlap ratio {ratio:.2f}; {'auto-merge possible' if ratio < 0.2 else 'manual review recommended'}.",
+                "overlapping_symbols": sorted(list(fns_a & fns_b))[:10],
+            }
+
+        return {
+            "severity": "low",
+            "conflict_type": "additive",
+            "auto_resolvable": True,
+            "suggestion": "No semantic overlap detected; safe to auto-merge.",
+            "overlapping_symbols": [],
+        }
+
+    except Exception as exc:
+        _log.warning("analyze_merge_conflict failed: %s", exc)
+        return {"severity": "medium", "conflict_type": "unknown",
+                "auto_resolvable": False, "suggestion": f"analysis error: {exc}",
+                "overlapping_symbols": []}

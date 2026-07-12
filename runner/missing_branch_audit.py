@@ -67,5 +67,91 @@ def main():
         print(f"  UNRESOLVABLE  {proj}: {slug}")
 
 
+def auto_recover_missing_branches(dry_run=True, max_recover=10):
+    """Detect missing branches for DONE tasks and initiate recovery.
+
+    For each genuinely missing branch, creates a recovery task that will
+    re-checkout and re-apply the work from the task's original prompt.
+
+    Args:
+        dry_run: If True, only report what would be recovered
+        max_recover: Maximum number of recovery tasks to create per run
+    """
+    import time as _time
+    projects = {p["id"]: p for p in (db.select("projects", {"select": "*"}) or [])}
+    done_tasks = db.select("tasks", {
+        "select": "id,slug,project_id,state,prompt,kind,base_branch",
+        "state": "eq.DONE",
+        "limit": "2000",
+    }) or []
+
+    missing = []
+    for t in done_tasks:
+        proj = projects.get(t.get("project_id"), {})
+        localized_repo = db.localize_repo_path(proj.get("repo_path", ""))
+        branch = f"agent/{t.get('slug')}"
+        if _branch_exists(localized_repo, branch) is False:
+            missing.append((t, proj))
+
+    if not missing:
+        print("auto_recover: no missing branches found")
+        return {"recovered": 0, "missing": 0}
+
+    print(f"auto_recover: {len(missing)} missing branches detected")
+
+    recovered = 0
+    for t, proj in missing[:max_recover]:
+        slug = t.get("slug", "")
+        recovery_slug = f"recover-{slug}"
+
+        # Check if recovery task already exists
+        existing = db.select("tasks", {
+            "select": "id",
+            "slug": f"eq.{recovery_slug}",
+            "project_id": f"eq.{t.get('project_id')}",
+            "limit": "1",
+        }) or []
+        if existing:
+            print(f"  SKIP  {slug}: recovery task already exists")
+            continue
+
+        if dry_run:
+            print(f"  DRY-RUN  would create recovery task for: {slug}")
+            recovered += 1
+            continue
+
+        # Create recovery task
+        recovery_task = {
+            "slug": recovery_slug,
+            "project_id": t.get("project_id"),
+            "state": "QUEUED",
+            "kind": t.get("kind", "build"),
+            "prompt": f"Recovery: re-create missing branch agent/{slug}.\nOriginal prompt:\n{t.get('prompt', '')[:2000]}",
+            "base_branch": t.get("base_branch", "master"),
+            "deps": [],
+            "note": f"auto-recovery for missing branch (original task {t.get('id')})",
+        }
+        try:
+            db.insert("tasks", recovery_task)
+            recovered += 1
+            print(f"  RECOVERED  created recovery task: {recovery_slug}")
+        except Exception as exc:
+            print(f"  ERROR  failed to create recovery for {slug}: {exc}")
+
+    result = {"recovered": recovered, "missing": len(missing)}
+    print(f"auto_recover complete: {recovered}/{len(missing)} recovery tasks created (dry_run={dry_run})")
+    return result
+
+
 if __name__ == "__main__":
-    main()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--recover", action="store_true", help="Auto-recover missing branches")
+    parser.add_argument("--no-dry-run", action="store_true", help="Actually create recovery tasks")
+    parser.add_argument("--max-recover", type=int, default=10, help="Max recovery tasks to create")
+    args = parser.parse_args()
+
+    if args.recover:
+        auto_recover_missing_branches(dry_run=not args.no_dry_run, max_recover=args.max_recover)
+    else:
+        main()
