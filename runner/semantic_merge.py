@@ -1,23 +1,27 @@
 """
-semantic_merge -- AST-level semantic merging for Python files.
+semantic_merge.py - AST-level 3-way merging for conflicting tasks.
 
-When two concurrent tasks edit the same file, instead of serializing (deferring
-one), this module attempts a 3-way semantic merge using AST analysis.  It splits
-Python files into "semantic regions" (imports, top-level function/class defs,
-module-level statements between defs) and determines whether two diffs touch
-different regions.  Non-overlapping diffs merge automatically; overlapping diffs
-fall back to serial merge.
+Instead of serializing tasks that conflict_predictor flags as overlapping,
+this module runs both concurrently and uses structural analysis to combine
+their diffs.  For Python files it parses with the ast module to identify
+function/class boundaries; for everything else it falls back to line-range
+analysis.
 
-For non-Python files, a simpler line-based heuristic is used: diffs are
-non-overlapping if they touch entirely different line ranges.
+Strategies (in descending confidence):
+  disjoint          - diffs touch completely different files        (1.0)
+  function_disjoint - same file, different functions/classes        (0.8)
+  line_disjoint     - same function, non-overlapping line ranges   (0.6)
+  overlapping       - overlapping lines in the same function       (unmergeable)
 
-Env vars
---------
-ORCH_SEMANTIC_MERGE          "true" (default) / "false"
-ORCH_MERGE_CONFIDENCE_MIN    0.0-1.0 (default "0.8")
+Thread-safe.  Fail-soft: any error -> mergeable=False / success=False
+so the caller falls back to serialization.
+
+Env vars:
+  ORCH_SEMANTIC_MERGE_ENABLED              (default "true")
+  ORCH_SEMANTIC_MERGE_CONFIDENCE_THRESHOLD (default "0.6")
 """
 
-import sys, os, ast, re, threading, time, difflib
+import sys, os, re, ast, json, time, threading, subprocess, tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import log as _log_mod
@@ -25,443 +29,683 @@ import log as _log_mod
 _log = _log_mod.get("semantic_merge")
 
 # ---------------------------------------------------------------------------
-# env config
+# Configuration
 # ---------------------------------------------------------------------------
 
-_ENABLED = os.environ.get("ORCH_SEMANTIC_MERGE", "true").lower() == "true"
-_CONFIDENCE_MIN = float(os.environ.get("ORCH_MERGE_CONFIDENCE_MIN", "0.8"))
+_ENABLED = os.environ.get("ORCH_SEMANTIC_MERGE_ENABLED", "true").lower() in (
+    "true", "1", "yes",
+)
+_CONFIDENCE_THRESHOLD = float(
+    os.environ.get("ORCH_SEMANTIC_MERGE_CONFIDENCE_THRESHOLD", "0.6")
+)
 
 # ---------------------------------------------------------------------------
-# stats tracking (thread-safe)
+# Stats (thread-safe)
 # ---------------------------------------------------------------------------
 
 _lock = threading.Lock()
 _stats = {
-    "auto_merges": 0,
-    "deferrals": 0,
-    "errors": 0,
-    "by_strategy": {},        # strategy -> count
-    "by_filepath": {},        # filepath -> {"auto": N, "deferred": N}
+    "merges_attempted": 0,
+    "merges_succeeded": 0,
+    "conflicts_avoided": 0,
+    "time_saved_s": 0.0,
 }
 
 
+def stats() -> dict:
+    """Return a snapshot of merge statistics."""
+    with _lock:
+        return dict(_stats)
+
+
+def _inc(key, value=1):
+    with _lock:
+        _stats[key] = _stats.get(key, 0) + value
+
+
 # ---------------------------------------------------------------------------
-# semantic region extraction
+# Diff parsing
 # ---------------------------------------------------------------------------
 
-class _Region:
-    """A contiguous semantic region within a Python file."""
-    __slots__ = ("kind", "name", "start", "end")
-
-    def __init__(self, kind, name, start, end):
-        self.kind = kind      # "import", "class", "function", "module_stmt"
-        self.name = name      # e.g. "MyClass", "my_func", "imports", "stmt_L42"
-        self.start = start    # 1-based first line
-        self.end = end        # 1-based last line
-
-    def __repr__(self):
-        return f"Region({self.kind}:{self.name} L{self.start}-{self.end})"
+_DIFF_FILE_RE = re.compile(r"^diff --git a/(.+?) b/(.+?)$", re.MULTILINE)
+_HUNK_HEADER_RE = re.compile(
+    r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$", re.MULTILINE,
+)
 
 
-def _extract_regions(source):
-    """Parse Python source into semantic regions.
+def _parse_diff_hunks(diff_text: str) -> list:
+    """Parse unified diff into structured hunks.
 
-    Returns a list of _Region covering every line in the file. On parse
-    failure returns an empty list (caller should fall back to line heuristic).
+    Returns list of dicts:
+      {"file", "old_start", "old_count", "new_start", "new_count", "content"}
+    """
+    if not diff_text:
+        return []
+
+    hunks = []
+    current_file = None
+
+    for line in diff_text.splitlines(keepends=True):
+        stripped = line.rstrip("\n")
+
+        file_match = _DIFF_FILE_RE.match(stripped)
+        if file_match:
+            current_file = file_match.group(2)
+            continue
+
+        hunk_match = _HUNK_HEADER_RE.match(stripped)
+        if hunk_match:
+            hunks.append({
+                "file": current_file or "",
+                "old_start": int(hunk_match.group(1)),
+                "old_count": int(hunk_match.group(2) or 1),
+                "new_start": int(hunk_match.group(3)),
+                "new_count": int(hunk_match.group(4) or 1),
+                "content": "",
+            })
+            continue
+
+        if hunks:
+            hunks[-1]["content"] += line
+
+    return hunks
+
+
+# ---------------------------------------------------------------------------
+# Python AST helpers
+# ---------------------------------------------------------------------------
+
+
+def _python_function_boundaries(file_path: str) -> list:
+    """Use ast module to map function/class line ranges in a Python file.
+
+    Returns list of dicts:
+      {"name", "start_line", "end_line", "type": "function"|"class"}
     """
     try:
-        tree = ast.parse(source)
+        with open(file_path, "r", errors="replace") as fh:
+            source = fh.read()
+    except (FileNotFoundError, PermissionError, OSError):
+        return []
+
+    try:
+        tree = ast.parse(source, filename=file_path)
     except SyntaxError:
         return []
 
-    lines = source.splitlines()
-    total_lines = len(lines)
-    if total_lines == 0:
-        return []
-
-    # Collect top-level nodes with line spans
-    nodes = []
-    for node in ast.iter_child_nodes(tree):
-        if not hasattr(node, "lineno"):
-            continue
-        end_line = getattr(node, "end_lineno", node.lineno)
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            nodes.append(("import", "imports", node.lineno, end_line))
+    boundaries = []
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            boundaries.append({
+                "name": node.name,
+                "start_line": node.lineno,
+                "end_line": node.end_lineno or node.lineno,
+                "type": "function",
+            })
         elif isinstance(node, ast.ClassDef):
-            nodes.append(("class", node.name, node.lineno, end_line))
-        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            nodes.append(("function", node.name, node.lineno, end_line))
-        else:
-            nodes.append(("module_stmt", f"stmt_L{node.lineno}", node.lineno, end_line))
+            boundaries.append({
+                "name": node.name,
+                "start_line": node.lineno,
+                "end_line": node.end_lineno or node.lineno,
+                "type": "class",
+            })
 
-    if not nodes:
-        return [_Region("module_stmt", "entire_file", 1, total_lines)]
+    boundaries.sort(key=lambda b: b["start_line"])
+    return boundaries
 
-    # Sort by start line
-    nodes.sort(key=lambda n: n[2])
 
-    # Merge consecutive imports into one region
-    merged = []
-    for kind, name, start, end in nodes:
-        if kind == "import" and merged and merged[-1][0] == "import":
-            # Extend previous import region
-            merged[-1] = ("import", "imports", merged[-1][2], end)
-        else:
-            merged.append((kind, name, start, end))
-
-    # Build regions, filling gaps with module_stmt regions
-    regions = []
-    cursor = 1
-    for kind, name, start, end in merged:
-        if start > cursor:
-            # Gap lines before this node
-            regions.append(_Region("module_stmt", f"gap_L{cursor}", cursor, start - 1))
-        regions.append(_Region(kind, name, start, end))
-        cursor = end + 1
-
-    if cursor <= total_lines:
-        regions.append(_Region("module_stmt", f"tail_L{cursor}", cursor, total_lines))
-
-    return regions
+def _find_containing_boundary(boundaries, line):
+    """Return the boundary dict that contains *line*, or None."""
+    for b in boundaries:
+        if b["start_line"] <= line <= b["end_line"]:
+            return b
+    return None
 
 
 # ---------------------------------------------------------------------------
-# diff analysis
+# Overlap analysis helpers
 # ---------------------------------------------------------------------------
 
-def _changed_lines(base_lines, modified_lines):
-    """Return set of 1-based line numbers in base that were changed or deleted,
-    plus the 1-based line numbers that were inserted-adjacent-to."""
-    sm = difflib.SequenceMatcher(None, base_lines, modified_lines, autojunk=False)
-    changed = set()
-    for tag, i1, i2, j1, j2 in sm.get_opcodes():
-        if tag == "equal":
-            continue
-        # Lines in the base that were replaced or deleted
-        for ln in range(i1 + 1, i2 + 1):   # +1 for 1-based
-            changed.add(ln)
-        # For inserts, mark the adjacent base line so region overlap detects it
-        if tag == "insert" and i1 > 0:
-            changed.add(i1)  # line before insert point (1-based = i1 since i1==i2 for pure insert)
-        if tag == "insert" and i1 == 0:
-            changed.add(1)
-    return changed
+
+def _ranges_overlap(s1, c1, s2, c2):
+    """Return True if line ranges [s1, s1+c1) and [s2, s2+c2) overlap."""
+    return s1 < s2 + c2 and s2 < s1 + c1
 
 
-def _touched_regions(regions, changed_lines):
-    """Return set of region names touched by the given changed lines."""
-    touched = set()
-    for region in regions:
-        for ln in changed_lines:
-            if region.start <= ln <= region.end:
-                touched.add(region.name)
-                break
-    return touched
-
-
-def _apply_diff_lines(base_lines, modified_lines, base_original):
-    """Given base_lines and modified_lines, produce a unified diff as a list of
-    (action, line_no, text) tuples for later replay."""
-    ops = difflib.SequenceMatcher(None, base_lines, modified_lines, autojunk=False).get_opcodes()
-    return ops
+def _files_touched(hunks):
+    """Return set of files modified by a list of hunks."""
+    return {h["file"] for h in hunks}
 
 
 # ---------------------------------------------------------------------------
-# line-based heuristic for non-Python
+# can_semantic_merge
 # ---------------------------------------------------------------------------
 
-def _line_ranges(base_content, modified_content):
-    """Return (min_line, max_line) 1-based of changed region, or None if identical."""
-    base = base_content.splitlines()
-    mod = modified_content.splitlines()
-    changed = _changed_lines(base, mod)
-    if not changed:
-        return None
-    return (min(changed), max(changed))
 
-
-# ---------------------------------------------------------------------------
-# core merge logic
-# ---------------------------------------------------------------------------
-
-def can_auto_merge(base_content, diff_a, diff_b, filepath="unknown.py"):
-    """Analyze whether two modifications to the same base can be auto-merged.
+def can_semantic_merge(diff_a: str, diff_b: str, repo_path: str) -> dict:
+    """Analyse two diffs and determine whether they can be semantically merged.
 
     Parameters
     ----------
-    base_content : str   The original file content both diffs started from.
-    diff_a : str         Full file content after applying change A.
-    diff_b : str         Full file content after applying change B.
-    filepath : str       Path for logging / language detection.
+    diff_a : str      Unified diff text from task A.
+    diff_b : str      Unified diff text from task B.
+    repo_path : str   Absolute path to the repository root (used to read
+                      Python files for AST analysis).
 
     Returns
     -------
-    dict  {"mergeable": bool, "confidence": float, "strategy": str}
+    dict  {"mergeable": bool, "confidence": float,
+           "conflicts": list, "strategy": str}
     """
+    fail = {"mergeable": False, "confidence": 0.0, "conflicts": [], "strategy": "error"}
+
     if not _ENABLED:
-        return {"mergeable": False, "confidence": 0.0, "strategy": "disabled"}
+        return {**fail, "strategy": "disabled"}
 
     try:
-        if base_content is None or diff_a is None or diff_b is None:
-            return {"mergeable": False, "confidence": 0.0, "strategy": "null_input"}
+        hunks_a = _parse_diff_hunks(diff_a)
+        hunks_b = _parse_diff_hunks(diff_b)
 
-        base_lines = base_content.splitlines()
-        a_lines = diff_a.splitlines()
-        b_lines = diff_b.splitlines()
+        if not hunks_a or not hunks_b:
+            return {**fail, "strategy": "empty_diff"}
 
-        is_python = filepath.endswith(".py")
+        files_a = _files_touched(hunks_a)
+        files_b = _files_touched(hunks_b)
+        common_files = files_a & files_b
 
-        if is_python:
-            regions = _extract_regions(base_content)
-            if not regions:
-                # AST parse failed, fall back to line heuristic
-                return _can_merge_line_heuristic(base_lines, a_lines, b_lines)
+        # ------ completely different files ------
+        if not common_files:
+            return {
+                "mergeable": True,
+                "confidence": 1.0,
+                "conflicts": [],
+                "strategy": "disjoint",
+            }
 
-            changed_a = _changed_lines(base_lines, a_lines)
-            changed_b = _changed_lines(base_lines, b_lines)
+        # ------ same file(s): deeper analysis ------
+        conflicts = []
+        min_confidence = 1.0
 
-            if not changed_a and not changed_b:
-                return {"mergeable": True, "confidence": 1.0, "strategy": "both_identical"}
-            if not changed_a:
-                return {"mergeable": True, "confidence": 1.0, "strategy": "only_b_changed"}
-            if not changed_b:
-                return {"mergeable": True, "confidence": 1.0, "strategy": "only_a_changed"}
+        for fname in common_files:
+            fhunks_a = [h for h in hunks_a if h["file"] == fname]
+            fhunks_b = [h for h in hunks_b if h["file"] == fname]
 
-            touched_a = _touched_regions(regions, changed_a)
-            touched_b = _touched_regions(regions, changed_b)
+            # Try Python AST analysis
+            full_path = os.path.join(repo_path, fname) if repo_path else fname
+            boundaries = []
+            if fname.endswith(".py") and os.path.isfile(full_path):
+                boundaries = _python_function_boundaries(full_path)
 
-            overlap = touched_a & touched_b
-            if not overlap:
-                confidence = 0.95
-                return {"mergeable": confidence >= _CONFIDENCE_MIN,
-                        "confidence": confidence,
-                        "strategy": "ast_disjoint_regions"}
+            if boundaries:
+                # Function-level analysis
+                funcs_a = set()
+                funcs_b = set()
+                for h in fhunks_a:
+                    for line in range(h["old_start"],
+                                     h["old_start"] + h["old_count"]):
+                        b = _find_containing_boundary(boundaries, line)
+                        if b:
+                            funcs_a.add(b["name"])
+                for h in fhunks_b:
+                    for line in range(h["old_start"],
+                                     h["old_start"] + h["old_count"]):
+                        b = _find_containing_boundary(boundaries, line)
+                        if b:
+                            funcs_b.add(b["name"])
 
-            # Overlapping regions -- cannot auto-merge safely
-            return {"mergeable": False, "confidence": 0.0,
-                    "strategy": "ast_overlapping_regions",
-                    "overlapping": sorted(overlap)}
+                common_funcs = funcs_a & funcs_b
+                if not common_funcs:
+                    # Same file, different functions
+                    min_confidence = min(min_confidence, 0.8)
+                    continue
+
+                # Same function — check line ranges
+                for func_name in common_funcs:
+                    func_hunks_a = [
+                        h for h in fhunks_a
+                        if (_find_containing_boundary(boundaries, h["old_start"])
+                            or {}).get("name") == func_name
+                    ]
+                    func_hunks_b = [
+                        h for h in fhunks_b
+                        if (_find_containing_boundary(boundaries, h["old_start"])
+                            or {}).get("name") == func_name
+                    ]
+
+                    overlap = False
+                    for ha in func_hunks_a:
+                        for hb in func_hunks_b:
+                            if _ranges_overlap(
+                                ha["old_start"], ha["old_count"],
+                                hb["old_start"], hb["old_count"],
+                            ):
+                                overlap = True
+                                conflicts.append({
+                                    "file": fname,
+                                    "function": func_name,
+                                    "a_range": (
+                                        f"{ha['old_start']}-"
+                                        f"{ha['old_start'] + ha['old_count']}"
+                                    ),
+                                    "b_range": (
+                                        f"{hb['old_start']}-"
+                                        f"{hb['old_start'] + hb['old_count']}"
+                                    ),
+                                })
+
+                    if overlap:
+                        return {
+                            "mergeable": False,
+                            "confidence": 0.0,
+                            "conflicts": conflicts,
+                            "strategy": "overlapping",
+                        }
+
+                    min_confidence = min(min_confidence, 0.6)
+            else:
+                # Non-Python or no AST: line-range analysis only
+                overlap = False
+                for ha in fhunks_a:
+                    for hb in fhunks_b:
+                        if _ranges_overlap(
+                            ha["old_start"], ha["old_count"],
+                            hb["old_start"], hb["old_count"],
+                        ):
+                            overlap = True
+                            conflicts.append({
+                                "file": fname,
+                                "a_range": (
+                                    f"{ha['old_start']}-"
+                                    f"{ha['old_start'] + ha['old_count']}"
+                                ),
+                                "b_range": (
+                                    f"{hb['old_start']}-"
+                                    f"{hb['old_start'] + hb['old_count']}"
+                                ),
+                            })
+
+                if overlap:
+                    return {
+                        "mergeable": False,
+                        "confidence": 0.0,
+                        "conflicts": conflicts,
+                        "strategy": "overlapping",
+                    }
+
+                # Same file, non-overlapping lines (no AST info)
+                min_confidence = min(min_confidence, 0.6)
+
+        # Determine strategy name from confidence level
+        if min_confidence >= 1.0:
+            strategy = "disjoint"
+        elif min_confidence >= 0.8:
+            strategy = "function_disjoint"
         else:
-            return _can_merge_line_heuristic(base_lines, a_lines, b_lines)
+            strategy = "line_disjoint"
 
-    except Exception as exc:
-        _log.warning("can_auto_merge error: %s", exc)
-        with _lock:
-            _stats["errors"] += 1
-        return {"mergeable": False, "confidence": 0.0, "strategy": "error"}
-
-
-def _can_merge_line_heuristic(base_lines, a_lines, b_lines):
-    """Line-range heuristic for non-Python or AST-unparseable files."""
-    changed_a = _changed_lines(base_lines, a_lines)
-    changed_b = _changed_lines(base_lines, b_lines)
-
-    if not changed_a and not changed_b:
-        return {"mergeable": True, "confidence": 1.0, "strategy": "both_identical"}
-    if not changed_a:
-        return {"mergeable": True, "confidence": 1.0, "strategy": "only_b_changed"}
-    if not changed_b:
-        return {"mergeable": True, "confidence": 1.0, "strategy": "only_a_changed"}
-
-    # Check if changed line ranges are disjoint with a buffer
-    overlap = changed_a & changed_b
-    if not overlap:
-        min_a, max_a = min(changed_a), max(changed_a)
-        min_b, max_b = min(changed_b), max(changed_b)
-        gap = min(abs(min_a - max_b), abs(min_b - max_a))
-        # Confidence scales with gap size
-        confidence = min(0.9, 0.7 + gap * 0.02)
-        return {"mergeable": confidence >= _CONFIDENCE_MIN,
-                "confidence": confidence,
-                "strategy": "line_disjoint"}
-
-    return {"mergeable": False, "confidence": 0.0, "strategy": "line_overlapping"}
-
-
-# ---------------------------------------------------------------------------
-# 3-way merge execution
-# ---------------------------------------------------------------------------
-
-def semantic_merge(base_content, diff_a, diff_b, filepath="unknown.py"):
-    """Attempt a 3-way semantic merge.
-
-    Parameters
-    ----------
-    base_content : str   Original file.
-    diff_a : str         File after change A.
-    diff_b : str         File after change B.
-    filepath : str       For logging / language detection.
-
-    Returns
-    -------
-    dict  {"merged": str|None, "conflicts": list, "auto_resolved": int}
-          On failure, merged is None.
-    """
-    if not _ENABLED:
-        return {"merged": None, "conflicts": ["disabled"], "auto_resolved": 0}
-
-    try:
-        check = can_auto_merge(base_content, diff_a, diff_b, filepath)
-        if not check["mergeable"]:
-            return {"merged": None,
-                    "conflicts": [check.get("strategy", "unknown")],
-                    "auto_resolved": 0}
-
-        strategy = check["strategy"]
-
-        # Trivial cases
-        if strategy in ("both_identical",):
-            return {"merged": diff_a, "conflicts": [], "auto_resolved": 0}
-        if strategy == "only_a_changed":
-            return {"merged": diff_a, "conflicts": [], "auto_resolved": 1}
-        if strategy == "only_b_changed":
-            return {"merged": diff_b, "conflicts": [], "auto_resolved": 1}
-
-        # Non-overlapping merge: apply both sets of changes to the base
-        base_lines = base_content.splitlines(keepends=True)
-        a_lines = diff_a.splitlines(keepends=True)
-        b_lines = diff_b.splitlines(keepends=True)
-
-        merged = _three_way_merge(base_lines, a_lines, b_lines)
-        if merged is None:
-            return {"merged": None, "conflicts": ["merge_failed"], "auto_resolved": 0}
-
-        return {"merged": "".join(merged), "conflicts": [], "auto_resolved": 2}
-
-    except Exception as exc:
-        _log.warning("semantic_merge error: %s", exc)
-        with _lock:
-            _stats["errors"] += 1
-        return {"merged": None, "conflicts": [str(exc)], "auto_resolved": 0}
-
-
-def _three_way_merge(base, a, b):
-    """Line-level 3-way merge.  Returns merged lines or None on conflict.
-
-    For each hunk in A's diff against base and B's diff against base, if they
-    touch different line ranges, both are applied.  If they touch the same
-    range, we return None (conflict).
-    """
-    try:
-        sm_a = difflib.SequenceMatcher(None, base, a, autojunk=False)
-        sm_b = difflib.SequenceMatcher(None, base, b, autojunk=False)
-
-        ops_a = [(tag, i1, i2, j1, j2) for tag, i1, i2, j1, j2 in sm_a.get_opcodes() if tag != "equal"]
-        ops_b = [(tag, i1, i2, j1, j2) for tag, i1, i2, j1, j2 in sm_b.get_opcodes() if tag != "equal"]
-
-        # Check for base-range overlap between any A op and any B op
-        for ta, ai1, ai2, aj1, aj2 in ops_a:
-            for tb, bi1, bi2, bj1, bj2 in ops_b:
-                if ai1 < bi2 and bi1 < ai2:
-                    return None  # overlapping base ranges
-
-        # No overlapping -- build merged result
-        # Collect all edits keyed by base position
-        edits = {}  # base_start -> (base_end, replacement_lines)
-        for tag, i1, i2, j1, j2 in ops_a:
-            edits[i1] = (i2, a[j1:j2])
-        for tag, i1, i2, j1, j2 in ops_b:
-            edits[i1] = (i2, b[j1:j2])
-
-        # Replay base, substituting edits
-        result = []
-        i = 0
-        while i < len(base):
-            if i in edits:
-                end, replacement = edits[i]
-                result.extend(replacement)
-                i = end
-            else:
-                result.append(base[i])
-                i += 1
-
-        return result
-
-    except Exception:
-        return None
-
-
-# ---------------------------------------------------------------------------
-# outcome tracking
-# ---------------------------------------------------------------------------
-
-def record_outcome(filepath, strategy, success):
-    """Record whether an auto-merge attempt succeeded or failed.
-
-    Parameters
-    ----------
-    filepath : str   The file that was merged.
-    strategy : str   The strategy used (from can_auto_merge).
-    success : bool   Whether the merge produced a correct result.
-    """
-    try:
-        with _lock:
-            if success:
-                _stats["auto_merges"] += 1
-            else:
-                _stats["deferrals"] += 1
-
-            _stats["by_strategy"].setdefault(strategy, {"success": 0, "fail": 0})
-            key = "success" if success else "fail"
-            _stats["by_strategy"][strategy][key] += 1
-
-            _stats["by_filepath"].setdefault(filepath, {"auto": 0, "deferred": 0})
-            fkey = "auto" if success else "deferred"
-            _stats["by_filepath"][filepath][fkey] += 1
-    except Exception:
-        pass
-
-
-# ---------------------------------------------------------------------------
-# stats
-# ---------------------------------------------------------------------------
-
-def stats():
-    """Return a snapshot of merge statistics."""
-    with _lock:
-        total = _stats["auto_merges"] + _stats["deferrals"]
+        mergeable = min_confidence >= _CONFIDENCE_THRESHOLD
         return {
-            "auto_merges": _stats["auto_merges"],
-            "deferrals": _stats["deferrals"],
-            "errors": _stats["errors"],
-            "success_rate": (_stats["auto_merges"] / total) if total > 0 else 0.0,
-            "total_attempts": total,
-            "by_strategy": dict(_stats["by_strategy"]),
-            "by_filepath": dict(_stats["by_filepath"]),
+            "mergeable": mergeable,
+            "confidence": min_confidence,
+            "conflicts": conflicts,
+            "strategy": strategy,
         }
 
-
-# ---------------------------------------------------------------------------
-# module-level convenience (singleton pattern)
-# ---------------------------------------------------------------------------
-
-def reset_stats():
-    """Reset all stats counters.  Useful for testing."""
-    with _lock:
-        _stats["auto_merges"] = 0
-        _stats["deferrals"] = 0
-        _stats["errors"] = 0
-        _stats["by_strategy"].clear()
-        _stats["by_filepath"].clear()
-
-
-def enabled():
-    """Return whether semantic merge is enabled."""
-    return _ENABLED
+    except Exception as exc:
+        _log.warning("can_semantic_merge failed: %s", exc)
+        return fail
 
 
 # ---------------------------------------------------------------------------
+# Diff reconstruction
+# ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    # Quick self-test
-    base = "import os\n\ndef foo():\n    return 1\n\ndef bar():\n    return 2\n"
-    a = "import os\n\ndef foo():\n    return 42\n\ndef bar():\n    return 2\n"
-    b = "import os\n\ndef foo():\n    return 1\n\ndef bar():\n    return 99\n"
 
-    check = can_auto_merge(base, a, b, "test.py")
-    print("can_auto_merge:", check)
+def _reconstruct_diff(hunks):
+    """Reconstruct a unified diff string from a list of parsed hunks."""
+    if not hunks:
+        return ""
 
-    result = semantic_merge(base, a, b, "test.py")
-    print("merged:", repr(result["merged"]))
-    print("conflicts:", result["conflicts"])
-    print("auto_resolved:", result["auto_resolved"])
+    lines = []
+    current_file = None
+    for h in hunks:
+        if h["file"] != current_file:
+            current_file = h["file"]
+            lines.append(f"diff --git a/{current_file} b/{current_file}")
+            lines.append(f"--- a/{current_file}")
+            lines.append(f"+++ b/{current_file}")
+        lines.append(
+            f"@@ -{h['old_start']},{h['old_count']} "
+            f"+{h['new_start']},{h['new_count']} @@"
+        )
+        content = h["content"].rstrip("\n")
+        if content:
+            lines.append(content)
+
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Function-level merge fallback
+# ---------------------------------------------------------------------------
+
+
+def _try_function_merge(diff_a, diff_b, wt_path, base_branch, repo_path, t0):
+    """Fallback: split diffs into per-function hunks, apply non-overlapping."""
+    fail = {"success": False, "merged_diff": "", "strategy_used": "none",
+            "files_merged": 0}
+
+    try:
+        hunks_a = _parse_diff_hunks(diff_a)
+        hunks_b = _parse_diff_hunks(diff_b)
+
+        # Identify non-overlapping hunks from diff_b
+        non_overlapping_b = []
+        for hb in hunks_b:
+            overlap = False
+            for ha in hunks_a:
+                if ha["file"] == hb["file"] and _ranges_overlap(
+                    ha["old_start"], ha["old_count"],
+                    hb["old_start"], hb["old_count"],
+                ):
+                    overlap = True
+                    break
+            if not overlap:
+                non_overlapping_b.append(hb)
+
+        if not non_overlapping_b:
+            return fail
+
+        # Reset worktree and apply diff_a fully
+        subprocess.run(
+            ["git", "checkout", base_branch, "--", "."],
+            cwd=wt_path, capture_output=True, timeout=30,
+        )
+        ra = subprocess.run(
+            ["git", "apply"],
+            input=diff_a, cwd=wt_path, capture_output=True, text=True,
+            timeout=60,
+        )
+        if ra.returncode != 0:
+            return fail
+
+        # Build partial diff from non-overlapping hunks of diff_b
+        partial_diff = _reconstruct_diff(non_overlapping_b)
+        if not partial_diff:
+            return fail
+
+        rb = subprocess.run(
+            ["git", "apply"],
+            input=partial_diff, cwd=wt_path, capture_output=True, text=True,
+            timeout=60,
+        )
+        if rb.returncode != 0:
+            return fail
+
+        # Generate combined diff
+        combined = subprocess.run(
+            ["git", "diff", base_branch],
+            cwd=wt_path, capture_output=True, text=True, timeout=30,
+        )
+
+        files_merged = len(
+            _files_touched(hunks_a)
+            | {h["file"] for h in non_overlapping_b}
+        )
+
+        elapsed = time.monotonic() - t0
+        _inc("merges_succeeded")
+        _inc("conflicts_avoided")
+        _inc("time_saved_s", elapsed)
+
+        return {
+            "success": True,
+            "merged_diff": combined.stdout,
+            "strategy_used": "function_level",
+            "files_merged": files_merged,
+        }
+
+    except Exception as exc:
+        _log.warning("function-level merge failed: %s", exc)
+        return fail
+
+
+# ---------------------------------------------------------------------------
+# merge_diffs
+# ---------------------------------------------------------------------------
+
+
+def merge_diffs(diff_a: str, diff_b: str, repo_path: str,
+                base_branch: str) -> dict:
+    """Apply two diffs onto *base_branch* and return a combined diff.
+
+    Tries ``git apply --3way`` first; on failure attempts function-level
+    merge for non-overlapping hunks.
+
+    Parameters
+    ----------
+    diff_a : str         Unified diff from task A.
+    diff_b : str         Unified diff from task B.
+    repo_path : str      Repository root.
+    base_branch : str    Branch both diffs are relative to.
+
+    Returns
+    -------
+    dict  {"success": bool, "merged_diff": str,
+           "strategy_used": str, "files_merged": int}
+    """
+    fail = {"success": False, "merged_diff": "", "strategy_used": "none",
+            "files_merged": 0}
+
+    if not _ENABLED:
+        return fail
+
+    _inc("merges_attempted")
+    t0 = time.monotonic()
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="sem_merge_") as tmpdir:
+            wt_path = os.path.join(tmpdir, "worktree")
+
+            r = subprocess.run(
+                ["git", "worktree", "add", "--detach", wt_path, base_branch],
+                cwd=repo_path, capture_output=True, text=True, timeout=60,
+            )
+            if r.returncode != 0:
+                _log.warning("git worktree add failed: %s", r.stderr.strip())
+                return fail
+
+            try:
+                # Apply diff_a
+                ra = subprocess.run(
+                    ["git", "apply", "--3way"],
+                    input=diff_a, cwd=wt_path, capture_output=True, text=True,
+                    timeout=60,
+                )
+                if ra.returncode != 0:
+                    _log.debug("diff_a apply failed: %s", ra.stderr.strip())
+                    return _try_function_merge(
+                        diff_a, diff_b, wt_path, base_branch, repo_path, t0,
+                    )
+
+                # Apply diff_b
+                rb = subprocess.run(
+                    ["git", "apply", "--3way"],
+                    input=diff_b, cwd=wt_path, capture_output=True, text=True,
+                    timeout=60,
+                )
+                if rb.returncode != 0:
+                    _log.debug("diff_b apply failed: %s", rb.stderr.strip())
+                    return _try_function_merge(
+                        diff_a, diff_b, wt_path, base_branch, repo_path, t0,
+                    )
+
+                # Both applied cleanly — generate combined diff
+                combined = subprocess.run(
+                    ["git", "diff", base_branch],
+                    cwd=wt_path, capture_output=True, text=True, timeout=30,
+                )
+
+                files_merged = len(
+                    _files_touched(_parse_diff_hunks(diff_a))
+                    | _files_touched(_parse_diff_hunks(diff_b))
+                )
+
+                elapsed = time.monotonic() - t0
+                _inc("merges_succeeded")
+                _inc("conflicts_avoided")
+                _inc("time_saved_s", elapsed)
+
+                return {
+                    "success": True,
+                    "merged_diff": combined.stdout,
+                    "strategy_used": "git_apply_3way",
+                    "files_merged": files_merged,
+                }
+            finally:
+                subprocess.run(
+                    ["git", "worktree", "remove", "--force", wt_path],
+                    cwd=repo_path, capture_output=True, timeout=30,
+                )
+
+    except Exception as exc:
+        _log.warning("merge_diffs failed: %s", exc)
+        return fail
+
+
+# ---------------------------------------------------------------------------
+# Concurrent orchestration
+# ---------------------------------------------------------------------------
+
+
+def orchestrate_concurrent(task_a, task_b, repo_path: str,
+                           base_branch: str, test_cmd: str) -> dict:
+    """Run two conflicting tasks concurrently and attempt semantic merge.
+
+    *task_a* and *task_b* are callables that return a dict with at least
+    ``{"diff": str, "branch": str, "task_id": str}``.
+
+    After both finish, attempts semantic merge.  If the merge succeeds and
+    ``test_cmd`` passes on the merged result, returns success with the
+    merged branch.  Otherwise falls back to serialization (task_a kept,
+    task_b re-queued).
+
+    Parameters
+    ----------
+    task_a : callable    Returns {"diff", "branch", "task_id"}.
+    task_b : callable    Returns {"diff", "branch", "task_id"}.
+    repo_path : str      Repository root.
+    base_branch : str    Common ancestor branch.
+    test_cmd : str       Shell command to validate the merged result.
+
+    Returns
+    -------
+    dict  {"success": bool, "merged_branch": str, "tasks_merged": list}
+    """
+    fail = {"success": False, "merged_branch": "", "tasks_merged": []}
+
+    if not _ENABLED:
+        return fail
+
+    try:
+        results = {}
+
+        def _run(key, task):
+            try:
+                results[key] = task()
+            except Exception as exc:
+                _log.warning("task %s failed: %s", key, exc)
+                results[key] = None
+
+        thread_a = threading.Thread(target=_run, args=("a", task_a), daemon=True)
+        thread_b = threading.Thread(target=_run, args=("b", task_b), daemon=True)
+        thread_a.start()
+        thread_b.start()
+        thread_a.join()
+        thread_b.join()
+
+        res_a = results.get("a")
+        res_b = results.get("b")
+
+        if not res_a or not res_b:
+            _log.info("one or both tasks returned no result; falling back")
+            return fail
+
+        diff_a = res_a.get("diff", "")
+        diff_b = res_b.get("diff", "")
+
+        if not diff_a or not diff_b:
+            return fail
+
+        # Check mergeability
+        analysis = can_semantic_merge(diff_a, diff_b, repo_path)
+        if not analysis["mergeable"]:
+            _log.info(
+                "diffs not mergeable (strategy=%s); falling back",
+                analysis["strategy"],
+            )
+            return fail
+
+        # Attempt merge
+        merge_result = merge_diffs(diff_a, diff_b, repo_path, base_branch)
+        if not merge_result["success"]:
+            return fail
+
+        # Apply merged diff to a new branch and run tests
+        merged_branch = f"agent/merged-{int(time.time())}"
+        try:
+            subprocess.run(
+                ["git", "checkout", "-b", merged_branch, base_branch],
+                cwd=repo_path, capture_output=True, text=True, timeout=30,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "apply"],
+                input=merge_result["merged_diff"],
+                cwd=repo_path, capture_output=True, text=True, timeout=60,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "add", "-A"],
+                cwd=repo_path, capture_output=True, timeout=15,
+            )
+            subprocess.run(
+                ["git", "commit", "-m",
+                 f"semantic merge: "
+                 f"{res_a.get('task_id', '?')} + {res_b.get('task_id', '?')}"],
+                cwd=repo_path, capture_output=True, text=True, timeout=30,
+            )
+        except subprocess.CalledProcessError as exc:
+            _log.warning("branch creation / apply failed: %s", exc)
+            return fail
+
+        # Run tests
+        test_result = subprocess.run(
+            test_cmd, cwd=repo_path, shell=True,
+            capture_output=True, text=True, timeout=300,
+        )
+
+        if test_result.returncode != 0:
+            _log.info("tests failed on merged branch; falling back")
+            subprocess.run(
+                ["git", "checkout", base_branch],
+                cwd=repo_path, capture_output=True, timeout=15,
+            )
+            subprocess.run(
+                ["git", "branch", "-D", merged_branch],
+                cwd=repo_path, capture_output=True, timeout=15,
+            )
+            return fail
+
+        return {
+            "success": True,
+            "merged_branch": merged_branch,
+            "tasks_merged": [
+                res_a.get("task_id", "a"),
+                res_b.get("task_id", "b"),
+            ],
+        }
+
+    except Exception as exc:
+        _log.warning("orchestrate_concurrent failed: %s", exc)
+        return fail
