@@ -108,6 +108,10 @@ import capacity_pacer, account_partition, generator_feedback
 import exhaustion_signal, surge_planner
 import agentic_repair
 import cowork_dispatch
+try:
+    import warm_pool
+except ImportError:
+    warm_pool = None
 
 INTEGRATION_MODE = os.environ.get("INTEGRATION_MODE", "local")  # local | pr
 USE_CACHE = os.environ.get("RESULT_CACHE", "true").lower() == "true"
@@ -528,6 +532,14 @@ def run_task(t):
             material=bool(t.get("material")), task=t, use_retrieval=USE_RETRIEVAL,
         )
         prompt = assembled["prompt"]
+        # WARM POOL: prepend pre-loaded CLAUDE.md context prefix (avoids cold-start rediscovery)
+        try:
+            if warm_pool:
+                _warm_ctx = warm_pool.acquire(repo)
+                if _warm_ctx:
+                    prompt = _warm_ctx + prompt
+        except Exception as _wp_err:
+            _log.debug("hook warm_pool.acquire failed: %s", _wp_err)
         try:
             _brain_plan = brain_compiler.compile_for_task(t, repo=repo, project=name)
             if _brain_plan.get("has_plan"):
@@ -2615,6 +2627,14 @@ def main():
     _reload_t = 0.0
     _restart_log_t = 0.0
     import resource_governor
+    # WARM POOL: eagerly pre-load CLAUDE.md context for active projects
+    try:
+        if warm_pool:
+            _wp_repos = [p.get("repo_path") for p in projects().values() if p.get("repo_path")]
+            warm_pool.preload(_wp_repos)
+            print(f"[warm-pool] pre-loaded {len(_wp_repos)} repo context(s): {warm_pool.stats()}")
+    except Exception as _wp_err:
+        print(f"[warm-pool] preload skipped: {_wp_err}")
     print("[main-loop] entering main loop", flush=True)
     try:
         if _fire_periodic("resilience_mesh.py"):

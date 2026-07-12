@@ -91,12 +91,25 @@ class WarmPool:
     One instance is shared across the runner process via the module-level singleton.
     """
 
-    def __init__(self, pool_size=None):
+    def __init__(self, pool_size=None, resource_governor=None):
         self._size       = pool_size if pool_size is not None else POOL_SIZE
+        self._resource_governor = resource_governor
         self._slots      = {}           # repo_path -> _Slot
         self._lock       = threading.Lock()
         self._last_health= 0.0
         self._enabled    = True
+
+    @property
+    def effective_max_size(self):
+        """Return the governor-adjusted pool size limit. Shrinks to 1 under memory pressure."""
+        if self._resource_governor is not None:
+            try:
+                ok, _ = self._resource_governor.can_claim()
+                if not ok:
+                    return min(self._size, 1)
+            except Exception:
+                pass
+        return self._size
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -159,8 +172,10 @@ class WarmPool:
     def _mem_ok(self):
         """Gate pool expansion on resource_governor; fail-open if unavailable."""
         try:
-            import resource_governor
-            ok, _ = resource_governor.can_claim()
+            gov = self._resource_governor
+            if gov is None:
+                import resource_governor as gov
+            ok, _ = gov.can_claim()
             return ok
         except Exception:
             return True
@@ -174,7 +189,7 @@ class WarmPool:
             if existing and not existing.is_stale():
                 return
             # Pool full and adding a new repo → need to evict; check memory first
-            if len(self._slots) >= self._size and repo not in self._slots:
+            if len(self._slots) >= self.effective_max_size and repo not in self._slots:
                 if not self._mem_ok():
                     return
                 oldest = min(self._slots, key=lambda r: self._slots[r].loaded_at, default=None)
