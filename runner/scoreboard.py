@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Fleet scoreboard heartbeat.
+"""Fleet scoreboard heartbeat (hourly, 3600s interval).
 
 Writes the small set of numbers that matter for drain mode: queue mix, merge
-rate, first-pass rate, spend, token use, and paused minutes. This is read-only
-except for a controls heartbeat (and an optional table insert if present).
+rate, first-pass rate, spend, token use, and paused minutes.
+
+Persistence: writes a controls heartbeat row (upsert, always latest) AND
+appends to the scoreboard table for historical data retained >= 30 days
+(configurable via ORCH_SCOREBOARD_RETENTION_DAYS).
 """
 import datetime
 import json
@@ -15,6 +18,7 @@ import db
 
 WINDOW_H = int(os.environ.get("ORCH_SCOREBOARD_WINDOW_H", "24"))
 CONTROL_KEY = "fleet_scoreboard"
+RETENTION_DAYS = int(os.environ.get("ORCH_SCOREBOARD_RETENTION_DAYS", "30"))
 
 
 def _iso_hours_ago(hours):
@@ -154,15 +158,19 @@ def compute():
 
 def run():
     payload = compute()
+    # Controls heartbeat: upsert single row so dashboard always has latest snapshot
     try:
         db.insert("controls", {"key": CONTROL_KEY, "value": json.dumps(payload, default=str),
                                "updated_at": "now()"}, upsert=True)
     except Exception:
         pass
+    # Append to scoreboard table for historical persistence (>= RETENTION_DAYS)
     try:
         db.insert("scoreboard", payload)
     except Exception:
         pass
+    # Note: rows older than RETENTION_DAYS should be pruned externally
+    # (e.g. Supabase cron or queue_janitor) to bound table growth.
     overall = payload["overall"]
     queue = payload.get("queue") or {}
     print(
