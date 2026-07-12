@@ -164,5 +164,8 @@ def invalidate() -> None:
 
 def stats() -> Dict[str, int]:
     """Get cache statistics: {entries, bytes_used, hits, misses}."""
-    with _lock:
-        return _pool.stats()
+    try:
+        with _lock:
+            return _pool.stats()
+    except Exception:
+        return {"entries": 0, "bytes_used": 0, "hits": 0, "misses": 0}
