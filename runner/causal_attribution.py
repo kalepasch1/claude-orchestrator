@@ -29,6 +29,35 @@ def _match_determination(app, slug):
     return None
 
 
+def _concurrent_experiments(exp, all_exps):
+    """Find experiments that overlapped in time with exp, excluding exp itself."""
+    start = exp.get("started_at") or ""
+    end = exp.get("concluded_at") or exp.get("updated_at") or ""
+    concurrent = []
+    for other in all_exps:
+        if other.get("id") == exp.get("id"):
+            continue
+        o_start = other.get("started_at") or ""
+        o_end = other.get("concluded_at") or other.get("updated_at") or ""
+        # Overlap check: experiments overlap if one starts before the other ends
+        if o_start and end and o_start <= end and o_end and o_end >= start:
+            concurrent.append(other)
+    return concurrent
+
+
+def _adjust_lift_for_concurrency(lift, exp, concurrent):
+    """Discount lift when concurrent experiments may confound attribution.
+
+    If N concurrent experiments were running, attribute only 1/(N+1) of the
+    observed lift to this experiment — a conservative equal-share split that
+    avoids double-counting the same KPI movement across experiments.
+    """
+    if not concurrent:
+        return lift
+    n = len(concurrent) + 1  # this experiment + concurrent ones
+    return lift / n
+
+
 def run():
     exps = db.select("committee_experiments", {"select": "*", "status": "eq.concluded"}) or []
     linked = {o.get("subject_id") for o in (db.select("determination_outcomes",
@@ -42,6 +71,9 @@ def run():
         if not det or det.get("subject_id") in linked:
             continue
         lift = float(lift)
+        # Adjust for concurrent experiments to avoid misattribution
+        concurrent = _concurrent_experiments(x, exps)
+        lift = _adjust_lift_for_concurrency(lift, x, concurrent)
         outcome = 1.0 if lift >= 1 else -1.0 if lift <= -1 else 0.0   # material causal lift threshold
         db.insert("determination_outcomes", {"determination_id": det.get("id"), "subject_id": det.get("subject_id"),
                   "metric": "ab_lift_pct", "delta": lift, "causal_lift": lift, "labeled_outcome": outcome,

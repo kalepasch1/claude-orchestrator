@@ -13,64 +13,21 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 from scoreboard_data import collect_all
+from scoreboard_metrics import compute_metrics
 
 WINDOW_H = int(os.environ.get("ORCH_SCOREBOARD_WINDOW_H", "24"))
 CONTROL_KEY = "fleet_scoreboard"
 
 
-def _outcome_metrics(rows):
-    attempts = len(rows)
-    tests_passed = sum(1 for r in rows if r.get("tests_passed"))
-    merged = sum(1 for r in rows if r.get("integrated"))
-    usd = sum(float(r.get("usd") or 0) for r in rows)
-    tokens = sum(int(r.get("input_tokens") or 0) + int(r.get("output_tokens") or 0) for r in rows)
-    wall_ms = sum(int(r.get("wall_ms") or 0) for r in rows)
-    review_failures = sum(int(r.get("review_failures") or 0) for r in rows)
-    first_pass_rate = round(tests_passed / attempts, 4) if attempts else None
-    merge_rate = round(merged / attempts, 4) if attempts else None
-    return {
-        "attempts": attempts,
-        "tests_passed": tests_passed,
-        "merged": merged,
-        "first_pass_rate": first_pass_rate,
-        "merge_rate": merge_rate,
-        "usd": round(usd, 4),
-        "usd_per_merge": round(usd / merged, 4) if merged else None,
-        "tokens": tokens,
-        "tokens_per_merge": round(tokens / merged, 1) if merged else None,
-        "avg_wall_min": round((wall_ms / max(1, attempts)) / 60000, 2) if attempts else None,
-        "review_failures": review_failures,
-        "review_failures_per_merge": round(review_failures / merged, 3) if merged else None,
-    }
-
-
-def _by_model(rows):
-    grouped = {}
-    for row in rows:
-        key = row.get("model") or row.get("coder") or "unknown"
-        grouped.setdefault(str(key), []).append(row)
-    return {key: _outcome_metrics(vals) for key, vals in grouped.items()}
-
-
-def _by_project(rows):
-    grouped = {}
-    for row in rows:
-        key = row.get("project") or "unknown"
-        grouped.setdefault(str(key), []).append(row)
-    return {key: _outcome_metrics(vals) for key, vals in grouped.items()}
-
-
 def compute():
     data = collect_all()
-    outcomes = data["outcomes"]
+    metrics = compute_metrics(data["outcomes"])
     return {
         "generated_at": datetime.datetime.utcnow().isoformat(),
         "window_h": WINDOW_H,
         "queue": data["queue"],
         "paused_minutes_today": data["paused_minutes"],
-        "overall": _outcome_metrics(outcomes),
-        "by_model": _by_model(outcomes),
-        "by_project": _by_project(outcomes),
+        **metrics,
     }
 
 
