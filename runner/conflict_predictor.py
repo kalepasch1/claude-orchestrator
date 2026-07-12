@@ -257,3 +257,101 @@ def analyze_merge_conflict(base_content, branch_a_content, branch_b_content, fil
         return {"severity": "medium", "conflict_type": "unknown",
                 "auto_resolvable": False, "suggestion": f"analysis error: {exc}",
                 "overlapping_symbols": []}
+
+
+def auto_resolve_conflict(base_content, branch_a_content, branch_b_content, filepath=""):
+    """Attempt automatic conflict resolution for additive/low-overlap conflicts.
+
+    Returns {"resolved": bool, "merged_content": str, "strategy": str}.
+    Only resolves when both branches add non-overlapping code (append-both strategy).
+    """
+    if not _REALTIME_ENABLED:
+        return {"resolved": False, "merged_content": "", "strategy": "disabled"}
+
+    analysis = analyze_merge_conflict(base_content, branch_a_content, branch_b_content, filepath)
+
+    if not analysis.get("auto_resolvable"):
+        return {"resolved": False, "merged_content": "", "strategy": "manual_required",
+                "analysis": analysis}
+
+    try:
+        base_lines = (base_content or "").splitlines(keepends=True)
+        a_lines = (branch_a_content or "").splitlines(keepends=True)
+        b_lines = (branch_b_content or "").splitlines(keepends=True)
+
+        # Find lines added by each branch
+        base_set = set(base_lines)
+        added_a = [l for l in a_lines if l not in base_set]
+        added_b = [l for l in b_lines if l not in base_set]
+
+        # Append-both: keep all of branch_a, then append branch_b additions
+        merged = list(a_lines)
+        if added_b:
+            # Add a separator comment if it's a code file
+            ext = os.path.splitext(filepath)[1].lower() if filepath else ""
+            if ext in (".py", ".js", ".ts", ".go", ".rs", ".java"):
+                merged.append("\n")
+            merged.extend(added_b)
+
+        return {
+            "resolved": True,
+            "merged_content": "".join(merged),
+            "strategy": "append_both",
+            "analysis": analysis,
+        }
+    except Exception as exc:
+        _log.warning("auto_resolve_conflict failed: %s", exc)
+        return {"resolved": False, "merged_content": "", "strategy": f"error: {exc}"}
+
+
+def realtime_conflict_scan(repo_path, branch_a, branch_b, base="master"):
+    """Scan two branches for conflicting files and attempt auto-resolution.
+
+    Returns {"files_scanned": int, "conflicts": int, "auto_resolved": int,
+             "results": [{filepath, analysis, resolution}]}.
+    """
+    import subprocess
+    results = []
+    auto_resolved = 0
+
+    try:
+        # Get list of files changed in both branches relative to base
+        r_a = subprocess.run(
+            ["git", "diff", "--name-only", f"{base}...{branch_a}"],
+            cwd=repo_path, capture_output=True, text=True, timeout=30)
+        r_b = subprocess.run(
+            ["git", "diff", "--name-only", f"{base}...{branch_b}"],
+            cwd=repo_path, capture_output=True, text=True, timeout=30)
+
+        files_a = set(r_a.stdout.strip().splitlines()) if r_a.returncode == 0 else set()
+        files_b = set(r_b.stdout.strip().splitlines()) if r_b.returncode == 0 else set()
+        overlap = files_a & files_b
+
+        for fp in sorted(overlap):
+            # Get content from each branch
+            def _show(rev, path):
+                r = subprocess.run(["git", "show", f"{rev}:{path}"],
+                                   cwd=repo_path, capture_output=True, text=True, timeout=10)
+                return r.stdout if r.returncode == 0 else ""
+
+            base_c = _show(base, fp)
+            a_c = _show(branch_a, fp)
+            b_c = _show(branch_b, fp)
+
+            analysis = analyze_merge_conflict(base_c, a_c, b_c, fp)
+            resolution = auto_resolve_conflict(base_c, a_c, b_c, fp)
+
+            if resolution.get("resolved"):
+                auto_resolved += 1
+
+            results.append({"filepath": fp, "analysis": analysis, "resolution": resolution})
+
+        return {
+            "files_scanned": len(overlap),
+            "conflicts": len(results),
+            "auto_resolved": auto_resolved,
+            "results": results,
+        }
+    except Exception as exc:
+        _log.warning("realtime_conflict_scan failed: %s", exc)
+        return {"files_scanned": 0, "conflicts": 0, "auto_resolved": 0, "results": []}

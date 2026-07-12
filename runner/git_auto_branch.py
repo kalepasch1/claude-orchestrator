@@ -12,6 +12,7 @@ Runs periodically via the runner loop. Only operates on local repos.
 import datetime, os, subprocess, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import branch_naming
 
 STALE_DAYS = int(os.environ.get("ORCH_BRANCH_STALE_DAYS", "7"))
 GRACE_HOURS = int(os.environ.get("ORCH_BRANCH_GRACE_HOURS", "24"))
@@ -113,6 +114,21 @@ def ensure_branch(repo, slug, base="master"):
     _git(["fetch", "origin", base], repo)
     _, ok = _git(["branch", branch, f"origin/{base}"], repo)
     return branch if ok else None
+
+
+def ensure_branch_safe(repo, slug, base="master"):
+    """Like ensure_branch but deduplicates the slug against existing branches first.
+
+    Returns (branch_name, final_slug) or (None, slug) on failure.
+    """
+    out, ok = _git(["branch", "--list", f"{BRANCH_PREFIX}*"], repo)
+    existing = set()
+    if ok:
+        for b in out.splitlines():
+            existing.add(b.strip().lstrip("* ").removeprefix(BRANCH_PREFIX))
+    final_slug = branch_naming.deduplicate_slug(slug, existing)
+    branch = ensure_branch(repo, final_slug, base)
+    return (branch, final_slug) if branch else (None, slug)
 
 
 def rebase_stale_branches(repo, base="master"):
