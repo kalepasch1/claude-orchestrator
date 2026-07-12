@@ -43,6 +43,40 @@ PARK_NOTE = "[ev-low-priority: near-zero expected value — keep queued, run whe
 BOOST_KINDS = ("build",)
 REVENUE_WORDS = ("revenue", "pricing", "growth", "conversion")
 
+# Outcome weighting: when ORCH_EV_OUTCOME_WEIGHTING=true, task-family priority is
+# weighted by REALIZED outcomes (merged-and-stayed-green rate, retries, human-reject
+# rate) rather than flat cost only. Default OFF so current scheduling is byte-identical.
+OUTCOME_WEIGHTING_ENABLED = os.environ.get("ORCH_EV_OUTCOME_WEIGHTING", "false").lower() in ("true", "1", "yes")
+
+
+def outcome_weight(task, ctx):
+    """Compute an outcome-based weight multiplier for a task's kind family.
+
+    Uses learn_from_merges signals via ctx["family_outcomes"]:
+      {kind: {"merged_green": int, "total": int, "retries": int, "rejected": int}}
+
+    Returns a multiplier >= 0.1. Higher realized success => higher multiplier.
+    Only active when ORCH_EV_OUTCOME_WEIGHTING is true; otherwise returns 1.0.
+    """
+    if not OUTCOME_WEIGHTING_ENABLED:
+        return 1.0
+    family = (ctx.get("family_outcomes") or {})
+    kind = (task.get("kind") or "build").lower()
+    stats = family.get(kind)
+    if not stats or not stats.get("total"):
+        return 1.0  # no data => neutral
+    total = float(stats["total"])
+    merged_green = float(stats.get("merged_green", 0))
+    retries = float(stats.get("retries", 0))
+    rejected = float(stats.get("rejected", 0))
+    # success rate: merged-and-stayed-green / total
+    success = merged_green / total
+    # penalty: retry and rejection rates drag the score down
+    retry_drag = 1.0 - min(retries / (total * 3), 0.5)  # cap penalty at 50%
+    reject_drag = 1.0 - min(rejected / total, 0.5)
+    weight = success * retry_drag * reject_drag
+    return max(weight, 0.1)  # floor at 0.1 so nothing is fully zeroed
+
 
 def score(task, ctx):
     """Expected value per token for one task. Pure + deterministic."""
@@ -66,6 +100,10 @@ def score(task, ctx):
         s *= 2.0
     if int(task.get("transient_retries") or 0) >= 2:
         s *= 0.3
+
+    # Outcome weighting: multiply by realized family success (only when flag is ON)
+    s *= outcome_weight(task, ctx)
+
     # ORCHESTRATOR-FIRST (owner directive): self-improvements to the orchestration layer have no
     # direct MRR but compound across the WHOLE fleet (a better orchestrator ships every app better),
     # so give them a high synthetic EV to rank them at the front of the queue.
