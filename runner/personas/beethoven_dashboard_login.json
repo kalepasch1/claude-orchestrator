@@ -1,0 +1,16 @@
+{
+  "name": "beethoven-dashboard-login-queue",
+  "project": "beethoven",
+  "description": "Login to beethoven dashboard and verify queue view loads with data",
+  "auth": {"env_user": "QA_BEETHOVEN_USER", "env_pass": "QA_BEETHOVEN_PASS"},
+  "steps": [
+    {"action": "navigate", "url": "/login"},
+    {"action": "wait", "selector": "[name=email]"},
+    {"action": "fill", "selector": "[name=email]", "value": "qa@beethoven.test"},
+    {"action": "fill", "selector": "[name=password]", "value": "testpass"},
+    {"action": "click", "selector": "button[type=submit]"},
+    {"action": "wait", "selector": ".dashboard"},
+    {"action": "assert_visible", "selector": ".queue-view", "assert": "queue view loads"},
+    {"action": "assert_visible", "selector": ".task-list", "assert": "task list has entries"}
+  ]
+}
