@@ -2661,6 +2661,39 @@ def main():
             _log.debug("hook self_deploy failed: %s", e)
         try:
             db.heartbeat(RUNNER_ID, socket.gethostname(), len(active))
+            # RUNNER REMOTE RESTART: check runner_control table for pending restart commands
+            # targeted at this host (or 'all'). Mark handled, release lock, exit (keepalive respawns).
+            try:
+                _hostname = socket.gethostname()
+                _rc_rows = db.select('runner_control', {
+                    'select': 'id,target,action',
+                    'action': 'eq.restart',
+                    'handled_at': 'is.null',
+                    'or': f'(target.eq.{_hostname},target.eq.all)',
+                    'limit': '1',
+                    'order': 'requested_at.asc',
+                })
+                if _rc_rows:
+                    _rc = _rc_rows[0]
+                    _log.info('runner_control restart request id=%s target=%s — honoring', _rc['id'], _rc['target'])
+                    print(f'[runner-control] restart requested (id={_rc["id"]}, target={_rc["target"]}) — exiting for keepalive')
+                    try:
+                        db.update('runner_control', {'handled_at': 'now()'}, {'id': f'eq.{_rc["id"]}'})
+                    except Exception:
+                        pass
+                    # Release singleton lock cleanly
+                    if _LOCK_FD:
+                        try:
+                            import fcntl
+                            fcntl.flock(_LOCK_FD, fcntl.LOCK_UN)
+                            _LOCK_FD.close()
+                        except Exception:
+                            pass
+                    sys.exit(0)
+            except SystemExit:
+                raise
+            except Exception as _rc_err:
+                _log.debug('runner_control check failed (fail-soft): %s', _rc_err)
             # FLEET GATEWAY: load central config (fleet_config) + honor control actions (restart / pull)
             # from ONE place, so every Mac converges without a second terminal. In-process so config is
             # live (the loop reads MAX_PARALLEL etc. from env below) and a restart action affects THIS

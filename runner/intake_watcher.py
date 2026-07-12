@@ -17,6 +17,7 @@ Canonical format (the drop-in prompt emits exactly this):
       model: haiku|sonnet|opus
       depends: [other-slug, ...]
       proof: `npx vue-tsc --noEmit` exits 0
+      bundle: outputs/my-bundle  # optional: pre-verified file tree
       prompt: |
         multi-line scope + steps for ONE deliverable.
 
@@ -80,13 +81,13 @@ def parse(text):
         if mid:
             flush()
             cur = {"project": project, "slug": mid.group(1).strip(), "material": False,
-                   "model": None, "depends": [], "proof": "", "prompt": ""}
+                   "model": None, "depends": [], "proof": "", "bundle": "", "prompt": ""}
             in_prompt = False; continue
         if cur is None:
             continue
         if in_prompt:
             plines.append(raw); continue
-        kv = re.match(r"^(title|material|model|depends|proof|prompt):\s*(.*)$", s)
+        kv = re.match(r"^(title|material|model|depends|proof|bundle|prompt):\s*(.*)$", s)
         if kv:
             k, v = kv.group(1), kv.group(2).strip()
             if k == "prompt":
@@ -99,6 +100,8 @@ def parse(text):
                 cur["material"] = v.lower().startswith("y")
             elif k == "model":
                 cur["model"] = (v or None)
+            elif k == "bundle":
+                cur["bundle"] = v
             else:
                 cur[k] = v
     flush()
