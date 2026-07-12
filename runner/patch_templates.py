@@ -91,12 +91,22 @@ def inject_prompt(task):
 
 
 def pre_claim_hook(task):
+    """Inject patch template into the in-memory task dict for the current run.
+
+    FIXED 2026-07-11: previously wrote the mutated prompt back to the DB via
+    db.update(), permanently corrupting the original prompt.  Tasks that failed
+    and retried accumulated layers of PATCH TEMPLATE boilerplate until the
+    original instructions were buried under hex-hash keyword salad.  1,801 tasks
+    were quarantined as unexecutable garbage from this bug.
+
+    Now: template is prepended in-memory only — the DB prompt stays clean.
+    """
     try:
         if not isinstance(task, dict) or MARK in str(task.get("prompt") or ""):
             return task
         template_id, body = build(task)
         new_prompt = body + f"\n{MARK}{template_id}]\n\n" + str(task.get("prompt") or "")
-        db.update("tasks", {"id": task["id"]}, {"prompt": new_prompt})
+        # DO NOT write back to DB — keep original prompt intact for retries
         _store(task, template_id, body)
         try:
             import savings_meter

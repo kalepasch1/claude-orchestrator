@@ -219,12 +219,10 @@ def _reuse_context(task, proj, repo, base):
             parts.append(h)
     except Exception:
         pass
-    try:
-        import patch_templates
-        _, body = patch_templates.build(task)
-        parts.append(body)
-    except Exception:
-        pass
+    # REMOVED 2026-07-11: patch_templates.build() was baking hex-hash keyword
+    # salad ("PATCH TEMPLATE 89e76ad68de0\nIntent: 07t18 08t17 269175...") into
+    # recovery task prompts at creation time, producing 1,801+ unexecutable tasks.
+    # The template is injected at claim time by pre_claim_hook (in-memory only).
     return "\n\n".join(p for p in parts if p)
 
 
