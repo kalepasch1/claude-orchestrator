@@ -1,109 +1,174 @@
 #!/usr/bin/env python3
 """
-cx_ensemble_panels.py - ensemble deliberation for high-materiality determinations.
+cx_ensemble_panels.py - Cross-examination ensemble panels.
 
-For the highest-materiality recent determinations, convene 2-3 INDEPENDENTLY-assembled panels
-via committees.review() on the same subject and compare their verdicts. Record agreement/
-disagreement as inbox kind='ensemble' + a determination_outcomes row source='ensemble'.
-Disagreement is treated as a contention signal that should stay with a human.
+For the highest-materiality recent determinations (bounded, cost-safe on
+subscription models), convene 2-3 INDEPENDENTLY-assembled panels via
+committees.review() on the same subject and compare their verdicts.
 
-Read-only except the digest; reuses committees.review; does not edit committees.py.
+Records agreement/disagreement as an inbox item (kind='ensemble') plus a
+determination_outcomes row (source='ensemble').  Treats disagreement as a
+contention signal that should stay with a human.
+
+Read-only except the digest; reuses committees.review; does NOT edit committees.py.
 """
-import os, sys, json
+import os, sys, datetime, json
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import committees
 
 MAX_PANELS = int(os.environ.get("ENSEMBLE_MAX_PANELS", "3"))
 MIN_PANELS = 2
-TOP_N = int(os.environ.get("ENSEMBLE_TOP_N", "5"))
+MAX_DETERMINATIONS = int(os.environ.get("ENSEMBLE_MAX_DETERMINATIONS", "5"))
+MATERIALITY_THRESHOLD = float(os.environ.get("ENSEMBLE_MATERIALITY_THRESHOLD", "7.0"))
 
 
-def _high_materiality_determinations():
-    """Fetch recent high-materiality determinations not yet ensemble-reviewed."""
-    already = {r["subject_id"] for r in (db.select("determination_outcomes", {
-        "select": "subject_id", "source": "eq.ensemble"}) or [])}
-    rows = db.select("committee_opinions", {
-        "select": "subject_type,subject_id,subject_title,opinion,consensus_verdict,app",
-        "order": "created_at.desc", "limit": str(TOP_N * 3)}) or []
-    out = []
+def _recent_high_materiality_determinations():
+    """Fetch recent determinations above the materiality threshold, bounded for cost safety."""
+    try:
+        rows = db.select("determinations", {
+            "select": "*",
+            "order": "created_at.desc",
+            "limit": str(MAX_DETERMINATIONS * 3),
+        }) or []
+    except Exception:
+        return []
+    # Filter to high-materiality: score >= threshold, not already ensembled
+    already = set()
+    try:
+        existing = db.select("determination_outcomes", {
+            "select": "determination_id",
+            "source": "eq.ensemble",
+        }) or []
+        already = {r.get("determination_id") for r in existing}
+    except Exception:
+        pass
+    result = []
     for r in rows:
-        sid = r.get("subject_id")
-        if sid and sid not in already:
-            already.add(sid)
-            out.append(r)
-        if len(out) >= TOP_N:
+        if r.get("id") in already:
+            continue
+        score = float(r.get("score") or r.get("materiality") or 0)
+        if score >= MATERIALITY_THRESHOLD:
+            result.append(r)
+        if len(result) >= MAX_DETERMINATIONS:
             break
-    return out
+    return result
 
+def _convene_ensemble(det):
+    """Convene 2-3 independent panels for a single determination and compare verdicts."""
+    title = det.get("title") or det.get("subject") or f"determination-{det.get('id', '?')}"
+    body = det.get("body") or det.get("detail") or json.dumps(det, default=str)[:2000]
+    subject_type = det.get("subject_type") or "determination"
+    subject_id = det.get("subject_id") or det.get("id") or ""
 
-def _convene_panels(subject_type, subject_id, title, body, app=None):
-    """Run committees.review() multiple times independently to get diverse panels."""
-    results = []
-    for _ in range(MAX_PANELS):
+    verdicts = []
+    for i in range(MAX_PANELS):
         try:
-            result = committees.review(subject_type, subject_id, title, body, app=app)
+            result = committees.review(subject_type, subject_id, title, body)
             if result and result.get("aggregate") is not None:
-                results.append(result)
+                verdicts.append(result)
+        except Exception:
+            pass  # fail-soft: partial ensemble is acceptable
+        if len(verdicts) >= MIN_PANELS:
+            # Cost gate: stop once we have enough independent opinions
+            if len(verdicts) >= MAX_PANELS:
+                break
+
+    if len(verdicts) < MIN_PANELS:
+        return None  # not enough panels convened
+
+    # Compare verdicts
+    recommendations = [v.get("recommendation", "") for v in verdicts]
+    unique_recs = set(recommendations)
+    agrees = len(unique_recs) == 1
+    scores = [v.get("aggregate", 0) for v in verdicts]
+    avg_score = round(sum(scores) / len(scores), 1) if scores else 0
+
+    return {
+        "determination_id": det.get("id"),
+        "subject_id": subject_id,
+        "title": title,
+        "panel_count": len(verdicts),
+        "agrees": agrees,
+        "recommendations": recommendations,
+        "avg_score": avg_score,
+        "verdicts": verdicts,
+    }
+
+
+def _record_ensemble(result):
+    """Record the ensemble result as inbox + determination_outcomes row."""
+    agrees = result["agrees"]
+    det_id = result.get("determination_id")
+    subject_id = result.get("subject_id") or ""
+    title = result.get("title", "")
+    recs = result.get("recommendations", [])
+
+    if agrees:
+        body = f"Ensemble of {result['panel_count']} panels AGREES on '{recs[0]}' (avg score {result['avg_score']})"
+    else:
+        body = (f"Ensemble of {result['panel_count']} panels DISAGREES — "
+                f"recommendations: {', '.join(recs)} (avg score {result['avg_score']}). "
+                f"Contention signal: requires human review.")
+
+    # Inbox item
+    try:
+        db.insert("inbox", {
+            "kind": "ensemble",
+            "title": f"Ensemble: {title[:120]}",
+            "body": body[:3000],
+            "meta": json.dumps({
+                "agrees": agrees,
+                "panel_count": result["panel_count"],
+                "recommendations": recs,
+                "avg_score": result["avg_score"],
+            }),
+        })
+    except Exception:
+        pass
+
+    # determination_outcomes row
+    if det_id:
+        try:
+            db.insert("determination_outcomes", {
+                "determination_id": det_id,
+                "subject_id": subject_id,
+                "source": "ensemble",
+                "outcome": "agreement" if agrees else "contention",
+                "detail": body[:1000],
+            })
         except Exception:
             pass
-        if len(results) >= MIN_PANELS:
-            # enough for comparison; stop early if we hit max
-            if len(results) >= MAX_PANELS:
-                break
-    return results
-
-
-def _compare_verdicts(panels):
-    """Compare panel verdicts. Returns (agreed: bool, summary: str)."""
-    if not panels:
-        return True, "no panels"
-    recs = [p.get("recommendation", "HOLD") for p in panels]
-    # normalize: strip parenthetical qualifiers for comparison
-    normed = [r.split("(")[0].strip().upper() for r in recs]
-    unique = set(normed)
-    agreed = len(unique) == 1
-    summary = f"verdicts: {', '.join(recs)} -> {'AGREE' if agreed else 'DISAGREE'}"
-    return agreed, summary
 
 
 def run():
-    """Entry point for periodic scheduling."""
-    dets = _high_materiality_determinations()
+    """Entry point: ensemble-review the highest-materiality recent determinations."""
+    dets = _recent_high_materiality_determinations()
     if not dets:
-        return
+        return {"ensembled": 0, "note": "no high-materiality determinations pending ensemble review"}
+
+    results = []
     for det in dets:
-        sid = det.get("subject_id")
-        stype = det.get("subject_type", "determination")
-        title = det.get("subject_title", "")
-        body = det.get("opinion", "")
-        app = det.get("app")
-
-        panels = _convene_panels(stype, sid, title, body, app=app)
-        if len(panels) < MIN_PANELS:
-            continue
-
-        agreed, summary = _compare_verdicts(panels)
-
-        # Record outcome
-        try:
-            db.insert("determination_outcomes", {
-                "determination_id": sid,
-                "subject_id": sid,
-                "source": "ensemble",
-                "labeled_outcome": "agree" if agreed else "disagree",
-                "detail": summary[:500],
+        result = _convene_ensemble(det)
+        if result:
+            _record_ensemble(result)
+            results.append({
+                "title": result["title"],
+                "agrees": result["agrees"],
+                "panel_count": result["panel_count"],
+                "avg_score": result["avg_score"],
             })
-        except Exception:
-            pass
 
-        # Inbox item for visibility
-        try:
-            db.insert("inbox", {
-                "kind": "ensemble",
-                "title": f"Ensemble {'agreement' if agreed else 'DISAGREEMENT'}: {title[:80]}",
-                "body": summary[:1000],
-                "app": app,
-            })
-        except Exception:
-            pass
+    agreements = sum(1 for r in results if r["agrees"])
+    contentions = sum(1 for r in results if not r["agrees"])
+    return {
+        "ensembled": len(results),
+        "agreements": agreements,
+        "contentions": contentions,
+        "details": results,
+    }
+
+
+if __name__ == "__main__":
+    print(json.dumps(run(), indent=2, default=str))
