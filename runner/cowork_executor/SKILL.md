@@ -34,7 +34,7 @@ WHERE t.state = 'QUEUED'
     )
   )
 ORDER BY t.id ASC
-LIMIT 3;
+LIMIT 10;
 ```
 
 Skip any task with `kind = 'speculative'` -- those need the runner's speculative framework.
