@@ -182,6 +182,7 @@ def ingest_file(path, projects_by_name):
                "note": pipeline_contract.note(source="intake-file")}
         if t.get("model"):
             row["model"] = t["model"]
+        _annotate_with_dedup(row)
         db.insert("tasks", row)
         existing.add(t["slug"]); created += 1
     # surface each operator-only item as its OWN approval card (per-item, not a lump)
@@ -261,6 +262,7 @@ def _queue_dropbox_tasks(rendered, projects_by_name):
                "note": pipeline_contract.note(source="intake-dropbox")}
         if t.get("model"):
             row["model"] = t["model"]
+        _annotate_with_dedup(row)
         db.insert("tasks", row)
         existing.add(t["slug"]); created += 1
     return created, skipped
@@ -374,6 +376,24 @@ def run():
             else:
                 print(f"intake: failed on {f}: {e}")  # leave the file in place to retry
     return total + dropbox_total
+
+
+# ── intake dedup annotation (fail-open) ──
+def _annotate_with_dedup(row):
+    """Annotate a task row with possible-duplicate info before insert. Fail-open: any error
+    is swallowed and the row is inserted unmodified."""
+    try:
+        import intake_dedup
+        threshold = float(os.environ.get("INTAKE_DEDUP_THRESHOLD", "0.70"))
+        matches = intake_dedup.candidate_matches(row.get("prompt") or "")
+        if matches and matches[0][1] >= threshold:
+            ref, score = matches[0]
+            annotation = f"\n\n[POSSIBLE-DUP: {ref} ({score:.2f})]"
+            row["prompt"] = (row.get("prompt") or "") + annotation
+            row["note"] = (row.get("note") or "") + f" | dedup-match: {ref} ({score:.2f})"
+    except Exception:
+        pass  # fail-open: never block intake on dedup errors
+    return row
 
 
 if __name__ == "__main__":
