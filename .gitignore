@@ -24,3 +24,8 @@ runner/runner.log
 .pip-cache/
 .orch-context-cache.json
 runner/.env.pre-symlink-merge-*
+.vercel
+.env*
+
+# machine-local settings with PIDs, credentials, hardcoded paths
+.claude/settings.local.json
