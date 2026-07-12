@@ -2073,7 +2073,6 @@ _SCHEDULE = [
     ("committeemins-dy","committeeminutes",  "daily",    (7, 0)), # plain-English board minutes for the owner
     ("committeekg-2am","committeekg",        "daily",    (2, 40)),# build the cross-committee knowledge graph
     ("committeemeta-wk","committeemeta",     "daily",    (2, 55)),# meta-review of the expert-assembly system
-    ("cadeextras-dy",  "cadeextras",         "daily",    (3, 10)),  # CADE extensions harness: run all cx_*.py modules
     ("remediate-180", "remediate",          "interval", 180),   # drive BLOCKED to zero (auto self-remedy)
     ("quarantine-180","quarantine",         "interval", 180),   # rewrite terminal blockers into safe claimable work
     ("objective-3600","objective",          "interval", 3600),  # meta-controller: tune knobs toward north-star
