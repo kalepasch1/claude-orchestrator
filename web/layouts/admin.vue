@@ -36,6 +36,45 @@
         <NuxtLink to="/admin/prompt-ops" class="nav-link" active-class="nav-active">
           <span class="nav-icon">&#128221;</span> Prompt Ops
         </NuxtLink>
+        <NuxtLink to="/admin/temporal" class="nav-link" active-class="nav-active">
+          <span class="nav-icon">&#9203;</span> Temporal
+        </NuxtLink>
+        <NuxtLink to="/admin/shadow" class="nav-link" active-class="nav-active">
+          <span class="nav-icon">&#128065;</span> Shadow
+        </NuxtLink>
+        <NuxtLink to="/admin/compliance" class="nav-link" active-class="nav-active">
+          <span class="nav-icon">&#128279;</span> Compliance
+        </NuxtLink>
+        <NuxtLink to="/admin/chaos" class="nav-link" active-class="nav-active">
+          <span class="nav-icon">&#128025;</span> Chaos
+        </NuxtLink>
+        <NuxtLink to="/admin/regulatory" class="nav-link" active-class="nav-active">
+          <span class="nav-icon">&#128220;</span> Regulatory
+        </NuxtLink>
+        <NuxtLink to="/admin/playbooks" class="nav-link" active-class="nav-active">
+          <span class="nav-icon">&#128214;</span> Playbooks
+        </NuxtLink>
+        <NuxtLink to="/admin/costs" class="nav-link" active-class="nav-active">
+          <span class="nav-icon">&#128178;</span> Costs
+        </NuxtLink>
+        <NuxtLink to="/admin/telemetry" class="nav-link" active-class="nav-active">
+          <span class="nav-icon">&#128200;</span> Telemetry
+        </NuxtLink>
+        <NuxtLink to="/admin/session-replay" class="nav-link" active-class="nav-active">
+          <span class="nav-icon">&#128101;</span> Sessions
+        </NuxtLink>
+        <NuxtLink to="/admin/knowledge-graph" class="nav-link" active-class="nav-active">
+          <span class="nav-icon">&#127760;</span> Knowledge Graph
+        </NuxtLink>
+        <NuxtLink to="/admin/predictions" class="nav-link" active-class="nav-active">
+          <span class="nav-icon">&#128302;</span> Predictions
+        </NuxtLink>
+        <NuxtLink to="/admin/gateway" class="nav-link" active-class="nav-active">
+          <span class="nav-icon">&#128268;</span> Gateway
+        </NuxtLink>
+        <NuxtLink to="/admin/replay" class="nav-link" active-class="nav-active">
+          <span class="nav-icon">&#127916;</span> Replay
+        </NuxtLink>
 
         <!-- App sections -->
         <div v-for="app in apps" :key="app.id" class="mt-2">

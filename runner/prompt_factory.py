@@ -118,8 +118,11 @@ def _open_factory_file_count():
 
 def render_objective_dag(objective_row, project_row):
     """Run one objective through planner.py's contract-first decomposition and render as a
-    canonical intake block (a list of task dicts ready for _render_intake_file)."""
+    canonical intake block (a list of task dicts ready for _render_intake_file).
+
+    If TDD is enabled, acceptance criteria from planner are propagated to task metadata."""
     import planner
+    import tdd_gate
     slug = _slugify(objective_row.get("objective") or objective_row.get("id") or "objective")
     goal_text = objective_row.get("objective") or ""
     metric = objective_row.get("metric")
@@ -132,7 +135,7 @@ def render_objective_dag(objective_row, project_row):
     hint = {"haiku": "claude-haiku-4-5-20251001", "sonnet": "claude-sonnet-4-6", "opus": "claude-opus-4-8"}
     rendered = []
     for t in tasks:
-        rendered.append({
+        entry = {
             "id": f"factory-{slug}-{t['slug']}",
             "title": (t.get("prompt") or "")[:80].replace("\n", " ") or t["slug"],
             "material": False,
@@ -140,7 +143,10 @@ def render_objective_dag(objective_row, project_row):
             "depends": [f"factory-{slug}-{d}" for d in (t.get("deps") or [])],
             "proof": _extract_proof(t.get("prompt"), project_row),
             "prompt": t.get("prompt") or "",
-        })
+        }
+        if tdd_gate.is_tdd_enabled() and t.get("acceptance_criteria"):
+            entry["acceptance_criteria"] = t["acceptance_criteria"]
+        rendered.append(entry)
     return slug, rendered
 
 

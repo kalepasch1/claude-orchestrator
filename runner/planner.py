@@ -10,10 +10,15 @@ How: asks a model to decompose the prompt into JSON tasks, each with an explicit
 file scope and acceptance test, plus `deps` (slugs that must finish first).
 Independent tasks share no files -> safe to run concurrently. Dependent tasks are
 ordered. Falls back to a single task if planning fails. Mockable via CLAUDE_BIN.
+
+TDD-first enforcement: when a task kind matches ORCH_TDD_REQUIRED_KINDS, planner
+automatically inserts a 'write_tests' phase BEFORE the 'implement' phase. This ensures
+tests are written with explicit acceptance criteria before any implementation begins.
 """
 import os, sys, json, subprocess, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import claude_cli
+import tdd_gate
 
 PLAN_MODEL = os.environ.get("PLAN_MODEL", "claude-opus-4-8")
 
@@ -38,6 +43,73 @@ in its deps. This lets parallel branches agree on boundaries up front so they ca
 structurally conflict at merge time.
 REQUEST:
 """
+
+
+def _apply_tdd_gating(tasks):
+    """
+    Apply TDD-first enforcement to tasks. For each task whose kind is gated for TDD:
+    - Insert a 'write_tests' phase BEFORE the 'implement' phase in its DAG deps
+    - The write_tests task has the same deps as the original task
+    - The original task then depends on write_tests completing
+    - Acceptance criteria (metrics, edge_cases, must_pass_tests) are extracted from task prompt
+
+    This is a no-op if ORCH_TDD_ENABLED is false or ORCH_TDD_TASK_KINDS is empty.
+    """
+    if not tdd_gate.is_tdd_enabled():
+        return tasks
+
+    gated_kinds = tdd_gate.get_task_kinds()
+    if not gated_kinds:
+        return tasks
+
+    modified = []
+    test_tasks = {}
+
+    for t in tasks:
+        slug = t.get("slug", "")
+        is_gated = tdd_gate.is_tdd_gated(slug)
+
+        if is_gated and slug != "contracts":
+            test_slug = f"{slug}-write-tests"
+            if test_slug not in test_tasks:
+                write_prompt = (
+                    f"Write failing tests + acceptance criteria for '{slug}':\n\n"
+                    f"{t.get('prompt', '')[:500]}\n\n"
+                    f"Task:\n"
+                    f"1. Read the original prompt above to understand acceptance criteria.\n"
+                    f"2. Write comprehensive failing tests to tests/test_{slug}.py.\n"
+                    f"3. Each test docstring MUST include '[ACCEPTANCE CRITERION]:' followed by the requirement.\n"
+                    f"4. Output a JSON block with acceptance_criteria:\n"
+                    f'{{"acceptance_criteria": {{\n'
+                    f'  "metrics": {{"latency_ms": "<100", "coverage_%": ">=90"}},\n'
+                    f'  "edge_cases": ["case1", "case2"],\n'
+                    f'  "must_pass_tests": ["test_main", "test_edge_cases"]\n'
+                    f'}}}}\n'
+                    f"5. All tests MUST fail before implementation.\n"
+                    f"6. Do NOT implement anything yet — only tests + criteria."
+                )
+                test_task = {
+                    "slug": test_slug,
+                    "prompt": write_prompt,
+                    "deps": t.get("deps", []),
+                    "model_hint": "haiku",
+                }
+                modified.append(test_task)
+                test_tasks[test_slug] = True
+
+            t_copy = dict(t)
+            original_deps = t_copy.get("deps", [])
+            t_copy["deps"] = list(set(original_deps + [test_slug]))
+            t_copy["acceptance_criteria"] = {
+                "metrics": {},
+                "edge_cases": [],
+                "must_pass_tests": []
+            }
+            modified.append(t_copy)
+        else:
+            modified.append(t)
+
+    return modified
 
 
 def plan(master: str, repo: str = None) -> list:
@@ -71,6 +143,10 @@ def plan(master: str, repo: str = None) -> list:
     except Exception as e:
         sys.stderr.write(f"[planner] decomposition failed ({e}); using single task\n")
         tasks = [{"slug": "master-task", "prompt": master, "deps": [], "model_hint": "opus"}]
+
+    # Apply TDD-first enforcement if configured
+    tasks = _apply_tdd_gating(tasks)
+
     return tasks
 
 
