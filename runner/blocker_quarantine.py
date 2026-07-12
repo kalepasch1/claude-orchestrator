@@ -117,6 +117,81 @@ def classify(task):
     return "rework"
 
 
+def classify_multi(task, max_labels=5):
+    """Multi-label classifier: identify ALL failure modes in a quarantined task (up to max_labels).
+
+    Unlike classify() which returns a single primary category, this returns a ranked list of
+    failure modes with confidence scores, enabling more targeted repair strategies. Each mode
+    includes the evidence snippet that triggered it.
+
+    Returns: [{"category": str, "confidence": float, "evidence": str}, ...]
+    """
+    blocker = _blocker_signal(task)
+    evidence = _evidence_signal(task)
+    text = blocker + "\n" + str(task.get("prompt") or "")
+    state = str(task.get("state") or "").upper()
+    results = []
+
+    # Check each classifier independently — a task can have multiple failure modes
+    classifiers = [
+        ("secret", lambda: _is_secret(evidence), evidence, 0.95),
+        ("security", lambda: bool(_SECURITY.search(evidence)), evidence, 0.90),
+        ("legal", lambda: bool(_LEGAL.search(text)), text, 0.85),
+        ("missing-branch", lambda: bool(_MISSING.search(text)), text, 0.92),
+        ("buildfail", lambda: bool(_BUILD.search(text)), text, 0.88),
+        ("testfail", lambda: state == "TESTFAIL" or bool(_TEST.search(text)), text, 0.88),
+        ("noop", lambda: bool(_NOOP.search(text)), text, 0.90),
+        ("oversized", lambda: bool(_EXHAUSTED.search(text)), text, 0.80),
+    ]
+
+    for category, check_fn, source, confidence in classifiers:
+        try:
+            if check_fn():
+                # Extract the matching evidence snippet
+                snippet = _extract_evidence_snippet(source, category)
+                results.append({
+                    "category": category,
+                    "confidence": confidence,
+                    "evidence": snippet[:200],
+                })
+        except Exception:
+            pass
+
+    if not results:
+        results.append({
+            "category": "rework",
+            "confidence": 0.5,
+            "evidence": (str(task.get("note") or "") + " " + str(task.get("log_tail") or ""))[:200].strip(),
+        })
+
+    # Sort by confidence descending, cap at max_labels
+    results.sort(key=lambda r: r["confidence"], reverse=True)
+    return results[:max_labels]
+
+
+def _extract_evidence_snippet(text, category):
+    """Extract the relevant snippet from text that triggered a category match."""
+    patterns = {
+        "secret": _SECRET_TERM,
+        "security": _SECURITY,
+        "legal": _LEGAL,
+        "missing-branch": _MISSING,
+        "buildfail": _BUILD,
+        "testfail": _TEST,
+        "noop": _NOOP,
+        "oversized": _EXHAUSTED,
+    }
+    pat = patterns.get(category)
+    if not pat:
+        return text[:200]
+    m = pat.search(text)
+    if not m:
+        return text[:200]
+    start = max(0, m.start() - 40)
+    end = min(len(text), m.end() + 40)
+    return text[start:end].strip()
+
+
 _REPLACEMENT_NOTE = re.compile(r"replacement for (?P<slug>.+?) category=(?P<category>[a-z-]+)", re.I)
 
 
