@@ -105,6 +105,14 @@ def _apply_tdd_gating(tasks):
                 "edge_cases": [],
                 "must_pass_tests": []
             }
+            # Contract-first proof rewriting: the code task's proof becomes
+            # "that acceptance test passes + suite green"
+            try:
+                import pipeline_contract
+                t_copy["proof"] = pipeline_contract.rewrite_proof_for_contract_first(
+                    t_copy.get("proof", ""), test_slug)
+            except Exception:
+                t_copy["proof"] = f"acceptance test from '{test_slug}' passes + suite green"
             modified.append(t_copy)
         else:
             modified.append(t)
