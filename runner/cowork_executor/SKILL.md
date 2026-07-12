@@ -23,9 +23,9 @@ WHERE t.state = 'QUEUED'
   AND t.kind NOT IN ('speculative')
   AND (
     t.deps IS NULL
-    OR t.deps = '[]'::jsonb
+    OR array_length(t.deps, 1) IS NULL
     OR NOT EXISTS (
-      SELECT 1 FROM jsonb_array_elements_text(t.deps) AS dep
+      SELECT 1 FROM unnest(t.deps) AS dep
       WHERE dep NOT IN (
         SELECT t2.slug FROM tasks t2
         WHERE t2.project_id = t.project_id
