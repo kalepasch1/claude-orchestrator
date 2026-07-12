@@ -68,9 +68,25 @@ def claude_exhausted():
 
 
 class AccountPool:
+    # Re-read config/state every 60s so concurrent runners see each other's cooldowns
+    # and DB priority changes without restart.
+    _RELOAD_INTERVAL = 60
+
     def __init__(self):
         self.accts = self._load_cfg()
         self.state = self._load_state()
+        self._cfg_ts = time.time()
+        self._state_ts = time.time()
+
+    def _maybe_reload(self):
+        """Refresh config and state from DB/disk if stale."""
+        now = time.time()
+        if now - self._cfg_ts > self._RELOAD_INTERVAL:
+            self.accts = self._load_cfg()
+            self._cfg_ts = now
+        if now - self._state_ts > self._RELOAD_INTERVAL:
+            self.state = self._load_state()
+            self._state_ts = now
 
     def _load_cfg(self):
         # 1) Supabase `accounts` table is the source of truth (visible in dashboard,
@@ -124,19 +140,23 @@ class AccountPool:
         return time.time() >= until
 
     def current(self):
+        self._maybe_reload()
         healthy = [a for a in self.accts if self._healthy(a)]
         if not healthy:
             # all cooling down -> return the one that frees up soonest
             return min(self.accts,
                        key=lambda a: self.state.get(a["name"], {}).get("cooldown_until", 0)) if self.accts else None
-        # Round-robin across healthy subscription accounts by picking the one with the
-        # fewest uses tracked locally. This distributes load evenly across Max plans so
-        # one account doesn't burn through its free capacity while others sit idle.
-        # The use_count resets when an account recovers from cooldown (mark_ok).
-        if len(healthy) > 1:
-            return min(healthy,
+        # Subscription (Max plan) accounts ALWAYS go before API accounts. Never touch
+        # paid API credits while any subscription account still has free capacity.
+        subs = [a for a in healthy if a.get("type") != "api"]
+        pool = subs if subs else healthy
+        # Round-robin across the pool by picking the one with the fewest uses tracked
+        # locally. This distributes load evenly across Max plans so one account doesn't
+        # burn through its bundled credits while others sit idle.
+        if len(pool) > 1:
+            return min(pool,
                        key=lambda a: self.state.get(a["name"], {}).get("use_count", 0))
-        return healthy[0]
+        return pool[0]
 
     def record_use(self, a):
         """Call after successfully dispatching a task to this account."""
