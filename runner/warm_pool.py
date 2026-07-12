@@ -221,3 +221,130 @@ def stats():
 if __name__ == "__main__":
     import json
     print(json.dumps(stats(), indent=2))
+
+
+# ── Subprocess warm-pool (sub-task of warm-agent-pool) ────────────────────────
+#
+# A second pool type that manages pre-warmed subprocess slots for running
+# claude -p commands.  Coexists with the context-prefix pool above.
+
+import subprocess, shutil
+
+POOL_REGISTRY = {}  # repo_path -> SubprocessWarmPool
+_registry_lock = threading.Lock()
+
+
+class SubprocessWarmPool:
+    """Manages pre-warmed subprocess slots for claude -p commands."""
+
+    def __init__(self, repo_path, max_size=3):
+        self.repo_path = repo_path
+        self.max_size = max_size
+        self._procs = []
+        self._lock = threading.Lock()
+        self._started = False
+
+    def start(self):
+        """Spawn initial warm processes."""
+        self._started = True
+        count = min(self.max_size, 1)
+        for _ in range(count):
+            p = self._spawn()
+            if p is not None:
+                with self._lock:
+                    self._procs.append(p)
+
+    def stop(self):
+        """Kill all pool members."""
+        with self._lock:
+            for p in self._procs:
+                try:
+                    p.kill()
+                    p.wait(timeout=5)
+                except Exception:
+                    pass
+            self._procs.clear()
+            self._started = False
+
+    def acquire(self):
+        """Return a warm Popen process if one is healthy, or None."""
+        with self._lock:
+            while self._procs:
+                p = self._procs.pop(0)
+                if p.poll() is None:  # still alive
+                    return p
+                # dead process, discard
+        return None
+
+    def release(self, proc):
+        """Return a healthy process back to the pool or discard it."""
+        if proc is None:
+            return
+        if proc.poll() is None:  # still alive
+            with self._lock:
+                if len(self._procs) < self.max_size:
+                    self._procs.append(proc)
+                    return
+        # Dead or pool full — kill it
+        try:
+            proc.kill()
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+
+    def health_check(self):
+        """Return True if pool has at least one live process."""
+        with self._lock:
+            return any(p.poll() is None for p in self._procs)
+
+    def _spawn(self):
+        """Spawn a warm subprocess. Returns Popen or None on failure."""
+        claude_bin = shutil.which("claude")
+        if not claude_bin:
+            # Fall back to a simple sentinel process (sleep) to track state
+            try:
+                return subprocess.Popen(
+                    ["sleep", "3600"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    cwd=self.repo_path,
+                )
+            except Exception:
+                return None
+        try:
+            return subprocess.Popen(
+                [claude_bin, "-p", "--no-cache"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=self.repo_path,
+            )
+        except Exception:
+            # Fall back to sentinel
+            try:
+                return subprocess.Popen(
+                    ["sleep", "3600"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    cwd=self.repo_path,
+                )
+            except Exception:
+                return None
+
+
+def get_or_create_pool(repo_path, max_size=3):
+    """Get or create a SubprocessWarmPool for the given repo_path."""
+    with _registry_lock:
+        if repo_path not in POOL_REGISTRY:
+            POOL_REGISTRY[repo_path] = SubprocessWarmPool(repo_path, max_size)
+        return POOL_REGISTRY[repo_path]
+
+
+def shutdown_all_pools():
+    """Stop and remove all subprocess pools."""
+    with _registry_lock:
+        for pool in POOL_REGISTRY.values():
+            pool.stop()
+        POOL_REGISTRY.clear()
