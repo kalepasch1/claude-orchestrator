@@ -2398,11 +2398,15 @@ def _reap_zombie_tasks():
         return
     _ZOMBIE_REAP_T = time.time()
     try:
-        running = db.select("tasks", {"select": "id,slug,updated_at", "state": "eq.RUNNING",
+        running = db.select("tasks", {"select": "id,slug,updated_at,account", "state": "eq.RUNNING",
                                        "limit": "100"}) or []
         cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=30)).isoformat()
         reclaimed = 0
         for t in running:
+            # COWORK DISPATCH: skip tasks claimed by Cowork sessions — they run in a
+            # separate execution context, not as a local subprocess.
+            if (t.get("account") or "").startswith("cowork-"):
+                continue
             if (t.get("updated_at") or "") < cutoff:
                 patch = agentic_repair.repair_patch(
                     t, "zombie-reaper: stale RUNNING >30min",

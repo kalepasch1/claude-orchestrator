@@ -118,6 +118,12 @@ def release_orphaned_running():
     cutoff = time.time() - ORPHAN_RUNNING_MIN * 60
     import datetime
     for t in db.select("tasks", {"select": "*", "state": "eq.RUNNING"}) or []:
+        # COWORK DISPATCH: tasks claimed by Cowork sessions are NOT orphans — they run
+        # in a separate Cowork execution context, not as a local subprocess. The janitor
+        # can't see Cowork processes, so it must trust the account prefix and leave them alone.
+        acct = (t.get("account") or "")
+        if acct.startswith("cowork-"):
+            continue
         try:
             ts = datetime.datetime.fromisoformat(str(t.get("updated_at")).replace("Z", "+00:00")).timestamp()
         except Exception:

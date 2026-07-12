@@ -48,12 +48,15 @@ def run(runner_id="startup"):
     cleared = 0
     try:
         cutoff = (datetime.datetime.utcnow() - datetime.timedelta(minutes=30)).isoformat()
-        stale = db.select("tasks", {"select": "id", "state": "eq.RUNNING",
+        stale = db.select("tasks", {"select": "id,account", "state": "eq.RUNNING",
                                     "updated_at": f"lt.{cutoff}", "limit": "100"}) or []
         for t in stale:
+            # COWORK DISPATCH: skip tasks claimed by Cowork sessions
+            if (t.get("account") or "").startswith("cowork-"):
+                continue
             db.update("tasks", {"id": t["id"]}, {"state": "QUEUED", "account": None,
                       "note": "self-check: reclaimed stale RUNNING zombie"})
-        cleared = len(stale)
+        cleared = len([t for t in stale if not (t.get("account") or "").startswith("cowork-")])
     except Exception as e:
         detail.append(f"zombie sweep err: {e}")
 
