@@ -152,6 +152,12 @@ def _req(method, path, body=None, headers=None, params=None):
                 raw = r.read().decode()
                 return json.loads(raw) if raw else None
         except urllib.error.HTTPError as e:
+            # A flood-guard dedup rejection (HTTP 409) must NOT kill the task —
+            # it means a unique constraint blocked a duplicate insert, which is
+            # idempotent and safe to ignore. No callers depend on the return value
+            # of insert(), so returning None is safe.
+            if e.code == 409:
+                return None
             if method != "GET" or e.code not in HTTP_RETRY_STATUSES or attempt >= attempts - 1:
                 raise
             time.sleep(min(8, 2 ** attempt))

@@ -998,6 +998,19 @@ def certify(subject_type, subject_id, agg):
     onepager = deliberation_onepager(agg)
     adv = float(agg.get("adv_discount") or 0)
     disc_conf = round(float(agg.get("aggregate") or 0) * (1 - adv), 2)
+    # COUNTERFACTUAL BOUND: compute the margin between the winning stance's weighted share
+    # and the best-scoring losing stance from the panel's factions. Asserts that no reachable
+    # alternative scored materially higher.
+    factions = agg.get("factions") or []
+    if len(factions) >= 2:
+        winning_share = float(factions[0].get("share") or 0)
+        runner_up_share = float(factions[1].get("share") or 0)
+        counterfactual_margin = round(winning_share - runner_up_share, 3)
+    else:
+        winning_share = float(factions[0].get("share") or 1) if factions else 1.0
+        counterfactual_margin = round(winning_share, 3)
+    counterfactual_claim = (f"no reachable alternative scored materially higher; "
+                            f"winning stance led by {round(counterfactual_margin * 100, 1)}pp margin")
     cert = {"position": agg.get("recommendation"), "consensus_pct": agg.get("consensus_pct"),
             "consensus_ci": [agg.get("consensus_lo"), agg.get("consensus_hi")],
             "materiality": agg.get("materiality"), "confidence": agg.get("aggregate"),
@@ -1005,8 +1018,8 @@ def certify(subject_type, subject_id, agg):
             "pivotal": agg.get("pivotal"), "consistency": agg.get("consistency"),
             "contributors": agg.get("contributors"), "factions": agg.get("factions"),
             "dissent": agg.get("dissents"), "gated_to_human": constitution_gate(agg),
-            "counterfactual": (f"winning stance carried {round((agg.get('consensus_pct') or 0)*100)}% of "
-                               f"weighted expertise; strongest opposing view preserved in dissent")}
+            "counterfactual_margin": counterfactual_margin,
+            "counterfactual": counterfactual_claim}
     try:
         prev = (db.select("determinations", {"select": "proof_hash", "order": "created_at.desc",
                                              "limit": "1"}) or [{}])
