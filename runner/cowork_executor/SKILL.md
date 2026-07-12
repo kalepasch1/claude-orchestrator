@@ -113,8 +113,8 @@ UPDATE tasks SET state = 'BLOCKED', note = 'cowork-executor: {error_description}
 ### Record outcome
 
 ```sql
-INSERT INTO outcomes (task_id, project, slug, kind, model, attempt, tests_pass, merged, cost_usd, input_tokens, output_tokens)
-VALUES ({task_id}, '{project_name}', '{slug}', '{kind}', 'cowork-executor', {attempt}, {tests_passed}, false, 0, 0, 0);
+INSERT INTO outcomes (task_id, project, slug, kind, model, account, attempts, tests_passed, integrated, usd, input_tokens, output_tokens)
+VALUES ({task_id}, '{project_name}', '{slug}', '{kind}', 'cowork-executor', 'cowork-executor-{timestamp}', 1, {tests_passed}, false, 0, 0, 0);
 ```
 
 - `cost_usd` = 0 (subscription usage, no per-token cost)
