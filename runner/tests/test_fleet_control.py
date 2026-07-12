@@ -16,6 +16,41 @@ class FleetControlTest(unittest.TestCase):
         self.assertFalse(fleet_control._safe_key("OPENAI_API_KEY"))
         self.assertFalse(fleet_control._safe_key("ORCH_SECRET_TOKEN"))
 
+    def test_safe_key_accepts_all_safe_prefixes(self):
+        safe_examples = [
+            "ORCH_CANARY_ONLY_OLLAMA_MODELS", "ORCH_DEPRIORITIZE_CHURN",
+            "MAX_PARALLEL_CEILING", "PER_TASK_GB", "RAM_FLOOR_GB", "RAM_LIMIT",
+            "RELEASE_GATE", "QUEUE_DEPTH", "CONT_TIMEOUT", "JANITOR_INTERVAL",
+            "REMEDIATION_CAP", "DEFAULT_TEST_CMD", "TASK_TIMEOUT_SECONDS",
+            "ENABLE_SPECULATIVE", "SESSION_TTL", "ACCOUNT_COOLDOWN_SECONDS",
+            "MERGE_STRATEGY", "DEPLOY_WINDOW", "INTEGRATE_KPI", "COST_CEILING",
+        ]
+        for k in safe_examples:
+            self.assertTrue(fleet_control._safe_key(k), f"expected safe: {k}")
+
+    def test_safe_key_rejects_all_deny_markers(self):
+        deny_cases = [
+            "ORCH_API_KEY", "ORCH_SECRET", "ORCH_TOKEN_REFRESH",
+            "ORCH_PASSWORD_HASH", "ORCH_PWD_RESET", "ORCH_CREDENTIAL_STORE",
+            "MAX_PARALLEL_KEY_ROTATION", "app_credential_name",
+            "DB_PASSWORD", "REDIS_TOKEN", "AWS_SECRET_ACCESS_KEY",
+        ]
+        for k in deny_cases:
+            self.assertFalse(fleet_control._safe_key(k), f"expected rejected: {k}")
+
+    def test_safe_key_rejects_unknown_prefixes(self):
+        unknown = ["HOME", "PATH", "USER", "SHELL", "MY_CUSTOM_VAR", "DB_HOST"]
+        for k in unknown:
+            self.assertFalse(fleet_control._safe_key(k), f"expected rejected: {k}")
+
+    def test_safe_key_case_insensitive_deny(self):
+        self.assertFalse(fleet_control._safe_key("ORCH_api_key"))
+        self.assertFalse(fleet_control._safe_key("orch_Secret_token"))
+
+    def test_safe_key_case_insensitive_prefix(self):
+        self.assertTrue(fleet_control._safe_key("orch_auto_pull"))
+        self.assertTrue(fleet_control._safe_key("max_parallel"))
+
     def test_all_target_done_when_expected_hosts_ack(self):
         fake_db = MagicMock()
         fake_db.select.side_effect = [
