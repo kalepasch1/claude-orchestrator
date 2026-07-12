@@ -82,7 +82,12 @@ import kill_switch, secrets_manager, credential_broker, quality_gate
 import claude_cli, waste, judge, experiment_router, decision_engine
 import agentic_coders
 import plan_stage
-import pipeline_contract
+try:
+    import pipeline_contract
+except ModuleNotFoundError:
+    class pipeline_contract:
+        original_request = staticmethod(lambda p: p)
+        wrap_prompt = staticmethod(lambda body, **kw: body)
 import task_artifacts
 import diff_compiler
 import parallel_gates, combined_gate, cache_gate_bypass, committee_bypass
