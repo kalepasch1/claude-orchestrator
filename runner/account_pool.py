@@ -42,6 +42,8 @@ COOLDOWN_MAX = int(os.environ.get("ORCH_ACCOUNT_COOLDOWN_MAX", str(6 * 3600)))
 EXHAUSTED_FLAG = os.path.join(HOME, "claude_exhausted.json")
 
 
+# Module-level cache for claude_exhausted(); avoids re-checking flag file/DB on every call.
+# Keys: t = timestamp of last check, v = cached boolean result.
 _EXH_CACHE = {"t": 0.0, "v": False}
 
 
