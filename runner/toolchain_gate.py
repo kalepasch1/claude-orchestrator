@@ -28,6 +28,14 @@ PROBES = [
     {"files": ["package.json", "tsconfig.json"], "cmd": ["npx", "tsc", "--version"], "name": "tsc"},
     {"files": ["requirements.txt", "setup.py", "pyproject.toml"], "cmd": ["python3", "--version"], "name": "python3"},
     {"files": ["Cargo.toml"], "cmd": ["cargo", "--version"], "name": "cargo"},
+    # Additional build tool probes added for broader coverage
+    {"files": ["yarn.lock"], "cmd": ["yarn", "--version"], "name": "yarn"},
+    {"files": ["pnpm-lock.yaml"], "cmd": ["pnpm", "--version"], "name": "pnpm"},
+    {"files": ["nuxt.config.ts", "nuxt.config.js"], "cmd": ["npx", "nuxi", "--version"], "name": "nuxt"},
+    {"files": ["next.config.js", "next.config.mjs", "next.config.ts"], "cmd": ["npx", "next", "--version"], "name": "next"},
+    {"files": ["vite.config.ts", "vite.config.js"], "cmd": ["npx", "vite", "--version"], "name": "vite"},
+    {"files": ["go.mod"], "cmd": ["go", "version"], "name": "go"},
+    {"files": ["Makefile"], "cmd": ["make", "--version"], "name": "make"},
 ]
 
 
@@ -145,8 +153,9 @@ def _queue_recovery(project_id, failures):
             "slug": f"toolchain-repair-{project_id[:8]}",
             "prompt": (f"The project's build toolchain has failures that must be fixed before "
                        f"any other tasks can run. Fix these issues:\n\n{errors}\n\n"
-                       f"Tools affected: {tool_names}. Ensure `npm install`, `npx tsc --version`, "
-                       f"and the project's build command all succeed after your fix."),
+                       f"Tools affected: {tool_names}. Ensure the relevant install command "
+                       f"(npm install / yarn install / pnpm install / pip install / cargo build) "
+                       f"and version checks all succeed after your fix."),
             "state": "QUEUED",
             "kind": "toolchain-repair",
             "material": True,
