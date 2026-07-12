@@ -562,6 +562,15 @@ async function renderChart() {
 }
 
 function alive(r: any) { return (Date.now() - new Date(r.last_seen).getTime()) < 60000 }
+
+async function restartRunner(host: string) {
+  try {
+    await $fetch('/api/runners/restart', { method: 'POST', body: { host } })
+    alert('Restart requested — ' + host + ' will respawn within ~1 min')
+  } catch (e: any) {
+    alert('Restart failed: ' + (e?.message || String(e)))
+  }
+}
 function fmtConf(c: any) { return c != null ? Math.round(Number(c) * 100) + '%' : '' }
 function confidenceLabel(c: any) {
   if (c == null) return 'not scored'
@@ -1326,6 +1335,11 @@ onBeforeUnmount(() => {
           <span class="text-slate-500 text-xs font-mono">{{ r.runner_id }}</span>
           <span class="flex-1"></span>
           <span class="text-slate-400 text-xs">{{ r.active_tasks }} active</span>
+          <button
+            class="ml-2 px-2 py-0.5 text-[10px] rounded bg-slate-700 hover:bg-slate-600 text-slate-300 transition-colors"
+            title="Request runner restart"
+            @click="restartRunner(r.hostname)"
+          >Restart</button>
         </div>
       </div>
 
