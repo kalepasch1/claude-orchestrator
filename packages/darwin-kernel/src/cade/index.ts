@@ -32,3 +32,72 @@ export {
   hashEmbedder,
   summarize,
 } from './vectors.ts';
+
+// --- frontier: determinations → settlement / capital / assurance / loop-closure ---
+export {
+  toOracleReading,
+  impliedOverturnProbability,
+  proposeEventCompression,
+  marginHaircutMultiplier,
+  type OracleReading,
+  type ChallengeLeg,
+  type EventPosition,
+  type CompressionLeg,
+  type CompressionResult,
+} from './settlement.ts';
+export {
+  machineCheck,
+  updateReliabilityFromOutcome,
+  precedentConcentration,
+  type LogicClause,
+  type MachineCheckResult,
+  type OutcomeEvent,
+  type PrecedentEdge,
+  type ConcentrationResult,
+} from './assurance.ts';
+export {
+  propagateAuthorityChange,
+  mineInstrumentGaps,
+  priceDeterminationService,
+  type StoredDetermination,
+  type PropagationResult,
+  type LegalEventLoss,
+  type InstrumentCoverage,
+  type InstrumentGap,
+  type ServiceTier,
+  type ServicePrice,
+} from './loop.ts';
+
+// --- frontier-2: interoperability, federation, finality, capital, doctrine ---
+export {
+  toDeterminationCredential,
+  verifyDeterminationCredential,
+  determinationSignature,
+  matchTemplate,
+  type DeterminationCredential,
+  type DeterminationTemplate,
+} from './credential.ts';
+export {
+  federatedDetermination,
+  screenOracleSources,
+  type LocalDetermination,
+  type FederatedResult,
+  type OracleSourceReading,
+  type OracleScreen,
+} from './federation.ts';
+export {
+  propagateFinality,
+  type FinalityNode,
+  type FinalityResult,
+} from './finality.ts';
+export {
+  precedentPricingAdjustmentBps,
+  optimizeCapitalTreatment,
+  type CapitalPosition,
+  type CapitalOptimization,
+} from './capital.ts';
+export {
+  mineDoctrineUpdates,
+  type DeterminationOutcome,
+  type DoctrineProposal,
+} from './doctrine.ts';

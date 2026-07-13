@@ -1,4 +1,5 @@
 <script setup lang="ts">
+definePageMeta({ layout: 'default' })
 // Portfolio health — one glance: runner uptime, per-app deploy state, RLS security, momentum, spend.
 const { data, pending, refresh } = await useFetch('/api/portfolio-health')
 const money = (n: any) => '$' + Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })

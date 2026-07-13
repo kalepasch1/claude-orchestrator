@@ -67,6 +67,8 @@
 </template>
 
 <script setup lang="ts">
+definePageMeta({ layout: 'default' })
+
 const busy = ref(false)
 const kpi = ref<any>(null)
 const approvals = ref<any[]>([])
@@ -77,7 +79,6 @@ const attestation = ref<any>(null)
 const attMeets = ref(false)
 
 function pct(x: number | undefined) { return x === undefined ? '—' : Math.round(x * 100) + '%' }
-
 async function safe<T>(p: Promise<T>, fallback: T): Promise<T> { try { return await p } catch { return fallback } }
 
 async function refreshAll() {
