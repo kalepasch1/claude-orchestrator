@@ -119,7 +119,26 @@ const APP_URLS: Record<string, string> = {
   'sustainable-barks': 'https://sustainable-barks.vercel.app',
   tomorrow: 'https://tomorrow.vercel.app',
 }
-const previewUrl = computed(() => APP_URLS[selectedApp.value] || 'https://apparently.vercel.app')
+// Branch-aware preview: Vercel deploys branch previews at [project]-git-[branch]-[owner].vercel.app
+// For main/master we use the canonical production URL; for other branches we try the branch preview pattern.
+const VERCEL_OWNER = 'kalepasch1s-projects'
+const APP_VERCEL_PROJECTS: Record<string, string> = {
+  apparently: 'apparently', beethoven: 'web-six-chi-76', darwn: 'darwn',
+  'pareto-2080': 'pareto-2080', racefeed: 'racefeed', 'santas-secret-workshop': 'santas-workshop',
+  smarter: 'smarter', 'sustainable-barks': 'sustainable-barks', tomorrow: 'tomorrow',
+}
+function branchPreviewUrl(app: string, branch: string): string {
+  const prodUrl = APP_URLS[app] || 'https://apparently.vercel.app'
+  if (branch === 'main' || branch === 'master') return prodUrl
+  // Vercel branch deploy URL format: [project]-git-[branch]-[owner].vercel.app
+  // Slashes in branch names become dashes
+  const proj = APP_VERCEL_PROJECTS[app] || app
+  const safeBranch = branch.replace(/\//g, '-')
+  return `https://${proj}-git-${safeBranch}-${VERCEL_OWNER}.vercel.app`
+}
+const previewUrl = computed(() => branchPreviewUrl(selectedApp.value, selectedBranch.value))
+// Auto-generated orchestrator working branch name
+const orchBranch = computed(() => `orch/${slug.value}/${selectedApp.value}`)
 // --- State ---
 const cap = computed(() => CAPS[slug.value] || { name: slug.value, domain: 'platform', status: 'unknown', maturity: 0, regulated: false, summary: '' })
 const insights = computed(() => DOMAIN_INSIGHTS[cap.value.domain] || DOMAIN_INSIGHTS.platform)
@@ -141,7 +160,7 @@ const recentTasks = ref<any[]>([])
 const sliders = ref<Record<string, number>>({})
 const showOverride = ref(false)
 const routeInfo = ref('')
-const selectedBranch = ref('main')
+const selectedBranch = ref('dev')
 const showConfig = ref(false)
 
 // Right panel — CADE insights
@@ -230,7 +249,7 @@ async function deployToProd() {
     deployLog.value.push('✓ All tests passing')
     deployLog.value.push('✓ No merge conflicts detected')
     deployStatus.value = 'deploying'
-    deployLog.value.push('Merging ' + selectedBranch.value + ' → main...')
+    deployLog.value.push('Merging ' + selectedBranch.value + ' → main (prod)...')
     await supabase.from('releases').insert({
       project: selectedApp.value, version: 'v' + Date.now().toString(36),
       deploy_status: 'deployed',
@@ -400,8 +419,8 @@ async function runCommand() {
     const pid = selectedProject.value || projects.value[0]?.id
     if (!pid) { terminalOutput.value = 'Error: No project selected'; return }
     const taskSlug = slug.value + '-' + Date.now().toString(36)
-    await supabase.from('tasks').insert({ project_id: pid, slug: taskSlug, prompt: terminalPrompt.value.trim(), kind: selectedKind.value, model: selectedModel.value, mode: selectedMode.value, state: 'QUEUED', note: 'source:' + slug.value + '-workspace;app:' + selectedApp.value })
-    terminalOutput.value = '✓ Queued: ' + taskSlug + '\n  Model: ' + modelLabel(selectedModel.value) + ' (auto)\n  Kind: ' + selectedKind.value + ' | Mode: ' + selectedMode.value + '\n  App: ' + selectedApp.value + '\n  Routing: ' + routeInfo.value
+    await supabase.from('tasks').insert({ project_id: pid, slug: taskSlug, prompt: terminalPrompt.value.trim(), kind: selectedKind.value, model: selectedModel.value, mode: selectedMode.value, state: 'QUEUED', note: 'source:' + slug.value + '-workspace;app:' + selectedApp.value + ';branch:' + selectedBranch.value })
+    terminalOutput.value = '✓ Queued: ' + taskSlug + '\n  Model: ' + modelLabel(selectedModel.value) + ' (auto)\n  Kind: ' + selectedKind.value + ' | Mode: ' + selectedMode.value + '\n  App: ' + selectedApp.value + '\n  Branch: ' + selectedBranch.value + '\n  Routing: ' + routeInfo.value
     terminalPrompt.value = ''; routeInfo.value = ''; loadData()
   } catch (e: any) { terminalOutput.value = 'Error: ' + (e.message || String(e)) }
   finally { terminalLoading.value = false }
@@ -487,14 +506,17 @@ watch(slug, () => { refreshInsights() })
           </div>
           <div class="flex items-center gap-2">
             <select v-model="selectedBranch" class="bg-white border border-gray-200 rounded px-2 py-1 text-[10px] text-gray-600 font-mono">
-              <option value="main">main</option><option value="dev">dev</option>
-              <option :value="'design/'+selectedApp+'-updates'">design/{{ selectedApp }}-updates</option>
+              <option value="dev">dev</option>
+              <option :value="orchBranch">{{ orchBranch }}</option>
               <option :value="'feature/'+selectedApp+'-redesign'">feature/{{ selectedApp }}-redesign</option>
+              <option :value="'design/'+selectedApp+'-updates'">design/{{ selectedApp }}-updates</option>
+              <option :value="'hotfix/'+selectedApp">hotfix/{{ selectedApp }}</option>
+              <option value="main" class="font-bold">main (prod)</option>
             </select>
             <button @click="showDeployPanel = !showDeployPanel"
               class="px-3 py-1 text-[10px] rounded font-medium transition-colors"
               :class="showDeployPanel ? 'bg-emerald-700 text-white' : 'bg-emerald-600 text-white hover:bg-emerald-700'">
-              {{ showDeployPanel ? '▼ Deploy' : '🚢 Deploy' }}
+              {{ showDeployPanel ? '▼ Merge' : '🚢 Merge → Prod' }}
             </button>
             <button @click="showInsights = !showInsights" class="px-2 py-1 text-[10px] border rounded" :class="showInsights ? 'bg-blue-50 text-blue-700 border-blue-200' : 'text-gray-500 border-gray-200'">
               {{ showInsights ? 'Hide' : 'Show' }} CADE
@@ -507,18 +529,19 @@ watch(slug, () => { refreshInsights() })
             <div class="flex items-center gap-3">
               <span class="text-xs text-gray-600">Deploy</span>
               <select v-model="selectedBranch" class="bg-white border border-gray-200 rounded px-2 py-1 text-[10px] font-mono text-gray-700">
-                <option value="main">main</option><option value="dev">dev</option>
-                <option :value="'design/'+selectedApp+'-updates'">design/{{ selectedApp }}-updates</option>
+                <option value="dev">dev</option>
+                <option :value="orchBranch">{{ orchBranch }}</option>
                 <option :value="'feature/'+selectedApp+'-redesign'">feature/{{ selectedApp }}-redesign</option>
+                <option :value="'design/'+selectedApp+'-updates'">design/{{ selectedApp }}-updates</option>
                 <option :value="'hotfix/'+selectedApp">hotfix/{{ selectedApp }}</option>
               </select>
-              <span class="text-gray-400 text-xs">→</span>
-              <span class="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] font-mono rounded">main (prod)</span>
+              <span class="text-gray-400 text-xs">→ merge to</span>
+              <span class="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] font-mono rounded font-semibold">main (prod)</span>
             </div>
             <button @click="deployToProd" :disabled="deployLoading || selectedBranch === 'main'"
               class="px-4 py-1.5 text-xs font-medium rounded-lg transition-all"
               :class="deployLoading ? 'bg-amber-500 text-white' : selectedBranch === 'main' ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700 text-white'">
-              {{ deployLoading ? (deployStatus === 'preflight' ? 'Pre-flight...' : 'Deploying...') : 'Deploy to Prod' }}
+              {{ deployLoading ? (deployStatus === 'preflight' ? 'Pre-flight...' : 'Merging...') : 'Merge → Prod' }}
             </button>
           </div>
           <div v-if="deployLog.length" class="mt-2 bg-gray-900 rounded-lg px-3 py-2 max-h-[120px] overflow-y-auto" style="font-family: 'JetBrains Mono', monospace;">
@@ -702,6 +725,7 @@ watch(slug, () => { refreshInsights() })
               </div>
             </div>
           </div>
+        </div>
         </div>
         <!-- TERMINAL — always visible at bottom of workspace -->
         <div class="flex-shrink-0 border-t border-gray-200 bg-gray-900" style="font-family: 'JetBrains Mono', monospace;">
