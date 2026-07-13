@@ -10,12 +10,13 @@ build red), the alarm fires and a review card is created instead of failing sile
 
 Env: VERCEL_TOKEN (required), VERCEL_TEAM_ID (for team-scoped projects). Fail-soft without them.
 """
-import os, sys, json, urllib.request, urllib.parse, urllib.error
+import os, sys, json, datetime, urllib.request, urllib.parse, urllib.error
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 TOKEN = os.environ.get("VERCEL_TOKEN")
 TEAM = os.environ.get("VERCEL_TEAM_ID")
+RED_ALERT_HOURS = int(os.environ.get("ORCH_DEPLOY_RED_ALERT_HOURS", "6"))
 
 
 def _latest_prod(project):
@@ -66,6 +67,64 @@ def _file_watch_issue(app, vercel_project, error):
         pass
 
 
+def _escalate_error_apps():
+    """File ops cards and auto-queue deployfix tasks for apps stuck in ERROR beyond threshold."""
+    try:
+        rows = db.select("deploy_health", {
+            "select": "app,last_deploy_state,updated_at",
+            "last_deploy_state": "eq.ERROR",
+        }) or []
+        now = datetime.datetime.now(datetime.timezone.utc)
+        today = now.strftime("%Y%m%d")
+        for r in rows:
+            app = r.get("app")
+            if not app:
+                continue
+            updated = r.get("updated_at")
+            if not updated:
+                continue
+            if isinstance(updated, str):
+                updated = updated.replace("Z", "+00:00")
+                try:
+                    updated = datetime.datetime.fromisoformat(updated)
+                except (ValueError, TypeError):
+                    continue
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=datetime.timezone.utc)
+            age_hours = (now - updated).total_seconds() / 3600
+            if age_hours < RED_ALERT_HOURS:
+                continue
+            # Ops card (dedupe by title)
+            title = f"Deploy ERROR red alert: {app}"
+            ex = db.select("approvals", {"select": "id", "project": f"eq.{app}",
+                                         "status": "eq.pending", "title": f"eq.{title}"}) or []
+            if not ex:
+                db.insert("approvals", {
+                    "project": app, "kind": "ops",
+                    "title": title,
+                    "why": f"{app} has been in deploy ERROR state for {age_hours:.1f}h (threshold: {RED_ALERT_HOURS}h). Immediate investigation required.",
+                    "value": f"Check Vercel build logs and recent commits for {app}.",
+                    "risk": "Production may be down or serving stale code.",
+                })
+            # Auto-queue deployfix task (dedupe by slug)
+            slug = f"deployfix-{app}-{today}"
+            ex_task = db.select("tasks", {"select": "id", "slug": f"eq.{slug}"}) or []
+            if not ex_task:
+                proj = db.select("projects", {"select": "id", "name": f"eq.{app}"}) or []
+                if proj:
+                    db.insert("tasks", {
+                        "slug": slug,
+                        "project_id": proj[0]["id"],
+                        "kind": "bugfix",
+                        "state": "QUEUED",
+                        "prompt": f"Deploy for {app} has been in ERROR for {age_hours:.1f}h. Investigate the Vercel build logs, identify the failing build, and fix the deployment. Check recent commits for breaking changes.",
+                        "base_branch": "main",
+                    })
+                    print(f"deploy_watch: auto-queued {slug}")
+    except Exception as e:
+        print(f"deploy_watch escalate: {e}")
+
+
 def run():
     if not TOKEN:
         print("deploy_watch: VERCEL_TOKEN unset; skipping"); return
@@ -98,6 +157,7 @@ def run():
                     "why": "A merge landed but Vercel has no matching successful production deploy. Check push + build."})
     except Exception as e:
         print(f"deploy_watch alarms: {e}")
+    _escalate_error_apps()
     print(f"deploy_watch: polled {seen} projects")
 
 

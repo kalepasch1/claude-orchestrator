@@ -2,6 +2,9 @@
   <div class="p-6">
     <h2 class="text-xl font-semibold mb-6">Canary Deploy Mesh</h2>
 
+    <!-- Deploy Error Banner -->
+    <DeployErrorBanner />
+
     <!-- Fleet Health Matrix -->
     <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 mb-6">
       <div class="flex items-center justify-between mb-3">
