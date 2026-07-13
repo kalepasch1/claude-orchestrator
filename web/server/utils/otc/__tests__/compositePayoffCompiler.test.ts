@@ -114,10 +114,44 @@ describe('Composite Payoff Compiler', () => {
       expect(result.instrument.type).toBe('spread');
     });
 
-    it('should generate unique instrument IDs', () => {
+    it('should generate deterministic instrument IDs (same input → same ID)', () => {
+      // Per server/utils conventions: no Date.now(), IDs are deterministic and reproducible.
       const riskSpec = createBasicRiskSpec();
       const result1 = composeProgram(riskSpec);
       const result2 = composeProgram(riskSpec);
+
+      expect(result1.instrument.id).toBe(result2.instrument.id);
+      expect(result1.instrument.id).toMatch(/AAPL-[a-z0-9]+/);
+    });
+
+    it('should generate different IDs for different underlying assets', () => {
+      const spec1 = createBasicRiskSpec({
+        vectors: [
+          {
+            underlying: 'AAPL',
+            type: 'equity',
+            strike: 150,
+            spot: 145,
+            maturity: 30,
+            notional: 100000,
+          } as RiskVector,
+        ],
+      });
+      const spec2 = createBasicRiskSpec({
+        vectors: [
+          {
+            underlying: 'MSFT',
+            type: 'equity',
+            strike: 150,
+            spot: 145,
+            maturity: 30,
+            notional: 100000,
+          } as RiskVector,
+        ],
+      });
+
+      const result1 = composeProgram(spec1);
+      const result2 = composeProgram(spec2);
 
       expect(result1.instrument.id).not.toBe(result2.instrument.id);
     });

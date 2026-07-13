@@ -79,6 +79,20 @@ export function generateRationale(
 }
 
 /**
+ * Deterministic hash function for reproducible IDs and random seeding.
+ * Never uses Date.now() or Math.random() — complies with server/utils convention.
+ */
+function deterministicHash(input: string): string {
+  let hash = 0;
+  for (let i = 0; i < input.length; i++) {
+    const char = input.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  return Math.abs(hash).toString(36).slice(0, 8);
+}
+
+/**
  * Deterministic hash-based seeded random for reproducible backtests.
  * Uses instrument type and underlying to seed, ensuring same results for same inputs.
  */
@@ -237,8 +251,13 @@ export function composeProgram(
     );
   }
 
+  // Deterministic ID generation: hash based on underlying, type, and vector config.
+  // No Date.now() or Math.random() — complies with server/utils conventions.
+  const idSeed = `${primaryVector.underlying}-${instrumentType}-${primaryVector.strike || 'noStrike'}-${primaryVector.spot}-${primaryVector.notional}`;
+  const seedHash = deterministicHash(idSeed);
+
   const instrument: Instrument = {
-    id: `${primaryVector.underlying}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    id: `${primaryVector.underlying}-${seedHash}`,
     type: instrumentType,
     underlying: primaryVector.underlying,
     payoff: {
