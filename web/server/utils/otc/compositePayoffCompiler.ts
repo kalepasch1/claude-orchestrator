@@ -49,10 +49,10 @@ export function selectHorizon(
   riskSpec: RiskSpec
 ): HorizonType {
   if (oneOffCost !== undefined && fundingCost !== undefined) {
-    const totalCarryCost = (fundingCost * (riskSpec.vectors[0]?.maturity || 1)) / 252;
-    const effectiveCarryCost = carry ? totalCarryCost - carry : totalCarryCost;
+    // Compare one-off cost against effective perpetual cost (funding carry + carry premium)
+    const effectivePerpetualCost = fundingCost + (carry || 0);
 
-    if (oneOffCost < effectiveCarryCost) {
+    if (oneOffCost < effectivePerpetualCost) {
       return 'discrete';
     }
     return 'perpetual';
