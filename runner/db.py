@@ -437,6 +437,34 @@ def claim_task(runner_id):
         s = str(t.get("slug") or "")
         return 1 if deprio_churn and (s.startswith("cont-") or s.startswith("batch-mech")) else 0
 
+
+    # Kind+age composite score: prioritize bugfixes and older tasks within the same
+    # jump-queue tier. Lower score = claimed sooner. Age gives a small boost (up to -10
+    # for tasks waiting 10+ days) so stale work doesn't starve behind fresh work of the
+    # same kind.
+    _KIND_WEIGHTS = {
+        "bugfix": 0, "test": 1, "cleanup": 2, "chore": 2, "docs": 3,
+        "mechanical": 3, "build": 4, "efficiency": 5, "research": 6, "self": 7,
+    }
+
+    def _kind_age_score(t):
+        kind_w = _KIND_WEIGHTS.get(str(t.get("kind") or "").lower(), 5)
+        created = t.get("created_at") or ""
+        age_boost = 0.0
+        if created:
+            try:
+                from datetime import datetime, timezone
+                # Parse ISO timestamp, compute age in hours
+                ts = created.replace("Z", "+00:00")
+                if "+" not in ts and ts[-1] != "Z":
+                    ts += "+00:00"
+                dt = datetime.fromisoformat(ts)
+                age_h = (datetime.now(timezone.utc) - dt).total_seconds() / 3600
+                age_boost = min(age_h / 24, 10)  # cap at 10 days
+            except Exception:
+                pass
+        return kind_w - age_boost
+
     thermal_rank = _thermal_rank_map()
     ev_rank = _ev_rank_map()
     recovery_backlog = (
@@ -558,6 +586,7 @@ def claim_task(runner_id):
                                _rework_rank(t),                                  # then quarantine-recovered work
                                _improvement_rank(t),                             # then drain improve-* work
                                _churn(t),                                        # real work before churn
+                               _kind_age_score(t),                                # kind+age: bugfixes first, older tasks boosted
                                _thermal_rank(t),                                 # EV/min thermal map
                                _task_priority(t),                                # EV/task priority when present
                                _ev_rank(t),                                      # controls.ev_ranking fallback
