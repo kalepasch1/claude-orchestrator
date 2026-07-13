@@ -8,11 +8,17 @@ Fast + safe: symlinks the main repo's node_modules into the ephemeral worktree (
 detected build (prefers typecheck when present — catches the TS/Nuxt errors that break Vercel — else the
 full build), with a timeout. Returns (ok, log). Auto-detects build_cmd from package.json and caches it on
 the project row.
+
+Impact prediction: optionally gates builds by expected impact before running expensive build checks.
+Prevents low-impact work from consuming build resources.
 """
 import os, sys, json, subprocess, tempfile, shutil, shlex
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import dependency_prewarm
+
+IMPACT_GATE_ENABLED = os.environ.get("ORCH_IMPACT_GATE_ENABLED", "false").lower() in ("true", "1", "yes")
+IMPACT_ADMISSION_THRESHOLD = float(os.environ.get("ORCH_IMPACT_ADMISSION_THRESHOLD", "50"))
 
 
 def _load_scripts(root):

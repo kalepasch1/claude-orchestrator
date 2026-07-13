@@ -404,10 +404,15 @@ class _PatternTransfer:
     def _project_profile(self, project_id):
         """Build a feature profile for a project from its outcomes."""
         try:
-            rows = db.select("outcomes", {
-                "project": "eq.%s" % project_id,
-                "state": "eq.DONE",
-                "select": "slug,diff,files_changed",
+            # merged_diffs is the only table carrying diff text + changed-file paths, and it
+            # holds merged work only (so no state filter is needed). Its `project` column is
+            # the project NAME, not the id, so resolve the id first.
+            prow = db.select("projects", {"id": "eq.%s" % project_id, "select": "name"}) or []
+            if not prow:
+                return {}
+            rows = db.select("merged_diffs", {
+                "project": "eq.%s" % prow[0].get("name"),
+                "select": "slug,diff,files",
                 "limit": "200",
                 "order": "created_at.desc",
             })
@@ -420,7 +425,7 @@ class _PatternTransfer:
 
             for r in rows:
                 # extract file extensions and directories from files_changed
-                fc = r.get("files_changed")
+                fc = r.get("files")
                 if fc:
                     if isinstance(fc, str):
                         try:
