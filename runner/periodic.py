@@ -280,6 +280,11 @@ def run_objective():
     import objective_optimizer; objective_optimizer.run()
 
 
+def run_credential_resolver():
+    """Auto-resolve credential_requests stuck at status=manual by checking runner env for available keys."""
+    import credential_auto_resolver; credential_auto_resolver.resolve_pending()
+
+
 def run_remediate():
     """Drive BLOCKED to zero: requeue transient/conflict, escalate+sharpen review/no-op fails, human-card the rest."""
     import auto_remediate; auto_remediate.run()
@@ -644,6 +649,7 @@ JOBS = {
     "committeeminutes": run_committeeminutes,
     "committeekg": run_committeekg,
     "committeemeta": run_committeemeta,
+    "credresolver": run_credential_resolver,
     "remediate": run_remediate,
     "quarantine": run_quarantine,
     "selfcheck": run_selfcheck,
@@ -694,7 +700,7 @@ if __name__ == "__main__":
         "contcompact", "backlogcompact",
         "bizradar", "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",
         "stripe", "ownerreport", "worktreegc", "remediate", "selfcheck",
-        "quarantine", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain",
+        "quarantine", "credresolver", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain",
         "release_kpi.py", "integrate_kpi.py", "fleet_control.py",
     }
     if job not in _SAFE_WHEN_PAUSED:
