@@ -91,7 +91,7 @@ async function productize(proposal: any) {
   if (!slug || !target) { alert('Missing capability slug or target app'); return }
   gtmLoading.value[proposal.id] = true
   try {
-    await $fetch('/api/go-to-market', {
+    await authedFetch('/api/go-to-market', {
       method: 'POST',
       body: { slug, target_project: target, product_name: product },
     })
@@ -207,6 +207,20 @@ const sessionRunning = ref<Record<string, boolean>>({})
 const newTask = reactive({ project_id: '', slug: '', prompt: '', kind: 'build', mode: 'improvement' })
 const queueLoading = ref(false)
 const newTxn = reactive({ id: '', name: '', description: '' })
+
+// ── authed fetch helper ───────────────────────────────────────────────────
+// Wraps $fetch to always include the Supabase Bearer token so the server
+// middleware doesn't reject the request with "Missing access token".
+async function authedFetch<T = any>(url: string, opts: Parameters<typeof $fetch>[1] = {}): Promise<T> {
+  const { data: { session } } = await supabase.auth.getSession()
+  return $fetch<T>(url, {
+    ...opts,
+    headers: {
+      ...(opts.headers || {}),
+      ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}),
+    },
+  })
+}
 
 // ── NL analytics ──────────────────────────────────────────────────────────
 const nlQuery = ref('')
@@ -335,8 +349,8 @@ async function loadAll() {
     supabase.from('resource_events').select('kind,detail,action,created_at').eq('kind', 'prune').order('created_at', { ascending: false }).limit(10),
     supabase.from('resource_events').select('value,detail,action,created_at').eq('kind', 'savings').order('created_at', { ascending: false }).limit(200),
     loadQueueCounters(),
-    $fetch('/api/fleet/proof-packs').catch((e: any) => ({ commonBrain: [], receipts: [], error: e?.message || String(e) })),
-    $fetch('/api/fleet/resilience').catch((e: any) => ({ mesh: null, db: null, spoolDepth: 0, error: e?.message || String(e) })),
+    authedFetch('/api/fleet/proof-packs').catch((e: any) => ({ commonBrain: [], receipts: [], error: e?.message || String(e) })),
+    authedFetch('/api/fleet/resilience').catch((e: any) => ({ mesh: null, db: null, spoolDepth: 0, error: e?.message || String(e) })),
   ])
   tasks.value = t.data || []; approvals.value = (a.data || []).filter(isOperatorApproval)
   outcomes.value = o.data || []; runners.value = r.data || []; projects.value = sortProjects(p.data || [])
@@ -377,7 +391,7 @@ async function decide(id: string, status: 'approved' | 'denied', reload = true) 
   const approver = user.value?.email || 'dashboard'
 
   try {
-    const res = await $fetch<any>('/api/approvals/decide', {
+    const res = await authedFetch<any>('/api/approvals/decide', {
       method: 'POST',
       body: { id, status, approver },
     })
@@ -416,7 +430,7 @@ async function queueTask() {
 async function triggerReplay(run: any) {
   const proj = projects.value.find(p => p.name === run.project)
   if (!proj) { alert('Project not found in projects list'); return }
-  await $fetch('/api/replay', { method: 'POST', body: { run_id: run.id, project_id: proj.id } })
+  await authedFetch('/api/replay', { method: 'POST', body: { run_id: run.id, project_id: proj.id } })
   loadAll()
 }
 
@@ -565,7 +579,7 @@ function alive(r: any) { return (Date.now() - new Date(r.last_seen).getTime()) <
 
 async function restartRunner(host: string) {
   try {
-    await $fetch('/api/runners/restart', { method: 'POST', body: { host } })
+    await authedFetch('/api/runners/restart', { method: 'POST', body: { host } })
     alert('Restart requested — ' + host + ' will respawn within ~1 min')
   } catch (e: any) {
     alert('Restart failed: ' + (e?.message || String(e)))

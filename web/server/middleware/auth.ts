@@ -16,7 +16,7 @@ import { createError, getCookie, getHeader, parseCookies, defineEventHandler } f
 
 const ACCESS_COOKIE = 'sb-access-token'
 
-const DEFAULT_OPS_EMAILS = 'kalepasch@gmail.com,kale@smrter.us'
+const DEFAULT_OPS_EMAILS = 'kalepasch@gmail.com,kale@smrter.us,kale@heretomorrow.us'
 
 function getAllowedEmails(): Set<string> {
   const raw = process.env.OPS_EMAILS || DEFAULT_OPS_EMAILS
