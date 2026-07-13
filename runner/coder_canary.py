@@ -141,6 +141,13 @@ def _next_slug(coder, existing):
 
 
 def _insert_task(row):
+    """Insert a canary task, falling back to fewer columns on schema mismatch.
+
+    The tasks table schema may lag behind code deploys (e.g. a new 'sensitivity'
+    or 'force_coder' column hasn't been migrated yet). Rather than hard-failing,
+    try progressively smaller column sets so canary routing isn't blocked by a
+    pending migration.
+    """
     variants = [
         row,
         {k: v for k, v in row.items() if k != "sensitivity"},
