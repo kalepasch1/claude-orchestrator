@@ -679,3 +679,88 @@ def run():
 if __name__ == "__main__":
     import json
     print(json.dumps(run(), indent=2, default=str))
+
+# ── dependency-aware release orchestration ────────────────────────────────────
+#
+# When apps share a capability (e.g. a shared library, an API contract), a
+# breaking change must ship to the dependency BEFORE the dependent. These
+# functions take an explicit dependency graph and a set of apps with pending
+# changes, then return a safe release order via topological sort.
+
+
+class CyclicDependencyError(Exception):
+    """Raised when the dependency graph contains a cycle."""
+
+
+def _topo_sort(graph):
+    """Kahn's algorithm. Returns a list in dependency-first order.
+
+    *graph* maps each node to its list of dependencies (nodes it depends ON).
+    Only nodes present as keys are considered; dependency targets that are not
+    keys themselves are treated as having no dependencies of their own.
+
+    Raises CyclicDependencyError if the graph contains a cycle.
+    """
+    # Build adjacency (dependency -> list of dependents) and in-degree.
+    all_nodes = set(graph)
+    for deps in graph.values():
+        all_nodes.update(deps)
+    adjacency = {n: [] for n in all_nodes}
+    in_degree = {n: 0 for n in all_nodes}
+    for node, deps in graph.items():
+        for dep in deps:
+            adjacency[dep].append(node)
+            in_degree[node] += 1
+
+    queue = sorted(n for n in all_nodes if in_degree[n] == 0)
+    order = []
+    while queue:
+        node = queue.pop(0)
+        order.append(node)
+        for dependent in sorted(adjacency[node]):
+            in_degree[dependent] -= 1
+            if in_degree[dependent] == 0:
+                queue.append(dependent)
+
+    if len(order) != len(all_nodes):
+        remaining = sorted(all_nodes - set(order))
+        raise CyclicDependencyError(
+            f"dependency cycle among: {', '.join(remaining)}"
+        )
+    return order
+
+
+def sequence_releases(dep_graph, changed_apps):
+    """Return an ordered list of release steps for *changed_apps* respecting *dep_graph*.
+
+    Parameters
+    ----------
+    dep_graph : dict[str, list[str]]
+        Maps each app to the apps it depends on.  Apps not in the dict are
+        assumed to have no dependencies.
+    changed_apps : set[str] | list[str]
+        The apps that have pending changes and need to be released.
+
+    Returns
+    -------
+    list[str]
+        Apps in safe deploy order (dependencies before dependents).  Only apps
+        in *changed_apps* appear, but ordering respects the full graph.
+
+    Raises
+    ------
+    CyclicDependencyError
+        If *dep_graph* contains a cycle (even among unchanged apps).
+    """
+    changed = set(changed_apps)
+    if not changed:
+        return []
+
+    # Ensure every changed app appears in the graph so topo_sort sees it.
+    full_graph = {app: list(deps) for app, deps in dep_graph.items()}
+    for app in changed:
+        if app not in full_graph:
+            full_graph[app] = []
+
+    total_order = _topo_sort(full_graph)
+    return [app for app in total_order if app in changed]
