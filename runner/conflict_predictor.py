@@ -15,9 +15,33 @@ _log = _log_mod.get("conflict_predictor")
 _FILE_RE = re.compile(r'[\w/.-]+\.(?:py|ts|js|go|rs|java|tsx|jsx|css|html|sql|yaml|yml|json|toml)')
 
 _ENABLED = os.environ.get("ORCH_CONFLICT_PREDICTOR_ENABLED", "true").lower() == "true"
-_THRESHOLD = float(os.environ.get("ORCH_CONFLICT_THRESHOLD", "0.75"))
+# Default 0.95 — effectively disabled for worktree-isolated execution.
+# Dynamic: refreshed from fleet_config every 5 min via _get_threshold().
+_THRESHOLD = float(os.environ.get("ORCH_CONFLICT_THRESHOLD", "0.95"))
+_threshold_last_refresh = 0.0
+_THRESHOLD_REFRESH_S = 300.0
 
 _lock = threading.Lock()
+
+
+def _get_threshold():
+    """Return current conflict threshold, refreshing from fleet_config every 5 min."""
+    global _THRESHOLD, _threshold_last_refresh
+    now = time.time()
+    if now - _threshold_last_refresh < _THRESHOLD_REFRESH_S:
+        return _THRESHOLD
+    try:
+        import db
+        rows = db.select("fleet_config", {"select": "value", "key": "eq.ORCH_CONFLICT_THRESHOLD"})
+        if rows and rows[0].get("value") is not None:
+            raw = rows[0]["value"]
+            if isinstance(raw, str):
+                raw = raw.strip(chr(34))
+            _THRESHOLD = float(raw)
+    except Exception:
+        pass
+    _threshold_last_refresh = now
+    return _THRESHOLD
 _stats = {
     "conflicts_detected": 0,
     "defers_suggested": 0,
@@ -87,20 +111,20 @@ def check_conflicts(task):
         all_overlaps = sorted(set(all_overlaps))
 
         with _lock:
-            if max_overlap > _THRESHOLD:
+            if max_overlap > _get_threshold():
                 _stats["conflicts_detected"] += 1
                 _stats["defers_suggested"] += 1
                 return {
                     "conflicts": all_overlaps,
                     "action": "defer",
-                    "reason": f"Jaccard overlap {max_overlap:.2f} exceeds threshold {_THRESHOLD}; overlapping files: {', '.join(all_overlaps[:10])}",
+                    "reason": f"Jaccard overlap {max_overlap:.2f} exceeds threshold {_get_threshold()}; overlapping files: {', '.join(all_overlaps[:10])}",
                 }
             elif max_overlap > 0:
                 _stats["conflicts_detected"] += 1
                 return {
                     "conflicts": all_overlaps,
                     "action": "proceed",
-                    "reason": f"low overlap {max_overlap:.2f} (threshold {_THRESHOLD}); overlapping files: {', '.join(all_overlaps[:10])}",
+                    "reason": f"low overlap {max_overlap:.2f} (threshold {_get_threshold()}); overlapping files: {', '.join(all_overlaps[:10])}",
                 }
             else:
                 return {"conflicts": [], "action": "proceed", "reason": "no file overlap"}
