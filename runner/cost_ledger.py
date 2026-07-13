@@ -40,6 +40,7 @@ def record(project, slug, model, logpath):
     cost = itok / 1e6 * pin + otok / 1e6 * pout
     row = {"ts": time.time(), "project": project, "slug": slug, "model": model,
            "input_tokens": itok, "output_tokens": otok, "usd": round(cost, 4)}
+    os.makedirs(os.path.dirname(LEDGER), exist_ok=True)
     with open(LEDGER, "a") as f:
         f.write(json.dumps(row) + "\n")
     return row
