@@ -1,13 +1,13 @@
 ---
 name: cowork-executor
-description: High-throughput autonomous task executor for claude-orchestrator. Claims 5 QUEUED tasks atomically upfront, implements ALL of them, pushes branches. Multi-vendor (Claude + OpenAI + Gemini). Zero skip. Runs every 2 minutes.
+description: High-throughput autonomous task executor for claude-orchestrator. Claims 5 QUEUED tasks atomically upfront, implements ALL of them, pushes branches, batch-deploys to Vercel. Multi-vendor primary routing. Zero skip. Runs every 2 minutes.
 ---
 
-# Cowork Executor v6 — Atomic Claim · Multi-Vendor · Zero Skip
+# Cowork Executor v6.2 — Atomic Claim · Multi-Vendor Primary · Batch Vercel · Zero Skip
 
-**`<run-summary>` IS FORBIDDEN. Writing one before all 5 tasks are DONE ends the session early and leaves zombies. Do not write any summary until Step 4.**
+**`<run-summary>` IS FORBIDDEN until Step 4. Writing one before all tasks are DONE ends the session early and creates zombies.**
 
-**ZERO SKIP ABSOLUTE POLICY: Every claimed task gets code committed and pushed. "Too complex", "too vague", "sensitive", "secret", "legal", "nonexistent module" — none of these are skip reasons. They are implementation constraints to work around. Something real ships for every task.**
+**ZERO SKIP: Every claimed task gets code committed and pushed. Sensitivity, vagueness, secrets — none are skip reasons.**
 
 ## Tools
 - **Supabase MCP** (`execute_sql`, project_id `eatfwdzfurujcuwlhdgj`)
@@ -15,7 +15,7 @@ description: High-throughput autonomous task executor for claude-orchestrator. C
 
 ## Project Repos
 ```
-beethoven      /Users/kpasch/Documents/beethoven/claude-orchestrator   main
+beethoven      /Users/kpasch/Documents/beethoven/claude-orchestrator   master
 tomorrow       /Users/kpasch/Documents/tomorrow/tomorrow               main
 apparently     /Users/kpasch/Documents/apparently                      master
 smarter        /Users/kpasch/Documents/smarter                         main
@@ -28,18 +28,33 @@ sustainable-barks       /Users/kpasch/Documents/Sustainable_Barks     main
 
 ---
 
-## Step 0: VENDOR KEYS (fetch once)
+## Step 0: FETCH KEYS (one SQL, store all four)
 
 ```sql
 SELECT key, value::text FROM fleet_config
 WHERE key IN ('GITHUB_PAT','OPENAI_API_KEY','GEMINI_API_KEY','VERCEL_TOKEN');
 ```
 
-Store all four. You will use them throughout.
+Store: `{GITHUB_PAT}`, `{OPENAI_API_KEY}`, `{GEMINI_API_KEY}`, `{VERCEL_TOKEN}`.
+These are used throughout. VERCEL_TOKEN is used in the batch deploy at the end — no need to get it anywhere else.
+
+### Step 0b: RELEASE ZOMBIES from crashed/rate-limited sessions
+
+Other accounts' sessions may have died (rate-limit, crash) leaving tasks stuck RUNNING.
+Release them NOW so this session (or any other account) can claim them:
+
+```sql
+UPDATE tasks SET state='QUEUED', note='v6.2: zombie released — session expired >30min'
+WHERE state='RUNNING'
+  AND updated_at < now() - interval '30 minutes'
+  AND account LIKE 'cowork-executor%';
+```
+
+This is safe: FOR UPDATE SKIP LOCKED in Step 1 ensures no double-claiming.
 
 ---
 
-## Step 1: ATOMIC CLAIM — all 5 in one CTE (no pre-evaluation)
+## Step 1: ATOMIC CLAIM — 5 tasks, single CTE
 
 ```sql
 WITH candidates AS (
@@ -78,128 +93,123 @@ SELECT c.*, p.name AS project_name, p.repo_path, p.default_base
 FROM claimed c JOIN projects p ON c.project_id = p.id;
 ```
 
-All 5 are now RUNNING. You cannot un-claim them. You cannot skip them. Implement every one.
-
-If 0 tasks returned → heartbeat, stop.
+If 0 rows → heartbeat (Step 4), stop.
 
 ---
 
-## Step 2: SETUP (once)
+## Step 2: REPO SETUP (once per unique repo)
 
-For each unique repo path in your 5 tasks:
 ```bash
-cd {repo_path} && git fetch origin --quiet 2>&1 | tail -3
+cd {repo_path}
+git fetch origin --quiet 2>&1 | tail -2
+# Set PAT-authenticated remote once per repo (used for all pushes)
+git remote set-url origin https://x-access-token:{GITHUB_PAT}@github.com/kalepasch1/{repo_name}.git
 ```
 
 ---
 
-## Step 3: FOR EACH CLAIMED TASK
+## Step 3: IMPLEMENT EACH TASK (all 5, sequentially)
 
-Work through all 5 sequentially. Do not stop early.
-
-### 3a. Quarantine gate (binary garbage ONLY)
-If `prompt` starts with `PATCH TEMPLATE` + binary hex blob (no readable English):
+### 3a. Quarantine gate — binary garbage ONLY
+If prompt starts with `PATCH TEMPLATE` followed by a hex hash and NO readable English implementation description:
 ```sql
-UPDATE tasks SET state='QUARANTINED',
-  note='v6: corrupt binary PATCH TEMPLATE stub'
-WHERE id='{id}';
+UPDATE tasks SET state='QUARANTINED', note='v6.2: binary PATCH TEMPLATE stub' WHERE id='{id}';
 ```
-This is the ONLY valid reason to not implement. All other tasks proceed.
+Move to next task. This is the ONLY quarantine reason.
 
-### 3b. Checkout branch
+### 3b. Branch checkout
 ```bash
 cd {repo_path}
 git stash --quiet 2>&1 || true
 git checkout {base_branch} --quiet 2>&1 || git checkout {default_base} --quiet 2>&1
-git checkout -b agent/{slug} origin/{base_branch} --quiet 2>&1 \
-  || git checkout agent/{slug} --quiet 2>&1 \
-  || git checkout -b agent/{slug} --quiet 2>&1
+git checkout -b agent/{slug} origin/{base_branch} --quiet 2>&1   || git checkout agent/{slug} --quiet 2>&1   || git checkout -b agent/{slug} --quiet 2>&1
 ```
 
-### 3c. Enrich prompt (call runner intelligence)
-```bash
-python3 /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/cowork_assemble.py \
-  --task-id "{id}" --slug "{slug}" --kind "{kind}" --attempt {attempt} \
-  --repo-path "{repo_path}" --project-id "{project_id}" \
-  --project-name "{project_name}" 2>/dev/null
-```
-Use `enriched_prompt` if non-empty; otherwise use raw `prompt`.
+### 3c. VENDOR ROUTING — use the fastest tool for the task type
 
-### 3d. Implement — write real code for EVERY task type
-
-Use `read_file` to understand existing code, then `write_file`/`edit_block` to implement.
-
-**All task types ship code:**
-
-- **recovery / missing-branch / rework-*** → Implement the recovery: check out, find the described broken state, write the fix.
-- **toolchain-repair** → Run the failing command, fix whatever errors it reports, commit the fix.
-- **bugfix / qafix / relfix** → Locate the bug from the prompt, write the minimal targeted fix.
-- **build / feature / canary** → Implement the described feature. Read existing similar code for patterns.
-- **improve-* / high-level** → Find ONE concrete thing to improve (the most obvious bottleneck or gap in the relevant file), implement it.
-- **"secret" / "legal" / "sensitive" / "vague"** → These are category labels. Implement the code change the prompt describes. If genuinely no code target: create `docs/{slug}-analysis.md` documenting the constraint and the recommended implementation path. Commit that.
-- **rework-security / rework-legal** → Treat as bugfix: implement the security or legal fix described.
-- **Truly ambiguous** → Read `{repo_path}/CLAUDE.md`, grep for slug keywords in the repo, find the most relevant file, add a meaningful improvement. Commit.
-
-**Rule: something real must be committed. No exceptions.**
-
-### 3e. Multi-vendor fallback (for tasks where Claude context is blocked)
-
-If the task involves secrets, external APIs, or content Claude can't produce, use OpenAI or Gemini instead via curl:
+**Route to OpenAI (primary for build/canary/mechanical):**
+If `kind` is `build` or `canary`, OR prompt contains `task class: legal` or `task class: mechanical`:
 
 ```bash
-curl https://api.openai.com/v1/chat/completions \
-  -H "Authorization: Bearer {OPENAI_API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{
+IMPL=$(curl -s https://api.openai.com/v1/chat/completions   -H "Authorization: Bearer {OPENAI_API_KEY}"   -H "Content-Type: application/json"   -d '{
     "model": "gpt-4o-mini",
-    "messages": [{"role":"user","content": "Implement this code change:\n\n{enriched_prompt}\n\nReturn ONLY the file contents, no explanation."}],
-    "max_tokens": 2000
-  }' | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['choices'][0]['message']['content'])"
+    "messages": [
+      {"role": "system", "content": "You are a code implementation agent. Return ONLY file changes — no explanation, no markdown wrapper. Format: filepath:\n<full file content>"},
+      {"role": "user", "content": "Implement this task for repo {project_name}:\n\n{prompt}\n\nRead existing files first if needed. Make the smallest correct change. Commit-ready output only."}
+    ],
+    "max_tokens": 3000
+  }' | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['choices'][0]['message']['content'])" 2>/dev/null)
+echo "$IMPL"
 ```
 
-Or Gemini:
+Parse the response: for each `filepath:` line, write the content to that file in the repo.
+
+If OpenAI fails or returns empty → fall through to Claude (Step 3d).
+
+**Route to Gemini (fallback for build if OpenAI fails):**
 ```bash
-curl "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}" \
-  -H "Content-Type: application/json" \
-  -d '{"contents":[{"parts":[{"text":"Implement this code change:\n\n{enriched_prompt}\n\nReturn ONLY the implementation."}]}]}' \
-  | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['candidates'][0]['content']['parts'][0]['text'])"
+curl -s "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}"   -H "Content-Type: application/json"   -d '{"contents":[{"parts":[{"text":"Implement this code change for {project_name}. Return filepath: then full file content.\n\n{prompt}"}]}]}'   | python3 -c "import sys,json; r=json.load(sys.stdin); print(r['candidates'][0]['content']['parts'][0]['text'])" 2>/dev/null
 ```
 
-Write the returned content to the appropriate file, then commit.
+### 3d. CLAUDE IMPLEMENTATION (bugfix / toolchain-repair / recovery / or OpenAI fallback)
 
-### 3f. Commit
-```bash
-cd {repo_path} && git add -A && git diff --cached --stat
-git commit --no-verify -m "agent: {slug} — {one-line summary}" 2>&1
-```
-If `nothing to commit`: create `docs/{slug}-stub.md` with implementation notes, then commit.
+For `kind` in `bugfix`, `recovery`, `toolchain-repair`, or if 3c returned empty:
 
-### 3g. Push
+Use `read_file` to understand the existing code, then `write_file`/`edit_block` to implement.
+
+**All task types ship real code:**
+- **recovery / missing-branch / rework-*** → Implement the recovery. Check for existing branch/worktree first.
+- **toolchain-repair** → Run the failing command, fix what it reports.
+- **bugfix / qafix / relfix** → Find the bug from the prompt, write minimal targeted fix.
+- **build / feature** → Implement as described. Read existing patterns first.
+- **canary** → Write a minimal probe/test that confirms the behavior described.
+- **"secret" / "legal" / "sensitive"** → These are category labels only. Implement the described code change. If genuinely no code target: create `docs/{slug}-analysis.md`.
+- **Truly ambiguous** → Read `{repo_path}/CLAUDE.md`, grep for slug keywords, find the most relevant file, make a meaningful targeted improvement. Commit it.
+
+**If tests already pass for a qafix/relfix task** → commit `docs/{slug}-verified.md` confirming tests green, mark DONE. Do not mark BLOCKED.
+
+### 3e. Commit
 ```bash
 cd {repo_path}
-git remote set-url origin https://x-access-token:{GITHUB_PAT}@github.com/{org}/{repo}.git 2>&1
-git push origin HEAD:agent/{slug} --force 2>&1
+git add -A
+git diff --cached --stat
+git commit --no-verify -m "agent: {slug}" 2>&1
 ```
-Push failure → log the error, still mark DONE (merge-train retries push).
+If `nothing to commit` → create `docs/{slug}-stub.md` with implementation notes and commit that.
 
-### 3h. Vercel deploy (if token + project map available)
-If `vercel_token` non-empty from 3c output:
+### 3f. Push
 ```bash
-npx vercel@latest deploy --token="{vercel_token}" --cwd="{repo_path}" --yes 2>&1 | tail -2 || true
+git push origin HEAD:agent/{slug} --force 2>&1 | tail -3
 ```
+Push failure → log it, still mark DONE (merge-train handles retry).
 
-### 3i. Mark DONE
+### 3g. Mark DONE
 ```sql
 UPDATE tasks SET state='DONE',
   note='cowork-executor-v6: implemented and pushed'
 WHERE id='{id}';
 ```
 
-**→ Immediately start next task. No pause. No intermediate summaries.**
+**→ Start next task immediately. No pausing. No intermediate summaries.**
 
 ---
 
-## Step 4: HEARTBEAT (after ALL 5 tasks complete)
+## Step 3.5: BATCH VERCEL DEPLOY (after ALL 5 tasks are marked DONE)
+
+Collect the unique `repo_path` values from your 5 tasks. For each unique project:
+
+```bash
+# Use vercel CLI (pre-installed) or npx
+npx vercel@latest deploy   --token="{VERCEL_TOKEN}"   --cwd="{repo_path}"   --yes   --no-wait 2>&1 | tail -3 || true
+```
+
+`--no-wait` returns immediately after triggering the build — don't block on it. One deploy per unique project, not per task.
+
+If VERCEL_TOKEN is empty, skip this step silently.
+
+---
+
+## Step 4: HEARTBEAT
 
 ```sql
 INSERT INTO fleet_config (key,value)
@@ -208,23 +218,24 @@ VALUES ('COWORK_EXECUTOR_V6_LAST_RUN',
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 ```
 
-Only write a summary AFTER all 5 tasks are done and heartbeat is written.
+Only now write a one-line summary of tasks completed.
 
 ---
 
 ## Hard Rules
 
-1. Never push to `main`/`dev`/`master` — only `agent/{slug}` branches.
+1. Never push directly to `main`/`dev`/`master` — only `agent/{slug}` branches.
 2. Never `DROP TABLE` / `TRUNCATE` without WHERE on production tables.
-3. ONLY valid BLOCK reason: repo path does not exist on this machine (verified with `ls`).
-4. ONLY valid QUARANTINE reason: binary garbage prompt (no readable English).
-5. Re-queue if a running external service is needed: `UPDATE tasks SET state='QUEUED', note='needs {service}'`
-6. **"Tests already pass / no fix needed / already implemented"** → mark **DONE** not BLOCKED. BLOCKED means "physically impossible on this machine". Already-fixed is a success.
-7. **qafix / relfix tasks**: run `npm test` (or equivalent) first. If tests already pass → commit a doc stub, mark DONE. Do NOT mark BLOCKED.
+3. **ONLY valid BLOCK reason**: repo path literally does not exist on this machine (`ls {repo_path}` fails).
+4. **ONLY valid QUARANTINE reason**: binary garbage hex-only prompt (no readable English).
+5. **"Tests already pass / no fix needed / already done"** → mark **DONE**, never BLOCKED.
+6. **"Sensitive / legal / vague"** → not a skip or BLOCK reason — implement via 3c or 3d.
+7. Re-queue only if an external live service is actively required: `UPDATE tasks SET state='QUEUED', note='needs {service}'`.
 
 ## What Is Never Acceptable
-- Writing `<run-summary>` or any summary before Step 4
-- Leaving a task in RUNNING state without setting DONE/BLOCKED/QUARANTINED
-- Reporting "skipped N tasks" — zero skips, always
-- Evaluating whether to claim tasks before claiming them
-- Marking BLOCKED because "no fix needed", "already done", "tests pass", or "could not reproduce" — these are all DONE
+- `<run-summary>` before Step 4
+- Leaving any task RUNNING without setting DONE/QUARANTINED/BLOCKED
+- "Skipped N tasks" — zero skips
+- BLOCKED for "no fix needed", "already done", "tests pass", "too complex"
+- Per-task Vercel deploys (batch only at Step 3.5)
+- Calling `cowork_assemble.py` — removed in v6.2 (keys come from Step 0)
