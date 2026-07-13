@@ -45,7 +45,23 @@ is_live_runner() {
   if [[ -z "$pid" ]]; then
     return 1
   fi
-  ps -p "$pid" >/dev/null 2>&1
+  if ! ps -p "$pid" >/dev/null 2>&1; then
+    return 1
+  fi
+  # WEDGEFIX-B-WATCHDOG
+  prog="$CLAUDE_ORCH_HOME/runner.progress"
+  stall="${ORCH_RUNNER_STALL_SECONDS:-1800}"
+  if [[ -f "$prog" ]]; then
+    now="$(date +%s)"
+    mtime="$(stat -f %m "$prog" 2>/dev/null || stat -c %Y "$prog" 2>/dev/null)"
+    if [[ -n "$mtime" ]] && (( now - mtime > stall )); then
+      echo "[keepalive] runner $pid wedged: no progress $(( now - mtime ))s (>${stall}s) — restarting $(date)" >> "$RUNNER_LOG"
+      kill -9 "$pid" 2>/dev/null
+      rm -f "$LOCK_FILE"
+      return 1
+    fi
+  fi
+  return 0
 }
 
 stay_resident() {

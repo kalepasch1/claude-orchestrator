@@ -2494,12 +2494,23 @@ def _block_or_retry(t, note):
         return "block"
 
 
+def _touch_progress():
+    # WEDGEFIX-B-PROGRESS
+    try:
+        _pf = os.path.join(os.environ.get("CLAUDE_ORCH_HOME", "."), "runner.progress")
+        open(_pf, "a").close()
+        os.utime(_pf, None)
+    except Exception:
+        pass
+
+
 def _run_task_safe(t):
     """Wrapper so an unhandled exception in run_task can NEVER leave a task stuck in RUNNING
     (which would leak a zombie, drain the queue, and defeat priority ordering). On any failure
     the task is auto-requeued if transient, else marked BLOCKED with the error captured."""
     try:
         run_task(t)
+        _touch_progress()  # WEDGEFIX-B-PROGRESS
     except Exception as e:
         try:
             import traceback
@@ -2771,6 +2782,7 @@ def main():
                         pass  # skip claiming this cycle
                     else:
                         t = db.claim_task(RUNNER_ID)
+                        _touch_progress()  # WEDGEFIX-B-PROGRESS
                     if t:
                         print(f"[claim] {t.get('slug','')} (project={t.get('project_id','?')[:8]}) active={len(active)+1}/{eff_limit}", flush=True)
                         # REUSE-FIRST: adapt an already-solved implementation instead of rebuilding

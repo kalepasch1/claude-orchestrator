@@ -183,11 +183,15 @@ async def _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, t
 
 def _run_agent_sdk(prompt, model, cwd, runenv, project, max_turns, timeout):
     """Synchronous wrapper — safe to call from the runner's daemon threads."""
+    # WEDGEFIX-A-SDK-TIMEOUT
     loop = asyncio.new_event_loop()
     try:
-        return loop.run_until_complete(
-            _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, timeout)
-        )
+        _coro = _run_agent_sdk_async(prompt, model, cwd, runenv, project, max_turns, timeout)
+        if timeout:
+            _coro = asyncio.wait_for(_coro, timeout=timeout)
+        return loop.run_until_complete(_coro)
+    except asyncio.TimeoutError:
+        raise subprocess.TimeoutExpired(cmd="claude-agent-sdk", timeout=timeout)
     finally:
         loop.close()
 
