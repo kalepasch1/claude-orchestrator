@@ -875,10 +875,94 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- dashboard -->
-    <div v-else class="max-w-5xl mx-auto px-5 py-6">
+    <div v-else class="flex min-h-screen">
+
+      <!-- ── Left sidebar ── -->
+      <aside class="w-56 flex-shrink-0 sticky top-0 h-screen flex flex-col bg-[#0d1117] border-r border-slate-800 overflow-y-auto">
+        <!-- App name -->
+        <div class="px-4 pt-5 pb-3 border-b border-slate-800">
+          <span class="text-xs font-semibold text-slate-400 tracking-wide">Claude Orchestrator</span>
+        </div>
+
+        <!-- Action To-Do panel -->
+        <div class="px-4 py-3 border-b border-slate-800">
+          <p class="text-[10px] uppercase tracking-wider text-slate-600 mb-2">Action queue</p>
+          <div class="space-y-1.5">
+            <div class="flex items-center justify-between text-xs">
+              <span class="text-slate-400">Sign-offs pending</span>
+              <span class="font-mono font-bold px-1.5 py-0.5 rounded text-[11px]"
+                    :class="operatorApprovals.length ? 'bg-red-900/60 text-red-300' : 'text-slate-600'">
+                {{ operatorApprovals.length }}
+              </span>
+            </div>
+            <div class="flex items-center justify-between text-xs">
+              <span class="text-slate-400">Inbox items</span>
+              <span class="font-mono font-bold px-1.5 py-0.5 rounded text-[11px]"
+                    :class="inbox.length ? 'bg-amber-900/60 text-amber-300' : 'text-slate-600'">
+                {{ inbox.length }}
+              </span>
+            </div>
+            <div class="flex items-center justify-between text-xs">
+              <span class="text-slate-400">Cred requests</span>
+              <span class="font-mono font-bold px-1.5 py-0.5 rounded text-[11px]"
+                    :class="credRequests.length ? 'bg-amber-900/60 text-amber-300' : 'text-slate-600'">
+                {{ credRequests.length }}
+              </span>
+            </div>
+            <div class="flex items-center justify-between text-xs">
+              <span class="text-slate-400">Blocked tasks</span>
+              <span class="font-mono font-bold px-1.5 py-0.5 rounded text-[11px]"
+                    :class="exactBlockedLike ? 'bg-red-900/60 text-red-300' : 'text-slate-600'">
+                {{ exactBlockedLike }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Nav links -->
+        <nav class="flex-1 px-3 py-3">
+          <p class="text-[10px] uppercase tracking-wider text-slate-600 mb-2 px-1">Navigate</p>
+          <ul class="space-y-0.5 text-xs">
+            <li><a href="#mission-control" class="block px-2 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 transition-colors">Mission Control</a></li>
+            <li><a href="#queue-status" class="block px-2 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 transition-colors">Queue Status</a></li>
+            <li><a href="#improvement-queue" class="block px-2 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 transition-colors">Queue Improvement</a></li>
+            <li><a href="#nl-search" class="block px-2 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 transition-colors">NL Search</a></li>
+            <li><a href="#health-goals" class="block px-2 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 transition-colors">Goals &amp; Health</a></li>
+            <li><a href="#inbox" class="block px-2 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 transition-colors">Action Inbox</a></li>
+            <li>
+              <a href="#sign-offs" class="flex items-center justify-between px-2 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 transition-colors">
+                <span>Sign-offs</span>
+                <span v-if="operatorApprovals.length"
+                      class="text-[10px] bg-red-900/60 text-red-300 rounded-full px-1.5 py-0.5 font-bold leading-none">
+                  {{ operatorApprovals.length }}
+                </span>
+              </a>
+            </li>
+            <li><a href="#capabilities" class="block px-2 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 transition-colors">Capabilities</a></li>
+            <li><a href="#activity" class="block px-2 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 transition-colors">Activity Log</a></li>
+            <li><a href="#tasks" class="block px-2 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 transition-colors">Task Flow</a></li>
+            <li><a href="#roi" class="block px-2 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 transition-colors">ROI</a></li>
+            <li><a href="#runners" class="block px-2 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 transition-colors">Runner Fleet</a></li>
+            <li><a href="#budgets" class="block px-2 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 transition-colors">Budgets</a></li>
+            <li><a href="#loops" class="block px-2 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 transition-colors">Loops</a></li>
+            <li><a href="#sessions" class="block px-2 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 transition-colors">Sessions</a></li>
+            <li><a href="#resources" class="block px-2 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 transition-colors">Resources</a></li>
+            <li><a href="#feedback" class="block px-2 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 transition-colors">Feedback</a></li>
+            <li><a href="#spend-keys" class="block px-2 py-1.5 rounded text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 transition-colors">Spend &amp; Keys</a></li>
+          </ul>
+        </nav>
+
+        <!-- Sign out -->
+        <div class="px-4 py-4 border-t border-slate-800">
+          <button @click="signOut" class="w-full text-left text-xs text-slate-500 hover:text-slate-200 transition-colors">Sign out</button>
+        </div>
+      </aside>
+
+      <!-- ── Main content area ── -->
+      <div class="flex-1 overflow-y-auto">
 
       <!-- header -->
-      <header class="sticky top-0 z-30 -mx-5 px-5 py-3 mb-6 flex items-center gap-3
+      <header class="sticky top-0 z-30 px-5 py-3 mb-6 flex items-center gap-3
                      bg-canvas/80 backdrop-blur border-b border-border-subtle">
         <span class="relative flex w-2 h-2">
           <span v-if="runners.some(alive)"
@@ -891,17 +975,23 @@ onBeforeUnmount(() => {
           {{ liveRunnerCount }}/{{ runnerFleetTarget }} live lanes · <span class="font-mono" :class="exactBacklogCount ? 'text-amber-300' : 'text-emerald-400'" title="Exact full-table backlog count from SQL">{{ fmtInt(exactBacklogCount) }}</span> backlog · {{ approvals.length }} pending · <span class="font-mono text-slate-300" title="Token cost covered by your Claude Max plan — not cash">${{ coveredMtd.toFixed(2) }}</span> Max-covered · <span class="font-mono text-emerald-400" title="Real out-of-pocket API cash, month-to-date">${{ cashMtd.toFixed(2) }}</span> cash · <span class="font-mono text-cyan-300" title="Estimated prompt/result cache and patch-template savings from recent resource events">{{ Math.round(savingsKpi.tokens).toLocaleString() }}</span> tok avoided · <span class="font-mono" :class="integrateKpi.overall >= 1 ? 'text-emerald-400' : 'text-amber-400'" title="Post-QA merge-rate: passed/non-churn work that actually integrated. Target is 100%; failed drafting attempts are tracked separately as attempt yield.">{{ (integrateKpi.overall * 100).toFixed(0) }}%</span> merge-rate ({{ integrateKpi.integrated }}/{{ integrateKpi.completed }}) · <span class="font-mono" :class="(integrateKpi.usdPerMerge ?? 99) <= 2 ? 'text-emerald-400' : 'text-amber-400'" title="NORTH STAR: $ per merged change. Drive this DOWN.">{{ integrateKpi.usdPerMerge == null ? '—' : ('$' + integrateKpi.usdPerMerge.toFixed(2)) }}</span>/merge
         </span>
         <span class="flex-1"></span>
-        <button @click="signOut" class="text-slate-400 text-sm hover:text-ink">Sign out</button>
       </header>
 
+      <div class="max-w-5xl mx-auto px-5 py-6">
+
       <!-- ── Mission Control live strip ── -->
-      <MissionControl
-        :tasks="deployableTasks"
-        :runners="runners"
-        :approvals="approvals"
-        :outcomes="outcomes"
-        :spend="spend"
-        :last-event-at="lastEventAt" />
+      <div id="mission-control">
+        <MissionControl
+          :tasks="deployableTasks"
+          :runners="runners"
+          :approvals="approvals"
+          :outcomes="outcomes"
+          :spend="spend"
+          :last-event-at="lastEventAt" />
+      </div>
+
+      <!-- ── Queue Status ── -->
+      <div id="queue-status">
 
       <!-- Resilience continuity -->
       <section class="bg-slate-900 border rounded-xl p-4 mb-6"
@@ -1026,7 +1116,10 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
+      </div><!-- /#queue-status -->
+
       <!-- ── Improvement command center ── -->
+      <div id="improvement-queue">
       <section class="bg-slate-900 border border-slate-700 rounded-xl p-4 mb-6">
         <div class="flex items-center gap-2 mb-3">
           <h2 class="text-xs uppercase tracking-wider text-slate-500">Queue an improvement</h2>
@@ -1054,8 +1147,10 @@ onBeforeUnmount(() => {
         </div>
       </section>
 
+      </div><!-- /#improvement-queue -->
+
       <!-- ── NL analytics search ── -->
-      <div class="bg-slate-900 border border-slate-700 rounded-xl p-4 mb-6">
+      <div id="nl-search" class="bg-slate-900 border border-slate-700 rounded-xl p-4 mb-6">
         <div class="flex gap-2">
           <input v-model="nlQuery" @keydown.enter="askNL" placeholder="Ask a question: 'which projects are shipping today?' or 'where is money going?'"
                  class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm" />
@@ -1067,7 +1162,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- ── Health & Goals ── -->
-      <div v-if="health.length || goals.length" class="grid sm:grid-cols-2 gap-4 mb-6">
+      <div id="health-goals" v-if="health.length || goals.length" class="grid sm:grid-cols-2 gap-4 mb-6">
         <div v-if="health.length" class="bg-slate-900 border border-slate-800 rounded-xl p-4">
           <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-3">Project health</h2>
           <div v-for="h in health" :key="h.project" class="flex items-center gap-2 py-1 border-b border-slate-800 last:border-0">
@@ -1092,7 +1187,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- ── Action inbox (v_action_inbox) ── -->
-      <div v-if="inbox.length" class="mb-6">
+      <div id="inbox" v-if="inbox.length" class="mb-6">
         <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Action inbox</h2>
         <div v-for="item in inbox" :key="item.id ?? item.title"
              class="bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 mb-2 flex items-center gap-3">
@@ -1103,7 +1198,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- ── Operator sign-offs (secrets / deploys / OAuth / legal) ── -->
-      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-2 flex-wrap">
+      <h2 id="sign-offs" class="text-xs uppercase tracking-wider text-slate-500 mb-2 flex items-center gap-2 flex-wrap">
         Operator sign-offs
         <span class="text-slate-400 normal-case tracking-normal">secrets · deploys · OAuth · legal</span>
         <span v-if="operatorApprovals.length"
@@ -1145,7 +1240,7 @@ onBeforeUnmount(() => {
       <div v-else class="text-slate-500 italic text-sm mb-6">No transactions yet. Tag tasks with <code class="font-mono not-italic">txn:&lt;id&gt;</code> in their note to join one.</div>
 
       <!-- ── Capabilities ── -->
-      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Capabilities</h2>
+      <h2 id="capabilities" class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Capabilities</h2>
       <div v-if="!capabilities.length" class="text-slate-500 italic text-sm mb-6">No capabilities published yet. Run distill.py to extract one.</div>
       <div v-else class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-3 text-sm overflow-x-auto">
         <table class="w-full text-xs">
@@ -1234,7 +1329,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- ── Live activity log ── -->
-      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Live activity</h2>
+      <h2 id="activity" class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Live activity</h2>
       <div class="mb-6">
         <LogView title="Runner activity" :lines="logLines" height="18rem" />
       </div>
@@ -1246,7 +1341,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- ── Tasks ── -->
-      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Deployable task flow</h2>
+      <h2 id="tasks" class="text-xs uppercase tracking-wider text-slate-500 mb-2">Deployable task flow</h2>
       <div v-if="!deployableTasks.length" class="text-slate-500 italic text-sm mb-6">No deployable tasks visible yet; repair work is handled internally.</div>
       <div v-for="t in deployableTasks" :key="t.id" class="bg-slate-900 border border-slate-800 rounded-xl p-3 mb-2">
         <div class="flex items-center gap-2 flex-wrap">
@@ -1294,7 +1389,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- ── ROI panel ── -->
-      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">ROI by project</h2>
+      <h2 id="roi" class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">ROI by project</h2>
       <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-3 text-sm">
         <div v-if="!roiData.length" class="text-slate-500 italic">No outcome data yet.</div>
         <table v-else class="w-full text-xs">
@@ -1326,7 +1421,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- ── Runner fleet ── -->
-      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Runner fleet</h2>
+      <h2 id="runners" class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Runner fleet</h2>
       <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 text-sm mb-2">
         <div v-if="!runners.length" class="text-slate-500 italic">No runners registered. Start runner.py on a machine.</div>
         <div v-for="r in runners" :key="r.runner_id" class="flex items-center gap-2 border-b border-slate-800 py-1 last:border-0">
@@ -1344,7 +1439,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- ── Budgets ── -->
-      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Budgets (month-to-date)</h2>
+      <h2 id="budgets" class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Budgets (month-to-date)</h2>
       <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 text-sm mb-2">
         <div v-for="p in projects" :key="p.id" class="mb-3 last:mb-0">
           <div class="flex justify-between mb-1">
@@ -1361,7 +1456,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- ═══ Loops ════════════════════════════════════════════════════════ -->
-      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-10">Loops</h2>
+      <h2 id="loops" class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-10">Loops</h2>
       <div v-if="!loops.length" class="text-slate-500 italic text-sm mb-6">No loops yet. Loops are auto-created once projects exist.</div>
       <div v-else class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-6 overflow-x-auto">
         <table class="w-full text-xs">
@@ -1410,7 +1505,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- ═══ Sessions ══════════════════════════════════════════════════════ -->
-      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Sessions</h2>
+      <h2 id="sessions" class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Sessions</h2>
       <div v-if="!sessions.length" class="text-slate-500 italic text-sm mb-6">No paused/finished sessions detected yet.</div>
       <div v-else class="mb-6 space-y-2">
         <div v-for="s in sessions" :key="s.id"
@@ -1438,7 +1533,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- ═══ Resources ══════════════════════════════════════════════════════ -->
-      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Resources</h2>
+      <h2 id="resources" class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Resources</h2>
       <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-6">
         <div v-if="resourceGauge.disk_pct != null" class="mb-4">
           <div class="flex justify-between text-xs text-slate-400 mb-1">
@@ -1492,7 +1587,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- ═══ Feedback ══════════════════════════════════════════════════════ -->
-      <h2 class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Feedback</h2>
+      <h2 id="feedback" class="text-xs uppercase tracking-wider text-slate-500 mb-2 mt-8">Feedback</h2>
       <div class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-6">
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
           <div class="bg-slate-800 rounded-lg p-3 text-center">
@@ -1540,7 +1635,7 @@ onBeforeUnmount(() => {
       </div>
 
       <!-- ═══ Spend & Keys ══════════════════════════════════════════════════ -->
-      <div class="flex items-center gap-3 mt-10 mb-2 flex-wrap">
+      <div id="spend-keys" class="flex items-center gap-3 mt-10 mb-2 flex-wrap">
         <h2 class="text-xs uppercase tracking-wider text-slate-500">Spend &amp; Keys</h2>
         <span class="flex-1"></span>
         <button v-if="!globalPaused" @click="stopAll" :disabled="stopLoading"
@@ -1631,6 +1726,8 @@ onBeforeUnmount(() => {
         <div class="flex justify-between pt-2 font-semibold"><span>Total</span><span class="font-mono">${{ spend.toFixed(2) }}</span></div>
       </div>
 
-    </div>
-  </div>
+      </div><!-- /.max-w-5xl -->
+      </div><!-- /.flex-1 main content -->
+    </div><!-- /.flex dashboard -->
+  </div><!-- /.min-h-screen -->
 </template>
