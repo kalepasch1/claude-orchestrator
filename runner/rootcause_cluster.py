@@ -70,16 +70,35 @@ def cluster_failures(project_id, limit=SWEEP_LIMIT):
 def _guard_slug(pattern_name):
     return f"guard-cluster-{pattern_name}"[:80]
 
+def _guard_exists(project_id, slug):
+    """Check if a guard task already exists (any state) to prevent duplicates."""
+    try:
+        rows = db.select("tasks", {
+            "select": "id,state",
+            "project_id": f"eq.{project_id}",
+            "slug": f"eq.{slug}",
+            "limit": "1",
+        }) or []
+        return len(rows) > 0
+    except Exception:
+        return False
+
+
 def create_cluster_guards(project_id, base_branch="master"):
     clusters = cluster_failures(project_id)
     created = []
+    skipped = []
     for pattern_name, tasks in clusters.items():
         if pattern_name == "unclassified" or len(tasks) < MIN_CLUSTER_SIZE:
+            continue
+        slug = _guard_slug(pattern_name)
+        if _guard_exists(project_id, slug):
+            skipped.append(slug)
             continue
         _, desc = classify(tasks[0].get("note", ""))
         slugs = [t.get("slug", "") for t in tasks[:5]]
         guard = {
-            "project_id": project_id, "slug": _guard_slug(pattern_name),
+            "project_id": project_id, "slug": slug,
             "kind": GUARD_KIND, "state": "QUEUED",
             "prompt": (f"Permanent fix for recurring '{pattern_name}' ({len(tasks)} hits). "
                        f"{desc} Affected: {', '.join(slugs)}. Add a guard."),
@@ -93,6 +112,26 @@ def create_cluster_guards(project_id, base_branch="master"):
         except Exception:
             pass
     return created
+
+
+def persist_cluster_snapshot(project_id):
+    """Save the latest cluster analysis to fleet_config for observability."""
+    report = summary(project_id)
+    if not report:
+        return
+    import json, datetime
+    snapshot = {
+        "project_id": project_id,
+        "clusters": report,
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+    try:
+        db.upsert("fleet_config", {
+            "key": f"CLUSTER_SNAPSHOT_{project_id[:8]}",
+            "value": json.dumps(snapshot, default=str),
+        })
+    except Exception:
+        pass
 
 def summary(project_id):
     clusters = cluster_failures(project_id)

@@ -105,20 +105,58 @@ def emit_file(content, intake_dir=None, filename=None):
 
 
 def fetch_queued_rows(client=None):
-    """Fetch QUEUED coordination_tasks rows. Uses injected client or falls back to db module."""
+    """Fetch QUEUED coordination_tasks rows. Uses injected client or falls back to db module.
+    Degrades gracefully when Supabase is unavailable — returns [] instead of raising."""
     if client is not None:
-        return client.fetch_queued()
-    import db as _db
-    rows = _db.select("coordination_tasks", {
-        "select": "id,slug,title,material,model,depends,proof,prompt,description",
-        "state": "eq.QUEUED",
-    }) or []
-    return rows
+        try:
+            return client.fetch_queued()
+        except Exception:
+            return []
+    try:
+        import db as _db
+        rows = _db.select("coordination_tasks", {
+            "select": "id,slug,title,material,model,depends,proof,prompt,description",
+            "state": "eq.QUEUED",
+        }) or []
+        return rows
+    except Exception:
+        # fail-soft: no Supabase creds or connection error — skip live-read enrichment
+        return _fetch_cached_rows()
+
+
+def _fetch_cached_rows(cache_dir=None):
+    """Fallback: read cached/mock rows from a local JSON file when Supabase is unavailable."""
+    import json
+    d = cache_dir or os.path.join(HERE, "..", ".runtime")
+    cache_path = os.path.join(d, "intake_compiler_cache.json")
+    try:
+        if os.path.isfile(cache_path):
+            with open(cache_path, "r", errors="replace") as f:
+                data = json.load(f)
+                return data if isinstance(data, list) else []
+    except (OSError, json.JSONDecodeError):
+        pass
+    return []
+
+
+def cache_rows(rows, cache_dir=None):
+    """Persist fetched rows to local cache for offline fallback."""
+    import json
+    d = cache_dir or os.path.join(HERE, "..", ".runtime")
+    os.makedirs(d, exist_ok=True)
+    cache_path = os.path.join(d, "intake_compiler_cache.json")
+    try:
+        with open(cache_path, "w") as f:
+            json.dump(rows, f, default=str)
+    except OSError:
+        pass
 
 
 def run(client=None, project_name="beethoven", intake_dir=None):
     """Main entry: fetch queued rows, compile, emit file. Returns (path, skipped) or (None, [])."""
     rows = fetch_queued_rows(client)
+    if rows:
+        cache_rows(rows)  # persist for offline fallback
     if not rows:
         return None, []
     content, skipped = compile_tasks(rows, project_name, intake_dir)

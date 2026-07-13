@@ -50,10 +50,7 @@ def load_config():
         for row in (db.select("fleet_config", {"select": "key,value"}) or []):
             k, v = row.get("key"), row.get("value")
             if k and v is not None and _safe_key(k):
-                _v = str(v).strip()
-                if len(_v) >= 2 and _v[0] == chr(34) and _v[-1] == chr(34):
-                    _v = _v[1:-1]
-                os.environ[k] = _v
+                os.environ[k] = str(v)
                 n += 1
     except Exception:
         pass

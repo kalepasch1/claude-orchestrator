@@ -40,3 +40,74 @@ def revoke(capability_id):
         db.update("capability_provenance", {"id": r["id"]}, {"consent": False})
     db.update("capabilities", {"id": capability_id}, {"status": "retired"})
     return "revoked + retired"
+
+
+# ── Merge provenance ledger ──────────────────────────────────────────────────
+# Ties multiple provenance records to a single merge event for batch audit/rollback.
+
+def record_merge(merge_id, capability_ids, merge_branch="master", author=None):
+    """Record a merge event linking multiple capabilities for batch audit."""
+    import datetime
+    entry = {
+        "merge_id": merge_id,
+        "capability_ids": capability_ids if isinstance(capability_ids, list) else [capability_ids],
+        "merge_branch": merge_branch,
+        "author": author or "",
+        "merged_at": datetime.datetime.utcnow().isoformat(),
+        "consent_snapshot": {},
+        "status": "active",
+    }
+    # snapshot consent state at merge time for each capability
+    for cid in entry["capability_ids"]:
+        ok, reason = consent_ok(cid)
+        entry["consent_snapshot"][cid] = {"ok": ok, "reason": reason}
+    try:
+        db.insert("merge_provenance_ledger", entry)
+    except Exception:
+        pass  # fail-soft: merge proceeds even if ledger write fails
+    return entry
+
+
+def merge_history(merge_id=None, capability_id=None, limit=100):
+    """Query the merge provenance ledger. Filter by merge_id or capability_id."""
+    try:
+        params = {"select": "*", "order": "merged_at.desc", "limit": str(limit)}
+        if merge_id:
+            params["merge_id"] = f"eq.{merge_id}"
+        rows = db.select("merge_provenance_ledger", params) or []
+        if capability_id:
+            rows = [r for r in rows if capability_id in (r.get("capability_ids") or [])]
+        return rows
+    except Exception:
+        return []
+
+
+def audit_merge(merge_id):
+    """Check all capabilities in a merge still have consent. Returns (ok, violations)."""
+    entries = merge_history(merge_id=merge_id)
+    if not entries:
+        return False, [{"error": "merge not found"}]
+    violations = []
+    for entry in entries:
+        for cid in entry.get("capability_ids") or []:
+            ok, reason = consent_ok(cid)
+            if not ok:
+                violations.append({"capability_id": cid, "reason": reason,
+                                   "was_ok_at_merge": (entry.get("consent_snapshot") or {}).get(cid, {}).get("ok")})
+    return len(violations) == 0, violations
+
+
+def rollback_merge(merge_id):
+    """Revoke all capabilities in a merge event and mark the merge as rolled back."""
+    entries = merge_history(merge_id=merge_id)
+    revoked = []
+    for entry in entries:
+        for cid in entry.get("capability_ids") or []:
+            revoke(cid)
+            revoked.append(cid)
+        try:
+            db.update("merge_provenance_ledger",
+                      {"merge_id": entry.get("merge_id")}, {"status": "rolled_back"})
+        except Exception:
+            pass
+    return {"merge_id": merge_id, "revoked": revoked}

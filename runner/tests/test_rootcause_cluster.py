@@ -65,6 +65,35 @@ class TestCreateGuards(unittest.TestCase):
         mock_db.select.return_value = [{"id":str(i),"slug":f"t{i}","note":"random","state":"BLOCKED"} for i in range(10)]
         self.assertEqual(len(rootcause_cluster.create_cluster_guards("p")), 0)
 
+class TestGuardDedup(unittest.TestCase):
+    @patch("rootcause_cluster.db")
+    def test_dedup_skips_existing_guard(self, mock_db):
+        """Second run should skip guard creation if guard task already exists."""
+        blocked = [{"id":str(i),"slug":f"t{i}","note":"budget cap","state":"BLOCKED"} for i in range(5)]
+        guard_slug = rootcause_cluster._guard_slug("budget-blocked")
+        existing_guard = [{"id":"g1","state":"QUEUED"}]
+        def mock_select(table, params):
+            if params.get("slug") == f"eq.{guard_slug}":
+                return existing_guard
+            return blocked
+        mock_db.select.side_effect = mock_select
+        created = rootcause_cluster.create_cluster_guards("p")
+        self.assertEqual(len(created), 0)
+
+class TestPersistSnapshot(unittest.TestCase):
+    @patch("rootcause_cluster.db")
+    def test_persist_saves_to_fleet_config(self, mock_db):
+        mock_db.select.return_value = [
+            {"id":"1","slug":"a","note":"timed out","state":"BLOCKED"},
+            {"id":"2","slug":"b","note":"timed out","state":"BLOCKED"},
+            {"id":"3","slug":"c","note":"timed out","state":"BLOCKED"},
+        ]
+        rootcause_cluster.persist_cluster_snapshot("p")
+        mock_db.upsert.assert_called_once()
+        call_args = mock_db.upsert.call_args[0]
+        self.assertEqual(call_args[0], "fleet_config")
+        self.assertIn("CLUSTER_SNAPSHOT", call_args[1]["key"])
+
 class TestSummary(unittest.TestCase):
     @patch("rootcause_cluster.db")
     def test_report(self, mock_db):

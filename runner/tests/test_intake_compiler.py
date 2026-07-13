@@ -131,5 +131,51 @@ class TestEmitFile(unittest.TestCase):
             self.assertEqual(f.read(), "PROJECT: test\n")
 
 
+class TestFailSoftDegradation(unittest.TestCase):
+    """Verify intake_compiler degrades gracefully without Supabase."""
+
+    def test_fetch_queued_rows_returns_empty_on_client_error(self):
+        class BrokenClient:
+            def fetch_queued(self):
+                raise ConnectionError("no supabase")
+        result = intake_compiler.fetch_queued_rows(client=BrokenClient())
+        self.assertEqual(result, [])
+
+    def test_cache_and_restore(self):
+        d = tempfile.mkdtemp()
+        rows = [_sample_row(slug="cached-1"), _sample_row(slug="cached-2")]
+        intake_compiler.cache_rows(rows, cache_dir=d)
+        restored = intake_compiler._fetch_cached_rows(cache_dir=d)
+        self.assertEqual(len(restored), 2)
+        self.assertEqual(restored[0]["slug"], "cached-1")
+
+    def test_fetch_cached_rows_returns_empty_on_missing_file(self):
+        result = intake_compiler._fetch_cached_rows(cache_dir=tempfile.mkdtemp())
+        self.assertEqual(result, [])
+
+    def test_fetch_cached_rows_returns_empty_on_corrupt_json(self):
+        d = tempfile.mkdtemp()
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "intake_compiler_cache.json"), "w") as f:
+            f.write("{not valid json")
+        result = intake_compiler._fetch_cached_rows(cache_dir=d)
+        self.assertEqual(result, [])
+
+    def test_run_caches_rows_on_success(self):
+        d = tempfile.mkdtemp()
+        cache_d = tempfile.mkdtemp()
+        client = FakeClient([_sample_row(slug="to-cache")])
+        # Monkey-patch cache_rows to capture call
+        original = intake_compiler.cache_rows
+        cached = []
+        intake_compiler.cache_rows = lambda rows, **kw: cached.extend(rows)
+        try:
+            intake_compiler.run(client=client, intake_dir=d)
+        finally:
+            intake_compiler.cache_rows = original
+        self.assertEqual(len(cached), 1)
+        self.assertEqual(cached[0]["slug"], "to-cache")
+
+
 if __name__ == "__main__":
     unittest.main()
