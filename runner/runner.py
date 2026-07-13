@@ -2755,6 +2755,19 @@ def main():
                 pass
             if os.environ.get("ORCH_DRAINING_FOR_RESTART") == "1":
                 eff_limit = 0
+            # COWORK-ONLY MODE: yield all local claims to Cowork executor sessions.
+            # Set ORCH_COWORK_ONLY=1 in .env or fleet_config; runner still orchestrates.
+            try:
+                _co = os.environ.get("ORCH_COWORK_ONLY", "0")
+                if _co != "1":
+                    import db as _db2
+                    _fc = _db2.select("fleet_config", {"select": "value", "key": "eq.ORCH_COWORK_ONLY"})
+                    if _fc and str((_fc[0] or {}).get("value", "")).strip('"') == "1":
+                        _co = "1"
+                if _co == "1":
+                    eff_limit = 0
+            except Exception:
+                pass
             # global kill switch: halt all task claiming instantly
             if kill_switch.is_paused():
                 eff_limit = 0
