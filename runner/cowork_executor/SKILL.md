@@ -216,12 +216,15 @@ Only write a summary AFTER all 5 tasks are done and heartbeat is written.
 
 1. Never push to `main`/`dev`/`master` — only `agent/{slug}` branches.
 2. Never `DROP TABLE` / `TRUNCATE` without WHERE on production tables.
-3. ONLY valid BLOCK reason: repo path does not exist on this machine.
+3. ONLY valid BLOCK reason: repo path does not exist on this machine (verified with `ls`).
 4. ONLY valid QUARANTINE reason: binary garbage prompt (no readable English).
 5. Re-queue if a running external service is needed: `UPDATE tasks SET state='QUEUED', note='needs {service}'`
+6. **"Tests already pass / no fix needed / already implemented"** → mark **DONE** not BLOCKED. BLOCKED means "physically impossible on this machine". Already-fixed is a success.
+7. **qafix / relfix tasks**: run `npm test` (or equivalent) first. If tests already pass → commit a doc stub, mark DONE. Do NOT mark BLOCKED.
 
 ## What Is Never Acceptable
 - Writing `<run-summary>` or any summary before Step 4
 - Leaving a task in RUNNING state without setting DONE/BLOCKED/QUARANTINED
 - Reporting "skipped N tasks" — zero skips, always
 - Evaluating whether to claim tasks before claiming them
+- Marking BLOCKED because "no fix needed", "already done", "tests pass", or "could not reproduce" — these are all DONE
