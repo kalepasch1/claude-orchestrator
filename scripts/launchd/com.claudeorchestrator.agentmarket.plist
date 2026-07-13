@@ -13,10 +13,6 @@
     </array>
     <key>EnvironmentVariables</key>
     <dict>
-        <key>SUPABASE_URL</key>
-        <string>SUPABASE_URL_PLACEHOLDER</string>
-        <key>SUPABASE_SERVICE_KEY</key>
-        <string>SUPABASE_SERVICE_KEY_PLACEHOLDER</string>
         <key>ORCH_SUPABASE_TIMEOUT</key>
         <string>12</string>
         <key>PATH</key>

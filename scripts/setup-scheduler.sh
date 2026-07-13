@@ -217,8 +217,6 @@ for label in "${ALL_PLISTS[@]}"; do
         -e "s|__APP_DIR__|$APP_DIR|g" \
         -e "s|HOME_DIR|$HOME|g" \
         -e "s|LOG_DIR|$LOG_DIR|g" \
-        -e "s|SUPABASE_URL_PLACEHOLDER|${SUPABASE_URL:-}|g" \
-        -e "s|SUPABASE_SERVICE_KEY_PLACEHOLDER|${SUPABASE_SERVICE_KEY:-}|g" \
         -e "s|MAX_PARALLEL_PLACEHOLDER|${MAX_PARALLEL:-2}|g" \
         -e "s|POLL_SECONDS_PLACEHOLDER|${POLL_SECONDS:-5}|g" \
         -e "s|TEST_CMD_PLACEHOLDER|${TEST_CMD:-npm test}|g" \

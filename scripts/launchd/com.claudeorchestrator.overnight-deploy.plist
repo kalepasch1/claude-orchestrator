@@ -13,10 +13,6 @@
     </array>
     <key>EnvironmentVariables</key>
     <dict>
-        <key>SUPABASE_URL</key>
-        <string>SUPABASE_URL_PLACEHOLDER</string>
-        <key>SUPABASE_SERVICE_KEY</key>
-        <string>SUPABASE_SERVICE_KEY_PLACEHOLDER</string>
         <key>INTEGRATION_MODE</key>
         <string>pr</string>
         <key>MAX_PARALLEL</key>
