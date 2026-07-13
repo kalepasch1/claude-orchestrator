@@ -49,13 +49,59 @@ def _by_project(rows):
     return {key: _outcome_metrics(vals) for key, vals in grouped.items()}
 
 
+def _lead_times(rows):
+    """Compute lead time stats: median time from task creation to merge."""
+    times = []
+    for r in rows:
+        created = r.get("created_at")
+        merged_at = r.get("merged_at") or r.get("updated_at")
+        if created and merged_at and r.get("integrated"):
+            try:
+                from datetime import datetime
+                c = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+                m = datetime.fromisoformat(str(merged_at).replace("Z", "+00:00"))
+                times.append((m - c).total_seconds() / 3600)
+            except Exception:
+                pass
+    if not times:
+        return {"median_hours": None, "p90_hours": None}
+    times.sort()
+    mid = len(times) // 2
+    p90 = int(len(times) * 0.9)
+    return {
+        "median_hours": round(times[mid], 2),
+        "p90_hours": round(times[min(p90, len(times) - 1)], 2),
+    }
+
+
+def _deploy_rate(rows):
+    """Compute deploy rate: merges per hour over the window."""
+    if not rows:
+        return None
+    merged = sum(1 for r in rows if r.get("integrated"))
+    hours = max(1, len(set(str(r.get("created_at", ""))[:13] for r in rows)))
+    return round(merged / hours, 3)
+
+
+def _knowledge_reuse(rows):
+    """Estimate knowledge reuse: fraction of tasks that leveraged prior patches."""
+    if not rows:
+        return None
+    reused = sum(1 for r in rows if r.get("reused_patch") or r.get("transplant_source"))
+    return round(reused / len(rows), 4) if rows else None
+
+
 def compute_metrics(outcomes):
     """Compute overall, by_model, by_project metrics from a list of outcome rows.
 
-    Returns dict with keys: overall, by_model, by_project.
+    Returns dict with keys: overall, by_model, by_project, lead_times,
+    deploy_rate, knowledge_reuse.
     """
     return {
         "overall": _outcome_metrics(outcomes),
         "by_model": _by_model(outcomes),
         "by_project": _by_project(outcomes),
+        "lead_times": _lead_times(outcomes),
+        "deploy_rate": _deploy_rate(outcomes),
+        "knowledge_reuse": _knowledge_reuse(outcomes),
     }

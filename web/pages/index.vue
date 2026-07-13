@@ -397,7 +397,7 @@ watch(user, async (u) => { if (u) await loadAll() })
           <NuxtLink
             v-for="cap in capabilities"
             :key="cap.id"
-            :to="`/orchestrators?cap=${cap.id}`"
+            :to="`/orchestrators/${cap.slug || cap.id}`"
             class="flex-shrink-0 w-44 bg-white border border-gray-200 rounded-lg p-3 hover:border-emerald-700 transition-colors cursor-pointer"
           >
             <div class="flex items-start justify-between mb-2">
