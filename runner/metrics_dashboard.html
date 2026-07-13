@@ -219,6 +219,19 @@ body { font-family: var(--font-b); background: var(--bg); color: var(--text); li
   </div>
 </section>
 
+
+<!-- §4b ── D1 FLEET METRICS ────────────── -->
+<section class="section section-band" style="padding:64px 0;">
+  <div class="container">
+    <div class="s-head reveal">
+      <div class="tag" style="margin-bottom:12px;">Fleet health — D1 metrics</div>
+      <h2>Lead times, deployment health,<br>and knowledge reuse.</h2>
+      <p>End-to-end visibility from objective creation to merged code, with deployment success and cross-project knowledge sharing.</p>
+    </div>
+    <div class="how-grid reveal" id="d1-grid"></div>
+  </div>
+</section>
+
 <!-- §5 ── THE COMPOUNDING EFFECT ────────── -->
 <section class="section section-band">
   <div class="container">
@@ -420,6 +433,14 @@ const DATA = {
       "total_output_tokens": 62125000,
       "task_count": 3241
     }
+  },
+  "d1_metrics": {
+    "lead_times": {
+      "objective_to_prompt": {"median_min": 4.2, "p90_min": 18.7, "count": 2841},
+      "prompt_to_merged": {"median_min": 8.5, "p90_min": 32.4, "count": 2594}
+    },
+    "deploy_success_rate": {"rate": 0.97, "succeeded": 2516, "attempted": 2594},
+    "knowledge_reuse_rate": {"rate": 0.44, "reused": 1423, "total": 3241}
   },
   "generated_at": "2026-07-10T14:30:00Z"
 };
@@ -644,6 +665,36 @@ document.getElementById('foot').textContent =
   fmt.dt(DATA.generated_at) + ' · TCO methodology: competitor realistic model mix (40% cheap / 60% capable) × retry overhead (' + BASELINE_MR*100 + '% baseline merge rate) + missing reuse + missing waste prevention value';
 
 /* ── Scroll reveal ────────────── */
+
+  // ── D1 Fleet Metrics ──────────────────
+  var d1 = DATA.d1_metrics || {};
+  var lt = (d1.lead_times || {});
+  var otp = lt.objective_to_prompt || {};
+  var ptm = lt.prompt_to_merged || {};
+  var dsr = d1.deploy_success_rate || {};
+  var krr = d1.knowledge_reuse_rate || {};
+  var d1Cards = [
+    { num: '01', title: 'Objective → Prompt', desc: 'Median time from objective creation to work starting.',
+      stat: (otp.median_min != null ? otp.median_min + ' min median' : 'n/a') + ' · p90 ' + (otp.p90_min != null ? otp.p90_min + ' min' : 'n/a') + ' · ' + fmt.num(otp.count || 0) + ' tasks' },
+    { num: '02', title: 'Prompt → Merged', desc: 'Median time from work start to integrated merge.',
+      stat: (ptm.median_min != null ? ptm.median_min + ' min median' : 'n/a') + ' · p90 ' + (ptm.p90_min != null ? ptm.p90_min + ' min' : 'n/a') + ' · ' + fmt.num(ptm.count || 0) + ' tasks' },
+    { num: '03', title: 'Deploy Success Rate', desc: 'Fraction of merged tasks that deployed without rollback.',
+      stat: (dsr.rate != null ? fmt.pctI(dsr.rate) : 'n/a') + ' · ' + fmt.num(dsr.succeeded || 0) + '/' + fmt.num(dsr.attempted || 0) + ' deployments' },
+    { num: '04', title: 'Knowledge Reuse', desc: 'Tasks that benefited from cross-project context sharing.',
+      stat: (krr.rate != null ? fmt.pctI(krr.rate) : 'n/a') + ' · ' + fmt.num(krr.reused || 0) + '/' + fmt.num(krr.total || 0) + ' tasks reused context' }
+  ];
+  var d1Grid = document.getElementById('d1-grid');
+  if (d1Grid) {
+    d1Grid.innerHTML = d1Cards.map(function(c, i){
+      return '<div class="how-card reveal' + (i>1 ? ' d'+(i-1) : '') + '">' +
+        '<div class="hc-num">' + c.num + '</div>' +
+        '<div class="hc-title">' + c.title + '</div>' +
+        '<div class="hc-desc">' + c.desc + '</div>' +
+        '<div class="hc-stat" style="margin-top:14px;font-family:var(--font-m);font-size:0.75rem;color:var(--text-muted);">' + c.stat + '</div>' +
+        '</div>';
+    }).join('');
+  }
+
 var obs = new IntersectionObserver(function(entries){
   entries.forEach(function(e){
     if (e.isIntersecting) { e.target.classList.add('vis'); obs.unobserve(e.target); }
