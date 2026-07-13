@@ -25,8 +25,8 @@ MAX_DEPTH = int(os.environ.get("ORCH_DECOMPOSE_MAX_DEPTH", "2"))
 # every page is disjoint and nothing is missed.
 CHILD_SCAN_PAGE_SIZE = int(os.environ.get("ORCH_MATERIALIZER_CHILD_SCAN_PAGE_SIZE", "1000"))
 CHILD_SCAN_MAX_PAGES = int(os.environ.get("ORCH_MATERIALIZER_CHILD_SCAN_MAX_PAGES", "50"))
-MAX_UPDATES = int(os.environ.get("ORCH_MATERIALIZER_MAX_UPDATES", "20"))
-RUN_BUDGET_S = int(os.environ.get("ORCH_MATERIALIZER_RUN_BUDGET_S", "90"))
+MAX_UPDATES = int(os.environ.get("ORCH_MATERIALIZER_MAX_UPDATES", "200"))
+RUN_BUDGET_S = int(os.environ.get("ORCH_MATERIALIZER_RUN_BUDGET_S", "240"))
 UPDATE_TIMEOUT_S = int(os.environ.get("ORCH_MATERIALIZER_UPDATE_TIMEOUT_S", "15"))
 
 
