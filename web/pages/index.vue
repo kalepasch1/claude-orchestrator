@@ -1,5 +1,5 @@
 <script setup lang="ts">
-definePageMeta({ layout: 'default', alias: ['/index'] })
+definePageMeta({ layout: 'default' })
 
 const supabase = useSupabaseClient<any>()
 const user = useSupabaseUser()
@@ -33,6 +33,7 @@ const runners = ref<any[]>([])
 const providerSpend = ref<any[]>([])
 const outcomes = ref<any[]>([])
 const controls = ref<any[]>([])
+const capabilities = ref<any[]>([])
 const expandedTask = ref<string | null>(null)
 
 const newTask = reactive({ project_id: '', slug: '', prompt: '', kind: 'build', model: 'claude-sonnet-4-6', mode: 'build' })
@@ -118,9 +119,33 @@ const usdPerMerge = computed(() => {
 })
 const recentTasks = computed(() => tasks.value.slice(0, 20))
 
+// ── Capability helpers ────────────────────────────────────────────────────
+function capStatusDot(status: string) {
+  if (status === 'trusted') return 'bg-[#6fcf8a]'
+  if (status === 'experimental') return 'bg-yellow-400'
+  return 'bg-[#3a5a3a]'
+}
+function capMaturityColor(n: number) {
+  if (n >= 80) return 'bg-[#2d7a3a]'
+  if (n >= 50) return 'bg-[#1e5228]'
+  return 'bg-[#162016]'
+}
+
+// ── State color helpers ───────────────────────────────────────────────────
+function stateColor(state: string) {
+  const s = (state || '').toUpperCase()
+  if (s === 'RUNNING') return 'text-[#6fcf8a] bg-[#0a1e0e]'
+  if (s === 'DONE') return 'text-[#4ade80] bg-[#052e10]'
+  if (s === 'MERGED') return 'text-[#60a5fa] bg-[#0c1e38]'
+  if (s === 'QUEUED') return 'text-[#7a9a7a] bg-[#0a120a]'
+  if (['BLOCKED', 'CONFLICT', 'TESTFAIL'].includes(s)) return 'text-[#f87171] bg-[#2a0808]'
+  if (s === 'RETRY') return 'text-orange-400 bg-orange-400/10'
+  return 'text-[#5a7a5a] bg-[#0a120a]'
+}
+
 // ── Data loading ──────────────────────────────────────────────────────────
 async function loadAll() {
-  const [t, a, p, r, ps, o, ctrl] = await Promise.all([
+  const [t, a, p, r, ps, o, ctrl, cap] = await Promise.all([
     supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(50),
     supabase.from('approvals').select('*').eq('status', 'pending').order('created_at'),
     supabase.from('projects').select('*').order('name'),
@@ -128,6 +153,7 @@ async function loadAll() {
     supabase.from('v_provider_spend_mtd').select('*'),
     supabase.from('outcomes').select('model,usd,project,tests_passed,integrated,created_at,slug').order('created_at').limit(500),
     supabase.from('controls').select('*'),
+    supabase.from('capabilities').select('*'),
   ])
   tasks.value = t.data || []
   approvals.value = a.data || []
@@ -136,6 +162,7 @@ async function loadAll() {
   providerSpend.value = ps.data || []
   outcomes.value = o.data || []
   controls.value = ctrl.data || []
+  capabilities.value = cap.data || []
   globalPaused.value = (ctrl.data || []).some((c: any) => c.scope === 'global' && c.paused)
   if (!newTask.project_id && projects.value[0]) newTask.project_id = projects.value[0].id
 }
@@ -213,18 +240,6 @@ async function resumeAll() {
   } finally { stopLoading.value = false }
 }
 
-// ── State color helpers ───────────────────────────────────────────────────
-function stateColor(state: string) {
-  const s = (state || '').toUpperCase()
-  if (s === 'RUNNING') return 'text-blue-400 bg-blue-400/10'
-  if (s === 'DONE') return 'text-green-400 bg-green-400/10'
-  if (s === 'MERGED') return 'text-emerald-400 bg-emerald-400/10'
-  if (s === 'QUEUED') return 'text-amber-400 bg-amber-400/10'
-  if (['BLOCKED', 'CONFLICT', 'TESTFAIL'].includes(s)) return 'text-red-400 bg-red-400/10'
-  if (s === 'RETRY') return 'text-orange-400 bg-orange-400/10'
-  return 'text-slate-400 bg-slate-400/10'
-}
-
 // ── Lifecycle ─────────────────────────────────────────────────────────────
 let refreshTimer: any = null
 let realtimeSub: any = null
@@ -248,166 +263,248 @@ watch(user, async (u) => { if (u) await loadAll() })
 </script>
 
 <template>
-  <!-- Login gate -->
-  <div v-if="!user" class="flex items-center justify-center min-h-screen bg-[#0d1117]">
-    <div class="text-center space-y-6 p-8">
-      <div class="text-5xl">⬡</div>
+  <!-- Sign-in gate -->
+  <div v-if="!user" class="flex items-center justify-center min-h-screen bg-[#07090a]">
+    <div class="text-center space-y-8 p-10 max-w-sm">
       <div>
-        <h1 class="text-2xl font-bold text-white">Claude Orchestrator</h1>
-        <p class="text-slate-400 mt-2">AI Platform Control Interface</p>
+        <div class="text-2xl tracking-[0.3em] uppercase text-[#dde5dd] mb-2" style="font-family: 'Fraunces', serif;">ORCHESTRATOR</div>
+        <p class="text-sm text-[#3a5a3a] tracking-wide">AI Control Platform</p>
       </div>
-      <button @click="signInWithGoogle" :disabled="signingIn"
-        class="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-medium rounded-lg transition-colors disabled:opacity-50">
-        {{ signingIn ? 'Signing in…' : 'Sign in with Google' }}
+      <button
+        @click="signInWithGoogle"
+        :disabled="signingIn"
+        class="w-full px-6 py-3 bg-[#1e5228] hover:bg-[#2d7a3a] text-white font-medium rounded-lg transition-colors disabled:opacity-50 text-sm tracking-wide"
+      >
+        {{ signingIn ? 'Signing in...' : 'Sign in with Google' }}
       </button>
     </div>
   </div>
 
   <!-- Main interface -->
-  <div v-else class="min-h-screen bg-[#0d1117] text-slate-300">
+  <div v-else class="min-h-screen bg-[#07090a] text-[#dde5dd]">
 
-    <!-- KPI Bar -->
-    <div class="border-b border-slate-800 bg-slate-900/50 px-6 py-2">
-      <div class="flex items-center gap-6 flex-wrap">
+    <!-- Status bar -->
+    <div class="border-b border-[#162016] bg-[#07090a] px-6 py-2 sticky top-0 z-10">
+      <div class="flex items-center gap-5 flex-wrap text-[11px]">
         <div class="flex items-center gap-1.5">
-          <span class="w-2 h-2 rounded-full" :class="liveRunnerCount > 0 ? 'bg-green-400 animate-pulse' : 'bg-slate-600'"></span>
-          <span class="text-xs text-slate-400">{{ liveRunnerCount }} runners</span>
+          <span
+            class="w-1.5 h-1.5 rounded-full flex-shrink-0"
+            :class="liveRunnerCount > 0 ? 'bg-[#6fcf8a] dot-breathe' : 'bg-[#1e2e1e]'"
+          ></span>
+          <span class="text-[#5a7a5a]">{{ liveRunnerCount }} running</span>
         </div>
-        <div class="text-xs text-slate-400">Backlog <span class="text-amber-300 font-mono font-bold">{{ backlogCount }}</span></div>
-        <div class="text-xs text-slate-400">Cash MtD <span class="text-white font-mono font-bold">${{ cashMtd.toFixed(2) }}</span></div>
-        <div class="text-xs text-slate-400">Merge rate <span class="text-green-300 font-mono font-bold">{{ mergeRate }}%</span></div>
-        <div v-if="usdPerMerge" class="text-xs text-slate-400">$/merge <span class="text-blue-300 font-mono font-bold">${{ usdPerMerge }}</span></div>
-        <NuxtLink to="/sign-offs" class="flex items-center gap-1.5 ml-auto">
-          <span class="text-xs" :class="pendingSignOffsCount > 0 ? 'text-red-300' : 'text-slate-500'">
-            {{ pendingSignOffsCount }} pending sign-off{{ pendingSignOffsCount !== 1 ? 's' : '' }}
-          </span>
-          <span v-if="pendingSignOffsCount > 0" class="inline-flex items-center justify-center w-5 h-5 bg-red-500 text-white text-xs rounded-full font-bold">!</span>
+        <span class="text-[#162016]">·</span>
+        <span class="text-[#5a7a5a]">{{ backlogCount.toLocaleString() }} queued</span>
+        <span class="text-[#162016]">·</span>
+        <span class="text-[#5a7a5a]">${{ cashMtd.toFixed(2) }} MtD</span>
+        <span class="text-[#162016]">·</span>
+        <span class="text-[#5a7a5a]">{{ mergeRate }}% merge</span>
+        <span class="text-[#162016]">·</span>
+        <NuxtLink to="/sign-offs" class="flex items-center gap-1.5" :class="pendingSignOffsCount > 0 ? 'text-red-400' : 'text-[#5a7a5a]'">
+          {{ pendingSignOffsCount }} sign-off{{ pendingSignOffsCount !== 1 ? 's' : '' }}
         </NuxtLink>
-        <button @click="globalPaused ? resumeAll() : stopAll()" :disabled="stopLoading"
-          class="px-3 py-1 text-xs rounded border transition-colors"
-          :class="globalPaused ? 'border-green-600 text-green-400 hover:bg-green-400/10' : 'border-red-700 text-red-400 hover:bg-red-400/10'">
-          {{ stopLoading ? '…' : globalPaused ? '▶ Resume All' : '⏹ Stop All' }}
-        </button>
-        <button @click="signOut" class="text-xs text-slate-600 hover:text-slate-400 transition-colors">Sign out</button>
+        <div class="ml-auto flex items-center gap-3">
+          <button
+            @click="globalPaused ? resumeAll() : stopAll()"
+            :disabled="stopLoading"
+            class="px-2.5 py-1 rounded border text-[11px] transition-colors"
+            :class="globalPaused ? 'border-[#2d7a3a] text-[#6fcf8a] hover:bg-[#0f2014]' : 'border-[#3a1010] text-[#f87171] hover:bg-[#1a0808]'"
+          >
+            {{ stopLoading ? '...' : globalPaused ? '▶ Resume' : '■ Stop All' }}
+          </button>
+          <button @click="signOut" class="text-[#3a5a3a] hover:text-[#5a7a5a] transition-colors">Sign out</button>
+        </div>
       </div>
     </div>
 
     <div class="max-w-6xl mx-auto px-6 py-6 space-y-6">
 
-      <!-- AI Command Terminal -->
-      <div class="bg-slate-900 border border-slate-700 rounded-xl overflow-hidden">
-        <div class="px-5 py-3 border-b border-slate-800 flex items-center gap-2">
-          <span class="text-blue-400">⌘</span>
-          <span class="text-sm font-semibold text-white">Command Terminal</span>
-          <span class="text-xs text-slate-500 ml-1">Queue tasks directly into the orchestration pipeline</span>
+      <!-- Command Terminal -->
+      <div class="bg-[#0c110c] border border-[#162016] rounded-lg overflow-hidden">
+        <div class="px-5 py-3 border-b border-[#162016] flex items-center gap-3">
+          <span class="text-[#6fcf8a] text-xs">→</span>
+          <span class="text-sm font-medium text-[#dde5dd]" style="font-family: 'Fraunces', serif;">Command Terminal</span>
+          <span class="text-xs text-[#3a5a3a] ml-1">Route tasks into the orchestration pipeline</span>
         </div>
         <div class="p-5 space-y-3">
-          <!-- Row 1: selectors -->
+          <!-- Selectors -->
           <div class="flex gap-3 flex-wrap">
-            <select v-model="newTask.project_id" class="select-dark flex-1 min-w-32">
-              <option value="" disabled>Project…</option>
+            <select
+              v-model="newTask.project_id"
+              class="bg-[#070c07] border border-[#1e2e1e] text-[#c8d8c8] text-sm rounded px-3 py-2 focus:outline-none focus:border-[#2d7a3a] cursor-pointer flex-1 min-w-32"
+            >
+              <option value="" disabled>Project</option>
               <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
             </select>
-            <select v-model="newTask.model" class="select-dark flex-1 min-w-40">
+            <select
+              v-model="newTask.model"
+              class="bg-[#070c07] border border-[#1e2e1e] text-[#c8d8c8] text-sm rounded px-3 py-2 focus:outline-none focus:border-[#2d7a3a] cursor-pointer flex-1 min-w-40"
+            >
               <option v-for="m in MODEL_OPTIONS" :key="m.value" :value="m.value">{{ m.label }}</option>
             </select>
-            <select v-model="newTask.kind" class="select-dark w-32">
+            <select
+              v-model="newTask.kind"
+              class="bg-[#070c07] border border-[#1e2e1e] text-[#c8d8c8] text-sm rounded px-3 py-2 focus:outline-none focus:border-[#2d7a3a] cursor-pointer w-32"
+            >
               <option v-for="k in KIND_OPTIONS" :key="k" :value="k">{{ k }}</option>
             </select>
-            <select v-model="newTask.mode" class="select-dark w-36">
+            <select
+              v-model="newTask.mode"
+              class="bg-[#070c07] border border-[#1e2e1e] text-[#c8d8c8] text-sm rounded px-3 py-2 focus:outline-none focus:border-[#2d7a3a] cursor-pointer w-36"
+            >
               <option v-for="m in MODE_OPTIONS" :key="m.value" :value="m.value">{{ m.label }}</option>
             </select>
           </div>
-          <!-- Row 2: prompt -->
-          <textarea v-model="newTask.prompt" rows="4"
-            placeholder="Describe what to build, fix, or change…"
-            class="w-full bg-[#0d1117] border border-slate-700 rounded-lg px-4 py-3 text-sm text-slate-200 placeholder-slate-600 resize-none focus:outline-none focus:border-blue-500 font-mono">
-          </textarea>
-          <!-- Optional slug -->
-          <input v-model="newTask.slug" type="text" placeholder="Slug (auto-generated if blank)"
-            class="w-full bg-[#0d1117] border border-slate-800 rounded-lg px-4 py-2 text-sm text-slate-300 placeholder-slate-600 focus:outline-none focus:border-slate-600" />
-          <!-- Row 3: actions -->
+          <!-- Prompt -->
+          <textarea
+            v-model="newTask.prompt"
+            rows="4"
+            placeholder="Describe what to build, fix, or improve..."
+            class="w-full bg-[#070c07] border border-[#1e2e1e] text-[#c8d8c8] text-sm rounded px-4 py-3 placeholder-[#3a5a3a] resize-none focus:outline-none focus:border-[#2d7a3a]"
+            style="font-family: 'JetBrains Mono', monospace;"
+          ></textarea>
+          <!-- Slug -->
+          <input
+            v-model="newTask.slug"
+            type="text"
+            placeholder="Slug (auto-generated if blank)"
+            class="w-full bg-[#070c07] border border-[#162016] text-[#7a9a7a] text-sm rounded px-4 py-2 placeholder-[#3a5a3a] focus:outline-none focus:border-[#1e2e1e]"
+          />
+          <!-- Actions -->
           <div class="flex gap-3">
-            <button @click="queueTask(false)" :disabled="queueLoading || !newTask.prompt.trim() || !newTask.project_id"
-              class="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
-              <span>{{ queueLoading ? 'Queuing…' : '🚀 Route & Execute' }}</span>
+            <button
+              @click="queueTask(false)"
+              :disabled="queueLoading || !newTask.prompt.trim() || !newTask.project_id"
+              class="px-5 py-2 bg-[#1e5228] hover:bg-[#2d7a3a] text-white text-sm font-medium rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {{ queueLoading ? 'Queuing...' : '→ Route & Execute' }}
             </button>
-            <button @click="queueTask(true)" :disabled="queueLoading || !newTask.prompt.trim() || !newTask.project_id"
-              class="px-5 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm font-medium rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2">
-              <span>🔍 Research First</span>
+            <button
+              @click="queueTask(true)"
+              :disabled="queueLoading || !newTask.prompt.trim() || !newTask.project_id"
+              class="px-5 py-2 border border-[#1e2e1e] text-[#5a7a5a] hover:text-[#c8d8c8] hover:border-[#2d7a3a] text-sm rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Research First
             </button>
           </div>
         </div>
       </div>
 
-      <!-- Pending Sign-offs Quick Panel -->
-      <div v-if="operatorApprovals.length > 0" class="bg-slate-900 border border-amber-800/40 rounded-xl overflow-hidden">
-        <div class="px-5 py-3 border-b border-slate-800 flex items-center justify-between">
+      <!-- Capabilities -->
+      <div v-if="capabilities.length > 0">
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="text-xs uppercase tracking-[0.15em] text-[#3a5a3a]" style="font-family: 'Fraunces', serif;">Capabilities</h2>
+          <NuxtLink to="/orchestrators" class="text-xs text-[#5a7a5a] hover:text-[#6fcf8a] transition-colors">View all →</NuxtLink>
+        </div>
+        <div class="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
+          <NuxtLink
+            v-for="cap in capabilities"
+            :key="cap.id"
+            to="/orchestrators"
+            class="flex-shrink-0 w-44 bg-[#0c110c] border border-[#162016] rounded-lg p-3 hover:border-[#2d7a3a] transition-colors cursor-pointer"
+          >
+            <div class="flex items-start justify-between mb-2">
+              <span class="text-xs font-medium text-[#c8d8c8] leading-tight">{{ cap.name }}</span>
+              <span class="w-1.5 h-1.5 rounded-full flex-shrink-0 mt-0.5 ml-2" :class="capStatusDot(cap.status || cap.maturity_status || 'draft')"></span>
+            </div>
+            <div v-if="cap.domain" class="mb-2">
+              <span class="text-[10px] px-1.5 py-0.5 rounded bg-[#0f2014] text-[#5a7a5a] border border-[#162016]">{{ cap.domain }}</span>
+            </div>
+            <div class="w-full h-0.5 bg-[#162016] rounded-full overflow-hidden">
+              <div
+                class="h-full rounded-full transition-all"
+                :class="capMaturityColor(cap.maturity || 0)"
+                :style="{ width: (cap.maturity || 0) + '%' }"
+              ></div>
+            </div>
+          </NuxtLink>
+        </div>
+      </div>
+
+      <!-- Pending Sign-offs -->
+      <div v-if="operatorApprovals.length > 0" class="bg-[#0c110c] border border-[#2a1010] rounded-lg overflow-hidden">
+        <div class="px-5 py-3 border-b border-[#1e1010] flex items-center justify-between">
           <div class="flex items-center gap-2">
-            <span class="text-amber-400">⚠️</span>
-            <span class="text-sm font-semibold text-white">Pending Sign-offs</span>
-            <span class="text-xs bg-red-500/20 text-red-300 px-2 py-0.5 rounded-full">{{ pendingSignOffsCount }}</span>
+            <span class="text-[#f87171] text-xs">○</span>
+            <span class="text-sm font-medium text-[#dde5dd]" style="font-family: 'Fraunces', serif;">Pending Sign-offs</span>
+            <span class="text-[10px] bg-red-500/20 text-red-400 px-2 py-0.5 rounded-full">{{ pendingSignOffsCount }}</span>
           </div>
-          <div class="flex items-center gap-2">
-            <button @click="approveAll" :disabled="bulkApproving"
-              class="px-3 py-1 bg-green-700/40 hover:bg-green-700/60 text-green-300 text-xs rounded-lg transition-colors disabled:opacity-50">
-              {{ bulkApproving ? 'Approving…' : `Approve All (${operatorApprovals.length})` }}
+          <div class="flex items-center gap-3">
+            <button
+              @click="approveAll"
+              :disabled="bulkApproving"
+              class="px-3 py-1 bg-[#0f2014] hover:bg-[#1e5228] text-[#6fcf8a] text-xs rounded border border-[#1c3a1c] transition-colors disabled:opacity-50"
+            >
+              {{ bulkApproving ? 'Approving...' : `Approve All (${operatorApprovals.length})` }}
             </button>
-            <NuxtLink to="/sign-offs" class="text-xs text-blue-400 hover:text-blue-300 transition-colors">View all →</NuxtLink>
+            <NuxtLink to="/sign-offs" class="text-xs text-[#5a7a5a] hover:text-[#6fcf8a] transition-colors">View all →</NuxtLink>
           </div>
         </div>
-        <div class="divide-y divide-slate-800">
-          <div v-for="a in operatorApprovals" :key="a.id" class="px-5 py-3 flex items-start gap-4">
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center gap-2 mb-1">
-                <span class="text-xs px-2 py-0.5 rounded-full font-medium"
-                  :class="a.kind === 'legal' ? 'bg-red-500/20 text-red-300' : a.kind === 'deploy' ? 'bg-blue-500/20 text-blue-300' : 'bg-amber-500/20 text-amber-300'">
-                  {{ a.kind }}
-                </span>
-                <span v-if="a.project" class="text-xs text-slate-500">{{ a.project }}</span>
+        <div class="divide-y divide-[#162016]">
+          <div v-for="a in operatorApprovals" :key="a.id" class="px-5 py-4">
+            <!-- CADE mini brief -->
+            <div class="flex items-start justify-between gap-4 mb-3">
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 flex-wrap mb-1.5">
+                  <span class="text-[10px] px-2 py-0.5 rounded border font-medium"
+                    :class="a.kind === 'legal' ? 'bg-red-500/10 text-red-400 border-red-800/40' : a.kind === 'deploy' ? 'bg-blue-500/10 text-blue-400 border-blue-800/40' : 'bg-[#0f2014] text-[#6fcf8a] border-[#1c3a1c]'">
+                    {{ a.kind }}
+                  </span>
+                  <span v-if="a.project" class="text-[10px] text-[#3a5a3a] bg-[#0a120a] px-2 py-0.5 rounded border border-[#162016]">{{ a.project }}</span>
+                  <span class="text-[10px] text-[#3a5a3a] ml-auto">{{ a.created_at ? ago(a.created_at) : '' }}</span>
+                </div>
+                <div class="text-sm font-medium text-[#c8d8c8] mb-2">{{ a.title }}</div>
+                <div class="space-y-1 text-xs">
+                  <div><span class="text-[#3a5a3a] font-medium mr-2">C</span><span class="text-[#7a9a7a]">{{ a.why || 'Authorization required for this action.' }}</span></div>
+                  <div><span class="text-[#3a5a3a] font-medium mr-2">D</span>
+                    <span class="text-[#6fcf8a]">Approve = {{ a.value || 'proceed' }}</span>
+                    <span class="text-[#3a5a3a] mx-1">·</span>
+                    <span class="text-[#f87171]">Deny = {{ a.risk || 'blocks dependent tasks' }}</span>
+                  </div>
+                </div>
               </div>
-              <div class="text-sm text-slate-200 font-medium truncate">{{ a.title }}</div>
-              <div v-if="a.why" class="text-xs text-slate-500 mt-0.5 line-clamp-1">{{ a.why }}</div>
-            </div>
-            <div class="flex gap-2 flex-shrink-0">
-              <button @click="decide(a.id, 'approved')" class="px-3 py-1 bg-green-700/30 hover:bg-green-700/50 text-green-300 text-xs rounded-lg transition-colors">Approve</button>
-              <button @click="decide(a.id, 'denied')" class="px-3 py-1 bg-red-700/30 hover:bg-red-700/50 text-red-300 text-xs rounded-lg transition-colors">Deny</button>
+              <div class="flex flex-col gap-2 flex-shrink-0">
+                <button @click="decide(a.id, 'approved')" class="px-3 py-1.5 bg-[#0f2014] hover:bg-[#1e5228] text-[#6fcf8a] text-xs rounded border border-[#1c3a1c] transition-colors">Approve</button>
+                <button @click="decide(a.id, 'denied')" class="px-3 py-1.5 bg-[#1a0808] hover:bg-[#2a1010] text-[#f87171] text-xs rounded border border-[#3a1010] transition-colors">Deny</button>
+              </div>
             </div>
           </div>
         </div>
         <div v-if="approvalError" class="px-5 py-2 text-xs text-red-400 bg-red-500/10 border-t border-red-800/30">{{ approvalError }}</div>
       </div>
 
-      <!-- Live Activity Feed -->
-      <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-        <div class="px-5 py-3 border-b border-slate-800 flex items-center justify-between">
+      <!-- Live Activity -->
+      <div class="bg-[#0c110c] border border-[#162016] rounded-lg overflow-hidden">
+        <div class="px-5 py-3 border-b border-[#162016] flex items-center justify-between">
           <div class="flex items-center gap-2">
-            <span class="text-green-400">●</span>
-            <span class="text-sm font-semibold text-white">Live Activity</span>
-            <span class="text-xs text-slate-500">last 20 tasks</span>
+            <span class="w-1.5 h-1.5 rounded-full bg-[#6fcf8a] dot-breathe"></span>
+            <span class="text-sm font-medium text-[#dde5dd]" style="font-family: 'Fraunces', serif;">Live Activity</span>
+            <span class="text-xs text-[#3a5a3a]">last 20 tasks</span>
           </div>
-          <NuxtLink to="/queue" class="text-xs text-blue-400 hover:text-blue-300 transition-colors">Full queue →</NuxtLink>
+          <NuxtLink to="/queue" class="text-xs text-[#5a7a5a] hover:text-[#6fcf8a] transition-colors">Full queue →</NuxtLink>
         </div>
-        <div class="divide-y divide-slate-800/60">
-          <div v-if="recentTasks.length === 0" class="px-5 py-8 text-center text-slate-600 text-sm">No tasks yet</div>
-          <div v-for="t in recentTasks" :key="t.id"
-            class="px-5 py-3 hover:bg-slate-800/30 transition-colors cursor-pointer"
-            @click="expandedTask = expandedTask === t.id ? null : t.id">
+        <div class="divide-y divide-[#0f180f]">
+          <div v-if="recentTasks.length === 0" class="px-5 py-10 text-center text-[#3a5a3a] text-sm">No tasks yet</div>
+          <div
+            v-for="t in recentTasks"
+            :key="t.id"
+            class="px-5 py-2.5 hover:bg-[#0f180f] transition-colors cursor-pointer"
+            @click="expandedTask = expandedTask === t.id ? null : t.id"
+          >
             <div class="flex items-center gap-3">
-              <span class="text-xs px-2 py-0.5 rounded-full font-mono font-medium" :class="stateColor(t.state)">
-                {{ t.state }}
-              </span>
-              <span class="text-sm text-slate-200 truncate flex-1 font-mono">{{ t.slug }}</span>
-              <span v-if="t.project_id" class="text-xs text-slate-500 hidden sm:block">{{ projects.find(p=>p.id===t.project_id)?.name }}</span>
-              <span v-if="t.model" class="text-xs text-slate-600 hidden md:block truncate max-w-24">{{ t.model }}</span>
-              <span class="text-xs text-slate-600 flex-shrink-0">{{ t.created_at ? ago(t.created_at) : '' }}</span>
-              <span :class="t.state === 'RUNNING' ? 'text-blue-400 animate-pulse' : 'text-slate-700'" class="text-xs">▼</span>
+              <span
+                class="text-[10px] px-2 py-0.5 rounded font-mono font-medium flex-shrink-0"
+                :class="stateColor(t.state)"
+              >{{ t.state }}</span>
+              <span class="text-xs text-[#7a9a7a] truncate flex-1 font-mono">{{ t.slug }}</span>
+              <span v-if="t.project_id" class="text-[10px] text-[#3a5a3a] hidden sm:block">{{ projects.find(p => p.id === t.project_id)?.name }}</span>
+              <span class="text-[10px] text-[#3a5a3a] flex-shrink-0">{{ t.created_at ? ago(t.created_at) : '' }}</span>
+              <span class="text-[10px]" :class="t.state === 'RUNNING' ? 'text-[#6fcf8a]' : 'text-[#162016]'">▼</span>
             </div>
-            <!-- Expandable log_tail -->
-            <div v-if="expandedTask === t.id" class="mt-3 p-3 bg-[#0d1117] rounded-lg border border-slate-800">
-              <div class="text-xs text-slate-500 mb-2">{{ t.prompt?.slice(0, 200) }}{{ t.prompt?.length > 200 ? '…' : '' }}</div>
-              <pre v-if="t.log_tail" class="text-xs text-green-300 font-mono whitespace-pre-wrap overflow-x-auto max-h-48 overflow-y-auto">{{ t.log_tail }}</pre>
-              <div v-else class="text-xs text-slate-600 italic">No log output yet</div>
+            <div v-if="expandedTask === t.id" class="mt-2 p-3 bg-[#070c07] rounded border border-[#162016]">
+              <div class="text-xs text-[#5a7a5a] mb-2 font-mono">{{ t.prompt?.slice(0, 200) }}{{ t.prompt?.length > 200 ? '...' : '' }}</div>
+              <pre v-if="t.log_tail" class="text-xs text-[#6fcf8a] font-mono whitespace-pre-wrap overflow-x-auto max-h-40 overflow-y-auto">{{ t.log_tail }}</pre>
+              <div v-else class="text-xs text-[#3a5a3a] italic">No log output yet</div>
             </div>
           </div>
         </div>
@@ -416,9 +513,3 @@ watch(user, async (u) => { if (u) await loadAll() })
     </div>
   </div>
 </template>
-
-<style scoped>
-.select-dark {
-  @apply bg-slate-800 border border-slate-700 text-slate-200 text-sm rounded-lg px-3 py-2 focus:outline-none focus:border-blue-500 cursor-pointer;
-}
-</style>

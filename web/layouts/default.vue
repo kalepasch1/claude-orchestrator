@@ -1,74 +1,123 @@
 <template>
-  <div class="flex h-screen bg-[#0d1117] text-slate-300 overflow-hidden">
+  <div class="flex h-screen bg-[#07090a] text-[#dde5dd] overflow-hidden">
     <!-- Sidebar -->
-    <aside class="w-56 flex-shrink-0 bg-[#0d1117] border-r border-slate-800 flex flex-col">
+    <aside class="w-56 flex-shrink-0 bg-[#07090a] border-r border-[#162016] flex flex-col">
       <!-- Branding -->
-      <div class="px-4 py-4 border-b border-slate-800">
-        <div class="flex items-center gap-2">
-          <span class="text-blue-400 text-lg">⬡</span>
-          <div>
-            <div class="text-sm font-bold text-white tracking-tight">Claude Orchestrator</div>
-            <div class="text-xs text-slate-500">AI Platform Control</div>
-          </div>
+      <div class="px-4 py-4 border-b border-[#162016]">
+        <div class="mb-1">
+          <div class="text-xs tracking-[0.25em] uppercase text-[#dde5dd] font-medium" style="font-family: 'Fraunces', serif; letter-spacing: 0.2em;">ORCHESTRATOR</div>
+          <div class="text-[10px] text-[#3a5a3a] mt-0.5 tracking-wide">AI Control Platform</div>
         </div>
-        <div class="mt-3 flex items-center gap-3">
-          <div class="flex items-center gap-1.5">
-            <span class="w-2 h-2 rounded-full" :class="runnerCount > 0 ? 'bg-green-400 animate-pulse' : 'bg-slate-600'"></span>
-            <span class="text-xs text-slate-400">{{ runnerCount }} runner{{ runnerCount !== 1 ? 's' : '' }}</span>
-          </div>
-          <NuxtLink to="/sign-offs" class="flex items-center gap-1">
-            <span v-if="pendingCount > 0" class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 bg-red-500 text-white text-xs rounded-full font-bold">{{ pendingCount }}</span>
+        <div class="mt-3 flex items-center gap-2">
+          <span
+            class="w-1.5 h-1.5 rounded-full flex-shrink-0"
+            :class="runnerCount > 0 ? 'bg-[#6fcf8a] dot-breathe' : 'bg-[#1e2e1e]'"
+          ></span>
+          <span class="text-[11px] text-[#5a7a5a]">{{ runnerCount }} active</span>
+          <NuxtLink v-if="pendingCount > 0" to="/sign-offs" class="ml-auto">
+            <span class="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 bg-red-500/90 text-white text-[10px] rounded-full font-bold">{{ pendingCount }}</span>
           </NuxtLink>
         </div>
       </div>
       <!-- Navigation -->
-      <nav class="flex-1 overflow-y-auto py-2 space-y-0.5">
-        <NuxtLink to="/" class="nav-link" active-class="nav-active" exact>
-          <span class="nav-icon">⌘</span> Command Center
+      <nav class="flex-1 overflow-y-auto py-2">
+        <NuxtLink
+          to="/"
+          class="flex items-center gap-3 px-4 py-2 text-sm transition-colors"
+          :class="$route.path === '/' ? 'bg-[#0f2014] text-[#6fcf8a]' : 'text-[#5a7a5a] hover:bg-[#0c180e] hover:text-[#c8d8c8]'"
+          exact
+        >
+          <span class="w-4 text-center flex-shrink-0 text-xs">→</span>
+          <span>Command Center</span>
         </NuxtLink>
-        <NuxtLink to="/sign-offs" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">✅</span>
-          Sign-offs
-          <span v-if="pendingCount > 0" class="ml-auto inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 bg-red-500 text-white text-xs rounded-full font-bold">{{ pendingCount }}</span>
+        <NuxtLink
+          to="/sign-offs"
+          class="flex items-center gap-3 px-4 py-2 text-sm transition-colors"
+          :class="$route.path === '/sign-offs' ? 'bg-[#0f2014] text-[#6fcf8a]' : 'text-[#5a7a5a] hover:bg-[#0c180e] hover:text-[#c8d8c8]'"
+        >
+          <span class="w-4 text-center flex-shrink-0 text-xs">○</span>
+          <span>Sign-offs</span>
+          <span v-if="pendingCount > 0" class="ml-auto inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 bg-red-500/90 text-white text-[10px] rounded-full font-bold">{{ pendingCount }}</span>
         </NuxtLink>
-        <NuxtLink to="/queue" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">📋</span> Queue
+        <NuxtLink
+          to="/queue"
+          class="flex items-center gap-3 px-4 py-2 text-sm transition-colors"
+          :class="$route.path === '/queue' ? 'bg-[#0f2014] text-[#6fcf8a]' : 'text-[#5a7a5a] hover:bg-[#0c180e] hover:text-[#c8d8c8]'"
+        >
+          <span class="w-4 text-center flex-shrink-0 text-xs">≡</span>
+          <span>Queue</span>
         </NuxtLink>
-        <NuxtLink to="/orchestrators" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">🤖</span> Orchestrators
+        <NuxtLink
+          to="/orchestrators"
+          class="flex items-center gap-3 px-4 py-2 text-sm transition-colors"
+          :class="$route.path === '/orchestrators' ? 'bg-[#0f2014] text-[#6fcf8a]' : 'text-[#5a7a5a] hover:bg-[#0c180e] hover:text-[#c8d8c8]'"
+        >
+          <span class="w-4 text-center flex-shrink-0 text-xs">◈</span>
+          <span>Orchestrators</span>
         </NuxtLink>
-        <NuxtLink to="/spend" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">💰</span> Spend &amp; ROI
+        <NuxtLink
+          to="/spend"
+          class="flex items-center gap-3 px-4 py-2 text-sm transition-colors"
+          :class="$route.path === '/spend' ? 'bg-[#0f2014] text-[#6fcf8a]' : 'text-[#5a7a5a] hover:bg-[#0c180e] hover:text-[#c8d8c8]'"
+        >
+          <span class="w-4 text-center flex-shrink-0 text-xs">$</span>
+          <span>Spend &amp; ROI</span>
         </NuxtLink>
-        <NuxtLink to="/loops" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">🔄</span> Loops
+        <NuxtLink
+          to="/loops"
+          class="flex items-center gap-3 px-4 py-2 text-sm transition-colors"
+          :class="$route.path === '/loops' ? 'bg-[#0f2014] text-[#6fcf8a]' : 'text-[#5a7a5a] hover:bg-[#0c180e] hover:text-[#c8d8c8]'"
+        >
+          <span class="w-4 text-center flex-shrink-0 text-xs">∞</span>
+          <span>Loops</span>
         </NuxtLink>
-        <NuxtLink to="/inbox" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">📥</span> Inbox
+        <NuxtLink
+          to="/inbox"
+          class="flex items-center gap-3 px-4 py-2 text-sm transition-colors"
+          :class="$route.path === '/inbox' ? 'bg-[#0f2014] text-[#6fcf8a]' : 'text-[#5a7a5a] hover:bg-[#0c180e] hover:text-[#c8d8c8]'"
+        >
+          <span class="w-4 text-center flex-shrink-0 text-xs">⊡</span>
+          <span>Inbox</span>
         </NuxtLink>
-        <NuxtLink to="/fleet" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">🚀</span> Fleet
+        <NuxtLink
+          to="/fleet"
+          class="flex items-center gap-3 px-4 py-2 text-sm transition-colors"
+          :class="$route.path === '/fleet' ? 'bg-[#0f2014] text-[#6fcf8a]' : 'text-[#5a7a5a] hover:bg-[#0c180e] hover:text-[#c8d8c8]'"
+        >
+          <span class="w-4 text-center flex-shrink-0 text-xs">◉</span>
+          <span>Fleet</span>
         </NuxtLink>
-        <NuxtLink to="/health" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">❤️</span> Health
+        <NuxtLink
+          to="/health"
+          class="flex items-center gap-3 px-4 py-2 text-sm transition-colors"
+          :class="$route.path === '/health' ? 'bg-[#0f2014] text-[#6fcf8a]' : 'text-[#5a7a5a] hover:bg-[#0c180e] hover:text-[#c8d8c8]'"
+        >
+          <span class="w-4 text-center flex-shrink-0 text-xs">♡</span>
+          <span>Health</span>
         </NuxtLink>
 
         <div class="px-4 pt-4 pb-1">
-          <div class="border-t border-slate-800"></div>
+          <div class="border-t border-[#162016]"></div>
         </div>
-        <NuxtLink to="/admin" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">⚙️</span> Admin
+
+        <NuxtLink
+          to="/admin"
+          class="flex items-center gap-3 px-4 py-2 text-sm transition-colors"
+          :class="$route.path === '/admin' ? 'bg-[#0f2014] text-[#6fcf8a]' : 'text-[#5a7a5a] hover:bg-[#0c180e] hover:text-[#c8d8c8]'"
+        >
+          <span class="w-4 text-center flex-shrink-0 text-xs">⚙</span>
+          <span>Admin</span>
         </NuxtLink>
       </nav>
 
       <!-- Footer -->
-      <div class="px-4 py-3 border-t border-slate-800">
-        <div class="text-xs text-slate-600">Orchestrator v2</div>
+      <div class="px-4 py-3 border-t border-[#162016]">
+        <div class="text-[10px] text-[#3a5a3a] truncate">v2.0</div>
       </div>
     </aside>
 
     <!-- Page content -->
-    <main class="flex-1 overflow-y-auto">
+    <main class="flex-1 overflow-y-auto bg-[#07090a]">
       <slot />
     </main>
   </div>
@@ -96,15 +145,3 @@ onMounted(() => {
   onUnmounted(() => clearInterval(timer))
 })
 </script>
-
-<style scoped>
-.nav-link {
-  @apply flex items-center gap-2 px-4 py-2 text-sm text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 transition-colors rounded-none;
-}
-.nav-active {
-  @apply bg-slate-800 text-white;
-}
-.nav-icon {
-  @apply text-xs w-5 text-center flex-shrink-0;
-}
-</style>
