@@ -1,9 +1,9 @@
 <template>
-  <div class="flex h-screen bg-gray-950 text-gray-200">
+  <div class="flex h-screen bg-white text-gray-900">
     <!-- Sidebar -->
-    <aside class="w-56 bg-gray-900 border-r border-gray-800 flex flex-col">
-      <div class="p-4 border-b border-gray-800">
-        <h1 class="text-sm font-semibold text-indigo-400 tracking-wide">SMRTER OPS</h1>
+    <aside class="w-56 bg-gray-50 border-r border-gray-200 flex flex-col">
+      <div class="p-4 border-b border-gray-200">
+        <h1 class="text-sm font-semibold text-blue-700 tracking-wide">SMRTER OPS</h1>
         <p class="text-xs text-gray-500 mt-1">Unified Admin</p>
       </div>
 
@@ -80,7 +80,7 @@
         <div v-for="app in apps" :key="app.id" class="mt-2">
           <div class="px-4 py-1 text-xs font-medium text-gray-600 uppercase tracking-wider">{{ app.name }}</div>
           <NuxtLink :to="`/admin/${app.id}`" class="nav-link" active-class="nav-active">
-            <span class="nav-dot" :class="app.configured ? 'bg-green-500' : 'bg-gray-600'" />
+            <span class="nav-dot" :class="app.configured ? 'bg-green-500' : 'bg-gray-300'" />
             Dashboard
           </NuxtLink>
           <NuxtLink :to="`/admin/${app.id}/users`" class="nav-link text-xs" active-class="nav-active">
@@ -93,8 +93,8 @@
       </nav>
 
       <!-- Footer -->
-      <div class="p-3 border-t border-gray-800">
-        <NuxtLink to="/" class="text-xs text-gray-500 hover:text-gray-300">&larr; Fleet Ops</NuxtLink>
+      <div class="p-3 border-t border-gray-200">
+        <NuxtLink to="/" class="text-xs text-gray-500 hover:text-gray-900">&larr; Fleet Ops</NuxtLink>
       </div>
     </aside>
 
@@ -129,10 +129,10 @@ onMounted(async () => {
 
 <style scoped>
 .nav-link {
-  @apply flex items-center gap-2 px-4 py-1.5 text-sm text-gray-400 hover:text-gray-200 hover:bg-gray-800 transition-colors;
+  @apply flex items-center gap-2 px-4 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors;
 }
 .nav-active {
-  @apply text-indigo-400 bg-indigo-950/30 border-r-2 border-indigo-400;
+  @apply text-blue-700 bg-blue-50 border-r-2 border-blue-600;
 }
 .nav-icon {
   @apply text-xs w-5 text-center;

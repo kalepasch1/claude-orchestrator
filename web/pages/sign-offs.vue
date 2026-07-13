@@ -134,11 +134,11 @@ function getAi(a: any): AiAssessment {
 }
 
 const REC_STYLE: Record<string, string> = {
-  APPROVE:     'text-[#6fcf8a] bg-[#0a1e0e] border-[#1c3a1c]',
-  ACKNOWLEDGE: 'text-[#60a5fa] bg-[#080f28] border-[#1c2a4a]',
-  CANCEL:      'text-[#f87171] bg-[#1a0808] border-[#3a1010]',
-  ESCALATE:    'text-red-300 bg-red-900/20 border-red-700/60',
-  MONITOR:     'text-yellow-400 bg-yellow-900/10 border-yellow-800/40',
+  APPROVE:     'text-emerald-700 bg-emerald-50 border-emerald-200',
+  ACKNOWLEDGE: 'text-blue-700 bg-blue-50 border-blue-200',
+  CANCEL:      'text-red-700 bg-red-50 border-red-200',
+  ESCALATE:    'text-red-700 bg-red-50 border-red-300',
+  MONITOR:     'text-amber-700 bg-amber-50 border-amber-200',
 }
 
 const WAR_ROOM_PAGES = [
@@ -149,18 +149,18 @@ const WAR_ROOM_PAGES = [
 ]
 
 function kindBadge(kind: string) {
-  if (kind === 'legal') return 'bg-red-500/10 text-red-400 border-red-800/40'
-  if (kind === 'deploy') return 'bg-blue-500/10 text-blue-400 border-blue-800/40'
-  if (kind === 'secret') return 'bg-purple-500/10 text-purple-400 border-purple-800/40'
-  if (kind === 'self') return 'bg-yellow-500/10 text-yellow-400 border-yellow-800/40'
-  return 'bg-[#0f2014] text-[#6fcf8a] border-[#1c3a1c]'
+  if (kind === 'legal') return 'bg-red-50 text-red-600 border-red-200'
+  if (kind === 'deploy') return 'bg-blue-50 text-blue-600 border-blue-200'
+  if (kind === 'secret') return 'bg-purple-50 text-purple-600 border-purple-200'
+  if (kind === 'self') return 'bg-amber-50 text-amber-600 border-amber-200'
+  return 'bg-emerald-50 text-emerald-600 border-emerald-200'
 }
 function borderColor(kind: string) {
-  if (kind === 'legal') return 'border-l-red-800'
-  if (kind === 'deploy') return 'border-l-blue-800'
-  if (kind === 'secret') return 'border-l-purple-700'
-  if (kind === 'self') return 'border-l-yellow-800'
-  return 'border-l-[#1c3a1c]'
+  if (kind === 'legal') return 'border-l-red-400'
+  if (kind === 'deploy') return 'border-l-blue-400'
+  if (kind === 'secret') return 'border-l-purple-400'
+  if (kind === 'self') return 'border-l-amber-400'
+  return 'border-l-emerald-400'
 }
 function ago(ts: string) {
   const d = Math.round((Date.now() - new Date(ts).getTime()) / 60000)
@@ -209,85 +209,85 @@ watch(user, u => { if (u) loadAll() })
 </script>
 
 <template>
-  <div class="min-h-screen bg-[#07090a] text-[#dde5dd]">
+  <div class="min-h-screen bg-white text-gray-900">
     <div class="max-w-3xl mx-auto px-6 py-6 space-y-5">
 
       <!-- Header -->
       <div class="flex items-center justify-between">
         <div>
-          <h1 class="text-lg font-medium text-[#dde5dd]" style="font-family:'Fraunces',serif;">Sign-offs</h1>
-          <p class="text-xs text-[#3a5a3a] mt-0.5 tracking-wide">{{ filtered.length }} pending · operator review required</p>
+          <h1 class="text-lg font-medium text-gray-900" style="font-family:'Fraunces',serif;">Sign-offs</h1>
+          <p class="text-xs text-gray-400 mt-0.5 tracking-wide">{{ filtered.length }} pending · operator review required</p>
         </div>
         <div class="flex items-center gap-2">
-          <select v-model="projectFilter" class="bg-[#070c07] border border-[#1e2e1e] text-[#7a9a7a] text-xs rounded px-3 py-1.5 focus:outline-none focus:border-[#2d7a3a]">
+          <select v-model="projectFilter" class="bg-white border border-gray-200 text-gray-600 text-xs rounded px-3 py-1.5 focus:outline-none focus:border-emerald-400">
             <option value="all">All projects</option>
             <option v-for="p in allProjects" :key="p" :value="p">{{ p }}</option>
           </select>
           <button @click="approveAll" :disabled="bulkApproving || !filtered.length"
-            class="px-3 py-1.5 bg-[#0f2014] hover:bg-[#1e5228] text-[#6fcf8a] text-xs rounded border border-[#1c3a1c] transition-colors disabled:opacity-40">
+            class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs rounded border border-emerald-600 transition-colors disabled:opacity-40">
             {{ bulkApproving ? 'Approving...' : `Approve All (${filtered.length})` }}
           </button>
-          <button @click="loadAll" class="px-3 py-1.5 bg-[#0c110c] text-[#5a7a5a] text-xs rounded border border-[#162016] hover:text-[#c8d8c8] transition-colors">↻</button>
+          <button @click="loadAll" class="px-3 py-1.5 bg-gray-50 text-gray-600 text-xs rounded border border-gray-200 hover:text-gray-900 transition-colors">↻</button>
         </div>
       </div>
 
-      <div v-if="error" class="p-3 bg-red-500/10 border border-red-800/40 rounded-lg text-xs text-red-400">{{ error }}</div>
-      <div v-if="loading" class="text-center py-12 text-[#3a5a3a] text-sm">Loading sign-offs...</div>
+      <div v-if="error" class="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600">{{ error }}</div>
+      <div v-if="loading" class="text-center py-12 text-gray-400 text-sm">Loading sign-offs...</div>
 
-      <div v-else-if="filtered.length === 0" class="text-center py-16 text-[#3a5a3a]">
+      <div v-else-if="filtered.length === 0" class="text-center py-16 text-gray-400">
         <div class="text-3xl mb-3 opacity-30">○</div>
-        <div class="text-base font-medium text-[#5a7a5a]" style="font-family:'Fraunces',serif;">No pending sign-offs</div>
-        <div class="text-xs text-[#3a5a3a] mt-1">All gates are clear</div>
+        <div class="text-base font-medium text-gray-600" style="font-family:'Fraunces',serif;">No pending sign-offs</div>
+        <div class="text-xs text-gray-400 mt-1">All gates are clear</div>
       </div>
 
       <!-- CADE + AI Approval Cards -->
       <div v-else class="space-y-5">
         <div v-for="a in filtered" :key="a.id"
-          class="bg-[#0c110c] border border-[#162016] border-l-2 rounded-lg overflow-hidden"
+          class="bg-white border border-gray-200 border-l-2 rounded-lg overflow-hidden"
           :class="borderColor(a.kind)">
 
           <!-- Card header -->
-          <div class="px-5 py-3 border-b border-[#162016] flex items-center justify-between gap-4">
+          <div class="px-5 py-3 border-b border-gray-200 flex items-center justify-between gap-4">
             <div class="flex items-center gap-2 flex-wrap">
               <span class="text-[10px] px-2 py-0.5 rounded border font-medium tracking-wider" :class="kindBadge(a.kind)">{{ a.kind?.toUpperCase() }}</span>
-              <span v-if="a.approvals_required > 1" class="text-[10px] px-2 py-0.5 rounded border bg-purple-500/10 text-purple-400 border-purple-800/40">{{ a.approvals_required }}-KEY</span>
-              <span v-if="a.project" class="text-[10px] text-[#3a5a3a] bg-[#0a120a] px-2 py-0.5 rounded border border-[#162016]">{{ a.project }}</span>
+              <span v-if="a.approvals_required > 1" class="text-[10px] px-2 py-0.5 rounded border bg-purple-50 text-purple-600 border-purple-200">{{ a.approvals_required }}-KEY</span>
+              <span v-if="a.project" class="text-[10px] text-gray-500 bg-gray-50 px-2 py-0.5 rounded border border-gray-200">{{ a.project }}</span>
             </div>
-            <span class="text-[10px] text-[#3a5a3a] flex-shrink-0 font-mono">{{ a.created_at ? ago(a.created_at) : '' }}</span>
+            <span class="text-[10px] text-gray-400 flex-shrink-0 font-mono">{{ a.created_at ? ago(a.created_at) : '' }}</span>
           </div>
 
           <!-- Title -->
           <div class="px-5 pt-4 pb-2">
-            <h3 class="text-sm font-medium text-[#c8d8c8] leading-snug" style="font-family:'Fraunces',serif;">{{ a.title }}</h3>
+            <h3 class="text-sm font-medium text-gray-900 leading-snug" style="font-family:'Fraunces',serif;">{{ a.title }}</h3>
           </div>
 
           <!-- CADE Sections -->
           <div class="px-5 space-y-2 pb-3">
-            <div class="rounded border border-[#162016] overflow-hidden">
-              <div class="px-3 py-1 bg-[#0a120a] border-b border-[#162016]"><span class="text-[9px] font-medium text-[#2d5a2d] tracking-[0.15em] uppercase">Context</span></div>
-              <div class="px-3 py-2.5 text-xs text-[#6a8a6a] leading-relaxed">{{ getCade(a).context }}</div>
+            <div class="rounded border border-gray-200 overflow-hidden">
+              <div class="px-3 py-1 bg-gray-50 border-b border-gray-200"><span class="text-[9px] font-medium text-gray-500 tracking-[0.15em] uppercase">Context</span></div>
+              <div class="px-3 py-2.5 text-xs text-gray-600 leading-relaxed">{{ getCade(a).context }}</div>
             </div>
-            <div class="rounded border border-[#162016] overflow-hidden">
-              <div class="px-3 py-1 bg-[#0a120a] border-b border-[#162016]"><span class="text-[9px] font-medium text-[#2d5a2d] tracking-[0.15em] uppercase">Action Required</span></div>
-              <div class="px-3 py-2.5 text-xs text-[#6a8a6a] leading-relaxed">{{ getCade(a).action }}</div>
+            <div class="rounded border border-gray-200 overflow-hidden">
+              <div class="px-3 py-1 bg-gray-50 border-b border-gray-200"><span class="text-[9px] font-medium text-gray-500 tracking-[0.15em] uppercase">Action Required</span></div>
+              <div class="px-3 py-2.5 text-xs text-gray-600 leading-relaxed">{{ getCade(a).action }}</div>
             </div>
-            <div class="rounded border border-[#162016] overflow-hidden">
-              <div class="px-3 py-1 bg-[#0a120a] border-b border-[#162016]"><span class="text-[9px] font-medium text-[#2d5a2d] tracking-[0.15em] uppercase">Decision</span></div>
+            <div class="rounded border border-gray-200 overflow-hidden">
+              <div class="px-3 py-1 bg-gray-50 border-b border-gray-200"><span class="text-[9px] font-medium text-gray-500 tracking-[0.15em] uppercase">Decision</span></div>
               <div class="px-3 py-2.5 space-y-1">
-                <div class="text-xs"><span class="text-[#6fcf8a] font-medium mr-2">Approve =</span><span class="text-[#6a8a6a]">{{ getCade(a).approveValue }}</span></div>
-                <div class="text-xs"><span class="text-[#f87171] font-medium mr-2">Deny =</span><span class="text-[#6a8a6a]">{{ getCade(a).denyRisk }}</span></div>
+                <div class="text-xs"><span class="text-emerald-600 font-medium mr-2">Approve =</span><span class="text-gray-600">{{ getCade(a).approveValue }}</span></div>
+                <div class="text-xs"><span class="text-red-600 font-medium mr-2">Deny =</span><span class="text-gray-600">{{ getCade(a).denyRisk }}</span></div>
               </div>
             </div>
-            <div class="rounded border border-[#162016] overflow-hidden">
-              <div class="px-3 py-1 bg-[#0a120a] border-b border-[#162016]"><span class="text-[9px] font-medium text-[#2d5a2d] tracking-[0.15em] uppercase">Evidence</span></div>
-              <div class="px-3 py-2.5 text-xs text-[#6a8a6a] leading-relaxed">{{ getCade(a).evidence }}</div>
+            <div class="rounded border border-gray-200 overflow-hidden">
+              <div class="px-3 py-1 bg-gray-50 border-b border-gray-200"><span class="text-[9px] font-medium text-gray-500 tracking-[0.15em] uppercase">Evidence</span></div>
+              <div class="px-3 py-2.5 text-xs text-gray-600 leading-relaxed">{{ getCade(a).evidence }}</div>
             </div>
 
             <!-- ── AI Hivemind Assessment ─────────────────────────────────── -->
-            <div class="rounded border border-[#1c2a3a] overflow-hidden">
-              <div class="px-3 py-1 bg-[#080f18] border-b border-[#1c2a3a] flex items-center gap-2">
-                <span class="text-[9px] font-medium text-[#2a4a6a] tracking-[0.15em] uppercase">AI Hivemind Assessment</span>
-                <span class="text-[8px] text-[#1e3a5a]">· claude-orchestrator intelligence</span>
+            <div class="rounded border border-blue-200 overflow-hidden">
+              <div class="px-3 py-1 bg-blue-50 border-b border-blue-200 flex items-center gap-2">
+                <span class="text-[9px] font-medium text-blue-600 tracking-[0.15em] uppercase">AI Hivemind Assessment</span>
+                <span class="text-[8px] text-blue-400">· claude-orchestrator intelligence</span>
               </div>
               <div class="px-3 py-3 space-y-3">
                 <!-- Recommendation + confidence -->
@@ -295,38 +295,38 @@ watch(user, u => { if (u) loadAll() })
                   <span class="text-[10px] px-3 py-1 rounded border font-bold tracking-wider" :class="REC_STYLE[getAi(a).recommendation] || REC_STYLE['APPROVE']">
                     {{ getAi(a).recommendation }}
                   </span>
-                  <div class="flex-1 bg-[#0a120a] rounded-full h-1.5">
-                    <div class="h-1.5 rounded-full bg-[#1e5228]" :style="`width:${getAi(a).confidence}%`"></div>
+                  <div class="flex-1 bg-gray-100 rounded-full h-1.5">
+                    <div class="h-1.5 rounded-full bg-emerald-500" :style="`width:${getAi(a).confidence}%`"></div>
                   </div>
-                  <span class="text-[10px] text-[#3a5a3a] font-mono">{{ getAi(a).confidence }}%</span>
+                  <span class="text-[10px] text-gray-400 font-mono">{{ getAi(a).confidence }}%</span>
                 </div>
                 <!-- Reasoning -->
-                <div class="text-xs text-[#5a7a8a] leading-relaxed italic border-l-2 border-[#1c2a3a] pl-3">
+                <div class="text-xs text-gray-600 leading-relaxed italic border-l-2 border-blue-200 pl-3">
                   "{{ getAi(a).reasoning }}"
                 </div>
                 <!-- Risks -->
                 <div v-if="getAi(a).risks.length" class="space-y-1">
-                  <div class="text-[9px] font-medium text-[#2a4a6a] tracking-[0.12em] uppercase mb-1">Risks Identified</div>
-                  <div v-for="(risk, i) in getAi(a).risks" :key="i" class="flex gap-2 text-xs text-[#5a7a8a]">
-                    <span class="text-[#1e3a5a] flex-shrink-0 mt-0.5">·</span>
+                  <div class="text-[9px] font-medium text-blue-600 tracking-[0.12em] uppercase mb-1">Risks Identified</div>
+                  <div v-for="(risk, i) in getAi(a).risks" :key="i" class="flex gap-2 text-xs text-gray-600">
+                    <span class="text-blue-300 flex-shrink-0 mt-0.5">·</span>
                     <span>{{ risk }}</span>
                   </div>
                 </div>
                 <!-- Legal exposure flag -->
-                <div v-if="getAi(a).legalExposure" class="flex items-center gap-2 text-xs text-red-400 bg-red-900/10 border border-red-800/30 rounded px-2 py-1.5">
+                <div v-if="getAi(a).legalExposure" class="flex items-center gap-2 text-xs text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1.5">
                   <span>⚠</span> Legal/regulatory exposure detected — escalate to legal review before deciding.
                 </div>
               </div>
             </div>
 
             <!-- ── War Room Links (legal/regulated projects) ──────────────── -->
-            <div v-if="getCade(a).legalProjects.length > 0" class="rounded border border-[#1a2a14] overflow-hidden">
-              <div class="px-3 py-1 bg-[#0a140a] border-b border-[#1a2a14]"><span class="text-[9px] font-medium text-[#2a4a2a] tracking-[0.15em] uppercase">War Room · Quick Links</span></div>
+            <div v-if="getCade(a).legalProjects.length > 0" class="rounded border border-gray-200 overflow-hidden">
+              <div class="px-3 py-1 bg-gray-50 border-b border-gray-200"><span class="text-[9px] font-medium text-gray-500 tracking-[0.15em] uppercase">War Room · Quick Links</span></div>
               <div class="px-3 py-2.5 space-y-2">
                 <div v-for="proj in getCade(a).legalProjects" :key="proj" class="flex items-center gap-2 flex-wrap">
-                  <span class="text-[10px] text-[#3a5a3a] font-mono min-w-[80px]">{{ proj }}</span>
+                  <span class="text-[10px] text-gray-500 font-mono min-w-[80px]">{{ proj }}</span>
                   <NuxtLink v-for="page in WAR_ROOM_PAGES" :key="page.path" :to="`${page.path}?project=${proj}`"
-                    class="text-[10px] px-2 py-0.5 rounded border border-[#1a2a14] bg-[#0a140a] text-[#4a8a4a] hover:text-[#6fcf8a] hover:border-[#2d5a2d] transition-colors">
+                    class="text-[10px] px-2 py-0.5 rounded border border-gray-200 bg-gray-50 text-gray-600 hover:text-emerald-600 hover:border-emerald-300 transition-colors">
                     → {{ page.label }}
                   </NuxtLink>
                 </div>
@@ -335,42 +335,42 @@ watch(user, u => { if (u) loadAll() })
           </div>
 
           <!-- Actions -->
-          <div class="px-5 py-3 border-t border-[#162016] flex items-center justify-between gap-4">
+          <div class="px-5 py-3 border-t border-gray-200 flex items-center justify-between gap-4">
             <div class="flex gap-3">
               <button @click="decide(a.id, 'approved')"
-                class="px-6 py-2 bg-[#0f2014] hover:bg-[#1e5228] text-[#6fcf8a] text-sm font-medium rounded border border-[#1c3a1c] transition-colors">
+                class="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded border border-emerald-600 transition-colors">
                 Approve
               </button>
               <button @click="decide(a.id, 'denied')"
-                class="px-6 py-2 bg-[#1a0808] hover:bg-[#2a1010] text-[#f87171] text-sm font-medium rounded border border-[#3a1010] transition-colors">
+                class="px-6 py-2 bg-red-600 hover:bg-red-700 text-white text-sm font-medium rounded border border-red-600 transition-colors">
                 Deny
               </button>
             </div>
-            <span class="text-[9px] text-[#2a3a2a] font-mono">{{ a.id?.slice(0, 8) }}...</span>
+            <span class="text-[9px] text-gray-400 font-mono">{{ a.id?.slice(0, 8) }}...</span>
           </div>
         </div>
       </div>
 
       <!-- Credential Requests -->
-      <div v-if="credRequests.length > 0" class="bg-[#0c110c] border border-[#162016] rounded-lg overflow-hidden">
-        <div class="px-5 py-3 border-b border-[#162016]">
-          <span class="text-xs font-medium text-[#dde5dd]" style="font-family:'Fraunces',serif;">Credential Requests</span>
-          <span class="text-[10px] text-[#3a5a3a] ml-2">{{ credRequests.length }} request{{ credRequests.length !== 1 ? 's' : '' }}</span>
+      <div v-if="credRequests.length > 0" class="bg-white border border-gray-200 rounded-lg overflow-hidden">
+        <div class="px-5 py-3 border-b border-gray-200">
+          <span class="text-xs font-medium text-gray-900" style="font-family:'Fraunces',serif;">Credential Requests</span>
+          <span class="text-[10px] text-gray-400 ml-2">{{ credRequests.length }} request{{ credRequests.length !== 1 ? 's' : '' }}</span>
         </div>
-        <div class="divide-y divide-[#0f180f]">
+        <div class="divide-y divide-gray-100">
           <div v-for="c in credRequests" :key="c.id" class="px-5 py-3 flex items-center gap-4">
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2 mb-0.5">
-                <span class="text-[10px] font-mono text-[#6fcf8a]">{{ c.provider }}</span>
+                <span class="text-[10px] font-mono text-emerald-600">{{ c.provider }}</span>
                 <span class="text-[10px] px-2 py-0.5 rounded border"
-                  :class="c.status === 'payment_required' ? 'bg-red-500/10 text-red-400 border-red-800/40' : c.status === 'pending' ? 'bg-yellow-500/10 text-yellow-400 border-yellow-800/40' : 'bg-[#0f2014] text-[#6fcf8a] border-[#1c3a1c]'">
+                  :class="c.status === 'payment_required' ? 'bg-red-50 text-red-600 border-red-200' : c.status === 'pending' ? 'bg-amber-50 text-amber-600 border-amber-200' : 'bg-emerald-50 text-emerald-600 border-emerald-200'">
                   {{ c.status }}
                 </span>
-                <span v-if="c.project" class="text-[10px] text-[#3a5a3a]">{{ c.project }}</span>
+                <span v-if="c.project" class="text-[10px] text-gray-400">{{ c.project }}</span>
               </div>
-              <div class="text-xs text-[#5a7a5a] truncate">{{ c.reason }}</div>
+              <div class="text-xs text-gray-600 truncate">{{ c.reason }}</div>
             </div>
-            <span class="text-[10px] text-[#3a5a3a] flex-shrink-0">{{ c.created_at ? ago(c.created_at) : '' }}</span>
+            <span class="text-[10px] text-gray-400 flex-shrink-0">{{ c.created_at ? ago(c.created_at) : '' }}</span>
           </div>
         </div>
       </div>

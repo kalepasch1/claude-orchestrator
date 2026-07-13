@@ -42,24 +42,24 @@ const feedbackStats = computed(() => {
 
 function kindColor(kind: string) {
   const k = (kind || '').toLowerCase()
-  if (k === 'alert') return 'bg-red-500/20 text-red-300'
-  if (k === 'warning') return 'bg-amber-500/20 text-amber-300'
-  if (k === 'info') return 'bg-blue-500/20 text-blue-300'
-  return 'bg-slate-700 text-slate-400'
+  if (k === 'alert') return 'bg-red-50 text-red-600'
+  if (k === 'warning') return 'bg-amber-50 text-amber-600'
+  if (k === 'info') return 'bg-blue-50 text-blue-600'
+  return 'bg-gray-200 text-gray-500'
 }
 
 function credStatusColor(status: string) {
-  if (status === 'payment_required') return 'bg-red-500/20 text-red-300'
-  if (status === 'pending') return 'bg-amber-500/20 text-amber-300'
-  if (status === 'approved') return 'bg-green-500/20 text-green-300'
-  return 'bg-slate-700 text-slate-400'
+  if (status === 'payment_required') return 'bg-red-50 text-red-600'
+  if (status === 'pending') return 'bg-amber-50 text-amber-600'
+  if (status === 'approved') return 'bg-green-50 text-green-600'
+  return 'bg-gray-200 text-gray-500'
 }
 
 function sevColor(sev: string) {
-  if (sev === 'critical') return 'text-red-400'
-  if (sev === 'high') return 'text-orange-400'
-  if (sev === 'med') return 'text-amber-400'
-  return 'text-slate-500'
+  if (sev === 'critical') return 'text-red-600'
+  if (sev === 'high') return 'text-orange-600'
+  if (sev === 'med') return 'text-amber-600'
+  return 'text-gray-400'
 }
 
 function ago(ts: string) {
@@ -79,34 +79,34 @@ watch(user, u => { if (u) loadAll() })
 </script>
 
 <template>
-  <div class="min-h-screen bg-[#0d1117] text-slate-300">
+  <div class="min-h-screen bg-white text-gray-900">
     <div class="max-w-4xl mx-auto px-6 py-6 space-y-6">
 
       <div class="flex items-center justify-between">
         <div>
-          <h1 class="text-xl font-bold text-white">Inbox</h1>
-          <p class="text-sm text-slate-500 mt-0.5">Action items, credential requests, and feedback</p>
+          <h1 class="text-xl font-bold text-gray-900">Inbox</h1>
+          <p class="text-sm text-gray-500 mt-0.5">Action items, credential requests, and feedback</p>
         </div>
-        <button @click="loadAll" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-400 text-sm rounded-lg">↻ Refresh</button>
+        <button @click="loadAll" class="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-500 text-sm rounded-lg">↻ Refresh</button>
       </div>
 
-      <div v-if="loading" class="text-center py-12 text-slate-600">Loading…</div>
+      <div v-if="loading" class="text-center py-12 text-gray-400">Loading…</div>
 
       <!-- Action Inbox -->
-      <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-        <div class="px-5 py-3 border-b border-slate-800 flex items-center gap-2">
-          <span class="text-sm font-semibold text-white">Action Items</span>
-          <span class="text-xs bg-slate-800 text-slate-400 px-2 py-0.5 rounded-full">{{ inbox.length }}</span>
+      <div class="bg-gray-50 border border-gray-200 rounded-xl overflow-hidden">
+        <div class="px-5 py-3 border-b border-gray-200 flex items-center gap-2">
+          <span class="text-sm font-semibold text-gray-900">Action Items</span>
+          <span class="text-xs bg-gray-100 text-gray-500 px-2 py-0.5 rounded-full">{{ inbox.length }}</span>
         </div>
-        <div v-if="inbox.length === 0" class="px-5 py-8 text-center text-slate-600 text-sm">Inbox clear</div>
-        <div v-else class="divide-y divide-slate-800">
+        <div v-if="inbox.length === 0" class="px-5 py-8 text-center text-gray-400 text-sm">Inbox clear</div>
+        <div v-else class="divide-y divide-gray-200">
           <div v-for="item in inbox" :key="item.id" class="px-5 py-3">
             <div class="flex items-start gap-3">
               <span class="text-xs px-2 py-0.5 rounded-full mt-0.5 flex-shrink-0" :class="kindColor(item.kind)">{{ item.kind }}</span>
               <div class="flex-1 min-w-0">
-                <div class="text-sm text-slate-200 font-medium">{{ item.title }}</div>
-                <div v-if="item.message" class="text-xs text-slate-500 mt-0.5">{{ item.message }}</div>
-                <div v-if="item.project" class="text-xs text-slate-600 mt-0.5">{{ item.project }}</div>
+                <div class="text-sm text-gray-800 font-medium">{{ item.title }}</div>
+                <div v-if="item.message" class="text-xs text-gray-500 mt-0.5">{{ item.message }}</div>
+                <div v-if="item.project" class="text-xs text-gray-400 mt-0.5">{{ item.project }}</div>
               </div>
             </div>
           </div>
@@ -114,77 +114,77 @@ watch(user, u => { if (u) loadAll() })
       </div>
 
       <!-- Credential Requests -->
-      <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-        <div class="px-5 py-3 border-b border-slate-800 flex items-center gap-2">
-          <span class="text-sm font-semibold text-white">Credential Requests</span>
+      <div class="bg-gray-50 border border-gray-200 rounded-xl overflow-hidden">
+        <div class="px-5 py-3 border-b border-gray-200 flex items-center gap-2">
+          <span class="text-sm font-semibold text-gray-900">Credential Requests</span>
           <span v-if="credRequests.filter(c => c.status === 'payment_required').length > 0"
-            class="text-xs bg-red-500/20 text-red-300 px-2 py-0.5 rounded-full">
+            class="text-xs bg-red-50 text-red-600 px-2 py-0.5 rounded-full">
             {{ credRequests.filter(c => c.status === 'payment_required').length }} payment required
           </span>
         </div>
-        <div v-if="credRequests.length === 0" class="px-5 py-6 text-center text-slate-600 text-sm">No credential requests</div>
-        <div v-else class="divide-y divide-slate-800">
+        <div v-if="credRequests.length === 0" class="px-5 py-6 text-center text-gray-400 text-sm">No credential requests</div>
+        <div v-else class="divide-y divide-gray-200">
           <div v-for="c in credRequests" :key="c.id" class="px-5 py-3 flex items-start gap-4"
             :class="c.status === 'payment_required' ? 'bg-red-500/5' : ''">
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-2 mb-1">
-                <span class="text-xs font-mono font-medium text-blue-300">{{ c.provider }}</span>
+                <span class="text-xs font-mono font-medium text-blue-600">{{ c.provider }}</span>
                 <span class="text-xs px-1.5 py-0.5 rounded-full" :class="credStatusColor(c.status)">{{ c.status }}</span>
-                <span v-if="c.project" class="text-xs text-slate-500">{{ c.project }}</span>
+                <span v-if="c.project" class="text-xs text-gray-500">{{ c.project }}</span>
               </div>
-              <div class="text-sm text-slate-300">{{ c.reason }}</div>
+              <div class="text-sm text-gray-700">{{ c.reason }}</div>
             </div>
-            <span class="text-xs text-slate-600 flex-shrink-0">{{ c.created_at ? ago(c.created_at) : '' }}</span>
+            <span class="text-xs text-gray-400 flex-shrink-0">{{ c.created_at ? ago(c.created_at) : '' }}</span>
           </div>
         </div>
       </div>
 
       <!-- Recent Prune Events -->
-      <div v-if="recentPrunes.length > 0" class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-        <div class="px-5 py-3 border-b border-slate-800">
-          <span class="text-sm font-semibold text-white">Recent Prune Events</span>
+      <div v-if="recentPrunes.length > 0" class="bg-gray-50 border border-gray-200 rounded-xl overflow-hidden">
+        <div class="px-5 py-3 border-b border-gray-200">
+          <span class="text-sm font-semibold text-gray-900">Recent Prune Events</span>
         </div>
-        <div class="divide-y divide-slate-800">
+        <div class="divide-y divide-gray-200">
           <div v-for="p in recentPrunes" :key="p.created_at" class="px-5 py-2.5 flex items-center gap-4 text-xs">
-            <span class="text-slate-600 flex-shrink-0">{{ p.created_at ? ago(p.created_at) : '' }}</span>
-            <span class="text-slate-400 truncate">{{ p.action || p.detail }}</span>
+            <span class="text-gray-400 flex-shrink-0">{{ p.created_at ? ago(p.created_at) : '' }}</span>
+            <span class="text-gray-500 truncate">{{ p.action || p.detail }}</span>
           </div>
         </div>
       </div>
 
       <!-- Feedback Stats -->
-      <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
+      <div class="bg-gray-50 border border-gray-200 rounded-xl p-5 space-y-4">
         <div class="flex items-center justify-between">
-          <span class="text-sm font-semibold text-white">Feedback Summary</span>
-          <span class="text-xs text-slate-500">{{ feedbackStats.total }} total · {{ feedbackStats.newCount }} new</span>
+          <span class="text-sm font-semibold text-gray-900">Feedback Summary</span>
+          <span class="text-xs text-gray-500">{{ feedbackStats.total }} total · {{ feedbackStats.newCount }} new</span>
         </div>
         <div class="grid grid-cols-2 gap-4">
           <div>
-            <div class="text-xs text-slate-500 mb-2">By category</div>
+            <div class="text-xs text-gray-500 mb-2">By category</div>
             <div class="space-y-1">
               <div v-for="(count, cat) in feedbackStats.cats" :key="cat" class="flex justify-between text-xs">
-                <span class="text-slate-400">{{ cat }}</span>
-                <span class="font-mono text-slate-300">{{ count }}</span>
+                <span class="text-gray-500">{{ cat }}</span>
+                <span class="font-mono text-gray-700">{{ count }}</span>
               </div>
             </div>
           </div>
           <div>
-            <div class="text-xs text-slate-500 mb-2">By severity</div>
+            <div class="text-xs text-gray-500 mb-2">By severity</div>
             <div class="space-y-1">
               <div v-for="(count, sev) in feedbackStats.sevs" :key="sev" class="flex justify-between text-xs">
                 <span :class="sevColor(String(sev))">{{ sev }}</span>
-                <span class="font-mono text-slate-300">{{ count }}</span>
+                <span class="font-mono text-gray-700">{{ count }}</span>
               </div>
             </div>
           </div>
         </div>
         <!-- Recent feedback items -->
-        <div v-if="feedbackItems.length > 0" class="space-y-2 pt-2 border-t border-slate-800">
-          <div class="text-xs text-slate-500">Recent observations</div>
-          <div v-for="f in feedbackItems.slice(0, 5)" :key="f.created_at" class="text-xs text-slate-400 flex gap-2">
+        <div v-if="feedbackItems.length > 0" class="space-y-2 pt-2 border-t border-gray-200">
+          <div class="text-xs text-gray-500">Recent observations</div>
+          <div v-for="f in feedbackItems.slice(0, 5)" :key="f.created_at" class="text-xs text-gray-500 flex gap-2">
             <span :class="sevColor(f.severity)" class="flex-shrink-0">{{ f.severity }}</span>
             <span class="truncate">{{ f.observation }}</span>
-            <span class="text-slate-600 flex-shrink-0">{{ f.created_at ? ago(f.created_at) : '' }}</span>
+            <span class="text-gray-400 flex-shrink-0">{{ f.created_at ? ago(f.created_at) : '' }}</span>
           </div>
         </div>
       </div>

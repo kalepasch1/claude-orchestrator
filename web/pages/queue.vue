@@ -140,13 +140,13 @@ async function askNL() {
 
 function stateColor(state: string) {
   const s = (state || '').toUpperCase()
-  if (s === 'RUNNING') return 'text-blue-400 bg-blue-400/10'
-  if (s === 'DONE') return 'text-green-400 bg-green-400/10'
-  if (s === 'MERGED') return 'text-emerald-400 bg-emerald-400/10'
-  if (s === 'QUEUED') return 'text-amber-400 bg-amber-400/10'
-  if (['BLOCKED', 'CONFLICT', 'TESTFAIL'].includes(s)) return 'text-red-400 bg-red-400/10'
-  if (s === 'RETRY') return 'text-orange-400 bg-orange-400/10'
-  return 'text-slate-400 bg-slate-400/10'
+  if (s === 'RUNNING') return 'text-blue-600 bg-blue-50'
+  if (s === 'DONE') return 'text-green-600 bg-green-50'
+  if (s === 'MERGED') return 'text-emerald-600 bg-emerald-50'
+  if (s === 'QUEUED') return 'text-amber-600 bg-amber-50'
+  if (['BLOCKED', 'CONFLICT', 'TESTFAIL'].includes(s)) return 'text-red-600 bg-red-50'
+  if (s === 'RETRY') return 'text-orange-600 bg-orange-50'
+  return 'text-gray-500 bg-gray-100'
 }
 
 function ago(ts: string) {
@@ -166,14 +166,14 @@ watch(user, u => { if (u) loadAll() })
 </script>
 
 <template>
-  <div class="min-h-screen bg-[#0d1117] text-slate-300">
+  <div class="min-h-screen bg-white text-gray-900">
     <div class="max-w-6xl mx-auto px-6 py-6 space-y-6">
 
       <!-- Header -->
       <div class="flex items-center justify-between">
         <div>
-          <h1 class="text-xl font-bold text-white">Queue Management</h1>
-          <p class="text-sm text-slate-500 mt-0.5">Task pipeline state, controls, and submission</p>
+          <h1 class="text-xl font-bold text-gray-900">Queue Management</h1>
+          <p class="text-sm text-gray-500 mt-0.5">Task pipeline state, controls, and submission</p>
         </div>
         <div class="flex gap-2">
           <button @click="globalPaused ? resumeAll() : stopAll()" :disabled="stopLoading"
@@ -181,42 +181,42 @@ watch(user, u => { if (u) loadAll() })
             :class="globalPaused ? 'border-green-700 text-green-400 hover:bg-green-400/10' : 'border-red-700 text-red-400 hover:bg-red-400/10'">
             {{ stopLoading ? '…' : globalPaused ? '▶ Resume All' : '⏹ Stop All' }}
           </button>
-          <button @click="loadAll" class="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-400 text-sm rounded-lg">↻</button>
+          <button @click="loadAll" class="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-500 text-sm rounded-lg">↻</button>
         </div>
       </div>
 
       <!-- KPI Tiles -->
       <div class="grid grid-cols-3 sm:grid-cols-6 gap-3">
-        <div v-for="s in STATES.slice(0,6)" :key="s" class="bg-slate-900 border border-slate-800 rounded-xl p-4 text-center">
+        <div v-for="s in STATES.slice(0,6)" :key="s" class="bg-gray-50 border border-gray-200 rounded-xl p-4 text-center">
           <div class="text-2xl font-bold font-mono" :class="stateColor(s).split(' ')[0]">{{ counts[s] ?? '—' }}</div>
-          <div class="text-xs text-slate-500 mt-1">{{ s }}</div>
+          <div class="text-xs text-gray-500 mt-1">{{ s }}</div>
         </div>
       </div>
 
       <!-- Priority Queue Tiles -->
       <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
-          <div class="text-xl font-bold text-cyan-300 font-mono">{{ priorityCounts.recovery }}</div>
-          <div class="text-xs text-slate-500 mt-1">Recovery queued</div>
+        <div class="bg-gray-50 border border-gray-200 rounded-xl p-4">
+          <div class="text-xl font-bold text-cyan-600 font-mono">{{ priorityCounts.recovery }}</div>
+          <div class="text-xs text-gray-500 mt-1">Recovery queued</div>
         </div>
-        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
-          <div class="text-xl font-bold font-mono" :class="priorityCounts.relfix ? 'text-red-300' : 'text-slate-500'">{{ priorityCounts.relfix }}</div>
-          <div class="text-xs text-slate-500 mt-1">Release-fixes</div>
+        <div class="bg-gray-50 border border-gray-200 rounded-xl p-4">
+          <div class="text-xl font-bold font-mono" :class="priorityCounts.relfix ? 'text-red-600' : 'text-gray-500'">{{ priorityCounts.relfix }}</div>
+          <div class="text-xs text-gray-500 mt-1">Release-fixes</div>
         </div>
-        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
-          <div class="text-xl font-bold text-indigo-300 font-mono">{{ priorityCounts.improve }}</div>
-          <div class="text-xs text-slate-500 mt-1">Improvements</div>
+        <div class="bg-gray-50 border border-gray-200 rounded-xl p-4">
+          <div class="text-xl font-bold text-indigo-600 font-mono">{{ priorityCounts.improve }}</div>
+          <div class="text-xs text-gray-500 mt-1">Improvements</div>
         </div>
-        <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
-          <div class="text-xl font-bold text-emerald-300 font-mono">{{ priorityCounts.canary }}</div>
-          <div class="text-xs text-slate-500 mt-1">Canaries active</div>
+        <div class="bg-gray-50 border border-gray-200 rounded-xl p-4">
+          <div class="text-xl font-bold text-emerald-600 font-mono">{{ priorityCounts.canary }}</div>
+          <div class="text-xs text-gray-500 mt-1">Canaries active</div>
         </div>
       </div>
 
       <!-- Queue Improvement Form -->
-      <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-        <div class="px-5 py-3 border-b border-slate-800">
-          <span class="text-sm font-semibold text-white">Queue Task</span>
+      <div class="bg-gray-50 border border-gray-200 rounded-xl overflow-hidden">
+        <div class="px-5 py-3 border-b border-gray-200">
+          <span class="text-sm font-semibold text-gray-900">Queue Task</span>
         </div>
         <div class="p-5 space-y-3">
           <div class="flex gap-3 flex-wrap">
@@ -229,13 +229,13 @@ watch(user, u => { if (u) loadAll() })
             </select>
           </div>
           <textarea v-model="newTask.prompt" rows="3" placeholder="Prompt / task description…"
-            class="w-full bg-[#0d1117] border border-slate-700 rounded-lg px-4 py-3 text-sm text-slate-200 placeholder-slate-600 resize-none focus:outline-none focus:border-blue-500 font-mono">
+            class="w-full bg-white border border-gray-300 rounded-lg px-4 py-3 text-sm text-gray-800 placeholder-gray-400 resize-none focus:outline-none focus:border-blue-500 font-mono">
           </textarea>
           <div class="flex gap-3">
             <input v-model="newTask.slug" type="text" placeholder="Slug (auto)"
-              class="flex-1 bg-[#0d1117] border border-slate-800 rounded-lg px-3 py-2 text-sm text-slate-300 placeholder-slate-600 focus:outline-none focus:border-slate-600" />
+              class="flex-1 bg-white border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-700 placeholder-gray-400 focus:outline-none focus:border-gray-300" />
             <button @click="queueTask" :disabled="queueLoading || !newTask.prompt.trim() || !newTask.project_id"
-              class="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium rounded-lg disabled:opacity-40 transition-colors">
+              class="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-gray-900 text-sm font-medium rounded-lg disabled:opacity-40 transition-colors">
               {{ queueLoading ? 'Queuing…' : '+ Queue' }}
             </button>
           </div>
@@ -243,43 +243,43 @@ watch(user, u => { if (u) loadAll() })
       </div>
 
       <!-- NL Search -->
-      <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+      <div class="bg-gray-50 border border-gray-200 rounded-xl p-4">
         <div class="flex gap-3">
           <input v-model="nlQuery" @keyup.enter="askNL" type="text" placeholder="Ask anything about the queue… (e.g. 'why are tasks blocked?')"
-            class="flex-1 bg-[#0d1117] border border-slate-700 rounded-lg px-4 py-2 text-sm text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-500" />
+            class="flex-1 bg-white border border-gray-300 rounded-lg px-4 py-2 text-sm text-gray-800 placeholder-gray-400 focus:outline-none focus:border-blue-500" />
           <button @click="askNL" :disabled="nlLoading"
-            class="px-4 py-2 bg-slate-700 hover:bg-slate-600 text-slate-200 text-sm rounded-lg disabled:opacity-40 transition-colors">
+            class="px-4 py-2 bg-gray-200 hover:bg-gray-200 text-gray-800 text-sm rounded-lg disabled:opacity-40 transition-colors">
             {{ nlLoading ? '…' : 'Ask' }}
           </button>
         </div>
-        <div v-if="nlAnswer" class="mt-3 p-3 bg-[#0d1117] rounded-lg text-sm text-slate-300 border border-slate-800">{{ nlAnswer }}</div>
+        <div v-if="nlAnswer" class="mt-3 p-3 bg-white rounded-lg text-sm text-gray-700 border border-gray-200">{{ nlAnswer }}</div>
       </div>
 
       <!-- Task List -->
-      <div class="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
-        <div class="px-5 py-3 border-b border-slate-800 flex items-center gap-3">
-          <span class="text-sm font-semibold text-white">Tasks</span>
+      <div class="bg-gray-50 border border-gray-200 rounded-xl overflow-hidden">
+        <div class="px-5 py-3 border-b border-gray-200 flex items-center gap-3">
+          <span class="text-sm font-semibold text-gray-900">Tasks</span>
           <select v-model="stateFilter" class="select-dark text-xs">
             <option value="all">All states</option>
             <option v-for="s in STATES" :key="s" :value="s">{{ s }}</option>
           </select>
-          <span class="text-xs text-slate-500 ml-auto">{{ tasks.length }} shown</span>
+          <span class="text-xs text-gray-500 ml-auto">{{ tasks.length }} shown</span>
         </div>
-        <div class="divide-y divide-slate-800/60">
-          <div v-if="loading" class="px-5 py-8 text-center text-slate-600 text-sm">Loading…</div>
-          <div v-else-if="tasks.length === 0" class="px-5 py-8 text-center text-slate-600 text-sm">No tasks found</div>
+        <div class="divide-y divide-gray-200/60">
+          <div v-if="loading" class="px-5 py-8 text-center text-gray-400 text-sm">Loading…</div>
+          <div v-else-if="tasks.length === 0" class="px-5 py-8 text-center text-gray-400 text-sm">No tasks found</div>
           <div v-for="t in tasks" :key="t.id"
-            class="px-5 py-3 hover:bg-slate-800/30 transition-colors cursor-pointer"
+            class="px-5 py-3 hover:bg-gray-50 transition-colors cursor-pointer"
             @click="expandedTask = expandedTask === t.id ? null : t.id">
             <div class="flex items-center gap-3">
               <span class="text-xs px-2 py-0.5 rounded-full font-mono font-medium flex-shrink-0" :class="stateColor(t.state)">{{ t.state }}</span>
-              <span class="text-sm text-slate-200 font-mono truncate flex-1">{{ t.slug }}</span>
-              <span v-if="t.model" class="text-xs text-slate-600 hidden md:block truncate max-w-28">{{ t.model }}</span>
-              <span class="text-xs text-slate-600 flex-shrink-0">{{ t.created_at ? ago(t.created_at) : '' }}</span>
+              <span class="text-sm text-gray-800 font-mono truncate flex-1">{{ t.slug }}</span>
+              <span v-if="t.model" class="text-xs text-gray-400 hidden md:block truncate max-w-28">{{ t.model }}</span>
+              <span class="text-xs text-gray-400 flex-shrink-0">{{ t.created_at ? ago(t.created_at) : '' }}</span>
             </div>
-            <div v-if="expandedTask === t.id" class="mt-3 p-3 bg-[#0d1117] rounded-lg border border-slate-800 space-y-2">
-              <div class="text-xs text-slate-500">{{ t.prompt?.slice(0, 300) }}{{ t.prompt?.length > 300 ? '…' : '' }}</div>
-              <pre v-if="t.log_tail" class="text-xs text-green-300 font-mono whitespace-pre-wrap overflow-x-auto max-h-40 overflow-y-auto">{{ t.log_tail }}</pre>
+            <div v-if="expandedTask === t.id" class="mt-3 p-3 bg-white rounded-lg border border-gray-200 space-y-2">
+              <div class="text-xs text-gray-500">{{ t.prompt?.slice(0, 300) }}{{ t.prompt?.length > 300 ? '…' : '' }}</div>
+              <pre v-if="t.log_tail" class="text-xs text-green-600 font-mono whitespace-pre-wrap overflow-x-auto max-h-40 overflow-y-auto">{{ t.log_tail }}</pre>
             </div>
           </div>
         </div>
@@ -291,6 +291,6 @@ watch(user, u => { if (u) loadAll() })
 
 <style scoped>
 .select-dark {
-  @apply bg-slate-800 border border-slate-700 text-slate-200 rounded-lg px-3 py-2 focus:outline-none focus:border-blue-500 cursor-pointer;
+  @apply bg-gray-100 border border-gray-300 text-gray-800 rounded-lg px-3 py-2 focus:outline-none focus:border-blue-500 cursor-pointer;
 }
 </style>
