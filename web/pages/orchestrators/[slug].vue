@@ -491,7 +491,6 @@ watch(slug, () => { refreshInsights() })
               <option :value="'design/'+selectedApp+'-updates'">design/{{ selectedApp }}-updates</option>
               <option :value="'feature/'+selectedApp+'-redesign'">feature/{{ selectedApp }}-redesign</option>
             </select>
-            <a :href="previewUrl" target="_blank" class="px-2 py-1 text-[10px] border border-gray-200 rounded text-gray-600 hover:bg-gray-50">Open App ↗</a>
             <button @click="showDeployPanel = !showDeployPanel"
               class="px-3 py-1 text-[10px] rounded font-medium transition-colors"
               :class="showDeployPanel ? 'bg-emerald-700 text-white' : 'bg-emerald-600 text-white hover:bg-emerald-700'">
@@ -535,54 +534,58 @@ watch(slug, () => { refreshInsights() })
           </div>
         </div>
         <!-- VISUAL CONTEXT + TOOLS AREA (scrollable, domain-specific) -->
-        <div class="flex-1 overflow-y-auto min-h-0 p-4">
-          <!-- Design domain: App preview + metrics -->
-          <div v-if="cap.domain === 'product-design'" class="space-y-4">
-            <div class="bg-gray-100 border border-gray-200 rounded-xl overflow-hidden">
-              <div class="bg-gray-200 px-3 py-1.5 flex items-center gap-2 text-[10px] text-gray-500">
-                <span class="w-2 h-2 rounded-full bg-red-400"></span>
-                <span class="w-2 h-2 rounded-full bg-amber-400"></span>
-                <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
-                <span class="flex-1 text-center font-mono">{{ previewUrl }} — {{ selectedBranch }}</span>
+        <div class="flex-1 overflow-y-auto min-h-0">
+          <!-- LIVE APP PREVIEW — universal across all domains -->
+          <div class="bg-gray-100 border-b border-gray-200">
+            <div class="bg-gray-200 px-3 py-1.5 flex items-center gap-2 text-[10px] text-gray-500">
+              <span class="w-2 h-2 rounded-full bg-red-400"></span>
+              <span class="w-2 h-2 rounded-full bg-amber-400"></span>
+              <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+              <span class="flex-1 text-center font-mono">{{ previewUrl }} — {{ selectedBranch }}</span>
+              <button @click="reloadIframe" class="text-gray-400 hover:text-gray-600 px-1">↻</button>
+              <a :href="previewUrl" target="_blank" class="text-gray-400 hover:text-gray-600 px-1">↗</a>
+            </div>
+            <div class="relative" style="height: 45vh; min-height: 280px;">
+              <!-- Loading overlay -->
+              <div v-if="!iframeLoaded" class="absolute inset-0 bg-white flex items-center justify-center z-10">
+                <div class="text-center space-y-2">
+                  <div class="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                  <p class="text-xs text-gray-400">Loading {{ APPS.find(a => a.id === selectedApp)?.name }}...</p>
+                </div>
               </div>
-              <div class="h-[220px] bg-white flex items-center justify-center">
-                <div class="text-center space-y-3">
-                  <div class="text-5xl">🎨</div>
-                  <p class="text-sm text-gray-700 font-medium">{{ APPS.find(a => a.id === selectedApp)?.name }}</p>
-                  <p class="text-[10px] text-gray-400">Branch: {{ selectedBranch }}</p>
-                  <div class="flex gap-2 justify-center">
-                    <a :href="previewUrl" target="_blank" class="px-3 py-1.5 text-xs bg-gray-900 text-white rounded-lg hover:bg-gray-800">Open Live App ↗</a>
-                    <a :href="previewUrl + '/_vercel/insights'" target="_blank" class="px-3 py-1.5 text-xs border border-gray-300 text-gray-600 rounded-lg hover:bg-gray-50">Analytics ↗</a>
-                  </div>
+              <iframe
+                :key="iframeKey"
+                :src="previewUrl"
+                @load="onIframeLoad"
+                class="w-full h-full border-0"
+                allow="clipboard-read; clipboard-write"
+                referrerpolicy="no-referrer-when-downgrade"
+              />
+            </div>
+          </div>
+
+          <!-- DOMAIN-SPECIFIC TOOLS below preview -->
+          <div class="p-4 space-y-4">
+            <!-- Design domain metrics -->
+            <div v-if="cap.domain === 'product-design'" class="space-y-4">
+              <div class="grid grid-cols-4 gap-3">
+                <div class="bg-white border border-gray-200 rounded-lg p-3">
+                  <div class="text-[10px] text-gray-400">Pages</div><div class="text-xl font-bold text-gray-900 mt-1">12</div><div class="text-[10px] text-emerald-600">All passing</div>
+                </div>
+                <div class="bg-white border border-gray-200 rounded-lg p-3">
+                  <div class="text-[10px] text-gray-400">Components</div><div class="text-xl font-bold text-gray-900 mt-1">47</div><div class="text-[10px] text-blue-600">3 need review</div>
+                </div>
+                <div class="bg-white border border-gray-200 rounded-lg p-3">
+                  <div class="text-[10px] text-gray-400">Cognitive Load</div><div class="text-xl font-bold text-gray-900 mt-1">6.2</div><div class="text-[10px] text-amber-600">Slightly elevated</div>
+                </div>
+                <div class="bg-white border border-gray-200 rounded-lg p-3">
+                  <div class="text-[10px] text-gray-400">Tasks</div><div class="text-xl font-bold text-gray-900 mt-1">{{ recentTasks.filter(t => t.note?.includes(selectedApp)).length }}</div><div class="text-[10px] text-gray-500">For {{ APPS.find(a => a.id === selectedApp)?.name }}</div>
                 </div>
               </div>
             </div>
-            <div class="grid grid-cols-4 gap-3">
-              <div class="bg-white border border-gray-200 rounded-lg p-3">
-                <div class="text-[10px] text-gray-400">Pages</div><div class="text-xl font-bold text-gray-900 mt-1">12</div><div class="text-[10px] text-emerald-600">All passing</div>
-              </div>
-              <div class="bg-white border border-gray-200 rounded-lg p-3">
-                <div class="text-[10px] text-gray-400">Components</div><div class="text-xl font-bold text-gray-900 mt-1">47</div><div class="text-[10px] text-blue-600">3 need review</div>
-              </div>
-              <div class="bg-white border border-gray-200 rounded-lg p-3">
-                <div class="text-[10px] text-gray-400">Cognitive Load</div><div class="text-xl font-bold text-gray-900 mt-1">6.2</div><div class="text-[10px] text-amber-600">Slightly elevated</div>
-              </div>
-              <div class="bg-white border border-gray-200 rounded-lg p-3">
-                <div class="text-[10px] text-gray-400">Tasks</div><div class="text-xl font-bold text-gray-900 mt-1">{{ recentTasks.filter(t => t.note?.includes(selectedApp)).length }}</div><div class="text-[10px] text-gray-500">For {{ APPS.find(a => a.id === selectedApp)?.name }}</div>
-              </div>
-            </div>
-            <!-- Recent tasks for this app -->
-            <div v-if="recentTasks.filter(t => t.note?.includes(selectedApp) || t.note?.includes(slug)).length" class="space-y-1">
-              <div class="text-[10px] text-gray-400 uppercase tracking-wider">Recent tasks — {{ APPS.find(a => a.id === selectedApp)?.name }}</div>
-              <div v-for="t in recentTasks.filter(t => t.note?.includes(selectedApp) || t.note?.includes(slug)).slice(0, 5)" :key="t.id" class="bg-white border border-gray-200 rounded-lg px-3 py-2 flex items-center gap-2 text-xs">
-                <span class="font-mono" :class="stateClass(t.state)">{{ stateIcon(t.state) }}</span>
-                <span class="text-gray-700 flex-1 truncate">{{ t.slug }}</span>
-                <span class="text-[10px] text-gray-400">{{ timeAgo(t.created_at) }}</span>
-              </div>
-            </div>
-          </div>
-          <!-- Legal domain: Document viewer + tools -->
-          <div v-else-if="cap.domain === 'legal-ops'" class="space-y-4">
+
+            <!-- Legal domain tools -->
+            <div v-else-if="cap.domain === 'legal-ops'" class="space-y-4">
             <div class="flex items-center justify-between">
               <h4 class="text-sm font-semibold text-gray-700">Documents — {{ APPS.find(a => a.id === selectedApp)?.name }}</h4>
               <button class="px-2 py-1 text-[10px] bg-blue-600 text-white rounded">+ New Document</button>
