@@ -49,16 +49,20 @@ export function selectHorizon(
   riskSpec: RiskSpec
 ): HorizonType {
   if (oneOffCost !== undefined && fundingCost !== undefined) {
-    const totalCarryCost = (fundingCost * (riskSpec.vectors[0]?.maturity || 1)) / 252;
-    const effectiveCarryCost = carry ? totalCarryCost - carry : totalCarryCost;
-
-    if (oneOffCost < effectiveCarryCost) {
+    // Compare one-off cost against effective perpetual cost (funding cost + carry burden)
+    const effectivePerpetualCost = fundingCost + (carry || 0);
+    if (oneOffCost < effectivePerpetualCost) {
       return 'discrete';
     }
     return 'perpetual';
   }
 
   return 'perpetual';
+}
+
+function formatBps(value: number | undefined): string {
+  if (value === undefined) return 'undefinedBps';
+  return `${value.toFixed(2)}bps`;
 }
 
 export function generateRationale(
@@ -68,7 +72,7 @@ export function generateRationale(
   carry: number | undefined
 ): string {
   if (horizon === 'discrete') {
-    return `Discrete instrument selected: one-off cost (${costDelta?.toFixed(2)}bps) is lower than funding carry cost (${fundingCost?.toFixed(2)}bps annualized) over the horizon.`;
+    return `Discrete instrument selected: one-off cost (${formatBps(costDelta)}) is lower than funding carry cost (${fundingCost?.toFixed(2)}bps annualized) over the horizon.`;
   }
 
   return `Perpetual instrument selected: funding carry (${carry?.toFixed(2)}bps) justifies continuous costs (${fundingCost?.toFixed(2)}bps annualized).`;
@@ -122,16 +126,18 @@ export function composeProgram(
   let instrumentType: InstrumentType = 'spread';
 
   if (riskSpec.vectors.length === 1) {
-    if (riskSpec.description.toLowerCase().includes('call')) {
-      instrumentType = 'call';
-    } else if (riskSpec.description.toLowerCase().includes('put')) {
-      instrumentType = 'put';
-    } else if (riskSpec.description.toLowerCase().includes('collar')) {
+    const desc = riskSpec.description.toLowerCase();
+    // Check more-specific types before substrings they contain (e.g. 'collar' before 'call')
+    if (desc.includes('collar')) {
       instrumentType = 'collar';
-    } else if (riskSpec.description.toLowerCase().includes('ramp')) {
-      instrumentType = 'ramp';
-    } else if (riskSpec.description.toLowerCase().includes('reinstatement')) {
+    } else if (desc.includes('reinstatement')) {
       instrumentType = 'reinstatement';
+    } else if (desc.includes('ramp')) {
+      instrumentType = 'ramp';
+    } else if (desc.includes('call')) {
+      instrumentType = 'call';
+    } else if (desc.includes('put')) {
+      instrumentType = 'put';
     }
   }
 
@@ -179,7 +185,7 @@ export function composeProgram(
   }
 
   const instrument: Instrument = {
-    id: `${primaryVector.underlying}-${Date.now()}`,
+    id: `${primaryVector.underlying}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     type: instrumentType,
     underlying: primaryVector.underlying,
     payoff: {
