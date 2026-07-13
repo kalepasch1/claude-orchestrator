@@ -29,3 +29,5 @@ runner/.env.pre-symlink-merge-*
 
 # machine-local settings with PIDs, credentials, hardcoded paths
 .claude/settings.local.json
+
+runner/*.bak.wedgefix
