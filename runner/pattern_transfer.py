@@ -319,15 +319,32 @@ class _PatternTransfer:
     def _patterns_from_outcomes(self, project):
         """Reconstruct patterns from the outcomes table when compiled_patterns unavailable."""
         try:
+            # outcomes carries the success signal (integrated) but has no state/diff/
+            # files_changed columns. merged_diffs is the only table with changed-file
+            # paths, keyed by the same (project, slug).
             rows = db.select("outcomes", {
                 "project": "eq.%s" % project,
-                "state": "eq.DONE",
-                "select": "slug,diff,files_changed,integrated",
+                "select": "slug,integrated",
                 "limit": "500",
                 "order": "created_at.desc",
             })
             if not rows:
                 return []
+
+            files_by_slug = {}
+            for m in (db.select("merged_diffs", {
+                "project": "eq.%s" % project,
+                "select": "slug,files",
+                "limit": "500",
+            }) or []):
+                fc = m.get("files")
+                if isinstance(fc, str):
+                    try:
+                        fc = json.loads(fc)
+                    except Exception:
+                        fc = []
+                if isinstance(fc, list):
+                    files_by_slug[m.get("slug")] = fc
 
             # group by slug prefix (first two tokens)
             groups = {}
@@ -337,21 +354,11 @@ class _PatternTransfer:
                 if not prefix:
                     continue
                 if prefix not in groups:
-                    groups[prefix] = {"total": 0, "success": 0, "diffs": [], "files": []}
+                    groups[prefix] = {"total": 0, "success": 0, "files": []}
                 groups[prefix]["total"] += 1
                 if r.get("integrated"):
                     groups[prefix]["success"] += 1
-                if r.get("diff"):
-                    groups[prefix]["diffs"].append(r["diff"][:500])
-                if r.get("files_changed"):
-                    fc = r["files_changed"]
-                    if isinstance(fc, str):
-                        try:
-                            fc = json.loads(fc)
-                        except Exception:
-                            fc = []
-                    if isinstance(fc, list):
-                        groups[prefix]["files"].extend(fc)
+                groups[prefix]["files"].extend(files_by_slug.get(slug, []))
 
             patterns = []
             for prefix, g in groups.items():
@@ -380,7 +387,6 @@ class _PatternTransfer:
             rows = db.select("outcomes", {
                 "project": "eq.%s" % project,
                 "slug": "like.%s*" % prefix,
-                "state": "eq.DONE",
                 "limit": "50",
             })
             if not rows:
@@ -404,10 +410,15 @@ class _PatternTransfer:
     def _project_profile(self, project_id):
         """Build a feature profile for a project from its outcomes."""
         try:
-            rows = db.select("outcomes", {
-                "project": "eq.%s" % project_id,
-                "state": "eq.DONE",
-                "select": "slug,diff,files_changed",
+            # merged_diffs is the only table carrying diff text + changed-file paths, and it
+            # holds merged work only (so no state filter is needed). Its `project` column is
+            # the project NAME, not the id, so resolve the id first.
+            prow = db.select("projects", {"id": "eq.%s" % project_id, "select": "name"}) or []
+            if not prow:
+                return {}
+            rows = db.select("merged_diffs", {
+                "project": "eq.%s" % prow[0].get("name"),
+                "select": "slug,diff,files",
                 "limit": "200",
                 "order": "created_at.desc",
             })
@@ -420,7 +431,7 @@ class _PatternTransfer:
 
             for r in rows:
                 # extract file extensions and directories from files_changed
-                fc = r.get("files_changed")
+                fc = r.get("files")
                 if fc:
                     if isinstance(fc, str):
                         try:
@@ -465,7 +476,6 @@ class _PatternTransfer:
         try:
             rows = db.select("outcomes", {
                 "select": "project",
-                "state": "eq.DONE",
                 "limit": "1000",
             })
             return list({r["project"] for r in rows if r.get("project")})

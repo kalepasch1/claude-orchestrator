@@ -95,7 +95,7 @@ class _RetryBudget:
             return
         try:
             rows = db.select("outcomes", {
-                "select": "slug,model,state,attempts,tests_passed,integrated,rate_limited",
+                "select": "slug,model,attempts,tests_passed,integrated,rate_limited",
                 "limit": "10000",
             }) or []
             agg = {}       # prefix -> {attempt_num -> {total, success}}
@@ -103,7 +103,7 @@ class _RetryBudget:
             for r in rows:
                 prefix = _slug_prefix(r.get("slug") or "")
                 attempt = int(r.get("attempts") or 1)
-                success = bool(r.get("state") == "DONE" or r.get("integrated") or r.get("tests_passed"))
+                success = bool(r.get("integrated") or r.get("tests_passed"))
 
                 bucket = agg.setdefault(prefix, {}).setdefault(attempt, {"total": 0, "success": 0})
                 bucket["total"] += 1
