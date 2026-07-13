@@ -15,7 +15,7 @@ _log = _log_mod.get("conflict_predictor")
 _FILE_RE = re.compile(r'[\w/.-]+\.(?:py|ts|js|go|rs|java|tsx|jsx|css|html|sql|yaml|yml|json|toml)')
 
 _ENABLED = os.environ.get("ORCH_CONFLICT_PREDICTOR_ENABLED", "true").lower() == "true"
-_THRESHOLD = float(os.environ.get("ORCH_CONFLICT_THRESHOLD", "0.3"))
+_THRESHOLD = float(os.environ.get("ORCH_CONFLICT_THRESHOLD", "0.75"))
 
 _lock = threading.Lock()
 _stats = {

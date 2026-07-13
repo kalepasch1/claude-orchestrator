@@ -31,9 +31,9 @@ COWORK_ACCOUNT_PREFIX = os.environ.get("ORCH_COWORK_ACCOUNT_PREFIX", "cowork-")
 CACHE_TTL = int(os.environ.get("ORCH_COWORK_CACHE_TTL", "60") or 60)
 THROUGHPUT_WINDOW_HOURS = int(os.environ.get("ORCH_COWORK_THROUGHPUT_WINDOW", "4") or 4)
 # When Cowork throughput exceeds this threshold (tasks/hr), start reducing local lanes
-LANE_REDUCTION_THRESHOLD = float(os.environ.get("ORCH_COWORK_LANE_THRESHOLD", "2.0") or 2.0)
+LANE_REDUCTION_THRESHOLD = float(os.environ.get("ORCH_COWORK_LANE_THRESHOLD", "0.5") or 0.5)
 # Maximum fraction of local lanes to yield to Cowork (0.0–1.0)
-MAX_LANE_REDUCTION = float(os.environ.get("ORCH_COWORK_MAX_LANE_REDUCTION", "0.5") or 0.5)
+MAX_LANE_REDUCTION = float(os.environ.get("ORCH_COWORK_MAX_LANE_REDUCTION", "0.75") or 0.75)
 
 
 # ---------------------------------------------------------------------------
