@@ -909,3 +909,95 @@
 +Task was orphaned RUNNING >20m and hit the janitor cap. Resume/fix/commit rather than asking for manual intervention.
 +```
 +
+
+# 2026-07-13 15:21:17.571537
++PATCH TEMPLATE 7bc64c67a808
++Intent: 07062319 07071626 8b92d078e856 a6f10b7 acceptance adapt adding after agentic alter analysis artifacts available backlog because beethoven before behavior below blocked blocker blocks branch broad
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt:
++- pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi sim=0.547: PATCH TEMPLATE 8b92d078e856
++Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
++Acceptance: preserve existing behavior,
++- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-3-reproduce-failure sim=0.468: PATCH TEMPLATE d51e96944632
++Intent: 07062319 07071626 8b92d078e856 acceptance adapt alter because beethoven before behavior blocks branch broad build changing concrete dependencies diffs drafting duplicate duplicates eliminating examine existing
++Acceptance: preserve existing behavior, make the small
++[patch-template:7bc64c67a808]
++
++MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi similarity=0.347: PATCH TEMPLATE 8b92d078e856
++Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
++Acceptance: preserve existing behavior,
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 similarity=0.289: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
++
++REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
++SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi
++SUMMARY: PATCH TEMPLATE 8b92d078e856
++Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
++Acceptance: preserve existing behavior,
++
++- Implementation slots:
++1.
++- Implementation slots:
++1.
++- Add or update the narrowest test/check that proves the requested behavior.
++- Locate the existing owner module/function before adding 
++
++Canary task for the orchestrator coder pool.
++- Continue the same implementation to completion.
++- Required completion behavior:
++- Commit the final implementation on the task branch.
++- Locate the existing owner module/function before ad
++
++REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
++- Locate the existing owner module/function before adding new files.
++- Prior merged patterns to adapt: none found; keep the patch template reusable.
++- Make the smallest safe repository-local improvement available, such as fixing a typo,
++adding a tiny comment to clarify non-obvious test setup, or improving a harmless doc line.
++- Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
++- If tests/build fail, fix source/config/tests until the relevant checks are green.
++
++Parent task: canary-gpt-1
++
++STRUCTURAL QUARANTINE REWORK
++Original task: canary-gpt-1-slice-3
++Replacement task: rework-secret-canary-gpt-1-slice-3-a6f10b7
++Blocked category: rework
++Blocked context: drain-sprint: canary probes deferred — heavy local models were clamping governor to 1 lane; restore after backlog drains
++
++The original blocker should not be retried verbatim. Reconsider the strategy, preserve the functional value, remove the blocked mechanism, and implement the smallest mergeable safe variant.
++
++Execution rules:
++- Prefer reuse before drafting: search existing repo helpers, merged-diff library, patch templates, and sibling patterns.
++- Keep the diff small and independently mergeable.
++- Run the relevant build/test/QA command and commit the patch.
++- Do not reintroduce the blocker that caused quarantine.
++
++
++[reuse-first: matched qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi]
++
++AGENTIC-REPAIR DIRECTIVE
++Repair category: orphaned-running
++Original task slug: rework-secret-canary-gpt-1-slice-3-a6f10b7
++
++This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
++
++Resume this same task through an agentic coder. Inspect the existing branch/worktree/artifacts, preserve useful prior work, repair the technical issue, run the relevant checks, and commit.
++
++Required completion behavior:
++- Reproduce or inspect the concrete failure before changing broad strategy.
++- If dependencies/build tools are missing, repair the repo setup or install path minimally.
++- If tests/build fail, fix source/config/tests until the relevant checks are green.
++- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
++- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
++
++Failure context:
++```
++agentic-repair:orphaned-running; same-task repair via ollama
++Task was orphaned RUNNING >20m and hit the janitor cap. Resume/fix/commit rather than asking for manual intervention.
++```
++
