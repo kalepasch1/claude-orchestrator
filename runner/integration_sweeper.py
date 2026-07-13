@@ -219,12 +219,7 @@ def _reuse_context(task, proj, repo, base):
             parts.append(h)
     except Exception:
         pass
-    try:
-        import patch_templates
-        _, body = patch_templates.build(task)
-        parts.append(body)
-    except Exception:
-        pass
+    # FIXED: removed patch_templates.build() — was baking hex-hash keyword salad into recovery prompts
     return "\n\n".join(p for p in parts if p)
 
 

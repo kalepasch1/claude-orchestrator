@@ -459,9 +459,13 @@ def _decompose(task, note):
 
 
 def _spawn_subtasks(task, subs):
-    """Create child tasks for a decomposed parent. Returns count actually created."""
+    """FIXED 2026-07-12: quality gate rejects sub-tasks < 80 chars or missing action verbs."""
+    ACTION_WORDS = re.compile(r"\b(add|create|implement|fix|update|write|modify|remove|refactor|replace|extract|move|rename|delete|configure|set up|integrate|convert|wrap|define|build|test|validate|ensure|return|handle|parse|send|fetch|call|check)\b", re.I)
     made = 0
     for i, s in enumerate(subs):
+        prompt_text = str(s.get("prompt") or "").strip()
+        if len(prompt_text) < 80 or not ACTION_WORDS.search(prompt_text):
+            continue
         child = f"{task['slug']}-{s['title']}"[:80]
         if db.select("tasks", {"select": "id", "slug": f"eq.{child}", "limit": "1"}):
             continue
@@ -470,7 +474,7 @@ def _spawn_subtasks(task, subs):
                 "project_id": task.get("project_id"), "slug": child, "kind": "build", "state": "QUEUED",
                 "remediation_count": 0, "base_branch": task.get("base_branch") or "main",
                 "material": bool(task.get("material")),
-                "prompt": s["prompt"] + f"\n\n(Sub-task {i+1}/{len(subs)} of '{task['slug']}', auto-split because the parent was too large to build in one pass.)",
+                "prompt": prompt_text,
                 "note": f"auto-decomposed from {task['slug']}"})
             made += 1
         except Exception:
@@ -479,9 +483,10 @@ def _spawn_subtasks(task, subs):
 
 
 def _already_decomposed(task, note):
-    """Depth guard: a task that was itself a decomposition product and STILL can't build is genuinely
-    stuck — don't recurse forever."""
-    return "auto-decomposed from" in (note or "") or (task.get("slug") or "").count("-part") >= 2
+    """Depth guard — FIXED 2026-07-12: counts both -part and -slice- depth."""
+    slug = task.get("slug") or ""
+    decomposition_depth = slug.count("-part") + slug.count("-slice-")
+    return "auto-decomposed from" in (note or "") or decomposition_depth >= 2
 
 
 def recover_shelved(limit=200):

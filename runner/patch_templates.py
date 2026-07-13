@@ -96,7 +96,7 @@ def pre_claim_hook(task):
             return task
         template_id, body = build(task)
         new_prompt = body + f"\n{MARK}{template_id}]\n\n" + str(task.get("prompt") or "")
-        db.update("tasks", {"id": task["id"]}, {"prompt": new_prompt})
+        # FIXED: do NOT write mutated prompt back to DB — in-memory only
         _store(task, template_id, body)
         try:
             import savings_meter
