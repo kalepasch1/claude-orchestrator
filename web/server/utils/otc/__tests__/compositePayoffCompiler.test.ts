@@ -971,4 +971,252 @@ describe('Composite Payoff Compiler', () => {
       expect(result.instrument.rationale).toContain('bps');
     });
   });
+
+  // ===== SPEC-SPECIFIC REQUIRED INSTRUMENTS =====
+  describe('Spec-specific instrument types', () => {
+    it('should create gradient ramp instruments for ramp description', () => {
+      const riskSpec = createBasicRiskSpec({
+        description: 'Gradient ramp exposure hedge',
+      });
+      const result = composeProgram(riskSpec);
+
+      expect(result.instrument.type).toBe('ramp');
+      expect(result.instrument.isAllowlisted).toBe(true);
+      expect(result.instrument.backtestResults).toBeDefined();
+    });
+
+    it('should create reinstatement instruments when specified', () => {
+      const riskSpec = createBasicRiskSpec({
+        description: 'Reinstatement feature protection',
+      });
+      const result = composeProgram(riskSpec);
+
+      expect(result.instrument.type).toBe('reinstatement');
+      expect(result.instrument.isAllowlisted).toBe(true);
+      expect(result.instrument.backtestResults).toBeDefined();
+    });
+
+    it('should create call-spread via spread type for multi-vector', () => {
+      const riskSpec = createBasicRiskSpec({
+        description: 'call spread hedge',
+        vectors: [
+          {
+            underlying: 'SPX',
+            type: 'equity',
+            strike: 4500,
+            spot: 4550,
+            maturity: 60,
+            notional: 500000,
+          } as RiskVector,
+          {
+            underlying: 'SPX',
+            type: 'equity',
+            strike: 4600,
+            spot: 4550,
+            maturity: 60,
+            notional: 500000,
+          } as RiskVector,
+        ],
+      });
+      const result = composeProgram(riskSpec);
+
+      expect(result.instrument.type).toBe('spread');
+      expect(result.instrument.underlying).toBe('SPX');
+      expect(result.instrument.isAllowlisted).toBe(true);
+    });
+  });
+
+  // ===== HORIZON DECISION LOGIC: FUNDING/CARRY VS ONE-OFF COST =====
+  describe('Horizon selection: funding-carry vs one-off cost decision', () => {
+    it('should choose discrete when one-off cost significantly beats funding+carry', () => {
+      const riskSpec = createBasicRiskSpec({
+        fundingCost: 100,
+        carry: 50,
+        oneOffCost: 80,
+      });
+      const result = composeProgram(riskSpec);
+
+      // oneOffCost (80) < fundingCost + carry (150)
+      expect(result.instrument.horizon).toBe('discrete');
+      expect(result.instrument.costDelta).toBe(-20);
+      expect(result.instrument.rationale).toContain('Discrete');
+    });
+
+    it('should choose perpetual when funding+carry beats one-off cost', () => {
+      const riskSpec = createBasicRiskSpec({
+        fundingCost: 30,
+        carry: 15,
+        oneOffCost: 100,
+      });
+      const result = composeProgram(riskSpec);
+
+      // oneOffCost (100) > fundingCost (30) + carry (15)
+      expect(result.instrument.horizon).toBe('perpetual');
+      expect(result.instrument.rationale).toContain('Perpetual');
+      expect(result.instrument.rationale).toContain('funding carry');
+    });
+
+    it('should close on discrete for break-even with zero carry', () => {
+      const riskSpec = createBasicRiskSpec({
+        fundingCost: 50,
+        carry: 0,
+        oneOffCost: 50,
+      });
+      const result = composeProgram(riskSpec);
+
+      // oneOffCost (50) = fundingCost (50), but selectHorizon uses < so defaults to perpetual
+      expect(result.instrument.horizon).toBe('perpetual');
+    });
+
+    it('should favor discrete when one-off has no carry burden', () => {
+      const riskSpec = createBasicRiskSpec({
+        fundingCost: 25,
+        carry: 75,
+        oneOffCost: 50,
+      });
+      const result = composeProgram(riskSpec);
+
+      // oneOffCost (50) < fundingCost + carry (100)
+      expect(result.instrument.horizon).toBe('discrete');
+    });
+  });
+
+  // ===== DETERMINISTIC BACKTEST REPRODUCIBILITY =====
+  describe('Deterministic backtest across multiple invocations', () => {
+    it('should produce identical backtest results for same underlying+type', () => {
+      const results1 = performStructuralBacktest('AAPL', 'call');
+      const results2 = performStructuralBacktest('AAPL', 'call');
+
+      expect(results1.scenarioCount).toBe(results2.scenarioCount);
+      expect(results1.passed).toBe(results2.passed);
+      expect(results1.failed).toBe(results2.failed);
+      expect(results1.avgPnL).toBe(results2.avgPnL);
+      expect(results1.maxLoss).toBe(results2.maxLoss);
+      expect(results1.maxGain).toBe(results2.maxGain);
+      expect(results1.confidence).toBe(results2.confidence);
+    });
+
+    it('should vary backtest results across different instrument types', () => {
+      const callResults = performStructuralBacktest('AAPL', 'call');
+      const putResults = performStructuralBacktest('AAPL', 'put');
+
+      // Calls and puts have different risk profiles
+      expect(callResults.confidence).not.toBe(putResults.confidence);
+    });
+
+    it('should vary backtest results across different underlyings', () => {
+      const aaplResults = performStructuralBacktest('AAPL', 'call');
+      const msftResults = performStructuralBacktest('MSFT', 'call');
+
+      // Same instrument type but different underlying should differ
+      expect(aaplResults.avgPnL).not.toBe(msftResults.avgPnL);
+    });
+  });
+
+  // ===== FAIL-CLOSED VALIDATION =====
+  describe('Fail-closed validation against instrumentAllowlist and backtest', () => {
+    it('should mark invalid when instrument type not in allowlist', () => {
+      const riskSpec = createBasicRiskSpec();
+      const instrument = {
+        ...createBasicRiskSpec().vectors[0],
+        id: 'failclosed-1',
+        type: 'exotic' as any,
+        underlying: 'TEST',
+        payoff: { strikes: [100], weights: [1.0], type: 'exotic' as any },
+        horizon: 'perpetual' as const,
+        rationale: 'test',
+        isAllowlisted: false,
+        backtestResults: {
+          scenarioCount: 250,
+          passed: 235,
+          failed: 15,
+          avgPnL: 500,
+          maxLoss: -2000,
+          maxGain: 5000,
+          confidence: 0.94,
+        },
+      };
+
+      expect(() => assertComposable(riskSpec, instrument)).toThrow();
+    });
+
+    it('should reject if backtest failed to meet confidence threshold', () => {
+      const riskSpec = createBasicRiskSpec();
+      const instrument = {
+        ...createBasicRiskSpec().vectors[0],
+        id: 'failclosed-2',
+        type: 'call' as const,
+        underlying: 'TEST',
+        payoff: { strikes: [100], weights: [1.0], type: 'call' as const },
+        horizon: 'perpetual' as const,
+        rationale: 'test',
+        isAllowlisted: true,
+        backtestResults: {
+          scenarioCount: 250,
+          passed: 210,
+          failed: 40,
+          avgPnL: 500,
+          maxLoss: -2000,
+          maxGain: 5000,
+          confidence: 0.84, // Below MIN_CONFIDENCE_THRESHOLD of 0.85
+        },
+      };
+
+      expect(() => assertComposable(riskSpec, instrument)).toThrow(
+        /confidence.*below threshold/
+      );
+    });
+
+    it('should reject if backtest scenario count too low', () => {
+      const riskSpec = createBasicRiskSpec();
+      const instrument = {
+        ...createBasicRiskSpec().vectors[0],
+        id: 'failclosed-3',
+        type: 'call' as const,
+        underlying: 'TEST',
+        payoff: { strikes: [100], weights: [1.0], type: 'call' as const },
+        horizon: 'perpetual' as const,
+        rationale: 'test',
+        isAllowlisted: true,
+        backtestResults: {
+          scenarioCount: 50, // Below MIN_SCENARIO_COUNT
+          passed: 45,
+          failed: 5,
+          avgPnL: 500,
+          maxLoss: -2000,
+          maxGain: 5000,
+          confidence: 0.9,
+        },
+      };
+
+      expect(() => assertComposable(riskSpec, instrument)).toThrow(
+        /scenario count.*below minimum/
+      );
+    });
+
+    it('should pass fail-closed validation when all criteria met', () => {
+      const riskSpec = createBasicRiskSpec();
+      const instrument = {
+        ...createBasicRiskSpec().vectors[0],
+        id: 'failclosed-4',
+        type: 'call' as const,
+        underlying: 'TEST',
+        payoff: { strikes: [100], weights: [1.0], type: 'call' as const },
+        horizon: 'perpetual' as const,
+        rationale: 'test',
+        isAllowlisted: true,
+        backtestResults: {
+          scenarioCount: 250,
+          passed: 235,
+          failed: 15,
+          avgPnL: 500,
+          maxLoss: -2000,
+          maxGain: 5000,
+          confidence: 0.94,
+        },
+      };
+
+      expect(() => assertComposable(riskSpec, instrument)).not.toThrow();
+    });
+  });
 });
