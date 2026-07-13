@@ -64,5 +64,19 @@ export const INSTRUMENT_ALLOWLIST: InstrumentType[] = [
   'reinstatement',
 ];
 
-export const MIN_CONFIDENCE_THRESHOLD = 0.85;
-export const MIN_SCENARIO_COUNT = 100;
+function getEnvNumber(key: string, defaultValue: number): number {
+  const value = process.env[key];
+  if (!value) return defaultValue;
+  const parsed = parseFloat(value);
+  return isNaN(parsed) ? defaultValue : parsed;
+}
+
+function getEnvInt(key: string, defaultValue: number): number {
+  const value = process.env[key];
+  if (!value) return defaultValue;
+  const parsed = parseInt(value, 10);
+  return isNaN(parsed) ? defaultValue : parsed;
+}
+
+export const MIN_CONFIDENCE_THRESHOLD = getEnvNumber('OTC_MIN_CONFIDENCE_THRESHOLD', 0.85);
+export const MIN_SCENARIO_COUNT = getEnvInt('OTC_MIN_SCENARIO_COUNT', 100);

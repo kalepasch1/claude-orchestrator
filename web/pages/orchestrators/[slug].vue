@@ -245,10 +245,10 @@ async function deployToProd() {
     // Create release record
     const pid = selectedProject.value || projects.value[0]?.id
     await supabase.from('releases').insert({
-      project_id: pid,
+      project: selectedApp.value,
       version: 'v' + Date.now().toString(36),
-      status: 'deployed',
-      notes: 'Deploy from ' + cap.value.name + ' (' + selectedApp.value + ') branch: ' + selectedBranch.value,
+      deploy_status: 'deployed',
+      note: 'Deploy from ' + cap.value.name + ' (' + selectedApp.value + ') branch: ' + selectedBranch.value,
       created_at: new Date().toISOString(),
     })
 
@@ -496,9 +496,9 @@ watch(selectedApp, () => { loadDraft(); loadDeploys() })
           <div class="text-xs font-semibold text-gray-700 mb-3">Recent Deployments</div>
           <div v-if="recentDeploys.length" class="space-y-1.5">
             <div v-for="d in recentDeploys" :key="d.id" class="flex items-center gap-3 text-sm px-3 py-2 bg-gray-50 rounded-lg">
-              <span class="w-2 h-2 rounded-full" :class="d.status === 'deployed' ? 'bg-emerald-500' : d.status === 'failed' ? 'bg-red-500' : 'bg-amber-400'"></span>
+              <span class="w-2 h-2 rounded-full" :class="d.deploy_status === 'deployed' ? 'bg-emerald-500' : d.deploy_status === 'failed' ? 'bg-red-500' : 'bg-amber-400'"></span>
               <span class="font-mono text-xs text-gray-600">{{ d.version }}</span>
-              <span class="flex-1 truncate text-gray-500 text-xs">{{ d.notes }}</span>
+              <span class="flex-1 truncate text-gray-500 text-xs">{{ d.note || d.changelog || '' }}</span>
               <span class="text-[10px] text-gray-400">{{ timeAgo(d.created_at) }}</span>
             </div>
           </div>

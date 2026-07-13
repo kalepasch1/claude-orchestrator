@@ -173,6 +173,22 @@ export function performStructuralBacktest(
   };
 }
 
+/**
+ * Natural language instrument parsing rules.
+ * Extracts instrument type from RiskSpec.description via case-insensitive keyword matching.
+ * Check order matters: more specific types (e.g., 'collar') must precede substrings they contain.
+ * Only applied when vectors.length === 1 (single underlying); multi-vector specs default to 'spread'.
+ */
+function parseInstrumentTypeFromDescription(description: string): InstrumentType {
+  const desc = description.toLowerCase();
+  if (desc.includes('collar')) return 'collar';
+  if (desc.includes('reinstatement')) return 'reinstatement';
+  if (desc.includes('ramp')) return 'ramp';
+  if (desc.includes('call')) return 'call';
+  if (desc.includes('put')) return 'put';
+  return 'spread';
+}
+
 export function composeProgram(
   riskSpec: RiskSpec
 ): CompilationResult {
@@ -193,19 +209,7 @@ export function composeProgram(
   let instrumentType: InstrumentType = 'spread';
 
   if (riskSpec.vectors.length === 1) {
-    const desc = riskSpec.description.toLowerCase();
-    // Check more-specific types before substrings they contain (e.g. 'collar' before 'call')
-    if (desc.includes('collar')) {
-      instrumentType = 'collar';
-    } else if (desc.includes('reinstatement')) {
-      instrumentType = 'reinstatement';
-    } else if (desc.includes('ramp')) {
-      instrumentType = 'ramp';
-    } else if (desc.includes('call')) {
-      instrumentType = 'call';
-    } else if (desc.includes('put')) {
-      instrumentType = 'put';
-    }
+    instrumentType = parseInstrumentTypeFromDescription(riskSpec.description);
   }
 
   const horizon = selectHorizon(
