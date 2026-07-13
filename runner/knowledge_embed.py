@@ -107,6 +107,11 @@ def embed(text):
     minutes, allows ONE probe call to check if the provider recovered. On success, closes the
     circuit.
     """
+    if not isinstance(text, str):
+        try:
+            text = json.dumps(text, default=str)
+        except Exception:
+            text = str(text)
     now = time.time()
     circuit_open = now < _circuit["open_until"]
     vec, err = None, None

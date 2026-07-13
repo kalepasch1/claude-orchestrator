@@ -97,23 +97,54 @@ _cache = {}  # task_id -> {"ts": float, "data": dict, "task_hash": str}
 _daemon_thread = None
 _stop_event = threading.Event()
 
+# Disk-backed cache so OTHER processes (cowork_assemble.py CLI) can read pre-optimizations.
+_DISK_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".preopt_cache")
+
+
+def _disk_path(task_id):
+    return os.path.join(_DISK_DIR, "%s.json" % task_id)
+
+
+def _disk_read(task_id):
+    try:
+        with open(_disk_path(task_id)) as f:
+            entry = json.load(f)
+        if time.time() - entry.get("ts", 0) > CACHE_TTL:
+            try: os.remove(_disk_path(task_id))
+            except OSError: pass
+            return None
+        return entry
+    except Exception:
+        return None
+
 
 def get(task_id):
     """Retrieve pre-computed results for a task. Returns None if no cache or expired."""
     with _cache_lock:
         entry = _cache.get(task_id)
     if not entry:
-        return None
+        entry = _disk_read(task_id)
+        if not entry:
+            return None
+        return entry["data"]
     if time.time() - entry["ts"] > CACHE_TTL:
         invalidate(task_id)
         return None
     return entry["data"]
 
 
+# Back-compat: cowork_assemble.py calls get_cache(); keep both names working.
+get_cache = get
+
+
 def invalidate(task_id):
     """Remove cached pre-optimization for a task (e.g. when claimed or modified)."""
     with _cache_lock:
         _cache.pop(task_id, None)
+    try:
+        os.remove(_disk_path(task_id))
+    except OSError:
+        pass
 
 
 def invalidate_all():
@@ -873,13 +904,20 @@ def _task_hash(t):
 
 
 def _store(task_id, data, task_hash):
-    """Store pre-optimization result in cache."""
+    """Store pre-optimization result in cache (memory + disk for cross-process reads)."""
+    entry = {
+        "ts": time.time(),
+        "data": data,
+        "task_hash": task_hash,
+    }
     with _cache_lock:
-        _cache[task_id] = {
-            "ts": time.time(),
-            "data": data,
-            "task_hash": task_hash,
-        }
+        _cache[task_id] = entry
+    try:
+        os.makedirs(_DISK_DIR, exist_ok=True)
+        with open(_disk_path(task_id), "w") as f:
+            json.dump(entry, f, default=str)
+    except Exception as e:
+        _log.warning("disk cache write failed for %s: %s", task_id, e)
 
 
 def _system_has_capacity():

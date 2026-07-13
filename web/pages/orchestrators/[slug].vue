@@ -726,6 +726,7 @@ watch(slug, () => { refreshInsights() })
             </div>
           </div>
         </div>
+        </div>
         <!-- TERMINAL — always visible at bottom of workspace -->
         <div class="flex-shrink-0 border-t border-gray-200 bg-gray-900" style="font-family: 'JetBrains Mono', monospace;">
           <div class="px-4 py-2 flex items-center justify-between border-b border-gray-700">
