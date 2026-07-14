@@ -2950,6 +2950,7 @@ def main():
                         # PARALLEL SWARM DISPATCH: batch-claim + concurrent API dispatch
                         # when conditions are right (enough headroom, budget under cap).
                         # Falls through to serial claim if swarm is disabled or not applicable.
+                        t = None
                         _swarm_dispatched = False
                         try:
                             import parallel_dispatch

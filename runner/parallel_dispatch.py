@@ -43,6 +43,47 @@ _CLI_ONLY_KINDS = frozenset({"replay"})
 # Slug prefixes that require CLI execution
 _CLI_ONLY_SLUG_PREFIXES = ("ROTATE_KEY:",)
 
+
+def _normalized_swarm_model(provider: str, model: str, task: dict, registry: dict) -> tuple:
+    """Resolve generic vendor routes to a real model accepted by that provider.
+
+    Admission intentionally stores portable route labels (for example ``openai``
+    or ``google``).  The HTTP fast lane must translate those labels at its launch
+    boundary instead of sending them as literal model IDs.  Choose the provider's
+    fast/mid/heavy tier from task risk so the translation also preserves the
+    triage decision rather than blindly selecting the cheapest model.
+    """
+    provider = {"google": "gemini", "anthropic": "claude"}.get(provider, provider)
+    spec = (registry or {}).get(provider) or {}
+    models = spec.get("models") or {}
+    current = str(model or "").strip()
+    if not models:
+        return provider, current
+    if current in models.values():
+        return provider, current
+
+    aliases = {provider, "google" if provider == "gemini" else "",
+               "anthropic" if provider == "claude" else "", "openai"}
+    valid_prefix = {
+        "openai": ("gpt-", "o1", "o3", "o4", "o5"),
+        "gemini": ("gemini-",),
+        "claude": ("claude-",),
+        "deepseek": ("deepseek-",),
+        "groq": ("llama-", "mixtral-"),
+        "xai": ("grok-",),
+    }.get(provider, ())
+    if current and current not in aliases and current.startswith(valid_prefix):
+        return provider, current
+
+    kind = str((task or {}).get("kind") or "build").lower()
+    if (task or {}).get("material") or kind in {"security", "legal", "architecture"}:
+        tier = "heavy"
+    elif kind in {"mechanical", "chore", "docs", "cleanup", "test"}:
+        tier = "fast"
+    else:
+        tier = "mid"
+    return provider, models.get(tier) or models.get("mid") or next(iter(models.values()))
+
 # ---------------------------------------------------------------------------
 # Thread-safe spend tracking (reads swarm_executor's spend log)
 # ---------------------------------------------------------------------------
@@ -165,6 +206,9 @@ def _dispatch_one_api(task: dict) -> dict:
         fc = str(task.get("force_coder") or "")
         if fc.startswith("swarm:"):
             provider = fc.split(":", 1)[1]
+        if provider:
+            provider, model = _normalized_swarm_model(
+                provider, model, task, swarm_executor.PROVIDERS)
 
         # Determine repo path for cwd
         cwd = ""
