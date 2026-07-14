@@ -464,6 +464,11 @@ def run_task(t):
         proj = projects(t["project_id"]).get(t["project_id"], {})
         repo = proj.get("repo_path", os.getcwd())
         name = proj.get("name", "repo")
+        # data-locality guard: if this Mac doesn't hold the repo (race/removed after claim),
+        # re-queue rather than fail so another Mac that has it takes it.
+        if repo and repo != os.getcwd() and not os.path.isdir(repo):
+            set_state(t["id"], state="QUEUED", note=f"repo not on this host ({socket.gethostname()}): {repo}")
+            time.sleep(2); return
         # Fall back to the project's REAL default branch (master vs main), not a hardcoded
         # "main" — otherwise diff/rebase against a nonexistent branch returns empty.
         task_base = _normalize_task_base(repo, proj, t.get("base_branch") or proj.get("default_base") or "main")
