@@ -21,6 +21,14 @@ import os, sys, time, json, socket, subprocess, threading, datetime, hashlib, fa
 import log as _log_mod
 _log = _log_mod.get("runner")
 
+# ENV SANITY (2026-07-14): the runner (and everything it spawns — agents, npm installs, builds)
+# sometimes inherits NODE_ENV=production from its launcher. Under NODE_ENV=production, `npm
+# install` silently OMITS devDependencies, so builds fail with "Could not load <module>. Is it
+# installed?" (@nuxtjs/supabase, tailwind, vitest, tsc...) and node_modules trees end up
+# half-populated/corrupt. Build tools set their own production mode during `nuxt build` etc.;
+# an inherited global NODE_ENV only breaks installs. Strip it for this process tree.
+os.environ.pop("NODE_ENV", None)
+
 # Auto-load .env from the runner's own directory (works regardless of CWD)
 _RUNNER_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_RUNNER_DIR)

@@ -16,6 +16,9 @@ Usage:
   python3 periodic.py txn
 """
 import os, sys, subprocess, time
+# Inherited NODE_ENV=production makes npm omit devDependencies in every child job (staging QA,
+# prewarm, merge/release trains) → "Could not load <module>" failures. Strip it (see runner.py).
+os.environ.pop("NODE_ENV", None)
 try:
     import fcntl
 except Exception:

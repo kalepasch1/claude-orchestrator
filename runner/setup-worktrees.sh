@@ -12,6 +12,8 @@
 # Creates: ../<repo>-wt/<task-slug>  on branch  agent/<task-slug>
 
 set -euo pipefail
+# Inherited NODE_ENV=production makes npm omit devDependencies (broken installs/builds) — strip it.
+unset NODE_ENV || true
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 REPO_NAME="$(basename "$REPO_ROOT")"
 WT_ROOT="$(dirname "$REPO_ROOT")/${REPO_NAME}-wt"
