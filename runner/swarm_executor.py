@@ -29,28 +29,28 @@ PROVIDERS: Dict[str, dict] = {
     "claude": {
         "base_url": "https://api.anthropic.com/v1/messages",
         "key_env": "ANTHROPIC_API_KEY",
-        "models": {"fast": "claude-haiku-4-5-20251001", "mid": "claude-sonnet-4-6",
+        "models": {"fast": "claude-haiku-4-5-20251001", "mid": "claude-sonnet-5",
                    "heavy": "claude-opus-4-8"},
         "max_concurrent": 50,
     },
     "openai": {
         "base_url": "https://api.openai.com/v1/chat/completions",
         "key_env": "OPENAI_API_KEY",
-        "models": {"fast": "gpt-4o-mini", "mid": "gpt-4o", "heavy": "o3"},
+        "models": {"fast": "gpt-5.4-nano", "mid": "gpt-5.4-mini", "heavy": "gpt-5.5"},
         "max_concurrent": 50,
     },
     "deepseek": {
         "base_url": "https://api.deepseek.com/v1/chat/completions",
         "key_env": "DEEPSEEK_API_KEY",
-        "models": {"fast": "deepseek-chat", "mid": "deepseek-chat",
-                   "heavy": "deepseek-reasoner"},
+        "models": {"fast": "deepseek-v4-flash", "mid": "deepseek-v4-flash",
+                   "heavy": "deepseek-v4-pro"},
         "max_concurrent": 50,
     },
     "gemini": {
         "base_url": "https://generativelanguage.googleapis.com/v1beta",
         "key_env": "GEMINI_API_KEY",
-        "models": {"fast": "gemini-2.0-flash", "mid": "gemini-2.5-pro",
-                   "heavy": "gemini-2.5-pro"},
+        "models": {"fast": "gemini-3-flash", "mid": "gemini-3.5-flash",
+                   "heavy": "gemini-3.1-pro"},
         "max_concurrent": 50,
     },
     "groq": {
@@ -71,22 +71,16 @@ PROVIDERS: Dict[str, dict] = {
 
 # Pricing: (input $/Mtok, output $/Mtok)
 _PRICES: Dict[str, tuple] = {
-    "claude-haiku-4-5-20251001": (1.0, 5.0),
-    "claude-sonnet-4-6": (3.0, 15.0),
-    "claude-opus-4-8": (15.0, 75.0),
-    "gpt-4o-mini": (0.15, 0.60),
-    "gpt-4o": (2.50, 10.0),
-    "o3": (10.0, 40.0),
-    "deepseek-chat": (0.27, 1.10),
-    "deepseek-reasoner": (0.55, 2.19),
-    "gemini-2.0-flash": (0.10, 0.40),
-    "gemini-2.5-pro": (1.25, 10.0),
-    # Groq (LPU inference — 10x speed, open-source models)
-    "llama-3.1-8b-instant": (0.05, 0.08),
-    "llama-3.3-70b-versatile": (0.59, 0.79),
-    # xAI Grok (real-time data, image gen, batch API at 50% off)
-    "grok-build-0.1": (1.00, 2.00),
-    "grok-4.3": (1.25, 2.50),
+    "claude-haiku-4-5-20251001": (1.0, 5.0), "claude-sonnet-5": (3.0, 15.0),
+    "claude-opus-4-8": (5.0, 25.0), "gpt-5.5": (5.0, 30.0),
+    "gpt-5.4-mini": (0.75, 4.50), "gpt-5.4-nano": (0.20, 1.25),
+    "o4-mini": (1.1, 4.4), "deepseek-v4-flash": (0.14, 0.28),
+    "deepseek-v4-pro": (0.435, 0.87), "deepseek-chat": (0.14, 0.28),
+    "gemini-3.5-flash": (1.50, 9.0), "gemini-3.1-pro": (2.0, 12.0),
+    "gemini-3-flash": (0.50, 3.0), "gemini-2.5-pro": (1.25, 10.0),
+    "llama-3.1-8b-instant": (0.05, 0.08), "llama-3.3-70b-versatile": (0.59, 0.79),
+    "grok-4.5": (2.0, 6.0), "grok-4.3": (1.25, 2.50),
+    "grok-4.20": (1.25, 2.50), "grok-build-0.1": (1.00, 2.00),
 }
 
 # Budget caps

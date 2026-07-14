@@ -61,8 +61,8 @@ VENDORS = {
             },
             "claude-opus-4-8": {
                 "context_window": 200_000,
-                "cost_per_mtok_in": 15.0,
-                "cost_per_mtok_out": 75.0,
+                "cost_per_mtok_in": 5.0,
+                "cost_per_mtok_out": 25.0,
                 "strengths": ["deep_reasoning", "complex_code", "analysis"],
                 "tier": "heavy",
             },
@@ -146,17 +146,17 @@ VENDORS = {
             "long_context",
         },
         "models": {
-            "deepseek-chat": {
-                "context_window": 128_000,
+            "deepseek-v4-flash": {
+                "context_window": 1_000_000,
                 "cost_per_mtok_in": 0.14,
                 "cost_per_mtok_out": 0.28,
                 "strengths": ["code", "reasoning", "cost_efficiency"],
                 "tier": "mid",
             },
-            "deepseek-reasoner": {
-                "context_window": 128_000,
-                "cost_per_mtok_in": 0.55,
-                "cost_per_mtok_out": 2.19,
+            "deepseek-v4-pro": {
+                "context_window": 1_000_000,
+                "cost_per_mtok_in": 0.435,
+                "cost_per_mtok_out": 0.87,
                 "strengths": ["deep_reasoning", "math", "complex_code"],
                 "tier": "heavy",
             },
