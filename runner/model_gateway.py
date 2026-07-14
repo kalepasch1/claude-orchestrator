@@ -61,6 +61,13 @@ PRICES = {
     ("deepseek", "deepseek-v4-flash"): (0.14, 0.28),
     ("deepseek", "deepseek-v4-pro"): (0.435, 0.87),
     ("local", "*"): (0.0, 0.0),
+    # Groq LPU inference (10x speed, open-source models)
+    ("groq", "llama-3.1-8b-instant"): (0.05, 0.08),
+    ("groq", "llama-3.3-70b-versatile"): (0.59, 0.79),
+    ("groq", "llama-4-scout"): (0.11, 0.34),
+    # xAI Grok (real-time data, image gen, coding)
+    ("xai", "grok-build-0.1"): (1.00, 2.00),
+    ("xai", "grok-4.3"): (1.25, 2.50),
 }
 
 
@@ -211,15 +218,17 @@ def _local(model, prompt, timeout=90):
 
 DEFAULT_MODELS = {
     "local": lambda: __import__("ollama_catalog").best("fallback", need=5).get("model"),
+    "groq": lambda: os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
     "deepseek": lambda: _configured("DEEPSEEK_CHEAP_MODEL", "deepseek-v4-flash",
                                     deprecated=("deepseek-chat", "deepseek-reasoner")),
     "google": lambda: _configured("GEMINI_MODEL", "gemini-2.5-flash",
                                   deprecated=("gemini-2.0-",)),
+    "xai": lambda: os.environ.get("XAI_MODEL", "grok-build-0.1"),
     "openai": lambda: os.environ.get("OPENAI_CHEAP_MODEL", "gpt-5.4-nano"),
     "claude": lambda: "claude-haiku-4-5-20251001",
 }
 
-FALLBACK_ORDER = ("local", "deepseek", "google", "openai", "claude")
+FALLBACK_ORDER = ("local", "groq", "deepseek", "google", "xai", "openai", "claude")
 
 
 def provider_for_model(model):
@@ -230,6 +239,13 @@ def provider_for_model(model):
         return "google"
     if "deepseek" in m:
         return "deepseek"
+    if "grok" in m:
+        return "xai"
+    if "llama" in m or "qwen" in m or "mixtral" in m:
+        # Groq for cloud inference of open-source models; local for Ollama
+        if os.environ.get("GROQ_API_KEY"):
+            return "groq"
+        return "local"
     if m.startswith(("gpt-", "o1", "o3", "o4")):
         return "openai"
     if m:
@@ -256,6 +272,30 @@ def _record_operation(project, operation, task_class, provider, model, prompt, c
         pass
 
 
+def _groq(model, prompt):
+    """Groq LPU inference — 10x speed, OpenAI-compatible API."""
+    d = _post("https://api.groq.com/openai/v1/chat/completions",
+              {"Authorization": f"Bearer {os.environ['GROQ_API_KEY']}"},
+              {"model": model, "messages": [{"role": "user", "content": prompt}],
+               "max_tokens": 8192})
+    u = d.get("usage", {})
+    pin, pout = PRICES.get(("groq", model), (0.59, 0.79))
+    cost = u.get("prompt_tokens", 0)/1e6*pin + u.get("completion_tokens", 0)/1e6*pout
+    return d["choices"][0]["message"]["content"], round(cost, 6)
+
+
+def _xai(model, prompt):
+    """xAI Grok — real-time data, OpenAI-compatible API."""
+    d = _post("https://api.x.ai/v1/chat/completions",
+              {"Authorization": f"Bearer {os.environ['XAI_API_KEY']}"},
+              {"model": model, "messages": [{"role": "user", "content": prompt}],
+               "max_tokens": 8192})
+    u = d.get("usage", {})
+    pin, pout = PRICES.get(("xai", model), (1.25, 2.50))
+    cost = u.get("prompt_tokens", 0)/1e6*pin + u.get("completion_tokens", 0)/1e6*pout
+    return d["choices"][0]["message"]["content"], round(cost, 6)
+
+
 def _call_provider(provider, model, prompt, project=None, timeout=90):
     if provider == "claude":
         import claude_cli
@@ -264,7 +304,8 @@ def _call_provider(provider, model, prompt, project=None, timeout=90):
     if provider == "local":
         text, cost = _local(model, prompt, timeout=timeout)
     else:
-        fn = {"openai": _openai, "google": _google, "deepseek": _deepseek}[provider]
+        fn = {"openai": _openai, "google": _google, "deepseek": _deepseek,
+              "groq": _groq, "xai": _xai}[provider]
         text, cost = fn(model, prompt)
     try:
         import usage_meter

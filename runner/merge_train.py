@@ -30,6 +30,7 @@ the legacy merge-handler are skipped.
 import datetime, json, os, re, sys, subprocess, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import events
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
 import agentic_repair
 import repo_lock         # per-repo mutex: concurrent train_run() calls must not race git refs

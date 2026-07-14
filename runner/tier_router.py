@@ -41,11 +41,23 @@ _DIFF_MODEL = {"easy": "fast", "hard": "mid", "critical": "heavy"}
 
 # Provider cost ranking (lower = cheaper) for API tier selection
 _API_PROVIDERS = [
-    {"provider": "deepseek", "model": "deepseek-chat",    "coder": "aider", "cost_rank": 1},
-    {"provider": "gemini",   "model": "gemini-2.0-flash", "coder": "aider", "cost_rank": 2},
-    {"provider": "openai",   "model": "gpt-4o-mini",      "coder": "aider", "cost_rank": 3},
-    {"provider": "anthropic","model": "claude-sonnet-4-6", "coder": "aider", "cost_rank": 4},
+    {"provider": "groq",     "model": "llama-3.1-8b-instant",  "coder": "swarm", "cost_rank": 0},
+    {"provider": "deepseek", "model": "deepseek-chat",         "coder": "aider", "cost_rank": 1},
+    {"provider": "gemini",   "model": "gemini-2.0-flash",      "coder": "aider", "cost_rank": 2},
+    {"provider": "xai",      "model": "grok-build-0.1",        "coder": "swarm", "cost_rank": 3},
+    {"provider": "openai",   "model": "gpt-4o-mini",           "coder": "aider", "cost_rank": 4},
+    {"provider": "anthropic","model": "claude-sonnet-4-6",      "coder": "aider", "cost_rank": 5},
 ]
+
+# API key env var map for availability checks
+_KEY_ENV_MAP = {
+    "groq": "GROQ_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "xai": "XAI_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+}
 
 # Subscription providers and their model tiers — calibrated per task difficulty.
 # With 3 Claude Max plans, we have abundant subscription credits across all Claude
@@ -248,11 +260,76 @@ class TierRouter:
         return None
 
     def _pick_api(self, task, model_tier, context):
-        """Pick cheapest API provider with needed capability."""
+        """Pick cheapest API provider with needed capability.
+
+        Enhanced to:
+        1. Check vendor_capabilities for task-specific capability matching
+        2. Consult qpd_bandit for learned quality-per-dollar routing
+        3. Skip providers demoted by SLA enforcement
+        4. Auto-dispatch to cowork_skills for browser/document tasks
+        """
+        # --- Cowork skill dispatch: tasks needing browser/document capabilities ---
+        try:
+            import cowork_skills
+            if cowork_skills.needs_skill(task):
+                skill_types = cowork_skills.detect_skill_type(task)
+                if skill_types:
+                    return {"tier": "sub", "provider": "claude", "model": "claude-sonnet-4-6",
+                            "coder": "cowork-skill",
+                            "skill_types": [s[0] for s in skill_types],
+                            "reason": f"{context} → cowork skill dispatch ({skill_types[0][0]})"}
+        except Exception:
+            pass
+
+        # --- QPD bandit: learned routing when enough signal exists ---
+        try:
+            import qpd_bandit
+            task_class = (task.get("kind") or task.get("type") or "unknown").lower()
+
+            # Capability-aware bandit routing
+            try:
+                import vendor_capabilities
+                required = vendor_capabilities.detect_required_capabilities(task)
+                prov, model, reason = qpd_bandit.best_for_capabilities(task_class, required)
+            except ImportError:
+                prov, model, reason = qpd_bandit.best_with_penalties(task_class)
+
+            if prov and model and model != "penalty":
+                # Map provider to API entry
+                for ap in _API_PROVIDERS:
+                    if ap["provider"] == prov:
+                        return {"tier": "api", "provider": prov, "model": model,
+                                "coder": ap["coder"],
+                                "reason": f"{context} → bandit: {reason}"}
+        except Exception:
+            pass
+
+        # --- Capability-filtered cheapest provider ---
+        try:
+            import vendor_capabilities
+            required = vendor_capabilities.detect_required_capabilities(task)
+            import provider_failover_sla
+            for ap in _API_PROVIDERS:
+                key_env = _KEY_ENV_MAP.get(ap["provider"], "")
+                if key_env and not os.environ.get(key_env):
+                    continue  # no API key
+                if provider_failover_sla.is_demoted(ap["provider"]):
+                    continue  # SLA-demoted
+                if vendor_capabilities.vendor_has_capability(ap["provider"], "code_generation"):
+                    return {"tier": "api", "provider": ap["provider"], "model": ap["model"],
+                            "coder": ap["coder"],
+                            "reason": f"{context} → capability-filtered {ap['provider']} (cheapest capable)"}
+        except Exception:
+            pass
+
+        # --- Fallback: cheapest available API provider ---
         for ap in _API_PROVIDERS:
+            key_env = _KEY_ENV_MAP.get(ap["provider"])
+            if key_env and not os.environ.get(key_env):
+                continue
             return {"tier": "api", "provider": ap["provider"], "model": ap["model"],
                     "coder": ap["coder"],
-                    "reason": f"{context} → api {ap['provider']} (cheapest)"}
+                    "reason": f"{context} → api {ap['provider']} (cheapest available)"}
         return {"tier": "api", "provider": "deepseek", "model": "deepseek-chat",
                 "coder": "aider", "reason": f"{context} → deepseek fallback"}
 

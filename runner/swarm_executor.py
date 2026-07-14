@@ -53,6 +53,20 @@ PROVIDERS: Dict[str, dict] = {
                    "heavy": "gemini-2.5-pro"},
         "max_concurrent": 50,
     },
+    "groq": {
+        "base_url": "https://api.groq.com/openai/v1/chat/completions",
+        "key_env": "GROQ_API_KEY",
+        "models": {"fast": "llama-3.1-8b-instant", "mid": "llama-3.3-70b-versatile",
+                   "heavy": "llama-3.3-70b-versatile"},
+        "max_concurrent": 30,
+    },
+    "xai": {
+        "base_url": "https://api.x.ai/v1/chat/completions",
+        "key_env": "XAI_API_KEY",
+        "models": {"fast": "grok-build-0.1", "mid": "grok-build-0.1",
+                   "heavy": "grok-4.3"},
+        "max_concurrent": 50,
+    },
 }
 
 # Pricing: (input $/Mtok, output $/Mtok)
@@ -67,6 +81,12 @@ _PRICES: Dict[str, tuple] = {
     "deepseek-reasoner": (0.55, 2.19),
     "gemini-2.0-flash": (0.10, 0.40),
     "gemini-2.5-pro": (1.25, 10.0),
+    # Groq (LPU inference — 10x speed, open-source models)
+    "llama-3.1-8b-instant": (0.05, 0.08),
+    "llama-3.3-70b-versatile": (0.59, 0.79),
+    # xAI Grok (real-time data, image gen, batch API at 50% off)
+    "grok-build-0.1": (1.00, 2.00),
+    "grok-4.3": (1.25, 2.50),
 }
 
 # Budget caps
@@ -365,7 +385,7 @@ async def _dispatch(session, provider: str, model: str,
     async with sem:
         if provider == "claude":
             return await _call_claude(session, model, messages, system)
-        elif provider in ("openai", "deepseek"):
+        elif provider in ("openai", "deepseek", "groq", "xai"):
             # Inject system as first message for OpenAI-compat
             if system:
                 messages = [{"role": "system", "content": system}] + messages
@@ -389,6 +409,10 @@ def _provider_for_model(model: str) -> str:
         return "deepseek"
     if "gemini" in model:
         return "gemini"
+    if "llama" in model or "qwen" in model:
+        return "groq"
+    if "grok" in model:
+        return "xai"
     return "claude"
 
 

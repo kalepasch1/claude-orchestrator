@@ -33,6 +33,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 REPO = os.path.dirname(HERE)
+import events
 RUNTIME = os.path.join(REPO, ".runtime")
 STATE_PATH = os.path.join(RUNTIME, "sentinel_state.json")
 LOG_PATH = os.path.join(RUNTIME, "sentinel.log")
@@ -54,6 +55,11 @@ def log(action, detail=""):
             f.write(line + "\n")
     except OSError:
         pass
+
+
+def emit(kind, **fields):
+    """Emit a structured event to the event stream (along with log)."""
+    return events.emit(f"sentinel:{kind}", **fields)
 
 
 def load_state():

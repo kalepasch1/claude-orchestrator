@@ -2590,6 +2590,8 @@ def main():
                   f"You will be charged API rates. Unset ORCH_ALLOW_API_BILLING to block.")
     except Exception as _e:
         print(f"[billing-firewall] guard failed to load: {_e}")
+    _touch_progress()  # WEDGEFIX-C: reset progress mtime at startup so keepalive doesn't
+                        # immediately kill a fresh runner due to stale mtime from prior run.
     print(f"runner {RUNNER_ID} online -> {os.environ.get('SUPABASE_URL','(set SUPABASE_URL)')}")
     # FLEET TOPOLOGY: register this runner's capability profile
     try:
@@ -2875,6 +2877,8 @@ def main():
                             _log.debug("hook pattern_adversary failed: %s", e)
         except Exception as e:
             print("poll error:", e)
+        _touch_progress()  # WEDGEFIX-C: unconditional — prevents wedge detection during
+                           # capacity-pacer holds, mem-gate holds, or any non-claiming cycle.
         time.sleep(POLL)
 
 
