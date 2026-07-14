@@ -5,13 +5,16 @@ the author reviews the diff and returns a rating + a legal-risk assessment. This
 us safely UNBLOCK and auto-merge tested work while gating ONLY items that truly need legal
 counsel (with the legal risk explained on the approval card).
 
-review(task_prompt, diff, author_model, project) -> {
+review(task_prompt, diff, author_model, project, use_parallel=False) -> {
    "verdict": "pass"|"fail", "score": 0-10, "notes": "...",
    "legal_counsel_required": bool, "legal_risk": "explanation or ''",
    "panel": [ per-judge results ] }
 
 Panel = up to N cheapest available NON-author-family models (judge.py picks them from
 model_gateway.available()). Falls back to a cheap Claude model if no other provider is set.
+
+For hard-tier tasks (legal, security), use_parallel=True runs 2-3 providers in parallel
+and synthesizes the best result, reducing latency and improving confidence.
 """
 import os, sys, json, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -58,7 +61,82 @@ def _panel_providers(author_model):
     return picks[:N_JUDGES] or ["claude"]
 
 
-def review(task_prompt, diff, author_model="claude-opus-4-8", project=None, max_chars=45000):
+def _review_parallel(task_prompt, diff, author_model="claude-opus-4-8", project=None, max_chars=45000):
+    """Parallel execution mode: run 2-3 providers in parallel and synthesize results."""
+    import parallel_provider
+    prompt = PROMPT.replace("{task}", (task_prompt or "")[:2000]).replace("{diff}", (diff or "")[:max_chars])
+
+    providers = _panel_providers(author_model)
+    if not providers:
+        providers = ["claude"]
+    models = [REVIEWERS.get(prov, "claude-haiku-4-5-20251001") for prov in providers]
+
+    # Run in parallel
+    result = parallel_provider.parallel_complete(providers, models, prompt, project=project)
+
+    # Parse the winning result
+    panel = []
+    for r in result.get("all_results", []):
+        try:
+            d = json.loads(re.search(r"\{.*\}", r.get("text", ""), re.S).group(0))
+        except Exception:
+            d = {"verdict": "pass", "score": 6, "notes": "unparseable review",
+                 "legal_counsel_required": False, "legal_risk": ""}
+        d["by"] = f"{r.get('provider')}:{r.get('model')}"
+        d["cost_usd"] = r.get("cost_usd", 0)
+        d["score_synthesis"] = r.get("score", 0)  # synthesis quality score
+        if r.get("winner"):
+            d["winner"] = True
+        panel.append(d)
+
+    if not panel:
+        return {"verdict": "pass", "score": 6, "notes": "no judges available",
+                "legal_counsel_required": False, "legal_risk": "", "panel": [], "parallel": True}
+
+    # Find the winner panel result
+    winner = next((p for p in panel if p.get("winner")), panel[0])
+
+    scores = [float(p.get("score", 6)) for p in panel]
+    verdict = winner.get("verdict", "pass")
+    legal = any(p.get("legal_counsel_required") for p in panel)
+    legal_txt = " | ".join(p.get("legal_risk", "") for p in panel if p.get("legal_risk"))
+
+    return {
+        "verdict": verdict,
+        "score": round(sum(scores) / len(scores), 1),
+        "notes": winner.get("notes", "")[:500],
+        "legal_counsel_required": legal,
+        "legal_risk": legal_txt,
+        "panel": panel,
+        "parallel": True,
+        "synthesis_score": result.get("score", 0),
+        "total_cost": result.get("cost_usd", 0)
+    }
+
+
+def review(task_prompt, diff, author_model="claude-opus-4-8", project=None, max_chars=45000, use_parallel=False):
+    """
+    Review a diff with a panel of judges. For hard-tier tasks, use parallel execution.
+
+    Args:
+      task_prompt: the task/context for the review
+      diff: the code diff to review
+      author_model: which model authored the code
+      project: project name for telemetry
+      max_chars: truncate diff to this many chars
+      use_parallel: if True, run providers in parallel for faster results with hard-tier tasks
+
+    Returns:
+      review result dict with verdict, score, notes, legal_counsel_required, panel
+    """
+    if use_parallel:
+        try:
+            return _review_parallel(task_prompt, diff, author_model, project, max_chars)
+        except Exception as e:
+            # Fall back to sequential if parallel fails
+            print(f"parallel review failed: {e}; falling back to sequential", file=sys.stderr)
+
+    # Sequential execution (default)
     prompt = PROMPT.replace("{task}", (task_prompt or "")[:2000]).replace("{diff}", (diff or "")[:max_chars])
     panel = []
     for prov in _panel_providers(author_model):
