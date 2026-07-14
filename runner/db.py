@@ -335,7 +335,13 @@ _done_cache = {"slugs": set(), "ts": 0.0, "ttl": 60.0}
 
 
 def _done_slugs():
-    """Return cached set of DONE/MERGED slugs, refreshing every 60s."""
+    """Return cached set of DONE/MERGED slugs, refreshing every 60s.
+
+    The set contains bare slugs (backward-compatible project-local lookup)
+    AND ``project_name:slug`` qualified entries so cross-project deps
+    (e.g. ``apparently:curation-layer-land``) resolve against the global
+    task namespace while bare ids stay project-local.
+    """
     now = time.time()
     if now - _done_cache["ts"] < _done_cache["ttl"]:
         return _done_cache["slugs"]
@@ -344,11 +350,29 @@ def _done_slugs():
         if now - _done_cache["ts"] < _done_cache["ttl"]:
             return _done_cache["slugs"]
         rows = select("tasks", {
-            "select": "slug",
+            "select": "slug,project_id",
             "state": "in.(DONE,MERGED)",
             "limit": "10000",
         }) or []
-        _done_cache["slugs"] = {r["slug"] for r in rows}
+        slugs = set()
+        # Build project_id -> name map for cross-project qualified entries
+        _proj_names = {}
+        try:
+            for p in (select("projects", {"select": "id,name"}) or []):
+                if p.get("name"):
+                    _proj_names[p["id"]] = p["name"]
+        except Exception:
+            pass
+        for r in rows:
+            s = r.get("slug")
+            if not s:
+                continue
+            slugs.add(s)  # bare slug (backward compat)
+            pid = r.get("project_id")
+            pname = _proj_names.get(pid)
+            if pname:
+                slugs.add(f"{pname}:{s}")  # qualified cross-project entry
+        _done_cache["slugs"] = slugs
         _done_cache["ts"] = time.time()
         return _done_cache["slugs"]
 
