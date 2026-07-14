@@ -5,6 +5,7 @@
       "master": true
     }
   },
+  "installCommand": "npm ci --ignore-scripts --prefer-offline --no-audit --no-fund",
   "ignoreCommand": "git diff --quiet HEAD^ HEAD -- . ../packages/darwin-kernel",
   "crons": [
     {
