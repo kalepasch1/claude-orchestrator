@@ -164,7 +164,7 @@ class ApplyAndVerifyOutcomesTest(unittest.TestCase):
     def test_exception_during_apply_cleans_up(self):
         with patch("os.path.isdir", return_value=True), patch("os.makedirs"), \
              patch.object(qe, "_cleanup_worktree") as cleanup, \
-             patch("subprocess.run", side_effect=[_proc(0), _proc(0), RuntimeError("boom")]):
+             patch("subprocess.run", side_effect=[_proc(0), _proc(0), _proc(0), RuntimeError("boom")]):
             result = qe._apply_and_verify(REPO, "diff", "task123")
         self.assertFalse(result["success"])
         self.assertIn("boom", result["reason"])
