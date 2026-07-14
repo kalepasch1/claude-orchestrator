@@ -1,4 +1,10 @@
 {
+  "crons": [
+    {
+      "path": "/api/fleet/analytics?rangeDays=1&sync=true",
+      "schedule": "0 6 * * *"
+    }
+  ],
   "headers": [
     {
       "source": "/(.*)",
