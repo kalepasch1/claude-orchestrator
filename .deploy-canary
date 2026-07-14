@@ -1,6 +1,1 @@
-{
-  "canary": true,
-  "created": "2026-07-13T12:00:00Z",
-  "source": "agent/rework-secret-canary-gpt-1-slice-2-c3a9425",
-  "note": "Deploy canary heartbeat — recovered from missing branch canary-gpt-1-slice-2"
-}
+2026-07-14T16:20:00Z Canary deployment heartbeat (canary-gpt-1-slice-1) - exercises build/verify/merge/push loop
