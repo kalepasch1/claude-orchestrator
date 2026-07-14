@@ -42,11 +42,11 @@ _DIFF_MODEL = {"easy": "fast", "hard": "mid", "critical": "heavy"}
 # Provider cost ranking (lower = cheaper) for API tier selection
 _API_PROVIDERS = [
     {"provider": "groq",     "model": "llama-3.1-8b-instant",  "coder": "swarm", "cost_rank": 0},
-    {"provider": "deepseek", "model": "deepseek-chat",         "coder": "aider", "cost_rank": 1},
-    {"provider": "gemini",   "model": "gemini-2.0-flash",      "coder": "aider", "cost_rank": 2},
+    {"provider": "deepseek", "model": "deepseek-v4-flash",     "coder": "aider", "cost_rank": 1},
+    {"provider": "gemini",   "model": "gemini-3-flash",        "coder": "aider", "cost_rank": 2},
     {"provider": "xai",      "model": "grok-build-0.1",        "coder": "swarm", "cost_rank": 3},
-    {"provider": "openai",   "model": "gpt-4o-mini",           "coder": "aider", "cost_rank": 4},
-    {"provider": "anthropic","model": "claude-sonnet-4-6",      "coder": "aider", "cost_rank": 5},
+    {"provider": "openai",   "model": "gpt-5.4-nano",          "coder": "aider", "cost_rank": 4},
+    {"provider": "anthropic","model": "claude-sonnet-5",      "coder": "aider", "cost_rank": 5},
 ]
 
 # API key env var map for availability checks
@@ -68,7 +68,7 @@ _SUB_PROVIDERS = [
     {"provider": "claude",  "model": "claude-haiku-4-5-20251001", "coder": "claude-cli",
      "tiers": {"fast"}},
     # Claude Sonnet: balanced, good for standard build/mid-complexity
-    {"provider": "claude",  "model": "claude-sonnet-4-6", "coder": "claude-cli",
+    {"provider": "claude",  "model": "claude-sonnet-5", "coder": "claude-cli",
      "tiers": {"mid"}},
     # Claude Opus: maximum capability for hard/critical/security/architecture tasks
     {"provider": "claude",  "model": "claude-opus-4-8", "coder": "claude-cli",
@@ -153,11 +153,11 @@ class TierRouter:
                   "coder": str, "reason": str}
         """
         if not task:
-            return {"tier": "sub", "provider": "claude", "model": "claude-sonnet-4-6",
+            return {"tier": "sub", "provider": "claude", "model": "claude-sonnet-5",
                     "coder": "claude-cli", "reason": "empty task fallback"}
 
         if self._kill_switch_paused():
-            return {"tier": "sub", "provider": "claude", "model": "claude-sonnet-4-6",
+            return {"tier": "sub", "provider": "claude", "model": "claude-sonnet-5",
                     "coder": "claude-cli", "reason": "kill_switch paused — default sub only"}
 
         mode = _tier_mode()
@@ -184,7 +184,7 @@ class TierRouter:
                             "reason": f"cowork-calibrate: {kind or diff} → Opus (heavy/$0)"}
             # Everything else (build, refactor, standard) → Sonnet (balanced, $0)
             elif self._sub_has_capacity("claude"):
-                _cal_model = os.environ.get("ORCH_COWORK_MID_MODEL", "claude-sonnet-4-6")
+                _cal_model = os.environ.get("ORCH_COWORK_MID_MODEL", "claude-sonnet-5")
                 return {"tier": "sub", "provider": "claude", "model": _cal_model,
                         "coder": "claude-cli",
                         "reason": f"cowork-calibrate: {kind or diff} → Sonnet (mid/$0)"}
@@ -246,7 +246,7 @@ class TierRouter:
             return self._pick_api(task, model_tier, "no sub capacity")
 
         # --- ultimate fallback: queue for sub (Claude) ---
-        return {"tier": "sub", "provider": "claude", "model": "claude-sonnet-4-6",
+        return {"tier": "sub", "provider": "claude", "model": "claude-sonnet-5",
                 "coder": "claude-cli",
                 "reason": "paid not allowed, no sub capacity — queued for Claude"}
 
@@ -274,7 +274,7 @@ class TierRouter:
             if cowork_skills.needs_skill(task):
                 skill_types = cowork_skills.detect_skill_type(task)
                 if skill_types:
-                    return {"tier": "sub", "provider": "claude", "model": "claude-sonnet-4-6",
+                    return {"tier": "sub", "provider": "claude", "model": "claude-sonnet-5",
                             "coder": "cowork-skill",
                             "skill_types": [s[0] for s in skill_types],
                             "reason": f"{context} → cowork skill dispatch ({skill_types[0][0]})"}
@@ -330,7 +330,7 @@ class TierRouter:
             return {"tier": "api", "provider": ap["provider"], "model": ap["model"],
                     "coder": ap["coder"],
                     "reason": f"{context} → api {ap['provider']} (cheapest available)"}
-        return {"tier": "api", "provider": "deepseek", "model": "deepseek-chat",
+        return {"tier": "api", "provider": "deepseek", "model": "deepseek-v4-flash",
                 "coder": "aider", "reason": f"{context} → deepseek fallback"}
 
     # ---- outcome feedback -------------------------------------------------
