@@ -341,9 +341,32 @@ def _test_cmd_for(proj, repo):
 
 def _ff_base(repo, branch, base):
     """Step 4: fast-forward base to the rebased branch WITHOUT checking base out
-    (git fetch . branch:base — the approval_merge technique). No force, ever."""
+    (git fetch . branch:base — the approval_merge technique). No force, ever.
+
+    SELF-HEAL (2026-07-14): a leaked ephemeral staging worktree (tempfile 'stg-*', left locked
+    when a train process died) keeps `base` checked out forever, so git refuses the ff for
+    EVERY card ("refusing to fetch into branch ... checked out at /tmp/stg-*") — this zeroed
+    the merge rate. Detect that exact refusal, evict stale stg-* worktrees holding base, retry."""
     approval_merge._free_branch(repo, branch)
-    return _git(repo, "fetch", ".", f"{branch}:{base}").returncode == 0
+    r = _git(repo, "fetch", ".", f"{branch}:{base}")
+    if r.returncode == 0:
+        return True
+    err = (r.stderr or "") + (r.stdout or "")
+    if "refusing to fetch into branch" in err:
+        out = _git(repo, "worktree", "list", "--porcelain").stdout or ""
+        path = None
+        for line in out.splitlines() + [""]:
+            if line.startswith("worktree "):
+                path = line[len("worktree "):].strip()
+            elif line.startswith("branch ") and line.endswith(f"refs/heads/{base}"):
+                bn = os.path.basename(path or "")
+                if path and os.path.abspath(path) != os.path.abspath(repo) and bn.startswith("stg-"):
+                    _git(repo, "worktree", "unlock", path)
+                    _git(repo, "worktree", "remove", "--force", path)
+        _git(repo, "worktree", "prune")
+        r = _git(repo, "fetch", ".", f"{branch}:{base}")
+        return r.returncode == 0
+    return False
 
 
 def _push_base(repo, base):

@@ -421,8 +421,13 @@ def _refresh_staging_with_prod(repo, prod):
     except Exception as e:
         return False, f"staging refresh error: {e}"
     finally:
+        # unlock first: a locked worktree survives `remove --force` and then PERMANENTLY blocks
+        # every fast-forward into the staging branch ("refusing to fetch into branch ... checked
+        # out at /tmp/stg-*") — this exact leak zeroed the merge rate on 2026-07-14.
+        _git(repo, "worktree", "unlock", tmp)
         _git(repo, "worktree", "remove", "--force", tmp)
         shutil.rmtree(tmp, ignore_errors=True)
+        _git(repo, "worktree", "prune")
 
 
 def _merge_into_staging(repo, branch):
@@ -439,8 +444,10 @@ def _merge_into_staging(repo, branch):
             return False
         return True
     finally:
+        _git(repo, "worktree", "unlock", tmp)  # locked worktrees survive remove --force (see above)
         _git(repo, "worktree", "remove", "--force", tmp)
         shutil.rmtree(tmp, ignore_errors=True)
+        _git(repo, "worktree", "prune")
 
 
 def run_for(project):
