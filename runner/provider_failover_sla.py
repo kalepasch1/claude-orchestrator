@@ -109,9 +109,14 @@ def demote(provider, reason="manual", immediate=True):
     """Immediately quarantine an auth-invalid provider from optimization routes."""
     state = _load()
     dem = state.get("demoted") or {}
+    try:
+        import provider_credentials
+        credential_fp = provider_credentials.fingerprint(provider)
+    except Exception:
+        credential_fp = ""
     dem[provider] = {"since": datetime.datetime.utcnow().isoformat(),
                      "reason": reason, "avail": 0.0, "p95": 0,
-                     "immediate": bool(immediate)}
+                     "immediate": bool(immediate), "credential_fp": credential_fp}
     state["demoted"] = dem
     _save(state)
     try:
@@ -173,7 +178,26 @@ def check_and_enforce():
 
 
 def is_demoted(provider):
-    return provider in (_load().get("demoted") or {})
+    state = _load()
+    demoted = state.get("demoted") or {}
+    record = demoted.get(provider)
+    if not record:
+        return False
+    # A replacement credential deserves a fresh bounded canary. The hash only
+    # detects change; no key material is persisted or logged.
+    if str(record.get("reason") or "").startswith("auth-") and record.get("credential_fp"):
+        try:
+            import provider_credentials
+            current = provider_credentials.fingerprint(provider)
+            if current and current != record.get("credential_fp"):
+                del demoted[provider]
+                state["demoted"] = demoted
+                _save(state)
+                _notify_bandit_promote(provider)
+                return False
+        except Exception:
+            pass
+    return True
 
 
 def run():

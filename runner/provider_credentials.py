@@ -5,6 +5,7 @@ accepted another (notably XAI_API_KEY versus GROK_API_KEY/XAPI_KEY).  This modul
 keeps aliases in one place and mirrors a discovered alias into the canonical env
 name in-process, without logging or persisting secret values.
 """
+import hashlib
 import os
 
 
@@ -41,6 +42,12 @@ def get(provider, default=""):
 
 def has(provider):
     return bool(get(provider))
+
+
+def fingerprint(provider):
+    """Non-reversible identifier used only to detect credential replacement."""
+    value = get(provider)
+    return hashlib.sha256(value.encode()).hexdigest()[:16] if value else ""
 
 
 def activate_aliases():
