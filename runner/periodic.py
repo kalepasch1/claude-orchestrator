@@ -468,6 +468,43 @@ def run_dedup():
     """Collapse near-duplicate queued tasks so the swarm solves each thing once."""
     import task_dedup
     task_dedup.apply()
+    # Second pass: embedding-similarity dedupe catches paraphrased duplicates that
+    # slug/title matching misses. Capped per run; fail-soft.
+    try:
+        import db
+        import semantic_dedupe
+        import knowledge_embed
+
+        def _batch_embed(texts):
+            return [knowledge_embed.embed(t) for t in texts]
+
+        def _mark(keeper, dup, sim):
+            db.update("tasks", {"id": dup["id"]}, {
+                "state": "QUARANTINED",
+                "note": f"semantic-dedupe: {sim:.3f} duplicate of {keeper.get('slug','')[:60]}",
+            })
+
+        cap = int(os.environ.get("ORCH_SEMDEDUPE_BATCH", "200"))
+        tasks = db.select("tasks", {
+            "select": "id,slug,prompt,project_id",
+            "state": "eq.QUEUED",
+            "order": "created_at.asc",
+            "limit": str(cap),
+        }) or []
+        if len(tasks) >= 2:
+            n = semantic_dedupe.dedupe_queued(tasks, _batch_embed, mark_fn=_mark)
+            if n:
+                print(f"semantic-dedupe: quarantined {n} paraphrase duplicates")
+    except Exception as e:
+        print(f"semantic-dedupe skipped: {e}")
+
+
+def run_conflictresolve():
+    """Zero-token conflict/branch recovery: auto-rebase + serialize + branch rebuild."""
+    import conflict_auto_resolve
+    n = conflict_auto_resolve.run()
+    if n:
+        print(f"conflict_auto_resolve: recovered {n} blocked tasks")
 
 
 def run_contcompact():
@@ -624,6 +661,7 @@ JOBS = {
     "promptfactory": run_promptfactory,
     "embedretry": run_embedretry,
     "dedup": run_dedup,
+    "conflictresolve": run_conflictresolve,
     "contcompact": run_contcompact,
     "backlogcompact": run_backlogcompact,
     "canaryecon": run_canaryecon,
@@ -696,7 +734,7 @@ if __name__ == "__main__":
         "resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn",
         "approval_policy.py", "queue_janitor.py", "unstick", "dagfix", "batchmech",
         "selftune", "cluster", "governor", "costslo", "promote", "prewarm",
-        "billingguard", "dedup", "canaryecon", "forecast", "arbitrage", "autoscale",
+        "billingguard", "dedup", "conflictresolve", "canaryecon", "forecast", "arbitrage", "autoscale",
         "contcompact", "backlogcompact",
         "bizradar", "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",
         "stripe", "ownerreport", "worktreegc", "remediate", "selfcheck",

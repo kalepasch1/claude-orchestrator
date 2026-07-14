@@ -2121,7 +2121,8 @@ _SCHEDULE = [
     ("governor-900",  "governor",           "interval", 900),   # EV-based capacity allocation
     ("costslo-1800",  "costslo",            "interval", 1800),  # hold per-app $/merge SLOs
     ("promote-daily", "promote",            "daily",    (6, 30)),# productize proven capabilities
-    ("dedup-600",     "dedup",              "interval", 600),   # collapse near-duplicate queued tasks
+    ("dedup-600",     "dedup",              "interval", 600),   # collapse near-duplicate queued tasks (+ semantic pass)
+    ("conflictres-300","conflictresolve",   "interval", 300),   # zero-token auto-rebase/branch recovery for BLOCKED
     ("contcompact-300","contcompact",       "interval", 300),   # collapse cont-* shard floods into few tasks
     ("backlogcompact-600","backlogcompact", "interval", 600),   # collapse stale broad queued backlog into batches
     ("canaryecon-600","canaryecon",         "interval", 600),   # promote/rollback canaries on cost+quality
