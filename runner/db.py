@@ -669,8 +669,8 @@ def claim_task(runner_id):
         return per_project_limit
 
     queued.sort(key=lambda t: (_evidence_reserve_rank(t),                        # reserve one vendor-evidence lane
-                               _portfolio_project_rank(t),                       # owner portfolio priority order
-                               _release_fix_rank(t),                             # unblock Vercel releases first inside each project
+                               _release_fix_rank(t),                             # unblock Vercel releases across the portfolio
+                               _portfolio_project_rank(t),                       # owner order within the same delivery class
                                _release_fix_urgency(t),                          # hot gate fixes before stale EV noise
                                _evidence_rank(t),                                # bounded canaries unblock learned routing
                                _recovery_rank(t),                                # recover tested work next
