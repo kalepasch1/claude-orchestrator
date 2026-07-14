@@ -105,7 +105,8 @@ class _dedup_lock:
 RECOVERY_PREFIX = "recover-missing-branch-"
 CANARY_PREFIX = "canary-"
 IMPROVEMENT_PREFIX = "improve-"
-RELEASE_FIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-", "copyfix-")
+RELEASE_FIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-", "copyfix-",
+                        "toolchain-repair-")
 REWORK_PREFIX = "rework-"
 CLAIM_SCAN_LIMIT = int(os.environ.get("ORCH_CLAIM_SCAN_LIMIT", "1000") or 1000)
 PROJECT_PRIORITY_ORDER = {
@@ -486,7 +487,7 @@ def claim_task(runner_id):
     # all. Pull bounded escape hatches for deployment blockers and evidence
     # tasks, then let the normal atomic ranking/claim path decide among them.
     escape_filters = (
-        "(slug.like.relfix-*,slug.like.qafix-*,slug.like.deployfix-*,slug.like.buildfix-*,slug.like.copyfix-*)",
+        "(slug.like.relfix-*,slug.like.qafix-*,slug.like.deployfix-*,slug.like.buildfix-*,slug.like.copyfix-*,slug.like.toolchain-repair-*)",
         "(slug.like.canary-*,slug.like.*-canary-*,kind.eq.canary,note.ilike.*coder-canary*,note.ilike.*routing%20sample*)",
     )
     seen_ids = {t.get("id") for t in queued}
