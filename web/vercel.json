@@ -1,4 +1,11 @@
 {
+  "git": {
+    "deploymentEnabled": {
+      "*": false,
+      "master": true
+    }
+  },
+  "ignoreCommand": "git diff --quiet HEAD^ HEAD -- . ../packages/darwin-kernel",
   "crons": [
     {
       "path": "/api/fleet/analytics?rangeDays=1&sync=true",

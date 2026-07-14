@@ -184,14 +184,12 @@ WHERE state='RUNNING' AND account='{my_account}';
 
 ---
 
-## Step 3.5: BATCH VERCEL DEPLOY (after ALL 5 tasks are marked DONE)
+## Step 3.5: RELEASE QUEUE ONLY
 
-For each unique `repo_path` from your 5 tasks, deploy once:
-```bash
-npx vercel@latest deploy   --token="{VERCEL_TOKEN}"   --cwd="{repo_path}"   --yes   --no-wait 2>&1 | tail -3 || true
-```
-`--no-wait` returns immediately. One deploy per unique project, not per task.
-Skip silently if VERCEL_TOKEN is empty.
+Do not call the Vercel CLI and do not create a deployment from an agent or dirty
+worktree. The merge train batches completed branches into staging; the release
+train is the only path that may push the configured production branch. Vercel's
+Git integration then creates one production deployment for that batched push.
 
 ---
 
@@ -212,6 +210,11 @@ Only now write `<run-summary>` with totals across all batches.
 ---
 
 ## Hard Rules
+
+- Never run `vercel deploy`, `vercel --prod`, or an equivalent `npx vercel`
+  command from an agent worktree. Agent branches are build-free by policy.
+- Never push directly to a production branch. Production changes flow through
+  the merge train and release train so they can be batched and verified.
 
 1. Never push to `main`/`dev`/`master` — only `agent/{slug}` branches.
 2. Never `DROP TABLE` / `TRUNCATE` without WHERE on production tables.
