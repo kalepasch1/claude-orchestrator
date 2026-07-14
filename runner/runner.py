@@ -717,10 +717,14 @@ def run_task(t):
                 visible_model = model if coder == "claude" else f"{coder}:{_coder_route.get('model') or model}"
             except Exception:
                 visible_model = model if coder == "claude" else f"{coder}:{model}"
-            acct = POOL.current()
-            POOL.record_use(acct)
+            # Non-Claude coders use their own provider/local environment. Do not
+            # lease or attribute a Claude subscription account for Aider work.
+            acct = POOL.current() if coder == "claude" else None
+            if acct:
+                POOL.record_use(acct)
             set_state(t["id"], state="RUNNING", model=visible_model, attempt=attempt,
-                      account=(acct or {}).get("name"), note=f"agentic coder: {coder}")
+                      account=(acct or {}).get("name") or f"agentic:{coder}",
+                      note=f"agentic coder: {coder}")
             # GIT ISOLATION: prevent concurrent agents from touching the main working tree.
             # When ORCH_GIT_ISOLATION=worktree_only, all agent work happens in worktrees
             # and the main repo's .git/index.lock is never contested. This eliminates
@@ -738,7 +742,9 @@ def run_task(t):
             subprocess.run([os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"), slug, base],
                            cwd=repo, capture_output=True)
             wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", slug)
-            env = dict(os.environ); env.update(POOL.env_for(acct))
+            env = dict(os.environ)
+            if acct:
+                env.update(POOL.env_for(acct))
             # inject this project's external-provider secrets (values never logged)
             try:
                 env.update(secrets_manager.inject_env(name))

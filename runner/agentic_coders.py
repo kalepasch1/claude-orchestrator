@@ -516,6 +516,16 @@ def pick(task, slot_index=0):
 
     forced = str(task.get("force_coder") or "").strip()
     if forced:
+        # "aider" names the execution seam, not a concrete pool entry. Resolve
+        # it to a usable non-Claude backend instead of silently falling through
+        # to a Claude subscription account.
+        if forced == "aider":
+            candidates = by_cost or sorted(
+                [c for c in pool if c["name"] != "claude" and _within_cap(c)],
+                key=lambda c: (adjusted_cost(c), -c["cap"]),
+            )
+            if candidates:
+                return candidates[0]["name"]
         fc = _spec(forced)
         if forced == "claude" and fc and fc["cap"] >= need and _within_cap(fc) and _allowed_by_terms(fc, sensitivity):
             return "claude"

@@ -387,6 +387,20 @@ class ModelRoutingTest(unittest.TestCase):
              patch.object(agentic_coders, "_heavy_ollama_saturated", return_value=False):
             self.assertEqual(agentic_coders.pick(task), "gemini")
 
+    def test_forced_aider_resolves_to_non_claude_backend(self):
+        coders = [
+            {"name": "claude", "cmd": None, "cost": 1, "cap": 10, "daily_usd": 0},
+            {"name": "ollama", "cmd": "aider --model ollama/qwen --message {prompt}",
+             "cost": 0, "cap": 6, "daily_usd": 0},
+        ]
+        task = {"slug": "qafix-app-123", "kind": "bugfix", "prompt": "fix build",
+                "force_coder": "aider", "deps": [], "_need": 8}
+        with patch.object(agentic_coders, "_pool", return_value=coders), \
+             patch.object(agentic_coders, "_within_cap", return_value=True), \
+             patch.object(agentic_coders, "_allowed_by_terms", return_value=True), \
+             patch.object(agentic_coders, "_heavy_ollama_saturated", return_value=False):
+            self.assertEqual(agentic_coders.pick(task), "ollama")
+
     def test_forced_canary_bypasses_existing_branch_shortcut(self):
         self.assertTrue(runner_entrypoint._must_run_agent_for_evidence(
             {"slug": "recover-missing-branch-canary-gpt-1", "kind": "canary", "force_coder": "gpt"},
