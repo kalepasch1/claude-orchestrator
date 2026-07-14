@@ -196,11 +196,17 @@ def _fallback_ideas(surface):
 
 
 def run():
-    import improvement_scrutiny
+    import improvement_scrutiny, improvement_optimizer
+    capacity = improvement_optimizer.capacity(db)
+    if capacity["limited"]:
+        print("improvement_miner: capacity-limited; draining scrutiny/build backlog before drafting")
+        return {"queued": 0, "for_review": 0, "needs_revision": 0,
+                "capacity_limited": True, "capacity": capacity}
     pid = {p["name"]: p["id"] for p in (db.select("projects", {"select": "id,name"}) or [])}
     # don't re-propose the same title for the same app+surface
-    seen = {(r["app"], r.get("surface"), (r.get("title") or "").lower())
-            for r in (db.select("improvement_proposals", {"select": "app,surface,title"}) or [])}
+    existing = db.select("improvement_proposals", {
+        "select": "id,app,surface,title,current_state,proposal,rationale", "limit": "2000"}) or []
+    seen = {(r["app"], r.get("surface"), (r.get("title") or "").lower()) for r in existing}
     import math
     mrr = {r["app"]: float(r.get("mrr_usd") or 0) for r in (db.select("app_revenue", {"select": "*"}) or [])}
     queued_now = 0
@@ -212,12 +218,17 @@ def run():
         queued_now = 0
     # gather + SCORE all candidates first (impact x feasibility x revenue-fit), then build highest-EV first
     cands = []
+    novelty_rejected = 0
     for app0, surface in _next_pairs():
         # meta surfaces improve the AUTONOMOUS SYSTEM itself -> target the orchestrator repo
         app = "beethoven" if surface in META_SURFACES else app0
         for it in (_mine(app, surface) or [])[:3]:
             title = (it.get("title") or "").strip()
             if not title or (app, surface, title.lower()) in seen:
+                continue
+            novelty = improvement_optimizer.novel(it, existing + [x[3] for x in cands])
+            if not novelty["novel"]:
+                novelty_rejected += 1
                 continue
             impact = float(it.get("impact", 6) or 6); feas = float(it.get("feasibility", 6) or 6)
             # bias toward surfaces that have PROVEN to pay off (from improvement_measure)
@@ -229,7 +240,7 @@ def run():
             seen.add((app, surface, title.lower()))
     cands.sort(key=lambda x: x[0], reverse=True)   # impact-ranked: biggest wins first
     queued = review = revision = 0
-    for score, app, surface, it, title in cands:
+    for score, app, surface, it, title in cands[:capacity["slots"]]:
             divergent = bool(it.get("divergent"))
             row = {"app": app, "surface": surface, "title": title[:200],
                    "current_state": (it.get("current_state") or "")[:600],
@@ -262,7 +273,8 @@ def run():
                 review += 1
             seen.add((app, surface, title.lower()))
     print(f"improvement_miner: queued 0 directly; {review} scrutiny-ready, {revision} need revision")
-    return {"queued": queued, "for_review": review, "needs_revision": revision}
+    return {"queued": queued, "for_review": review, "needs_revision": revision,
+            "novelty_rejected": novelty_rejected, "capacity": capacity}
 
 
 if __name__ == "__main__":

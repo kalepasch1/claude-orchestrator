@@ -111,7 +111,8 @@ def _ollama_up():
         return False
 
 
-def available():
+def configured():
+    """Providers with local configuration present, regardless of health."""
     prov = ["claude"]
     # a key counts only if it's non-empty (blank .env lines don't enable a provider)
     if provider_credentials.has("openai"): prov.append("openai")
@@ -121,6 +122,16 @@ def available():
     if provider_credentials.has("xai"): prov.append("xai")
     if _ollama_up(): prov.append("local")
     return prov
+
+
+def available():
+    """Configured providers currently eligible for traffic."""
+    providers = configured()
+    try:
+        import provider_failover_sla
+        return [p for p in providers if not provider_failover_sla.is_demoted(p)]
+    except Exception:
+        return providers
 
 
 def _post(url, headers, payload, timeout=90):

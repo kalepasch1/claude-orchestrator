@@ -9,7 +9,7 @@ def test_grok_alias_enables_xai_without_copying_secret_to_disk(monkeypatch):
     monkeypatch.setenv("GROK_API_KEY", "test-grok-credential")
 
     assert provider_credentials.has("xai")
-    assert "xai" in model_gateway.available()
+    assert "xai" in model_gateway.configured()
 
 
 def test_xai_and_groq_models_participate_in_concrete_catalog(monkeypatch):
@@ -50,3 +50,15 @@ def test_auth_demoted_provider_is_removed_from_optimizer(monkeypatch):
     ranked = model_catalog.ranked("plan", need=8, available_providers={"xai"}, use_empirical=False)
 
     assert ranked == []
+
+
+def test_auth_demotion_survives_control_plane_write_failure(monkeypatch, tmp_path):
+    import provider_failover_sla
+    monkeypatch.setenv("CLAUDE_ORCH_HOME", str(tmp_path))
+    monkeypatch.setattr(provider_failover_sla.db, "upsert", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("offline")))
+    monkeypatch.setattr(provider_failover_sla.db, "select", lambda *a, **k: [])
+
+    provider_failover_sla.demote("xai", "auth-403")
+
+    assert provider_failover_sla.is_demoted("xai")
+    assert (tmp_path / "provider_sla_state.json").exists()

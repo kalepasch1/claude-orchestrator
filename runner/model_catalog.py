@@ -124,12 +124,17 @@ def _empirical_score(task_class, provider, model):
                                             "limit": "80"}) or []
     except Exception:
         return 0.0
-    if len(rows) < 5:
+    try:
+        import route_value_optimizer
+        min_samples = route_value_optimizer.MIN_SAMPLES
+        lower = route_value_optimizer.wilson_lower(sum(1 for r in rows if r.get("ok")), len(rows))
+    except Exception:
+        min_samples, lower = 20, 0.0
+    if len(rows) < min_samples:
         return 0.0
-    ok = sum(1 for r in rows if r.get("ok")) / len(rows)
     cost = sum(float(r.get("cost_usd") or 0) for r in rows) / len(rows)
     latency = sum(float(r.get("latency_ms") or 0) for r in rows) / len(rows)
-    return ok * 2.0 - cost - min(2.0, latency / 60000.0)
+    return lower * 2.0 - cost - min(2.0, latency / 60000.0)
 
 
 def ranked(task_class="review", need=6, sensitivity="standard", exclude_provider=None,
@@ -164,11 +169,18 @@ def ranked(task_class="review", need=6, sensitivity="standard", exclude_provider
             pass
         price = _price_score(c)
         empirical = _empirical_score(task_class, c["provider"], c["model"]) if use_empirical else 0.0
+        deployed_value = 0.0
+        if use_empirical:
+            try:
+                import route_value_optimizer
+                deployed_value = route_value_optimizer.provider_score(c["provider"])
+            except Exception:
+                pass
         surplus = max(0, int(c.get("cap") or 0) - int(need or 0))
         surplus_penalty = surplus * (0.02 if c["provider"] == "local" else 0.05)
         local_bonus = 0.08 if c["provider"] == "local" else 0.0
         slash_penalty = model_slashing.score_adjustment(c["provider"], c["model"]) if model_slashing else 0.0
-        score = empirical - price - surplus_penalty - slash_penalty + (int(c.get("cap") or 0) / 100.0) + local_bonus
+        score = empirical + (2.0 * deployed_value) - price - surplus_penalty - slash_penalty + (int(c.get("cap") or 0) / 100.0) + local_bonus
         candidates.append((score, price, -c["cap"], c))
     candidates.sort(key=lambda x: (-x[0], x[1], x[2]))
     return [{**item[3], "vendor_family": vendor_family(item[3]["provider"], item[3]["model"]),
