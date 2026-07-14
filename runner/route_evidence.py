@@ -142,9 +142,10 @@ def provider_status():
         import agentic_coders
         import model_gateway
         providers = set(model_gateway.available())
+        configured = set(model_gateway.configured())
         coders = agentic_coders.available()
     except Exception as e:
-        return {"available_providers": [], "agentic_coders": [], "error": str(e)[:300]}
+        return {"available_providers": [], "configured_providers": [], "agentic_coders": [], "error": str(e)[:300]}
     required = {
         "openai": "OPENAI_API_KEY",
         "google": "GOOGLE_API_KEY",
@@ -171,6 +172,7 @@ def provider_status():
         pass
     return {
         "available_providers": sorted(providers),
+        "configured_providers": sorted(configured),
         "agentic_coders": coders,
         "disabled_providers": disabled,
         "demoted_providers": demoted,

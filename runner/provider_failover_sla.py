@@ -16,6 +16,12 @@ COOLDOWN = int(os.environ.get("ORCH_PROVIDER_SLA_COOLDOWN_MIN", "30"))
 CK = "provider_sla_state"
 
 
+def _local_path():
+    home = os.environ.get("CLAUDE_ORCH_HOME",
+                          os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".runtime"))
+    return os.path.join(home, "provider_sla_state.json")
+
+
 def _recent_ops():
     since = (datetime.datetime.utcnow() - datetime.timedelta(hours=WINDOW_H)).isoformat()
     try:
@@ -44,16 +50,35 @@ def _compute_sla(ops):
 
 
 def _load():
+    local = {"demoted": {}, "history": []}
+    try:
+        with open(_local_path()) as f:
+            local = json.load(f)
+    except Exception:
+        pass
     try:
         r = db.select("controls", {"select": "value", "key": f"eq.{CK}", "limit": "1"})
         if r and r[0].get("value"):
-            return json.loads(r[0]["value"])
+            remote = json.loads(r[0]["value"])
+            # Local auth failures take precedence when the control-plane write
+            # was unavailable; remote state adds fleet-wide demotions.
+            remote["demoted"] = {**(remote.get("demoted") or {}),
+                                 **(local.get("demoted") or {})}
+            return remote
     except Exception:
         pass
-    return {"demoted": {}, "history": []}
+    return local
 
 
 def _save(s):
+    try:
+        os.makedirs(os.path.dirname(_local_path()), exist_ok=True)
+        tmp = _local_path() + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(s, f, default=str)
+        os.replace(tmp, _local_path())
+    except Exception:
+        pass
     try:
         db.upsert("controls", {"key": CK, "value": json.dumps(s, default=str), "updated_at": "now()"})
     except Exception:
