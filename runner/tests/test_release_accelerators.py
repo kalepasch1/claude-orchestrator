@@ -1,4 +1,5 @@
 import json
+import datetime
 from unittest.mock import patch
 
 import failure_compiler
@@ -25,6 +26,20 @@ def test_release_train_does_not_duplicate_done_branch_ingestion(monkeypatch):
     assert release_train._candidate_state_filter() is None
     monkeypatch.setenv("ORCH_RELEASE_INGEST_DONE", "true")
     assert release_train._candidate_state_filter() == "in.(DONE,MERGED)"
+
+
+def test_release_fix_holds_are_gate_specific_and_expire(monkeypatch):
+    now = datetime.datetime.now(datetime.timezone.utc)
+    rows = [
+        {"slug": "qafix-app-current", "state": "QUEUED", "note": "auto-queued by release_train",
+         "updated_at": now.isoformat()},
+        {"slug": "copyfix-app-stale", "state": "QUEUED", "note": "auto-queued by release_train",
+         "updated_at": (now - datetime.timedelta(hours=4)).isoformat()},
+    ]
+    monkeypatch.setattr(release_train.db, "select", lambda *a, **k: rows)
+    monkeypatch.setenv("ORCH_RELEASE_FIX_HOLD_MIN", "180")
+    assert [x["slug"] for x in release_train._open_release_fix_tasks({"id": "p"}, "qa")] == ["qafix-app-current"]
+    assert release_train._open_release_fix_tasks({"id": "p"}, "copy") == []
 
 
 def test_exact_release_attribution_uses_git_range_evidence(monkeypatch, tmp_path):

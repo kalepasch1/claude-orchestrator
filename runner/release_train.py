@@ -303,12 +303,27 @@ def _open_release_fix_tasks(p, gate=None):
         prefixes = RELEASE_FIX_PREFIXES
     else:
         prefixes = QA_FIX_PREFIXES + RELEASE_FIX_PREFIXES + COPY_FIX_PREFIXES
+    hold_minutes = float(os.environ.get("ORCH_RELEASE_FIX_HOLD_MIN", "180"))
+    now = datetime.datetime.now(datetime.timezone.utc)
     out = []
     for row in rows:
         slug = str(row.get("slug") or "")
         note = str(row.get("note") or "").lower()
-        if slug.startswith(prefixes) or "release_train" in note or "vercel" in note:
-            out.append(row)
+        # Notes such as "auto-queued by release_train" describe provenance,
+        # not the gate. Using them for every gate caused QA tasks to block copy
+        # and deploy tasks to block build indefinitely.
+        matches_gate = slug.startswith(prefixes)
+        if gate is None:
+            matches_gate = matches_gate or "release_train" in note or "vercel" in note
+        if not matches_gate:
+            continue
+        touched = _parse_time(row.get("updated_at") or row.get("created_at"))
+        if touched:
+            if touched.tzinfo is None:
+                touched = touched.replace(tzinfo=datetime.timezone.utc)
+            if (now - touched).total_seconds() > hold_minutes * 60:
+                continue
+        out.append(row)
     return out
 
 
