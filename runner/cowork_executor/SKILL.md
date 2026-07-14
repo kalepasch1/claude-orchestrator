@@ -1,13 +1,15 @@
 ---
 name: cowork-executor
-description: High-throughput autonomous task executor for claude-orchestrator. Claims 5 QUEUED tasks atomically, reads pre-optimized enriched prompts, implements ALL with Claude, pushes branches, batch-deploys Vercel. Zero skip. Runs every 2 minutes.
+description: High-throughput autonomous task executor for claude-orchestrator. Claims 5 QUEUED tasks atomically, reads pre-optimized enriched prompts, implements ALL with Claude, pushes branches, batch-deploys Vercel. Zero skip. CONTINUOUS LOOP — never stops until queue is empty.
 ---
 
-# Cowork Executor v6.3 — Claude-Only Implementation · Enriched Prompts · Batch Vercel · Zero Skip
+# Cowork Executor v6.4 — Claude-Only Implementation · Enriched Prompts · Batch Vercel · Zero Skip
 
 **`<run-summary>` IS FORBIDDEN until Step 4. Writing one before all tasks are DONE ends the session early and creates zombies.**
 
 **ZERO SKIP: Every claimed task gets code committed and pushed. Sensitivity, vagueness, secrets — none are skip reasons.**
+
+**CONTINUOUS LOOP: After completing a batch of 5 and deploying, immediately claim the next 5. Only stop when the queue returns 0 rows. Never pause between batches. Never wait for a human prompt.**
 
 ## Architecture
 This executor is the DEPLOYMENT layer. Other AI vendors (OpenAI, Gemini, Ollama) pre-process and pre-draft tasks in the queue via runner.py. `cowork_assemble.py` surfaces that pre-work. Claude (this session) reads it, implements the final code, pushes to repo, deploys to Vercel. Fast because the heavy thinking is already done upstream.
@@ -43,9 +45,9 @@ Store: `{GITHUB_PAT}`, `{VERCEL_TOKEN}`. (Others available if needed.)
 ### 0b. Release zombies from crashed/rate-limited sessions
 Any other executor account that hit a rate limit left tasks stuck RUNNING. Free them now so this session can claim them:
 ```sql
-UPDATE tasks SET state='QUEUED', note='v6.3: zombie released — session expired >30min'
+UPDATE tasks SET state='QUEUED', note='v6.4: zombie released — heartbeat stale >90min'
 WHERE state='RUNNING'
-  AND updated_at < now() - interval '30 minutes'
+  AND updated_at < now() - interval '90 minutes'
   AND account LIKE 'cowork-executor%';
 ```
 
@@ -82,15 +84,15 @@ WITH candidates AS (
   FOR UPDATE SKIP LOCKED
 ),
 claimed AS (
-  UPDATE tasks SET state='RUNNING', account='cowork-executor-v6', updated_at=NOW()
+  UPDATE tasks SET state='RUNNING', account='cowork-executor-v6-' || extract(epoch from now())::bigint, updated_at=NOW()
   WHERE id IN (SELECT id FROM candidates)
-  RETURNING id, slug, project_id, prompt, base_branch, kind, attempt, force_coder
+  RETURNING id, slug, project_id, prompt, base_branch, kind, attempt, force_coder, account
 )
 SELECT c.*, p.name AS project_name, p.repo_path, p.default_base
 FROM claimed c JOIN projects p ON c.project_id = p.id;
 ```
 
-If 0 rows → heartbeat (Step 4), stop.
+If 0 rows → heartbeat (Step 4), write `<run-summary>`, stop.
 
 ---
 
@@ -109,17 +111,21 @@ git remote set-url origin https://x-access-token:{GITHUB_PAT}@github.com/kalepas
 ### 3a. Quarantine gate — binary garbage ONLY
 If prompt is a hex-only `PATCH TEMPLATE` stub with no readable English implementation intent:
 ```sql
-UPDATE tasks SET state='QUARANTINED', note='v6.3: binary PATCH TEMPLATE stub' WHERE id='{id}';
+UPDATE tasks SET state='QUARANTINED', note='v6.4: binary PATCH TEMPLATE stub' WHERE id='{id}';
 ```
 Move to next task. This is the ONLY quarantine reason.
 
-### 3b. Branch checkout
+### 3b. Isolated worktree (NEVER checkout branches in the main repo)
+The main checkout is shared by other executors, the runner, and sentinel.py (which stashes+resets any non-base checkout it finds). All work happens in a per-task worktree instead — same `{repo}-wt/{slug}` convention the runner uses.
+
 ```bash
 cd {repo_path}
-git stash --quiet 2>&1 || true
-git checkout {base_branch} --quiet 2>&1 || git checkout {default_base} --quiet 2>&1
-git checkout -b agent/{slug} origin/{base_branch} --quiet 2>&1   || git checkout agent/{slug} --quiet 2>&1   || git checkout -b agent/{slug} --quiet 2>&1
+git worktree prune 2>&1
+WT="$(dirname {repo_path})/$(basename {repo_path})-wt/{slug}"
+git worktree add --force "$WT" -B agent/{slug} origin/{base_branch} 2>&1   || git worktree add --force "$WT" -B agent/{slug} {base_branch} 2>&1   || git worktree add --force "$WT" -B agent/{slug} 2>&1
+cd "$WT"
 ```
+Do NOT run `git stash` or `git checkout` in `{repo_path}` — ever. If worktree creation fails because the branch is checked out in a stale worktree, run `git worktree prune` then retry.
 
 ### 3c. Fetch pre-optimized enrichment (runner.py pre-work)
 The runner.py intelligence pipeline (prompt_assembler, reuse_first, queue_preopt) has already pre-processed this task. Retrieve it:
@@ -147,27 +153,32 @@ The upstream vendors have already analyzed and pre-drafted this. Your job: apply
 
 **Rule: something real must be committed. No exceptions.**
 
-### 3e. Commit
+### 3e. Commit (inside the worktree, not the main repo)
 ```bash
-cd {repo_path}
+cd "$WT"
 git add -A
 git diff --cached --stat
-git commit --no-verify -m "agent: {slug}" 2>&1
+git -c user.name="Kale Pasch" -c user.email="kalepasch@gmail.com" commit --no-verify -m "agent: {slug}" 2>&1
 ```
 If `nothing to commit` → create `docs/{slug}-stub.md` with implementation notes and commit that.
 
-### 3f. Push
+### 3f. Push, then remove the worktree (branch survives)
 ```bash
 git push origin HEAD:agent/{slug} --force 2>&1 | tail -3
+cd {repo_path} && git worktree remove --force "$WT" 2>&1 || true
 ```
-Push failure → log it, still mark DONE (merge-train handles push retry).
+Push failure → log it, still mark DONE (merge-train handles push retry). Always remove the worktree so `-wt` dirs don't accumulate; the agent branch keeps the work.
 
-### 3g. Mark DONE
+### 3g. Mark DONE + heartbeat remaining claims
 ```sql
 UPDATE tasks SET state='DONE',
-  note='cowork-executor-v6: implemented and pushed'
+  note='cowork-executor-v6.4: implemented and pushed (isolated worktree)'
 WHERE id='{id}';
+-- Heartbeat: keep this session's other claimed tasks out of the zombie sweep
+UPDATE tasks SET updated_at=now()
+WHERE state='RUNNING' AND account='{my_account}';
 ```
+(`{my_account}` = the `account` value returned by the Step 1 claim — note it when you claim.)
 
 **→ Start next task immediately. No pausing. No summaries.**
 
@@ -184,16 +195,19 @@ Skip silently if VERCEL_TOKEN is empty.
 
 ---
 
-## Step 4: HEARTBEAT
+## Step 4: LOOP OR STOP
 
+**IMMEDIATELY go back to Step 1 and claim another 5.** Only write `<run-summary>` and stop when Step 1 returns 0 rows.
+
+When finally stopping (0 rows):
 ```sql
 INSERT INTO fleet_config (key,value)
 VALUES ('COWORK_EXECUTOR_V6_LAST_RUN',
-  '{"ts":"{iso_now}","claimed":5,"done":{n}}'::jsonb)
+  '{"ts":"{iso_now}","claimed":{total_claimed},"done":{total_done}}'::jsonb)
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 ```
 
-Only now write a one-line summary.
+Only now write `<run-summary>` with totals across all batches.
 
 ---
 
@@ -206,11 +220,14 @@ Only now write a one-line summary.
 5. **"Tests already pass / already done / no fix needed"** → mark **DONE**, never BLOCKED.
 6. **"Sensitive / legal / vague / secret"** → not a skip — implement via 3d.
 7. Re-queue only if an actively-required live external service is unavailable.
+8. **NEVER STOP BETWEEN BATCHES.** After Step 3.5 deploy, go straight to Step 1. The session ends only when the queue is empty (0 rows from Step 1).
 
 ## What Is Never Acceptable
-- `<run-summary>` before Step 4
+- `<run-summary>` before the queue is empty
 - Leaving any task RUNNING without resolving to DONE/QUARANTINED/BLOCKED
 - "Skipped N tasks" — zero skips
 - BLOCKED for anything other than missing repo path
 - Per-task Vercel deploys — batch only at Step 3.5
 - Using OpenAI/Gemini for code implementation in this session — that happens upstream in runner.py, not here
+- **Stopping after a batch when there are still QUEUED tasks** — this wastes the scheduled trigger and forces a 2-minute wait for the next run
+- **Waiting for a human prompt between batches** — you are autonomous, loop until empty
