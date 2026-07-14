@@ -1,5 +1,12 @@
 import json
+import os
+import sys
 from pathlib import Path
+from unittest.mock import patch
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import cowork_assemble
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,3 +37,10 @@ def test_cloud_runner_cannot_push_every_merge_to_production():
     assert "Environment=ORCH_PUSH_ON_MERGE=false" in service
     assert "Environment=RELEASE_MIN_BATCH=10" in service
     assert "Environment=RELEASE_INTERVAL_HOURS=6" in service
+
+
+def test_cowork_agents_never_receive_vercel_token():
+    with patch.dict(os.environ, {"VERCEL_TOKEN": "account-secret"}), \
+            patch.object(cowork_assemble, "_safe_import", return_value=None):
+        config = cowork_assemble.get_vercel_config()
+    assert config["token"] == ""

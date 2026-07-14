@@ -53,7 +53,11 @@ def _safe_import(name):
 
 
 def get_vercel_config():
-    """Read Vercel token and project map from env + fleet_config."""
+    """Read non-secret Vercel metadata for Cowork agents.
+
+    Cowork tasks must never receive the account token: direct CLI deployments
+    bypass Git branch gates, release batching, and production verification.
+    """
     token = os.environ.get("VERCEL_TOKEN", "")
     team_id = os.environ.get("VERCEL_TEAM_ID", "")
     project_map = {}
@@ -83,7 +87,7 @@ def get_vercel_config():
     except Exception:
         pass
 
-    return {"token": token, "team_id": team_id, "project_map": project_map}
+    return {"token": "", "team_id": team_id, "project_map": project_map}
 
 
 def get_enriched_prompt(task_id, slug, kind, attempt, repo_path, project_id, project_name):
