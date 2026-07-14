@@ -487,7 +487,7 @@ class TestClaimTaskOrder(unittest.TestCase):
         tasks = [
             {"id": "new", "project_id": "p1", "slug": "net-new-tomorrow", "deps": [],
              "created_at": "2026-01-01", "kind": "feature"},
-            {"id": "qafix", "project_id": "p2", "slug": "qafix-racefeed-current", "deps": [],
+            {"id": "qafix", "project_id": "p2", "slug": "qafix-racefeed-a1b2c3d4e5f6", "deps": [],
              "created_at": "2026-01-02", "kind": "bugfix"},
         ]
 
@@ -517,6 +517,37 @@ class TestClaimTaskOrder(unittest.TestCase):
                                      "ORCH_EVIDENCE_RESERVED_LANES": "0"}, clear=False):
             task = db.claim_task("runner-1")
         self.assertEqual(task["id"], "qafix")
+
+    def test_exact_signature_release_fix_beats_legacy_higher_portfolio_fix(self):
+        tasks = [
+            {"id": "legacy", "project_id": "p1", "slug": "qafix-tomorrow-old-slice-4", "deps": [],
+             "created_at": "2026-01-01", "kind": "bugfix"},
+            {"id": "exact", "project_id": "p2", "slug": "qafix-racefeed-a1b2c3d4e5f6", "deps": [],
+             "created_at": "2026-01-02", "kind": "bugfix"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [{"id": "p1", "name": "tomorrow", "priority": 1, "concurrency_weight": 1},
+                        {"id": "p2", "name": "racefeed", "priority": 9, "concurrency_weight": 1}]
+            if table == "controls": return []
+            if table == "tasks":
+                if params.get("state") == "eq.QUEUED": return [dict(t) for t in tasks]
+                return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        with patch.dict(os.environ, {"ORCH_RELEASE_FIX_JUMP_QUEUE": "true",
+                                     "ORCH_EVIDENCE_RESERVED_LANES": "0"}, clear=False):
+            task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "exact")
 
     def test_ordinary_work_still_respects_project_cap(self):
         tasks = [

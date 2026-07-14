@@ -642,6 +642,14 @@ def claim_task(runner_id):
             return 0
         return 1
 
+    def _release_fix_specificity(t):
+        """Current compiled failure signatures beat legacy sliced/generic repair backlogs."""
+        if not _is_release_fix_task(t):
+            return 9
+        import re
+        slug = str(t.get("slug") or "")
+        return 0 if re.search(r"-[0-9a-f]{12}$", slug) else 1
+
     def _improvement_rank(t):
         # Once recovery is drained, orchestrator self-improvements should ship before fresh product
         # expansion because every merge compounds throughput/cost/quality across the whole fleet.
@@ -670,8 +678,9 @@ def claim_task(runner_id):
 
     queued.sort(key=lambda t: (_evidence_reserve_rank(t),                        # reserve one vendor-evidence lane
                                _release_fix_rank(t),                             # unblock Vercel releases across the portfolio
-                               _portfolio_project_rank(t),                       # owner order within the same delivery class
                                _release_fix_urgency(t),                          # hot gate fixes before stale EV noise
+                               _release_fix_specificity(t),                      # exact current failures before legacy slices
+                               _portfolio_project_rank(t),                       # owner order within the same delivery class
                                _evidence_rank(t),                                # bounded canaries unblock learned routing
                                _recovery_rank(t),                                # recover tested work next
                                _rework_rank(t),                                  # then quarantine-recovered work
