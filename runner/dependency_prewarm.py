@@ -233,6 +233,19 @@ def ensure(repo, reason="prewarm", timeout=None):
         tail = ((r.stdout or "")[-800:] + "\n" + (r.stderr or "")[-800:]).strip()
         if lock_file: lock_file.close()
         return {"ok": False, "manager": manager, "error": tail or f"{manager} install failed"}
+    # PRISMA (2026-07-14): installs that skip lifecycle scripts (--ignore-scripts fallback,
+    # pnpm script whitelisting) never run `prisma generate`, so every test importing the client
+    # fails with "Cannot find module '.prisma/client/default'" — this single missing step
+    # accounted for 49 red test files on tomorrow's staging. Generate explicitly when a schema
+    # exists; harmless no-op otherwise.
+    try:
+        if (os.path.isfile(os.path.join(repo, "prisma", "schema.prisma"))
+                or os.path.isfile(os.path.join(repo, "schema.prisma"))):
+            npx = shutil.which("npx") or "npx"
+            subprocess.run([npx, "prisma", "generate"], cwd=repo, capture_output=True,
+                           text=True, timeout=300)
+    except Exception:
+        pass
     os.makedirs(_STAMP_DIR, exist_ok=True)
     try:
         with open(_stamp_path(repo), "w", encoding="utf-8") as f:
