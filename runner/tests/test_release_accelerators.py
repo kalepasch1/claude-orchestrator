@@ -20,6 +20,13 @@ def test_partial_release_flushes_when_cadence_is_due():
     assert release_train._release_decision(100, False, minimum=10) == "release"
 
 
+def test_release_train_does_not_duplicate_done_branch_ingestion(monkeypatch):
+    monkeypatch.delenv("ORCH_RELEASE_INGEST_DONE", raising=False)
+    assert release_train._candidate_state_filter() == "eq.MERGED"
+    monkeypatch.setenv("ORCH_RELEASE_INGEST_DONE", "true")
+    assert release_train._candidate_state_filter() == "in.(DONE,MERGED)"
+
+
 def test_exact_release_attribution_uses_git_range_evidence(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_ORCH_HOME", str(tmp_path))
     monkeypatch.setattr(release_attribution, "_messages", lambda *a: "train: agent/fix-auth\n")

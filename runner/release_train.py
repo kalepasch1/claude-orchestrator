@@ -58,6 +58,11 @@ def _release_decision(ahead, due, minimum=None):
     return "hold"
 
 
+def _candidate_state_filter():
+    """Keep integration in the canonical merge train unless legacy ingestion is explicitly enabled."""
+    return "in.(DONE,MERGED)" if _truthy("ORCH_RELEASE_INGEST_DONE", False) else "eq.MERGED"
+
+
 def _record_release_flow(project, status, **extra):
     """Small local status file so dashboard/autopilot can show staged-vs-prod release state."""
     try:
@@ -480,10 +485,13 @@ def run_for(project):
         p["vercel_project"] = dh["vercel_project"]
         db.update("projects", {"name": project}, {"vercel_project": dh["vercel_project"]})
     _ensure_staging(repo, prod)
-    # candidate agent branches: tasks DONE/approved not yet on staging
+    # The canonical merge train owns DONE -> MERGED. Re-ingesting every DONE
+    # branch here duplicated work, contended on Git worktree locks, and delayed
+    # QA/deploy by minutes per project. MERGED is retained as a safe catch-up
+    # path for a branch whose state advanced just before its staging ref landed.
     merged = 0
     for t in db.select("tasks", {"select": "slug", "project_id": f"eq.{p['id']}",
-                                 "state": "in.(DONE,MERGED)", "order": "updated_at.desc", "limit": "60"}) or []:
+                                 "state": _candidate_state_filter(), "order": "updated_at.desc", "limit": "60"}) or []:
         br = f"agent/{t['slug']}"
         if _git(repo, "rev-parse", "--verify", br).returncode != 0:
             continue
