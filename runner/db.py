@@ -242,6 +242,26 @@ def insert(table, row, upsert=False):
     # Catches: PATCH TEMPLATE stubs, empty prompts, prompts that are just error messages.
     # This prevents 1,794+ garbage tasks from ever being created (they used to be cleaned up
     # after the fact by rootcause_cluster, which was too late — they'd already consumed slots).
+    # AUTHORITATIVE OBJECTIVE ADMISSION: every producer (including upserting legacy
+    # generators) passes the same boundary. Exact database conflict behavior remains below.
+    if table == "tasks" and isinstance(row, dict):
+        try:
+            import control_plane
+            _admission = control_plane.prepare_task(row, select_fn=select)
+            row = _admission.get("row") or row
+            if not _admission.get("accept", True):
+                import logging
+                logging.getLogger("db").info(
+                    "objective-admission: rejecting %s — %s",
+                    row.get("slug", "?"), _admission.get("reason", "rejected"))
+                # A rejected proposal did not create the requested row. Returning an
+                # unrelated semantic predecessor made multi-step producers believe their
+                # new parent existed and mutate children toward a nonexistent slug.
+                return None
+        except Exception as _control_err:
+            import logging
+            logging.getLogger("db").debug("objective-admission unavailable: %s", _control_err)
+
     if table == "tasks" and isinstance(row, dict) and not upsert:
         _prompt = (row.get("prompt") or "").strip()
         _reject_reason = None
@@ -293,9 +313,41 @@ def insert(table, row, upsert=False):
                     return existing
             except Exception:
                 pass
+    # Cross-machine semantic uniqueness.  The local slug lock above remains a cheap fast path;
+    # this short database lease closes the remaining SELECT/INSERT race between runner hosts.
+    # It is deliberately fail-open while the additive migration rolls out.
+    _objective_claim = None
+    if (table == "tasks" and isinstance(row, dict) and not upsert
+            and row.get("project_id") and os.environ.get("ORCH_DB_OBJECTIVE_ADMISSION", "true").lower() in ("1", "true", "yes", "on")):
+        try:
+            import control_plane, uuid
+            row.setdefault("id", str(uuid.uuid4()))
+            _fp = control_plane.objective_fingerprint(row)
+            _owner = os.environ.get("RUNNER_ID") or f"{socket.gethostname()}-{os.getpid()}"
+            _claims = rpc("reserve_task_objective", {"p_project_id": row["project_id"],
+                "p_objective_fingerprint": _fp, "p_owner": _owner, "p_ttl_seconds": 120}) or []
+            _claim = _claims[0] if _claims else {}
+            if not _claim.get("accepted"):
+                if _claim.get("existing_task_id"):
+                    return select("tasks", {"select": "id,slug,state", "id": f"eq.{_claim['existing_task_id']}", "limit": "1"})
+                return None
+            _objective_claim = (_fp, _claim.get("lease_token"))
+        except Exception:
+            _objective_claim = None
     h = {"Prefer": "return=representation" + (",resolution=merge-duplicates" if upsert else "")}
     try:
-        return _req("POST", f"/rest/v1/{table}", body=row, headers=h)
+        result = _req("POST", f"/rest/v1/{table}", body=row, headers=h)
+        if _objective_claim:
+            try:
+                rpc("finalize_task_objective", {"p_project_id": row["project_id"],
+                    "p_objective_fingerprint": _objective_claim[0],
+                    "p_lease_token": _objective_claim[1], "p_task_id": row["id"]})
+                import activation_proof
+                activation_proof.record("objective_admission", "outcome", True,
+                                        task_id=row["id"], fingerprint=_objective_claim[0])
+            except Exception:
+                pass
+        return result
     except urllib.error.HTTPError as e:
         # 409 = duplicate key: the row already exists, so the write intent is satisfied. A retried
         # task re-inserting an outcome/row used to raise HTTP 409 -> "runner exception: Conflict" ->
@@ -476,7 +528,7 @@ def claim_task(runner_id):
         paused_pids = {name2id[n] for n in paused_names if n in name2id}
     except Exception:
         pass
-    queued = select("tasks", {"select": "id,slug,project_id,deps,confidence,created_at,kind,note",
+    queued = select("tasks", {"select": "id,slug,project_id,deps,confidence,created_at,kind,note,prompt,priority,attempt,material",
                               "state": "eq.QUEUED",
                               "order": "created_at.asc",
                               "limit": str(CLAIM_SCAN_LIMIT)}) or []
@@ -611,6 +663,36 @@ def claim_task(runner_id):
         # Last-resort EV fallback writes higher confidence for better tasks.
         return -_num(t.get("confidence"), 0.0)
 
+    def _control_rank(t):
+        """Global constrained-planner score shared by CLI, API, and Cowork lanes."""
+        try:
+            # Preserve explicit operator opt-outs for the legacy jump queues. The
+            # global planner must not smuggle the same preference back in through
+            # its delivery-value multiplier when a lane was deliberately disabled.
+            if (_is_recovery_task(t)
+                    and os.environ.get("ORCH_RECOVERY_JUMP_QUEUE", "true").lower() not in ("true", "1", "yes", "on")):
+                return 0.0
+            if (_is_quarantine_rework_task(t)
+                    and os.environ.get("ORCH_QUARANTINE_REWORK_JUMP_QUEUE", "true").lower() not in ("true", "1", "yes", "on")):
+                return 0.0
+            import control_plane
+            return -control_plane.global_task_score(t)
+        except Exception:
+            return 0.0
+
+    def _liquidation_rank(t):
+        try:
+            import control_plane
+            if not control_plane.liquidation_active(queue_depth=len(queued)):
+                return 0
+            if control_plane.is_delivery_work(t):
+                return 0
+            if control_plane.is_generator_work(t):
+                return 2
+            return 1
+        except Exception:
+            return 0
+
     def _recovery_rank(t):
         # Missing-branch recovery is already mostly solved work. While any of that backlog exists,
         # claim it ahead of net-new work regardless of stale thermal/priority rows.
@@ -669,14 +751,16 @@ def claim_task(runner_id):
         return per_project_limit
 
     queued.sort(key=lambda t: (_evidence_reserve_rank(t),                        # reserve one vendor-evidence lane
-                               _portfolio_project_rank(t),                       # owner portfolio priority order
-                               _release_fix_rank(t),                             # unblock Vercel releases first inside each project
+                               _release_fix_rank(t),                             # unblock Vercel releases across the portfolio
+                               _portfolio_project_rank(t),                       # owner order within the same delivery class
                                _release_fix_urgency(t),                          # hot gate fixes before stale EV noise
+                               _liquidation_rank(t),                             # finish/deploy before net-new generation
                                _evidence_rank(t),                                # bounded canaries unblock learned routing
                                _recovery_rank(t),                                # recover tested work next
                                _rework_rank(t),                                  # then quarantine-recovered work
                                _improvement_rank(t),                             # then drain improve-* work
                                _churn(t),                                        # real work before churn
+                               _control_rank(t),                                 # global value + information-gain plan
                                _kind_age_score(t),                                # kind+age: bugfixes first, older tasks boosted
                                _thermal_rank(t),                                 # EV/min thermal map
                                _task_priority(t),                                # EV/task priority when present
