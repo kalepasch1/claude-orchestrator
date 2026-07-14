@@ -485,6 +485,15 @@ def run_task(t):
             set_state(t["id"], state="QUEUED", note="paused by kill switch")
             time.sleep(5); return
 
+        # MAX REQUEUE GUARD: tasks bounced >N times by pre-hooks are forced through.
+        # The 72% silent-failure rate was caused by topology/conflict/ensemble hooks
+        # endlessly re-queuing tasks. Cap it and force execution.
+        _requeue_count = int(t.get("_requeue_count") or 0)
+        _max_requeues = int(os.environ.get("ORCH_MAX_REQUEUE", "3"))
+        _force_execute = _requeue_count >= _max_requeues
+        if _force_execute:
+            set_state(t["id"], note=f"requeue-guard: forced execution after {_requeue_count} requeues")
+
         # toolchain gate: refuse to spend a model run on a project whose build toolchain is
         # known broken (missing npm/tsc, or node_modules never installed) — hold the task
         # QUEUED instead of burning a full agent run that would fail at build_gate anyway.
@@ -554,6 +563,12 @@ def run_task(t):
         except Exception as e:
             _log.debug("hook brain_compiler failed: %s", e)
         t0 = time.time()
+        # EXECUTION TELEMETRY: instrument the entire pre-hook chain
+        try:
+            import exec_telemetry
+            _tel = exec_telemetry.start(t["id"], slug)
+        except Exception:
+            _tel = None
 
         # deterministic replay: re-run a captured run snapshot
         if kind == "replay" and t["prompt"].startswith("REPLAY:"):
@@ -667,6 +682,20 @@ def run_task(t):
             POOL.record_use(acct)
             set_state(t["id"], state="RUNNING", model=visible_model, attempt=attempt,
                       account=(acct or {}).get("name"), note=f"agentic coder: {coder}")
+            # GIT ISOLATION: prevent concurrent agents from touching the main working tree.
+            # When ORCH_GIT_ISOLATION=worktree_only, all agent work happens in worktrees
+            # and the main repo's .git/index.lock is never contested. This eliminates
+            # the 622 permission errors from fleet agents competing for the same repo.
+            if os.environ.get("ORCH_GIT_ISOLATION", "").lower() == "worktree_only":
+                _lockfile = os.path.join(repo, ".git", "index.lock")
+                if os.path.exists(_lockfile):
+                    try:
+                        _lock_age = time.time() - os.path.getmtime(_lockfile)
+                        if _lock_age > 30:  # stale lock older than 30s
+                            os.remove(_lockfile)
+                            set_state(t["id"], note=f"git-isolation: removed stale index.lock ({_lock_age:.0f}s old)")
+                    except (OSError, PermissionError):
+                        pass
             subprocess.run([os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"), slug, base],
                            cwd=repo, capture_output=True)
             wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", slug)
@@ -880,11 +909,12 @@ def run_task(t):
             # FLEET TOPOLOGY: check if this runner can handle the task's complexity
             try:
                 import fleet_topology
-                if not fleet_topology.can_handle(t):
+                if not _force_execute and not fleet_topology.can_handle(t):
                     _better = fleet_topology.best_runner_for(t)
                     if _better:
+                        t["_requeue_count"] = _requeue_count + 1
                         set_state(t["id"], state="QUEUED",
-                                  note=f"fleet-topology: redirecting to {_better} (better fit)")
+                                  note=f"fleet-topology: redirecting to {_better} (better fit) [requeue {_requeue_count+1}/{_max_requeues}]")
                         time.sleep(5); return
             except Exception as e:
                 _log.debug("hook fleet_topology failed: %s", e)
@@ -892,9 +922,10 @@ def run_task(t):
             try:
                 import conflict_predictor
                 _conflicts = conflict_predictor.check_conflicts(t)
-                if _conflicts.get("action") == "defer":
+                if not _force_execute and _conflicts.get("action") == "defer":
+                    t["_requeue_count"] = _requeue_count + 1
                     set_state(t["id"], state="QUEUED",
-                              note=f"conflict-predictor: deferring ({_conflicts['reason']})")
+                              note=f"conflict-predictor: deferring ({_conflicts['reason']}) [requeue {_requeue_count+1}/{_max_requeues}]")
                     time.sleep(10); return
                 elif _conflicts.get("conflicts"):
                     set_state(t["id"], note=f"conflict-predictor: {len(_conflicts['conflicts'])} overlapping files, proceeding")
@@ -917,9 +948,10 @@ def run_task(t):
                     _ens_domain = model_portfolios.classify(t, (_plan or {}).get("files", [])) if _plan is not None else "backend"
                     _ensemble = ensemble_predictor.predict(t, _ens_agent, _ens_domain, visible_model,
                                                            diff_plan=_plan)
-                    if _ensemble.get("should_skip"):
+                    if not _force_execute and _ensemble.get("should_skip"):
+                        t["_requeue_count"] = _requeue_count + 1
                         set_state(t["id"], state="QUEUED",
-                                  note=f"ensemble-predictor: {_ensemble['recommended_action']} (conf={_ensemble['confidence']:.0%}, {_ensemble['signal_count']} signals)")
+                                  note=f"ensemble-predictor: {_ensemble['recommended_action']} (conf={_ensemble['confidence']:.0%}, {_ensemble['signal_count']} signals) [requeue {_requeue_count+1}/{_max_requeues}]")
                         time.sleep(5); return
                 except Exception as e:
                     _log.debug("hook ensemble_predictor failed: %s", e)
@@ -942,6 +974,14 @@ def run_task(t):
                         set_state(t["id"], note=f"adaptive-pipeline: collapsed {len(_ap['collapsed'])} stages, saving ~{_ap.get('estimated_savings_tokens', 0)} tokens")
                 except Exception as e:
                     _log.debug("hook adaptive_pipeline failed: %s", e)
+            # PRE-HOOK TIMING GUARD: if pre-hooks already consumed >60s, skip the
+            # remaining parallelized hooks and go straight to execution. This prevents
+            # the "death by a thousand hooks" pattern where 40+ hooks each take 2-3s.
+            _prehook_elapsed = time.time() - t0
+            _prehook_max = float(os.environ.get("ORCH_PREHOOK_MAX_S", "60"))
+            if _prehook_elapsed > _prehook_max:
+                _fast["skip_all"] = True
+                set_state(t["id"], note=f"prehook-timing: {_prehook_elapsed:.0f}s > {_prehook_max:.0f}s cap — skipping remaining hooks")
             # ── REMAINING PRE-HOOKS (parallelized, all skipped when fast-path L4 skip_all) ──
             _pipeline_cost = 0
             if not _fast.get("skip_all"):
@@ -1132,6 +1172,14 @@ def run_task(t):
             except Exception as _wave_err:
                 _log.debug("wave pre-exec hooks: %s", _wave_err)
 
+            # Record pre-hook telemetry before execution starts
+            if _tel:
+                try:
+                    _tel.finish(outcome="executing", note=_tel.summary())
+                    set_state(t["id"], note=f"telemetry: {_tel.summary()}")
+                except Exception:
+                    pass
+
             try:
                 if _integrating_existing:
                     print(f"[integrate-existing] {slug}: branch ahead of {base} -> skip agent, integrate directly", flush=True)
@@ -1193,15 +1241,33 @@ def run_task(t):
                 set_state(t["id"], state="BLOCKED", note="timed out (>15m) — killed to free the slot")
                 record(t, name, slug, kind, visible_model, acct, attempt, False, False, "timeout", t0); return
             except claude_cli.CircuitOpen as e:
-                # Capacity/cost circuit hit. Do not create a global pause by default: rotate/fail over
-                # when another coder route exists, otherwise leave the task queued for cooldown.
+                # MULTI-VENDOR FAILOVER: route through tier_router instead of just re-queuing.
+                # This gives instant failover to Groq/DeepSeek/Gemini instead of stalling.
                 try:
                     POOL.mark_exhausted(acct)
-                except Exception as e:
-                    _log.debug("hook mark_exhausted failed: %s", e)
+                except Exception:
+                    pass
+                # Try tier_router for cross-vendor failover first
+                try:
+                    import tier_router
+                    _failover = tier_router.route(t)
+                    if _failover and _failover.get("provider") != "claude":
+                        _fo_coder = _failover.get("coder", "swarm")
+                        _fo_model = _failover.get("model", "deepseek-v4-flash")
+                        _fo_provider = _failover["provider"]
+                        set_state(t["id"], state="RETRY",
+                                  note=f"circuit-open → tier_router failover: {_fo_provider}:{_fo_model} ({_failover.get('reason','')})")
+                        t["force_coder"] = f"swarm:{_fo_provider}" if _fo_coder == "swarm" else _fo_coder
+                        t["_force_model"] = _fo_model
+                        attempt -= 1
+                        time.sleep(2)
+                        continue
+                except Exception as _tr_err:
+                    _log.debug("tier_router failover failed: %s", _tr_err)
+                # Fallback: try agentic_coders pool
                 if len(agentic_coders.available()) > 1:
                     failover = _next_non_claude_coder(t, exclude=t.get("_failed_coders") or ())
-                    patch = {"state": "RETRY", "note": f"capacity circuit -> non-Claude failover route ({e})"}
+                    patch = {"state": "RETRY", "note": f"capacity circuit → non-Claude failover ({e})"}
                     if failover:
                         patch["force_coder"] = failover
                         patch["model"] = failover
@@ -1251,23 +1317,53 @@ def run_task(t):
 
             if any(s in low for s in EXHAUST):
                 nxt = POOL.mark_exhausted(acct)
-                # If ALL Claude accounts exhausted, immediately failover to non-Claude
-                # instead of burning another attempt cycling through exhausted accounts
+                # CROSS-VENDOR CASCADE: use tier_router for intelligent failover
+                try:
+                    import tier_router
+                    _exhaust_fo = tier_router.route(t)
+                    if _exhaust_fo and _exhaust_fo.get("provider") != "claude":
+                        _fo_coder = _exhaust_fo.get("coder", "swarm")
+                        _fo_provider = _exhaust_fo["provider"]
+                        _fo_model = _exhaust_fo.get("model", "deepseek-v4-flash")
+                        t["force_coder"] = f"swarm:{_fo_provider}" if _fo_coder == "swarm" else _fo_coder
+                        t["_force_model"] = _fo_model
+                        set_state(t["id"], state="RETRY",
+                                  note=f"exhausted → cross-vendor cascade: {_fo_provider}:{_fo_model}")
+                        attempt -= 1
+                        continue
+                except Exception as _tr_err:
+                    _log.debug("tier_router exhaust failover: %s", _tr_err)
+                # Fallback: try agentic_coders pool
                 try:
                     if account_pool.claude_exhausted():
                         failover = _next_non_claude_coder(t, exclude=t.get("_failed_coders") or ())
                         if failover:
-                            set_state(t["id"], state="RETRY", note=f"all Claude exhausted -> {failover}",
+                            set_state(t["id"], state="RETRY", note=f"all Claude exhausted → {failover}",
                                       force_coder=failover, model=failover)
                             attempt -= 1
                             continue
                 except Exception as e:
                     _log.debug("hook claude_exhausted_failover failed: %s", e)
-                set_state(t["id"], state="RETRY", note=f"account exhausted -> {nxt}")
+                set_state(t["id"], state="RETRY", note=f"account exhausted → {nxt}")
                 if nxt and nxt != (acct or {}).get("name"):
                     attempt -= 1
                 continue
             if any(s in low for s in RATE):
+                # RATE LIMIT FAILOVER: try a different vendor instead of just backing off
+                try:
+                    import tier_router
+                    _rate_fo = tier_router.route(t)
+                    if _rate_fo and _rate_fo.get("provider") != "claude":
+                        _fo_coder = _rate_fo.get("coder", "swarm")
+                        _fo_provider = _rate_fo["provider"]
+                        _fo_model = _rate_fo.get("model", "deepseek-v4-flash")
+                        t["force_coder"] = f"swarm:{_fo_provider}" if _fo_coder == "swarm" else _fo_coder
+                        t["_force_model"] = _fo_model
+                        set_state(t["id"], state="RETRY",
+                                  note=f"rate-limited → cross-vendor: {_fo_provider}:{_fo_model}")
+                        time.sleep(2); continue
+                except Exception:
+                    pass
                 back = min(300, 2 ** attempt * 5)
                 set_state(t["id"], state="RETRY", note=f"rate-limited, backoff {back}s")
                 time.sleep(min(back, 30)); continue
@@ -2528,6 +2624,12 @@ def _run_task_safe(t):
         except Exception as e2:
             _log.debug("hook run_task_safe_log failed: %s", e2)
         _block_or_retry(t, f"runner exception: {e}"[:300])
+        try:
+            import exec_telemetry
+            _crash_tel = exec_telemetry.start(t["id"])
+            _crash_tel.finish(outcome="crash", note=f"runner exception: {e}"[:300])
+        except Exception:
+            pass
 
 
 _FLEET = {"t": 0.0}  # throttle for the in-loop fleet_control gateway tick

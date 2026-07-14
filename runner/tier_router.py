@@ -342,6 +342,43 @@ class TierRouter:
         return {"tier": "api", "provider": "deepseek", "model": "deepseek-v4-flash",
                 "coder": "aider", "reason": f"{context} → deepseek fallback"}
 
+    # ---- failover routing ------------------------------------------------
+
+    def failover_route(self, task, exclude_providers=None):
+        """Route to a non-Claude provider for failover scenarios.
+
+        Called when Claude CLI hits CircuitOpen, rate limits, or auth failures.
+        Skips Claude entirely and picks the best alternative vendor.
+        """
+        exclude = set(exclude_providers or [])
+        exclude.add("claude")  # always exclude Claude in failover
+
+        diff = self._task_difficulty(task)
+        model_tier = _DIFF_MODEL.get(diff, "fast")
+
+        # Try subscription providers first (Groq free, Gemini free, ChatGPT)
+        for sp in _SUB_PROVIDERS:
+            if sp["provider"] in exclude:
+                continue
+            if model_tier in sp["tiers"] and self._sub_has_capacity(sp["provider"]):
+                return {"tier": "sub", "provider": sp["provider"], "model": sp["model"],
+                        "coder": sp["coder"],
+                        "reason": f"failover: sub {sp['provider']} (excluding {', '.join(sorted(exclude))})"}
+
+        # Try API providers
+        if self._paid_allowed():
+            for ap in _API_PROVIDERS:
+                if ap["provider"] in exclude:
+                    continue
+                key_env = _KEY_ENV_MAP.get(ap["provider"], "")
+                if key_env and not os.environ.get(key_env):
+                    continue
+                return {"tier": "api", "provider": ap["provider"], "model": ap["model"],
+                        "coder": ap["coder"],
+                        "reason": f"failover: api {ap['provider']} (excluding {', '.join(sorted(exclude))})"}
+
+        return None  # no failover available
+
     # ---- outcome feedback -------------------------------------------------
 
     def record_outcome(self, task_id, tier, provider, success, cost_usd=0.0, latency_s=0.0):
@@ -416,6 +453,10 @@ _router = TierRouter()
 def route(task):
     """Route task to cheapest execution tier with capacity."""
     return _router.route(task)
+
+
+def failover_route(task, exclude_providers=None):
+    return _router.failover_route(task, exclude_providers)
 
 
 def record_outcome(task_id, tier, provider, success, cost_usd=0.0, latency_s=0.0):
