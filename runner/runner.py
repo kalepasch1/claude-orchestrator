@@ -536,6 +536,37 @@ def run_task(t):
 
         task_body = pipeline_contract.original_request(t["prompt"])
 
+        # FINAL ADMISSION BARRIER: queue preflight normally persists the shared
+        # vendor/model/capability route before a task is claimed.  Auto-slicing can,
+        # however, create a leaf and have a free native lane claim it before the next
+        # preflight tick.  Re-run the same admission contract here so native execution
+        # and direct Cowork claiming cannot diverge, and so no agent starts with an
+        # unset executor route.  Existing repair/canary overrides are preserved.
+        try:
+            _admission = pipeline_contract.task_fields(
+                task_body,
+                project=name,
+                kind=kind,
+                source="native-claim",
+                slug=slug,
+                material=bool(t.get("material")),
+                existing_note=t.get("note") or "",
+                model=t.get("model") or None,
+                force_coder=t.get("force_coder") or None,
+            )
+            _admission_patch = {
+                key: _admission.get(key)
+                for key in ("prompt", "note", "model", "force_coder")
+                if _admission.get(key) is not None
+            }
+            db.update("tasks", {"id": t["id"]}, _admission_patch)
+            t.update(_admission_patch)
+            task_body = pipeline_contract.original_request(t["prompt"])
+        except Exception as e:
+            # Fail soft for control-plane availability, as the runner's executor
+            # picker still validates backend readiness immediately before launch.
+            _log.warning("native admission refresh failed for %s: %s", slug, e)
+
         # result cache: identical (repo+prompt+commit) work is reused, not re-run
         sig = result_cache.signature(name, task_body, repo, base) if USE_CACHE else None
         if sig:
