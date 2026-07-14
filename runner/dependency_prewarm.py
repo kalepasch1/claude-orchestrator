@@ -195,13 +195,30 @@ def ensure(repo, reason="prewarm", timeout=None):
         return {"ok": True, "skipped": "no-package-json"}
     if _stamp_matches(repo):
         return {"ok": True, "skipped": "warm-cache"}
+    # SERIALIZE INSTALLS (2026-07-14): multiple daemons (prewarm, build_daemon, executors) used
+    # to run `npm install` in the SAME package root concurrently, corrupting node_modules
+    # (ENOTDIR/ENOTEMPTY, half-extracted packages, poisoned npm cache). Take an exclusive
+    # per-root flock; whoever waited re-checks the stamp and skips if another process warmed it.
+    lock_file = None
+    try:
+        import fcntl as _fcntl
+        os.makedirs(_STAMP_DIR, exist_ok=True)
+        lock_file = open(_stamp_path(repo) + ".lock", "w")
+        _fcntl.flock(lock_file, _fcntl.LOCK_EX)
+        if _stamp_matches(repo):
+            lock_file.close()
+            return {"ok": True, "skipped": "warm-cache (installed by concurrent process)"}
+    except Exception:
+        pass  # locking is best-effort; proceed unlocked rather than fail the warm
     manager, cmd = _manager(repo)
     try:
         r = subprocess.run(cmd, cwd=repo, capture_output=True, text=True,
                            timeout=timeout or _DEFAULT_TIMEOUT)
     except subprocess.TimeoutExpired:
+        if lock_file: lock_file.close()
         return {"ok": False, "manager": manager, "error": f"install timed out after {timeout or _DEFAULT_TIMEOUT}s"}
     except Exception as e:
+        if lock_file: lock_file.close()
         return {"ok": False, "manager": manager, "error": str(e)}
     ignored_scripts = False
     if r.returncode != 0 and _truthy("ORCH_PREWARM_IGNORE_SCRIPTS_FALLBACK", True):
@@ -214,6 +231,7 @@ def ensure(repo, reason="prewarm", timeout=None):
                 ignored_scripts = True
     if r.returncode != 0:
         tail = ((r.stdout or "")[-800:] + "\n" + (r.stderr or "")[-800:]).strip()
+        if lock_file: lock_file.close()
         return {"ok": False, "manager": manager, "error": tail or f"{manager} install failed"}
     os.makedirs(_STAMP_DIR, exist_ok=True)
     try:
@@ -223,6 +241,7 @@ def ensure(repo, reason="prewarm", timeout=None):
                        "updated_at": time.time()}, f)
     except Exception:
         pass
+    if lock_file: lock_file.close()
     return {"ok": deps_ready(repo), "manager": manager, "installed": True,
             "ignored_scripts": ignored_scripts}
 
