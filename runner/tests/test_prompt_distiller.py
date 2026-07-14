@@ -1,90 +1,84 @@
-#!/usr/bin/env python3
-"""Tests for runner/prompt_distiller.py"""
-import sys, os, unittest
-from unittest.mock import patch
+"""Tests for prompt_distiller.py"""
+import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-import prompt_distiller
 
-class TestEstimateTokens(unittest.TestCase):
-    def test_basic(self):
-        self.assertEqual(prompt_distiller._estimate_tokens("abcd"), 1)
-        self.assertEqual(prompt_distiller._estimate_tokens("abcdefgh"), 2)
-    def test_empty(self):
-        self.assertEqual(prompt_distiller._estimate_tokens(""), 0)
-        self.assertEqual(prompt_distiller._estimate_tokens(None), 0)
+from prompt_distiller import (
+    compress_prompt, estimate_tokens, extract_core_spec,
+    distill_batch, MergedOutcome, DistilledPattern, DistillationReport,
+)
 
-class TestStripDirectives(unittest.TestCase):
-    def test_preflight(self):
-        r = prompt_distiller._strip_directives("Do thing.\nPREFLIGHT DIRECTIVE blah\nMore.")
-        self.assertNotIn("PREFLIGHT DIRECTIVE", r)
-        self.assertIn("Do thing", r)
-    def test_agentic(self):
-        self.assertNotIn("AGENTIC-REPAIR", prompt_distiller._strip_directives("Fix.\nAGENTIC-REPAIR ctx"))
-    def test_clean(self):
-        self.assertEqual(prompt_distiller._strip_directives("normal"), "normal")
 
-class TestExtractConventions(unittest.TestCase):
-    def test_finds_recurring(self):
-        line = "DO: always commit tests before merging code changes"
-        prompts = [line, line, line]
-        r = prompt_distiller.extract_conventions(prompts)
-        self.assertTrue(any("always commit tests" in c for c in r))
-    def test_skips_rare(self):
-        prompts = ["DO: unique thing only once here."]
-        self.assertEqual(prompt_distiller.extract_conventions(prompts), [])
+def test_compress_strips_agentic_repair():
+    raw = "Fix the bug.\n\nAGENTIC-REPAIR DIRECTIVE\nRepair category: rework\nOriginal task slug: foo\n\nDone."
+    result = compress_prompt(raw)
+    assert "AGENTIC-REPAIR" not in result
+    assert "Fix the bug" in result
 
-class TestDistillPrompt(unittest.TestCase):
-    def test_removes_directives(self):
-        p = "Fix bug.\nPREFLIGHT DIRECTIVE no diff\nAGENTIC-REPAIR context\nDone."
-        r = prompt_distiller.distill_prompt(p)
-        self.assertNotIn("PREFLIGHT", r)
-        self.assertNotIn("AGENTIC-REPAIR", r)
-        self.assertIn("Fix bug", r)
-    def test_deduplicates_lines(self):
-        p = "Line A\nLine B\nLine A\nLine C"
-        r = prompt_distiller.distill_prompt(p)
-        self.assertEqual(r.count("Line A"), 1)
-    def test_collapses_blanks(self):
-        p = "A\n\n\n\n\nB"
-        r = prompt_distiller.distill_prompt(p)
-        self.assertNotIn("\n\n\n", r)
 
-class TestMeasureSavings(unittest.TestCase):
-    def test_savings(self):
-        r = prompt_distiller.measure_savings("a" * 400, "a" * 200)
-        self.assertEqual(r["original_tokens"], 100)
-        self.assertEqual(r["distilled_tokens"], 50)
-        self.assertEqual(r["tokens_saved"], 50)
-        self.assertEqual(r["savings_pct"], 50.0)
-    def test_empty(self):
-        r = prompt_distiller.measure_savings("", "")
-        self.assertEqual(r["savings_pct"], 0.0)
+def test_compress_strips_preflight():
+    raw = "Build X.\n\nPREFLIGHT DIRECTIVE\nA cheap preflight model thought this might not produce.\n\nEnd."
+    result = compress_prompt(raw)
+    assert "PREFLIGHT" not in result
+    assert "Build X" in result
 
-class TestSweep(unittest.TestCase):
-    @patch("prompt_distiller.db")
-    def test_returns_report(self, mock_db):
-        mock_db.select.return_value = [
-            {"id":"1","slug":"s1","prompt":"DO: always test. " * 20,"note":"ok"},
-            {"id":"2","slug":"s2","prompt":"DO: always test. " * 20,"note":"ok"},
-        ]
-        r = prompt_distiller.sweep("p")
-        self.assertEqual(r["tasks_analysed"], 2)
-        self.assertIn("total_potential_savings", r)
-    @patch("prompt_distiller.db")
-    def test_handles_error(self, mock_db):
-        mock_db.select.side_effect = Exception("net")
-        r = prompt_distiller.sweep("p")
-        self.assertEqual(r["tasks_analysed"], 0)
 
-class TestRecordSavings(unittest.TestCase):
-    @patch("prompt_distiller.db")
-    def test_upserts(self, mock_db):
-        prompt_distiller.record_savings("p", {"tokens_saved": 50})
-        mock_db.upsert.assert_called_once()
-    @patch("prompt_distiller.db")
-    def test_swallows_error(self, mock_db):
-        mock_db.upsert.side_effect = Exception("net")
-        prompt_distiller.record_savings("p", {})  # should not raise
+def test_compress_collapses_whitespace():
+    raw = "A\n\n\n\n\nB"
+    result = compress_prompt(raw)
+    assert "\n\n\n" not in result
 
-if __name__ == "__main__":
-    unittest.main()
+
+def test_estimate_tokens():
+    assert estimate_tokens("hello world") > 0
+    assert estimate_tokens("a" * 400) == 100
+
+
+def test_extract_core_spec():
+    prompt = "Create the widget.\n\nPRIOR ATTEMPT FAILED — foo\nbar"
+    core = extract_core_spec(prompt)
+    assert core == "Create the widget."
+    assert "PRIOR ATTEMPT" not in core
+
+
+def test_extract_core_spec_no_markers():
+    prompt = "Just build the thing."
+    assert extract_core_spec(prompt) == "Just build the thing."
+
+
+def test_distill_batch_token_savings():
+    outcomes = [
+        MergedOutcome(
+            task_id="t1", slug="slug-1",
+            prompt="Build feature X.\n\nAGENTIC-REPAIR DIRECTIVE\nRepair category: rework\nblah blah blah long boilerplate text here",
+            prompt_tokens=100, completion_tokens=200,
+            merged_at="2026-07-13T00:00:00Z",
+        ),
+        MergedOutcome(
+            task_id="t2", slug="slug-2",
+            prompt="Fix bug Y.\n\nPREFLIGHT DIRECTIVE\nA cheap preflight model said no.\n\nAUTO-REMEDIATION DIRECTIVE\nRecover and fix.",
+            prompt_tokens=80, completion_tokens=150,
+            merged_at="2026-07-13T00:00:00Z",
+        ),
+    ]
+    patterns, report = distill_batch(outcomes)
+
+    assert report.total_prompts_processed == 2
+    assert report.total_saving_pct > 0
+    assert report.patterns_extracted >= 1
+    assert len(patterns) >= 1
+    assert all(p.pattern_id for p in patterns)
+
+
+def test_distill_batch_deduplicates():
+    same_prompt = "Build feature X."
+    outcomes = [
+        MergedOutcome(task_id="t1", slug="s1", prompt=same_prompt,
+                      prompt_tokens=50, completion_tokens=100, merged_at="2026-07-13"),
+        MergedOutcome(task_id="t2", slug="s2", prompt=same_prompt,
+                      prompt_tokens=50, completion_tokens=100, merged_at="2026-07-13"),
+    ]
+    patterns, report = distill_batch(outcomes)
+    assert len(patterns) == 1
+    assert patterns[0].usage_count == 2
+    assert "s1" in patterns[0].source_slugs
+    assert "s2" in patterns[0].source_slugs
