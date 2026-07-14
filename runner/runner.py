@@ -821,6 +821,9 @@ def run_task(t):
                             os.makedirs(os.path.dirname(wt), exist_ok=True)
                             subprocess.run(["git", "worktree", "add", "-f", wt, branch_ref],
                                            cwd=repo, capture_output=True, timeout=180)
+                            # Lock while in use — concurrent GC/prune must not delete it mid-task.
+                            subprocess.run(["git", "worktree", "lock", wt, "--reason", f"task {slug} in use"],
+                                           cwd=repo, capture_output=True, timeout=30)
                         _integrating_existing = os.path.isdir(wt)
                 except Exception:
                     _integrating_existing = False

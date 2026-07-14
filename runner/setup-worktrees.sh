@@ -38,6 +38,12 @@ else
   git -C "$REPO_ROOT" worktree add "$DEST" -b "$BRANCH" "$BASE"
 fi
 
+# LOCK the worktree while a task is using it. Concurrent GC/prune loops (worktree_gc,
+# resource_governor) must not delete an in-use worktree; `git worktree remove --force`
+# refuses locked worktrees unless doubly forced. worktree_gc unlocks after its safety
+# guards (task terminal + clean + aged) pass, so this never leaks disk.
+git -C "$REPO_ROOT" worktree lock "$DEST" --reason "task ${SLUG} in use" 2>/dev/null || true
+
 # Each worktree inherits .claude/settings.json from the repo automatically.
 # copy the repo's permission allowlist into the worktree so agents CANNOT push / trigger CI
 mkdir -p "$DEST/.claude"
@@ -56,5 +62,15 @@ if [ "${ORCH_WARM_DEPS:-true}" = "true" ]; then
     fi
   done
 fi
+# NUXT TYPES: resource_governor prunes **/.nuxt from the main checkout as a "build cache",
+# so the symlink above often points at nothing and `tsc --noEmit` fails with thousands of
+# missing-alias errors (unrelated to the task's change). Regenerate the type stubs once,
+# best-effort, so tsc-based acceptance checks can actually go green. Cheap (~seconds), and
+# skipped when .nuxt already exists or this isn't a Nuxt project.
+if [ "${ORCH_NUXT_PREPARE:-true}" = "true" ] && [ ! -e "$DEST/.nuxt" ] && [ -f "$DEST/package.json" ] \
+   && grep -q '"nuxt"' "$DEST/package.json" 2>/dev/null; then
+  (cd "$DEST" && timeout 180 npx nuxi prepare >/dev/null 2>&1) || true
+fi
+
 echo "✅ worktree ready: $DEST  (branch $BRANCH, based on $BASE)"
 echo "   run an agent there with: scripts/orchestrate.sh"

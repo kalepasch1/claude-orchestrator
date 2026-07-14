@@ -49,10 +49,12 @@ class ApplyAndVerifyNeverTouchesRepoCwdTest(unittest.TestCase):
         results = [
             _proc(returncode=0),          # apply --check (repo)
             _proc(returncode=0),          # worktree add (repo)
+            _proc(returncode=0),          # worktree lock (repo)
             _proc(returncode=0),          # apply --3way (wt)
             _proc(returncode=0),          # test cmd (wt)
             _proc(returncode=0),          # git add -A (wt)
             _proc(returncode=0),          # git commit (wt)
+            _proc(returncode=0),          # worktree unlock (repo, cleanup)
             _proc(returncode=0),          # worktree remove (repo, cleanup)
         ]
         with patch("os.path.isdir", return_value=True), \
@@ -79,16 +81,17 @@ class ApplyAndVerifyNeverTouchesRepoCwdTest(unittest.TestCase):
         results = [
             _proc(returncode=0),                 # apply --check
             _proc(returncode=0),                 # worktree add
+            _proc(returncode=0),                 # worktree lock
             _proc(returncode=0),                 # apply --3way
             _proc(returncode=0),                 # test
             _proc(returncode=0), _proc(returncode=0),  # add -A, commit
-            _proc(returncode=0),                 # cleanup
+            _proc(returncode=0), _proc(returncode=0),  # cleanup (unlock, remove)
         ]
         with patch("os.path.isdir", return_value=True), patch("os.makedirs"), \
              patch("subprocess.run", side_effect=results) as m:
             qe._apply_and_verify(REPO, "diff", "task123")
-        apply_call = m.call_args_list[2]
-        test_call = m.call_args_list[3]
+        apply_call = m.call_args_list[3]
+        test_call = m.call_args_list[4]
         self.assertEqual(apply_call.args[0], ["git", "apply", "--3way"])
         self.assertNotEqual(apply_call.kwargs.get("cwd"), REPO)
         self.assertNotEqual(test_call.kwargs.get("cwd"), REPO)
@@ -107,6 +110,7 @@ class ApplyAndVerifyOutcomesTest(unittest.TestCase):
         results = [
             _proc(returncode=0),   # check
             _proc(returncode=0),   # worktree add
+            _proc(returncode=0),   # worktree lock
             _proc(returncode=1),   # apply --3way fails
         ]
         with patch("os.path.isdir", return_value=True), patch("os.makedirs"), \
@@ -122,6 +126,7 @@ class ApplyAndVerifyOutcomesTest(unittest.TestCase):
         results = [
             _proc(returncode=0),   # check
             _proc(returncode=0),   # worktree add
+            _proc(returncode=0),   # worktree lock
             _proc(returncode=0),   # apply --3way
             _proc(returncode=1),   # test fails
         ]
@@ -137,6 +142,7 @@ class ApplyAndVerifyOutcomesTest(unittest.TestCase):
         results = [
             _proc(returncode=0),   # check
             _proc(returncode=0),   # worktree add
+            _proc(returncode=0),   # worktree lock
             _proc(returncode=0),   # apply --3way
             _proc(returncode=0),   # test passes
             _proc(returncode=0),   # git add -A
