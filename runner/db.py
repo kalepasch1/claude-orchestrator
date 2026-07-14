@@ -476,10 +476,29 @@ def claim_task(runner_id):
         paused_pids = {name2id[n] for n in paused_names if n in name2id}
     except Exception:
         pass
-    queued = select("tasks", {"select": "id,slug,project_id,deps,confidence,created_at,kind,note",
+    claim_fields = "id,slug,project_id,deps,confidence,created_at,kind,note,priority"
+    queued = select("tasks", {"select": claim_fields,
                               "state": "eq.QUEUED",
                               "order": "created_at.asc",
                               "limit": str(CLAIM_SCAN_LIMIT)}) or []
+    # PostgREST/Supabase caps large result sets at 1,000 rows. Urgent new work
+    # otherwise sits outside an oldest-first scan and cannot be prioritized at
+    # all. Pull bounded escape hatches for deployment blockers and evidence
+    # tasks, then let the normal atomic ranking/claim path decide among them.
+    escape_filters = (
+        "(slug.like.relfix-*,slug.like.qafix-*,slug.like.deployfix-*,slug.like.buildfix-*,slug.like.copyfix-*)",
+        "(slug.like.canary-*,slug.like.*-canary-*,kind.eq.canary,note.ilike.*coder-canary*,note.ilike.*routing%20sample*)",
+    )
+    seen_ids = {t.get("id") for t in queued}
+    for expression in escape_filters:
+        try:
+            extra = select("tasks", {"select": claim_fields, "state": "eq.QUEUED",
+                                      "or": expression, "order": "created_at.desc", "limit": "200"}) or []
+        except Exception:
+            extra = []
+        for task in extra:
+            if task.get("id") not in seen_ids:
+                queued.append(task); seen_ids.add(task.get("id"))
     queued = [t for t in queued if t.get("project_id") not in paused_pids]  # skip paused projects
     # HOST AFFINITY: only claim tasks whose project repo exists on this machine. No-op on the
     # machine that owns the repos (all present) and when localization is disabled; prevents a
