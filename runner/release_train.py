@@ -538,6 +538,23 @@ def run_for(project):
             merged += 1
     release_base = _release_base_ref(repo, prod)
     release_base_sha = _git(repo, "rev-parse", release_base).stdout.strip()
+    # Reconcile production into staging *before* any gate runs.  The previous
+    # order verified the old staging tree and merged production afterwards,
+    # allowing an untested merge result to be promoted (or repeatedly held).
+    initial_staging_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
+    held = _hold_for_open_fix(p, project, "refresh")
+    if held:
+        return held
+    if _recent_failed_gate(project, initial_staging_sha, "refresh"):
+        return {"project": project, "note": "unchanged staging SHA already failed staging/prod refresh recently"}
+    refreshed, refresh_note = _refresh_staging_with_prod(repo, release_base)
+    if not refreshed:
+        _self_heal_release_conflict(p, project, repo, prod, refresh_note)
+        _insert_failed_release(project, "refresh", 0, release_base_sha, initial_staging_sha,
+                               f"staging/prod refresh failed — self-heal queued: {refresh_note[-160:]}")
+        _record_release_flow(project, "staging-red-refresh", prod=prod, ahead=0,
+                             note=refresh_note[-300:])
+        return {"project": project, "note": "staging/prod refresh failed; relfix queued"}
     staging_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
     # count staging changes vs the deployable prod tip, not necessarily a stale checked-out local branch
     ahead = _git(repo, "rev-list", "--count", f"{release_base}..{STAGING}").stdout.strip() or "0"
@@ -683,24 +700,23 @@ def run_for(project):
                     pass
     except Exception:
         pass
-    # release: record last-good, ff prod to staging, push (deploy_verify confirms/rolls back)
-    held = _hold_for_open_fix(p, project, "refresh")
-    if held:
-        return held
-    if _recent_failed_gate(project, staging_sha, "refresh"):
-        return {"project": project, "note": "unchanged staging SHA already failed staging/prod refresh recently"}
-    refreshed, refresh_note = _refresh_staging_with_prod(repo, release_base)
-    if not refreshed:
-        _self_heal_release_conflict(p, project, repo, prod, refresh_note)
-        _insert_failed_release(project, "refresh", ahead, release_base_sha, staging_sha,
-                               f"staging/prod refresh failed — self-heal queued: {refresh_note[-160:]}")
-        _record_release_flow(project, "staging-red-refresh", prod=prod, ahead=int(ahead),
-                             note=refresh_note[-300:])
-        return {"project": project, "note": "staging/prod refresh failed; relfix queued"}
+    # Promote only the exact tree that passed copy, QA, and build. Background
+    # integration workers may advance staging while expensive gates run; that
+    # newer tree belongs in the next release and must never borrow this proof.
+    current_staging_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
+    if current_staging_sha != staging_sha:
+        _insert_failed_release(project, "snapshot", ahead, release_base_sha, current_staging_sha,
+                               f"staging changed after verification: {staging_sha[:12]} -> {current_staging_sha[:12]}")
+        _record_release_flow(project, "staging-changed-after-verify", prod=prod, ahead=int(ahead),
+                             from_sha=staging_sha, to_sha=current_staging_sha)
+        return {"project": project, "snapshot": "CHANGED",
+                "note": "staging advanced during verification; next release will verify the new snapshot"}
+    # release: record last-good, ff prod to the verified snapshot, push
+    # (deploy_verify confirms/rolls back)
     last_good = release_base_sha
     db.update("projects", {"name": project}, {"last_good_sha": last_good})
     push_on = _truthy("ORCH_PUSH_ON_RELEASE", True)
-    to_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
+    to_sha = staging_sha
     _record_release_flow(project, "prod-promoting" if push_on else "prod-ready-local",
                          prod=prod, ahead=int(ahead), from_sha=last_good, to_sha=to_sha)
     if not push_on:
@@ -720,7 +736,7 @@ def run_for(project):
                     "n_changes": int(ahead), "changelog": changelog, "deploy_status": "pending"})
     pushed = None
     if push_on:
-        pr = _git(repo, "push", "origin", f"{STAGING}:{prod}", timeout=300)
+        pr = _git(repo, "push", "origin", f"{staging_sha}:refs/heads/{prod}", timeout=300)
         pushed = pr.returncode == 0
         if pushed:
             # Keep local prod fresh when possible, but do not fail a good remote

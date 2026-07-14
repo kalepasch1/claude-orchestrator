@@ -105,5 +105,26 @@ class TestImplicitDependencies(unittest.TestCase):
         self.assertLess(order.index("lib"), order.index("app"))
 
 
+class TestReleaseSnapshotOrdering(unittest.TestCase):
+    def test_refresh_precedes_gates_and_snapshot_guard_precedes_push(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "release_train.py")
+        with open(path, encoding="utf-8") as source:
+            text = source.read()
+
+        refresh = text.index("refreshed, refresh_note = _refresh_staging_with_prod")
+        qa_gate = text.index("# QA staging tests")
+        snapshot_guard = text.index("current_staging_sha != staging_sha")
+        exact_push = text.index('f"{staging_sha}:refs/heads/{prod}"')
+        self.assertLess(refresh, qa_gate)
+        self.assertLess(snapshot_guard, exact_push)
+
+    def test_verified_sha_is_the_release_sha(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "release_train.py")
+        with open(path, encoding="utf-8") as source:
+            text = source.read()
+        self.assertIn("to_sha = staging_sha", text)
+        self.assertIn('"snapshot": "CHANGED"', text)
+
+
 if __name__ == "__main__":
     unittest.main()
