@@ -45,6 +45,21 @@ EXHAUSTED_FLAG = os.path.join(HOME, "claude_exhausted.json")
 _EXH_CACHE = {"t": 0.0, "v": False}
 
 
+def _api_billing_allowed():
+    """Return whether an API-type Anthropic account is actually usable.
+
+    Configured API rows must not mask exhausted subscription capacity when the
+    purchased-credit guard is off.  In that state ``env_for`` intentionally
+    withholds the key, so treating the row as healthy only sends the CLI back
+    through the exhausted default login and prevents cross-vendor failover.
+    """
+    try:
+        import subscription_guard
+        return bool(subscription_guard.is_api_allowed())
+    except Exception:
+        return os.environ.get("ORCH_ALLOW_API_BILLING", "false").lower() == "true"
+
+
 def claude_exhausted():
     """True iff all Claude accounts are currently cooling down (limits hit).
     Fast path: the flag file written by mark_exhausted. Fallback: derive from the live account
@@ -139,13 +154,19 @@ class AccountPool:
         until = self.state.get(a["name"], {}).get("cooldown_until", 0)
         return time.time() >= until
 
+    def _usable_accounts(self):
+        """Accounts that can provide Claude capacity under the billing guard."""
+        api_allowed = _api_billing_allowed()
+        return [a for a in self.accts if a.get("type") != "api" or api_allowed]
+
     def current(self):
         self._maybe_reload()
-        healthy = [a for a in self.accts if self._healthy(a)]
+        usable = self._usable_accounts()
+        healthy = [a for a in usable if self._healthy(a)]
         if not healthy:
             # all cooling down -> return the one that frees up soonest
-            return min(self.accts,
-                       key=lambda a: self.state.get(a["name"], {}).get("cooldown_until", 0)) if self.accts else None
+            return min(usable,
+                       key=lambda a: self.state.get(a["name"], {}).get("cooldown_until", 0)) if usable else None
         # Subscription (Max plan) accounts ALWAYS go before API accounts. Never touch
         # paid API credits while any subscription account still has free capacity.
         subs = [a for a in healthy if a.get("type") != "api"]
@@ -168,7 +189,8 @@ class AccountPool:
 
     def all_exhausted(self):
         """True iff no Claude account is currently healthy (every one is cooling down)."""
-        return bool(self.accts) and not any(self._healthy(a) for a in self.accts)
+        usable = self._usable_accounts()
+        return bool(usable) and not any(self._healthy(a) for a in usable)
 
     def _write_exhausted_flag(self):
         """Persist/clear the cheap cross-module 'all Claude exhausted' signal."""
