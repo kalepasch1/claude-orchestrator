@@ -14,6 +14,10 @@ REQUIRED = (
     "acceptance_tests", "measurement_plan", "rollback_plan", "rationale",
 )
 VAGUE = ("improve things", "optimize everything", "use ai", "make better", "tbd", "somehow")
+SPEC_MARKERS = (
+    "IMPROVEMENT HYPOTHESIS", "Baseline:", "Target:", "Multiplier basis:",
+    "Measurement plan:", "Rollback:", "Acceptance tests:",
+)
 
 
 def multiplier_value(value):
@@ -76,6 +80,13 @@ def implementation_spec(idea, surface, bottleneck_context=""):
         "do not report the multiplier as achieved until post-deploy measurement confirms it.\n\n"
         f"Live bottleneck context:\n{bottleneck_context[:2500]}"
     )
+
+
+def implementation_spec_ready(text):
+    """Cheap final guard before a committee spends calls or authorizes a build."""
+    value = str(text or "")
+    missing = [marker for marker in SPEC_MARKERS if marker.lower() not in value.lower()]
+    return {"pass": not missing, "missing": missing}
 
 
 def redirect_legacy_direct_queue(db, limit=1000):

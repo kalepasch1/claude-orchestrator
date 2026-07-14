@@ -1229,6 +1229,17 @@ def run(limit=8):
                         "status": "eq.for_review", "limit": str(limit)}) or []:
         if p["id"] in reviewed:
             continue
+        if not p.get("divergent"):
+            import improvement_scrutiny
+            admission = improvement_scrutiny.implementation_spec_ready(p.get("proposal"))
+            if not admission["pass"]:
+                db.update("improvement_proposals", {"id": p["id"]}, {
+                    "status": "proposed",
+                    "rationale": ((p.get("rationale") or "")[:500] +
+                                  "\n\nCommittee admission: redraft required; missing " +
+                                  ", ".join(admission["missing"]))[:1200],
+                })
+                continue
         agg = review("proposal", p["id"], p.get("title"),
                      (p.get("proposal") or "") + "\n" + (p.get("rationale") or ""), app=p.get("app"))
         cert = certify("proposal", p["id"], agg)   # Optimality Certificate + proof + reviewer 1-pager

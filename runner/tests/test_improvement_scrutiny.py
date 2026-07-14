@@ -78,3 +78,9 @@ def test_legacy_redirect_only_quarantines_untouched_queue():
                for table, _, patch in db.updates)
     assert any(table == "improvement_proposals" and patch["status"] == "for_review"
                for table, _, patch in db.updates)
+
+
+def test_committee_spec_gate_rejects_legacy_vague_rows():
+    assert not improvement_scrutiny.implementation_spec_ready("make caching better")["pass"]
+    spec = improvement_scrutiny.implementation_spec(_idea(), "reliability")
+    assert improvement_scrutiny.implementation_spec_ready(spec)["pass"]
