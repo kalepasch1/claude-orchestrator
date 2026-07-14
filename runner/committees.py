@@ -164,7 +164,7 @@ def _seat_need(committee, seat):
 def _complete(prompt, kind="review", need=None):
     try:
         import model_policy, model_gateway
-        prov, model, _ = model_policy.choose(kind, agentic=False, need=need)  # spread across providers
+        prov, model, _ = model_policy.choose_diverse(kind, need=need)
         r = model_gateway.complete(prov, model, prompt)
         return r.get("text") or ""
     except Exception:

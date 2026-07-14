@@ -48,7 +48,7 @@ TIER_ENV = {
     "google": {"cheap": "GEMINI_CHEAP_MODEL", "fast": "GEMINI_MODEL", "strong": "GEMINI_STRONG_MODEL"},
     "deepseek": {"cheap": "DEEPSEEK_CHEAP_MODEL", "strong": "DEEPSEEK_REASONER_MODEL"},
 }
-ROUTABLE = {"openai", "google", "deepseek", "local"}  # providers the gateway can call today
+ROUTABLE = {"openai", "google", "deepseek", "groq", "xai", "local"}
 
 
 def _now():

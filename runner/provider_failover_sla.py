@@ -80,6 +80,25 @@ def _notify_bandit_promote(provider):
         pass
 
 
+def demote(provider, reason="manual", immediate=True):
+    """Immediately quarantine an auth-invalid provider from optimization routes."""
+    state = _load()
+    dem = state.get("demoted") or {}
+    dem[provider] = {"since": datetime.datetime.utcnow().isoformat(),
+                     "reason": reason, "avail": 0.0, "p95": 0,
+                     "immediate": bool(immediate)}
+    state["demoted"] = dem
+    _save(state)
+    try:
+        db.upsert("fleet_config", {
+            "key": f"ORCH_PROVIDER_DEMOTED_{provider.upper()}", "value": "true"
+        })
+    except Exception:
+        pass
+    _notify_bandit_demote(provider, reason)
+    return dem[provider]
+
+
 def check_and_enforce():
     """Check SLA for all providers; demote/promote via fleet_config AND qpd_bandit."""
     sla = _compute_sla(_recent_ops())

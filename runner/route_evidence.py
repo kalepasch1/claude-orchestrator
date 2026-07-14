@@ -149,16 +149,35 @@ def provider_status():
         "openai": "OPENAI_API_KEY",
         "google": "GOOGLE_API_KEY",
         "deepseek": "DEEPSEEK_API_KEY",
+        "groq": "GROQ_API_KEY",
+        "xai": "XAI_API_KEY or GROK_API_KEY or XAPI_KEY",
         "local": "OLLAMA_HOST or running Ollama",
     }
     disabled = []
     for provider, requirement in required.items():
         if provider not in providers:
             disabled.append({"provider": provider, "reason": f"not available ({requirement})"})
+    local_models = []
+    try:
+        import ollama_catalog
+        local_models = [c.get("model") for c in ollama_catalog.candidates() if c.get("model")]
+    except Exception:
+        pass
+    demoted = {}
+    try:
+        import provider_failover_sla
+        demoted = (provider_failover_sla._load().get("demoted") or {})
+    except Exception:
+        pass
     return {
         "available_providers": sorted(providers),
         "agentic_coders": coders,
         "disabled_providers": disabled,
+        "demoted_providers": demoted,
+        "local_vendor_models": {
+            "deepseek": [m for m in local_models if "deepseek" in str(m).lower()],
+            "mistral_codestral": [m for m in local_models if any(x in str(m).lower() for x in ("mistral", "codestral"))],
+        },
     }
 
 

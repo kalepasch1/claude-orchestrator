@@ -4,8 +4,8 @@ improvement_miner.py - bakes "how can I make this 20-500X better?" into the lear
 and each SURFACE (feature, product, api, backend, frontend, ux, function, growth), it asks a strong model
 for concrete, high-leverage improvements, then:
 
-  * NON-DIVERGENT ideas (improve an existing feature/UX/perf/quality/api without changing the business
-    model) -> auto-QUEUED as build tasks in that app, so the swarm implements them autonomously.
+  * NON-DIVERGENT ideas -> measurability admission -> committee scrutiny. Only committee survivors
+    become build tasks, with pre-mortem/canary/rollback conditions carried into the implementation spec.
   * DIVERGENT ideas (new pricing, new product line, new market, changed core value prop, regulatory) ->
     NOT built. Stored as improvement_proposals(status='for_review') WITH a written rationale/presentation
     for the owner to approve later — nothing high-leverage is ever discarded.
@@ -32,13 +32,18 @@ QUEUE_FLOOR = int(os.environ.get("IMPROVE_QUEUE_FLOOR", "12"))
 BOTTLENECK_SURFACES = ("integration", "reliability", "orchestration-layer", "cost-efficiency", "observability")
 
 PROMPT = """You are a world-class product+engineering+systems strategist. For the target below, propose 3
-concrete, high-leverage ways to make its {surface} 20x-500x better — MORE EFFICIENT, faster, cheaper,
+concrete, high-leverage hypotheses to make its {surface} 20x-500x better — MORE EFFICIENT, faster, cheaper,
 higher-quality, or more autonomous. This can be the app itself OR the autonomous system that builds it
-(how the bots, the swarm, the hive-mind, and the cross-app coordination work). Be specific and buildable,
-not vague. Return ONE JSON array; each item:
+(how the bots, the swarm, the hive-mind, and the cross-app coordination work). A multiplier is a hypothesis,
+not an achieved result. Ground it in current telemetry and make it falsifiable. Return ONE JSON array; each item:
 {"title":"...","current_state":"what exists / the gap","proposal":"the concrete change to build",
  "expected_multiplier":"20x|50x|100x|500x","impact":1-10,"feasibility":1-10,"divergent":true|false,
- "rationale":"why this is 20-500x leverage (2-3 sentences)"}
+ "multiplier_basis":"baseline math showing how the multiplier could occur",
+ "baseline_metric":"named current metric and value/source","target_metric":"named target and value",
+ "acceptance_tests":["deterministic test", "integration/behavior test"],
+ "measurement_plan":"before/after or controlled post-deploy measurement window",
+ "rollback_plan":"specific reversible rollback trigger and action",
+ "rationale":"why this is high leverage (2-3 sentences)"}
 Set divergent=true ONLY if it changes the BUSINESS MODEL (new pricing/product line/market/core value
 prop/regulated activity) — those need owner sign-off. Everything else (features, UX, perf, quality,
 reliability, APIs, and improvements to the orchestration/bots/swarm itself) is divergent=false.
@@ -158,21 +163,40 @@ def _fallback_ideas(surface):
          "current_state": "Recovery and passed-but-not-merged tasks compete with broad build tasks.",
          "proposal": "Add/verify queue ranking that boosts recover-missing-branch tasks, approved train cards, and build-fix tasks until pressure is near zero.",
          "expected_multiplier": "50x", "impact": 9, "feasibility": 9, "divergent": False,
+         "multiplier_basis": "Reduce median recovery wait from 50 queue cycles to 1 prioritized cycle: 50/1 = 50x.",
+         "baseline_metric": "median queue cycles from recovery task creation to executor claim",
+         "target_metric": "median recovery claim latency <= 1 scheduler cycle",
+         "acceptance_tests": ["ranking test places recovery work ahead of speculative work", "live canary shows recovery latency without lowering merge success"],
+         "measurement_plan": "Compare 7 days before and after canary; require at least 20 recovery tasks.",
+         "rollback_plan": "Disable the ranking weight if merge success falls by >5% or starvation exceeds two cycles.",
          "rationale": "These tasks already contain much of the value and need less model work than net-new drafting."},
         {"title": "Attribute train and deploy outcomes back to coder routing",
          "current_state": "Routing can over-reward tests-passed attempts that later fail train/deploy.",
          "proposal": "Record train/deploy status on outcomes and make router_stats optimize by stage-specific deployed value per minute.",
          "expected_multiplier": "100x", "impact": 9, "feasibility": 8, "divergent": False,
+         "multiplier_basis": "If only 1 in 100 test-passing attempts deploys, optimizing the 1% conversion bottleneck can recover up to 100/1 = 100x deployed yield.",
+         "baseline_metric": "tests-passed to production-deployed conversion by provider/model",
+         "target_metric": "deployed-value/minute and conversion tracked for every route",
+         "acceptance_tests": ["deployment status is attributed to the originating route", "router excludes routes below the deployment-quality floor"],
+         "measurement_plan": "Run a 14-day shadow comparison against current routing before enabling allocation changes.",
+         "rollback_plan": "Restore the prior routing weights if deployed conversion or rollback rate regresses by >5%.",
          "rationale": "The biggest loss is tests-passed work not becoming deployed value; routing must learn from that downstream truth."},
         {"title": f"Reduce {surface} bottleneck with a small self-healing loop",
          "current_state": "Bottleneck telemetry exists but not every failure class has an automatic repair loop.",
          "proposal": f"Implement the smallest self-healing loop for the current {surface} bottleneck using existing queue notes and merge pressure metrics.",
          "expected_multiplier": "20x", "impact": 8, "feasibility": 8, "divergent": False,
+         "multiplier_basis": "Replace up to 20 repeated manual remediation cycles with one bounded automatic detect-repair-verify cycle: 20/1 = 20x.",
+         "baseline_metric": f"manual/repeated remediation attempts per recurring {surface} failure class",
+         "target_metric": "one automatic repair attempt with verified resolution or quarantine",
+         "acceptance_tests": ["known failure fixture triggers exactly one bounded repair", "failed repair quarantines without requeue loop"],
+         "measurement_plan": "Compare repeated attempts per failure signature for 7 days before/after a 10% canary.",
+         "rollback_plan": "Disable the repair hook if false-positive quarantine exceeds 2% or any task is mutated twice.",
          "rationale": "Automating one repeated blocker compounds across every app and frees expensive model lanes."},
     ]
 
 
 def run():
+    import improvement_scrutiny
     pid = {p["name"]: p["id"] for p in (db.select("projects", {"select": "id,name"}) or [])}
     # don't re-propose the same title for the same app+surface
     seen = {(r["app"], r.get("surface"), (r.get("title") or "").lower())
@@ -186,7 +210,6 @@ def run():
                          if str(t.get("slug") or "").startswith("improve-"))
     except Exception:
         queued_now = 0
-    queue_slots = max(0, QUEUE_FLOOR - queued_now)
     # gather + SCORE all candidates first (impact x feasibility x revenue-fit), then build highest-EV first
     cands = []
     for app0, surface in _next_pairs():
@@ -205,7 +228,7 @@ def run():
             cands.append((score, app, surface, it, title))
             seen.add((app, surface, title.lower()))
     cands.sort(key=lambda x: x[0], reverse=True)   # impact-ranked: biggest wins first
-    queued = review = 0
+    queued = review = revision = 0
     for score, app, surface, it, title in cands:
             divergent = bool(it.get("divergent"))
             row = {"app": app, "surface": surface, "title": title[:200],
@@ -213,32 +236,33 @@ def run():
                    "proposal": (it.get("proposal") or "")[:1500],
                    "expected_multiplier": it.get("expected_multiplier", ""), "score": score,
                    "divergent": divergent, "rationale": (it.get("rationale") or "")[:800]}
-            if divergent:
+            scrutiny = improvement_scrutiny.assess(it)
+            row["rationale"] = (row["rationale"] + "\n\nDraft scrutiny: " +
+                                scrutiny["label"] + "; " + ", ".join(scrutiny["reasons"]))[:800]
+            if not scrutiny["pass"]:
+                row["status"] = "proposed"
+                db.insert("improvement_proposals", row)
+                revision += 1
+            elif divergent:
                 row["status"] = "for_review"
                 db.insert("improvement_proposals", row)
                 review += 1
-            elif score < MIN_SCORE and queue_slots <= 0:
+            elif score < MIN_SCORE:
                 # below the auto-build bar -> keep as a proposal (visible) but don't spend on it yet
                 row["status"] = "proposed"
                 db.insert("improvement_proposals", row)
             else:
-                # auto-queue a build task in the app (only if the app is active)
-                slug = "improve-" + re.sub(r"[^a-z0-9]+", "-", title[:40].lower()).strip("-")
-                if pid.get(app):
-                    db.insert("tasks", {"project_id": pid[app], "slug": slug, "state": "QUEUED",
-                        "kind": "build", "deps": [], "base_branch": "main", "material": False,
-                        "force_coder": "ollama", "model": "ollama",
-                        "prompt": f"IMPROVEMENT ({surface}, target {it.get('expected_multiplier','')}): "
-                                  f"{it.get('proposal')}\nContext/gap: {it.get('current_state')}\n"
-                                  f"Make a concrete, well-tested change and ensure the prod build stays green.\n"
-                                  f"Live bottleneck context:\n{_bottleneck_context()[:2500]}"})
-                    row["status"] = "queued"; row["task_slug"] = slug
-                    db.insert("improvement_proposals", row)
-                    queued += 1
-                    queue_slots = max(0, queue_slots - 1)
+                # Every high-leverage draft now enters the independent committee QA path.
+                # committees.run() composes the final implementation spec and is the only
+                # component allowed to turn a surviving proposal into a build task.
+                row["status"] = "for_review"
+                row["proposal"] = improvement_scrutiny.implementation_spec(
+                    it, surface, _bottleneck_context())[:1500]
+                db.insert("improvement_proposals", row)
+                review += 1
             seen.add((app, surface, title.lower()))
-    print(f"improvement_miner: auto-queued {queued} improvements, {review} business-model ideas for review")
-    return {"queued": queued, "for_review": review}
+    print(f"improvement_miner: queued 0 directly; {review} scrutiny-ready, {revision} need revision")
+    return {"queued": queued, "for_review": review, "needs_revision": revision}
 
 
 if __name__ == "__main__":

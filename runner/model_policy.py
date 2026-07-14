@@ -18,6 +18,7 @@ Env keys enable providers (added by the owner; Cowork cannot create accounts/key
   DEEPSEEK_API_KEY, OPENAI_API_KEY, GOOGLE_API_KEY, OLLAMA_HOST
 """
 import os, sys, time
+import threading
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import model_gateway as mg
 
@@ -29,7 +30,9 @@ TRANCHES = [
     # for qa/review/plan — pushes more non-agentic load off paid APIs. Active when OLLAMA_STRONG_MODEL set.
     ("local",    os.environ.get("OLLAMA_STRONG_MODEL", ""),  "free",   7),
     ("deepseek", os.environ.get("DEEPSEEK_CHEAP_MODEL", "deepseek-v4-flash"), "cheap",  7),
+    ("groq",     os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),     "cheap",  7),
     ("google",   os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),          "cheap",  8),
+    ("xai",      os.environ.get("XAI_CODING_MODEL", "grok-build-0.1"),        "mid",    8),
     ("openai",   os.environ.get("OPENAI_CHEAP_MODEL", "gpt-5.4-mini"),       "cheap",  7),
     ("claude",   "claude-haiku-4-5-20251001",                "sub",    6),   # subscription $0/call
     ("openai",   os.environ.get("OPENAI_STRONG_MODEL", "gpt-5.5"),           "mid",    9),
@@ -90,7 +93,7 @@ def choose(task_class="build", agentic=True, need=None, prefer_free=True, sensit
                if prov in avail and cap >= need
                and (tier_allow is None or tier in tier_allow)]
     # DIVERSIFY MODE (default ON): actively ROTATE across all capable providers so the whole stack —
-    # local(Ollama), DeepSeek, Google(Gemini), OpenAI, Claude — gets exercised and benchmarked, instead
+    # local(Ollama), DeepSeek, Groq, Google(Gemini), xAI, OpenAI, Claude — gets exercised and benchmarked, instead
     # of always defaulting to the single cheapest. Cost stays bounded (only cheap/free tiers + the
     # key_broker $/day cap). Turn off with ORCH_DIVERSIFY_MODELS=false to go pure cheapest-first.
     diversify_default = "false" if os.environ.get("ORCH_CONFIDENTIAL_MODE", "false").lower() == "true" else "false"
@@ -117,6 +120,34 @@ def choose(task_class="build", agentic=True, need=None, prefer_free=True, sensit
 _RR_FILE = os.path.join(os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator")),
                         "model_rr.json")
 _TELEMETRY_CACHE = {}
+_DIVERSE_LOCK = threading.Lock()
+_DIVERSE_INDEX = 0
+
+
+def choose_diverse(task_class="review", need=None, sensitivity="standard"):
+    """Rotate independent panel seats across the best capable vendor families."""
+    global _DIVERSE_INDEX
+    need = need if need is not None else NEED.get(task_class, 6)
+    try:
+        import model_catalog
+        ranked = model_catalog.ranked(task_class, need=need, sensitivity=sensitivity,
+                                      available_providers=set(mg.available()))
+        distinct = []
+        seen = set()
+        for candidate in ranked:
+            family = candidate.get("vendor_family") or candidate["provider"]
+            if family in seen:
+                continue
+            seen.add(family); distinct.append(candidate)
+        if distinct:
+            with _DIVERSE_LOCK:
+                picked = distinct[_DIVERSE_INDEX % len(distinct)]
+                _DIVERSE_INDEX += 1
+            return (picked["provider"], picked["model"],
+                    f"diverse QA panel route {picked['provider']} score={picked.get('optimizer_score')}")
+    except Exception:
+        pass
+    return choose(task_class, agentic=False, need=need, sensitivity=sensitivity)
 
 
 def _rr_next(bucket, n):

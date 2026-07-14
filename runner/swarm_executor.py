@@ -20,6 +20,8 @@ import os, sys, re, json, time, asyncio, logging, threading, fnmatch
 from typing import Dict, List, Optional, Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import provider_credentials
+provider_credentials.activate_aliases()
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------

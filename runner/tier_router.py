@@ -17,6 +17,8 @@ Env vars (ORCH_-prefixed for fleet-wide tuning via fleet_config):
 import os, sys, time, threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import provider_credentials
+provider_credentials.activate_aliases()
 
 # ---------------------------------------------------------------------------
 # Env config (read at call time for live fleet_config reloads)
@@ -347,7 +349,7 @@ class TierRouter:
             import provider_failover_sla
             for ap in _API_PROVIDERS:
                 key_env = _KEY_ENV_MAP.get(ap["provider"], "")
-                if key_env and not os.environ.get(key_env):
+                if key_env and not provider_credentials.has(ap["provider"]):
                     continue  # no API key
                 if provider_failover_sla.is_demoted(ap["provider"]):
                     continue  # SLA-demoted
@@ -366,8 +368,14 @@ class TierRouter:
         # --- Fallback: cheapest available API provider ---
         for ap in _API_PROVIDERS:
             key_env = _KEY_ENV_MAP.get(ap["provider"])
-            if key_env and not os.environ.get(key_env):
+            if key_env and not provider_credentials.has(ap["provider"]):
                 continue
+            try:
+                import provider_failover_sla
+                if provider_failover_sla.is_demoted(ap["provider"]):
+                    continue
+            except Exception:
+                pass
             return {"tier": "api", "provider": ap["provider"], "model": ap["model"],
                     "coder": ap["coder"],
                     "reason": f"{context} → api {ap['provider']} (cheapest available)"}
@@ -403,8 +411,14 @@ class TierRouter:
                 if ap["provider"] in exclude:
                     continue
                 key_env = _KEY_ENV_MAP.get(ap["provider"], "")
-                if key_env and not os.environ.get(key_env):
+                if key_env and not provider_credentials.has(ap["provider"]):
                     continue
+                try:
+                    import provider_failover_sla
+                    if provider_failover_sla.is_demoted(ap["provider"]):
+                        continue
+                except Exception:
+                    pass
                 return {"tier": "api", "provider": ap["provider"], "model": ap["model"],
                         "coder": ap["coder"],
                         "reason": f"failover: api {ap['provider']} (excluding {', '.join(sorted(exclude))})"}

@@ -21,6 +21,7 @@ complete(provider, model, prompt) -> {"text","cost_usd","provider","model"}
 """
 import os, sys, json, time, subprocess, urllib.request, urllib.error
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import provider_credentials
 
 
 def _load_env():
@@ -39,6 +40,7 @@ def _load_env():
 
 
 _load_env()
+provider_credentials.activate_aliases()
 
 # rough $/1M tokens (input,output) for routing decisions; edit to current pricing
 PRICES = {
@@ -112,11 +114,11 @@ def _ollama_up():
 def available():
     prov = ["claude"]
     # a key counts only if it's non-empty (blank .env lines don't enable a provider)
-    if os.environ.get("OPENAI_API_KEY", "").strip(): prov.append("openai")
-    if os.environ.get("GOOGLE_API_KEY", "").strip(): prov.append("google")
-    if os.environ.get("DEEPSEEK_API_KEY", "").strip(): prov.append("deepseek")
-    if os.environ.get("GROQ_API_KEY", "").strip(): prov.append("groq")
-    if os.environ.get("XAI_API_KEY", "").strip(): prov.append("xai")
+    if provider_credentials.has("openai"): prov.append("openai")
+    if provider_credentials.has("google"): prov.append("google")
+    if provider_credentials.has("deepseek"): prov.append("deepseek")
+    if provider_credentials.has("groq"): prov.append("groq")
+    if provider_credentials.has("xai"): prov.append("xai")
     if _ollama_up(): prov.append("local")
     return prov
 
@@ -294,7 +296,7 @@ def _groq(model, prompt):
 def _xai(model, prompt):
     """xAI Grok — real-time data, OpenAI-compatible API."""
     d = _post("https://api.x.ai/v1/chat/completions",
-              {"Authorization": f"Bearer {os.environ['XAI_API_KEY']}"},
+              {"Authorization": f"Bearer {provider_credentials.get('xai')}"},
               {"model": model, "messages": [{"role": "user", "content": prompt}],
                "max_tokens": 8192})
     u = d.get("usage", {})
@@ -441,6 +443,12 @@ def complete(provider, model, prompt, project=None, timeout=90, operation="compl
         except Exception as e:
             latency = int((time.time() - t0) * 1000)
             last = {"provider": prov, "model": mdl, "error": str(e)}
+            if isinstance(e, urllib.error.HTTPError) and e.code in (401, 403):
+                try:
+                    import provider_failover_sla
+                    provider_failover_sla.demote(prov, f"auth-{e.code}")
+                except Exception:
+                    pass
             if record_op:
                 _record_operation(project, operation, task_class, prov, mdl, prompt, 0, latency,
                                   ok=False, error=str(e))
