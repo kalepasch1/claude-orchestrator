@@ -163,6 +163,10 @@ def _apply_and_verify(repo, diff_text, task_id):
             return {"success": False, "reason": "diff doesn't apply"}
 
         os.makedirs(os.path.dirname(wt), exist_ok=True)
+        # Prune stale worktrees first to avoid "already locked" errors from
+        # previously-crashed sessions that left worktree metadata behind.
+        subprocess.run(["git", "worktree", "prune"], cwd=repo,
+                       capture_output=True, timeout=15)
         added = subprocess.run(["git", "worktree", "add", "-b", branch, wt, "HEAD"], cwd=repo,
                                capture_output=True, text=True, timeout=60)
         if added.returncode != 0 or not os.path.isdir(wt):
