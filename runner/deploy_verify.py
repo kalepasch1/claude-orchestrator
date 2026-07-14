@@ -217,6 +217,11 @@ def run():
                       {"deploy_status": "success", "vercel_url": url, "deployed_at": "now()"})
             db.update("projects", {"name": project}, {"last_good_sha": release["to_sha"],
                       "vercel_project": vproj})
+            try:
+                import release_attribution
+                release_attribution.attribute_release(project, p.get("repo_path") or "", release, db)
+            except Exception as e:
+                print(f"deploy_verify: release attribution skipped for {project}: {str(e)[:160]}")
             print(f"deploy_verify: {project} deploy OK ({url})")
             continue
 

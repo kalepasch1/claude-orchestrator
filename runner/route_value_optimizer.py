@@ -29,6 +29,13 @@ def wilson_lower(successes, total, z=1.96):
 
 def provider_of(model):
     value = str(model or "").lower()
+    if value.startswith("cowork"):
+        return "cowork"
+    if value.startswith("swarm:"):
+        parts = value.split(":")
+        return parts[1] if len(parts) > 1 else "swarm"
+    if not value or value == "none":
+        return "unknown"
     if value.startswith("ollama") or any(tag in value for tag in (":3b", ":7b", ":8b", ":14b", ":16b", ":22b", ":30b", ":32b", ":70b")):
         return "local"
     if "deepseek" in value:
@@ -111,11 +118,16 @@ def live_rows():
     try:
         import db
         try:
-            outcomes = db.select("outcomes", {"select": "model,project,kind,integrated,tests_passed,usd,wall_ms,deployed,deploy_status,created_at", "order": "created_at.desc", "limit": "5000"}) or []
+            outcomes = db.select("outcomes", {"select": "id,task_id,slug,model,project,kind,integrated,tests_passed,usd,wall_ms,deployed,deploy_status,created_at", "order": "created_at.desc", "limit": "5000"}) or []
         except Exception:
-            outcomes = db.select("outcomes", {"select": "model,project,kind,integrated,tests_passed,usd,wall_ms,created_at", "order": "created_at.desc", "limit": "5000"}) or []
+            outcomes = db.select("outcomes", {"select": "id,task_id,slug,model,project,kind,integrated,tests_passed,usd,wall_ms,created_at", "order": "created_at.desc", "limit": "5000"}) or []
         releases = db.select("releases", {"select": "project,deploy_status,deployed_at,created_at", "order": "created_at.desc", "limit": "1000"}) or []
         _CACHE["rows"] = attach_release_evidence(outcomes, releases)
+        try:
+            import release_attribution
+            _CACHE["rows"] = release_attribution.apply(_CACHE["rows"])
+        except Exception:
+            pass
     except Exception:
         _CACHE["rows"] = []
     _CACHE["t"] = time.time()

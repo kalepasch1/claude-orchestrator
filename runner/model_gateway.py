@@ -435,6 +435,11 @@ def complete(provider, model, prompt, project=None, timeout=90, operation="compl
         t0 = time.time()
         try:
             res = _call_provider(prov, mdl, prompt, project=project, timeout=timeout)
+            try:
+                import provider_failover_sla
+                provider_failover_sla.record_probe_success(prov)
+            except Exception:
+                pass
             latency = int((time.time() - t0) * 1000)
             if record_op:
                 _record_operation(project, operation, task_class, res["provider"], res["model"],
@@ -471,7 +476,13 @@ def complete(provider, model, prompt, project=None, timeout=90, operation="compl
 def complete_legacy(provider, model, prompt, project=None, timeout=90):
     """Backward-compatible no-fallback/no-telemetry path for old callers that need it."""
     try:
-        return _call_provider(provider, model, prompt, project=project, timeout=timeout)
+        result = _call_provider(provider, model, prompt, project=project, timeout=timeout)
+        try:
+            import provider_failover_sla
+            provider_failover_sla.record_probe_success(provider)
+        except Exception:
+            pass
+        return result
     except Exception as e:
         return {"text": "", "cost_usd": 0, "provider": provider, "model": model, "error": str(e)}
 

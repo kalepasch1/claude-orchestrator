@@ -47,6 +47,17 @@ def _truthy(name, default=False):
     return str(val).lower() in ("1", "true", "yes", "on")
 
 
+def _release_decision(ahead, due, minimum=None):
+    """Release a full batch immediately or flush a partial batch on cadence."""
+    minimum = MIN_BATCH if minimum is None else int(minimum)
+    ahead = int(ahead or 0)
+    if ahead <= 0:
+        return "up-to-date"
+    if ahead >= minimum or due:
+        return "release"
+    return "hold"
+
+
 def _record_release_flow(project, status, **extra):
     """Small local status file so dashboard/autopilot can show staged-vs-prod release state."""
     try:
@@ -118,16 +129,19 @@ def _self_heal_build(p, project, repo, branch, blog):
     try:
         import build_fixer
         # don't pile up: skip if an open build-fix task already exists for this app
+        import failure_compiler
+        compiled = failure_compiler.record(project, "release-build", blog)
+        uslug = failure_compiler.task_slug("relfix", project, "release-build", blog)
         existing = db.select("tasks", {"select": "slug", "project_id": f"eq.{p['id']}",
                                        "state": "in.(QUEUED,RUNNING,RETRY,BLOCKED)"}) or []
-        if any(str(e.get("slug", "")).startswith("relfix-") for e in existing):
+        if any(str(e.get("slug", "")) == uslug for e in existing):
             return
         build_fixer.save_log(f"rel-{project}", blog)
         diff = _git(repo, "log", "-1", "--stat", branch).stdout[:3000]
         directive = build_fixer.fix_directive(blog or "", diff=diff, project=project)
-        uslug = f"relfix-{project}-{datetime.datetime.utcnow().strftime('%m%d%H%M')}"
         prompt = ("The production build for this app is RED and is BLOCKING release. Make `npm run build` "
                   "pass with the SMALLEST possible change (fix types/imports/syntax). Do NOT add features.\n\n"
+                  f"Failure signature: {compiled['signature']} (observed {compiled['count']} time(s)).\n"
                   "# Build error (tail):\n" + (blog or "")[-3000:] + "\n\n" + (directive or ""))
         try:
             import pipeline_contract
@@ -147,14 +161,17 @@ def _self_heal_build(p, project, repo, branch, blog):
 def _self_heal_qa(p, project, repo, branch, qlog):
     """Queue one targeted QA-fix task when a required staging test gate is red."""
     try:
+        import failure_compiler
+        compiled = failure_compiler.record(project, "release-qa", qlog)
+        uslug = failure_compiler.task_slug("qafix", project, "release-qa", qlog)
         existing = db.select("tasks", {"select": "slug", "project_id": f"eq.{p['id']}",
                                        "state": "in.(QUEUED,RUNNING,RETRY,BLOCKED)"}) or []
-        if any(str(e.get("slug", "")).startswith("qafix-") for e in existing):
+        if any(str(e.get("slug", "")) == uslug for e in existing):
             return
         diff = _git(repo, "log", "-1", "--stat", branch).stdout[:3000]
-        uslug = f"qafix-{project}-{datetime.datetime.utcnow().strftime('%m%d%H%M')}"
         prompt = ("The required staging QA/test gate is RED and is BLOCKING Vercel release. "
                   "Fix the smallest test/build issue. Do NOT add features.\n\n"
+                  f"Failure signature: {compiled['signature']} (observed {compiled['count']} time(s)).\n"
                   "# QA error tail:\n" + (qlog or "")[-3000:] + "\n\n# Latest staged diff summary:\n" + diff)
         try:
             import pipeline_contract
@@ -480,14 +497,19 @@ def run_for(project):
     staging_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
     # count staging changes vs the deployable prod tip, not necessarily a stale checked-out local branch
     ahead = _git(repo, "rev-list", "--count", f"{release_base}..{STAGING}").stdout.strip() or "0"
-    if int(ahead) < MIN_BATCH:
-        _record_release_flow(project, "staging-held-batch", prod=prod, staged=merged, ahead=int(ahead))
-        return {"project": project, "prod": prod, "staged": merged, "ahead": ahead, "note": "below batch size"}
+    if _release_decision(ahead, False) == "up-to-date":
+        _record_release_flow(project, "up-to-date", prod=prod, staged=merged, ahead=0)
+        return {"project": project, "prod": prod, "staged": merged, "ahead": "0", "note": "up to date"}
     due, due_note = _release_due(project)
-    if not due:
-        _record_release_flow(project, "staging-held-cadence", prod=prod, staged=merged,
+    # Amortize normal traffic into batches, but never strand low-volume projects
+    # forever below MIN_BATCH: cadence expiry flushes whatever is ready.
+    if _release_decision(ahead, due) == "hold":
+        _record_release_flow(project, "staging-held-batch", prod=prod, staged=merged,
                              ahead=int(ahead), note=due_note)
-        return {"project": project, "prod": prod, "staged": merged, "ahead": ahead, "note": due_note}
+        return {"project": project, "prod": prod, "staged": merged, "ahead": ahead,
+                "note": f"below batch size; {due_note}"}
+    # A full batch is already amortized and should ship immediately. Cadence is
+    # only the deadline that flushes a partial batch.
     # PUBLIC COPY/IP GATE: anything added to public-facing pages/components/content must describe
     # value at a general abstraction level. Specific proprietary mechanisms, AI vendor routing, IP
     # partitioning, and legal/regulatory playbooks are blocked and rewritten before release.
@@ -529,7 +551,14 @@ def run_for(project):
     require_tests = (has_real_tests
                      or os.environ.get("ORCH_RELEASE_REQUIRE_TESTS", "false").lower() == "true"
                      or _kpi_requires_tests(project))
+    qa_reused = False
     if test_cmd and require_tests:
+        try:
+            import proof_graph
+            qa_reused = bool(proof_graph.reusable_verification(repo, staging_sha, test_cmd, "qa"))
+        except Exception:
+            qa_reused = False
+    if test_cmd and require_tests and not qa_reused:
         held = _hold_for_open_fix(p, project, "qa")
         if held:
             return held
@@ -565,6 +594,11 @@ def run_for(project):
             _record_release_flow(project, "staging-red-qa", prod=prod, ahead=int(ahead),
                                  note="staging tests failed")
             return {"project": project, "qa": "FAILED", "note": "staging not green; held"}
+        try:
+            import proof_graph
+            proof_graph.record_verification(repo, staging_sha, test_cmd, "qa", True)
+        except Exception:
+            pass
     # BUILD GATE on the whole staging batch: the real prod build must be green before we release to
     # prod (this is what stops the Vercel deploy failures — no green build, no release).
     try:
@@ -576,7 +610,15 @@ def run_for(project):
                 return held
             if _recent_failed_gate(project, staging_sha, "build"):
                 return {"project": project, "build": "HELD", "note": "unchanged staging SHA already failed build recently"}
-            bok, blog = build_gate.run_build(repo, STAGING, bcmd)
+            try:
+                import proof_graph
+                build_reused = bool(proof_graph.reusable_verification(repo, staging_sha, bcmd, "build"))
+            except Exception:
+                build_reused = False
+            if build_reused:
+                bok, blog = True, "reused exact commit/dependency verification proof"
+            else:
+                bok, blog = build_gate.run_build(repo, STAGING, bcmd)
             if not bok:
                 _self_heal_build(p, project, repo, STAGING, blog)  # queue a targeted build-fix task
                 _insert_failed_release(project, "build", ahead, release_base_sha, staging_sha,
@@ -584,6 +626,12 @@ def run_for(project):
                 _record_release_flow(project, "staging-red-build", prod=prod, ahead=int(ahead),
                                      note="staging build failed")
                 return {"project": project, "build": "RED", "note": "staging build not green; build-fix task queued"}
+            if not build_reused:
+                try:
+                    import proof_graph
+                    proof_graph.record_verification(repo, staging_sha, bcmd, "build", True)
+                except Exception:
+                    pass
     except Exception:
         pass
     # release: record last-good, ff prod to staging, push (deploy_verify confirms/rolls back)

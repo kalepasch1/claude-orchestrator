@@ -200,6 +200,22 @@ def is_demoted(provider):
     return True
 
 
+def record_probe_success(provider):
+    """Re-admit a provider after a real successful inference, even if credits changed under the same key."""
+    state = _load(); demoted = state.get("demoted") or {}
+    if provider not in demoted:
+        return False
+    del demoted[provider]
+    state["demoted"] = demoted
+    _save(state)
+    _notify_bandit_promote(provider)
+    try:
+        db.upsert("fleet_config", {"key": f"ORCH_PROVIDER_DEMOTED_{provider.upper()}", "value": "false"})
+    except Exception:
+        pass
+    return True
+
+
 def run():
     s = check_and_enforce()
     print(f"provider_sla: checked")

@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Exact task/outcome -> release attribution from Git commit evidence."""
+import json
+import os
+import subprocess
+import time
+
+
+def _home():
+    return os.environ.get("CLAUDE_ORCH_HOME", os.path.join(os.path.dirname(__file__), "..", ".runtime"))
+
+
+def _path():
+    return os.path.join(_home(), "release-attribution.jsonl")
+
+
+def _messages(repo, before, after):
+    if not repo or not after:
+        return ""
+    range_spec = f"{before}..{after}" if before else after
+    try:
+        return subprocess.check_output(["git", "log", "--format=%H%n%B", range_spec],
+                                       cwd=repo, text=True, stderr=subprocess.DEVNULL,
+                                       timeout=30).lower()
+    except Exception:
+        return ""
+
+
+def _existing_keys():
+    try:
+        with open(_path()) as f:
+            return {(r.get("outcome_id"), r.get("release_id"))
+                    for r in (json.loads(x) for x in f if x.strip())}
+    except Exception:
+        return set()
+
+
+def attribute_release(project, repo, release, database=None):
+    if database is None:
+        import db as database
+    messages = _messages(repo, release.get("from_sha"), release.get("to_sha"))
+    if not messages:
+        return {"attributed": 0, "reason": "no-release-commit-evidence"}
+    outcomes = database.select("outcomes", {"select": "id,task_id,slug,model,project,integrated,created_at",
+                                             "project": f"eq.{project}", "integrated": "eq.true",
+                                             "limit": "5000"}) or []
+    keys = _existing_keys(); rows = []
+    for outcome in outcomes:
+        slug = str(outcome.get("slug") or "").lower()
+        if not slug or (slug not in messages and f"agent/{slug}" not in messages):
+            continue
+        key = (outcome.get("id"), release.get("id"))
+        if key in keys:
+            continue
+        rows.append({"at": time.time(), "outcome_id": outcome.get("id"),
+                     "task_id": outcome.get("task_id"), "slug": outcome.get("slug"),
+                     "model": outcome.get("model"), "project": project,
+                     "release_id": release.get("id"), "commit": release.get("to_sha"),
+                     "evidence": "git-release-range"})
+    if rows:
+        os.makedirs(os.path.dirname(_path()), exist_ok=True)
+        with open(_path(), "a") as f:
+            for row in rows:
+                f.write(json.dumps(row, separators=(",", ":"), default=str) + "\n")
+    return {"attributed": len(rows), "release_id": release.get("id")}
+
+
+def apply(outcomes):
+    try:
+        with open(_path()) as f:
+            rows = [json.loads(x) for x in f if x.strip()]
+    except Exception:
+        rows = []
+    ids = {r.get("outcome_id") for r in rows}
+    by_slug = {(str(r.get("project") or "").lower(), str(r.get("slug") or "").lower()) for r in rows}
+    result = []
+    for original in outcomes or []:
+        row = dict(original)
+        key = (str(row.get("project") or "").lower(), str(row.get("slug") or "").lower())
+        if row.get("id") in ids or key in by_slug:
+            row["deployed"] = True
+            row["deployment_evidence"] = "git-release-range"
+        result.append(row)
+    return result
+
+
+def backfill(limit=100):
+    import db
+    projects = {p.get("name"): p for p in (db.select("projects", {"select": "name,repo_path"}) or [])}
+    releases = db.select("releases", {"select": "id,project,from_sha,to_sha,deploy_status,deployed_at",
+                                       "deploy_status": "eq.success", "order": "created_at.desc",
+                                       "limit": str(limit)}) or []
+    total = 0
+    for release in releases:
+        p = projects.get(release.get("project")) or {}
+        total += attribute_release(release.get("project"), p.get("repo_path"), release, db).get("attributed", 0)
+    print(f"release_attribution: attributed={total} releases={len(releases)}")
+    return {"attributed": total, "releases": len(releases)}
+
+
+if __name__ == "__main__":
+    print(json.dumps(backfill(), indent=2))

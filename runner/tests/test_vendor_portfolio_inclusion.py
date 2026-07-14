@@ -76,3 +76,15 @@ def test_replacing_auth_credential_releases_old_quarantine(monkeypatch, tmp_path
     monkeypatch.setenv("XAI_API_KEY", "replacement-key")
 
     assert not provider_failover_sla.is_demoted("xai")
+
+
+def test_successful_same_key_probe_releases_credit_quarantine(monkeypatch, tmp_path):
+    import provider_failover_sla
+    monkeypatch.setenv("CLAUDE_ORCH_HOME", str(tmp_path))
+    monkeypatch.setenv("XAI_API_KEY", "same-key")
+    monkeypatch.setattr(provider_failover_sla.db, "upsert", lambda *a, **k: None)
+    monkeypatch.setattr(provider_failover_sla.db, "select", lambda *a, **k: [])
+    provider_failover_sla.demote("xai", "auth-403")
+
+    assert provider_failover_sla.record_probe_success("xai") is True
+    assert not provider_failover_sla.is_demoted("xai")
