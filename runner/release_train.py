@@ -390,6 +390,25 @@ def _link_shared_runtime(repo, worktree):
                     pass
 
 
+def _prepare_generated_types(worktree):
+    """Generate checkout-local framework types before typecheck-oriented QA."""
+    package = os.path.join(worktree, "package.json")
+    tsconfig = os.path.join(worktree, "tsconfig.json")
+    if not os.path.isfile(package) or not os.path.isfile(tsconfig):
+        return True, "not a typed package"
+    try:
+        package_text = open(package, encoding="utf-8").read()
+        tsconfig_text = open(tsconfig, encoding="utf-8").read()
+    except OSError as e:
+        return False, str(e)
+    if '"nuxt"' not in package_text or ".nuxt/tsconfig" not in tsconfig_text:
+        return True, "framework generation not required"
+    proc = subprocess.run(["bash", "-lc", "npx nuxi prepare"], cwd=worktree,
+                          capture_output=True, text=True, timeout=180)
+    log = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-4000:]
+    return proc.returncode == 0 and os.path.exists(os.path.join(worktree, ".nuxt", "tsconfig.json")), log
+
+
 def prod_branch(repo):
     """Auto-detect the production branch: origin/HEAD target, else main, else master."""
     r = _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD")
@@ -607,8 +626,13 @@ def run_for(project):
                 pass
             _git(repo, "worktree", "add", "-f", tmp, STAGING)
             _link_shared_runtime(repo, tmp)
-            qa = subprocess.run(["bash", "-lc", test_cmd], cwd=tmp, capture_output=True, text=True, timeout=1800)
-            ok = qa.returncode == 0
+            prepared, prepare_log = _prepare_generated_types(tmp)
+            if prepared:
+                qa = subprocess.run(["bash", "-lc", test_cmd], cwd=tmp, capture_output=True, text=True, timeout=1800)
+                ok = qa.returncode == 0
+            else:
+                qa = subprocess.CompletedProcess(test_cmd, 1, "", "Nuxt type preparation failed:\n" + prepare_log)
+                ok = False
         finally:
             _git(repo, "worktree", "remove", "--force", tmp); shutil.rmtree(tmp, ignore_errors=True)
         if not ok:
