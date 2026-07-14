@@ -64,6 +64,13 @@ def _rebuild():
         releases = db.select("releases", {"select": "project,deploy_status,deployed_at,created_at",
                                            "order": "created_at.desc", "limit": "1000"}) or []
         rows = route_value_optimizer.attach_release_evidence(rows, releases)
+        # Replace broad project/time-window inference with exact task/commit
+        # release evidence whenever it is available.
+        try:
+            import release_attribution
+            rows = release_attribution.apply(rows)
+        except Exception:
+            pass
     except Exception:
         pass
     agg = collections.defaultdict(lambda: {"n": 0, "merged": 0, "tests": 0, "usd": 0.0,

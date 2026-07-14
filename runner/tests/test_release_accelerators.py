@@ -7,6 +7,7 @@ import proof_graph
 import release_attribution
 import release_train
 import route_counterfactual
+import router_stats
 
 
 def test_failure_signature_compiles_repeated_paths_and_numbers_together():
@@ -63,6 +64,11 @@ def test_release_messages_returns_git_range_output(monkeypatch):
     monkeypatch.setattr(release_attribution.subprocess, "check_output",
                         lambda *args, **kwargs: "ABC123\nFix Auth\n")
     assert release_attribution._messages("/repo", "a", "b") == "abc123\nfix auth\n"
+
+
+def test_router_stats_consumes_exact_release_attribution():
+    source = open(router_stats.__file__, encoding="utf-8").read()
+    assert "rows = release_attribution.apply(rows)" in source
 
 
 def test_release_attribution_uses_merged_task_artifact_and_repairs_integrated(monkeypatch, tmp_path):
