@@ -10,6 +10,9 @@ Jobs:
   scout   - opportunity scout: RICE-scored proposals (schedule: weekly)
   deploy  - canary-gated nightly deploy window (schedule: nightly)
   roi     - update project concurrency_weight from ROI (schedule: daily)
+  stuck_reaper - detect+recover RUNNING tasks stuck >2h (schedule: every 30 min)
+  priority_scorer - score QUEUED tasks with default priority (schedule: every 10 min)
+  quarantine_gc - GC non-recoverable quarantined tasks (schedule: every 6h)
 
 Usage:
   python3 periodic.py spec
@@ -342,6 +345,11 @@ def run_credential_resolver():
     import credential_auto_resolver; credential_auto_resolver.resolve_pending()
 
 
+def run_stuck_reaper():
+    """Detect RUNNING tasks that haven't updated in hours (crashed/hung) and reset or quarantine them."""
+    import stuck_reaper; stuck_reaper.run()
+
+
 def run_remediate():
     """Drive BLOCKED to zero: requeue transient/conflict, escalate+sharpen review/no-op fails, human-card the rest."""
     import auto_remediate; auto_remediate.run()
@@ -654,6 +662,18 @@ def run_commonbrain():
     common_brain.run()
 
 
+def run_priority_scorer():
+    """Score QUEUED tasks with default priority=1000 based on kind, slug, deps, and age."""
+    import priority_scorer
+    priority_scorer.run()
+
+
+def run_quarantine_gc():
+    """GC non-recoverable quarantined tasks (PATCH TEMPLATE, dedup) to reduce scan noise."""
+    import quarantine_gc
+    quarantine_gc.run()
+
+
 def run_cluster():
     """Cluster pending approval cards so the human can bulk-approve siblings."""
     import approval_cluster
@@ -746,6 +766,7 @@ JOBS = {
     "committeekg": run_committeekg,
     "committeemeta": run_committeemeta,
     "credresolver": run_credential_resolver,
+    "stuck_reaper": run_stuck_reaper,
     "remediate": run_remediate,
     "quarantine": run_quarantine,
     "selfcheck": run_selfcheck,
@@ -770,6 +791,8 @@ JOBS = {
     "modelportfolios": run_modelportfolios,
     "modelslashing": run_modelslashing,
     "commonbrain": run_commonbrain,
+    "priority_scorer": run_priority_scorer,
+    "quarantine_gc": run_quarantine_gc,
 }
 
 if __name__ == "__main__":
@@ -795,8 +818,9 @@ if __name__ == "__main__":
         "billingguard", "dedup", "conflictresolve", "canaryecon", "forecast", "arbitrage", "autoscale",
         "contcompact", "backlogcompact",
         "bizradar", "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",
-        "stripe", "ownerreport", "worktreegc", "remediate", "selfcheck",
+        "stripe", "ownerreport", "worktreegc", "stuck_reaper", "remediate", "selfcheck",
         "quarantine", "credresolver", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain",
+        "priority_scorer", "quarantine_gc",
         "release_kpi.py", "integrate_kpi.py", "fleet_control.py",
     }
     if job not in _SAFE_WHEN_PAUSED:

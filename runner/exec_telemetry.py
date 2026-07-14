@@ -15,7 +15,7 @@ Usage in runner.py:
     _tel.finish(outcome="executed" | "requeued" | "blocked")
     # Writes to Supabase exec_telemetry table
 """
-import os, sys, time, threading, json
+import os, sys, time, threading, json, datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -77,6 +77,18 @@ class TaskTelemetry:
         self.hooks.append(timer)
         return timer
 
+    def record_hook(self, name, duration_ms, outcome="ok", error=None):
+        """Record a hook timing without using the context manager.
+
+        Use this when hooks are structured as individual try/except blocks
+        rather than wrapped with `with _tel.hook("name"):` context managers.
+        """
+        timer = HookTimer(name)
+        timer.duration_ms = duration_ms
+        timer.outcome = outcome
+        timer.error = error
+        self.hooks.append(timer)
+
     def record_requeue(self, hook_name, reason=""):
         """Record which hook caused a task to be requeued."""
         self._requeue_hook = hook_name
@@ -109,7 +121,11 @@ class TaskTelemetry:
             "requeue_hook": self._requeue_hook or "",
             "hooks_json": json.dumps(hook_data[:20]),  # top 20 by duration
             "note": note[:500],
-            "created_at": "now()",
+            # Use real ISO timestamp — PostgREST passes JSON values as literals,
+            # so "now()" would be sent as a string, not interpreted as SQL.
+            # If the column has DEFAULT now(), omitting it also works; but an
+            # explicit timestamp is safer for tables without that default.
+            "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
 
         try:

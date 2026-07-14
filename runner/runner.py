@@ -2916,7 +2916,24 @@ def main():
                         t = None
                         pass  # skip claiming this cycle
                     else:
-                        t = db.claim_task(RUNNER_ID)
+                        # PARALLEL SWARM DISPATCH: batch-claim + concurrent API dispatch
+                        # when conditions are right (enough headroom, budget under cap).
+                        # Falls through to serial claim if swarm is disabled or not applicable.
+                        _swarm_dispatched = False
+                        try:
+                            import parallel_dispatch
+                            if parallel_dispatch.should_use_swarm(eff_limit, len(active)):
+                                _pd_stats = parallel_dispatch.dispatch_swarm_batch(
+                                    RUNNER_ID, active, _run_task_safe)
+                                if _pd_stats.get("dispatched", 0):
+                                    print(f"[swarm-batch] dispatched={_pd_stats['dispatched']} "
+                                          f"api={_pd_stats['api_tasks']} cli={_pd_stats['cli_tasks']} "
+                                          f"cost=${_pd_stats['cost_usd']:.4f}", flush=True)
+                                    _swarm_dispatched = True
+                        except Exception as e:
+                            _log.debug("hook parallel_dispatch failed: %s", e)
+                        if not _swarm_dispatched:
+                            t = db.claim_task(RUNNER_ID)
                         _touch_progress()  # WEDGEFIX-B-PROGRESS
                     if t:
                         print(f"[claim] {t.get('slug','')} (project={t.get('project_id','?')[:8]}) active={len(active)+1}/{eff_limit}", flush=True)
