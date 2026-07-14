@@ -2805,6 +2805,15 @@ def main():
                         t = db.claim_task(RUNNER_ID)
                         _touch_progress()  # WEDGEFIX-B-PROGRESS
                     if t:
+                        # FAILURE FORECAST: skip tasks with consecutive terminal failures
+                        try:
+                            from failure_forecast import should_skip
+                            if should_skip(t.get("id", ""), db):
+                                print(f"SKIP forecasted-fail {t.get('id','')}", flush=True)
+                                t = None
+                        except Exception as e:
+                            _log.debug("hook failure_forecast failed: %s", e)
+                    if t:
                         print(f"[claim] {t.get('slug','')} (project={t.get('project_id','?')[:8]}) active={len(active)+1}/{eff_limit}", flush=True)
                         # REUSE-FIRST: adapt an already-solved implementation instead of rebuilding
                         try:
