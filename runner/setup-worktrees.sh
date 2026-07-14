@@ -53,10 +53,12 @@ mkdir -p "$DEST/.claude"
 
 # WARM DEPS: the agent's build-to-green loop dominates wall-clock, and a fresh worktree would
 # `npm install` from scratch every time (minutes). Symlink the main checkout's node_modules (and
-# reuse the build cache) so `npm run build`/tests start instantly. Symlink = zero copy, zero disk.
+# reuse path-safe build caches) so `npm run build`/tests start instantly. Symlink = zero copy, zero disk.
 # Disable with ORCH_WARM_DEPS=false. (npm/pnpm resolve a symlinked node_modules fine for builds.)
 if [ "${ORCH_WARM_DEPS:-true}" = "true" ]; then
-  for depdir in node_modules .next/cache .nuxt node_modules/.cache; do
+  # Never share .nuxt: generated tsconfig/type files contain absolute checkout
+  # paths and make QA in one worktree type-check stale sources from another.
+  for depdir in node_modules .next/cache node_modules/.cache; do
     src="$REPO_ROOT/$depdir"; dst="$DEST/$depdir"
     if [ -e "$src" ] && [ ! -e "$dst" ]; then
       mkdir -p "$(dirname "$dst")"
@@ -64,11 +66,9 @@ if [ "${ORCH_WARM_DEPS:-true}" = "true" ]; then
     fi
   done
 fi
-# NUXT TYPES: resource_governor prunes **/.nuxt from the main checkout as a "build cache",
-# so the symlink above often points at nothing and `tsc --noEmit` fails with thousands of
-# missing-alias errors (unrelated to the task's change). Regenerate the type stubs once,
-# best-effort, so tsc-based acceptance checks can actually go green. Cheap (~seconds), and
-# skipped when .nuxt already exists or this isn't a Nuxt project.
+# NUXT TYPES: generated files are worktree-specific because they embed absolute
+# paths. Regenerate the type stubs once, best-effort, so tsc-based acceptance
+# checks use this checkout and can actually go green. Cheap (~seconds).
 if [ "${ORCH_NUXT_PREPARE:-true}" = "true" ] && [ ! -e "$DEST/.nuxt" ] && [ -f "$DEST/package.json" ] \
    && grep -q '"nuxt"' "$DEST/package.json" 2>/dev/null; then
   (cd "$DEST" && timeout 180 npx nuxi prepare >/dev/null 2>&1) || true
