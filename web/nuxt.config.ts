@@ -16,7 +16,7 @@ const appAlias = {
 
 // Nuxt config - hosted control plane (deploys to Vercel out of the box).
 export default defineNuxtConfig({
-  modules: ['@nuxtjs/supabase', '@nuxtjs/tailwindcss', '@vercel/analytics'],
+  modules: ['@nuxtjs/supabase', '@nuxtjs/tailwindcss', '@vercel/analytics/nuxt'],
   ssr: true,
   experimental: { appManifest: false },
   alias: appAlias,
