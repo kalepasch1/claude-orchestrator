@@ -2329,7 +2329,7 @@ def _fire_periodic(job: str) -> None:
     # discarded. Previously an EPERM here silently skipped merge_train/release_train/intake/etc.,
     # stalling the entire deploy pipeline.
     _base = os.environ.get("ORCH_LOG_DIR") or os.path.join(_home, "logs")
-    _log = None
+    _logpath = None
     for cand in (_base, os.path.join(_dir, "logs"), "/tmp/claude-orchestrator-logs"):
         try:
             os.makedirs(cand, exist_ok=True)
@@ -2337,7 +2337,7 @@ def _fire_periodic(job: str) -> None:
             with open(_probe, "a"):
                 pass
             os.remove(_probe)
-            _log = os.path.join(cand, job.replace(".py", "").replace("_", "-"))
+            _logpath = os.path.join(cand, job.replace(".py", "").replace("_", "-"))
             break
         except Exception:
             continue
@@ -2346,8 +2346,8 @@ def _fire_periodic(job: str) -> None:
     # job wouldn't be reaped for 5 hours; see _is_still_running for the incident this caused).
     _reap_stale_periodic(job, _JOB_INTERVAL.get(job, 3600))
     try:
-        if _log:
-            with open(_log + ".log", "a") as lf, open(_log + ".err", "a") as ef:
+        if _logpath:
+            with open(_logpath + ".log", "a") as lf, open(_logpath + ".err", "a") as ef:
                 p = subprocess.Popen(cmd, stdout=lf, stderr=ef, cwd=_dir, env=os.environ.copy())
         else:
             p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
