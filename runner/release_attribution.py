@@ -17,6 +17,21 @@ def _path():
 def _messages(repo, before, after):
     if not repo or not after:
         return ""
+
+
+def _commit_in_range(repo, commit, before, after):
+    """Return true when commit is reachable from after but not from before."""
+    if not repo or not commit or not after:
+        return False
+    try:
+        inside = subprocess.run(["git", "merge-base", "--is-ancestor", commit, after], cwd=repo,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15).returncode == 0
+        already = bool(before) and subprocess.run(
+            ["git", "merge-base", "--is-ancestor", commit, before], cwd=repo,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15).returncode == 0
+        return inside and not already
+    except Exception:
+        return False
     range_spec = f"{before}..{after}" if before else after
     try:
         return subprocess.check_output(["git", "log", "--format=%H%n%B", range_spec],
@@ -42,21 +57,42 @@ def attribute_release(project, repo, release, database=None):
     if not messages:
         return {"attributed": 0, "reason": "no-release-commit-evidence"}
     outcomes = database.select("outcomes", {"select": "id,task_id,slug,model,project,integrated,created_at",
-                                             "project": f"eq.{project}", "integrated": "eq.true",
+                                             "project": f"eq.{project}",
                                              "limit": "5000"}) or []
+    unmatched_ids = [str(o.get("task_id")) for o in outcomes
+                     if o.get("task_id") and str(o.get("slug") or "").lower() not in messages]
+    tasks = {}
+    if unmatched_ids:
+        try:
+            task_rows = database.select("tasks", {
+                "select": "id,slug,state,artifact_commit", "id": f"in.({','.join(unmatched_ids)})",
+                "limit": "5000"}) or []
+            tasks = {str(t.get("id")): t for t in task_rows}
+        except Exception:
+            tasks = {}
     keys = _existing_keys(); rows = []
     for outcome in outcomes:
         slug = str(outcome.get("slug") or "").lower()
-        if not slug or (slug not in messages and f"agent/{slug}" not in messages):
+        message_evidence = bool(slug and (slug in messages or f"agent/{slug}" in messages))
+        task = tasks.get(str(outcome.get("task_id"))) or {}
+        artifact_evidence = (str(task.get("state") or "").upper() == "MERGED"
+                             and _commit_in_range(repo, task.get("artifact_commit"),
+                                                  release.get("from_sha"), release.get("to_sha")))
+        if not message_evidence and not artifact_evidence:
             continue
         key = (outcome.get("id"), release.get("id"))
         if key in keys:
             continue
+        if artifact_evidence and not outcome.get("integrated"):
+            try:
+                database.update("outcomes", {"id": outcome.get("id")}, {"integrated": True})
+            except Exception:
+                pass
         rows.append({"at": time.time(), "outcome_id": outcome.get("id"),
                      "task_id": outcome.get("task_id"), "slug": outcome.get("slug"),
                      "model": outcome.get("model"), "project": project,
                      "release_id": release.get("id"), "commit": release.get("to_sha"),
-                     "evidence": "git-release-range"})
+                     "evidence": "git-release-range" if message_evidence else "task-artifact-release-range"})
     if rows:
         os.makedirs(os.path.dirname(_path()), exist_ok=True)
         with open(_path(), "a") as f:

@@ -59,6 +59,31 @@ def test_exact_release_attribution_uses_git_range_evidence(monkeypatch, tmp_path
     assert marked[0]["deployment_evidence"] == "git-release-range"
 
 
+def test_release_attribution_uses_merged_task_artifact_and_repairs_integrated(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_ORCH_HOME", str(tmp_path))
+    monkeypatch.setattr(release_attribution, "_messages", lambda *a: "release merge\n")
+    monkeypatch.setattr(release_attribution, "_commit_in_range", lambda repo, commit, before, after: commit == "abc123")
+
+    class DB:
+        def __init__(self):
+            self.updated = []
+
+        def select(self, table, params):
+            if table == "outcomes":
+                return [{"id": "o1", "task_id": "t1", "slug": "fix-auth", "model": "xai",
+                         "project": "app", "integrated": False}]
+            return [{"id": "t1", "slug": "fix-auth", "state": "MERGED", "artifact_commit": "abc123"}]
+
+        def update(self, table, where, values):
+            self.updated.append((table, where, values))
+
+    database = DB()
+    result = release_attribution.attribute_release("app", "/repo", {
+        "id": "r1", "from_sha": "a", "to_sha": "b"}, database)
+    assert result["attributed"] == 1
+    assert database.updated == [("outcomes", {"id": "o1"}, {"integrated": True})]
+
+
 def test_content_addressed_verification_proof_reuses_exact_commit(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_ORCH_HOME", str(tmp_path / "runtime"))
     repo = tmp_path / "repo"; repo.mkdir()
