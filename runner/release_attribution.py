@@ -17,6 +17,13 @@ def _path():
 def _messages(repo, before, after):
     if not repo or not after:
         return ""
+    range_spec = f"{before}..{after}" if before else after
+    try:
+        return subprocess.check_output(["git", "log", "--format=%H%n%B", range_spec],
+                                       cwd=repo, text=True, stderr=subprocess.DEVNULL,
+                                       timeout=30).lower()
+    except Exception:
+        return ""
 
 
 def _commit_in_range(repo, commit, before, after):
@@ -32,13 +39,6 @@ def _commit_in_range(repo, commit, before, after):
         return inside and not already
     except Exception:
         return False
-    range_spec = f"{before}..{after}" if before else after
-    try:
-        return subprocess.check_output(["git", "log", "--format=%H%n%B", range_spec],
-                                       cwd=repo, text=True, stderr=subprocess.DEVNULL,
-                                       timeout=30).lower()
-    except Exception:
-        return ""
 
 
 def _existing_keys():
@@ -58,15 +58,21 @@ def attribute_release(project, repo, release, database=None):
         return {"attributed": 0, "reason": "no-release-commit-evidence"}
     outcomes = database.select("outcomes", {"select": "id,task_id,slug,model,project,integrated,created_at",
                                              "project": f"eq.{project}",
+                                             "order": "created_at.desc",
                                              "limit": "5000"}) or []
     unmatched_ids = [str(o.get("task_id")) for o in outcomes
                      if o.get("task_id") and str(o.get("slug") or "").lower() not in messages]
     tasks = {}
     if unmatched_ids:
         try:
-            task_rows = database.select("tasks", {
-                "select": "id,slug,state,artifact_commit", "id": f"in.({','.join(unmatched_ids)})",
-                "limit": "5000"}) or []
+            task_rows = []
+            # Keep PostgREST URLs bounded; a 1,000-UUID `in` filter can exceed
+            # proxy limits and silently erase all artifact attribution.
+            for start in range(0, len(unmatched_ids), 50):
+                batch = unmatched_ids[start:start + 50]
+                task_rows.extend(database.select("tasks", {
+                    "select": "id,slug,state,artifact_commit", "id": f"in.({','.join(batch)})",
+                    "limit": "50"}) or [])
             tasks = {str(t.get("id")): t for t in task_rows}
         except Exception:
             tasks = {}

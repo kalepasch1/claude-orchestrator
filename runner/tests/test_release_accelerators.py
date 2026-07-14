@@ -59,6 +59,12 @@ def test_exact_release_attribution_uses_git_range_evidence(monkeypatch, tmp_path
     assert marked[0]["deployment_evidence"] == "git-release-range"
 
 
+def test_release_messages_returns_git_range_output(monkeypatch):
+    monkeypatch.setattr(release_attribution.subprocess, "check_output",
+                        lambda *args, **kwargs: "ABC123\nFix Auth\n")
+    assert release_attribution._messages("/repo", "a", "b") == "abc123\nfix auth\n"
+
+
 def test_release_attribution_uses_merged_task_artifact_and_repairs_integrated(monkeypatch, tmp_path):
     monkeypatch.setenv("CLAUDE_ORCH_HOME", str(tmp_path))
     monkeypatch.setattr(release_attribution, "_messages", lambda *a: "release merge\n")
