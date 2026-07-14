@@ -404,10 +404,9 @@ class _PatternTransfer:
     def _project_profile(self, project_id):
         """Build a feature profile for a project from its outcomes."""
         try:
-            rows = db.select("outcomes", {
+            rows = db.select("merged_diffs", {
                 "project": "eq.%s" % project_id,
-                "state": "eq.DONE",
-                "select": "slug,diff,files_changed",
+                "select": "slug,diff,files",
                 "limit": "200",
                 "order": "created_at.desc",
             })
@@ -420,7 +419,7 @@ class _PatternTransfer:
 
             for r in rows:
                 # extract file extensions and directories from files_changed
-                fc = r.get("files_changed")
+                fc = r.get("files")
                 if fc:
                     if isinstance(fc, str):
                         try:
@@ -463,9 +462,8 @@ class _PatternTransfer:
     def _all_projects(self):
         """Return distinct project identifiers from outcomes."""
         try:
-            rows = db.select("outcomes", {
+            rows = db.select("merged_diffs", {
                 "select": "project",
-                "state": "eq.DONE",
                 "limit": "1000",
             })
             return list({r["project"] for r in rows if r.get("project")})
