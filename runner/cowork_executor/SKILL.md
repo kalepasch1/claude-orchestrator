@@ -167,18 +167,24 @@ If `nothing to commit` → create `docs/{slug}-stub.md` with implementation note
 git push origin HEAD:agent/{slug} --force 2>&1 | tail -3
 cd {repo_path} && git worktree remove --force "$WT" 2>&1 || true
 ```
-Push failure → log it, still mark DONE (merge-train handles push retry). Always remove the worktree so `-wt` dirs don't accumulate; the agent branch keeps the work.
+Capture the committed SHA with `git rev-parse HEAD` before removing the worktree. A push is part of delivery: on push failure, mark the task `RETRY` with the concrete error and do **not** mark it `DONE`. Always remove the worktree so `-wt` dirs don't accumulate; a successfully pushed agent branch keeps the work.
 
 ### 3g. Mark DONE + heartbeat remaining claims
 ```sql
 UPDATE tasks SET state='DONE',
-  note='cowork-executor-v6.4: implemented and pushed (isolated worktree)'
+  note='cowork-executor-v6.5: implemented, committed, and pushed (isolated worktree)',
+  artifact_branch='agent/{slug}', artifact_commit='{committed_sha}'
 WHERE id='{id}';
 -- Heartbeat: keep this session's other claimed tasks out of the zombie sweep
 UPDATE tasks SET updated_at=now()
 WHERE state='RUNNING' AND account='{my_account}';
 ```
 (`{my_account}` = the `account` value returned by the Step 1 claim — note it when you claim.)
+
+`DONE` therefore means a remotely addressable artifact exists. Never write `DONE` when the
+commit SHA is unknown, the branch is only local, or `git push` returned non-zero. Those cases stay
+`RETRY`, which prevents the dashboard and integration sweeper from reporting undelivered work as
+completed.
 
 **→ Start next task immediately. No pausing. No summaries.**
 
