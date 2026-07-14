@@ -196,7 +196,11 @@ class AccountPool:
         """Persist/clear the cheap cross-module 'all Claude exhausted' signal."""
         try:
             if self.all_exhausted():
-                soonest = min(self.state.get(a["name"], {}).get("cooldown_until", 0) for a in self.accts)
+                # Use the same billing-guard-filtered set as all_exhausted(). A
+                # disabled API row may have an old/expired cooldown and must not
+                # make this signal expire while subscriptions are still capped.
+                usable = self._usable_accounts()
+                soonest = min(self.state.get(a["name"], {}).get("cooldown_until", 0) for a in usable)
                 json.dump({"until": soonest}, open(EXHAUSTED_FLAG, "w"))
             elif os.path.exists(EXHAUSTED_FLAG):
                 os.remove(EXHAUSTED_FLAG)

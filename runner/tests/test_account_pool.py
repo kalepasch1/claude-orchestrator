@@ -37,6 +37,19 @@ def test_disabled_api_row_does_not_mask_exhausted_subscriptions(monkeypatch):
     assert pool.current()["name"] in {"max-1", "max-2", "max-3"}
 
 
+def test_exhausted_flag_uses_subscription_reset_not_disabled_api(monkeypatch, tmp_path):
+    pool = _pool()
+    flag = tmp_path / "claude_exhausted.json"
+    pool.state["anthropic-api"] = {"cooldown_until": time.time() - 60}
+    monkeypatch.setattr(account_pool, "_api_billing_allowed", lambda: False)
+    monkeypatch.setattr(account_pool, "EXHAUSTED_FLAG", str(flag))
+
+    pool._write_exhausted_flag()
+
+    import json
+    assert json.loads(flag.read_text())["until"] > time.time()
+
+
 def test_explicitly_enabled_api_capacity_remains_usable(monkeypatch):
     pool = _pool()
     monkeypatch.setattr(account_pool, "_api_billing_allowed", lambda: True)
