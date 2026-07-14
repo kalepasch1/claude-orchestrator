@@ -868,4 +868,19 @@ run = train_run
 
 if __name__ == "__main__":
     import json
+    # SINGLE-FLIGHT (2026-07-14): the 60s scheduler kept spawning new train processes while a
+    # long pass (staging tests take minutes) was still running — 3-4 stacked merge_train.py
+    # processes contended on the per-repo locks and burned RAM for zero extra merges. If another
+    # instance is already running, exit immediately; the running pass covers this cycle.
+    import fcntl
+    _lock_path = os.path.join(os.environ.get("CLAUDE_ORCH_HOME",
+                              os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".runtime")),
+                              "merge-train.single.lock")
+    os.makedirs(os.path.dirname(_lock_path), exist_ok=True)
+    _lock = open(_lock_path, "a+")
+    try:
+        fcntl.flock(_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        print(json.dumps({"skipped": "another merge_train instance is running"}))
+        sys.exit(0)
     print(json.dumps(train_run(), indent=2, default=str))
