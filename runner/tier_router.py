@@ -59,6 +59,15 @@ _KEY_ENV_MAP = {
     "anthropic": "ANTHROPIC_API_KEY",
 }
 
+
+def _registry_provider(provider):
+    """Normalize execution-provider aliases to vendor registry names."""
+    return {
+        "google": "gemini", "gemini": "gemini",
+        "anthropic": "claude", "claude": "claude",
+        "chatgpt": "openai",
+    }.get(str(provider or "").lower(), str(provider or "").lower())
+
 # Subscription providers: drain $0/flat-fee tokens BEFORE API billing.
 # Includes: Claude Max, Groq free (30 RPM), Google AI Studio free (1500 RPD),
 # ChatGPT Plus/Pro, Gemini Advanced.
@@ -168,6 +177,20 @@ class TierRouter:
         if self._kill_switch_paused():
             return {"tier": "sub", "provider": "claude", "model": "claude-sonnet-5",
                     "coder": "claude-cli", "reason": "kill_switch paused — default sub only"}
+
+        # Capabilities that genuinely require Cowork must be dispatched before
+        # generic Claude model calibration. Code/build tasks without these
+        # requirements continue through the fully native orchestrator path.
+        try:
+            import vendor_capabilities, cowork_skills
+            needs_cowork, cowork_caps = vendor_capabilities.requires_cowork_session(task)
+            if needs_cowork and cowork_skills.ENABLED:
+                return {"tier": "sub", "provider": "claude",
+                        "model": os.environ.get("ORCH_COWORK_SKILL_MODEL", "claude-sonnet-5"),
+                        "coder": "cowork-skill", "skill_types": cowork_caps,
+                        "reason": "capability gate → Cowork-only " + ",".join(cowork_caps)}
+        except Exception:
+            pass
 
         mode = _tier_mode()
         diff = self._task_difficulty(task)
@@ -306,8 +329,12 @@ class TierRouter:
             if prov and model and model != "penalty":
                 # Map provider to API entry
                 for ap in _API_PROVIDERS:
-                    if ap["provider"] == prov:
-                        return {"tier": "api", "provider": prov, "model": model,
+                    if _registry_provider(ap["provider"]) == _registry_provider(prov):
+                        registry_provider = _registry_provider(ap["provider"])
+                        if required and not all(vendor_capabilities.vendor_has_capability(
+                                registry_provider, cap) for cap in required):
+                            continue
+                        return {"tier": "api", "provider": ap["provider"], "model": model,
                                 "coder": ap["coder"],
                                 "reason": f"{context} → bandit: {reason}"}
         except Exception:
@@ -324,10 +351,15 @@ class TierRouter:
                     continue  # no API key
                 if provider_failover_sla.is_demoted(ap["provider"]):
                     continue  # SLA-demoted
-                if vendor_capabilities.vendor_has_capability(ap["provider"], "code_generation"):
-                    return {"tier": "api", "provider": ap["provider"], "model": ap["model"],
+                registry_provider = _registry_provider(ap["provider"])
+                if required and not all(vendor_capabilities.vendor_has_capability(
+                        registry_provider, cap) for cap in required):
+                    continue
+                if vendor_capabilities.vendor_has_capability(registry_provider, "code_generation"):
+                    suggested, why = vendor_capabilities.suggest_model(registry_provider, task)
+                    return {"tier": "api", "provider": ap["provider"], "model": suggested or ap["model"],
                             "coder": ap["coder"],
-                            "reason": f"{context} → capability-filtered {ap['provider']} (cheapest capable)"}
+                            "reason": f"{context} → capability-complete {ap['provider']} ({why or 'cheapest capable'})"}
         except Exception:
             pass
 
