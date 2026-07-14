@@ -20,6 +20,7 @@ Env keys enable providers (added by the owner; Cowork cannot create accounts/key
 import os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import model_gateway as mg
+import tier_quality_delta as tqd
 
 # Ascending all-in cost. 'free' = local/subscription. Each entry: (provider, model, tier, cap)
 # cap = rough capability score 1-10 for general coding/reasoning.
@@ -43,6 +44,50 @@ NEED = {"mechanical": 5, "qa": 6, "review": 6, "rating": 5, "plan": 7,
         "build": 6, "hard": 9, "security": 9, "legal": 9}
 
 
+def _load_task_outcomes():
+    """Load task outcomes from the database for quality delta analysis."""
+    try:
+        import db
+        rows = db.select("task_outcomes", {"select": "*", "limit": "500"}) or []
+        outcomes = []
+        for row in rows:
+            try:
+                outcome = tqd.TaskOutcome(
+                    task_id=row.get("task_id", ""),
+                    slug=row.get("slug", ""),
+                    model=row.get("model", "haiku"),
+                    task_shape=row.get("task_shape", row.get("category", "default")),
+                    verify_passed=row.get("verify_passed", False),
+                    merged=row.get("merged", False),
+                    cost_usd=float(row.get("cost_usd", 0.0)),
+                    prompt_tokens=int(row.get("prompt_tokens", 0)),
+                    completion_tokens=int(row.get("completion_tokens", 0)),
+                )
+                outcomes.append(outcome)
+            except Exception:
+                pass
+        return outcomes
+    except Exception:
+        return []
+
+
+def _get_model_recommendation(task_shape):
+    """Get model recommendation for a task shape based on quality delta analysis."""
+    try:
+        outcomes = _load_task_outcomes()
+        if not outcomes:
+            return None
+        stats = tqd.compute_tier_stats(outcomes)
+        if not stats:
+            return None
+        deltas = tqd.compute_quality_deltas(stats)
+        if not deltas:
+            return None
+        return tqd.recommend_model(deltas, task_shape)
+    except Exception:
+        return None
+
+
 def choose(task_class="build", agentic=True, need=None, prefer_free=True, sensitivity="standard",
            project_id=None):
     """Return (provider, model, reason). Cheapest capable, subscription/free-first.
@@ -62,6 +107,11 @@ def choose(task_class="build", agentic=True, need=None, prefer_free=True, sensit
     _TIER_ALLOW = {0: None, 1: {"free", "sub", "cheap"}, 2: {"free", "sub"}}
     avail = set(mg.available())            # providers with a key/host present
     if agentic:
+        delta_model = _get_model_recommendation(task_class)
+        if delta_model and delta_model.startswith("claude-"):
+            for _, model, _, _ in TRANCHES:
+                if model == delta_model:
+                    return "claude", delta_model, f"agentic {task_class}: quality-delta recommends {delta_model}"
         try:
             import agentic_coders
             task = {"kind": task_class, "material": need >= 8, "deps": [], "_need": need}

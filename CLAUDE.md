@@ -45,3 +45,20 @@ work to. Once the fleet is healthy, prefer the drop-box.
 - **DO** gate resource expansion (new pool entries) on memory checks via `resource_governor.can_claim()` to prevent wedging under pressure
 - **AVOID** blocking the caller on slow I/O—if a cache miss is likely, accept it and fall back rather than synchronous disk waits
 - **DO** provide `stats()` and `invalidate()` methods so operators and tests can observe/control pool state
+
+## Wiring gate (mandatory)
+
+Every logic module (under `server/utils/`, `server/engines/`, `lib/`, `runner/`) MUST be
+imported by at least one reachable surface (API route, page, component, cron, CLI entrypoint,
+or another module that is itself reachable). The pre-merge check `runner/wiring_check.py`
+enforces this:
+
+    python3 runner/wiring_check.py /path/to/app --strict --diff
+
+**DO/AVOID RULES**
+
+- **DO** run `wiring_check.py --strict` before merging any branch that adds or moves logic modules
+- **DO** add a corresponding API route, barrel export, or page import in the SAME commit/PR as the engine
+- **DO NOT** merge engine-only PRs that leave wiring "for later" — the wiring never happens
+- **DO** update barrel `index.ts` files when adding sibling modules to a folder that has one
+- **AVOID** the "engine-first, wire-later" pattern — always ship engine + route + barrel together

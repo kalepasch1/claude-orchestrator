@@ -41,6 +41,13 @@ defines the shared interfaces/types/API signatures/DB schema that the others bui
 against (and ONLY those - no implementation). EVERY other task MUST list "contracts"
 in its deps. This lets parallel branches agree on boundaries up front so they cannot
 structurally conflict at merge time.
+WIRING RULE (mandatory): If a task creates or modifies a file under server/utils/,
+server/engines/, lib/, or runner/, that SAME task MUST also create the corresponding
+API route (server/api/**), barrel export (index.ts), or page import in its file scope.
+Never create a separate "wiring" task — the engine and its surface are one atomic
+deliverable. If the engine needs a new API route, include both files in ONE task.
+A task that creates an engine without its route is malformed and will be rejected at
+merge by wiring_check.py.
 REQUEST:
 """
 

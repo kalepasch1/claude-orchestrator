@@ -13,6 +13,7 @@ import os, sys, subprocess, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 from action_drafter import SAFE_CMD, UNSAFE
+from runner import capability_registry  # noqa: F401  – registers all 48 capability modules
 
 
 def _repo_for(approval_id):
