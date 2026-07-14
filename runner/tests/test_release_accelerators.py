@@ -22,7 +22,7 @@ def test_partial_release_flushes_when_cadence_is_due():
 
 def test_release_train_does_not_duplicate_done_branch_ingestion(monkeypatch):
     monkeypatch.delenv("ORCH_RELEASE_INGEST_DONE", raising=False)
-    assert release_train._candidate_state_filter() == "eq.MERGED"
+    assert release_train._candidate_state_filter() is None
     monkeypatch.setenv("ORCH_RELEASE_INGEST_DONE", "true")
     assert release_train._candidate_state_filter() == "in.(DONE,MERGED)"
 

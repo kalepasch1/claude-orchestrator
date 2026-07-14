@@ -60,7 +60,7 @@ def _release_decision(ahead, due, minimum=None):
 
 def _candidate_state_filter():
     """Keep integration in the canonical merge train unless legacy ingestion is explicitly enabled."""
-    return "in.(DONE,MERGED)" if _truthy("ORCH_RELEASE_INGEST_DONE", False) else "eq.MERGED"
+    return "in.(DONE,MERGED)" if _truthy("ORCH_RELEASE_INGEST_DONE", False) else None
 
 
 def _record_release_flow(project, status, **extra):
@@ -485,13 +485,15 @@ def run_for(project):
         p["vercel_project"] = dh["vercel_project"]
         db.update("projects", {"name": project}, {"vercel_project": dh["vercel_project"]})
     _ensure_staging(repo, prod)
-    # The canonical merge train owns DONE -> MERGED. Re-ingesting every DONE
-    # branch here duplicated work, contended on Git worktree locks, and delayed
-    # QA/deploy by minutes per project. MERGED is retained as a safe catch-up
-    # path for a branch whose state advanced just before its staging ref landed.
+    # The canonical merge train owns DONE -> MERGED and is the only default
+    # writer to staging. Database MERGED state is not sufficient evidence that
+    # a branch landed: stale rows previously recreated the same worktree tax.
+    # Legacy direct ingestion remains an explicit emergency opt-in.
     merged = 0
-    for t in db.select("tasks", {"select": "slug", "project_id": f"eq.{p['id']}",
-                                 "state": _candidate_state_filter(), "order": "updated_at.desc", "limit": "60"}) or []:
+    state_filter = _candidate_state_filter()
+    candidates = (db.select("tasks", {"select": "slug", "project_id": f"eq.{p['id']}",
+                                      "state": state_filter, "order": "updated_at.desc", "limit": "60"}) or []) if state_filter else []
+    for t in candidates:
         br = f"agent/{t['slug']}"
         if _git(repo, "rev-parse", "--verify", br).returncode != 0:
             continue
