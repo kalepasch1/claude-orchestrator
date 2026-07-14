@@ -3,15 +3,17 @@ definePageMeta({ layout: false })
 
 const supabase = useSupabaseClient<any>()
 const user = useSupabaseUser()
+const { public: { siteUrl } } = useRuntimeConfig()
 
 // ── Auth ──────────────────────────────────────────────────────────────────
 const signingIn = ref(false)
 async function signInWithGoogle() {
   signingIn.value = true
   try {
+    const redirectTo = siteUrl || (typeof window !== 'undefined' ? window.location.origin : undefined)
     await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: typeof window !== 'undefined' ? window.location.origin : undefined },
+      options: { redirectTo },
     })
   } finally { signingIn.value = false }
 }

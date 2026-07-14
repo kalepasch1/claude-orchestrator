@@ -13,6 +13,10 @@ import os, sys, subprocess, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 from action_drafter import SAFE_CMD, UNSAFE
+try:
+    import capability_registry  # noqa: F401 — ensures all runner modules are loaded
+except Exception:
+    pass
 
 
 def _repo_for(approval_id):

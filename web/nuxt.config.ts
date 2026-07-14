@@ -27,6 +27,11 @@ export default defineNuxtConfig({
     ssr: { noExternal: ['@darwin/kernel'] }
   },
   nitro: { alias: appAlias },
+  runtimeConfig: {
+    public: {
+      siteUrl: process.env.NUXT_PUBLIC_SITE_URL || '',
+    },
+  },
   // SUPABASE_URL + SUPABASE_KEY (anon) come from env vars on Vercel.
   supabase: {
     // we gate auth inside index.vue, so don't force a global redirect
