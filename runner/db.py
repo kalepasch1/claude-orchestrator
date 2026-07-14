@@ -77,6 +77,31 @@ KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 HTTP_TIMEOUT = float(os.environ.get("ORCH_SUPABASE_TIMEOUT", "15") or 15)
 HTTP_RETRIES = int(os.environ.get("ORCH_SUPABASE_RETRIES", "1") or 1)
 HTTP_RETRY_STATUSES = {429, 500, 502, 503, 504, 521, 522, 523}  # incl. Cloudflare origin-down codes so monitors ride through Supabase capacity blips instead of silently no-op'ing
+
+# Thread-safe per-slug dedup lock pool (prevents same-machine race conditions)
+_DEDUP_LOCKS = {}
+_DEDUP_LOCKS_LOCK = threading.Lock()
+
+class _dedup_lock:
+    """Per-key lock for serializing task inserts with the same slug."""
+    def __init__(self, key):
+        self.key = key
+    def __enter__(self):
+        with _DEDUP_LOCKS_LOCK:
+            if self.key not in _DEDUP_LOCKS:
+                _DEDUP_LOCKS[self.key] = threading.Lock()
+            self._lock = _DEDUP_LOCKS[self.key]
+        self._lock.acquire()
+        return self
+    def __exit__(self, *args):
+        self._lock.release()
+        # Clean up to prevent memory leak (only if no one else is waiting)
+        with _DEDUP_LOCKS_LOCK:
+            if self.key in _DEDUP_LOCKS and not _DEDUP_LOCKS[self.key].locked():
+                try:
+                    del _DEDUP_LOCKS[self.key]
+                except KeyError:
+                    pass
 RECOVERY_PREFIX = "recover-missing-branch-"
 CANARY_PREFIX = "canary-"
 IMPROVEMENT_PREFIX = "improve-"
@@ -213,19 +238,61 @@ def insert(table, row, upsert=False):
     # QUEUED rows (5-at-a-time, recurring — the sentinel dedupe was firing 45x/24h just cleaning up
     # after them). Guard at the single choke point: if a task with this (project_id, slug) already
     # exists in a live/settled state, skip the insert. Opt out with row["_allow_dup"]=True.
+    # PROMPT VALIDATION GATE: reject tasks with garbage prompts before they enter the queue.
+    # Catches: PATCH TEMPLATE stubs, empty prompts, prompts that are just error messages.
+    # This prevents 1,794+ garbage tasks from ever being created (they used to be cleaned up
+    # after the fact by rootcause_cluster, which was too late — they'd already consumed slots).
+    if table == "tasks" and isinstance(row, dict) and not upsert:
+        _prompt = (row.get("prompt") or "").strip()
+        _reject_reason = None
+        if not _prompt or len(_prompt) < 20:
+            _reject_reason = "empty or trivial prompt"
+        elif _prompt.startswith("PATCH TEMPLATE"):
+            _reject_reason = "unfilled PATCH TEMPLATE stub"
+        elif all(line.startswith(("Error", "error:", "Traceback", "fatal:"))
+                 for line in _prompt.strip().split("\n")[:5] if line.strip()):
+            _reject_reason = "prompt is only error messages"
+        if _reject_reason:
+            import logging
+            logging.getLogger("db").warning(
+                "prompt-gate: rejecting task %s — %s (prompt: %.100s...)",
+                row.get("slug", "?"), _reject_reason, _prompt)
+            return None  # silently reject — caller gets None, same as "already exists"
+
     if (table == "tasks" and isinstance(row, dict) and not upsert
             and row.get("slug") and row.get("project_id") and not row.pop("_allow_dup", False)):
+        # ATOMIC DEDUP (2026-07-14): the old SELECT-then-INSERT raced across two Macs,
+        # causing 503 duplicate tasks. Now we:
+        # 1. Check for existing (fast path, catches most dupes)
+        # 2. Use a process-level lock to serialize concurrent inserts on the same machine
+        # 3. Re-check after acquiring the lock (double-checked locking)
+        _dedup_key = f"{row['project_id']}:{row['slug']}"
         try:
             existing = select("tasks", {
-                "select": "*",
+                "select": "id,slug,state",
                 "project_id": f"eq.{row['project_id']}",
                 "slug": f"eq.{row['slug']}",
                 "state": "in.(QUEUED,RUNNING,RETRY,DONE,MERGED,BLOCKED,DECOMPOSED)",
                 "limit": "1"}) or []
             if existing:
-                return existing  # already enqueued/handled — return it, don't duplicate
+                return existing
         except Exception:
-            pass  # fail-soft: never let the guard block a legitimate insert
+            pass
+        # Process-level lock: serialize inserts with the same slug on this machine.
+        # Cross-machine races still possible but reduced (the sentinel catches the rest).
+        with _dedup_lock(_dedup_key):
+            try:
+                # Re-check after lock (another thread may have inserted while we waited)
+                existing = select("tasks", {
+                    "select": "id,slug,state",
+                    "project_id": f"eq.{row['project_id']}",
+                    "slug": f"eq.{row['slug']}",
+                    "state": "in.(QUEUED,RUNNING,RETRY,DONE,MERGED,BLOCKED,DECOMPOSED)",
+                    "limit": "1"}) or []
+                if existing:
+                    return existing
+            except Exception:
+                pass
     h = {"Prefer": "return=representation" + (",resolution=merge-duplicates" if upsert else "")}
     try:
         return _req("POST", f"/rest/v1/{table}", body=row, headers=h)

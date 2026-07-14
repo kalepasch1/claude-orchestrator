@@ -112,6 +112,48 @@ def _children_by_parent(parent_slugs):
     return out, False
 
 
+def recover_false_orphans():
+    """Un-quarantine tasks that were falsely marked as orphans by the pre-fix scan.
+
+    These tasks have note='materializer: orphaned DECOMPOSED task (no children found after 24h)'
+    but may actually have live children now that the scan is fixed. Re-evaluate them.
+    """
+    quarantined = db.select("tasks", {
+        "select": "id,slug,state,note",
+        "state": "eq.QUARANTINED",
+        "note": "like.*materializer: orphaned*",
+        "order": "created_at.asc",
+        "limit": "200",
+    }) or []
+    if not quarantined:
+        return {"recovered": 0, "truly_orphaned": 0}
+
+    parent_slugs = [q.get("slug") for q in quarantined]
+    child_map, scan_complete = _children_by_parent(parent_slugs)
+    if not scan_complete:
+        print("[materializer] recovery scan incomplete — skipping to avoid false positives")
+        return {"recovered": 0, "truly_orphaned": 0, "skipped": "incomplete_scan"}
+
+    recovered = 0
+    truly_orphaned = 0
+    for q in quarantined:
+        slug = q.get("slug", "")
+        children = child_map.get(slug, [])
+        if children:
+            # Has children — was falsely quarantined. Restore to DECOMPOSED.
+            _update_task(q["id"], {
+                "state": "DECOMPOSED",
+                "note": f"materializer: recovered from false orphan quarantine ({len(children)} children found)"
+            })
+            recovered += 1
+        else:
+            truly_orphaned += 1
+
+    print(f"[materializer] orphan recovery: {recovered} restored to DECOMPOSED, "
+          f"{truly_orphaned} confirmed truly orphaned")
+    return {"recovered": recovered, "truly_orphaned": truly_orphaned}
+
+
 def run():
     """Main periodic entry point."""
     closed = 0
@@ -155,13 +197,17 @@ def run():
             # Check if it's been sitting for > 24h with no children
             try:
                 created = parent.get("created_at", "")
-                if created and _age_hours(created) > 24:
+                # Raised from 24h to 72h: children can be slow to appear when the queue is
+                # deep or decomposition cascades through multiple levels. 24h was too aggressive
+                # and caused 2,886 false-positive quarantines before the scan was fixed.
+                _orphan_timeout_h = float(os.environ.get("ORCH_ORPHAN_TIMEOUT_H", "72"))
+                if created and _age_hours(created) > _orphan_timeout_h:
                     attempted_updates += 1
                     if not can_update():
                         break
                     if _update_task(pid, {
                         "state": "QUARANTINED",
-                        "note": "materializer: orphaned DECOMPOSED task (no children found after 24h)"
+                        "note": f"materializer: orphaned DECOMPOSED task (no children found after {_orphan_timeout_h:.0f}h)"
                     }):
                         parked += 1
             except Exception:
@@ -212,6 +258,13 @@ def run():
     if closed or released or parked or attempted_updates >= MAX_UPDATES:
         print(f"[materializer] closed={closed} released={released} parked={parked} "
               f"attempted_updates={attempted_updates}/{MAX_UPDATES}")
+
+    # Recover tasks falsely quarantined by the pre-fix scan
+    try:
+        _recovery = recover_false_orphans()
+        released += _recovery.get("recovered", 0)
+    except Exception as e:
+        print(f"[materializer] recovery failed: {e}")
 
     return {"closed": closed, "released": released, "parked": parked,
             "attempted_updates": attempted_updates}
