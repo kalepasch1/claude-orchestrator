@@ -62,3 +62,17 @@ def test_auth_demotion_survives_control_plane_write_failure(monkeypatch, tmp_pat
 
     assert provider_failover_sla.is_demoted("xai")
     assert (tmp_path / "provider_sla_state.json").exists()
+
+
+def test_replacing_auth_credential_releases_old_quarantine(monkeypatch, tmp_path):
+    import provider_failover_sla
+    monkeypatch.setenv("CLAUDE_ORCH_HOME", str(tmp_path))
+    monkeypatch.setenv("XAI_API_KEY", "old-key")
+    monkeypatch.setattr(provider_failover_sla.db, "upsert", lambda *a, **k: None)
+    monkeypatch.setattr(provider_failover_sla.db, "select", lambda *a, **k: [])
+    provider_failover_sla.demote("xai", "auth-403")
+    assert provider_failover_sla.is_demoted("xai")
+
+    monkeypatch.setenv("XAI_API_KEY", "replacement-key")
+
+    assert not provider_failover_sla.is_demoted("xai")
