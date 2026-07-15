@@ -27,7 +27,7 @@ useHead({ title:'Madeus — One direction. A portfolio in motion.', meta:[{name:
 </script>
 
 <template>
-<main class="landing">
+<main class="landing" data-release-surface="public-command-center">
   <header class="nav"><a href="#top"><MadeusLogo /></a><nav><a href="#platform">Platform</a><a href="#intelligence">Intelligence</a><a href="#governance">Governance</a></nav><button @click="open=true">{{ signingIn ? 'Opening…' : 'Enter Madeus' }} <span>↗</span></button></header>
   <section id="top" class="hero">
     <div class="hero-copy"><p class="eyebrow">Private intelligence for multi-company founders</p><h1>One direction.<br><em>A portfolio in motion.</em></h1><p class="lead">Madeus turns your intent into coordinated, governed, and independently verified work across every company—without making you manage the machinery.</p><div class="actions"><button class="primary" @click="open=true">Request entry <span>→</span></button><a href="#platform">Explore the system ↓</a></div><p v-if="authError" class="error">{{ authError }}</p></div>
