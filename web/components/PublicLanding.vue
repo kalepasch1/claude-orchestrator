@@ -32,26 +32,28 @@ async function requestException() {
 }
 
 const operatingLayers = [
-  { number: '01', title: 'Understands the whole portfolio', copy: 'Companies, products, customers, people, code, accounts, policies, spend, and dependencies live in one continuously updated operating graph.' },
-  { number: '02', title: 'Builds the right team for the outcome', copy: 'Madeus selects models, agents, tools, connectors, and human specialists for the work—not one default model for every problem.' },
-  { number: '03', title: 'Moves work across the finish line', copy: 'Research becomes a decision. A decision becomes implementation. Implementation is tested, reviewed, deployed, measured, and improved.' },
-  { number: '04', title: 'Knows when autonomy must stop', copy: 'Consequential actions carry context, predicted impact, evidence, permissions, and a clear approval boundary before anything irreversible happens.' },
+  { number: '01', title: 'Understands the whole operating universe', copy: 'Companies, apps, agents, customers, people, code, accounts, policies, spend, and dependencies become one continuously updated graph.' },
+  { number: '02', title: 'Builds the right organization for the outcome', copy: 'Madeus composes models, durable agents, tools, connectors, and human specialists around the objective—then evolves the team as the work changes.' },
+  { number: '03', title: 'Carries intent all the way to proof', copy: 'Research becomes a decision. A decision becomes implementation. Implementation is tested, released, measured, and fed back into the system.' },
+  { number: '04', title: 'Expands autonomy without losing authority', copy: 'Predicted impact, evidence, identity, permissions, approval boundaries, rollback, and independent verification travel with every consequential action.' },
 ]
 
 const capabilities = [
-  ['Portfolio context', 'A digital twin of every company and the relationships between them—so no action is optimized in isolation.'],
+  ['Operating graph', 'A live digital twin spanning every company, application, agent, person, account, and relationship—so nothing is optimized in isolation.'],
   ['Universal intent', 'Describe the outcome once. Madeus decomposes, routes, executes, and keeps the objective intact across every handoff.'],
   ['Best-capability routing', 'Use the strongest model, agent, MCP tool, connected account, or specialist for each step—with cost and rationale visible.'],
+  ['Agent foundry', 'Create durable individual agents with a role, memory, tools, permissions, evaluation suite, autonomy envelope, and versioned improvement path.'],
   ['Governed execution', 'Identity, permissions, evidence, policy, approvals, rollback, and signed receipts travel with every material action.'],
   ['Independent verification', 'Builders do not grade their own work. Separate checks validate behavior, quality, safety, and the promised outcome.'],
   ['Compounding intelligence', 'Every decision and result improves future routing, forecasts, playbooks, portfolio strategy, and institutional memory.'],
+  ['Network learning', 'Each participating user strengthens privacy-safe capability scores, failure patterns, and playbooks without exposing private operating context.'],
 ]
 
 useHead({
-  title: 'Madeus — The operating system for founders running multiple companies',
+  title: 'Madeus — One direction. An expert operating network on demand.',
   meta: [
-    { name: 'description', content: 'Describe the outcome once. Madeus coordinates models, agents, people, codebases, accounts, governance, verification, and release across your entire company portfolio.' },
-    { property: 'og:title', content: 'Madeus — One founder. Many companies. One operating system.' },
+    { name: 'description', content: 'Describe the outcome once. Madeus coordinates companies, apps, agents, people, models, accounts, governance, verification, and release across your complete operating universe.' },
+    { property: 'og:title', content: 'Madeus — Set the direction. The hivemind moves everything forward.' },
     { property: 'og:description', content: 'An accountable orchestration system that turns founder intent into governed, verified outcomes.' },
     { name: 'theme-color', content: '#050505' },
   ],
@@ -75,34 +77,31 @@ useHead({
     <section id="top" class="hero">
       <div class="hero-grid" aria-hidden="true"><i v-for="n in 24" :key="n" /></div>
       <div class="hero-copy">
-        <p class="kicker"><span /> The private operating system for AI-native founders</p>
-        <h1>You steer.<br><em>The hivemind moves five companies forward.</em></h1>
-        <p class="hero-lead">Built for Claude- and GPT-native founders running 5+ startups at once. Madeus turns your direction into coordinated, verified work—while you remain at the helm and your full IP stays invisible to any single AI vendor.</p>
+        <h1>Set the direction.<br><em>The hivemind moves everything forward.</em></h1>
+        <p class="hero-lead">Madeus turns one person’s direction into coordinated, verified work across any number of companies, applications, specialist agents, people, and connected systems—without surrendering authority or exposing the complete invention to one AI vendor.</p>
         <div class="hero-actions">
           <button class="button primary" :disabled="signingIn" @click="openAccess">{{ signingIn ? 'Opening workspace…' : 'Request entry' }} <span>→</span></button>
           <a class="button secondary" href="#system">See how it works <span>↓</span></a>
         </div>
         <p v-if="authError" class="auth-error" role="alert">{{ authError }}</p>
         <div class="hero-proof" aria-label="Madeus operating principles">
-          <span><i /> Member referred</span><span>5+ companies</span><span>Cross-vendor IP shielding</span><span>Verified outcomes</span>
+          <span><i /> Member referred</span><span>Companies + apps + agents</span><span>Cross-vendor IP shielding</span><span>Verified outcomes</span>
         </div>
       </div>
 
-      <div class="command-model" aria-label="Illustration of Madeus routing a portfolio objective">
-        <header><span class="model-logo"><MadeusMark /></span><span>Portfolio command</span><b><i /> live</b></header>
-        <div class="portfolio-context"><span>CONTEXT</span><b>All companies</b><small>6 products · 14 codebases · 32 connected accounts</small></div>
-        <div class="intent-card">
-          <span>FOUNDER INTENT</span>
-          <p>Launch the pricing change across the portfolio without disrupting active customers.</p>
-          <div><b>Madeus plan</b><small>Impact modeled before execution</small></div>
+      <div class="command-model command-fabric" aria-label="Live Madeus objective routing across companies, applications, and agents">
+        <header><span class="model-logo"><MadeusMark /></span><span>Objective fabric</span><b><i /> reasoning live</b></header>
+        <div class="fabric-context"><span>COMPLETE OPERATING GRAPH</span><b>Companies · apps · agents · people</b><small>Live context, permissions, dependencies, and outcome memory</small></div>
+        <div class="fabric-stage">
+          <svg viewBox="0 0 640 390" aria-hidden="true"><path class="fabric-rail" d="M320 195C250 115 190 75 88 74M320 195C405 112 465 72 568 74M320 195C242 272 184 320 86 326M320 195C398 270 468 320 570 326"/><path class="fabric-rail inner" d="M88 74C245 18 410 20 568 74M86 326C240 374 420 376 570 326"/><circle class="fabric-packet p-a" r="5"><animateMotion dur="4.2s" repeatCount="indefinite" path="M88 74C190 75 250 115 320 195C405 112 465 72 568 74"/></circle><circle class="fabric-packet p-b" r="5"><animateMotion dur="5.1s" begin="-2s" repeatCount="indefinite" path="M86 326C184 320 242 272 320 195C398 270 468 320 570 326"/></circle></svg>
+          <div class="fabric-objective"><MadeusMark /><span>YOUR DIRECTION</span><b>Launch the new pricing system without disrupting active customers.</b><small>Authority retained · outcome bound</small></div>
+          <div class="fabric-node simulate"><span>SIMULATE</span><b>184 futures compared</b><small>Revenue · customer · policy</small></div>
+          <div class="fabric-node assemble"><span>ASSEMBLE</span><b>Expert mesh created</b><small>12 agents · 4 tools · 3 people</small></div>
+          <div class="fabric-node execute"><span>EXECUTE</span><b>7 workstreams moving</b><small>Isolated · observable · reversible</small></div>
+          <div class="fabric-node verify"><span>VERIFY</span><b>Independent gates armed</b><small>QA · policy · outcome proof</small></div>
+          <div class="fabric-signal"><i /><span><b>Better route discovered</b><small>Preserves 99.3% of renewals · 31% faster</small></span><strong>+$2.4m</strong></div>
         </div>
-        <ol class="route-list">
-          <li><time>01</time><span><b>Simulate</b><small>Customer, revenue, policy, and dependency effects</small></span><i>complete</i></li>
-          <li><time>02</time><span><b>Assemble</b><small>Strategy, product, engineering, legal, and growth agents</small></span><i>complete</i></li>
-          <li class="active"><time>03</time><span><b>Execute</b><small>Changes moving through isolated workstreams</small></span><i>running</i></li>
-          <li><time>04</time><span><b>Verify &amp; release</b><small>Independent QA, staged rollout, and outcome receipt</small></span><i>queued</i></li>
-        </ol>
-        <footer><span>Expected portfolio value</span><b>+$2.4m</b><small>91% confidence · reversible rollout</small></footer>
+        <footer><span>Madeus carries intent through execution—not just to an answer.</span><b>91% confidence</b><small>Every consequential boundary remains inspectable and controllable</small></footer>
       </div>
     </section>
 
@@ -119,50 +118,42 @@ useHead({
         <span>Most AI products stop at a response or a workflow. Madeus owns the complete loop—from context and judgment through execution, verification, release, and learning.</span>
       </div>
       <div class="layers">
-        <article v-for="layer in operatingLayers" :key="layer.number">
-          <span>{{ layer.number }}</span><div class="layer-signal" aria-hidden="true"><i /><i /><i /></div><h3>{{ layer.title }}</h3><p>{{ layer.copy }}</p>
+        <article v-for="(layer, index) in operatingLayers" :key="layer.number">
+          <span>{{ layer.number }}</span><div class="layer-signal" :class="`signal-${index + 1}`" aria-hidden="true"><svg viewBox="0 0 240 120"><path d="M20 60H220M120 10V110M42 22L198 98M42 98L198 22"/><circle cx="120" cy="60" r="17"/><circle cx="42" cy="22" r="7"/><circle cx="198" cy="22" r="7"/><circle cx="42" cy="98" r="7"/><circle cx="198" cy="98" r="7"/></svg><i /><i /><i /></div><h3>{{ layer.title }}</h3><p>{{ layer.copy }}</p>
         </article>
-      </div>
-    </section>
-
-    <section class="outcome-loop">
-      <div class="loop-copy">
-        <p class="dark-kicker"><i /> Founder at the helm</p>
-        <h2>You choose the destination.<br>The hivemind navigates.</h2>
-        <p>Madeus is the GPS, lane-departure warning, and creative route planner for your portfolio. You keep authority. The hivemind watches the whole terrain, warns before drift, and continually proposes faster, safer, higher-value routes.</p>
-        <div class="loop-stats"><span><b>YOU</b> hold the wheel</span><span><b>CADE</b> predicts the road</span><span><b>∞</b> routes compared</span></div>
-      </div>
-      <div class="loop-console">
-        <header><span>madeus / navigation-hivemind</span><b>FOUNDER CONTROLLED</b></header>
-        <ol>
-          <li><time>09:41:08</time><b>DESTINATION</b><span>Founder sets outcome, constraints, and authority</span><i>✓</i></li>
-          <li><time>09:41:10</time><b>TERRAIN</b><span>CADE maps portfolio effects and hidden dependencies</span><i>✓</i></li>
-          <li><time>09:41:13</time><b>ROUTES</b><span>Hivemind compares cost, quality, speed, and risk</span><i>✓</i></li>
-          <li class="live"><time>09:41:16</time><b>GUIDANCE</b><span>Better route found · 31% faster · $4,820 less</span><i>●</i></li>
-          <li><time>—</time><b>GUARDRAIL</b><span>Lane warning before customer-impacting change</span><i>○</i></li>
-          <li><time>—</time><b>ARRIVAL</b><span>Independent proof confirms the destination</span><i>○</i></li>
-        </ol>
-        <footer><span>Founder can pause, reroute, or override at every boundary</span><button type="button">Inspect rationale ↗</button></footer>
       </div>
     </section>
 
     <section class="hivemind-section">
       <div class="hivemind-copy">
-        <p>Embedded capability hivemind</p>
+        <p>A capability network that compounds</p>
         <h2>Not one assistant.<br><em>An expert organization on demand.</em></h2>
-        <p>Legal scrutiny, product judgment, design craft, engineering execution, financial modeling, research, growth, security, and independent QA assemble around each objective—then dissolve when the work is done.</p>
-        <div class="hive-receipt"><span>LIVE ASSEMBLY</span><b>18 capabilities · 7 models · 4 companies</b><small>Madeus chose this team for the objective, not the vendor contract.</small></div>
+        <p>Legal scrutiny, product judgment, design craft, engineering execution, financial modeling, research, growth, security, and independent QA assemble around each objective. Durable agents can remain, specialize, and improve; temporary teams dissolve when the outcome is proven.</p>
+        <div class="hive-receipt"><span>LIVE ASSEMBLY</span><b>Capability graph expanding in real time</b><small>Madeus chooses the organization for the objective—not the vendor contract or a fixed seat count.</small></div>
+        <div class="network-effect-copy"><span>Every participant strengthens the hivemind</span><p>Consented decisions, evaluations, failure patterns, and verified outcomes improve routing and reusable playbooks. Private context stays partitioned; shared capability intelligence compounds.</p></div>
       </div>
-      <div class="hive-orbit" aria-label="Animated Madeus capability hivemind">
-        <div class="orbit-track track-one" /><div class="orbit-track track-two" /><div class="orbit-track track-three" />
-        <div class="hive-core"><MadeusMark /><span>FOUNDER<br>OBJECTIVE</span></div>
-        <div class="hive-node legal"><b>LEGAL</b><small>CADE dispute · policy · contracts</small></div>
-        <div class="hive-node design"><b>DESIGN</b><small>Brand · product · visual QA</small></div>
-        <div class="hive-node build"><b>BUILD</b><small>Architecture · code · release</small></div>
-        <div class="hive-node research"><b>RESEARCH</b><small>Markets · evidence · strategy</small></div>
-        <div class="hive-node growth"><b>GROWTH</b><small>Pricing · distribution · revenue</small></div>
-        <div class="hive-node verify"><b>VERIFY</b><small>Independent · adversarial · signed</small></div>
-        <i class="hive-particle p1" /><i class="hive-particle p2" /><i class="hive-particle p3" /><i class="hive-particle p4" />
+      <div class="hive-fabric" aria-label="Animated Madeus expert organization and network-learning graph">
+        <header><span><i /> hivemind / live organization</span><b>privacy-partitioned learning</b></header>
+        <div class="hive-canvas">
+          <svg viewBox="0 0 720 630" aria-hidden="true">
+            <defs><radialGradient id="hiveHalo"><stop stop-color="#635bff" stop-opacity=".42"/><stop offset="1" stop-color="#635bff" stop-opacity="0"/></radialGradient></defs>
+            <circle cx="360" cy="300" r="210" class="hive-ring outer"/><circle cx="360" cy="300" r="145" class="hive-ring middle"/><circle cx="360" cy="300" r="82" class="hive-halo"/>
+            <path class="hive-route" d="M360 300L148 112M360 300L570 108M360 300L625 304M360 300L565 505M360 300L160 510M360 300L94 302"/>
+            <path class="hive-route cross" d="M148 112C300 38 440 40 570 108M94 302C110 440 205 515 360 552M625 304C615 430 520 520 360 552"/>
+            <circle class="hive-flow f1" r="5"><animateMotion dur="4.6s" repeatCount="indefinite" path="M148 112L360 300L625 304"/></circle>
+            <circle class="hive-flow f2" r="5"><animateMotion dur="5.4s" begin="-2s" repeatCount="indefinite" path="M160 510L360 300L570 108"/></circle>
+            <circle class="hive-flow f3" r="4"><animateMotion dur="6s" begin="-3.3s" repeatCount="indefinite" path="M94 302L360 300L565 505"/></circle>
+          </svg>
+          <div class="hive-core-pro"><MadeusMark /><span>OBJECTIVE</span><b>Expand without losing quality</b><small>Outcome · authority · constraints</small></div>
+          <div class="expert-node legal"><span>LEGAL / CADE</span><b>Policy &amp; contracts</b><small>confidence 98%</small></div>
+          <div class="expert-node product"><span>PRODUCT</span><b>Judgment &amp; systems</b><small>3 agents assembled</small></div>
+          <div class="expert-node engineering"><span>ENGINEERING</span><b>Build &amp; release</b><small>isolated worktree</small></div>
+          <div class="expert-node growth"><span>GROWTH</span><b>Pricing &amp; distribution</b><small>2 experiments</small></div>
+          <div class="expert-node research"><span>RESEARCH</span><b>Markets &amp; evidence</b><small>42 sources verified</small></div>
+          <div class="expert-node qa"><span>INDEPENDENT QA</span><b>Adversarial verification</b><small>builder excluded</small></div>
+          <div class="agent-forge"><span>＋</span><p><b>Create a specialist agent</b><small>Role · memory · tools · authority · evaluations</small></p><i>→</i></div>
+          <div class="member-signal"><i>NEW</i><p><b>Verified pattern joined the network</b><small>Failure signature anonymized · routing quality +8.4%</small></p><span>✓</span></div>
+        </div>
       </div>
     </section>
 
@@ -208,29 +199,67 @@ useHead({
       </div>
     </section>
 
+    <section class="agent-foundry-section" aria-labelledby="agent-foundry-title">
+      <div class="foundry-copy">
+        <p>Individual agent creation</p>
+        <h2 id="agent-foundry-title">Create a specialist.<br><em>Let it earn autonomy.</em></h2>
+        <p>Turn a repeatable responsibility into a durable member of your operating network. Define the role and boundaries once; Madeus equips, evaluates, versions, supervises, and improves the agent against real outcomes.</p>
+        <ul><li>Portable identity, memory, skill, and connector passport</li><li>Evaluation suites and adversarial review before promotion</li><li>Autonomy that expands only with demonstrated reliability</li><li>Private learning locally; privacy-safe patterns shared by consent</li></ul>
+        <button class="button foundry-cta" :disabled="signingIn" @click="openAccess">Create an agent <span>→</span></button>
+      </div>
+      <div class="foundry-console" aria-label="Animated individual agent creation and evaluation interface">
+        <header><span>agent foundry / release-steward</span><b><i /> evaluation running</b></header>
+        <div class="foundry-body">
+          <aside>
+            <span>01 Identity</span><span>02 Knowledge</span><span>03 Tools</span><span>04 Authority</span><span class="active">05 Evaluations</span><span>06 Release</span>
+          </aside>
+          <div class="agent-blueprint">
+            <div class="agent-title"><MadeusMark /><p><span>RELEASE STEWARD</span><b>Protect every production release</b><small>Durable agent · version 12 · inherited policy constitution</small></p><em>v12</em></div>
+            <div class="agent-spec-grid">
+              <article><span>MEMORY</span><b>Outcome-weighted</b><small>184 verified releases</small></article>
+              <article><span>TOOLS</span><b>8 scoped connectors</b><small>GitHub · Vercel · Sentry +5</small></article>
+              <article><span>AUTHORITY</span><b>Stage &amp; rollback</b><small>Production deploy requires approval</small></article>
+              <article><span>SUCCESS</span><b>Outcome contract</b><small>No regression · receipt attached</small></article>
+            </div>
+            <div class="evaluation-stream">
+              <div><span>POLICY ADVERSARY</span><i><b style="width:100%" /></i><strong>passed</strong></div>
+              <div><span>HISTORICAL REPLAY</span><i><b style="width:94%" /></i><strong>94%</strong></div>
+              <div><span>SHADOW TRAFFIC</span><i><b style="width:88%" /></i><strong>running</strong></div>
+              <div><span>INDEPENDENT QA</span><i><b style="width:76%" /></i><strong>76%</strong></div>
+            </div>
+            <div class="promotion-gate"><i>●</i><p><b>Autonomy promotion pending</b><small>2 independent checks remain · human sign-off required</small></p><span>Review gate ↗</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section id="governance" class="portfolio-section">
       <div class="portfolio-visual">
-        <header><MadeusLogo compact /><span>PORTFOLIO GRAPH</span><b><i /> synchronized</b></header>
+        <header><MadeusLogo compact /><span>OPERATING UNIVERSE</span><b><i /> synchronized</b></header>
         <div class="portfolio-map">
-          <svg viewBox="0 0 680 410" aria-hidden="true">
-            <defs><linearGradient id="routeGlow" x1="0" x2="1"><stop stop-color="#8d8d87"/><stop offset=".5" stop-color="#2f9a65"/><stop offset="1" stop-color="#8d8d87"/></linearGradient></defs>
-            <path class="map-route r1" d="M340 202C270 145 225 90 135 88"/><path class="map-route r2" d="M340 202C420 142 455 88 552 88"/><path class="map-route r3" d="M340 202C260 265 220 320 120 328"/><path class="map-route r4" d="M340 202C420 265 470 316 565 328"/>
-            <path class="map-route cross" d="M135 88C310 20 425 35 552 88M120 328C275 382 435 380 565 328"/>
-            <circle class="pulse-dot d1" cx="225" cy="133" r="5"/><circle class="pulse-dot d2" cx="454" cy="125" r="5"/><circle class="pulse-dot d3" cx="238" cy="278" r="5"/><circle class="pulse-dot d4" cx="455" cy="275" r="5"/>
+          <svg viewBox="0 0 680 470" aria-hidden="true">
+            <defs><linearGradient id="routeGlow" x1="0" x2="1"><stop stop-color="#635bff" stop-opacity=".15"/><stop offset=".5" stop-color="#52d390"/><stop offset="1" stop-color="#635bff" stop-opacity=".15"/></linearGradient></defs>
+            <path class="map-route r1" d="M340 220C270 150 225 90 112 82"/><path class="map-route r2" d="M340 220C420 145 475 82 592 88"/><path class="map-route r3" d="M340 220C245 275 205 350 86 360"/><path class="map-route r4" d="M340 220C425 280 480 350 600 360"/>
+            <path class="map-route r5" d="M340 220C290 105 310 64 340 26M340 220C385 325 380 390 342 445"/>
+            <path class="map-route cross" d="M112 82C275 20 455 28 592 88M86 360C245 430 450 430 600 360"/>
+            <circle class="map-packet" r="5"><animateMotion dur="4.8s" repeatCount="indefinite" path="M112 82C225 90 270 150 340 220C425 280 480 350 600 360"/></circle>
+            <circle class="map-packet violet" r="5"><animateMotion dur="5.6s" begin="-2.5s" repeatCount="indefinite" path="M86 360C205 350 245 275 340 220C420 145 475 82 592 88"/></circle>
           </svg>
-          <div class="map-core"><MadeusMark /><b>Portfolio<br>hivemind</b><small>26 objectives routing</small></div>
-          <div class="company-node tomorrow"><span>TOMORROW</span><b>Risk &amp; markets</b><small><i /> pricing hedge simulated</small></div>
-          <div class="company-node smarter"><span>SMARTER</span><b>Legal operating system</b><small><i /> 4 matters advanced</small></div>
-          <div class="company-node studio"><span>STUDIO</span><b>Design &amp; venture</b><small><i /> brand system verified</small></div>
-          <div class="company-node newco"><span>NEWCO 05</span><b>Stealth build</b><small><i /> release candidate ready</small></div>
-          <div class="portfolio-ticker"><span>OPPORTUNITY FOUND</span><b>Tomorrow risk model → Smarter contract product</b><small>+$380k expected portfolio value</small></div>
+          <div class="map-core"><MadeusMark /><b>Living<br>hivemind</b><small>unbounded graph</small></div>
+          <div class="company-node tomorrow"><span>COMPANY</span><b>Tomorrow</b><small><i /> risk model improved</small></div>
+          <div class="company-node smarter"><span>APPLICATION</span><b>smrter</b><small><i /> 4 matters advanced</small></div>
+          <div class="company-node studio"><span>INDIVIDUAL AGENT</span><b>Release steward</b><small><i /> evaluation passed</small></div>
+          <div class="company-node newco"><span>CONNECTED ACCOUNT</span><b>Revenue systems</b><small><i /> pricing synced safely</small></div>
+          <div class="universe-node team"><span>TEAM</span><b>Product council</b></div>
+          <div class="universe-node new-agent"><span>NEW AGENT</span><b>Market sentinel</b></div>
+          <div class="portfolio-ticker"><span>COMPOUNDING OPPORTUNITY</span><b>Risk intelligence → contract strategy → pricing agent</b><small>3 entities improved from one verified outcome</small></div>
         </div>
       </div>
       <div class="portfolio-copy">
-        <p>Built for the multi-company founder</p>
-        <h2>Your portfolio is already connected.<br><em>Your operating system should be too.</em></h2>
-        <p>One company’s deployment changes another company’s cost. One customer relationship creates opportunities elsewhere. One connector, policy, or capability can safely serve the whole portfolio. Madeus sees—and operates—the system founders already hold in their heads.</p>
-        <ul><li>Shared capability and connector passport</li><li>Cross-company dependency and opportunity graph</li><li>Portfolio-level cost, risk, and outcome optimization</li><li>Just-in-time guidance before consequential actions</li></ul>
+        <p>Built for an expanding operating universe</p>
+        <h2>Everything you operate is already connected.<br><em>Your intelligence should compound across it.</em></h2>
+        <p>A company’s release changes an app’s cost. An agent’s discovery changes a team’s decision. A customer relationship creates opportunities elsewhere. Madeus sees the graph across companies, applications, agents, accounts, and people—and makes every verified outcome useful everywhere it is authorized.</p>
+        <ul><li>No fixed company, application, or agent limit</li><li>Shared capability, identity, memory, and connector passports</li><li>Cross-entity dependency, risk, and opportunity discovery</li><li>Privacy-safe learning that strengthens every future objective</li></ul>
       </div>
     </section>
 
@@ -246,8 +275,8 @@ useHead({
         <svg viewBox="0 0 1200 420"><path class="course-lane left" d="M-40 360C210 350 240 90 510 210S820 330 1240 55"/><path class="course-lane center" d="M-40 390C250 380 275 130 520 235S820 355 1240 90"/><path class="course-lane right" d="M-40 420C280 410 310 170 535 260S840 385 1240 125"/><circle cx="520" cy="235" r="7"/><circle cx="930" cy="245" r="5"/></svg>
         <span class="course-warning">BETTER ROUTE<br><b>31% faster</b></span><span class="course-arrival">VERIFIED ARRIVAL<br><b>Outcome proven</b></span>
       </div>
-      <p>You hold the wheel. Madeus makes the whole map usable.</p>
-      <h2>Five companies.<br>One founder’s direction.</h2>
+      <p>Your authority stays singular. Your operating capacity does not.</p>
+      <h2>One direction.<br>An organization without limits.</h2>
       <button class="button light-cta" :disabled="signingIn" @click="openAccess">{{ signingIn ? 'Opening Madeus…' : 'Request member access' }} <span>→</span></button>
     </section>
 
@@ -273,8 +302,7 @@ useHead({
       </section>
     </div>
 
-    <SystemStatusFooter />
-    <footer class="site-footer"><MadeusLogo /><p>Outcome orchestration for the multi-company founder.</p><div><a href="#system">Platform</a><a href="#governance">Governance</a><span>© {{ new Date().getFullYear() }} Madeus</span></div></footer>
+    <footer class="site-footer"><MadeusLogo /><p>Outcome orchestration for companies, applications, people, and agents.</p><div><a href="#system">Platform</a><a href="#governance">Governance</a><span>© {{ new Date().getFullYear() }} Madeus</span></div></footer>
   </main>
 </template>
 
@@ -296,4 +324,21 @@ useHead({
 
 @media(max-width:1050px){.hivemind-section{grid-template-columns:1fr}.hive-orbit{width:min(700px,100%);justify-self:center}.advantage-heading{grid-template-columns:1fr}.advantage-heading h2{margin-top:18px}.advantage-grid{grid-template-columns:1fr}.advantage-grid article{min-height:570px}}
 @media(max-width:680px){.hivemind-section,.advantage-section{padding:90px 16px}.hivemind-copy h2,.advantage-heading h2{font-size:13vw}.hive-orbit{min-height:470px;border-radius:24px}.track-three{width:95%;height:88%}.hive-node{min-width:118px;padding:9px}.hive-node.legal{left:2%;top:11%}.hive-node.design{right:2%;top:10%}.hive-node.build{right:0;top:54%}.hive-node.research{left:0;top:56%}.hive-node.growth{left:8%;bottom:5%}.hive-node.verify{right:8%;bottom:4%}.hive-core{width:94px;height:94px}.advantage-grid article{min-height:540px}.model-row{grid-template-columns:48px 1fr 68px 38px}.shard-map{height:325px;margin:0 8px}.vendor{width:103px;padding:8px}.vault{width:140px}.portfolio-map{min-height:535px}.company-node{width:118px;padding:9px}.company-node.tomorrow{left:3%}.company-node.smarter{right:3%}.company-node.studio{left:3%;bottom:25%}.company-node.newco{right:3%;bottom:25%}.portfolio-ticker{grid-template-columns:1fr;gap:5px}.closing{min-height:600px}.course-warning{left:28%;bottom:30%}.course-arrival{right:4%;bottom:18%}.access-overlay{padding:8px}.access-modal{max-height:calc(100vh - 16px);border-radius:13px}.access-intro,.access-form{padding-left:18px;padding-right:18px}.access-tabs{margin:0 18px}.access-intro h2{font-size:28px}}
+
+/* vNext — unbounded operating universe and high-fidelity motion system */
+.hero{grid-template-columns:minmax(0,.88fr) minmax(560px,1.12fr);background:radial-gradient(circle at 82% 16%,rgba(99,91,255,.11),transparent 27%),radial-gradient(circle at 96% 52%,rgba(82,211,144,.08),transparent 25%),#fafafa}.hero h1{font-size:clamp(58px,6.5vw,104px)}.command-fabric{background:#070809;border-color:#292c32;box-shadow:0 44px 120px rgba(10,12,18,.28)}.fabric-context{display:flex;flex-direction:column;gap:5px;padding:16px 19px;border-bottom:1px solid #24272c;background:linear-gradient(90deg,rgba(99,91,255,.08),transparent)}.fabric-context span{color:#8f88ff;font:650 6px JetBrains Mono,monospace;letter-spacing:.12em}.fabric-context b{font-size:11px;font-weight:580}.fabric-context small{color:#686d76;font-size:7px}.fabric-stage{position:relative;height:455px;overflow:hidden;background:radial-gradient(circle at 50% 49%,rgba(99,91,255,.16),transparent 19%),linear-gradient(#15171b 1px,transparent 1px),linear-gradient(90deg,#15171b 1px,transparent 1px);background-size:auto,28px 28px,28px 28px}.fabric-stage>svg{position:absolute;inset:0;width:100%;height:100%}.fabric-rail{fill:none;stroke:#353a43;stroke-width:1.2;stroke-dasharray:5 7;animation:routeDash 17s linear infinite}.fabric-rail.inner{stroke:#22262c;animation-direction:reverse}.fabric-packet{fill:#8f88ff;filter:drop-shadow(0 0 8px #635bff)}.fabric-packet.p-b{fill:#6dc993;filter:drop-shadow(0 0 8px #52d390)}.fabric-objective{position:absolute;z-index:3;left:50%;top:49%;width:210px;min-height:142px;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:16px;transform:translate(-50%,-50%);border:1px solid #4d5260;border-radius:18px;background:rgba(12,14,18,.94);box-shadow:0 0 0 10px rgba(99,91,255,.07),0 26px 60px rgba(0,0,0,.35);text-align:center}.fabric-objective :deep(.madeus-mark){width:35px;height:35px;color:#fff;--mark-ink:#0c0e12;--mark-signal:#635bff}.fabric-objective span{margin-top:8px;color:#8f88ff;font:6px JetBrains Mono,monospace;letter-spacing:.12em}.fabric-objective b{margin-top:8px;font-size:10px;line-height:1.35}.fabric-objective small{margin-top:7px;color:#777d87;font-size:6px}.fabric-node{position:absolute;z-index:2;width:158px;padding:12px 13px;border:1px solid #343840;border-radius:9px;background:rgba(14,16,20,.92);box-shadow:0 12px 30px rgba(0,0,0,.22);animation:fabricFloat 5s ease-in-out infinite}.fabric-node span{display:block;color:#737985;font:6px JetBrains Mono,monospace;letter-spacing:.1em}.fabric-node b{display:block;margin-top:7px;font-size:9px}.fabric-node small{display:block;margin-top:5px;color:#666c75;font-size:6px}.fabric-node.simulate{left:18px;top:24px}.fabric-node.assemble{right:18px;top:24px;animation-delay:-1.2s}.fabric-node.execute{left:18px;bottom:58px;animation-delay:-2.4s}.fabric-node.verify{right:18px;bottom:58px;animation-delay:-3.6s}.fabric-signal{position:absolute;z-index:4;left:50%;bottom:10px;width:min(440px,calc(100% - 40px));display:grid;grid-template-columns:7px 1fr auto;gap:10px;align-items:center;padding:10px 12px;transform:translateX(-50%);border:1px solid #2d6848;border-radius:8px;background:rgba(11,29,19,.96)}.fabric-signal>i{width:6px;height:6px;border-radius:50%;background:#6dc993;box-shadow:0 0 14px #52d390;animation:mapPulse 1.8s ease-in-out infinite}.fabric-signal span{display:flex;flex-direction:column}.fabric-signal b{font-size:8px}.fabric-signal small{margin-top:3px;color:#72a286;font-size:6px}.fabric-signal strong{color:#9ee4ba;font:500 13px Inter,sans-serif}.command-fabric>footer{grid-template-columns:1fr auto}.command-fabric>footer b{font-size:11px;color:#9de4b9}.command-fabric>footer small{font-size:6px}
+
+.layer-signal{position:relative;height:145px;margin:8px 0 14px;overflow:hidden;border:1px solid #e0e2e7;background:linear-gradient(#eef0f3 1px,transparent 1px),linear-gradient(90deg,#eef0f3 1px,transparent 1px);background-size:18px 18px}.layer-signal svg{width:100%;height:100%}.layer-signal svg path{fill:none;stroke:#abb1bb;stroke-width:1;stroke-dasharray:4 6;animation:layerDash 15s linear infinite}.layer-signal svg circle{fill:#fff;stroke:#777f8a;stroke-width:1.2}.layer-signal svg circle:first-of-type{fill:#111;stroke:#111;filter:drop-shadow(0 0 7px rgba(0,0,0,.22))}.layer-signal>i{position:absolute!important;width:6px!important;height:6px!important;margin:0!important;border:0!important;border-radius:50%!important;background:#635bff!important;box-shadow:0 0 10px #635bff!important}.layer-signal>i:nth-of-type(1){left:18%;top:45%;animation:layerParticleA 4.2s ease-in-out infinite}.layer-signal>i:nth-of-type(2){left:48%;top:18%;animation:layerParticleB 4.8s ease-in-out infinite}.layer-signal>i:nth-of-type(3){right:15%;bottom:18%;animation:layerParticleA 5.2s ease-in-out infinite reverse}.signal-2 svg{transform:rotate(18deg)}.signal-3 svg{transform:rotate(45deg)}.signal-4 svg{transform:rotate(90deg)}.layers article:nth-child(2) .layer-signal>i{background:#2f9a65!important;box-shadow:0 0 10px #52d390!important}.layers article:nth-child(3) .layer-signal>i{background:#1e6fd9!important;box-shadow:0 0 10px #5aa2ff!important}.layers article:nth-child(4) .layer-signal>i{background:#d18735!important;box-shadow:0 0 10px #e9ac68!important}
+
+.network-effect-copy{margin-top:28px;padding:18px 0;border-top:1px solid #cdcdc8;border-bottom:1px solid #cdcdc8}.network-effect-copy span{color:#635bff;font:650 7px JetBrains Mono,monospace;letter-spacing:.09em;text-transform:uppercase}.network-effect-copy p{margin:10px 0 0!important;color:#62625e!important;font-size:10px!important;line-height:1.65!important}.hive-fabric{overflow:hidden;border:1px solid #c9c9c4;border-radius:18px;background:#0a0b0d;color:#fff;box-shadow:0 35px 90px rgba(15,17,22,.18)}.hive-fabric>header{height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid #24262b;color:#737984;font:6px JetBrains Mono,monospace;letter-spacing:.08em;text-transform:uppercase}.hive-fabric>header span{display:flex;align-items:center;gap:8px}.hive-fabric>header i{width:6px;height:6px;border-radius:50%;background:#635bff;box-shadow:0 0 12px #635bff}.hive-fabric>header b{color:#638f76;font-weight:500}.hive-canvas{position:relative;min-height:670px;overflow:hidden;background:radial-gradient(circle at 50% 45%,rgba(99,91,255,.16),transparent 26%),linear-gradient(#15171b 1px,transparent 1px),linear-gradient(90deg,#15171b 1px,transparent 1px);background-size:auto,30px 30px,30px 30px}.hive-canvas>svg{position:absolute;inset:15px 0 auto;width:100%;height:610px}.hive-ring{fill:none;stroke:#2d3038;stroke-width:1}.hive-ring.outer{stroke-dasharray:7 10;animation:hiveSpin 40s linear infinite;transform-origin:360px 300px}.hive-ring.middle{stroke:#3b3f49;stroke-dasharray:3 7;animation:hiveSpin 28s linear infinite reverse;transform-origin:360px 300px}.hive-halo{fill:url(#hiveHalo)}.hive-route{fill:none;stroke:#444956;stroke-width:1;stroke-dasharray:5 7;animation:routeDash 17s linear infinite}.hive-route.cross{stroke:#282b31;animation-direction:reverse}.hive-flow{fill:#635bff;filter:drop-shadow(0 0 7px #635bff)}.hive-flow.f2{fill:#52d390;filter:drop-shadow(0 0 7px #52d390)}.hive-flow.f3{fill:#b9b6ff}.hive-core-pro{position:absolute;z-index:4;left:50%;top:45%;width:160px;height:160px;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:15px;transform:translate(-50%,-50%);border:1px solid #585d69;border-radius:50%;background:#0d0f13;box-shadow:0 0 0 12px rgba(99,91,255,.07),0 25px 60px rgba(0,0,0,.45);text-align:center}.hive-core-pro :deep(.madeus-mark){width:35px;height:35px;color:#fff;--mark-ink:#0d0f13;--mark-signal:#635bff}.hive-core-pro span{margin-top:7px;color:#8e88ff;font:6px JetBrains Mono,monospace}.hive-core-pro b{margin-top:7px;font-size:9px}.hive-core-pro small{margin-top:6px;color:#6e747e;font-size:6px}.expert-node{position:absolute;z-index:4;width:156px;padding:11px 12px;border:1px solid #343842;border-radius:8px;background:rgba(14,16,20,.95);box-shadow:0 10px 28px rgba(0,0,0,.28);animation:fabricFloat 5s ease-in-out infinite}.expert-node span{color:#777e89;font:6px JetBrains Mono,monospace;letter-spacing:.08em}.expert-node b{display:block;margin-top:6px;font-size:8px}.expert-node small{display:block;margin-top:4px;color:#626872;font-size:6px}.expert-node.legal{left:4%;top:10%}.expert-node.product{right:4%;top:10%;animation-delay:-.8s}.expert-node.engineering{right:1%;top:41%;animation-delay:-1.6s}.expert-node.growth{right:7%;bottom:12%;animation-delay:-2.4s}.expert-node.research{left:7%;bottom:12%;animation-delay:-3.2s}.expert-node.qa{left:1%;top:41%;animation-delay:-4s}.agent-forge,.member-signal{position:absolute;z-index:5;left:50%;display:grid;align-items:center;transform:translateX(-50%);border:1px solid #3e424b;background:rgba(12,14,18,.97)}.agent-forge{bottom:70px;width:330px;grid-template-columns:30px 1fr auto;gap:10px;padding:11px 13px;border-color:#5953c8}.agent-forge>span{width:27px;height:27px;display:grid;place-items:center;border-radius:7px;background:#635bff;font-size:16px}.agent-forge p,.member-signal p{display:flex;flex-direction:column;margin:0}.agent-forge b,.member-signal b{font-size:8px}.agent-forge small,.member-signal small{margin-top:3px;color:#717782;font-size:6px}.agent-forge>i{color:#a9a5ff;font-style:normal}.member-signal{bottom:13px;width:420px;grid-template-columns:32px 1fr auto;gap:10px;padding:10px 12px;border-color:#285c40;background:#0c1b13}.member-signal>i{color:#6dc993;font:6px JetBrains Mono,monospace}.member-signal>span{color:#6dc993}
+
+.capability-grid{grid-template-columns:repeat(4,1fr)}.capability-grid article{min-height:330px}.capability-glyph{position:relative;height:105px;margin:12px 0 16px;border:1px solid #e1e2e5;background:linear-gradient(#f0f1f3 1px,transparent 1px),linear-gradient(90deg,#f0f1f3 1px,transparent 1px);background-size:15px 15px}.capability-glyph:before,.capability-glyph:after{content:'';position:absolute;left:20%;right:20%;top:50%;height:1px;background:#aeb3ba;transform:rotate(28deg)}.capability-glyph:after{transform:rotate(-28deg)}.capability-glyph i{position:absolute!important;width:13px!important;height:13px!important;margin:0!important;border:1px solid #737b86!important;border-radius:4px!important;background:#fff!important;transform:none!important}.capability-glyph i:nth-child(1){left:18%;top:23%}.capability-glyph i:nth-child(2){left:calc(50% - 9px);top:calc(50% - 9px);width:18px!important;height:18px!important;border-radius:50%!important;background:#111!important}.capability-glyph i:nth-child(3){right:18%;bottom:22%}.capability-grid article:nth-child(even) .capability-glyph:before{transform:rotate(62deg)}.capability-grid article:nth-child(3n) .capability-glyph i:nth-child(2){border-radius:4px!important;transform:rotate(45deg)!important}.capability-grid article:nth-child(4n) .capability-glyph:after{transform:rotate(90deg)}
+
+.agent-foundry-section{display:grid;grid-template-columns:.82fr 1.18fr;gap:7vw;align-items:center;padding:140px clamp(20px,3.5vw,56px);background:#090a0c;color:#fff}.foundry-copy>p:first-child{margin:0;color:#8e88ff;font:650 8px JetBrains Mono,monospace;letter-spacing:.1em;text-transform:uppercase}.foundry-copy h2{margin:24px 0 0;font-size:clamp(50px,5.6vw,82px);font-weight:470;letter-spacing:-.065em;line-height:.96}.foundry-copy h2 em{color:#89898f;font-style:normal}.foundry-copy>p:nth-of-type(2){max-width:600px;margin:31px 0 0;color:#92949b;font-size:13px;line-height:1.75}.foundry-copy ul{margin:29px 0 0;padding:0;border-top:1px solid #2b2d33;list-style:none}.foundry-copy li{padding:11px 0;border-bottom:1px solid #24262b;color:#a8abb2;font-size:9px}.foundry-copy li:before{content:'✓';margin-right:10px;color:#6dc993}.foundry-cta{margin-top:30px;border:1px solid #eee;background:#fff;color:#111}.foundry-console{overflow:hidden;border:1px solid #363941;border-radius:16px;background:#101216;box-shadow:0 36px 90px rgba(0,0,0,.4)}.foundry-console>header{height:54px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid #292c32;color:#747a84;font:6px JetBrains Mono,monospace}.foundry-console>header b{display:flex;align-items:center;gap:7px;color:#72ad8b}.foundry-console>header i{width:6px;height:6px;border-radius:50%;background:#6dc993;box-shadow:0 0 12px #52d390}.foundry-body{min-height:540px;display:grid;grid-template-columns:115px 1fr}.foundry-body>aside{display:flex;flex-direction:column;border-right:1px solid #292c32;background:#0c0e11;padding:15px 8px}.foundry-body>aside span{padding:11px 9px;border-radius:6px;color:#565c66;font:6px JetBrains Mono,monospace}.foundry-body>aside span.active{background:#1d1c33;color:#aaa6ff}.agent-blueprint{padding:20px}.agent-title{display:grid;grid-template-columns:42px 1fr auto;gap:12px;align-items:center;padding-bottom:18px;border-bottom:1px solid #2a2d33}.agent-title :deep(.madeus-mark){width:40px;height:40px;color:#fff;--mark-ink:#101216;--mark-signal:#635bff}.agent-title p{display:flex;flex-direction:column;margin:0}.agent-title span{color:#8f89ff;font:6px JetBrains Mono,monospace}.agent-title b{margin-top:5px;font-size:12px}.agent-title small{margin-top:4px;color:#666c76;font-size:6px}.agent-title em{padding:5px 7px;border:1px solid #3b3e45;border-radius:5px;color:#858b94;font:6px JetBrains Mono,monospace;font-style:normal}.agent-spec-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:17px}.agent-spec-grid article{min-height:87px;padding:12px;border:1px solid #2e3138;background:#0d0f12}.agent-spec-grid span{color:#686e78;font:6px JetBrains Mono,monospace}.agent-spec-grid b,.agent-spec-grid small{display:block}.agent-spec-grid b{margin-top:8px;font-size:9px}.agent-spec-grid small{margin-top:5px;color:#626873;font-size:6px}.evaluation-stream{margin-top:17px;border-top:1px solid #2b2e34}.evaluation-stream>div{min-height:42px;display:grid;grid-template-columns:105px 1fr 50px;gap:10px;align-items:center;border-bottom:1px solid #25282e;color:#777d87;font:6px JetBrains Mono,monospace}.evaluation-stream i{height:4px;overflow:hidden;border-radius:3px;background:#252831}.evaluation-stream i b{display:block;height:100%;background:linear-gradient(90deg,#635bff,#6dc993);animation:evaluationPulse 2.5s ease-in-out infinite}.evaluation-stream strong{text-align:right;color:#9fa4ad;font-weight:500}.promotion-gate{display:grid;grid-template-columns:12px 1fr auto;gap:9px;align-items:center;margin-top:16px;padding:12px;border:1px solid #564f9e;background:#19172b}.promotion-gate>i{color:#8f88ff;font-style:normal;animation:liveBlink 1.5s ease-in-out infinite}.promotion-gate p{display:flex;flex-direction:column;margin:0}.promotion-gate b{font-size:8px}.promotion-gate small{margin-top:4px;color:#7c789c;font-size:6px}.promotion-gate>span{color:#aaa6ff;font-size:6px}
+
+.portfolio-map{min-height:580px;background:radial-gradient(circle at 50% 40%,rgba(99,91,255,.11),transparent 25%),linear-gradient(#f1f2f5 1px,transparent 1px),linear-gradient(90deg,#f1f2f5 1px,transparent 1px),#fafafa;background-size:auto,24px 24px,24px 24px}.portfolio-map>svg{height:83%}.map-core{top:38%;width:124px;height:124px;background:#0d0f13;box-shadow:0 0 0 12px rgba(99,91,255,.08),0 0 0 13px #9d99dc}.map-core :deep(.madeus-mark){--mark-ink:#0d0f13;--mark-signal:#635bff}.map-packet{fill:#52d390;filter:drop-shadow(0 0 7px #52d390)}.map-packet.violet{fill:#635bff;filter:drop-shadow(0 0 7px #635bff)}.company-node span{color:#635bff}.company-node small{color:#55816a}.company-node.studio{bottom:25%}.company-node.newco{bottom:25%}.universe-node{position:absolute;z-index:4;padding:8px 10px;border:1px solid #d0d0d6;border-radius:7px;background:rgba(255,255,255,.93);box-shadow:0 8px 20px rgba(30,32,45,.06);animation:fabricFloat 5.4s ease-in-out infinite}.universe-node span{display:block;color:#888;font:5px JetBrains Mono,monospace}.universe-node b{display:block;margin-top:4px;font-size:7px}.universe-node.team{left:39%;top:2%}.universe-node.new-agent{left:40%;bottom:19%;animation-delay:-2.4s}.portfolio-ticker{border-color:#454083;background:#14122d}.portfolio-ticker span{color:#aaa6ff}.portfolio-ticker small{color:#8f8ab5}
+
+@keyframes fabricFloat{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}@keyframes layerDash{to{stroke-dashoffset:-90}}@keyframes layerParticleA{0%,100%{transform:translate(0,0);opacity:.2}50%{transform:translate(68px,14px);opacity:1}}@keyframes layerParticleB{0%,100%{transform:translate(0,0);opacity:.2}50%{transform:translate(-28px,55px);opacity:1}}@keyframes hiveSpin{to{transform:rotate(360deg)}}@keyframes evaluationPulse{0%,100%{opacity:.65;filter:saturate(.7)}50%{opacity:1;filter:saturate(1.3)}}
+@media(max-width:1100px){.hero{grid-template-columns:1fr}.command-fabric{width:min(820px,100%)}.capability-grid{grid-template-columns:repeat(2,1fr)}.agent-foundry-section{grid-template-columns:1fr}.foundry-console{width:min(850px,100%)}.hive-fabric{width:min(760px,100%);justify-self:center}}
+@media(max-width:680px){.fabric-stage{height:540px}.fabric-objective{top:47%;width:175px}.fabric-node{width:130px;padding:9px}.fabric-node.simulate,.fabric-node.execute{left:8px}.fabric-node.assemble,.fabric-node.verify{right:8px}.fabric-node.execute,.fabric-node.verify{bottom:72px}.fabric-signal{bottom:8px}.layer-signal{height:130px}.hive-canvas{min-height:680px}.hive-canvas>svg{width:125%;left:-12%}.expert-node{width:125px;padding:8px}.expert-node.legal,.expert-node.research{left:2%}.expert-node.product,.expert-node.growth{right:2%}.hive-core-pro{width:130px;height:130px}.agent-forge{bottom:66px;width:calc(100% - 28px)}.member-signal{bottom:10px;width:calc(100% - 28px)}.capability-grid{grid-template-columns:1fr}.agent-foundry-section{padding:95px 16px}.foundry-copy h2{font-size:13vw}.foundry-body{grid-template-columns:1fr;min-height:620px}.foundry-body>aside{display:grid;grid-template-columns:repeat(3,1fr);border-right:0;border-bottom:1px solid #292c32}.foundry-body>aside span{padding:8px 4px}.agent-blueprint{padding:14px}.agent-spec-grid{grid-template-columns:1fr 1fr}.evaluation-stream>div{grid-template-columns:88px 1fr 42px}.promotion-gate{grid-template-columns:12px 1fr}.promotion-gate>span{display:none}.portfolio-map{min-height:610px}.universe-node.team{left:35%;top:1%}.universe-node.new-agent{left:34%;bottom:23%}}
 </style>
