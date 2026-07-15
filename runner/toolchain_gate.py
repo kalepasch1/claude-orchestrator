@@ -125,14 +125,18 @@ def is_ready(project_id, repo_path=None, force=False):
             return True  # can't determine, don't block
 
     result = check_project(project_id, repo_path)
+    failure_streak = (0 if result["ready"] else int(entry.get("failure_streak") or 0) + 1)
+    confirmations = max(1, int(os.environ.get("ORCH_TOOLCHAIN_FAILURE_CONFIRMATIONS", "2")))
+    ready = bool(result["ready"] or failure_streak < confirmations)
     state[project_id] = {
-        "ready": result["ready"],
+        "ready": ready,
         "failures": result["failures"],
+        "failure_streak": failure_streak,
         "checked_at": time.time(),
         "recovery_queued_at": entry.get("recovery_queued_at", 0)
     }
 
-    if not result["ready"]:
+    if not ready:
         # Queue a single recovery task if we haven't recently
         if time.time() - entry.get("recovery_queued_at", 0) > RECOVERY_COOLDOWN:
             _queue_recovery(project_id, result["failures"])
@@ -140,7 +144,7 @@ def is_ready(project_id, repo_path=None, force=False):
         print(f"[toolchain] project {project_id} NOT READY: {result['failures']}")
 
     _save_state(state)
-    return result["ready"]
+    return ready
 
 
 def is_ready_cached(project_id):
