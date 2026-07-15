@@ -1,4 +1,0 @@
-{
-  "python.envFile": "${workspaceFolder}/runner/.env",
-  "python.terminal.useEnvFile": true
-}
