@@ -81,7 +81,7 @@ def hold(repo, timeout=None, priority=False):
     except Exception:
         if priority:
             release_priority(repo)
-        yield True
+        yield False
         return
     acquired = False
     # Cooperative yield: if merge_train is waiting, non-priority callers pause
