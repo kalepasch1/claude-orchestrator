@@ -1,246 +1,138 @@
 <script setup lang="ts">
 definePageMeta({ layout: 'default' })
+
 const supabase = useSupabaseClient<any>()
-const user = useSupabaseUser()
-
-const CAPS = [
-  { slug: 'deploy-orchestrator', name: 'Deployment', domain: 'devops', icon: '🚀', status: 'trusted', maturity: 86, summary: 'Canary deployments, rollbacks, release gates' },
-  { slug: 'review-orchestrator', name: 'Code Review', domain: 'engineering', icon: '👁', status: 'trusted', maturity: 91, summary: 'Multi-model code review, security scanning' },
-  { slug: 'optimize-orchestrator', name: 'Optimization', domain: 'engineering', icon: '⚡', status: 'trusted', maturity: 80, summary: 'Performance, cost, and prompt optimization' },
-  { slug: 'preflight-inspector', name: 'Pre-flight', domain: 'engineering', icon: '✈', status: 'trusted', maturity: 88, summary: 'Pre-execution validation of state and deps' },
-  { slug: 'remediation-orchestrator', name: 'Remediation', domain: 'engineering', icon: '🔧', status: 'trusted', maturity: 93, summary: 'Auto-diagnose and repair failing builds' },
-  { slug: 'growth-orchestrator', name: 'Growth', domain: 'growth', icon: '📈', status: 'trusted', maturity: 79, summary: 'Growth experiments, A/B tests, conversions' },
-  { slug: 'entity-formation', name: 'Entity Formation', domain: 'legal-ops', icon: '🏢', status: 'productizable', maturity: 95, summary: 'Jurisdiction-aware entity formation filings' },
-  { slug: 'legal-orchestrator', name: 'Legal', domain: 'legal-ops', icon: '⚖', status: 'trusted', maturity: 87, summary: 'Legal review, compliance, contracts' },
-  { slug: 'design-orchestrator', name: 'Chief Design', domain: 'product-design', icon: '🎨', status: 'trusted', maturity: 82, summary: 'UI/UX improvements, brand consistency' },
-  { slug: 'security-orchestrator', name: 'Security', domain: 'security', icon: '🔒', status: 'trusted', maturity: 89, summary: 'RLS, access controls, key rotation' },
-  { slug: 'colosseum-evaluator', name: 'Model Arena', domain: 'platform', icon: '🏟', status: 'experimental', maturity: 72, summary: 'Embedded model evaluation powering all routing' },
-  { slug: 'learn-orchestrator', name: 'Learning', domain: 'platform', icon: '📚', status: 'trusted', maturity: 81, summary: 'Pattern capture and shared knowledge' },
-  { slug: 'queue-orchestrator', name: 'Queue', domain: 'platform', icon: '📋', status: 'trusted', maturity: 84, summary: 'Task grooming, priority lanes, throughput' },
-]
-
-const DOMAINS = [
-  { key: 'all', label: 'All Capabilities', icon: '◎' },
-  { key: 'engineering', label: 'Engineering', icon: '⚙' },
-  { key: 'devops', label: 'DevOps', icon: '🚀' },
-  { key: 'product-design', label: 'Design', icon: '🎨' },
-  { key: 'legal-ops', label: 'Legal', icon: '⚖' },
-  { key: 'growth', label: 'Growth', icon: '📈' },
-  { key: 'security', label: 'Security', icon: '🔒' },
-  { key: 'platform', label: 'Platform', icon: '🏗' },
-  { key: 'terminal', label: 'Command Terminal', icon: '▸' },
-  { key: 'bots', label: 'CADE Bots', icon: '🤖' },
-]
-
-const MODELS = [
-  { label: 'Sonnet 4.6', value: 'claude-sonnet-4-6' }, { label: 'Haiku 4.5', value: 'claude-haiku-4-5-20251001' },
-  { label: 'Opus 4.8', value: 'claude-opus-4-8' }, { label: 'GPT-4o', value: 'gpt-4o' },
-  { label: 'GPT-4o Mini', value: 'gpt-4o-mini' }, { label: 'Gemini 2.0 Flash', value: 'gemini/gemini-2.0-flash' },
-  { label: 'Gemini 1.5 Pro', value: 'gemini/gemini-1.5-pro' }, { label: 'Qwen2.5 Coder', value: 'ollama/qwen2.5-coder:7b' },
-  { label: 'Cowork Executor', value: 'cowork-executor' },
-]
-
-const CADE_BOTS = [
-  { name: 'Change Type Analyzer', group: 'Triage', status: 'active' },
-  { name: 'Impact Scope Assessor', group: 'Triage', status: 'active' },
-  { name: 'Regression Detector', group: 'Triage', status: 'active' },
-  { name: 'Pixel Inspector', group: 'Quality', status: 'active' },
-  { name: 'Consistency Checker', group: 'Quality', status: 'active' },
-  { name: 'A11y Validator', group: 'Quality', status: 'active' },
-  { name: 'Engagement Tracker', group: 'Analytics', status: 'active' },
-  { name: 'Heatmap Analyzer', group: 'Analytics', status: 'active' },
-  { name: 'Brand Consistency Bot', group: 'Brand', status: 'active' },
-  { name: 'Cognitive Load Sensor', group: 'UX', status: 'active' },
-  { name: 'Attention Flow Mapper', group: 'UX', status: 'active' },
-  { name: 'Anomaly Detector', group: 'Security', status: 'active' },
-  { name: 'Threat Modeler', group: 'Security', status: 'active' },
-  { name: 'Pattern Recognizer', group: 'Learning', status: 'active' },
-  { name: 'Intent Predictor', group: 'Learning', status: 'active' },
-]
-
-const activeDomain = ref('all')
-const terminalPrompt = ref('')
-const terminalLoading = ref(false)
-const terminalOutput = ref('')
-const selectedModel = ref('claude-sonnet-4-6')
-const selectedKind = ref('build')
-const selectedMode = ref('build')
-const routeInfo = ref('')
-const showOverride = ref(false)
 const projects = ref<any[]>([])
-const selectedProject = ref('')
 const recentTasks = ref<any[]>([])
+const prompt = ref('')
+const projectId = ref('')
+const submitting = ref(false)
+const notice = ref('')
+const projectChoices = ref<any[]>([])
 
-const filteredCaps = computed(() => activeDomain.value === 'all' ? CAPS : CAPS.filter(c => c.domain === activeDomain.value))
-function modelLabel(v: string) { return MODELS.find(m => m.value === v)?.label || v }
-function statusColor(s: string) { return s === 'trusted' ? 'text-blue-600' : s === 'productizable' ? 'text-emerald-600' : s === 'experimental' ? 'text-amber-600' : 'text-gray-500' }
-function maturityColor(n: number) { return n >= 85 ? 'bg-emerald-500' : n >= 70 ? 'bg-blue-500' : 'bg-gray-400' }
-function stateIcon(s: string) { return s === 'DONE' ? '✓' : s === 'RUNNING' ? '▶' : s === 'FAILED' ? '✗' : '◌' }
-function stateClass(s: string) { return s === 'DONE' ? 'text-emerald-600' : s === 'RUNNING' ? 'text-blue-600' : s === 'FAILED' ? 'text-red-600' : 'text-gray-400' }
-function timeAgo(d: string) { const s = Math.floor((Date.now() - new Date(d).getTime()) / 1000); if (s < 60) return s+'s ago'; if (s < 3600) return Math.floor(s/60)+'m ago'; if (s < 86400) return Math.floor(s/3600)+'h ago'; return Math.floor(s/86400)+'d ago' }
+const commandCenters = [
+  { slug: 'engineering-orchestrator', icon: '↗', eyebrow: 'Build & ship', name: 'Engineering', summary: 'Build products, fix defects, improve systems, and ship verified releases.', actions: ['Build a feature', 'Repair production', 'Improve performance'] },
+  { slug: 'design-orchestrator', icon: '✦', eyebrow: 'Create & refine', name: 'Design + Creative', summary: 'Design interfaces, brands, graphics, motion, campaigns, and production-ready derivatives.', actions: ['Design a product', 'Create a campaign', 'Generate derivatives'] },
+  { slug: 'legal-orchestrator', icon: '§', eyebrow: 'Review & protect', name: 'Legal + Compliance', summary: 'Review agreements, draft redlines, form entities, and run evidence-backed compliance work.', actions: ['Review a contract', 'Prepare a filing', 'Assess compliance'] },
+  { slug: 'growth-orchestrator', icon: '↗', eyebrow: 'Find & grow demand', name: 'Marketing + Growth', summary: 'Develop positioning, content, campaigns, experiments, and measurable growth programs.', actions: ['Plan a launch', 'Create content', 'Improve conversion'] },
+  { slug: 'research-orchestrator', icon: '◎', eyebrow: 'Understand & decide', name: 'Research + Strategy', summary: 'Investigate markets, competitors, users, and strategic choices with traceable evidence.', actions: ['Research a market', 'Compare options', 'Write a decision brief'] },
+  { slug: 'security-orchestrator', icon: '◇', eyebrow: 'Secure & govern', name: 'Security + Trust', summary: 'Audit access, data, dependencies, policies, and remediation paths across the portfolio.', actions: ['Audit security', 'Fix access controls', 'Model threats'] },
+]
 
-function routePrompt(prompt: string): { model: string; kind: string; mode: string; reason: string } {
-  const p = prompt.toLowerCase()
-  let model = 'claude-sonnet-4-6', kind = 'build', mode = 'build', reason = ''
-  if (/\b(fix|bug|broken|error|fail|crash|repair|debug|patch|resolv|remediat)\b/.test(p)) { kind = 'fix'; reason = 'fix' }
-  else if (/\b(research|analyz|investigat|compar|evaluat|study|audit|review|assess|inspect|check|scan|report)\b/.test(p)) { kind = 'research'; reason = 'research' }
-  else if (/\b(test|qa|quality|validat|verif|assert|regression|coverage)\b/.test(p)) { kind = 'qa'; reason = 'qa' }
-  else if (/\b(deploy|release|ship|rollout|push|publish|launch)\b/.test(p)) { kind = 'deploy'; reason = 'deploy' }
-  else { kind = 'build'; reason = 'build' }
-  if (/\b(research|analyz|investigat|compar|evaluat|study|audit|review|check|scan)\b/.test(p)) mode = 'research'
-  else if (/\b(optimi|efficien|fast|speed|cost|reduce|compress|cache|performance)\b/.test(p)) mode = 'efficiency'
-  else if (/\b(experiment|specul|explor|prototype|poc|spike|try|what if)\b/.test(p)) mode = 'speculative'
-  const isComplex = p.length > 200 || /\b(architect|redesign|refactor|comprehensive|full|entire|all apps|portfolio|across)\b/.test(p)
-  const isSimple = p.length < 60 && /\b(list|show|get|check|status|count)\b/.test(p)
-  const isLegal = /\b(legal|compliance|regulat|contract|filing|entity|policy|jurisdiction)\b/.test(p)
-  const isSecurity = /\b(security|rls|access|auth|encrypt|key|vulnerab)\b/.test(p)
-  if (isComplex || isLegal || isSecurity) { model = 'claude-opus-4-8'; reason += ' → Opus' }
-  else if (isSimple) { model = 'claude-haiku-4-5-20251001'; reason += ' → Haiku' }
-  else { model = 'claude-sonnet-4-6'; reason += ' → Sonnet' }
-  return { model, kind, mode, reason }
+const alwaysOn = [
+  { name: 'Triage', summary: 'Understands intent, scope, risk, and project context.' },
+  { name: 'Colosseum', summary: 'Selects the strongest vendor and model for each step.' },
+  { name: 'Isolated execution', summary: 'Creates safe worktrees and prevents conflicting changes.' },
+  { name: 'Preflight', summary: 'Checks state, dependencies, credentials, and blast radius.' },
+  { name: 'CADE intelligence', summary: 'Surfaces practical guidance, evidence, and one-click actions.' },
+  { name: 'Independent QA', summary: 'Tests implementation, UX, accessibility, and regressions.' },
+  { name: 'Auto-remediation', summary: 'Diagnoses failures and retries safe repairs automatically.' },
+  { name: 'Verified release', summary: 'Promotes only durable deployments and records proof.' },
+]
+
+function stateClass(state: string) {
+  if (state === 'DONE') return 'done'
+  if (state === 'RUNNING') return 'running'
+  if (state === 'FAILED') return 'failed'
+  return 'queued'
 }
 
-watch(terminalPrompt, (val) => {
-  if (val.trim().length > 5) {
-    const r = routePrompt(val)
-    selectedModel.value = r.model; selectedKind.value = r.kind; selectedMode.value = r.mode
-    routeInfo.value = r.reason
-  } else { routeInfo.value = '' }
-})
+async function authedFetch<T = any>(url: string, options: any = {}) {
+  const { data: { session } } = await supabase.auth.getSession()
+  return $fetch<T>(url, { ...options, headers: { ...(options.headers || {}), ...(session?.access_token ? { authorization: `Bearer ${session.access_token}` } : {}) } })
+}
 
-async function loadData() {
+async function load() {
+  const [projectResult, taskResult] = await Promise.all([
+    supabase.from('projects').select('id,name').order('name'),
+    supabase.from('tasks').select('id,slug,state,kind,created_at').order('created_at', { ascending: false }).limit(6),
+  ])
+  projects.value = projectResult.data || []
+  recentTasks.value = taskResult.data || []
+}
+
+async function submit(chosenProject?: string) {
+  if (!prompt.value.trim()) return
+  submitting.value = true
+  notice.value = ''
+  projectChoices.value = []
   try {
-    const [prj, tasks] = await Promise.all([supabase.from('projects').select('*').order('name'), supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(10)])
-    projects.value = prj.data || []; recentTasks.value = tasks.data || []
-    if (projects.value.length && !selectedProject.value) selectedProject.value = projects.value[0].id
-  } catch {}
+    const result = await authedFetch<any>('/api/tasks/intake', { method: 'POST', body: { intent: prompt.value.trim(), project_id: chosenProject || projectId.value || undefined, source: 'command-center' } })
+    notice.value = `Routed to ${result.project?.name || 'the right project'} · ${result.task?.slug || 'task queued'}`
+    prompt.value = ''
+    await load()
+  } catch (error: any) {
+    if (error?.statusCode === 409 || error?.data?.code === 'project_required') {
+      projectChoices.value = error?.data?.projects || projects.value
+      notice.value = 'Which project should Madeus change?'
+    } else notice.value = error?.data?.message || error?.message || 'Madeus could not route this request.'
+  } finally { submitting.value = false }
 }
 
-async function runCommand() {
-  if (!terminalPrompt.value.trim()) return
-  terminalLoading.value = true; terminalOutput.value = ''
-  try {
-    const pid = selectedProject.value || projects.value[0]?.id
-    if (!pid) { terminalOutput.value = 'Error: No project selected'; return }
-    const taskSlug = 'cmd-'+Date.now().toString(36)
-    await supabase.from('tasks').insert({ project_id: pid, slug: taskSlug, prompt: terminalPrompt.value.trim(), kind: selectedKind.value, model: selectedModel.value, mode: selectedMode.value, state: 'QUEUED', note: 'source:command-center' })
-    terminalOutput.value = '✓ Queued: '+taskSlug+'\n  Model: '+modelLabel(selectedModel.value)+' (auto)\n  Kind: '+selectedKind.value+' | Mode: '+selectedMode.value+'\n  Routing: '+routeInfo.value
-    terminalPrompt.value = ''; routeInfo.value = ''; loadData()
-  } catch (e: any) { terminalOutput.value = 'Error: ' + (e.message || String(e)) }
-  finally { terminalLoading.value = false }
-}
-
-onMounted(() => loadData())
-watch(user, u => { if (u) loadData() })
+onMounted(load)
 </script>
 
 <template>
-  <div>
-    <!-- Header bar with domain pills and project selector -->
-    <div class="flex items-center justify-between px-6 py-3 border-b border-gray-200 bg-gray-50/50">
-      <div class="flex items-center gap-2 flex-wrap">
-        <button v-for="d in DOMAINS" :key="d.key" @click="activeDomain = d.key"
-          class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-full transition-colors whitespace-nowrap"
-          :class="activeDomain === d.key ? 'bg-blue-600 text-white font-medium' : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-100 hover:text-gray-900'">
-          <span class="text-[11px]">{{ d.icon }}</span>
-          {{ d.label }}
-        </button>
-      </div>
-      <div class="flex items-center gap-3 flex-shrink-0 ml-4">
-        <div class="text-[10px] text-gray-400">Project:</div>
-        <select v-model="selectedProject" class="bg-white border border-gray-200 rounded px-2 py-1.5 text-xs text-gray-700">
-          <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
-        </select>
-      </div>
-    </div>
+  <main class="command-page">
+    <section class="command-hero">
+      <div class="hero-kicker"><span class="pulse-dot" /> Madeus command centers</div>
+      <h1>One outcome in.<br><span>Every specialist coordinated.</span></h1>
+      <p>Choose a focused workspace when you want controls and tools, or simply describe the outcome. Madeus handles routing, models, vendors, branches, research, QA, and release.</p>
 
-    <!-- Capabilities Grid -->
-    <div v-if="activeDomain !== 'terminal' && activeDomain !== 'bots'" class="p-6 max-w-5xl">
-      <div class="flex items-center justify-between mb-5">
-        <h2 class="text-lg font-semibold text-gray-900" style="font-family: 'Fraunces', serif;">{{ DOMAINS.find(d => d.key === activeDomain)?.label || 'Capabilities' }}</h2>
-        <span class="text-xs text-gray-400">{{ filteredCaps.length }} capabilities</span>
+      <form class="outcome-box" @submit.prevent="submit()">
+        <div class="outcome-label">What should we accomplish?</div>
+        <textarea v-model="prompt" rows="3" placeholder="Build, fix, research, design, review, or improve anything…" />
+        <div class="outcome-footer">
+          <label class="project-select">
+            <span>Project</span>
+            <select v-model="projectId">
+              <option value="">Let Madeus detect it</option>
+              <option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}</option>
+            </select>
+          </label>
+          <div class="autopilot-copy"><b>✦ Autopilot</b><span>Triage → specialists → independent QA → verified release</span></div>
+          <button :disabled="submitting || !prompt.trim()">{{ submitting ? 'Routing…' : 'Start' }} <span>↗</span></button>
+        </div>
+        <div v-if="notice" class="routing-notice">{{ notice }}</div>
+        <div v-if="projectChoices.length" class="project-choices">
+          <button v-for="project in projectChoices" :key="project.id" type="button" @click="projectId = project.id; submit(project.id)">{{ project.name }}</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="content-section">
+      <div class="section-heading">
+        <div><span>Focused workspaces</span><h2>Command centers for work you direct</h2></div>
+        <p>Open one when you need domain tools, configurable outputs, previews, evidence, or approvals.</p>
       </div>
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-        <NuxtLink v-for="c in filteredCaps" :key="c.slug" :to="'/orchestrators/'+c.slug"
-          class="bg-white border border-gray-200 rounded-xl p-4 hover:shadow-md hover:border-blue-200 transition-all group cursor-pointer">
-          <div class="flex items-start justify-between mb-2">
-            <span class="text-xl">{{ c.icon }}</span>
-            <span class="text-[10px] font-medium px-1.5 py-0.5 rounded" :class="statusColor(c.status)">{{ c.status }}</span>
-          </div>
-          <h3 class="text-sm font-semibold text-gray-900 group-hover:text-blue-700 transition-colors mb-1">{{ c.name }}</h3>
-          <p class="text-[11px] text-gray-500 leading-relaxed mb-3">{{ c.summary }}</p>
-          <div class="flex items-center gap-2">
-            <div class="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden"><div class="h-full rounded-full" :class="maturityColor(c.maturity)" :style="'width:'+c.maturity+'%'"></div></div>
-            <span class="text-[9px] text-gray-400 font-mono">{{ c.maturity }}%</span>
-          </div>
+      <div class="center-grid">
+        <NuxtLink v-for="center in commandCenters" :key="center.slug" :to="`/orchestrators/${center.slug}`" class="center-card">
+          <div class="center-top"><span class="center-icon">{{ center.icon }}</span><span class="open-arrow">↗</span></div>
+          <div class="eyebrow">{{ center.eyebrow }}</div>
+          <h3>{{ center.name }}</h3>
+          <p>{{ center.summary }}</p>
+          <div class="action-list"><span v-for="action in center.actions" :key="action">{{ action }}</span></div>
         </NuxtLink>
       </div>
-      <!-- Recent Tasks -->
-      <div v-if="recentTasks.length" class="mt-8">
-        <h3 class="text-sm font-semibold text-gray-700 mb-3">Recent Tasks</h3>
-        <div class="space-y-1.5">
-          <div v-for="t in recentTasks" :key="t.id" class="bg-white border border-gray-200 rounded-lg px-4 py-2.5 flex items-center gap-3 text-sm">
-            <span class="font-mono text-base" :class="stateClass(t.state)">{{ stateIcon(t.state) }}</span>
-            <span class="text-gray-900 flex-1 truncate">{{ t.slug }}</span>
-            <span class="text-xs text-gray-400 px-2 py-0.5 bg-gray-50 rounded">{{ t.kind || '—' }}</span>
-            <span class="text-xs text-gray-400">{{ timeAgo(t.created_at) }}</span>
-          </div>
-        </div>
-      </div>
-    </div>
+    </section>
 
-    <!-- Command Terminal -->
-    <div v-else-if="activeDomain === 'terminal'" class="p-6 max-w-4xl space-y-4">
-      <h2 class="text-lg font-semibold text-gray-900" style="font-family: 'Fraunces', serif;">Command Terminal</h2>
-      <div class="bg-gray-900 rounded-xl p-5 min-h-[200px]" style="font-family: 'JetBrains Mono', monospace;">
-        <div v-if="terminalOutput" class="text-sm text-emerald-400 whitespace-pre-wrap mb-4">{{ terminalOutput }}</div>
-        <div v-else class="text-sm text-gray-500 mb-4">Ready — describe what you need. Model, kind, and mode are auto-determined from your prompt.</div>
-        <div class="flex items-center gap-2">
-          <span class="text-emerald-500 text-sm">$</span>
-          <input v-model="terminalPrompt" @keydown.enter="runCommand" placeholder="Describe what you need..." class="flex-1 bg-transparent text-white text-sm outline-none placeholder-gray-600" />
-        </div>
+    <section class="platform-section">
+      <div class="section-heading inverse">
+        <div><span>Madeus operating system</span><h2>Always on. Never another form to configure.</h2></div>
+        <p>These are platform intelligence layers, not separate products. They improve every request automatically and become visible only when their evidence helps you decide.</p>
       </div>
-      <div v-if="routeInfo" class="flex items-center justify-between bg-blue-50 rounded-lg px-4 py-2.5 border border-blue-200">
-        <div class="flex items-center gap-2.5 text-xs">
-          <span class="text-blue-500 font-medium">Auto-routed</span>
-          <span class="px-2 py-0.5 rounded bg-blue-100 text-blue-700 font-medium">{{ modelLabel(selectedModel) }}</span>
-          <span class="px-2 py-0.5 rounded bg-gray-200 text-gray-700">{{ selectedKind }}</span>
-          <span class="px-2 py-0.5 rounded bg-gray-200 text-gray-700">{{ selectedMode }}</span>
-        </div>
-        <button @click="showOverride = !showOverride" class="text-[10px] text-blue-400 hover:text-blue-600">{{ showOverride ? 'hide' : 'override' }}</button>
+      <div class="platform-grid">
+        <article v-for="(item, index) in alwaysOn" :key="item.name"><b>{{ String(index + 1).padStart(2, '0') }}</b><div><h3>{{ item.name }}</h3><p>{{ item.summary }}</p></div><span>Active</span></article>
       </div>
-      <div v-if="showOverride" class="bg-gray-50 border border-gray-200 rounded-lg p-3 space-y-2">
-        <div class="text-[9px] text-gray-400 uppercase tracking-wider">Manual Override</div>
-        <div class="flex flex-wrap gap-1"><button v-for="m in MODELS" :key="m.value" @click="selectedModel = m.value" class="px-2 py-1 text-[10px] rounded border transition-colors" :class="selectedModel === m.value ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-500 border-gray-200'">{{ m.label }}</button></div>
-        <div class="flex gap-4">
-          <div class="flex flex-wrap gap-1"><button v-for="k in ['build','fix','research','qa','deploy','canary']" :key="k" @click="selectedKind = k" class="px-2 py-1 text-[10px] rounded border" :class="selectedKind === k ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-500 border-gray-200'">{{ k }}</button></div>
-          <div class="flex flex-wrap gap-1"><button v-for="md in ['build','research','efficiency','speculative']" :key="md" @click="selectedMode = md" class="px-2 py-1 text-[10px] rounded border" :class="selectedMode === md ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-gray-500 border-gray-200'">{{ md }}</button></div>
-        </div>
-      </div>
-      <div class="flex items-center gap-3">
-        <select v-model="selectedProject" class="bg-white border border-gray-200 rounded px-2 py-2 text-xs text-gray-700">
-          <option v-for="p in projects" :key="p.id" :value="p.id">{{ p.name }}</option>
-        </select>
-        <button @click="runCommand" :disabled="terminalLoading || !terminalPrompt.trim()" class="px-6 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition-colors disabled:opacity-40">{{ terminalLoading ? 'Routing...' : '→ Execute' }}</button>
-      </div>
-    </div>
+    </section>
 
-    <!-- CADE Bots -->
-    <div v-else-if="activeDomain === 'bots'" class="p-6 max-w-4xl space-y-4">
-      <h2 class="text-lg font-semibold text-gray-900" style="font-family: 'Fraunces', serif;">CADE Bot Fleet</h2>
-      <p class="text-xs text-gray-500">60 bots across 15 groups powering automated quality, analytics, and optimization.</p>
-      <div class="space-y-2">
-        <div v-for="b in CADE_BOTS" :key="b.name" class="bg-white border border-gray-200 rounded-xl p-4 flex items-center justify-between">
-          <div class="flex items-center gap-3">
-            <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
-            <div>
-              <div class="text-sm text-gray-900">{{ b.name }}</div>
-              <div class="text-[10px] text-gray-400">{{ b.group }}</div>
-            </div>
-          </div>
-          <span class="text-[10px] text-emerald-600 font-medium">{{ b.status }}</span>
-        </div>
-      </div>
-    </div>
-  </div>
+    <section v-if="recentTasks.length" class="content-section recent-section">
+      <div class="section-heading"><div><span>Portfolio activity</span><h2>Recently routed</h2></div></div>
+      <div class="recent-list"><article v-for="task in recentTasks" :key="task.id"><i :class="stateClass(task.state)" /><strong>{{ task.slug }}</strong><span>{{ task.kind || 'work' }}</span><small>{{ task.state }}</small></article></div>
+    </section>
+  </main>
 </template>
+
+<style scoped>
+.command-page{min-height:100%;background:#fafafa;color:#111}.command-hero{padding:76px 40px 64px;border-bottom:1px solid #e7e7e7;background:radial-gradient(circle at 75% 0,#e8eeff 0,transparent 28%),linear-gradient(#fff,#fafafa)}.command-hero>*{max-width:1120px;margin-left:auto;margin-right:auto}.hero-kicker,.eyebrow,.section-heading span{font-size:11px;font-weight:700;letter-spacing:.13em;text-transform:uppercase;color:#5b5bd6}.pulse-dot{display:inline-block;width:7px;height:7px;margin-right:8px;border-radius:50%;background:#6d5dfc;box-shadow:0 0 0 5px #6d5dfc18}.command-hero h1{margin-top:22px;font-size:clamp(42px,6vw,76px);line-height:.98;letter-spacing:-.055em;font-weight:650}.command-hero h1 span{color:#777}.command-hero>p{margin-top:24px;max-width:760px;margin-left:calc((100% - 1120px)/2);font-size:17px;line-height:1.65;color:#626262}.outcome-box{margin-top:38px;padding:18px;border:1px solid #d9d9d9;border-radius:18px;background:#fff;box-shadow:0 20px 60px #1111}.outcome-label{font-size:12px;font-weight:700;color:#222}.outcome-box textarea{width:100%;resize:none;border:0;outline:0;padding:14px 0;font-size:20px;line-height:1.5;color:#111}.outcome-footer{display:flex;gap:18px;align-items:center;padding-top:14px;border-top:1px solid #eee}.project-select{display:flex;flex-direction:column;gap:3px}.project-select span{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:#999}.project-select select{min-width:180px;border:0;background:#f4f4f4;border-radius:8px;padding:8px 10px;font-size:12px}.autopilot-copy{display:flex;flex:1;gap:10px;align-items:center;font-size:11px;color:#777}.autopilot-copy b{color:#5b5bd6}.outcome-footer>button{border:0;border-radius:10px;padding:12px 22px;background:#111;color:#fff;font-weight:650}.outcome-footer>button:disabled{opacity:.35}.routing-notice{margin-top:12px;font-size:12px;color:#5252b8}.project-choices{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}.project-choices button{border:1px solid #d8d8d8;border-radius:99px;background:#fff;padding:7px 11px;font-size:11px}.content-section,.platform-section{padding:72px 40px}.content-section>* , .platform-section>*{max-width:1120px;margin-left:auto;margin-right:auto}.section-heading{display:flex;justify-content:space-between;gap:40px;align-items:end;margin-bottom:28px}.section-heading h2{margin-top:8px;font-size:30px;letter-spacing:-.035em}.section-heading>p{max-width:480px;font-size:13px;line-height:1.6;color:#737373}.center-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}.center-card{min-height:290px;padding:24px;border:1px solid #e0e0e0;border-radius:16px;background:#fff;color:inherit;text-decoration:none;transition:.2s}.center-card:hover{transform:translateY(-3px);border-color:#b7b2fa;box-shadow:0 18px 44px #1111110f}.center-top{display:flex;justify-content:space-between}.center-icon{display:grid;width:38px;height:38px;place-items:center;border-radius:10px;background:#f1efff;color:#4f46c8}.open-arrow{color:#aaa}.center-card h3{margin-top:10px;font-size:24px;letter-spacing:-.03em}.center-card p{margin-top:10px;min-height:63px;font-size:13px;line-height:1.6;color:#666}.action-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:18px}.action-list span{padding:6px 8px;border-radius:6px;background:#f6f6f6;font-size:10px;color:#555}.platform-section{background:#111;color:#fff}.section-heading.inverse span{color:#9e95ff}.section-heading.inverse>p{color:#999}.platform-grid{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid #333}.platform-grid article{display:grid;grid-template-columns:42px 1fr auto;gap:10px;padding:22px 12px;border-bottom:1px solid #2d2d2d}.platform-grid article:nth-child(odd){border-right:1px solid #2d2d2d}.platform-grid b{font:11px monospace;color:#666}.platform-grid h3{font-size:14px}.platform-grid p{margin-top:5px;font-size:11px;line-height:1.5;color:#888}.platform-grid article>span{align-self:start;color:#76d69a;font-size:9px;text-transform:uppercase;letter-spacing:.1em}.recent-section{padding-top:56px}.recent-list article{display:grid;grid-template-columns:12px 1fr auto 80px;align-items:center;gap:12px;padding:14px 4px;border-bottom:1px solid #e6e6e6;font-size:12px}.recent-list i{width:7px;height:7px;border-radius:50%;background:#aaa}.recent-list i.done{background:#35a561}.recent-list i.running{background:#6658e8}.recent-list i.failed{background:#e04949}.recent-list span,.recent-list small{color:#888}@media(max-width:850px){.center-grid{grid-template-columns:1fr 1fr}.command-hero>p{margin-left:auto}.section-heading{align-items:start;flex-direction:column}.platform-grid{grid-template-columns:1fr}.platform-grid article:nth-child(odd){border-right:0}}@media(max-width:620px){.command-hero,.content-section,.platform-section{padding:44px 20px}.center-grid{grid-template-columns:1fr}.outcome-footer{align-items:stretch;flex-direction:column}.autopilot-copy{align-items:start;flex-direction:column}.project-select select{width:100%}.platform-grid article{grid-template-columns:30px 1fr}.platform-grid article>span{display:none}}
+</style>
