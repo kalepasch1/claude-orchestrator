@@ -221,6 +221,10 @@ const insightNotice = ref('')
 const expandedInsightId = ref('')
 const approvalRequired = ref<Record<string, boolean>>({})
 const rolloutMode = ref<Record<string, string>>({})
+function useCadePrompt(value: string) {
+  terminalPrompt.value = value
+  routeInfo.value = 'CADE outcome loaded · routing will be revalidated at execution time'
+}
 
 const INSIGHT_PLAYBOOK: Record<string, { recommendation: string; outcome: string }> = {
   archetypes: { recommendation: 'Simplify the affected journey with progressive disclosure, clearer primary actions, and role-aware shortcuts.', outcome: 'Fewer abandoned journeys and faster time to first value.' },
@@ -813,6 +817,14 @@ watch(slug, () => { refreshInsights() })
 
             <!-- DOMAIN-SPECIFIC CAPABILITIES below the app + command workbench -->
             <div class="p-4 space-y-4">
+              <CadeOperatingSystem
+                :app="APPS.find(a => a.id === selectedApp)?.name || selectedApp"
+                :capability="cap.name"
+                :domain="cap.domain"
+                :recommendation="insightsForActive[0]?.recommendation"
+                :outcome="insightsForActive[0]?.outcome"
+                @use-prompt="useCadePrompt"
+              />
               <div class="flex items-end justify-between gap-4">
                 <div>
                   <div class="text-[10px] font-semibold uppercase tracking-[0.16em] text-gray-400">Capability workspace</div>
