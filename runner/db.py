@@ -375,7 +375,15 @@ def _is_recovery_task(t):
 def _is_release_fix_task(t):
     slug = str((t or {}).get("slug") or "")
     note = str((t or {}).get("note") or "").lower()
-    return slug.startswith(RELEASE_FIX_PREFIXES) or "release_train" in note or "vercel" in note
+    if slug.startswith(("qafix-", "buildfix-", "deployfix-", "copyfix-")):
+        return True
+    if slug.startswith("relfix-"):
+        # `relfix-*` is also used by the improvement miner for speculative
+        # orchestrator ideas. Those are valuable, but they are not production
+        # release blockers and must not monopolize the emergency hot lane.
+        return any(marker in note for marker in
+                   ("release_train", "release gate", "staging/prod", "auto-queued", "vercel"))
+    return "release_train" in note or "vercel" in note
 
 
 def _is_improvement_task(t):
