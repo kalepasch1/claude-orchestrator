@@ -499,6 +499,9 @@ def _refresh_staging_with_prod(repo, prod):
                             f"release-train: refresh {STAGING} from {prod}", prod],
                            cwd=tmp, capture_output=True, text=True, timeout=300)
         if r.returncode != 0:
+            repaired, repair_note = _repair_lockfile_only_merge(tmp)
+            if repaired:
+                return True, repair_note
             subprocess.run(["git", "merge", "--abort"], cwd=tmp, capture_output=True)
             log = ((r.stdout or "")[-1500:] + "\n" + (r.stderr or "")[-1500:]).strip()
             return False, log or "staging/prod merge conflict"
@@ -515,6 +518,52 @@ def _refresh_staging_with_prod(repo, prod):
         _git(repo, "worktree", "remove", "--force", tmp)
         shutil.rmtree(tmp, ignore_errors=True)
         _git(repo, "worktree", "prune")
+
+
+def _repair_lockfile_only_merge(worktree):
+    """Regenerate lockfiles when they are the only production-refresh conflict.
+
+    Lockfiles are generated artifacts; routing these conflicts through an LLM repair
+    lane created days of duplicate relfix tasks. Regenerate from the already-merged
+    manifest with lifecycle scripts disabled, then finish the existing merge commit.
+    Source conflicts remain fail-closed for normal scrutiny.
+    """
+    unresolved = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=U"], cwd=worktree,
+        capture_output=True, text=True, timeout=30)
+    files = [x.strip() for x in (unresolved.stdout or "").splitlines() if x.strip()]
+    lockfiles = {"package-lock.json", "pnpm-lock.yaml", "yarn.lock"}
+    if unresolved.returncode != 0 or not files or any(x not in lockfiles for x in files):
+        return False, "not a lockfile-only conflict"
+    for name in files:
+        take = subprocess.run(["git", "checkout", "--theirs", "--", name],
+                              cwd=worktree, capture_output=True, text=True, timeout=30)
+        if take.returncode != 0:
+            return False, f"could not seed {name} for regeneration"
+        if name == "package-lock.json":
+            cmd = ["npm", "install", "--package-lock-only", "--ignore-scripts",
+                   "--prefer-offline", "--no-audit", "--fund=false"]
+        elif name == "pnpm-lock.yaml":
+            cmd = ["pnpm", "install", "--lockfile-only", "--no-frozen-lockfile",
+                   "--ignore-scripts", "--prefer-offline"]
+        else:
+            cmd = ["yarn", "install", "--mode=update-lockfile", "--ignore-scripts"]
+        generated = subprocess.run(cmd, cwd=worktree, capture_output=True, text=True, timeout=300)
+        if generated.returncode != 0:
+            return False, f"{name} regeneration failed: {((generated.stderr or generated.stdout or '')[-300:])}"
+    added = subprocess.run(["git", "add", "--", *files], cwd=worktree,
+                           capture_output=True, text=True, timeout=30)
+    if added.returncode != 0:
+        return False, "could not stage regenerated lockfile"
+    remaining = subprocess.run(["git", "diff", "--name-only", "--diff-filter=U"],
+                               cwd=worktree, capture_output=True, text=True, timeout=30)
+    if (remaining.stdout or "").strip():
+        return False, "unresolved files remain after lockfile regeneration"
+    committed = subprocess.run(["git", "commit", "--no-edit"], cwd=worktree,
+                               capture_output=True, text=True, timeout=60)
+    if committed.returncode != 0:
+        return False, f"regenerated lockfile commit failed: {((committed.stderr or '')[-300:])}"
+    return True, "staging refreshed; lockfile-only conflict regenerated deterministically"
 
 
 def _merge_into_staging(repo, branch):
