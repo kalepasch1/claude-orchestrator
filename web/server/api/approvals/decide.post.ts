@@ -61,6 +61,14 @@ export default defineEventHandler(async (event) => {
         await sb.from('workforce_lifecycle_cases').update({ status: 'onboarding', updated_at: now }).eq('action_run_id', businessRun.id).eq('status', 'preboarding')
         await sb.from('business_opportunities').update({ state: 'review', updated_at: now }).eq('action_run_id', businessRun.id).eq('state', 'evidence_required')
       }
+    } else {
+      const { data: contract } = await sb.from('legal_contracts').select('id,current_version,approval_id').eq('id', card.slug).maybeSingle()
+      if (contract && contract.approval_id === data.id) {
+        const lifecycle = data.status === 'approved' ? 'approved' : 'cancelled'
+        const transition = await sb.from('legal_contracts').update({ lifecycle, updated_at: now }).eq('id', contract.id).eq('approval_id', data.id)
+        if (transition.error) throw createError({ statusCode: 500, message: 'legal_contract_transition_failed' })
+        await sb.from('legal_contract_reviews').insert({ contract_id: contract.id, version: contract.current_version, reviewer_type: 'counsel', status: data.status === 'approved' ? 'accepted' : 'changes_requested', score: data.status === 'approved' ? 1 : 0, findings: [], evidence: { approval_id: data.id, decided_at: now, approver, authorization_is_not_signature_or_delivery: true }, reviewer_id: null })
+      }
     }
   }
   return { ok: true, approval: data }

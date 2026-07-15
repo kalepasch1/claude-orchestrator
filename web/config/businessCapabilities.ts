@@ -1,10 +1,11 @@
-export type BusinessDomain = 'workforce' | 'finance' | 'creative' | 'operations'
+export type BusinessDomain = 'workforce' | 'finance' | 'creative' | 'operations' | 'legal'
 export type BusinessRisk = 'low' | 'medium' | 'high'
 export interface BusinessCapability { id: string; domain: BusinessDomain; name: string; summary: string; outcome: string; risk: BusinessRisk; action: string; requires: string[] }
 export const BUSINESS_DOMAINS = [
   { id: 'operations' as const, label: 'Command', icon: '◈', summary: 'One prioritized operating plan across every business line.' },
   { id: 'workforce' as const, label: 'People', icon: '○', summary: 'Consent-first onboarding, agreements, capacity, benefits, and development.' },
   { id: 'finance' as const, label: 'Money', icon: '$', summary: 'Expenses, revenue, payments, cash, controls, and review-ready tax strategy.' },
+  { id: 'legal' as const, label: 'Legal', icon: '§', summary: 'Draft, review, negotiate, approve, issue, sign, and manage every business agreement.' },
   { id: 'creative' as const, label: 'Studio', icon: '✦', summary: 'Motion, Photoshop-class image editing, 3D, and governed production.' },
 ] as const
 export const BUSINESS_CAPABILITIES: BusinessCapability[] = [
@@ -16,6 +17,9 @@ export const BUSINESS_CAPABILITIES: BusinessCapability[] = [
   { id: 'expense', domain: 'finance', name: 'Expense intelligence', summary: 'Normalize transactions and receipts, detect duplicates and policy exceptions, and prepare auditable categorization.', outcome: 'Exception-focused expense review', risk: 'medium', action: 'expense_review', requires: [] },
   { id: 'cash', domain: 'finance', name: 'Cash & revenue command', summary: 'Unify income, invoices, payments, obligations, runway, and business-line contribution.', outcome: 'Rolling cash and value forecast', risk: 'medium', action: 'cash_forecast', requires: [] },
   { id: 'tax', domain: 'finance', name: 'Tax opportunity workbench', summary: 'Find evidence-backed timing, entity, deduction, credit, nexus, and compliance opportunities for qualified review.', outcome: 'Advisor-ready opportunity dossier', risk: 'high', action: 'tax_strategy', requires: ['jurisdiction'] },
+  { id: 'contracts', domain: 'legal', name: 'Contract workspace', summary: 'Find a template, merge prompted business terms, draft, redline, negotiate, approve, issue, and retain signature evidence.', outcome: 'Version-pinned contract matter with complete audit trail', risk: 'high', action: 'legal_workspace', requires: [] },
+  { id: 'policy-compiler', domain: 'legal', name: 'Jurisdictional policy compiler', summary: 'Pin verified primary-authority packs to an effective date and route required specialist review.', outcome: 'Immutable policy snapshot with coverage and review reasons', risk: 'high', action: 'legal_policy', requires: [] },
+  { id: 'obligation-radar', domain: 'legal', name: 'Obligation radar', summary: 'Turn signed clauses into owned deadlines, renewals, notices, payments, evidence, and exception alerts.', outcome: 'Exception-driven post-signature operating plan', risk: 'medium', action: 'legal_obligations', requires: [] },
   { id: 'motion', domain: 'creative', name: 'AI motion production', summary: 'Route storyboards, keyframes, animation, video, voice, localization, and QA across connected vendors.', outcome: 'Editable motion package + provenance', risk: 'medium', action: 'creative_motion', requires: ['brief'] },
   { id: 'photoshop', domain: 'creative', name: 'Layered image studio', summary: 'Generate, mask, fill, relight, retouch, composite, resize, and export through Adobe and best-fit image providers.', outcome: 'Layer-aware source + production derivatives', risk: 'medium', action: 'creative_image', requires: ['brief'] },
   { id: '3d', domain: 'creative', name: '3D & spatial studio', summary: 'Generate, texture, remesh, rig, animate, review, and export assets with runtime-specific LODs.', outcome: 'Production 3D package + QA manifest', risk: 'medium', action: 'creative_3d', requires: ['brief'] },
