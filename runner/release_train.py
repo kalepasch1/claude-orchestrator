@@ -402,22 +402,38 @@ def _link_shared_runtime(repo, worktree):
 
 
 def _prepare_generated_types(worktree):
-    """Generate checkout-local framework types before typecheck-oriented QA."""
-    package = os.path.join(worktree, "package.json")
-    tsconfig = os.path.join(worktree, "tsconfig.json")
-    if not os.path.isfile(package) or not os.path.isfile(tsconfig):
-        return True, "not a typed package"
+    """Generate checkout-local framework types for every typed Nuxt package root."""
+    roots = [worktree]
     try:
-        package_text = open(package, encoding="utf-8").read()
-        tsconfig_text = open(tsconfig, encoding="utf-8").read()
-    except OSError as e:
-        return False, str(e)
-    if '"nuxt"' not in package_text or ".nuxt/tsconfig" not in tsconfig_text:
-        return True, "framework generation not required"
-    proc = subprocess.run(["bash", "-lc", "npx nuxi prepare"], cwd=worktree,
-                          capture_output=True, text=True, timeout=180)
-    log = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-4000:]
-    return proc.returncode == 0 and os.path.exists(os.path.join(worktree, ".nuxt", "tsconfig.json")), log
+        import dependency_prewarm
+        roots.extend(dependency_prewarm.package_roots(worktree))
+    except Exception:
+        pass
+    logs = []
+    prepared = 0
+    for root in dict.fromkeys(os.path.abspath(path) for path in roots):
+        package = os.path.join(root, "package.json")
+        tsconfig = os.path.join(root, "tsconfig.json")
+        if not os.path.isfile(package) or not os.path.isfile(tsconfig):
+            continue
+        try:
+            with open(package, encoding="utf-8") as package_file:
+                package_text = package_file.read()
+            with open(tsconfig, encoding="utf-8") as tsconfig_file:
+                tsconfig_text = tsconfig_file.read()
+        except OSError as e:
+            return False, str(e)
+        if '"nuxt"' not in package_text or ".nuxt/tsconfig" not in tsconfig_text:
+            continue
+        proc = subprocess.run(["bash", "-lc", "npx nuxi prepare"], cwd=root,
+                              capture_output=True, text=True, timeout=180)
+        log = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-4000:]
+        logs.append(f"[{os.path.relpath(root, worktree)}]\n{log}")
+        generated = os.path.join(root, ".nuxt", "tsconfig.json")
+        if proc.returncode != 0 or not os.path.exists(generated):
+            return False, "\n".join(logs)
+        prepared += 1
+    return True, "\n".join(logs) if prepared else "framework generation not required"
 
 
 def _qa_ref(repo, ref, command, timeout=1800):
