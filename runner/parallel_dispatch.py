@@ -138,6 +138,12 @@ def _is_api_eligible(task: dict) -> bool:
     """Determine if a task can be dispatched via direct HTTP API (swarm_executor)
     rather than requiring a CLI subprocess."""
     try:
+        # SWARM-FAIL GUARD: if this task already failed through swarm dispatch,
+        # route it to CLI instead of looping endlessly.
+        note = str(task.get("note") or "")
+        if "swarm-parallel-fail" in note:
+            return False  # already failed in swarm — use CLI runner
+
         import pathway_arbiter
         decision = pathway_arbiter.decide(task)
         task["execution_lane"] = decision["lane"]
@@ -161,7 +167,8 @@ def _is_api_eligible(task: dict) -> bool:
         if kind in _CLI_ONLY_KINDS:
             return False
         slug = str(task.get("slug") or "")
-        safe_fast_kind = kind in {"mechanical", "chore", "docs", "cleanup", "test", "canary"}
+        safe_fast_kind = kind in {"mechanical", "chore", "docs", "cleanup", "test", "canary",
+                                  "bugfix", "build", "feature", "improvement", "fused"}
         safe_canary = slug.startswith("secondary-flow-live-canary-") or slug.startswith("canary-")
         if (not safe_fast_kind and not safe_canary
                 and os.environ.get("ORCH_SWARM_COMPLEX_ENABLED", "false").lower()
