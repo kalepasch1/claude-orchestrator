@@ -1097,3 +1097,49 @@
 +
 +
 +[reuse-first: matched qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi]
+
+# 2026-07-15 01:46:16.337353
++PATCH TEMPLATE bc90e8273e95
++Intent: 05ab230efefa 07060650 07062319 1677fc0f7242 3f01f94359a3 490564c811b3 4ff7ba380eac 6096aa2b 8d9a6415255f 9f821ef2b6cc a5f8e22456b6 acceptance adapt adding af84c7190272 affected after agentledger assertion automated based because before behavior
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt:
++- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-2-fix-source-config-tests sim=0.645: PATCH TEMPLATE af84c7190272
++Intent: 07060650 07062319 1677fc0f7242 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being brief briefly build changed checks classes
++Acceptance: preserve existing behavior, make the sma
++- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-2-split-the-failed-build-task-into-smal sim=0.618: PATCH TEMPLATE 4da78398a9b2
++Intent: 07060650 07062319 1677fc0f7242 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being brief briefly build changed classes completed
++Acceptance: preserve existing behavior, make the 
++[patch-template:bc90e8273e95]
++
++PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-2-fix-source-config-tests (similarity 0.573).
++Prior intent: PATCH TEMPLATE af84c7190272
++Intent: 07060650 07062319 1677fc0f7242 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being brief briefly build changed checks classes
++Acceptance: preserve existing behavior, make the sma
++Relevant prior diff excerpt:
++
++
++MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-identify-affected-lines similarity=0.192: PATCH TEMPLATE 4ff7ba380eac
++Intent: 07060650 07062319 6096aa2b a5f8e22456b6 based because being brief build changed descriptions exactly identified large lines modifications module numbers owner parent pareto patch pinpoint previous
++Acceptance: preserve existing behavior, make the smallest mergeable
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4-regenerate-minimal-patch similarity=0.16: PATCH TEMPLATE 8d9a6415255f
++Intent: 05ab230efefa 07060650 07062319 1677fc0f7242 3f01f94359a3 490564c811b3 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being branch branches brief
++Acceptance: preserve existing beha
++
++REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
++SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-2-identify-affected-lines
++SUMMARY: PATCH TEMPLATE 4ff7ba380eac
++Intent: 07060650 07062319 6096aa2b a5f8e22456b6 based because being brief build changed descriptions exactly identified large lines modifications module numbers owner parent pareto patch pinpoint previous
++Acceptance: preserve existing behavior, make the smallest mergeable
++
++- Locate the existing owner module/function before adding new files.
++- Prior merged patterns to adapt:
++- Implement CI/CD pipelines to run these tests as part of the merge process, making it mandatory for changes to pass these tests before being merged into the main branch.
++
++Parent task: improve-enhanced-automated-testing-suite
++
++[reuse-first: matched qafix-pareto-2080-07062319-slice-2-identify-affected-lines]
