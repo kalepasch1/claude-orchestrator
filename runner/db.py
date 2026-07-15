@@ -641,6 +641,9 @@ def claim_task(runner_id):
     )
     evidence_reserved_lanes = max(0, int(os.environ.get("ORCH_EVIDENCE_RESERVED_LANES", "1") or 0))
     evidence_reserve_open = evidence_backlog and active_evidence < evidence_reserved_lanes
+    recovery_reserved_lanes = max(0, int(os.environ.get("ORCH_RECOVERY_RESERVED_LANES", "0") or 0))
+    recovery_reserve_open = (recovery_backlog
+                             and sum(active_recovery_by_project.values()) < recovery_reserved_lanes)
     try:
         import blocker_portfolio
         blocker_scores = blocker_portfolio.scores(queued)
@@ -702,6 +705,9 @@ def claim_task(runner_id):
         # outcomes instead of staying permanently queued behind release/recovery pressure.
         return 0 if (evidence_reserve_open and _is_evidence_task(t)) else (1 if evidence_reserve_open else 0)
 
+    def _recovery_reserve_rank(t):
+        return 0 if (recovery_reserve_open and _is_recovery_task(t)) else (1 if recovery_reserve_open else 0)
+
     def _release_fix_urgency(t):
         if not _is_release_fix_task(t):
             return 9
@@ -746,6 +752,7 @@ def claim_task(runner_id):
         return per_project_limit
 
     queued.sort(key=lambda t: (_evidence_reserve_rank(t),                        # reserve one vendor-evidence lane
+                               _recovery_reserve_rank(t),                        # turn completed work into mergeable branches
                                _release_fix_rank(t),                             # unblock Vercel releases across the portfolio
                                _release_fix_urgency(t),                          # hot gate fixes before stale EV noise
                                _release_fix_specificity(t),                      # exact current failures before legacy slices
