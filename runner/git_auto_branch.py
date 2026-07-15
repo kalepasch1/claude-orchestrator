@@ -24,9 +24,20 @@ def _git(args, repo):
     """Run a git command, return (stdout, ok)."""
     try:
         r = subprocess.run(["git"] + args, cwd=repo, capture_output=True,
-                           text=True, timeout=GIT_TIMEOUT)
-        return r.stdout.strip(), r.returncode == 0
-    except Exception:
+                           text=True, timeout=GIT_TIMEOUT, check=True) # Added check=True
+        return r.stdout.strip(), True
+    except subprocess.CalledProcessError as e:
+        # Git command failed (non-zero exit code)
+        print(f"git_auto_branch: Git command failed: {' '.join(args)} in {repo}. Stderr: {e.stderr.strip()}", file=sys.stderr)
+        return e.stdout.strip(), False
+    except subprocess.TimeoutExpired:
+        print(f"git_auto_branch: Git command timed out: {' '.join(args)} in {repo}", file=sys.stderr)
+        return "", False
+    except FileNotFoundError:
+        print(f"git_auto_branch: 'git' command not found. Is Git installed and in PATH?", file=sys.stderr)
+        return "", False
+    except Exception as e:
+        print(f"git_auto_branch: An unexpected error occurred running git command: {e}", file=sys.stderr)
         return "", False
 
 
@@ -37,7 +48,8 @@ def _active_slugs():
         try:
             rows = db.select("tasks", {"select": "slug", "state": f"eq.{state}"}) or []
             active.update(r["slug"] for r in rows if r.get("slug"))
-        except Exception:
+        except Exception as e:
+            print(f"git_auto_branch: Error fetching active slugs for state {state}: {e}", file=sys.stderr)
             continue
     return active
 
@@ -48,7 +60,8 @@ def _merged_slugs():
         rows = db.select("tasks", {"select": "slug,updated_at", "state": "eq.MERGED",
                                    "limit": "500"}) or []
         return {r["slug"]: r.get("updated_at", "") for r in rows if r.get("slug")}
-    except Exception:
+    except Exception as e:
+        print(f"git_auto_branch: Error fetching merged slugs: {e}", file=sys.stderr)
         return {}
 
 
@@ -58,7 +71,8 @@ def _done_slugs():
         rows = db.select("tasks", {"select": "slug,updated_at", "state": "eq.DONE",
                                    "limit": "500"}) or []
         return {r["slug"]: r.get("updated_at", "") for r in rows if r.get("slug")}
-    except Exception:
+    except Exception as e:
+        print(f"git_auto_branch: Error fetching done slugs: {e}", file=sys.stderr)
         return {}
 
 
@@ -70,7 +84,7 @@ def cleanup_merged_branches(repo):
     merged = _merged_slugs()
     done = _done_slugs()
     terminal = {**merged, **done}
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.timezone.utc) # Use timezone-aware UTC now
 
     out, ok = _git(["branch", "--list", f"{BRANCH_PREFIX}*"], repo)
     if not ok:
@@ -87,10 +101,17 @@ def cleanup_merged_branches(repo):
         ts_str = terminal.get(slug, "")
         if ts_str:
             try:
-                updated = datetime.datetime.fromisoformat(ts_str.replace("Z", "+00:00").replace("+00:00", ""))
+                updated = datetime.datetime.fromisoformat(ts_str)
+                if updated.tzinfo is None: # If naive, assume UTC
+                    updated = updated.replace(tzinfo=datetime.timezone.utc)
+
                 if (now - updated).total_seconds() < GRACE_HOURS * 3600:
                     continue
-            except Exception:
+            except ValueError as e: # Catch specific error for fromisoformat
+                print(f"git_auto_branch: Error parsing timestamp for slug {slug}: {e}", file=sys.stderr)
+                pass
+            except Exception as e: # Catch other potential errors during comparison
+                print(f"git_auto_branch: Unexpected error during grace period check for slug {slug}: {e}", file=sys.stderr)
                 pass
         _, ok = _git(["branch", "-D", branch], repo)
         if ok:
@@ -140,7 +161,8 @@ def rebase_stale_branches(repo, base="master"):
     # Only rebase queued tasks — running ones shouldn't be disturbed
     try:
         queued = {r["slug"] for r in (db.select("tasks", {"select": "slug", "state": "eq.QUEUED"}) or []) if r.get("slug")}
-    except Exception:
+    except Exception as e:
+        print(f"git_auto_branch: Error fetching queued slugs for rebase: {e}", file=sys.stderr)
         return 0
 
     out, ok = _git(["branch", "--list", f"{BRANCH_PREFIX}*"], repo)
@@ -158,7 +180,8 @@ def rebase_stale_branches(repo, base="master"):
             continue
         try:
             behind = int(behind_out)
-        except ValueError:
+        except ValueError as e:
+            print(f"git_auto_branch: Error parsing rev-list count for branch {branch}: {e}", file=sys.stderr)
             continue
         if behind < 10:  # not stale enough to warrant rebase
             continue
@@ -174,8 +197,8 @@ def run():
     """Periodic branch lifecycle management across all registered projects."""
     try:
         projects = db.select("projects", {"select": "id,name,repo_path,default_base"}) or []
-    except Exception:
-        print("git_auto_branch: could not load projects")
+    except Exception as e:
+        print(f"git_auto_branch: could not load projects: {e}", file=sys.stderr)
         return {"cleaned": 0, "rebased": 0}
     total_cleaned = 0
     total_rebased = 0
