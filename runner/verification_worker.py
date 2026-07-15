@@ -9,7 +9,11 @@ def run_once():
  try:
   r=subprocess.run(['git','worktree','add','--detach',tree,job['commit_sha']],cwd=repo,capture_output=True,text=True)
   if r.returncode:raise RuntimeError(r.stderr[-1000:])
-  added=True;dep=proof_graph.dependency_fingerprint(tree)
+  added=True
+  try:
+   import dependency_prewarm;dependency_prewarm.link_shared_runtime(repo,tree)
+  except Exception:pass
+  dep=proof_graph.dependency_fingerprint(tree)
   for cmd in job.get('commands') or []:
    k=remote_cas.key(repo,job['commit_sha'],dep,cmd,job.get('image') or '');cached=remote_cas.get(k)
    if cached:result['commands'].append({'command':cmd,'ok':True,'cached':True});continue
