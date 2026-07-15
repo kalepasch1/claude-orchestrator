@@ -72,3 +72,26 @@ def ensure_task_worktree(repo: str, slug: str, base: str, setup_script: str) -> 
             detail = (created.stderr or created.stdout or "unknown setup error").strip()[-1000:]
             raise WorktreeIsolationError(f"worktree setup failed: {detail}")
         return validate_task_worktree(repo, slug, wt)
+
+
+def main() -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Create and validate one isolated task worktree")
+    parser.add_argument("--repo", required=True)
+    parser.add_argument("--slug", required=True)
+    parser.add_argument("--base", required=True)
+    parser.add_argument(
+        "--setup-script", default=os.path.join(os.path.dirname(__file__), "setup-worktrees.sh")
+    )
+    args = parser.parse_args()
+    try:
+        print(ensure_task_worktree(args.repo, args.slug, args.base, args.setup_script))
+        return 0
+    except WorktreeIsolationError as exc:
+        print(f"worktree isolation failed: {exc}", file=__import__("sys").stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
