@@ -296,7 +296,7 @@ def insert(table, row, upsert=False):
                 pass
     h = {"Prefer": "return=representation" + (",resolution=merge-duplicates" if upsert else "")}
     try:
-        return _req("POST", f"/rest/v1/{table}", body=row, headers=h)
+        result = _req("POST", f"/rest/v1/{table}", body=row, headers=h)
     except urllib.error.HTTPError as e:
         # 409 = duplicate key: the row already exists, so the write intent is satisfied. A retried
         # task re-inserting an outcome/row used to raise HTTP 409 -> "runner exception: Conflict" ->
@@ -311,6 +311,41 @@ def insert(table, row, upsert=False):
             except Exception:
                 return None
         raise
+
+    # POST-INSERT DEDUP RECONCILIATION (2026-07-15): the SELECT-then-INSERT guard above
+    # prevents same-machine duplicates via _dedup_lock, but two Macs can still race past
+    # the SELECT check simultaneously and both INSERT. This post-insert check detects that
+    # race: if multiple QUEUED rows now share (project_id, slug), keep only the oldest and
+    # DELETE the rest. This closes the cross-machine race window that previously required
+    # the groom_task_queue sentinel to clean up after the fact (producing the
+    # "groomed: duplicate queued slug" failures ~45x/24h).
+    if (table == "tasks" and isinstance(row, dict) and not upsert
+            and row.get("slug") and row.get("project_id")):
+        try:
+            dupes = select("tasks", {
+                "select": "id,created_at",
+                "project_id": f"eq.{row['project_id']}",
+                "slug": f"eq.{row['slug']}",
+                "state": "eq.QUEUED",
+                "order": "created_at.asc",
+            }) or []
+            if len(dupes) > 1:
+                # Keep the oldest (first by created_at), delete the rest
+                keeper_id = dupes[0]["id"]
+                for dup in dupes[1:]:
+                    try:
+                        _req("DELETE", "/rest/v1/tasks",
+                             params={"id": f"eq.{dup['id']}", "state": "eq.QUEUED"})
+                    except Exception:
+                        pass
+                import logging
+                logging.getLogger("db").info(
+                    "post-insert-dedup: removed %d duplicate QUEUED rows for slug=%s (kept %s)",
+                    len(dupes) - 1, row["slug"], keeper_id)
+        except Exception:
+            pass  # fail-soft: groom_task_queue sentinel is the backstop
+
+    return result
 
 
 def upsert(table, row):
