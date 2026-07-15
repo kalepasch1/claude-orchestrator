@@ -138,6 +138,12 @@ def _is_api_eligible(task: dict) -> bool:
     """Determine if a task can be dispatched via direct HTTP API (swarm_executor)
     rather than requiring a CLI subprocess."""
     try:
+        # SWARM-FAIL GUARD: if this task already failed through swarm dispatch,
+        # route it to CLI instead of looping endlessly.
+        note = str(task.get("note") or "")
+        if "swarm-parallel-fail" in note:
+            return False  # already failed in swarm — use CLI runner
+
         import pathway_arbiter
         decision = pathway_arbiter.decide(task)
         task["execution_lane"] = decision["lane"]
@@ -161,7 +167,8 @@ def _is_api_eligible(task: dict) -> bool:
         if kind in _CLI_ONLY_KINDS:
             return False
         slug = str(task.get("slug") or "")
-        safe_fast_kind = kind in {"mechanical", "chore", "docs", "cleanup", "test", "canary"}
+        safe_fast_kind = kind in {"mechanical", "chore", "docs", "cleanup", "test", "canary",
+                                  "bugfix", "build", "feature", "improvement", "fused"}
         safe_canary = slug.startswith("secondary-flow-live-canary-") or slug.startswith("canary-")
         if (not safe_fast_kind and not safe_canary
                 and os.environ.get("ORCH_SWARM_COMPLEX_ENABLED", "false").lower()
@@ -180,6 +187,42 @@ def _is_api_eligible(task: dict) -> bool:
         return True
     except Exception:
         return False
+
+
+import re as _re
+
+# Patterns indicating non-actionable garbage prompts — filter BEFORE dispatch
+_GARBAGE_PROMPT_RE = _re.compile(
+    r"PATCH TEMPLATE [0-9a-f]|patch-template-corrupt|^[\s#\-\*]*$", _re.I)
+
+# Notes indicating a task already went through a quarantine cycle
+_RECYCLED_NOTE_RE = _re.compile(
+    r"swarm-parallel-fail|legacy direct improvement|Meta-decomposition loop|"
+    r"queue-bankruptcy|sentinel-dedupe|semantic-dedupe", _re.I)
+
+
+def _preflight_check(task: dict) -> str:
+    """Pre-dispatch quality gate. Returns '' if OK, or quarantine reason."""
+    prompt = str(task.get("prompt") or "")
+    note = str(task.get("note") or "")
+    attempt = task.get("attempt") or 0
+    if _GARBAGE_PROMPT_RE.search(prompt):
+        return "preflight: PATCH TEMPLATE or garbage prompt (auto-quarantine)"
+    body = prompt
+    for marker in ("## ORCHESTRATION PIPELINE CONTRACT", "## TASK", "## OBJECTIVE"):
+        idx = body.find(marker)
+        if idx >= 0:
+            body = body[idx:]
+    lines = [l for l in body.split("\n") if l.strip() and not l.startswith("- source:")
+             and not l.startswith("- project:") and not l.startswith("- task class:")
+             and not l.startswith("- preflight") and not l.startswith("- strategy")]
+    if len(lines) < 2 and len(prompt) < 80:
+        return "preflight: prompt too short/empty to be actionable"
+    if _RECYCLED_NOTE_RE.search(note):
+        return f"preflight: recycled task ({note[:80]})"
+    if attempt >= 4:
+        return f"preflight: exhausted {attempt} attempts without success"
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -396,10 +439,30 @@ def dispatch_swarm_batch(runner_id: str, active_threads: list = None,
 
         stats["dispatched"] = len(claimed)
 
+        # PREFLIGHT FILTER: auto-quarantine garbage tasks before dispatch
+        dispatchable = []
+        preflight_killed = 0
+        for t in claimed:
+            reason = _preflight_check(t)
+            if reason:
+                try:
+                    db.update("tasks", {"id": t.get("id")}, {
+                        "state": "QUARANTINED", "note": reason, "updated_at": "now()"})
+                    log.info("parallel_dispatch: preflight-quarantine %s: %s",
+                             t.get("slug", "?"), reason)
+                    preflight_killed += 1
+                except Exception:
+                    dispatchable.append(t)  # fail-open
+            else:
+                dispatchable.append(t)
+        if preflight_killed:
+            log.info("parallel_dispatch: preflight filtered %d/%d", preflight_killed, len(claimed))
+        stats["preflight_killed"] = preflight_killed
+
         # Partition into API-eligible vs CLI-only
         api_tasks = []
         cli_tasks = []
-        for t in claimed:
+        for t in dispatchable:
             if _is_api_eligible(t):
                 api_tasks.append(t)
             else:
