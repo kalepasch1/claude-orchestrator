@@ -111,7 +111,7 @@ def compute_marginal_deltas(quality_data=None):
             "cheap_avg": round(cheap_avg, 3),
             "samples": len(expensive_scores) + len(cheap_scores),
             "worth_it": delta >= DELTA_THRESHOLD,
-            "reason": f"delta={delta:.3f} {'>='>= if delta >= DELTA_THRESHOLD else '<'} threshold={DELTA_THRESHOLD}",
+            "reason": f"delta={delta:.3f} {'>=' if delta >= DELTA_THRESHOLD else '<'} threshold={DELTA_THRESHOLD}",
         }
 
     return results

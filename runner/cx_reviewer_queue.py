@@ -52,7 +52,7 @@ def run():
     scored.sort(key=lambda x: x["ev_review"], reverse=True)
     lines = [f"Ranked review queue ({len(scored)} items, override_rate={round(or_rate, 3)}):"]
     for i, s in enumerate(scored[:20], 1):
-        lines.append(f"{i}. [{s[chr(39)+'type'+chr(39) if 0 else 'type'}] {s['title'][:80]}  (EV={s['ev_review']})")
+        lines.append(f"{i}. [{s['type']}] {s['title'][:80]}  (EV={s['ev_review']})")
     try:
         db.insert("inbox", {"kind": "review_queue", "title": f"Review queue: {len(scored)} items",
             "body": chr(10).join(lines)[:3000], "status": "unread"})
