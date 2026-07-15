@@ -405,8 +405,8 @@ def release_blocker_agent():
             os.environ["RELEASE_INTERVAL_HOURS"] = old_interval
         try:
             import release_train
-            release_train.MIN_BATCH = int(os.environ.get("RELEASE_MIN_BATCH", os.environ.get("ORCH_RELEASE_BATCH_MIN", "10")))
-            release_train.RELEASE_INTERVAL_HOURS = float(os.environ.get("RELEASE_INTERVAL_HOURS", os.environ.get("ORCH_RELEASE_INTERVAL_HOURS", "6")))
+            release_train.MIN_BATCH = max(10, int(os.environ.get("RELEASE_MIN_BATCH", os.environ.get("ORCH_RELEASE_BATCH_MIN", "10"))))
+            release_train.RELEASE_INTERVAL_HOURS = max(6.0, float(os.environ.get("RELEASE_INTERVAL_HOURS", os.environ.get("ORCH_RELEASE_INTERVAL_HOURS", "6"))))
         except Exception:
             pass
     try:

@@ -18,6 +18,15 @@ def test_release_defaults_batch_builds():
     assert float(config["RELEASE_INTERVAL_HOURS"]) >= 6
 
 
+def test_release_code_enforces_cost_control_floors():
+    release = (ROOT / "runner" / "release_train.py").read_text()
+    autopilot = (ROOT / "runner" / "autopilot.py").read_text()
+    assert "MIN_BATCH = max(10," in release
+    assert "RELEASE_INTERVAL_HOURS = max(6.0," in release
+    assert "release_train.MIN_BATCH = max(10," in autopilot
+    assert "release_train.RELEASE_INTERVAL_HOURS = max(6.0," in autopilot
+
+
 def test_cowork_executor_cannot_launch_vercel_builds():
     skill = (ROOT / "runner" / "cowork_executor" / "SKILL.md").read_text()
     forbidden = "npx " + "vercel@latest deploy"
