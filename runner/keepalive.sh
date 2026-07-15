@@ -22,6 +22,13 @@ case "${ORCH_CANONICAL_RUNTIME_HOME:-true}" in
     ;;
 esac
 export ORCH_LOG_DIR="${ORCH_LOG_DIR:-$CLAUDE_ORCH_HOME/logs}"
+MAINTENANCE_LOCK="${ORCH_MAINTENANCE_LOCK:-$CLAUDE_ORCH_HOME/maintenance.lock}"
+# A durable incident-maintenance fence. Scheduled tasks may invoke keepalive
+# while recovery is underway; they must not be able to resurrect a writer tree.
+if [[ -e "$MAINTENANCE_LOCK" ]]; then
+  echo "[keepalive] maintenance lock present at $MAINTENANCE_LOCK; runner start blocked" >&2
+  exit 75
+fi
 export ORCH_BATCH_DEV_RELEASE="${ORCH_BATCH_DEV_RELEASE:-true}"
 export ORCH_CODE_MERGE_TARGET="${ORCH_CODE_MERGE_TARGET:-dev}"
 export ORCH_STAGING_BRANCH="${ORCH_STAGING_BRANCH:-orchestrator/dev}"

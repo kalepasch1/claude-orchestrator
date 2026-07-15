@@ -61,6 +61,12 @@ def _acquire_singleton():
 
 
 if __name__ == "__main__":
+    _maintenance_lock = os.environ.get(
+        "ORCH_MAINTENANCE_LOCK", os.path.join(_CANONICAL_RUNTIME_HOME, "maintenance.lock")
+    )
+    if os.path.exists(_maintenance_lock):
+        print(f"maintenance lock present at {_maintenance_lock} — runner start blocked")
+        sys.exit(75)
     try:
         faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
     except Exception as e:
