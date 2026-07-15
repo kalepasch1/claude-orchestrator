@@ -43,6 +43,14 @@ def emit(kind, **fields):
     """Public fail-soft event adapter used by integrations and diagnostics."""
     return events.emit(kind, **fields)
 
+try:
+    import verify as _verify_mod
+except ImportError:
+    _verify_mod = None
+
+# Release-fix slug prefixes — mirrored from db.RELEASE_FIX_PREFIXES for local use
+_RELFIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-", "copyfix-")
+
 MARK = "train"                                   # decided_by prefix => handled by the train
 SKIP_PREFIXES = ("merge-handler", "train")       # cards already handled by any integration path
 MERGE_KINDS = ("verify", "material", "integrate")
@@ -609,6 +617,62 @@ def _attribute_train_outcome(slug, task, outcome, integrated=False):
     return False
 
 
+def _is_relfix(slug):
+    """True when the slug belongs to a release-fix family."""
+    return str(slug or "").startswith(_RELFIX_PREFIXES)
+
+
+def _verify_contract(repo, branch, base, slug, task, project_name):
+    """Contract-first verification gate: cheap-model diff review BEFORE test execution.
+
+    The runner applies verify.review_diff() before integration for tasks it executes
+    itself, but the merge train previously skipped this step entirely -- branches that
+    were approved and queued for the train landed without any diff-level safety review.
+    Release fixes (relfix-*, qafix-*, etc.) are especially risky because they are
+    high-priority, auto-approved, and target production-blocking issues, so an unsafe
+    diff can reach production faster than normal work.
+
+    This gate runs verify.review_diff() on the rebased branch BEFORE tests. A "fail"
+    verdict blocks the merge (same as a TESTFAIL) and routes the task for rework.
+
+    Gated by ORCH_TRAIN_CONTRACT_VERIFY (default "true"). When the env var
+    ORCH_TRAIN_CONTRACT_VERIFY_RELFIX_ONLY is "true" (default), only release-fix
+    slugs are verified; set to "false" to verify every branch in the train.
+
+    Fail-soft: any error during verification is logged and treated as a pass so
+    that verify infrastructure outages never block the merge train.
+    """
+    if not _truthy("ORCH_TRAIN_CONTRACT_VERIFY", default=True):
+        return True, ""
+    relfix_only = _truthy("ORCH_TRAIN_CONTRACT_VERIFY_RELFIX_ONLY", default=True)
+    if relfix_only and not _is_relfix(slug):
+        return True, ""
+    if _verify_mod is None:
+        return True, "verify module unavailable"
+    try:
+        # Collect blast-radius dependents for the verify prompt (same as runner.py)
+        dependents = None
+        try:
+            import blast_radius
+            dependents = blast_radius.dependents(repo, branch, base)
+        except Exception:
+            pass
+        result = _verify_mod.review_diff(
+            repo, base=base, dependents=dependents, project=project_name,
+        )
+        verdict = str(result.get("verdict", "pass")).lower()
+        notes = str(result.get("notes", ""))[:300]
+        reviewer = result.get("by", "unknown")
+        _log(project_name, slug, f"CONTRACT_VERIFY:{verdict.upper()}", f"by {reviewer}: {notes[:120]}")
+        if verdict.startswith("fail"):
+            return False, f"contract verify failed ({reviewer}): {notes}"
+        return True, f"contract verify passed ({reviewer})"
+    except Exception as e:
+        # Fail-soft: verification infra errors must not block the train
+        _log(project_name, slug, "CONTRACT_VERIFY:ERROR", str(e)[:120])
+        return True, f"verify error (fail-soft pass): {e}"
+
+
 def _select_batch(group):
     """Return the project's cards sorted (risk band, then age), DEDUPED by slug.
 
@@ -858,6 +922,18 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
             _attribute_train_outcome(slug, task, "conflict", integrated=False)
             _log(pname, slug, "CONFLICT", f"redo cap {cap} exhausted")
             return "conflict"
+
+    # (2.5) CONTRACT-FIRST VERIFY: cheap-model diff review BEFORE expensive test execution.
+    # Catches unsafe diffs (security regressions, broken error handling) early, especially
+    # for release fixes that are auto-approved and fast-tracked to production.
+    v_ok, v_detail = _verify_contract(repo, branch, base, slug, task, pname)
+    if not v_ok:
+        _task_patch(task, {"state": "TESTFAIL",
+                           "note": f"train: contract verification blocked merge of {branch}: {v_detail[:200]}"})
+        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:VERIFY_FAIL"})
+        _attribute_train_outcome(slug, task, "verify-fail", integrated=False)
+        _log(pname, slug, "VERIFY_FAIL", v_detail[:120])
+        return "verify-fail"
 
     test_cmd = _test_cmd_for(proj, repo)
     # Rebase changes the commit SHA. Freeze the accepted integration candidate
