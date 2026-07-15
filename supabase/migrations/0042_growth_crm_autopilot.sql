@@ -136,12 +136,12 @@ begin
 end $$;
 
 create or replace function sync_growth_crm_accounts() returns trigger language plpgsql as $$
-declare aid uuid;
+declare aid uuid; pcount int := coalesce(((regexp_match(coalesce(new.intent,''),'([0-9]+) properties'))[1])::int,1);
 begin
   if new.account_key is null or new.lead_type not in ('hotel_order','hotel_inquiry') then return new; end if;
   insert into growth_crm_accounts(app,account_key,property_count,lifetime_quantity,expansion_score,next_expansion_at)
-  values(new.app,new.account_key,1,coalesce(new.quantity,0),least(100,20+coalesce(new.quantity,0)::int),now()+interval '30 days')
-  on conflict(app,account_key) do update set lifetime_quantity=growth_crm_accounts.lifetime_quantity+coalesce(new.quantity,0),property_count=growth_crm_accounts.property_count+1,expansion_score=least(100,growth_crm_accounts.expansion_score+15),updated_at=now() returning id into aid;
+  values(new.app,new.account_key,pcount,coalesce(new.quantity,0),least(100,20+coalesce(new.quantity,0)::int+pcount*10),now()+interval '30 days')
+  on conflict(app,account_key) do update set lifetime_quantity=growth_crm_accounts.lifetime_quantity+coalesce(new.quantity,0),property_count=growth_crm_accounts.property_count+pcount,expansion_score=least(100,growth_crm_accounts.expansion_score+15*pcount),updated_at=now() returning id into aid;
   insert into growth_crm_properties(account_id,property_ref,region,status,program_quantity,cadence) values(aid,new.source_ref,new.region,case when new.lead_type='hotel_order' then 'active' else 'prospect' end,coalesce(new.quantity,0),new.frequency) on conflict(account_id,property_ref) do update set program_quantity=excluded.program_quantity,cadence=excluded.cadence,updated_at=now();
   return new;
 end $$;
