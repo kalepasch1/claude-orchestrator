@@ -114,6 +114,7 @@ import graduated_autonomy, live_bidding, multi_agent_pipeline
 import speculative_diff, adaptive_budget, transfer_learning
 import pipeline_fusion, prompt_distillation, output_recycling
 import cade_tournaments
+import branch_lease
 import queue_elimination, adaptive_pipeline, unified_knowledge
 import fast_path, batch_fusion, proof_propagation
 import intent_compiler, ensemble_predictor, bankruptcy_decompose
@@ -179,6 +180,10 @@ def projects(project_id=None):
 def set_state(task_id, **kw):
     kw["updated_at"] = "now()"
     db.update("tasks", {"id": task_id}, kw)
+    # Every non-running transition ends this executor's right to mutate the
+    # branch. A crashed worker is covered by the server-side lease TTL.
+    if kw.get("state") in {"QUEUED", "DONE", "MERGED", "BLOCKED", "QUARANTINED"}:
+        branch_lease.release(str(task_id))
 
 
 def _next_non_claude_coder(task, exclude=()):
@@ -676,7 +681,7 @@ def run_task(t):
         if kind == "speculative":
             _spec_acct = POOL.current(); POOL.record_use(_spec_acct)
             env = dict(os.environ); env.update(POOL.env_for(_spec_acct))
-            res = speculative.run(repo, slug, base, prompt, test_cmd, env=env)
+            res = speculative.run(repo, slug, base, prompt, test_cmd, env=env, task=t)
             w = res["winner"]
             if not w:
                 set_state(t["id"], state="BLOCKED", note="no speculative variant passed")
@@ -686,6 +691,12 @@ def run_task(t):
             set_state(t["id"], state=result, model=w["model"], note=f"speculative winner {w['vslug']} ({w['model']})")
             record(t, name, slug, kind, w["model"], POOL.current(), 1, True, result == "MERGED", "", t0); return
         attempt = 0
+        branch_ref = f"agent/{slug}"
+        _branch_lease = branch_lease.acquire(t, repo, branch_ref, base)
+        if not _branch_lease:
+            set_state(t["id"], state="QUEUED",
+                      note=f"branch-lease-held: another executor owns {branch_ref}")
+            return
         # ADAPTIVE RETRY BUDGET: use historical success data to set max retries
         _max_attempts = 4
         try:
@@ -697,6 +708,10 @@ def run_task(t):
             _log.debug("hook retry_budget failed: %s", e)
         while attempt < _max_attempts:
             attempt += 1
+            if not branch_lease.heartbeat(str(t["id"])):
+                set_state(t["id"], state="QUEUED",
+                          note=f"branch-lease-lost: refusing to mutate {branch_ref}")
+                return
             # COST-FIRST model routing: cheapest model that can do the job, escalate one tier
             # per failed attempt. Opus is used ONLY for genuinely heavy work or after retries —
             # an intake "opus"/"sonnet" tag is treated as advisory, NOT a license to burn Opus.
@@ -751,6 +766,7 @@ def run_task(t):
                 wt = worktree_isolation.ensure_task_worktree(
                     repo, slug, base,
                     os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"),
+                    task_id=str(t["id"]), lease_token=_branch_lease["token"],
                 )
             except worktree_isolation.WorktreeIsolationError as e:
                 set_state(t["id"], state="RETRY", note=f"git-isolation blocked execution: {e}")
@@ -895,7 +911,6 @@ def run_task(t):
             # that branch instead of spending another model call. Ensure the branch has a worktree,
             # because downstream verify/build steps operate on filesystem paths.
             _integrating_existing = False
-            branch_ref = f"agent/{slug}"
             if not _must_run_agent_for_evidence(t, slug):
                 try:
                     _av = subprocess.run(["git", "rev-list", "--count", f"{base}..{branch_ref}"],
@@ -908,8 +923,13 @@ def run_task(t):
                             except Exception as e:
                                 _log.debug("hook free_branch failed: %s", e)
                             os.makedirs(os.path.dirname(wt), exist_ok=True)
-                            subprocess.run(["git", "worktree", "add", "-f", wt, branch_ref],
-                                           cwd=repo, capture_output=True, timeout=180)
+                            # setup-worktrees owns creation; never force-adopt a branch
+                            # that another task may still have checked out.
+                            subprocess.run(
+                                [os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"), slug, base,
+                                 str(t["id"]), _branch_lease["token"]],
+                                cwd=repo, capture_output=True, timeout=180,
+                            )
                             # Lock while in use — concurrent GC/prune must not delete it mid-task.
                             subprocess.run(["git", "worktree", "lock", wt, "--reason", f"task {slug} in use"],
                                            cwd=repo, capture_output=True, timeout=30)

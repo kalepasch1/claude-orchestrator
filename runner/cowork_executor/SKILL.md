@@ -3,7 +3,7 @@ name: cowork-executor
 description: High-throughput autonomous task executor for claude-orchestrator. Claims queued tasks, edits only validated isolated worktrees, pushes agent branches, and hands them to the canonical merge/release train.
 ---
 
-# Cowork Executor v7.0 — Fail-Closed Worktrees · Enriched Prompts · Serialized Release Train
+# Cowork Executor v7.1 — Fail-Closed Worktrees · Single-Writer Branch Delivery
 
 **`<run-summary>` IS FORBIDDEN until Step 4. Writing one before all tasks are DONE ends the session early and creates zombies.**
 
@@ -117,9 +117,24 @@ UPDATE tasks SET state='QUARANTINED', note='v6.3: binary PATCH TEMPLATE stub' WH
 Move to next task. This is the ONLY quarantine reason.
 
 ### 3b. Allocate and validate the isolated worktree
+Acquire the same server-side branch lease used by orchestrator-native. Keep `lease_token`; if
+`acquired` is false, return the task to `QUEUED` with `branch-lease-held`. Never inspect, reset,
+or edit the other writer's worktree.
+
+```sql
+WITH lease AS (SELECT gen_random_uuid() AS token)
+SELECT token AS lease_token,
+       acquire_branch_execution_lease(
+         '{project_id}', 'agent/{slug}', '{id}', '{my_account}', token,
+         NULL, NULL, 3600
+       ) AS acquired
+FROM lease;
+```
+
 ```bash
 WORKTREE=$(python3 /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/worktree_isolation.py \
-  --repo "{repo_path}" --slug "{slug}" --base "{base_branch}")
+  --repo "{repo_path}" --slug "{slug}" --base "{base_branch}" \
+  --task-id "{id}" --lease-token "{lease_token}")
 test -n "$WORKTREE" && test "$WORKTREE" != "{repo_path}" && test -d "$WORKTREE"
 git -C "$WORKTREE" symbolic-ref --quiet --short HEAD | grep -Fx "agent/{slug}"
 ```
@@ -131,6 +146,15 @@ UPDATE tasks SET state='RETRY',
 WHERE id='{id}';
 ```
 Then move to the next task. Do not improvise a checkout and do not edit `{repo_path}`.
+
+Before each repair cycle, renew ownership. If renewal returns false, stop immediately and requeue;
+the executor has lost the right to write this ref.
+
+```sql
+SELECT heartbeat_branch_execution_lease(
+  '{project_id}', 'agent/{slug}', '{id}', '{lease_token}', 3600
+);
+```
 
 ### 3c. Fetch pre-optimized enrichment (runner.py pre-work)
 The runner.py intelligence pipeline (prompt_assembler, reuse_first, queue_preopt) has already pre-processed this task. Retrieve it:
@@ -170,9 +194,19 @@ If `nothing to commit` → create `docs/{slug}-stub.md` with implementation note
 
 ### 3f. Push
 ```bash
-git push origin HEAD:agent/{slug} --force-with-lease 2>&1 | tail -3
+git push origin HEAD:agent/{slug} 2>&1 | tail -3
 ```
-Push failure → log it, still mark DONE (merge-train handles push retry).
+Push failure is not delivery success: record a failed `branch_delivery` outcome and
+return the task to `QUEUED` for branch-share recovery. Never solve a non-fast-forward push with
+`--force`; preserve both sides and route the conflict through integration.
+
+After a successful push, or after the worktree has been safely removed on failure, release ownership:
+
+```sql
+SELECT release_branch_execution_lease(
+  '{project_id}', 'agent/{slug}', '{id}', '{lease_token}'
+);
+```
 
 ### 3g. Mark DONE
 ```sql
