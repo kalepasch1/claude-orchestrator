@@ -67,7 +67,17 @@ def status():
         # restart briefly leaves several fresh base rows, prefer it; otherwise
         # use the highest active count rather than whichever PID wrote last.
         schedulers = [r for r in candidates if str(r.get("runner_id") or "").endswith("-scheduler")]
-        chosen = max(schedulers or candidates, key=lambda r: r.get("last_seen") or "")
+        freshest = max(candidates, key=lambda r: r.get("last_seen") or "")
+        chosen = freshest
+        if schedulers:
+            scheduler = max(schedulers, key=lambda r: r.get("last_seen") or "")
+            try:
+                sched_at = datetime.datetime.fromisoformat(str(scheduler.get("last_seen")).replace("Z", "+00:00"))
+                fresh_at = datetime.datetime.fromisoformat(str(freshest.get("last_seen")).replace("Z", "+00:00"))
+                if (fresh_at - sched_at).total_seconds() <= int(os.environ.get("ORCH_SCHEDULER_HEARTBEAT_GRACE_S", "60")):
+                    chosen = scheduler
+            except Exception:
+                pass
         row = dict(chosen)
         row["hostname"] = host
         if not base:

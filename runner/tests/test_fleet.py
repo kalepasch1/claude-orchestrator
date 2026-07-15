@@ -91,6 +91,18 @@ class LivenessAggregationTest(unittest.TestCase):
         self.assertEqual(s["machines_live"], 1)
         self.assertEqual(s["in_use"], 11)
 
+    def test_stale_scheduler_yields_to_current_runner(self):
+        rows = [
+            _hb("Mac.lan", "Mac.lan-old-scheduler", active=24, age_s=150),
+            _hb("Mac.lan", "Mac.lan-200", active=1, age_s=2),
+        ]
+        fake_db = MagicMock()
+        fake_db.select.return_value = rows
+        with patch.object(fleet, "db", fake_db):
+            s = fleet.status()
+        self.assertEqual(s["in_use"], 1)
+        self.assertEqual(s["machines"][0]["runner"], "Mac.lan-200")
+
     def test_capacity_derives_from_status(self):
         rows = [_hb("Mac.lan", "Mac.lan-1", active=3, age_s=5)]
         fake_db = MagicMock()
