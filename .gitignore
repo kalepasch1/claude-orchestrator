@@ -31,3 +31,4 @@ runner/.env.pre-symlink-merge-*
 .claude/settings.local.json
 
 runner/*.bak.wedgefix
+intake/*.md
