@@ -34,6 +34,8 @@ export default defineNuxtConfig({
   },
   css: ['~/assets/main.css'],
   app: {
+    pageTransition: { name: 'page', mode: 'out-in' },
+    layoutTransition: { name: 'layout', mode: 'out-in' },
     head: {
       title: 'Madeus — Outcome Orchestration',
       meta: [{ name: 'viewport', content: 'width=device-width, initial-scale=1' }],

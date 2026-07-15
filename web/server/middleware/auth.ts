@@ -7,7 +7,7 @@
  *   3. Nuxt Supabase module cookie (`sb-<ref>-auth-token` JSON with .access_token)
  *
  * Validates via supabase.auth.getUser(token) using the service role client,
- * then checks the user's email against the OPS_EMAILS allowlist.
+ * then accepts either a legacy operator email or an active organization membership.
  *
  * Sets event.context.user = { id, email } on success.
  */
@@ -15,6 +15,16 @@ import { createClient } from '@supabase/supabase-js'
 import { createError, getCookie, getHeader, parseCookies, defineEventHandler } from 'h3'
 
 const ACCESS_COOKIE = 'sb-access-token'
+const PUBLIC_ACCESS_PATHS = new Set([
+  '/api/public/access/verify',
+  '/api/public/access/request',
+  '/api/public/access/claim',
+  '/api/public/access/status',
+  // Machine-to-machine delivery hooks authenticate their raw body with an
+  // HMAC in the route; requiring a Supabase user token would make them inert.
+  '/api/webhooks/github',
+  '/api/webhooks/vercel',
+])
 
 const DEFAULT_OPS_EMAILS = 'kalepasch@gmail.com,kale@smrter.us,kale@heretomorrow.us'
 
@@ -58,6 +68,7 @@ export default defineEventHandler(async (event) => {
 
   // Only protect /api/ routes
   if (!path.startsWith('/api/')) return
+  if (PUBLIC_ACCESS_PATHS.has(path.split('?')[0])) return
 
   const token = getAccessToken(event)
   if (!token) {
@@ -100,11 +111,8 @@ export default defineEventHandler(async (event) => {
 
   const allowed = getAllowedEmails()
   if (!allowed.has(email)) {
-    throw createError({
-      statusCode: 403,
-      statusMessage: 'Forbidden',
-      message: 'Email not in ops allowlist',
-    })
+    const { data: membership, error: membershipError } = await supabase.from('orchestrator_org_memberships').select('user_id').eq('user_id', data.user.id).eq('status', 'active').limit(1).maybeSingle()
+    if (membershipError || !membership) throw createError({ statusCode: 403, statusMessage: 'Forbidden', message: 'Active Madeus membership required' })
   }
 
   event.context.user = { id: data.user.id, email }

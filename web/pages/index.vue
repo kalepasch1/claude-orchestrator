@@ -21,6 +21,7 @@ const lastRoute = ref<any>(null)
 const stopLoading = ref(false)
 const globalPaused = ref(false)
 const approvalError = ref('')
+function signalOutcome(tone: 'success' | 'error', title: string, detail: string) { if (import.meta.client) window.dispatchEvent(new CustomEvent('madeus:outcome', { detail: { tone, title, detail } })) }
 
 async function authedFetch<T = any>(url: string, opts: any = {}): Promise<T> {
   const { data: { session } } = await supabase.auth.getSession()
@@ -90,19 +91,20 @@ async function submitIntent(projectId?: string) {
     intent.value = ''
     projectChoice.value = null
     await loadAll()
+    signalOutcome('success', 'Objective accepted', 'Madeus selected the route and moved the objective into governed execution.')
   } catch (error: any) {
     const details = error?.data?.data || error?.data
     if (error?.statusCode === 409 || details?.code === 'project_required') {
       projectChoice.value = { message: details?.message || 'Which project should Madeus change?', projects: details?.projects || projects.value.map(project => ({ id: project.id, name: project.name })) }
-    } else queueError.value = details?.message || error?.message || 'The objective could not be queued.'
+    } else { queueError.value = details?.message || error?.message || 'The objective could not be queued.'; signalOutcome('error', 'Objective not queued', queueError.value) }
   }
   finally { queueLoading.value = false }
 }
 
 async function decide(id: string, status: 'approved' | 'denied') {
   approvalError.value = ''
-  try { await authedFetch('/api/approvals/decide', { method: 'POST', body: { id, status, approver: user.value?.email || 'dashboard' } }); await loadAll() }
-  catch (error: any) { approvalError.value = error?.data?.message || error?.message || 'The decision could not be saved.' }
+  try { await authedFetch('/api/approvals/decide', { method: 'POST', body: { id, status, approver: user.value?.email || 'dashboard' } }); await loadAll(); signalOutcome('success', status === 'approved' ? 'Approved' : 'Declined', status === 'approved' ? 'Execution can continue within the reviewed boundary.' : 'Dependent execution has been stopped.') }
+  catch (error: any) { approvalError.value = error?.data?.message || error?.message || 'The decision could not be saved.'; signalOutcome('error', 'Decision not saved', approvalError.value) }
 }
 async function togglePause() {
   stopLoading.value = true

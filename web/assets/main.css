@@ -227,3 +227,30 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 .orchestrator-shell.motion-none *, .orchestrator-shell.motion-reduced * { animation: none !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 .orchestrator-shell.keyboard-first :focus-visible { outline: 3px solid #2563eb; outline-offset: 3px; }
 @media (prefers-reduced-motion: reduce) { *, .live-dot { animation: none !important; transition-duration: .01ms !important; } }
+
+/* Shared interaction and motion language — restrained, legible, and system-wide. */
+html { scroll-behavior: smooth; }
+body { min-width: 320px; background: #f7f8f5; }
+::selection { background: #dcd8ff; color: #17131f; }
+:focus-visible { outline: 2px solid #635bff; outline-offset: 3px; }
+button, a, input, textarea, select { -webkit-tap-highlight-color: transparent; }
+button:not(:disabled), [role='button'], a { transition: color .18s ease, background-color .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease, opacity .18s ease; }
+button:not(:disabled):active, [role='button']:active { transform: translateY(1px) scale(.99); }
+.app-main { position: relative; isolation: isolate; background: radial-gradient(900px 420px at 92% -12%, rgba(99,91,255,.075), transparent 60%), radial-gradient(700px 420px at 5% 105%, rgba(57,165,105,.06), transparent 64%), #fbfcfa; }
+.app-main::before { content: ''; position: fixed; z-index: -1; inset: 0; pointer-events: none; opacity: .28; background-image: linear-gradient(rgba(15,15,15,.025) 1px, transparent 1px), linear-gradient(90deg, rgba(15,15,15,.025) 1px, transparent 1px); background-size: 44px 44px; mask-image: linear-gradient(to bottom, #000, transparent 68%); }
+.app-sidebar { box-shadow: 18px 0 60px rgba(17,17,17,.025); }
+.nav-item { position: relative; overflow: hidden; }
+.nav-item::after { content: ''; position: absolute; inset: 0; opacity: 0; background: linear-gradient(90deg, transparent, rgba(99,91,255,.055), transparent); transform: translateX(-100%); transition: transform .45s ease, opacity .25s ease; }
+.nav-item:hover::after { opacity: 1; transform: translateX(100%); }
+.page-enter-active, .page-leave-active { transition: opacity .24s ease, transform .28s cubic-bezier(.2,.8,.2,1), filter .24s ease; }
+.page-enter-from { opacity: 0; transform: translateY(8px); filter: blur(3px); }
+.page-leave-to { opacity: 0; transform: translateY(-4px); filter: blur(2px); }
+.layout-enter-active, .layout-leave-active { transition: opacity .2s ease; }
+.layout-enter-from, .layout-leave-to { opacity: 0; }
+.app-main main > section, .app-main main > article, .app-main .section-block { animation: reveal-up .46s both cubic-bezier(.2,.8,.2,1); }
+.app-main main > section:nth-child(2), .app-main .section-block:nth-child(2) { animation-delay: .04s; }
+.app-main main > section:nth-child(3), .app-main .section-block:nth-child(3) { animation-delay: .08s; }
+.app-main :is(.connector-card,.capability-card,.overview-card,.activity-table,.intent-console,.suite-card) { will-change: transform; }
+.app-main :is(.connector-card,.capability-card,.overview-card):hover { transform: translateY(-3px); box-shadow: 0 20px 56px rgba(20,20,20,.075); }
+@keyframes reveal-up { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } .page-enter-active,.page-leave-active,.layout-enter-active,.layout-leave-active { transition: none; } .app-main main > section,.app-main main > article,.app-main .section-block { animation: none; } }

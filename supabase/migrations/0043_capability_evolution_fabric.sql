@@ -14,7 +14,6 @@ create table if not exists federated_trust_issuers (
   created_at timestamptz not null default now(),
   unique(organization_id,issuer_slug)
 );
-
 create table if not exists federated_passport_credentials (
   id uuid primary key default gen_random_uuid(),
   subject_organization_id uuid not null references orchestrator_organizations(id) on delete cascade,
@@ -27,7 +26,6 @@ create table if not exists federated_passport_credentials (
   issued_by uuid not null references auth.users(id),
   created_at timestamptz not null default now()
 );
-
 create table if not exists interface_twin_simulations (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references auth.users(id) on delete cascade,
@@ -40,7 +38,6 @@ create table if not exists interface_twin_simulations (
   status text not null default 'simulated' check (status in ('simulated','accepted','rejected','expired')),
   created_at timestamptz not null default now()
 );
-
 create table if not exists organizational_skills (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references orchestrator_organizations(id) on delete cascade,
@@ -53,7 +50,6 @@ create table if not exists organizational_skills (
   created_at timestamptz not null default now(),
   unique(organization_id,skill_key)
 );
-
 create table if not exists member_skill_evidence (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references orchestrator_organizations(id) on delete cascade,
@@ -68,7 +64,6 @@ create table if not exists member_skill_evidence (
   created_at timestamptz not null default now(),
   unique(user_id,skill_id)
 );
-
 create table if not exists capability_route_outcomes (
   id uuid primary key default gen_random_uuid(),
   receipt_id uuid not null references capability_route_receipts(id) on delete cascade,
@@ -84,7 +79,6 @@ create table if not exists capability_route_outcomes (
   created_at timestamptz not null default now(),
   unique(receipt_id)
 );
-
 create table if not exists private_learning_profiles (
   user_id uuid primary key references auth.users(id) on delete cascade,
   organization_id uuid not null references orchestrator_organizations(id) on delete cascade,
@@ -95,7 +89,6 @@ create table if not exists private_learning_profiles (
   noise_level numeric not null default 0.1 check (noise_level between 0 and 1),
   updated_at timestamptz not null default now()
 );
-
 create table if not exists accessibility_profiles (
   user_id uuid primary key references auth.users(id) on delete cascade,
   organization_id uuid not null references orchestrator_organizations(id) on delete cascade,
@@ -107,7 +100,6 @@ create table if not exists accessibility_profiles (
   keyboard_first boolean not null default false,
   updated_at timestamptz not null default now()
 );
-
 create table if not exists connector_lifecycle_events (
   id bigint generated always as identity primary key,
   connector_account_id uuid references connector_accounts(id) on delete cascade,
@@ -119,7 +111,6 @@ create table if not exists connector_lifecycle_events (
   metadata jsonb not null default '{}',
   created_at timestamptz not null default now()
 );
-
 create table if not exists journey_contract_runs (
   id uuid primary key default gen_random_uuid(),
   contract_version integer not null,
@@ -128,11 +119,9 @@ create table if not exists journey_contract_runs (
   checks jsonb not null,
   created_at timestamptz not null default now()
 );
-
 create index if not exists route_outcomes_provider_idx on capability_route_outcomes(organization_id,provider,created_at desc);
 create index if not exists connector_lifecycle_due_idx on connector_lifecycle_events(next_action_at) where next_action_at is not null;
 create index if not exists interface_twin_user_idx on interface_twin_simulations(user_id,created_at desc);
-
 alter table federated_trust_issuers enable row level security;
 alter table federated_passport_credentials enable row level security;
 alter table interface_twin_simulations enable row level security;
@@ -143,4 +132,4 @@ alter table private_learning_profiles enable row level security;
 alter table accessibility_profiles enable row level security;
 alter table connector_lifecycle_events enable row level security;
 alter table journey_contract_runs enable row level security;
--- Deliberately server-only. Membership, trust, evidence, and secrets are enforced by APIs.
+-- Deliberately server-only. Membership, trust, evidence, and secrets are enforced by APIs.;
