@@ -60,9 +60,11 @@ def check_project(project_id, repo_path):
 
     failures = []
     probe_path = repo_path
+    deps_ready_at_start = None
     try:
         import dependency_prewarm
         probe_path = dependency_prewarm.runtime_root(repo_path)
+        deps_ready_at_start = dependency_prewarm.deps_ready(repo_path)
     except Exception:
         pass
     for probe in PROBES:
@@ -89,7 +91,7 @@ def check_project(project_id, repo_path):
             # Shared immutable snapshots can be inspected concurrently by
             # version probes/activation. Require repeated negatives before
             # publishing a project-wide red verdict from a transient read.
-            deps_ok = False
+            deps_ok = bool(deps_ready_at_start)
             for _ in range(3):
                 if dependency_prewarm.deps_ready(repo_path):
                     deps_ok = True
