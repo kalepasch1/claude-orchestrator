@@ -251,6 +251,18 @@ def _try_semantic_merge(repo, branch, base):
         return False
 
 
+def _test_package_paths(repo, test_cmd):
+    roots = [repo]
+    for pattern in (r"(?:^|[;&])\s*cd\s+([^\s;&]+)", r"--prefix(?:=|\s+)([^\s;&]+)"):
+        for match in re.finditer(pattern, test_cmd or ""):
+            candidate = match.group(1).strip("'\"")
+            if not os.path.isabs(candidate):
+                candidate = os.path.join(repo, candidate)
+            if os.path.isdir(candidate):
+                roots.append(candidate)
+    return list(dict.fromkeys(os.path.realpath(root) for root in roots))
+
+
 def _ensure_node_deps(repo, test_cmd=""):
     """A node repo whose node_modules is missing makes every test/typecheck fail with
     'cannot find module' — an ENVIRONMENT failure, not a code failure, that was TESTFAIL-ing
@@ -273,15 +285,7 @@ def _ensure_node_deps(repo, test_cmd=""):
     # The gate runs in repo unless the command explicitly changes directory or
     # uses npm --prefix. Walking every package in a monorepo hydrated unrelated
     # examples/services and turned one branch check into a 15-minute lock hold.
-    roots = [repo]
-    for pattern in (r"(?:^|[;&])\s*cd\s+([^\s;&]+)", r"--prefix(?:=|\s+)([^\s;&]+)"):
-        for match in re.finditer(pattern, test_cmd or ""):
-            candidate = match.group(1).strip("'\"")
-            if not os.path.isabs(candidate):
-                candidate = os.path.join(repo, candidate)
-            if os.path.isdir(candidate):
-                roots.append(candidate)
-    roots = list(dict.fromkeys(os.path.realpath(root) for root in roots))
+    roots = _test_package_paths(repo, test_cmd)
     try:
         for root in roots:
             if (os.path.isfile(os.path.join(root, "package.json"))
@@ -302,6 +306,23 @@ def _ensure_node_deps(repo, test_cmd=""):
         pass
 
 
+def _prepare_generated_types(repo, test_cmd=""):
+    """Generate worktree-local Nuxt types for the package under test."""
+    for root in _test_package_paths(repo, test_cmd):
+        package = os.path.join(root, "package.json")
+        tsconfig = os.path.join(root, ".nuxt", "tsconfig.json")
+        if not os.path.isfile(package) or os.path.isfile(tsconfig):
+            continue
+        try:
+            with open(package, encoding="utf-8") as fh:
+                is_nuxt = '"nuxt"' in fh.read()
+            if is_nuxt:
+                subprocess.run(["npx", "nuxi", "prepare"], cwd=root,
+                               capture_output=True, text=True, timeout=180)
+        except Exception:
+            pass
+
+
 def _run_tests(repo, test_cmd, ref=None):
     """Step 3: run the gate. Returns (ok, tail-of-output)."""
     if not test_cmd:
@@ -317,6 +338,17 @@ def _run_tests(repo, test_cmd, ref=None):
             for shared in ("node_modules", ".env", ".env.local"):
                 src, dst = os.path.join(repo, shared), os.path.join(worktree, shared)
                 if os.path.exists(src) and not os.path.exists(dst):
+                    try: os.symlink(src, dst)
+                    except OSError: pass
+            # npm --prefix web / `cd web && ...` resolves dependencies below
+            # that package, not at the repository root. Reuse the primary
+            # package's content-addressed install instead of reinstalling it in
+            # every disposable QA worktree.
+            for source_root in _test_package_paths(repo, test_cmd)[1:]:
+                rel = os.path.relpath(source_root, repo)
+                src = os.path.join(source_root, "node_modules")
+                dst = os.path.join(worktree, rel, "node_modules")
+                if os.path.isdir(src) and not os.path.exists(dst):
                     try: os.symlink(src, dst)
                     except OSError: pass
             return _run_tests(worktree, test_cmd)
@@ -337,6 +369,7 @@ def _run_tests(repo, test_cmd, ref=None):
         except Exception:
             pass
         _ensure_node_deps(repo, test_cmd)
+        _prepare_generated_types(repo, test_cmd)
     try:
         r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
                            text=True, timeout=timeout)

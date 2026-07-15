@@ -499,6 +499,30 @@ class TestEnsureNodeDepsCumulativeBudget(unittest.TestCase):
 
             self.assertEqual(len(calls), 1)
 
+    def test_prefix_package_path_is_scoped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp, n_packages=2)
+            roots = merge_train._test_package_paths(repo, "npm --prefix pkg1 run test")
+            self.assertEqual(roots, [os.path.realpath(repo),
+                                     os.path.realpath(os.path.join(repo, "pkg1"))])
+
+    def test_nuxt_package_prepares_worktree_local_types(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp, n_packages=1)
+            pkg = os.path.join(repo, "pkg0")
+            with open(os.path.join(pkg, "package.json"), "w") as f:
+                f.write('{"devDependencies":{"nuxt":"latest"}}')
+            calls = []
+
+            def fake_run(*args, **kwargs):
+                calls.append((args[0], kwargs.get("cwd")))
+                return MagicMock(returncode=0)
+
+            with patch.object(merge_train.subprocess, "run", side_effect=fake_run):
+                merge_train._prepare_generated_types(repo, "npm --prefix pkg0 test")
+
+            self.assertEqual(calls, [(["npx", "nuxi", "prepare"], os.path.realpath(pkg))])
+
 
 class TestMergeRiskClassification(unittest.TestCase):
     def test_injected_security_boilerplate_does_not_make_normal_task_sensitive(self):
