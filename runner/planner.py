@@ -19,6 +19,7 @@ import os, sys, json, subprocess, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import claude_cli
 import tdd_gate
+import tests_first_gate
 
 PLAN_MODEL = os.environ.get("PLAN_MODEL", "claude-opus-4-8")
 
@@ -146,6 +147,9 @@ def plan(master: str, repo: str = None) -> list:
 
     # Apply TDD-first enforcement if configured
     tasks = _apply_tdd_gating(tasks)
+
+    # Apply tests-first gate: split tasks whose proof references a missing test file
+    tasks = tests_first_gate.apply_gate(tasks, repo_path=repo)
 
     return tasks
 
