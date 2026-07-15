@@ -237,11 +237,14 @@ class TestDecisionEngine(unittest.TestCase):
             "terms": "revenue sharing"
         }
 
-        decision_engine.store_decision(
-            project="test",
-            directive="negotiate",
-            context=context_dict
-        )
+        draft = {"draft": "Negotiation draft", "model": "test-model",
+                 "input_tokens": 1, "output_tokens": 1, "cost_usd": 0}
+        with patch.object(decision_engine, "generate_draft", return_value=draft):
+            decision_engine.store_decision(
+                project="test",
+                directive="negotiate",
+                context=context_dict
+            )
 
         call_args = mock_insert.call_args
         inserted_row = call_args[0][1]
@@ -259,7 +262,10 @@ class TestDecisionEngine(unittest.TestCase):
             [],  # No approved approvals
         ]
 
-        result = decision_engine.poll_pending()
+        draft = {"draft": "Negotiation draft", "model": "test-model",
+                 "input_tokens": 1, "output_tokens": 1, "cost_usd": 0}
+        with patch.object(decision_engine, "generate_draft", return_value=draft):
+            result = decision_engine.poll_pending()
 
         self.assertEqual(result, [])
         mock_insert.assert_not_called()
