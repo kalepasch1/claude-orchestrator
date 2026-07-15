@@ -1,37 +1,229 @@
 <script setup lang="ts">
-const supabase=useSupabaseClient<any>(),state=ref<any>(null),economy=ref<any>(null),busy=ref(''),message=ref('')
-const clearing=reactive({round_id:'',metric_key:'delivery_cycle_days',cohort_key:'ai_native_multi_company_founders',minimum_participants:5,treatment_mean:0,control_mean:0,sample_size:20,variance:0})
-const license=reactive({escrow_id:'',licensee_organization_id:'',scopes:['derive_adapter','execute','verify'],duration_days:90,max_projects:1,max_executions_per_month:100,fixed_credit_cents:0,usage_rate_bps:500,territory:'global'})
-const attribution=reactive({settlement_id:'',participants:[{type:'author',ref:'origin-author',weight:4},{type:'adapter',ref:'local-adapter',weight:3},{type:'verifier',ref:'independent-verifier',weight:2},{type:'improver',ref:'network-improver',weight:1}]})
-const privacy=reactive({fields:['pattern_summary','aggregate_outcomes','verification'],audience:'member_network'})
-const negative=reactive({problem_class:'',attempted_pattern:'',stage:'early_revenue',runtime:'web',metric:'',effect:0,sample_size:20,independent_verification:false,proof_digest:''})
-const lineage=reactive({contribution_id:'',parent_event_id:'',event_type:'improvement',change_summary:'',evidence_digest:''})
-const proposal=reactive({title:'',rationale:'',policy_domain:'privacy',rule:'',expected_value:70,parameters:{}})
-const bundle=reactive({opportunity_id:'',objective:''})
-async function authed<T>(url:string,options:any={}){const{data:{session}}=await supabase.auth.getSession();return $fetch<T>(url,{...options,headers:session?.access_token?{authorization:`Bearer ${session.access_token}`}:{}})}
-const dollars=(c:any)=>new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}).format(Number(c||0)/100)
-async function load(){try{[state.value,economy.value]=await Promise.all([authed('/api/hivemind/governance'),authed('/api/hivemind/economy')]);clearing.round_id||=state.value.rounds?.find((x:any)=>x.status==='collecting')?.id||'';license.escrow_id||=state.value.escrows?.[0]?.id||'';license.licensee_organization_id||=state.value.license_candidates?.[0]?.id||'';attribution.settlement_id||=state.value.settlements?.[0]?.id||'';lineage.contribution_id||=economy.value.contributions?.[0]?.id||economy.value.marketplace?.[0]?.id||'';bundle.opportunity_id||=state.value.opportunities?.[0]?.id||''}catch(e:any){message.value=e?.data?.message||e?.message}}
-async function act(action:string,values:any={}){busy.value=action;message.value='';try{const result:any=await authed('/api/hivemind/governance',{method:'POST',body:{action,...values}});message.value=`${action.replaceAll('_',' ')} completed with a governed receipt${result?.status?` · ${result.status}`:''}.`;await load()}catch(e:any){message.value=e?.data?.message||e?.data?.data?.message||e?.message||'Governance action failed.'}finally{busy.value=''}}
-onMounted(()=>{load();const timer=setInterval(load,20000);onUnmounted(()=>clearInterval(timer))})
+type Goal = 'earn' | 'adopt' | 'protect' | 'govern'
+
+const supabase = useSupabaseClient<any>()
+const state = ref<any>(null)
+const active = ref<Goal>('earn')
+const busy = ref('')
+const message = ref('')
+
+const goals: Array<{ id: Goal; label: string; promise: string }> = [
+  { id: 'earn', label: 'Earn', promise: 'Value returned to you' },
+  { id: 'adopt', label: 'Adopt', promise: 'Verified advantages ready' },
+  { id: 'protect', label: 'Protect', promise: 'Risk already contained' },
+  { id: 'govern', label: 'Govern', promise: 'Decisions needing your voice' },
+]
+
+async function authed<T>(url: string, options: any = {}) {
+  const { data: { session } } = await supabase.auth.getSession()
+  return $fetch<T>(url, {
+    ...options,
+    headers: session?.access_token ? { authorization: `Bearer ${session.access_token}` } : {},
+  })
+}
+
+const dollars = (cents: any) => new Intl.NumberFormat('en-US', {
+  style: 'currency',
+  currency: 'USD',
+  maximumFractionDigits: 0,
+}).format(Number(cents || 0) / 100)
+
+const relative = (value: string) => {
+  const minutes = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 60_000))
+  if (minutes < 2) return 'just now'
+  if (minutes < 60) return `${minutes}m ago`
+  if (minutes < 1_440) return `${Math.round(minutes / 60)}h ago`
+  return `${Math.round(minutes / 1_440)}d ago`
+}
+
+async function load() {
+  try {
+    state.value = await authed('/api/hivemind/outcomes')
+  } catch (error: any) {
+    message.value = error?.data?.message || error?.message || 'The Hivemind outcome view is temporarily unavailable.'
+  }
+}
+
+async function act(key: string, url: string, body: any) {
+  busy.value = key
+  message.value = ''
+  try {
+    await authed(url, { method: 'POST', body })
+    message.value = key === 'refresh'
+      ? 'Your portfolio protections, credits, and opportunities are current.'
+      : 'Your decision was recorded with its safeguards.'
+    await load()
+  } catch (error: any) {
+    message.value = error?.data?.message || error?.data?.data?.message || error?.message || 'That action could not be completed safely.'
+  } finally {
+    busy.value = ''
+  }
+}
+
+const prepare = (opportunity: any) => act(
+  `bundle:${opportunity.id}`,
+  '/api/hivemind/governance',
+  { action: 'bundle', opportunity_id: opportunity.id, objective: opportunity.title },
+)
+const vote = (proposal: any, decision: 'support' | 'oppose') => act(
+  `vote:${proposal.id}`,
+  '/api/hivemind/governance',
+  { action: 'vote', proposal_id: proposal.id, vote: decision },
+)
+const discloseConflict = (proposal: any) => act(
+  `conflict:${proposal.id}`,
+  '/api/hivemind/outcomes',
+  { action: 'conflict', proposal_id: proposal.id, relationship_class: 'material_beneficiary', material_interest: true },
+)
+
+onMounted(() => {
+  load()
+  const timer = setInterval(load, 60_000)
+  onUnmounted(() => clearInterval(timer))
+})
 </script>
-<template><section class="network" aria-labelledby="network-title"><header><div><span>NETWORK CONSTITUTION</span><h2 id="network-title">Make compounding<br><em>governable.</em></h2></div><p>The Hivemind can now clear collective effects, enforce licenses, hedge systemic risk, reward useful failures, preserve anonymous lineage, govern itself, and execute opportunities through one evidence-carrying bundle.</p></header><div v-if="!state" class="loading">Loading network governance…</div><template v-else><div class="network-stats"><div><span>Open proposals</span><b>{{state.proposals.length}}</b></div><div><span>System concentration</span><b>{{state.risks[0]?.concentration_score||0}}%</b></div><div><span>Executable licenses</span><b>{{state.licenses.length}}</b></div><div><span>Negative results shared</span><b>{{state.negative_evidence.length}}</b></div><div><span>Execution bundles</span><b>{{state.bundles.length}}</b></div></div>
-<div class="network-grid"><article class="card clearing"><span>01 · FEDERATED CAUSAL CLEARING</span><h3>Learn collectively without pooling private models.</h3><p>Each member contributes only a ≥20-sample aggregate plus an encrypted commitment. Results clear only after the minimum independent participant count.</p><form @submit.prevent="act('clearing_contribute',clearing)"><select v-model="clearing.round_id"><option value="">Start a new round</option><option v-for="r in state.rounds.filter((x:any)=>['collecting','ready'].includes(x.status))" :key="r.id" :value="r.id">{{r.metric_key}} · {{r.participant_count}}/{{r.minimum_participants}}</option></select><div class="three"><input v-model="clearing.metric_key" placeholder="Metric"><input v-model="clearing.cohort_key" placeholder="Cohort"><input v-model.number="clearing.minimum_participants" type="number" min="3" max="50"></div><div class="three"><label>Treatment mean<input v-model.number="clearing.treatment_mean" type="number" step=".01"></label><label>Control mean<input v-model.number="clearing.control_mean" type="number" step=".01"></label><label>Aggregate samples<input v-model.number="clearing.sample_size" type="number" min="20"></label></div><button>Commit aggregate privately</button></form><div v-for="r in state.rounds.slice(0,3)" :key="r.id" class="row"><div><b>{{r.metric_key}}</b><small>{{r.participant_count}}/{{r.minimum_participants}} participants · {{r.status}}</small></div><button v-if="r.status==='ready'" @click="act('clearing_clear',{round_id:r.id})">Clear collective effect</button><strong v-if="r.status==='cleared'">{{Number(r.aggregate_effect).toFixed(2)}}</strong></div></article>
 
-<article class="card"><span>02 · MACHINE-ENFORCEABLE LICENSE</span><h3>Turn terms into runtime boundaries.</h3><p>Scopes, usage ceilings, expiry, economics, proof, revocation, and prohibited uses compile into a license policy—not a PDF promise.</p><form @submit.prevent="act('license',license)"><select v-model="license.escrow_id" required><option disabled value="">Sealed escrow</option><option v-for="x in state.escrows" :key="x.id" :value="x.id">{{x.id.slice(0,8)}} · sealed</option></select><select v-model="license.licensee_organization_id" required><option disabled value="">Verified adopter</option><option v-for="x in state.license_candidates" :key="x.id" :value="x.id">{{x.name}}</option></select><div class="two"><label>Duration days<input v-model.number="license.duration_days" type="number" min="1" max="1095"></label><label>Max projects<input v-model.number="license.max_projects" type="number" min="1"></label></div><label>Usage royalty {{license.usage_rate_bps/100}}%<input v-model.number="license.usage_rate_bps" type="range" min="0" max="5000"></label><button>Compile proposed license</button></form><small>Raw escrow, resale, training, redelegation, and scope amplification remain denied.</small></article>
+<template>
+  <section class="cockpit" aria-labelledby="hivemind-outcomes-title">
+    <header class="hero">
+      <div>
+        <span class="eyebrow">MADEUS HIVEMIND</span>
+        <h1 id="hivemind-outcomes-title">The network works.<br><em>You steer the outcomes.</em></h1>
+      </div>
+      <div class="hero-copy">
+        <p>Madeus quietly compounds what works across your portfolio, contains what does not, and returns the value to the people who created it.</p>
+        <div class="pulse" :class="{ attention: state?.attention?.length }">
+          <i />
+          <span v-if="state?.attention?.length">{{ state.attention.length }} outcome{{ state.attention.length === 1 ? '' : 's' }} need your attention</span>
+          <span v-else>Portfolio protected · no action needed</span>
+          <button :disabled="busy === 'refresh'" @click="act('refresh', '/api/hivemind/outcomes', { action: 'refresh' })">Check now</button>
+        </div>
+      </div>
+    </header>
 
-<article class="card"><span>03 · SYSTEMIC RISK GRAPH</span><h3>Hedge shared-capability cascades.</h3><p>Measure adopter concentration, active immune signals, failure propagation, and pre-positioned alternatives.</p><button @click="act('risk_map')">Recompute network risk</button><div v-if="state.risks[0]" class="risk-meter"><b :style="{width:`${state.risks[0].concentration_score}%`}"/><span>{{state.risks[0].concentration_score}}/100 concentration</span></div><div v-for="x in state.risks[0]?.cascades||[]" :key="x.source" class="row"><span>{{x.source.slice(0,8)}}</span><b>{{x.adopters_at_risk}} adopters at risk</b><small>{{x.severity}}</small></div></article>
+    <div v-if="!state" class="loading">Preparing your outcomes…</div>
+    <template v-else>
+      <aside v-if="state.attention.length" class="attention" aria-label="Needs attention">
+        <div v-for="item in state.attention" :key="`${item.title}:${item.outcome}`">
+          <span>{{ item.severity || 'Review' }}</span>
+          <b>{{ item.title }}</b>
+          <p>{{ item.outcome }}</p>
+        </div>
+      </aside>
 
-<article class="card"><span>04 · CAUSAL VALUE ATTRIBUTION</span><h3>Reward every role that created the outcome.</h3><p>Allocate a settled rebate across origin authors, adapter builders, verifiers, and improvers using normalized contribution weights.</p><form @submit.prevent="act('attribution',attribution)"><select v-model="attribution.settlement_id" required><option disabled value="">Causal settlement</option><option v-for="x in state.settlements" :key="x.id" :value="x.id">{{x.id.slice(0,8)}} · {{dollars(x.rebate_cents)}}</option></select><div v-for="p in attribution.participants" :key="p.type" class="participant"><input v-model="p.ref"><label>{{p.type}} weight<input v-model.number="p.weight" type="number" min="1" max="10"></label></div><button>Allocate contributor credits</button></form></article>
+      <nav class="goals" aria-label="Hivemind outcomes">
+        <button
+          v-for="goal in goals"
+          :key="goal.id"
+          :class="{ active: active === goal.id }"
+          :aria-current="active === goal.id ? 'page' : undefined"
+          @click="active = goal.id"
+        >
+          <b>{{ goal.label }}</b>
+          <span>{{ goal.promise }}</span>
+        </button>
+      </nav>
 
-<article class="card"><span>05 · PRIVACY-BUDGET FUTURES</span><h3>Price tomorrow’s collaboration before sharing today.</h3><p>Forecast one-, three-, six-, and twelve-month disclosure capacity and preserve option value before consuming privacy budget.</p><form @submit.prevent="act('privacy_future',privacy)"><input v-model="privacy.fields" disabled><select v-model="privacy.audience"><option>member_network</option><option>public</option><option>private</option></select><button>Forecast disclosure future</button></form><div v-if="state.privacy_futures[0]" class="scenario-grid"><div v-for="x in state.privacy_futures[0].scenarios" :key="x.months"><span>{{x.months}} mo.</span><b>{{x.collaboration_capacity}}%</b><small>{{x.risk}}</small></div></div></article>
+      <section v-if="active === 'earn'" class="view" aria-labelledby="earn-title">
+        <div class="view-heading">
+          <div><span>YOUR SHARE OF NETWORK VALUE</span><h2 id="earn-title">{{ dollars(state.account.available_cents) }} ready</h2></div>
+          <p>Credits are automatically attributed, risk-adjusted, and cleared. Available value is applied according to your subscription preference.</p>
+        </div>
+        <div class="money-grid">
+          <article><span>Lifetime earned</span><b>{{ dollars(state.account.lifetime_earned_cents) }}</b><small>From verified reuse and useful learning</small></article>
+          <article><span>Clearing</span><b>{{ dollars(state.account.pending_settlement_cents) }}</b><small>Becomes available after outcome verification</small></article>
+          <article><span>Protected reserve</span><b>{{ dollars(state.account.reserved_cents) }}</b><small>Held against reversals and warranty risk</small></article>
+        </div>
+        <div class="feed">
+          <div v-for="outcome in state.outcomes.filter((x: any) => ['earnings', 'learning'].includes(x.kind))" :key="outcome.title">
+            <i class="good" /><b>{{ outcome.title }}</b><strong v-if="outcome.amount_cents">{{ dollars(outcome.amount_cents) }}</strong>
+          </div>
+          <div v-if="!state.outcomes.some((x: any) => ['earnings', 'learning'].includes(x.kind))" class="empty">Nothing new to reconcile. Earnings continue to update automatically.</div>
+        </div>
+        <details class="receipt">
+          <summary>View accounting receipt</summary>
+          <div v-if="state.earn.clearing[0]">
+            <span>Current period</span><b>{{ dollars(state.earn.clearing[0].net_available_cents) }} net available</b>
+            <small>Reserve {{ dollars(state.earn.clearing[0].reserve_cents) }} · receipt {{ state.earn.clearing[0].clearing_digest.slice(0, 12) }}</small>
+          </div>
+          <p v-else>Your first accounting receipt will appear after value is earned.</p>
+        </details>
+      </section>
 
-<article class="card"><span>06 · REWARDED NEGATIVE EVIDENCE</span><h3>Make a verified failure valuable.</h3><p>Publish bounded conditions and aggregate non-results so another founder avoids repeating the expense. Verified reports earn an immediate prevention credit.</p><form @submit.prevent="act('negative_evidence',negative)"><input v-model="negative.problem_class" required placeholder="Problem class"><textarea v-model="negative.attempted_pattern" required rows="3" placeholder="Abstract attempted pattern—no code or private data"></textarea><div class="three"><input v-model="negative.metric" placeholder="Metric"><input v-model.number="negative.effect" type="number" step=".01" placeholder="Effect"><input v-model.number="negative.sample_size" type="number" min="20"></div><label><input v-model="negative.independent_verification" type="checkbox"> Independently verified</label><input v-model="negative.proof_digest" placeholder="Verification digest"><button>Publish safe negative result</button></form><small>{{dollars(state.negative_evidence.reduce((n:number,x:any)=>n+Number(x.reward_cents),0))}} prevention credits earned</small></article>
+      <section v-else-if="active === 'adopt'" class="view" aria-labelledby="adopt-title">
+        <div class="view-heading">
+          <div><span>VERIFIED ADVANTAGE</span><h2 id="adopt-title">{{ state.adopt.opportunities.length }} next-best move{{ state.adopt.opportunities.length === 1 ? '' : 's' }}</h2></div>
+          <p>Madeus finds improvements proven elsewhere, adapts them locally, and keeps material execution behind your approval boundary.</p>
+        </div>
+        <div class="opportunities">
+          <article v-for="opportunity in state.adopt.opportunities" :key="opportunity.id">
+            <div><span>{{ Math.round(Number(opportunity.confidence) * 100) }}% confidence</span><h3>{{ opportunity.title }}</h3><p>{{ opportunity.explanation }}</p></div>
+            <div class="value"><b>{{ opportunity.predicted_value_cents ? dollars(opportunity.predicted_value_cents) : 'Compounding value' }}</b><small>predicted portfolio value</small></div>
+            <button :disabled="busy === `bundle:${opportunity.id}`" @click="prepare(opportunity)">Prepare safely</button>
+          </article>
+          <div v-if="!state.adopt.opportunities.length" class="empty">No verified advantage is waiting. Madeus will surface one when evidence clears your thresholds.</div>
+        </div>
+        <div v-if="state.adopt.bundles.length" class="prepared">
+          <span>PREPARED FOR YOU</span>
+          <div v-for="bundle in state.adopt.bundles.slice(0, 4)" :key="bundle.id">
+            <b>{{ bundle.objective }}</b><small>{{ bundle.status.replaceAll('_', ' ') }}</small>
+          </div>
+        </div>
+      </section>
 
-<article class="card"><span>07 · ANONYMOUS CAPABILITY LINEAGE</span><h3>See how the network made an idea better.</h3><p>Preserve origins, adaptations, verification, failures, improvements, and deprecation without revealing organization identity or implementation.</p><form @submit.prevent="act('lineage',lineage)"><select v-model="lineage.contribution_id" required><option v-for="x in [...economy.contributions,...economy.marketplace]" :key="x.id" :value="x.id">{{x.title}}</option></select><select v-model="lineage.event_type"><option>origin</option><option>adaptation</option><option>verification</option><option>negative_evidence</option><option>improvement</option><option>deprecation</option></select><textarea v-model="lineage.change_summary" required rows="3" placeholder="Privacy-safe change summary"></textarea><button>Add lineage event</button></form><div class="lineage"><div v-for="x in state.lineage.slice(0,6)" :key="x.id"><i/><b>{{x.event_type}}</b><span>{{x.change_summary}}</span><small>{{x.anonymous_actor}}</small></div></div></article>
+      <section v-else-if="active === 'protect'" class="view" aria-labelledby="protect-title">
+        <div class="view-heading">
+          <div><span>PORTFOLIO IMMUNE SYSTEM</span><h2 id="protect-title">{{ state.attention.length ? 'Contained. Review when ready.' : 'Protected by default.' }}</h2></div>
+          <p>Permissions, privacy, failures, and shared dependencies are monitored continuously. Affected scope is contained while healthy services stay on the last verified version.</p>
+        </div>
+        <div class="protection-grid">
+          <article><i class="good" /><b>{{ state.protect.proofs.filter((x: any) => x.verdict === 'verified').length }} verified executions</b><p>Policy compliance confirmed without storing execution payloads.</p></article>
+          <article><i :class="state.protect.licenses.some((x: any) => x.status === 'suspended') ? 'warn' : 'good'" /><b>{{ state.protect.licenses.filter((x: any) => x.status === 'active').length }} active permissions</b><p>{{ state.protect.licenses.filter((x: any) => x.status === 'suspended').length }} safely suspended.</p></article>
+          <article><i class="good" /><b>{{ state.earn.failures.length }} reusable failure insight{{ state.earn.failures.length === 1 ? '' : 's' }}</b><p>Context mismatches are separated from genuinely portable failures.</p></article>
+          <article><i class="good" /><b>No private payload pooling</b><p>Only bounded commitments, aggregate outcomes, and signed receipts cross the network plane.</p></article>
+        </div>
+        <div v-if="state.protect.immune.length" class="feed">
+          <div v-for="item in state.protect.immune" :key="item.id"><i class="good" /><b>{{ item.customer_impact }}</b><small>{{ relative(item.created_at) }}</small></div>
+        </div>
+        <details class="receipt">
+          <summary>How protection works</summary>
+          <p>Madeus checks granted scope, usage limits, prohibited uses, expiry, proof freshness, dependency health, and rollback readiness. It stores hashes and policy receipts—not your code, prompts, customer data, model inputs, or outputs.</p>
+        </details>
+      </section>
 
-<article class="card constitution"><span>08 · FOUNDER NETWORK CONSTITUTION</span><h3>Govern the rules that govern the Hivemind.</h3><p>One organization, one vote. CADE assesses risks and alternatives before proposals open. Quorum, supermajority, appeal, and non-token-weighted voting are enforced.</p><form @submit.prevent="act('proposal',proposal)"><input v-model="proposal.title" required placeholder="Proposal title"><select v-model="proposal.policy_domain"><option>rebates</option><option>privacy</option><option>verification</option><option>licensing</option><option>prohibited_use</option><option>governance</option></select><textarea v-model="proposal.rationale" required rows="2" placeholder="Why the network benefits"></textarea><textarea v-model="proposal.rule" required rows="3" placeholder="Machine-readable policy intent, including review or rollback"></textarea><button>Run CADE and propose</button></form><div v-for="p in state.proposals.slice(0,5)" :key="p.id" class="proposal"><div><b>{{p.title}}</b><small>{{p.policy_domain}} · CADE risk {{p.cade_assessment.risk_score}}/100</small></div><div><button @click="act('vote',{proposal_id:p.id,vote:'support'})">Support</button><button class="ghost" @click="act('vote',{proposal_id:p.id,vote:'oppose'})">Oppose</button></div></div></article>
+      <section v-else class="view" aria-labelledby="govern-title">
+        <div class="view-heading">
+          <div><span>FOUNDER CONSTITUTION</span><h2 id="govern-title">{{ state.govern.proposals.length }} decision{{ state.govern.proposals.length === 1 ? '' : 's' }} open</h2></div>
+          <p>Every change is simulated against different member types before voting. One organization gets one vote; rights-sensitive changes need a stronger majority.</p>
+        </div>
+        <div class="proposals">
+          <article v-for="proposal in state.govern.proposals" :key="proposal.id">
+            <div class="proposal-main">
+              <span>{{ proposal.policy_domain.replaceAll('_', ' ') }}</span>
+              <h3>{{ proposal.title }}</h3>
+              <p>{{ proposal.rationale }}</p>
+              <div v-if="proposal.simulation" class="simulation">
+                <b>{{ proposal.simulation.recommendation === 'proceed' ? 'Safe to decide' : 'Revision recommended' }}</b>
+                <span>Rights impact {{ proposal.simulation.rights_impact.score }}/100</span>
+                <span>Capture risk {{ proposal.simulation.capture_risk.score }}/100</span>
+              </div>
+            </div>
+            <div v-if="proposal.status === 'open'" class="decision">
+              <button :disabled="!proposal.simulation || proposal.simulation.recommendation !== 'proceed' || busy === `vote:${proposal.id}`" @click="vote(proposal, 'support')">Support</button>
+              <button class="secondary" :disabled="busy === `vote:${proposal.id}`" @click="vote(proposal, 'oppose')">Oppose</button>
+              <button class="link" :disabled="busy === `conflict:${proposal.id}`" @click="discloseConflict(proposal)">I have a material interest</button>
+            </div>
+            <b v-else class="status">{{ proposal.status }}</b>
+          </article>
+          <div v-if="!state.govern.proposals.length" class="empty">No network decisions need your voice.</div>
+        </div>
+      </section>
 
-<article class="card bundle"><span>09 · OPPORTUNITY EXECUTION BUNDLE</span><h3>One action. Every safety gate.</h3><p>Turn an opportunity into disclosure, compatibility, consent, licensing, canary, independent QA, causal settlement, and rollback steps. Material execution still begins with approval.</p><form @submit.prevent="act('bundle',bundle)"><select v-model="bundle.opportunity_id" required><option disabled value="">Open opportunity</option><option v-for="o in state.opportunities" :key="o.id" :value="o.id">{{o.title}} · {{dollars(o.predicted_value_cents)}}</option></select><textarea v-model="bundle.objective" rows="2" placeholder="Optional outcome refinement"></textarea><button>Create governed execution bundle</button></form><div v-for="b in state.bundles.slice(0,4)" :key="b.id" class="bundle-flow"><b>{{b.objective}}</b><span v-for="step in b.steps" :key="step.id">{{step.id}}</span><small>{{b.status.replaceAll('_',' ')}} · direct production denied</small></div></article></div><p v-if="message" class="notice" role="status">{{message}}</p></template></section></template>
+      <p v-if="message" class="notice" role="status">{{ message }}</p>
+    </template>
+  </section>
+</template>
+
 <style scoped>
-.network{padding:100px clamp(16px,3vw,42px);background:#f1f1ed;color:#111}.network>header{max-width:1180px;margin:auto;display:grid;grid-template-columns:1.4fr 1fr;gap:8vw;align-items:end}.network>header span,.card>span{font:750 8px JetBrains Mono,monospace;letter-spacing:.13em;color:#287050}.network h2{margin:17px 0 0;font-size:clamp(50px,6.4vw,88px);line-height:.94;letter-spacing:-.065em;font-weight:480}.network h2 em{font-style:normal;color:#84847d}.network>header p,.card p{color:#6c6d68;font-size:12px;line-height:1.7}.loading{padding:40px;text-align:center}.network-stats,.network-grid{max-width:1180px;margin:24px auto 0;display:grid;gap:10px}.network-stats{grid-template-columns:repeat(5,1fr)}.network-stats div,.card{border:1px solid #d5d5cf;background:#fff}.network-stats div{padding:14px}.network-stats span,.row small,.card>small{display:block;color:#85857e;font-size:8px}.network-stats b{display:block;margin-top:7px;font-size:22px}.network-grid{grid-template-columns:1fr 1fr}.card{padding:21px;border-radius:13px}.card.clearing,.card.constitution,.card.bundle{grid-column:1/-1}.card h3{font-size:23px;letter-spacing:-.04em;margin:6px 0}.card form{display:grid;gap:8px;margin:15px 0}.card input,.card select,.card textarea{width:100%;border:1px solid #d4d4ce;border-radius:8px;background:#fbfbf9;padding:9px;font-size:10px}.card label{font-size:9px;color:#696a65}.card button{border:0;border-radius:8px;background:#111;color:#fff;padding:9px 11px;font-size:9px;font-weight:700}.card button.ghost{background:#eee;color:#222}.two,.three,.participant,.scenario-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:7px}.three{grid-template-columns:repeat(3,1fr)}.participant{align-items:end;border-top:1px solid #e4e4df;padding-top:7px}.row,.proposal{display:flex;justify-content:space-between;align-items:center;gap:10px;border-top:1px solid #e3e3dd;padding:10px 0;font-size:9px}.risk-meter{position:relative;height:34px;margin:15px 0;background:#ededE8;overflow:hidden}.risk-meter b{display:block;height:100%;background:linear-gradient(90deg,#4d9b6d,#d5a646,#cf5f50)}.risk-meter span{position:absolute;inset:0;display:grid;place-items:center;font-size:9px}.scenario-grid{grid-template-columns:repeat(4,1fr);margin-top:14px}.scenario-grid div{padding:10px;background:#f2f6f3}.scenario-grid span,.scenario-grid small{display:block;font-size:8px;color:#747b76}.scenario-grid b{font-size:20px}.lineage{margin-top:12px}.lineage div{display:grid;grid-template-columns:auto auto 1fr auto;gap:8px;align-items:center;border-top:1px solid #e2e2dd;padding:9px;font-size:8px}.lineage i{width:7px;height:7px;border-radius:50%;background:#4e9b6e}.proposal>div:last-child{display:flex;gap:5px}.bundle-flow{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;padding:11px;background:#f3f6f3;font-size:8px}.bundle-flow b,.bundle-flow small{width:100%}.bundle-flow span{border:1px solid #cfd9d2;border-radius:99px;padding:5px}.notice{position:sticky;bottom:14px;max-width:720px;margin:18px auto 0;padding:13px;background:#111;color:#fff;border-radius:10px;font-size:10px}@media(max-width:760px){.network>header,.network-grid{grid-template-columns:1fr}.network-stats{grid-template-columns:1fr 1fr}.card.clearing,.card.constitution,.card.bundle{grid-column:auto}.three{grid-template-columns:1fr}.scenario-grid{grid-template-columns:1fr 1fr}.lineage div{grid-template-columns:auto 1fr}.lineage span,.lineage small{grid-column:2}}
+.cockpit{min-height:100vh;padding:104px clamp(18px,4vw,64px);background:#f2f2ee;color:#111}.hero,.view,.goals,.attention{max-width:1220px;margin:auto}.hero{display:grid;grid-template-columns:1.35fr .65fr;gap:8vw;align-items:end}.eyebrow,.view-heading span,.prepared>span,.proposal-main>span{font:750 9px/1.2 JetBrains Mono,monospace;letter-spacing:.15em;color:#27704e}.hero h1{margin:18px 0 0;font-size:clamp(54px,7vw,104px);line-height:.91;letter-spacing:-.07em;font-weight:480}.hero h1 em{font-style:normal;color:#85857e}.hero-copy>p,.view-heading>p{color:#666761;font-size:13px;line-height:1.75}.pulse{margin-top:20px;display:flex;align-items:center;gap:9px;border-top:1px solid #d5d5cf;padding-top:15px;font:700 9px/1.2 JetBrains Mono,monospace}.pulse i,.protection-grid i,.feed i{width:8px;height:8px;border-radius:50%;background:#43a06b;box-shadow:0 0 0 4px #dcece2}.pulse.attention i,.protection-grid i.warn{background:#cf8c37;box-shadow:0 0 0 4px #f2e5d4}.pulse button{margin-left:auto;border:0;background:transparent;text-decoration:underline;font:inherit}.loading{max-width:1220px;margin:50px auto;padding:30px;border-top:1px solid #d4d4ce;color:#777}.attention{margin-top:34px;display:grid;gap:8px}.attention div{display:grid;grid-template-columns:auto .6fr 1fr;gap:18px;align-items:center;padding:14px 18px;background:#211f1b;color:#fff;border-radius:12px}.attention span{color:#e8b66e;font:700 9px JetBrains Mono,monospace;text-transform:uppercase}.attention p{margin:0;color:#c7c6c2;font-size:11px}.goals{display:grid;grid-template-columns:repeat(4,1fr);margin-top:52px;border:1px solid #d3d3cd;border-radius:15px;overflow:hidden;background:#e8e8e3}.goals button{display:grid;gap:5px;padding:17px 19px;text-align:left;border:0;border-right:1px solid #d3d3cd;background:transparent;color:#64645f}.goals button:last-child{border-right:0}.goals button.active{background:#111;color:#fff}.goals b{font-size:15px}.goals span{font-size:9px}.view{margin-top:10px;padding:34px;border:1px solid #d3d3cd;border-radius:15px;background:#fff;min-height:520px}.view-heading{display:grid;grid-template-columns:1fr .65fr;gap:8vw;align-items:end}.view h2{margin:6px 0 0;font-size:clamp(38px,5vw,70px);line-height:.96;letter-spacing:-.06em}.money-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:32px}.money-grid article,.protection-grid article{padding:19px;border:1px solid #deded8;border-radius:11px;background:#f8f8f5}.money-grid span,.money-grid small{display:block;color:#72736d;font-size:9px}.money-grid b{display:block;margin:8px 0;font-size:28px;letter-spacing:-.04em}.feed,.prepared{margin-top:20px;border-top:1px solid #deded8}.feed>div,.prepared>div{display:flex;align-items:center;gap:12px;padding:13px 4px;border-bottom:1px solid #ededE8;font-size:10px}.feed strong,.feed small,.prepared small{margin-left:auto;color:#6e6f68}.feed i.good{background:#43a06b}.receipt{margin-top:22px;border-radius:10px;background:#f0f4f1;padding:14px 17px;font-size:10px}.receipt summary{cursor:pointer;font-weight:750}.receipt div{display:grid;gap:5px;margin-top:12px}.receipt p{color:#626660;line-height:1.65}.opportunities,.proposals{display:grid;gap:9px;margin-top:30px}.opportunities article{display:grid;grid-template-columns:1fr auto auto;gap:24px;align-items:center;padding:20px;border:1px solid #deded8;border-radius:12px}.opportunities h3,.proposals h3{margin:5px 0;font-size:19px;letter-spacing:-.03em}.opportunities p,.proposals p,.protection-grid p{margin:0;color:#70716b;font-size:10px;line-height:1.55}.opportunities span{font:700 8px JetBrains Mono,monospace;color:#27704e}.value{min-width:130px}.value b,.value small{display:block}.value small{font-size:8px;color:#777}.opportunities button,.decision button{border:0;border-radius:8px;background:#111;color:#fff;padding:11px 14px;font-size:9px;font-weight:750}.prepared{padding-top:16px}.prepared>span{display:block;margin-bottom:8px}.protection-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:9px;margin-top:30px}.protection-grid article{display:grid;grid-template-columns:auto 1fr;gap:8px 12px}.protection-grid i{margin-top:4px}.protection-grid p{grid-column:2}.proposals article{display:grid;grid-template-columns:1fr auto;gap:24px;align-items:center;padding:20px;border:1px solid #deded8;border-radius:12px}.simulation{display:flex;gap:12px;margin-top:13px;font-size:8px}.simulation b{color:#27704e}.simulation span{color:#797a73}.decision{display:grid;grid-template-columns:1fr 1fr;gap:6px}.decision .secondary{background:#e8e8e3;color:#111}.decision .link{grid-column:1/-1;background:transparent;color:#777;padding:5px;text-decoration:underline}.status{text-transform:capitalize}.empty{padding:28px;border:1px dashed #d0d0ca;border-radius:11px;color:#777;font-size:11px}.notice{position:sticky;bottom:16px;z-index:5;max-width:700px;margin:18px auto 0;padding:13px 16px;border-radius:10px;background:#111;color:#fff;font-size:10px}@media(max-width:800px){.cockpit{padding-top:76px}.hero,.view-heading{grid-template-columns:1fr;gap:22px}.goals{grid-template-columns:1fr 1fr}.goals button:nth-child(2){border-right:0}.goals button:nth-child(-n+2){border-bottom:1px solid #d3d3cd}.view{padding:20px}.money-grid,.protection-grid{grid-template-columns:1fr}.opportunities article,.proposals article{grid-template-columns:1fr}.attention div{grid-template-columns:1fr}.value{min-width:0}.simulation{flex-wrap:wrap}}
 </style>
