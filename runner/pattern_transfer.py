@@ -72,6 +72,7 @@ class _PatternTransfer:
         self._transfers_attempted = 0
         self._transfers_successful = 0
         self._cross_project_savings = 0
+        self._compiled_patterns_available = None
 
     # -----------------------------------------------------------------------
     # public: find_transferable
@@ -306,13 +307,17 @@ class _PatternTransfer:
 
     def _compiled_patterns_for(self, project):
         """Fetch compiled patterns for a project from the DB."""
+        if self._compiled_patterns_available is False:
+            return self._patterns_from_outcomes(project)
         try:
             rows = db.select("compiled_patterns", {
                 "project": "eq.%s" % project,
                 "limit": "200",
             })
+            self._compiled_patterns_available = True
             return rows if rows else []
         except Exception:
+            self._compiled_patterns_available = False
             _log.debug("compiled_patterns table query failed, trying outcomes")
             return self._patterns_from_outcomes(project)
 
@@ -321,8 +326,7 @@ class _PatternTransfer:
         try:
             rows = db.select("outcomes", {
                 "project": "eq.%s" % project,
-                "state": "eq.DONE",
-                "select": "slug,diff,files_changed,integrated",
+                "select": "slug,integrated",
                 "limit": "500",
                 "order": "created_at.desc",
             })
@@ -341,17 +345,6 @@ class _PatternTransfer:
                 groups[prefix]["total"] += 1
                 if r.get("integrated"):
                     groups[prefix]["success"] += 1
-                if r.get("diff"):
-                    groups[prefix]["diffs"].append(r["diff"][:500])
-                if r.get("files_changed"):
-                    fc = r["files_changed"]
-                    if isinstance(fc, str):
-                        try:
-                            fc = json.loads(fc)
-                        except Exception:
-                            fc = []
-                    if isinstance(fc, list):
-                        groups[prefix]["files"].extend(fc)
 
             patterns = []
             for prefix, g in groups.items():

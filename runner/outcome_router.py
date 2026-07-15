@@ -59,7 +59,7 @@ class _OutcomeRouter:
             return
         try:
             rows = db.select("outcomes", {
-                "select": "slug,model,state,integrated",
+                "select": "slug,model,integrated,tests_passed",
                 "limit": "10000",
             }) or []
             agg: dict = {}
@@ -68,7 +68,7 @@ class _OutcomeRouter:
                 mdl = r.get("model") or ""
                 bucket = agg.setdefault(prefix, {}).setdefault(mdl, {"total": 0, "success": 0})
                 bucket["total"] += 1
-                if r.get("state") == "DONE" or r.get("integrated"):
+                if r.get("integrated") or r.get("tests_passed"):
                     bucket["success"] += 1
             self._cache = agg
             self._cache_ts = now
