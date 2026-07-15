@@ -2543,6 +2543,19 @@ _PERIODIC_PIDS = {}  # job_name -> (pid, launch_time)
 # single hardcoded default that's wildly wrong for fast-cadence jobs (see _is_still_running).
 _JOB_INTERVAL = {job: args for (_key, job, stype, args) in _SCHEDULE if stype == "interval"}
 
+# Launch cadence is not an execution timeout. Integration and release jobs can
+# legitimately spend tens of minutes in isolated typecheck/build worktrees. A
+# historical ``interval * 5`` timeout therefore killed healthy QA for the
+# 60-second merge train after five minutes and forced it to restart forever.
+# Keep conservative per-job leases, while retaining the old scaled fallback for
+# lightweight periodic jobs.
+_JOB_MAX_RUNTIME = {
+    "merge_train.py": int(os.environ.get("ORCH_MERGE_TRAIN_MAX_RUNTIME_S", "7200")),
+    "release_train.py": int(os.environ.get("ORCH_RELEASE_TRAIN_MAX_RUNTIME_S", "7200")),
+    "releasetrain": int(os.environ.get("ORCH_RELEASE_TRAIN_MAX_RUNTIME_S", "7200")),
+    "integration_sweeper.py": int(os.environ.get("ORCH_INTEGRATION_SWEEPER_MAX_RUNTIME_S", "7200")),
+}
+
 
 def _is_still_running(job):
     """True if the previously-launched instance of this job is still alive.
@@ -2572,7 +2585,11 @@ def _is_still_running(job):
 
 
 def _reap_stale_periodic(job, expected_interval):
-    """Kill periodic children that have been running > 5x their expected interval."""
+    """Kill periodic children only after their execution lease expires.
+
+    Cadence controls when another run is useful; it must not define how long a
+    healthy run may execute. Long QA jobs have explicit leases above.
+    """
     info = _PERIODIC_PIDS.get(job)
     if not info:
         return
@@ -2582,10 +2599,12 @@ def _reap_stale_periodic(job, expected_interval):
     except OSError:
         del _PERIODIC_PIDS[job]
         return
-    if time.time() - launch_t > expected_interval * 5:
+    max_runtime = _JOB_MAX_RUNTIME.get(job, expected_interval * 5)
+    if time.time() - launch_t > max_runtime:
         try:
             os.kill(pid, 9)
-            print(f"[reaper] killed stale periodic child {job} (pid {pid}, ran {int(time.time()-launch_t)}s)")
+            print(f"[reaper] killed stale periodic child {job} "
+                  f"(pid {pid}, ran {int(time.time()-launch_t)}s; lease {max_runtime}s)")
         except Exception as e:
             _log.debug("hook reap_stale failed: %s", e)
         del _PERIODIC_PIDS[job]

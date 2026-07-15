@@ -532,8 +532,28 @@ class TestMergeRiskClassification(unittest.TestCase):
 class TestBranchExactQA(unittest.TestCase):
     def test_integrate_tests_rebased_branch_not_primary_checkout(self):
         source = open(merge_train.__file__, encoding="utf-8").read()
-        self.assertIn("_run_tests(repo, test_cmd, branch)", source)
+        self.assertIn("_verified_or_run(repo, candidate_sha, test_cmd)", source)
         self.assertIn("_run_tests(repo, test_cmd, base)", source)
+
+    def test_exact_commit_verification_is_reused(self):
+        proof = MagicMock()
+        proof.reusable_verification.return_value = {"success": True}
+        with patch.dict("sys.modules", {"proof_graph": proof}), \
+             patch.object(merge_train, "_run_tests") as run:
+            ok, note = merge_train._verified_or_run("/repo", "a" * 40, "npm test")
+        self.assertTrue(ok)
+        self.assertIn("reused exact", note)
+        run.assert_not_called()
+
+    def test_successful_exact_commit_verification_is_recorded(self):
+        proof = MagicMock()
+        proof.reusable_verification.return_value = None
+        with patch.dict("sys.modules", {"proof_graph": proof}), \
+             patch.object(merge_train, "_run_tests", return_value=(True, "green")):
+            ok, _ = merge_train._verified_or_run("/repo", "a" * 40, "npm test")
+        self.assertTrue(ok)
+        proof.record_verification.assert_called_once_with(
+            "/repo", "a" * 40, "npm test", "merge-qa", True)
 
 
 if __name__ == "__main__":

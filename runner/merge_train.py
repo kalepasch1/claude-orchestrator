@@ -360,6 +360,43 @@ def _test_cmd_for(proj, repo):
         return cmd
 
 
+def _verified_or_run(repo, commit, command, kind="merge-qa"):
+    """Resume exact-commit QA from a durable dependency-addressed proof.
+
+    A train may be interrupted after an expensive typecheck succeeds but before
+    the branch fast-forwards. Persisting the success lets the next owner resume
+    at the integration step without rerunning the same command. Failed or
+    mismatched commit/dependency proofs are never reused.
+    """
+    if not command:
+        return True, "no test_cmd configured"
+    import re
+    cacheable = bool(re.fullmatch(r"[0-9a-fA-F]{40,64}", str(commit or "")))
+    try:
+        import proof_graph
+        if cacheable and proof_graph.reusable_verification(repo, commit, command, kind):
+            return True, "reused exact commit/dependency verification proof"
+    except Exception:
+        proof_graph = None
+    ok, tail = _run_tests(repo, command, commit)
+    if ok and cacheable:
+        try:
+            import proof_graph
+            proof_graph.record_verification(repo, commit, command, kind, True)
+        except Exception:
+            pass
+    return ok, tail
+
+
+def _commit_identity(repo, ref):
+    """Resolve a ref without making mocked/non-local test repositories fatal."""
+    try:
+        resolved = _git(repo, "rev-parse", ref).stdout.strip()
+        return resolved or ref
+    except (OSError, subprocess.SubprocessError):
+        return ref
+
+
 def _ff_base(repo, branch, base):
     """Step 4: fast-forward base to the rebased branch WITHOUT checking base out
     (git fetch . branch:base — the approval_merge technique). No force, ever.
@@ -795,7 +832,8 @@ def _integrate_card(card, slug, task, proj):
             return "conflict"
 
     test_cmd = _test_cmd_for(proj, repo)
-    ok, tail = _run_tests(repo, test_cmd, branch)  # (3) branch-exact, never primary checkout
+    candidate_sha = _commit_identity(repo, branch)
+    ok, tail = _verified_or_run(repo, candidate_sha, test_cmd)  # (3) exact, resumable QA
     if not ok and os.environ.get("ORCH_DIFFERENTIAL_QA", "true").lower() in ("1", "true", "yes", "on"):
         try:
             import differential_qa
