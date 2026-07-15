@@ -2326,6 +2326,7 @@ _SCHEDULE = [
     ("fleet-stuck-300",       "fleet_stuck_alarm.py",   "interval", 300),  # queued>0 & running=0 for >15min -> notify + remediate
     ("queue-bankruptcy-3600", "queue_bankruptcy.py",    "interval", 3600), # close QUEUED tasks past ORCH_TASK_BANKRUPTCY_DAYS
     ("scoreboard-600",        "scoreboard.py",          "interval", 600),  # merged/day, first-pass rate, paused-minutes, queue mix
+    ("workflow-compare-300",  "workflow_comparison.py", "interval", 300),  # Cowork vs native verified/integrated/deployed value
     ("context-distill-3600",  "context_cache_distill.py","interval", 3600), # prune stale embedding-cache entries (unbounded growth fix)
     ("cost-intel-86400",      "cost_intelligence.py",   "interval", 86400), # daily: internal + external cost/value reports
     ("improve-roadmap-86400", "improvement_roadmap.py", "interval", 86400), # daily: 50x-500x claim, disclosed-assumption staged model
