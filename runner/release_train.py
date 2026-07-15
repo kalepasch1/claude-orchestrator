@@ -304,6 +304,8 @@ def _open_release_fix_tasks(p, gate=None):
     else:
         prefixes = QA_FIX_PREFIXES + RELEASE_FIX_PREFIXES + COPY_FIX_PREFIXES
     hold_minutes = float(os.environ.get("ORCH_RELEASE_FIX_HOLD_MIN", "180"))
+    hold_states = {x.strip().upper() for x in
+                   os.environ.get("ORCH_RELEASE_FIX_HOLD_STATES", "RUNNING,RETRY").split(",") if x.strip()}
     now = datetime.datetime.now(datetime.timezone.utc)
     out = []
     for row in rows:
@@ -316,6 +318,11 @@ def _open_release_fix_tasks(p, gate=None):
         if gate is None:
             matches_gate = matches_gate or "release_train" in note or "vercel" in note
         if not matches_gate:
+            continue
+        # A queued historical fix is not a mutex. The exact current candidate
+        # must be allowed to prove itself; only a fix consuming an executor lane
+        # gets a short exclusivity window to avoid racing its own release.
+        if str(row.get("state") or "").upper() not in hold_states:
             continue
         touched = _parse_time(row.get("updated_at") or row.get("created_at"))
         if touched:

@@ -34,12 +34,14 @@ def test_release_fix_holds_are_gate_specific_and_expire(monkeypatch):
     rows = [
         {"slug": "qafix-app-current", "state": "QUEUED", "note": "auto-queued by release_train",
          "updated_at": now.isoformat()},
+        {"slug": "qafix-app-running", "state": "RUNNING", "note": "auto-queued by release_train",
+         "updated_at": now.isoformat()},
         {"slug": "copyfix-app-stale", "state": "QUEUED", "note": "auto-queued by release_train",
          "updated_at": (now - datetime.timedelta(hours=4)).isoformat()},
     ]
     monkeypatch.setattr(release_train.db, "select", lambda *a, **k: rows)
     monkeypatch.setenv("ORCH_RELEASE_FIX_HOLD_MIN", "180")
-    assert [x["slug"] for x in release_train._open_release_fix_tasks({"id": "p"}, "qa")] == ["qafix-app-current"]
+    assert [x["slug"] for x in release_train._open_release_fix_tasks({"id": "p"}, "qa")] == ["qafix-app-running"]
     assert release_train._open_release_fix_tasks({"id": "p"}, "copy") == []
 
 
