@@ -569,6 +569,29 @@ def run_for(project):
                              ahead=int(ahead), note=due_note)
         return {"project": project, "prod": prod, "staged": merged, "ahead": ahead,
                 "note": f"below batch size; {due_note}"}
+    # Freeze the exact candidate, commands, dependency graph, and file set
+    # before any expensive gate runs. This manifest is the release identity.
+    det_cmd, has_real_tests = _detect_test_cmd(repo)
+    test_cmd = p.get("test_cmd") or det_cmd or os.environ.get("DEFAULT_TEST_CMD", "")
+    if p.get("test_cmd") and not os.path.isfile(os.path.join(repo, "package.json")) and det_cmd:
+        test_cmd = det_cmd
+        db.update("projects", {"name": project}, {"test_cmd": det_cmd})
+    require_tests = (has_real_tests
+                     or os.environ.get("ORCH_RELEASE_REQUIRE_TESTS", "false").lower() == "true"
+                     or _kpi_requires_tests(project))
+    try:
+        import build_gate
+        bcmd = build_gate.build_cmd_for(p, repo)
+    except Exception:
+        bcmd = ""
+    manifest = None
+    try:
+        import release_manifest
+        manifest = release_manifest.create(project, repo, release_base_sha, staging_sha,
+                                           test_cmd=test_cmd, build_cmd=bcmd,
+                                           tasks=[{"slug": t.get("slug")} for t in candidates])
+    except Exception:
+        manifest = None
     # A full batch is already amortized and should ship immediately. Cadence is
     # only the deadline that flushes a partial batch.
     # PUBLIC COPY/IP GATE: anything added to public-facing pages/components/content must describe
@@ -593,6 +616,8 @@ def run_for(project):
                                  note="public copy exposes protected IP/legal strategy")
             return {"project": project, "copy": "RED",
                     "note": "public copy exposes protected IP/legal strategy; copy-fix task queued"}
+        if manifest:
+            release_manifest.record_gate(manifest["id"], "copy", True, detail="public copy gate green")
     except Exception as e:
         _insert_failed_release(project, "copy", ahead, release_base_sha, staging_sha,
                                f"public-copy disclosure gate failed closed: {str(e)[:160]}")
@@ -604,19 +629,20 @@ def run_for(project):
     # forces it (ORCH_RELEASE_REQUIRE_TESTS=true), or when release_kpi flagged this app as chronically
     # failing its prod deploy. Otherwise tests are advisory — so a missing/placeholder `npm test` never
     # hard-blocks a deploy (the bug that stalled tomorrow/pareto/smarter) while real suites still gate.
-    det_cmd, has_real_tests = _detect_test_cmd(repo)
-    test_cmd = p.get("test_cmd") or det_cmd or os.environ.get("DEFAULT_TEST_CMD", "")
-    if p.get("test_cmd") and not os.path.isfile(os.path.join(repo, "package.json")) and det_cmd:
-        test_cmd = det_cmd
-        db.update("projects", {"name": project}, {"test_cmd": det_cmd})
-    require_tests = (has_real_tests
-                     or os.environ.get("ORCH_RELEASE_REQUIRE_TESTS", "false").lower() == "true"
-                     or _kpi_requires_tests(project))
+    qa_cmd = test_cmd
+    qa_plan = {"mode": "full", "command": test_cmd, "reason": "selective QA disabled"}
+    if test_cmd and _truthy("ORCH_SELECTIVE_QA", True):
+        try:
+            import selective_qa
+            qa_plan = selective_qa.plan(repo, release_base_sha, staging_sha, test_cmd)
+            qa_cmd = qa_plan.get("command") or test_cmd
+        except Exception:
+            qa_cmd = test_cmd
     qa_reused = False
     if test_cmd and require_tests:
         try:
             import proof_graph
-            qa_reused = bool(proof_graph.reusable_verification(repo, staging_sha, test_cmd, "qa"))
+            qa_reused = bool(proof_graph.reusable_verification(repo, staging_sha, qa_cmd, "qa"))
         except Exception:
             qa_reused = False
     if test_cmd and require_tests and not qa_reused:
@@ -645,10 +671,10 @@ def run_for(project):
             _link_shared_runtime(repo, tmp)
             prepared, prepare_log = _prepare_generated_types(tmp)
             if prepared:
-                qa = subprocess.run(["bash", "-lc", test_cmd], cwd=tmp, capture_output=True, text=True, timeout=1800)
+                qa = subprocess.run(["bash", "-lc", qa_cmd], cwd=tmp, capture_output=True, text=True, timeout=1800)
                 ok = qa.returncode == 0
             else:
-                qa = subprocess.CompletedProcess(test_cmd, 1, "", "Nuxt type preparation failed:\n" + prepare_log)
+                qa = subprocess.CompletedProcess(qa_cmd, 1, "", "Nuxt type preparation failed:\n" + prepare_log)
                 ok = False
         finally:
             _git(repo, "worktree", "remove", "--force", tmp); shutil.rmtree(tmp, ignore_errors=True)
@@ -660,16 +686,18 @@ def run_for(project):
             _record_release_flow(project, "staging-red-qa", prod=prod, ahead=int(ahead),
                                  note="staging tests failed")
             return {"project": project, "qa": "FAILED", "note": "staging not green; held"}
+        if manifest:
+            release_manifest.record_gate(manifest["id"], "qa", True, command=qa_cmd,
+                                         detail=qa_plan.get("reason", ""))
         try:
             import proof_graph
-            proof_graph.record_verification(repo, staging_sha, test_cmd, "qa", True)
+            proof_graph.record_verification(repo, staging_sha, qa_cmd, "qa", True)
         except Exception:
             pass
     # BUILD GATE on the whole staging batch: the real prod build must be green before we release to
     # prod (this is what stops the Vercel deploy failures — no green build, no release).
     try:
         import build_gate
-        bcmd = build_gate.build_cmd_for(p, repo)
         if bcmd:
             held = _hold_for_open_fix(p, project, "build")
             if held:
@@ -698,12 +726,24 @@ def run_for(project):
                     proof_graph.record_verification(repo, staging_sha, bcmd, "build", True)
                 except Exception:
                     pass
+            if manifest:
+                release_manifest.record_gate(manifest["id"], "build", True, command=bcmd,
+                                             detail="production build green")
     except Exception:
         pass
     # Promote only the exact tree that passed copy, QA, and build. Background
     # integration workers may advance staging while expensive gates run; that
     # newer tree belongs in the next release and must never borrow this proof.
     current_staging_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
+    if manifest:
+        try:
+            valid, manifest_note = release_manifest.validate(repo, manifest)
+        except Exception as e:
+            valid, manifest_note = False, str(e)
+        if not valid:
+            _record_release_flow(project, "release-manifest-invalid", prod=prod, ahead=int(ahead),
+                                 from_sha=staging_sha, to_sha=current_staging_sha, note=manifest_note[:300])
+            return {"project": project, "manifest": "INVALID", "note": manifest_note}
     if current_staging_sha != staging_sha:
         _insert_failed_release(project, "snapshot", ahead, release_base_sha, current_staging_sha,
                                f"staging changed after verification: {staging_sha[:12]} -> {current_staging_sha[:12]}")

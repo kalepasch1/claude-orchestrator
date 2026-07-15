@@ -723,6 +723,17 @@ def _integrate_card(card, slug, task, proj):
             _semantic_ok = _try_semantic_merge(repo, branch, base)
         except Exception:
             pass  # fail-soft: any error → fall through to redo
+        if not _semantic_ok and os.environ.get("ORCH_MINIMAL_COMMIT_EXTRACTION", "true").lower() in ("1", "true", "yes", "on"):
+            try:
+                import minimal_commit
+                approval_merge._free_branch(repo, branch)
+                extracted = minimal_commit.extract(repo, branch, base, task)
+                _semantic_ok = bool(extracted.get("ok"))
+                if _semantic_ok:
+                    _log(pname, slug, "MINIMAL_EXTRACT",
+                         f"{len(extracted.get('files') or [])} task files onto fresh {base}")
+            except Exception:
+                _semantic_ok = False
         if _semantic_ok:
             _log(pname, slug, "SEMANTIC_MERGE", f"auto-resolved rebase conflict on {branch}")
             # branch now sits on base with merged content — fall through to step (3): tests

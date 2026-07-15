@@ -100,6 +100,45 @@ def dedupe_attribution_rows(rows):
     return out
 
 
+def terminal_task_rows(rows):
+    """One routing observation per task/coder, not one row per retry/log write.
+
+    Retries are execution detail. Counting each retry as an independent failed
+    delivery depressed routes with honest instrumentation and rewarded routes
+    that emitted fewer rows. Preserve the strongest terminal evidence while
+    aggregating the real cost, wall time, and attempt count.
+    """
+    grouped = collections.OrderedDict()
+    for row in dedupe_attribution_rows(rows):
+        key = (row.get("task_id") or row.get("slug") or row.get("id"), _coder(row.get("model")))
+        current = grouped.get(key)
+        rank = (bool(row.get("deployed")) or str(row.get("deploy_status") or "").lower() in
+                ("success", "ready", "deployed", "green"), bool(row.get("integrated")),
+                bool(row.get("tests_passed")), str(row.get("created_at") or ""))
+        if current is None:
+            chosen = dict(row)
+            chosen["_rank"] = rank
+            chosen["_trial_rows"] = 1
+            grouped[key] = chosen
+            continue
+        current["_trial_rows"] = int(current.get("_trial_rows") or 1) + 1
+        current["usd"] = _float(current.get("usd")) + _float(row.get("usd"))
+        current["wall_ms"] = _float(current.get("wall_ms")) + _float(row.get("wall_ms"))
+        current["attempts"] = max(_float(current.get("attempts")), _float(row.get("attempts")),
+                                  float(current["_trial_rows"]))
+        if rank > current.get("_rank", (False, False, False, "")):
+            totals = {k: current.get(k) for k in ("usd", "wall_ms", "attempts", "_trial_rows")}
+            current = dict(row)
+            current.update(totals)
+            current["_rank"] = rank
+            grouped[key] = current
+    result = []
+    for row in grouped.values():
+        row.pop("_rank", None)
+        result.append(row)
+    return result
+
+
 def _select_existing_outcomes(extra=None, limit="5000"):
     params = {"select": "id,task_id,slug,integrated,model,kind,tests_passed,usd,wall_ms,note,created_at",
               "order": "created_at.desc", "limit": str(limit)}

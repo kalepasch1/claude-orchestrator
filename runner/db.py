@@ -605,9 +605,22 @@ def claim_task(runner_id):
     )
     evidence_reserved_lanes = max(0, int(os.environ.get("ORCH_EVIDENCE_RESERVED_LANES", "1") or 0))
     evidence_reserve_open = evidence_backlog and active_evidence < evidence_reserved_lanes
+    try:
+        import blocker_portfolio
+        blocker_scores = blocker_portfolio.scores(queued)
+    except Exception:
+        blocker_scores = {}
 
     def _task_priority(t):
         return _num(t.get("priority"), 1000)
+
+    def _blocker_portfolio_rank(t):
+        # Higher score means this task clears more downstream/release work.
+        if _is_recovery_task(t) and not recovery_backlog:
+            return 0.0
+        if _is_release_fix_task(t) and not release_fix_backlog:
+            return 0.0
+        return -float(blocker_scores.get(str(t.get("id") or t.get("slug") or ""), 0.0))
 
     def _portfolio_project_rank(t):
         # Owner directive: prioritize portfolio work in this exact product order. Keep this
@@ -700,6 +713,7 @@ def claim_task(runner_id):
                                _release_fix_rank(t),                             # unblock Vercel releases across the portfolio
                                _release_fix_urgency(t),                          # hot gate fixes before stale EV noise
                                _release_fix_specificity(t),                      # exact current failures before legacy slices
+                               _blocker_portfolio_rank(t),                       # maximize downstream work unblocked per claim
                                _portfolio_project_rank(t),                       # owner order within the same delivery class
                                _evidence_rank(t),                                # bounded canaries unblock learned routing
                                _recovery_rank(t),                                # recover tested work next

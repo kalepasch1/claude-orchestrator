@@ -56,7 +56,7 @@ def _rebuild():
                                       "limit": "5000"}) or []
     try:
         import route_evidence
-        rows = route_evidence.dedupe_attribution_rows(rows)
+        rows = route_evidence.terminal_task_rows(rows)
     except Exception:
         pass
     try:

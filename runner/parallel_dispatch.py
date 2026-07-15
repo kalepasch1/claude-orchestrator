@@ -212,6 +212,7 @@ def _dispatch_one_api(task: dict) -> dict:
 
         # Determine repo path for cwd
         cwd = ""
+        project_row = {}
         try:
             projects = {}
             try:
@@ -222,18 +223,26 @@ def _dispatch_one_api(task: dict) -> dict:
             if not projects:
                 projects = {p["id"]: p for p in (db.select("projects", {"select": "id,repo_path"}) or [])}
             proj = projects.get(task.get("project_id"), {})
+            project_row = proj
             cwd = db.localize_repo_path(proj.get("repo_path", "")) if hasattr(db, "localize_repo_path") else ""
         except Exception:
             pass
 
-        result = swarm_executor.run_swarm(
-            prompt=prompt,
-            model=model,
-            provider=provider,
-            cwd=cwd,
-            timeout=300,
-            mode="diff",
-        )
+        tournament_on = os.environ.get("ORCH_PATCH_TOURNAMENT", "true").lower() in ("1", "true", "yes", "on")
+        release_fix = str(task.get("slug") or "").startswith(("qafix-", "buildfix-", "relfix-", "deployfix-", "toolchain-repair-"))
+        if tournament_on and release_fix and cwd:
+            import patch_tournament, provider_credentials
+            providers = [p for p in ("xai", "deepseek", "groq", "openai", "google")
+                         if p in swarm_executor.PROVIDERS and provider_credentials.has(p)]
+            if len(providers) >= 2:
+                result = patch_tournament.run_live(task, cwd, providers[:3],
+                                                   test_cmd=project_row.get("test_cmd") or "")
+            else:
+                result = swarm_executor.run_swarm(prompt=prompt, model=model, provider=provider,
+                                                  cwd=cwd, timeout=300, mode="diff")
+        else:
+            result = swarm_executor.run_swarm(prompt=prompt, model=model, provider=provider,
+                                              cwd=cwd, timeout=300, mode="diff")
 
         cost = result.get("cost_usd", 0.0)
         _record_spend(cost)
