@@ -142,12 +142,14 @@ def rebuild_from_outcomes(hours=168, limit=5000):
     for row in reversed(rows):
         key = agent_key(row.get("model"))
         entry = ledger.setdefault(key, {"agent": key, "attempts": 0, "good": 0,
-                                        "bad": 0, "penalty": 0.0, "domains": {}})
+                                        "bad": 0, "tests_passed": 0,
+                                        "penalty": 0.0, "domains": {}})
         domain = str(row.get("kind") or "general")
         d = entry["domains"].setdefault(domain, {"attempts": 0, "merged": 0, "bad": 0})
         entry["attempts"] += 1
         d["attempts"] += 1
         merged, tested = bool(row.get("integrated")), bool(row.get("tests_passed"))
+        entry["tests_passed"] += int(tested)
         if merged:
             entry["good"] += 1
             d["merged"] += 1
@@ -161,10 +163,19 @@ def rebuild_from_outcomes(hours=168, limit=5000):
         delta += min(0.8, 0.2 * int(row.get("review_failures") or 0))
         if float(row.get("usd") or 0) > float(os.environ.get("ORCH_MODEL_SLASH_COST_WARN", "2.0")) and not merged:
             delta += 0.25
-        entry["penalty"] = round(min(MAX_PENALTY, max(0.0, entry["penalty"] + delta)), 4)
-        entry["allocation_multiplier"] = max(0.1, round(1.0 / (1.0 + entry["penalty"]), 3))
         entry["last_outcome"] = {"merged": merged, "tests_passed": tested,
                                   "domain": domain, "at": int(time.time())}
+    # Score current terminal quality, not failure-history path length. The old
+    # cumulative cap made a 67%-merge route indistinguishable from a 4%-merge
+    # route after enough samples. Beta smoothing prevents one canary deciding a
+    # route; test quality catches patches that never reach integration.
+    for entry in ledger.values():
+        n = int(entry.get("attempts") or 0)
+        nonmerge_rate = (int(entry.get("bad") or 0) + 2.0) / (n + 4.0)
+        testfail_rate = ((n - int(entry.get("tests_passed") or 0)) + 2.0) / (n + 4.0)
+        loss = 0.7 * nonmerge_rate + 0.3 * testfail_rate
+        entry["penalty"] = round(min(MAX_PENALTY, MAX_PENALTY * loss), 4)
+        entry["allocation_multiplier"] = max(0.1, round(1.0 / (1.0 + entry["penalty"]), 3))
     _save(ledger)
     return ledger
 
