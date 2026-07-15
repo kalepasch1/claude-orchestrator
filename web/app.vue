@@ -1,5 +1,5 @@
 <template>
-  <PublicLanding v-if="!user" :signing-in="signingIn" :auth-error="authError" @sign-in="signIn" />
+  <LegoraLanding v-if="!user" :signing-in="signingIn" :auth-error="authError" @sign-in="signIn" />
   <template v-else><NuxtLayout><NuxtPage /></NuxtLayout><PreActionGuidance /></template>
   <ExperienceLayer />
 </template>
