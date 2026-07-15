@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 
 
@@ -66,6 +67,30 @@ def _repo_key(repo):
 
 def _stamp_path(repo):
     return os.path.join(_STAMP_DIR, _repo_key(repo) + ".json")
+
+
+def _snapshot_dir():
+    return os.environ.get("ORCH_DEPS_SNAPSHOT_DIR", os.path.join(_STAMP_DIR, "snapshots"))
+
+
+def _fingerprint(repo):
+    """Content address an install so incomplete/stale trees are never reused."""
+    digest = hashlib.sha256()
+    digest.update(os.uname().sysname.encode("utf-8"))
+    digest.update(os.uname().machine.encode("utf-8"))
+    for name in ("package.json", *_LOCKS, ".npmrc"):
+        path = os.path.join(repo, name)
+        if not os.path.isfile(path):
+            continue
+        digest.update(name.encode("utf-8"))
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _snapshot_path(repo):
+    return os.path.join(_snapshot_dir(), _fingerprint(repo))
 
 
 def _signature(repo):
@@ -151,8 +176,7 @@ def _ignore_scripts_cmd(manager, cmd):
     return None
 
 
-def deps_ready(repo):
-    """Return True when the root install looks usable for local build worktrees."""
+def _deps_ready_local(repo):
     if not os.path.isfile(os.path.join(repo, "package.json")):
         return True
     nm = os.path.join(repo, "node_modules")
@@ -176,17 +200,28 @@ def deps_ready(repo):
     return True
 
 
-def _stamp_matches(repo):
+def _ready_snapshot(repo):
     try:
-        with open(_stamp_path(repo), encoding="utf-8") as f:
-            stamp = json.load(f)
-        return stamp.get("signature") == _signature(repo) and deps_ready(repo)
+        path = _snapshot_path(repo)
+        if (os.path.isfile(os.path.join(path, ".ready.json"))
+                and _deps_ready_local(path)):
+            return path
     except Exception:
-        return False
+        pass
+    return None
+
+
+def deps_ready(repo):
+    """Return True when either a local or immutable install is usable."""
+    return _deps_ready_local(repo) or bool(_ready_snapshot(repo))
+
+
+def _stamp_matches(repo):
+    return bool(_ready_snapshot(repo))
 
 
 def ensure(repo, reason="prewarm", timeout=None):
-    """Install dependencies once per repo signature. Returns a small result dict."""
+    """Build and atomically publish an immutable dependency snapshot."""
     if not _truthy("ORCH_PREWARM_INSTALL_DEPS", True):
         return {"ok": True, "skipped": "disabled"}
     if not repo or not os.path.isdir(repo):
@@ -195,42 +230,64 @@ def ensure(repo, reason="prewarm", timeout=None):
         return {"ok": True, "skipped": "no-package-json"}
     if _stamp_matches(repo):
         return {"ok": True, "skipped": "warm-cache"}
-    # SERIALIZE INSTALLS (2026-07-14): multiple daemons (prewarm, build_daemon, executors) used
-    # to run `npm install` in the SAME package root concurrently, corrupting node_modules
-    # (ENOTDIR/ENOTEMPTY, half-extracted packages, poisoned npm cache). Take an exclusive
-    # per-root flock; whoever waited re-checks the stamp and skips if another process warmed it.
+    # The lock is keyed by manifest content rather than checkout path: identical installs
+    # across worktrees collapse into one build and one immutable runtime.
     lock_file = None
+    build_root = None
     try:
         import fcntl as _fcntl
-        os.makedirs(_STAMP_DIR, exist_ok=True)
-        lock_file = open(_stamp_path(repo) + ".lock", "w")
+        os.makedirs(_snapshot_dir(), exist_ok=True)
+        lock_file = open(_snapshot_path(repo) + ".lock", "w")
         _fcntl.flock(lock_file, _fcntl.LOCK_EX)
         if _stamp_matches(repo):
             lock_file.close()
             return {"ok": True, "skipped": "warm-cache (installed by concurrent process)"}
     except Exception:
         pass  # locking is best-effort; proceed unlocked rather than fail the warm
-    manager, cmd = _manager(repo)
     try:
-        r = subprocess.run(cmd, cwd=repo, capture_output=True, text=True,
+        os.makedirs(_snapshot_dir(), exist_ok=True)
+        build_root = tempfile.mkdtemp(prefix=_fingerprint(repo) + ".building-",
+                                      dir=_snapshot_dir())
+        for name in ("package.json", *_LOCKS, ".npmrc"):
+            src = os.path.join(repo, name)
+            if os.path.isfile(src):
+                shutil.copy2(src, os.path.join(build_root, name))
+        prisma = os.path.join(repo, "prisma")
+        if os.path.isdir(prisma):
+            shutil.copytree(prisma, os.path.join(build_root, "prisma"))
+        schema = os.path.join(repo, "schema.prisma")
+        if os.path.isfile(schema):
+            shutil.copy2(schema, os.path.join(build_root, "schema.prisma"))
+    except Exception as e:
+        if build_root:
+            shutil.rmtree(build_root, ignore_errors=True)
+        if lock_file:
+            lock_file.close()
+        return {"ok": False, "error": f"snapshot staging failed: {e}"}
+    manager, cmd = _manager(build_root)
+    try:
+        r = subprocess.run(cmd, cwd=build_root, capture_output=True, text=True,
                            timeout=timeout or _DEFAULT_TIMEOUT)
     except subprocess.TimeoutExpired:
+        shutil.rmtree(build_root, ignore_errors=True)
         if lock_file: lock_file.close()
         return {"ok": False, "manager": manager, "error": f"install timed out after {timeout or _DEFAULT_TIMEOUT}s"}
     except Exception as e:
+        shutil.rmtree(build_root, ignore_errors=True)
         if lock_file: lock_file.close()
         return {"ok": False, "manager": manager, "error": str(e)}
     ignored_scripts = False
     if r.returncode != 0 and _truthy("ORCH_PREWARM_IGNORE_SCRIPTS_FALLBACK", True):
         fallback = _ignore_scripts_cmd(manager, cmd)
         if fallback:
-            r2 = subprocess.run(fallback, cwd=repo, capture_output=True, text=True,
+            r2 = subprocess.run(fallback, cwd=build_root, capture_output=True, text=True,
                                 timeout=timeout or _DEFAULT_TIMEOUT)
             if r2.returncode == 0:
                 r = r2
                 ignored_scripts = True
     if r.returncode != 0:
         tail = ((r.stdout or "")[-800:] + "\n" + (r.stderr or "")[-800:]).strip()
+        shutil.rmtree(build_root, ignore_errors=True)
         if lock_file: lock_file.close()
         return {"ok": False, "manager": manager, "error": tail or f"{manager} install failed"}
     # PRISMA (2026-07-14): installs that skip lifecycle scripts (--ignore-scripts fallback,
@@ -239,13 +296,33 @@ def ensure(repo, reason="prewarm", timeout=None):
     # accounted for 49 red test files on tomorrow's staging. Generate explicitly when a schema
     # exists; harmless no-op otherwise.
     try:
-        if (os.path.isfile(os.path.join(repo, "prisma", "schema.prisma"))
-                or os.path.isfile(os.path.join(repo, "schema.prisma"))):
+        if (os.path.isfile(os.path.join(build_root, "prisma", "schema.prisma"))
+                or os.path.isfile(os.path.join(build_root, "schema.prisma"))):
             npx = shutil.which("npx") or "npx"
-            subprocess.run([npx, "prisma", "generate"], cwd=repo, capture_output=True,
+            subprocess.run([npx, "prisma", "generate"], cwd=build_root, capture_output=True,
                            text=True, timeout=300)
     except Exception:
         pass
+    if not _deps_ready_local(build_root):
+        shutil.rmtree(build_root, ignore_errors=True)
+        if lock_file: lock_file.close()
+        return {"ok": False, "manager": manager,
+                "error": "installed snapshot failed dependency readiness validation"}
+    final_root = _snapshot_path(repo)
+    try:
+        with open(os.path.join(build_root, ".ready.json"), "w", encoding="utf-8") as f:
+            json.dump({"source": os.path.realpath(repo), "fingerprint": _fingerprint(repo),
+                       "manager": manager, "reason": reason, "ignored_scripts": ignored_scripts,
+                       "updated_at": time.time()}, f)
+        if os.path.isdir(final_root):
+            shutil.rmtree(build_root, ignore_errors=True)
+        else:
+            os.replace(build_root, final_root)
+        build_root = None
+    except Exception as e:
+        shutil.rmtree(build_root, ignore_errors=True)
+        if lock_file: lock_file.close()
+        return {"ok": False, "manager": manager, "error": f"snapshot publish failed: {e}"}
     os.makedirs(_STAMP_DIR, exist_ok=True)
     try:
         with open(_stamp_path(repo), "w", encoding="utf-8") as f:
@@ -255,8 +332,8 @@ def ensure(repo, reason="prewarm", timeout=None):
     except Exception:
         pass
     if lock_file: lock_file.close()
-    return {"ok": deps_ready(repo), "manager": manager, "installed": True,
-            "ignored_scripts": ignored_scripts}
+    return {"ok": bool(_ready_snapshot(repo)), "manager": manager, "installed": True,
+            "ignored_scripts": ignored_scripts, "snapshot": final_root}
 
 
 def ensure_all(repo, reason="prewarm", timeout=None):
@@ -303,6 +380,9 @@ def link_shared_runtime(repo, worktree):
         target_root = worktree if rel == "." else os.path.join(worktree, rel)
         if not os.path.isdir(target_root):
             continue
-        for shared in ("node_modules", ".env", ".env.local"):
+        snapshot = _ready_snapshot(root)
+        modules = os.path.join(snapshot, "node_modules") if snapshot else os.path.join(root, "node_modules")
+        link_one(modules, os.path.join(target_root, "node_modules"))
+        for shared in (".env", ".env.local"):
             link_one(os.path.join(root, shared), os.path.join(target_root, shared))
     return linked

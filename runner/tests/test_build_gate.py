@@ -125,8 +125,9 @@ class TestBuildGate(unittest.TestCase):
             p.stderr = "postinstall failed"
             p.returncode = 1
             if "--ignore-scripts" in cmd:
-                os.makedirs(os.path.join(d, "node_modules", ".bin"))
-                with open(os.path.join(d, "node_modules", ".bin", "nuxi"), "w") as f:
+                install_root = kwargs["cwd"]
+                os.makedirs(os.path.join(install_root, "node_modules", ".bin"))
+                with open(os.path.join(install_root, "node_modules", ".bin", "nuxi"), "w") as f:
                     f.write("#!/bin/sh\n")
                 p.returncode = 0
             return p
@@ -137,6 +138,28 @@ class TestBuildGate(unittest.TestCase):
         self.assertTrue(res["ok"])
         self.assertTrue(res["ignored_scripts"])
         self.assertIn("--ignore-scripts", calls[-1])
+        self.assertFalse(os.path.exists(os.path.join(d, "node_modules")))
+
+    def test_dependency_snapshot_is_atomically_linked_into_worktree(self):
+        d = tempfile.mkdtemp()
+        worktree = tempfile.mkdtemp()
+        with open(os.path.join(d, "package.json"), "w") as f:
+            json.dump({"scripts": {"build": "echo ok"}}, f)
+
+        def fake_run(cmd, **kwargs):
+            os.makedirs(os.path.join(kwargs["cwd"], "node_modules"))
+            p = MagicMock(returncode=0, stdout="", stderr="")
+            return p
+
+        with patch.object(dependency_prewarm, "_STAMP_DIR", tempfile.mkdtemp()), \
+             patch.object(dependency_prewarm.subprocess, "run", side_effect=fake_run):
+            res = dependency_prewarm.ensure(d, reason="test")
+            linked = dependency_prewarm.link_shared_runtime(d, worktree)
+        target = os.path.join(worktree, "node_modules")
+        self.assertTrue(res["ok"])
+        self.assertIn(target, linked)
+        self.assertTrue(os.path.islink(target))
+        self.assertIn("snapshots", os.path.realpath(target))
 
 
 if __name__ == "__main__":
