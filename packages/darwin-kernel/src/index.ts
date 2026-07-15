@@ -28,3 +28,4 @@ export * as products from './products/index.ts';
 export * as cade from './cade/index.ts';
 export * as commonBrain from './commonBrain/index.ts';
 export * as fleetAdmin from './fleetAdmin/index.ts';
+export * as resolution from './resolution/index.ts';
