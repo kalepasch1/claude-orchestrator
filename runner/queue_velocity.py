@@ -49,22 +49,9 @@ def _save_state(state):
 
 
 def _queue_depth():
-    try:
-        # Supabase/PostgREST commonly caps every response at 1,000 rows even
-        # when a larger limit is requested. Page on a stable key so the PID sees
-        # the real backlog instead of a permanent, false depth=1000 plateau.
-        total = 0
-        page_size = 1000
-        for offset in range(0, int(os.environ.get("QUEUE_DEPTH_SCAN_MAX", "50000")), page_size):
-            rows = db.select("tasks", {"select": "id", "state": "eq.QUEUED",
-                                       "order": "created_at.asc", "limit": str(page_size),
-                                       "offset": str(offset)}) or []
-            total += len(rows)
-            if len(rows) < page_size:
-                break
-        return total
-    except Exception:
-        return 0
+    # Exact header count is O(1), avoids PostgREST's 1,000-row body cap, and raises
+    # on transport failure. An outage must never masquerade as a drained queue.
+    return db.count("tasks", {"state": "eq.QUEUED"})
 
 
 def _pause_generators(reason):
@@ -115,7 +102,11 @@ def run():
     integral = state.get("integral", 0)
 
     # Sample current queue depth
-    depth = _queue_depth()
+    try:
+        depth = _queue_depth()
+    except Exception as e:
+        print(f"[queue-velocity] measurement failed; preserving controller state: {e}")
+        return {"ok": False, "error": str(e), "measurement_valid": False}
     now = time.time()
     history.append({"t": now, "depth": depth})
     history = history[-MAX_HISTORY:]  # trim

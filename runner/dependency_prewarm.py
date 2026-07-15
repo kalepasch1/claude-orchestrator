@@ -157,12 +157,24 @@ def _manager(repo):
     pnpm = shutil.which("pnpm") or _tool("pnpm")
     yarn = shutil.which("yarn") or _tool("yarn")
     npm = _tool("npm")
-    if os.path.isfile(os.path.join(repo, "pnpm-lock.yaml")) and shutil.which("pnpm"):
+    try:
+        with open(os.path.join(repo, "package.json"), encoding="utf-8") as f:
+            declared = str(json.load(f).get("packageManager") or "").lower()
+    except Exception:
+        declared = ""
+    has_npm = os.path.isfile(os.path.join(repo, "package-lock.json"))
+    has_pnpm = os.path.isfile(os.path.join(repo, "pnpm-lock.yaml"))
+    has_yarn = os.path.isfile(os.path.join(repo, "yarn.lock"))
+    if declared.startswith("pnpm@") and has_pnpm and shutil.which("pnpm"):
         return "pnpm", [pnpm, "install", "--frozen-lockfile", "--prefer-offline"]
-    if os.path.isfile(os.path.join(repo, "yarn.lock")) and shutil.which("yarn"):
+    if declared.startswith("yarn@") and has_yarn and shutil.which("yarn"):
         return "yarn", [yarn, "install", "--frozen-lockfile", "--prefer-offline"]
-    if os.path.isfile(os.path.join(repo, "package-lock.json")):
+    if has_npm:
         return "npm", [npm, "ci", "--prefer-offline", "--no-audit", "--fund=false"]
+    if has_pnpm and shutil.which("pnpm"):
+        return "pnpm", [pnpm, "install", "--frozen-lockfile", "--prefer-offline"]
+    if has_yarn and shutil.which("yarn"):
+        return "yarn", [yarn, "install", "--frozen-lockfile", "--prefer-offline"]
     return "npm", [npm, "install", "--prefer-offline", "--no-audit", "--fund=false"]
 
 

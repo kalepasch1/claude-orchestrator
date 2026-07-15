@@ -60,6 +60,18 @@ class TestBuildGate(unittest.TestCase):
         os.makedirs(os.path.join(d, "node_modules"))
         self.assertTrue(dependency_prewarm.deps_ready(d))
 
+    def test_dependency_prewarm_prefers_package_lock_when_multiple_locks_exist(self):
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "package.json"), "w") as f:
+            json.dump({}, f)
+        for name in ("package-lock.json", "pnpm-lock.yaml"):
+            with open(os.path.join(d, name), "w") as f:
+                f.write("{}")
+        with patch.object(dependency_prewarm.shutil, "which", return_value="/usr/bin/tool"):
+            manager, cmd = dependency_prewarm._manager(d)
+        self.assertEqual(manager, "npm")
+        self.assertEqual(cmd[1], "ci")
+
     def test_detects_nested_web_build_when_root_has_no_package(self):
         d = tempfile.mkdtemp()
         web = os.path.join(d, "web")
