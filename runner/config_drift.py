@@ -4,10 +4,16 @@ import os, sys, hashlib, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 def _config_hash():
-    rows = db.sql("SELECT key, value FROM fleet_config ORDER BY key") or []
+    try:
+        rows = db.select("fleet_config", {"select": "key,value", "order": "key.asc"}) or []
+    except Exception:
+        rows = []
     return hashlib.sha256(json.dumps(rows, sort_keys=True, default=str).encode()).hexdigest()[:16]
 def _executor_hashes():
-    return db.sql("SELECT key, value FROM fleet_config WHERE key LIKE 'COWORK_EXECUTOR_%_LAST_RUN'") or []
+    try:
+        return db.select("fleet_config", {"select": "key,value", "key": "like.COWORK_EXECUTOR_%_LAST_RUN"}) or []
+    except Exception:
+        return []
 def check():
     expected = _config_hash()
     drifted = []

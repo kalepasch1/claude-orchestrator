@@ -26,10 +26,30 @@ import sys
 import re
 import json
 import subprocess
+import time
+import db
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 _TDD_CACHE = {"enabled": None, "kinds": None, "cached_at": 0.0}
+
+
+def get_required_kinds():
+    """Return explicitly configured TDD kinds; missing/unavailable config is off."""
+    now = time.time()
+    if _TDD_CACHE["kinds"] is not None and now - _TDD_CACHE["cached_at"] < 30:
+        return _TDD_CACHE["kinds"]
+    kinds = set()
+    try:
+        rows = db.select("fleet_config", {"select": "key,value", "key": "eq.ORCH_TDD_REQUIRED_KINDS"}) or []
+        value = rows[0].get("value") if rows else None
+        if value:
+            kinds = {item.strip().lower() for item in str(value).split(",") if item.strip()}
+    except Exception:
+        kinds = set()
+    _TDD_CACHE["kinds"] = kinds
+    _TDD_CACHE["cached_at"] = now
+    return kinds
 
 
 def is_tdd_enabled():
@@ -97,10 +117,13 @@ def get_task_kinds():
 
 def is_tdd_gated(task_kind):
     """Check if a task kind is gated for TDD-first execution."""
-    if not task_kind or not is_tdd_enabled():
+    if not task_kind or str(task_kind).lower() == "contracts":
         return False
-    kinds = get_task_kinds()
-    return task_kind.lower() in {k.lower() for k in kinds}
+    kinds = get_required_kinds()
+    normalized = str(task_kind).lower()
+    return any(normalized == str(kind).lower() or
+               normalized.startswith(str(kind).lower() + "-") or
+               normalized.startswith(str(kind).lower() + "_") for kind in kinds)
 
 
 def extract_test_file_path(agent_output):
@@ -143,9 +166,7 @@ def parse_acceptance_criteria(test_code):
         docstring = match.group(2).strip()
         if docstring.startswith("[ACCEPTANCE CRITERION]:"):
             criterion = docstring.replace("[ACCEPTANCE CRITERION]:", "").strip()
-        else:
-            criterion = docstring
-        criteria.append({"test_name": test_name, "criterion": criterion})
+            criteria.append({"test_name": test_name, "criterion": criterion})
 
     return criteria
 

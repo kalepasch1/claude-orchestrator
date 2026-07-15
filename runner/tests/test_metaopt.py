@@ -3,6 +3,7 @@ import os, sys, types
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # Stub db module before importing metaopt
+_real_db = sys.modules.get("db")
 _mock_rows = {"queue": 0, "throughput": 0}
 fake_db = types.ModuleType("db")
 def _mock_sql(q):
@@ -14,6 +15,10 @@ fake_db.insert = lambda *a, **k: None
 sys.modules["db"] = fake_db
 
 import metaopt
+if _real_db is not None:
+    sys.modules["db"] = _real_db
+else:
+    sys.modules.pop("db", None)
 
 def test_recommend_low_queue():
     _mock_rows["queue"] = 1

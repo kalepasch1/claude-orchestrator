@@ -53,12 +53,12 @@ def _apply_tdd_gating(tasks):
     - The original task then depends on write_tests completing
     - Acceptance criteria (metrics, edge_cases, must_pass_tests) are extracted from task prompt
 
-    This is a no-op if ORCH_TDD_ENABLED is false or ORCH_TDD_TASK_KINDS is empty.
+    This is a no-op if ORCH_TDD_REQUIRED_KINDS is empty.
     """
-    if not tdd_gate.is_tdd_enabled():
+    try:
+        gated_kinds = tdd_gate.get_required_kinds()
+    except Exception:
         return tasks
-
-    gated_kinds = tdd_gate.get_task_kinds()
     if not gated_kinds:
         return tasks
 

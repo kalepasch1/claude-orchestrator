@@ -12,6 +12,10 @@ import os
 import sys
 import time
 import threading
+import json
+import re
+import subprocess
+from datetime import datetime, timedelta
 from typing import Optional, Dict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -27,6 +31,10 @@ CACHE_SIZE_BYTES = CACHE_SIZE_MB * 1024 * 1024
 CACHE_TTL = int(os.environ.get("ORCH_DIFF_CACHE_TTL", "3600"))
 
 _lock = threading.Lock()
+HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
+MEMORY_ROOT = os.environ.get("CLAUDE_MEMORY_ROOT", os.path.expanduser("~/.claude-orchestrator/memory"))
+LOOKBACK = int(os.environ.get("MERGED_MEMORY_LOOKBACK", "14"))
+ERROR_LOG = os.path.join(HOME, "knowledge", "merged_diff_memory_errors.jsonl")
 
 
 class _DiffCache:
@@ -169,3 +177,84 @@ def stats() -> Dict[str, int]:
             return _pool.stats()
     except Exception:
         return {"entries": 0, "bytes_used": 0, "hits": 0, "misses": 0}
+
+
+def _ensure_dirs():
+    os.makedirs(MEMORY_ROOT, exist_ok=True)
+    os.makedirs(os.path.dirname(ERROR_LOG), exist_ok=True)
+
+
+def _log_error(message, context=""):
+    try:
+        _ensure_dirs()
+        with open(ERROR_LOG, "a") as handle:
+            handle.write(json.dumps({"timestamp": datetime.utcnow().isoformat(),
+                                     "message": message, "context": context}) + "\n")
+    except Exception:
+        pass
+
+
+def _extract_rules(text):
+    return [line.strip().lstrip("*-•0123456789.). ") for line in (text or "").splitlines()
+            if re.match(r"^\s*(?:[-*•]|\d+[.)])\s+(?:DO|AVOID|DO NOT|NEVER|ALWAYS)\b", line, re.I)]
+
+
+def _merged_commits(repo, days=LOOKBACK):
+    try:
+        output = subprocess.check_output(["git", "log", "--oneline", "--merges",
+                                          f"--since={days} days ago", "master"],
+                                         cwd=repo, text=True, timeout=30)
+        return [tuple(line.split(None, 1)) for line in output.splitlines() if " " in line]
+    except Exception:
+        return []
+
+
+def _save_to_memory(patterns):
+    if not patterns:
+        return True, None
+    try:
+        _ensure_dirs(); today = datetime.utcnow().date(); path = os.path.join(MEMORY_ROOT, f"merged_learning_{today:%Y%m%d}.md")
+        rules = sorted({rule for pattern in patterns for rule in pattern.get("rules", [])})
+        frameworks = sorted({item for pattern in patterns for item in pattern.get("frameworks", [])})
+        content = f"# Merged learning {today.isoformat()}\n\n" + "\n".join(f"- {rule}" for rule in rules)
+        content += "\n\nFrameworks: " + (", ".join(frameworks) or "none") + "\n"
+        with open(path, "w") as handle: handle.write(content)
+        return True, path
+    except Exception as exc:
+        _log_error(str(exc), "save"); return False, None
+
+
+def _update_memory_index(memory_file):
+    if not memory_file: return True
+    try:
+        _ensure_dirs(); index = os.path.join(MEMORY_ROOT, "MEMORY.md"); base = os.path.basename(memory_file)
+        existing = open(index).read() if os.path.exists(index) else ""
+        if base not in existing:
+            stamp = re.search(r"(\d{4})(\d{2})(\d{2})", base)
+            date = f"{stamp.group(1)}-{stamp.group(2)}-{stamp.group(3)}" if stamp else datetime.utcnow().date().isoformat()
+            with open(index, "a") as handle: handle.write(f"- [Merged patterns {date}]({base})\n")
+        return True
+    except Exception as exc:
+        _log_error(str(exc), "index"); return False
+
+
+def _prune_old_entries(index_file, days=90):
+    cutoff = datetime.utcnow().date() - timedelta(days=days)
+    try:
+        lines = open(index_file).readlines(); kept = []
+        for line in lines:
+            match = re.search(r"(\d{4})-(\d{2})-(\d{2})", line)
+            if not match or datetime.strptime("".join(match.groups()), "%Y%m%d").date() >= cutoff: kept.append(line)
+        with open(index_file, "w") as handle: handle.writelines(kept)
+    except Exception as exc: _log_error(str(exc), "prune")
+
+
+def run(repo=".", dry_run=False):
+    commits = _merged_commits(repo); patterns = []
+    for commit, message in commits:
+        rules = _extract_rules(message)
+        if rules: patterns.append({"commit": commit, "rules": rules, "frameworks": [], "files": []})
+    if dry_run: return {"success": True, "merged_count": len(commits), "patterns_count": len(patterns), "memory_file": "[dry-run]" if patterns else None}
+    success, path = _save_to_memory(patterns)
+    if success and path: _update_memory_index(path)
+    return {"success": success, "merged_count": len(commits), "patterns_count": len(patterns), "memory_file": path}

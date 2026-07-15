@@ -10,8 +10,8 @@ Produces .github/workflows/orch-agent.yml (or per-repo variants) that:
 The generated workflow reads ANTHROPIC_API_KEY (or equivalent) from repo secrets,
 never from the dispatch payload.
 """
+import json
 import os
-import yaml
 
 
 WORKFLOW_TEMPLATE = {
@@ -59,8 +59,8 @@ WORKFLOW_TEMPLATE = {
 
 
 def generate(repo_path=None):
-    """Return the orch-agent workflow YAML string."""
-    return yaml.dump(WORKFLOW_TEMPLATE, default_flow_style=False, sort_keys=False)
+    """Return the workflow as JSON, a strict subset accepted as YAML by GitHub."""
+    return json.dumps(WORKFLOW_TEMPLATE, indent=2) + "\n"
 
 
 def write_workflow(repo_path):

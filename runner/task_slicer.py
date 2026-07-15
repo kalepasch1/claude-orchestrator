@@ -134,7 +134,9 @@ def _slice_exists(task, slug):
                                    "project_id": f"eq.{task.get('project_id')}",
                                    "slug": f"eq.{slug}",
                                    "limit": "1"}) or []
-        return bool(rows)
+        # The DB contract is a list. Treat mock/sentinel/invalid return values
+        # as no match instead of silently retiring a parent without children.
+        return isinstance(rows, list) and bool(rows)
     except Exception:
         # DB unreachable: report absent so the normal path (which is also fail-soft) proceeds.
         return False

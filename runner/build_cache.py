@@ -8,6 +8,7 @@ save(worktree) to snapshot the artifacts for reuse by later tasks.
 
 Behavior-preserving: a cache miss simply falls back to a clean build.
 """
+from __future__ import annotations
 import hashlib, os, shutil, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

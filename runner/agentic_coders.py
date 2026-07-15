@@ -188,21 +188,21 @@ def _auto_coders():
                         "cap": int(os.environ.get("ORCH_LOCAL_AGENTIC_CAP", "5"))}]
         for idx, lc in enumerate(sorted(locals_, key=lambda c: (-int(c.get("cap") or 0), c.get("model") or ""))[:4]):
             name = "ollama" if idx == 0 else f"ollama-{idx + 1}"
-            coders.append({"name": name, "cmd": _aider_cmd("ollama/" + lc["model"]),
+            coders.append({"name": name, "cmd": _aider_cmd("ollama/" + lc["model"]), "auto": True,
                            "cost": 0, "cap": int(lc.get("cap") or 5),
                            "daily_usd": 0, "est_usd": 0.0})
     if not paid_enabled:
         return coders
     if "deepseek" in available:
-        coders.append({"name": "deepseek", "cmd": _aider_cmd("deepseek/" + os.environ.get("DEEPSEEK_AGENTIC_MODEL", "deepseek-v4-flash")),
+        coders.append({"name": "deepseek", "cmd": _aider_cmd("deepseek/" + os.environ.get("DEEPSEEK_AGENTIC_MODEL", "deepseek-v4-flash")), "auto": True,
                        "cost": 2, "cap": int(os.environ.get("DEEPSEEK_AGENTIC_CAP", "7")), "daily_usd": paid_cap, "est_usd": 0.02})
     if "google" in available:
-        coders.append({"name": "gemini", "cmd": _aider_cmd("gemini/" + (os.environ.get("GEMINI_AGENTIC_MODEL") or os.environ.get("GEMINI_MODEL") or "gemini-2.5-flash")),
+        coders.append({"name": "gemini", "cmd": _aider_cmd("gemini/" + (os.environ.get("GEMINI_AGENTIC_MODEL") or os.environ.get("GEMINI_MODEL") or "gemini-2.5-flash")), "auto": True,
                        "cost": 2, "cap": int(os.environ.get("GEMINI_AGENTIC_CAP", "8")), "daily_usd": paid_cap, "est_usd": 0.02})
     if "openai" in available:
-        coders.append({"name": "gpt-mini", "cmd": _aider_cmd("openai/" + os.environ.get("OPENAI_CHEAP_AGENTIC_MODEL", "gpt-5.4-mini")),
+        coders.append({"name": "gpt-mini", "cmd": _aider_cmd("openai/" + os.environ.get("OPENAI_CHEAP_AGENTIC_MODEL", "gpt-5.4-mini")), "auto": True,
                        "cost": 2, "cap": 7, "daily_usd": paid_cap, "est_usd": 0.03})
-        coders.append({"name": "gpt", "cmd": _aider_cmd("openai/" + os.environ.get("OPENAI_AGENTIC_MODEL", "gpt-5.5")),
+        coders.append({"name": "gpt", "cmd": _aider_cmd("openai/" + os.environ.get("OPENAI_AGENTIC_MODEL", "gpt-5.5")), "auto": True,
                        "cost": 3, "cap": int(os.environ.get("OPENAI_AGENTIC_CAP", "9")), "daily_usd": paid_cap, "est_usd": 0.10})
     return coders
 
@@ -254,7 +254,10 @@ def _pool():
     # "broken tasks + tanked throughput". Each cheap coder (ollama/gemini/deepseek/gpt) therefore lights
     # up automatically the moment its key/server appears, and drops out the moment it's gone. Native
     # claude (cmd=None) is never pruned. All checks cached (~60s) so this hot path stays cheap.
-    pool = [c for c in pool if _coder_ready(c.get("cmd"))]
+    # Auto coders were already admitted by model_gateway.available(), whose
+    # probes validate credentials/reachability. Avoid duplicating those probes
+    # here; explicit/manual coders still receive the defensive readiness gate.
+    pool = [c for c in pool if c.get("auto") or _coder_ready(c.get("cmd"))]
     # de-dupe by name, keep first (native wins)
     seen, uniq = set(), []
     for c in pool:

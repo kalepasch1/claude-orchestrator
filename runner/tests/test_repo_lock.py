@@ -11,12 +11,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import repo_lock
 
 
-def _hold_and_record(lock_dir, repo, out_path, hold_seconds):
+def _hold_and_record(lock_dir, repo, out_path, hold_seconds, ready=None):
     os.environ["ORCH_REPO_LOCK_DIR"] = lock_dir
     import importlib
     import repo_lock as rl
     importlib.reload(rl)
     with rl.hold(repo):
+        if ready is not None:
+            ready.set()
         with open(out_path, "a") as f:
             f.write(f"start {time.time()}\n")
         time.sleep(hold_seconds)
@@ -60,10 +62,11 @@ class TestRepoLock(unittest.TestCase):
 
     def test_timeout_returns_false_when_contended(self):
         out_path = os.path.join(self.lock_dir, "out.txt")
+        ready = multiprocessing.Event()
         holder = multiprocessing.Process(
-            target=_hold_and_record, args=(self.lock_dir, "/contended/repo", out_path, 2.0))
+            target=_hold_and_record, args=(self.lock_dir, "/contended/repo", out_path, 2.0, ready))
         holder.start()
-        time.sleep(0.4)  # let the holder acquire first
+        self.assertTrue(ready.wait(5), "holder process did not acquire the lock")
         got_it = None
         with repo_lock.hold("/contended/repo", timeout=0.5) as got:
             got_it = got
@@ -72,20 +75,22 @@ class TestRepoLock(unittest.TestCase):
 
     def test_sequential_after_release_succeeds(self):
         out_path = os.path.join(self.lock_dir, "out2.txt")
+        ready = multiprocessing.Event()
         holder = multiprocessing.Process(
-            target=_hold_and_record, args=(self.lock_dir, "/contended/repo2", out_path, 0.5))
+            target=_hold_and_record, args=(self.lock_dir, "/contended/repo2", out_path, 0.5, ready))
         holder.start()
-        time.sleep(0.1)
+        self.assertTrue(ready.wait(5), "holder process did not acquire the lock")
         with repo_lock.hold("/contended/repo2", timeout=5) as got:
             self.assertTrue(got, "caller should acquire once the holder releases within the timeout")
         holder.join(timeout=5)
 
     def test_no_timeout_blocks_until_acquired(self):
         out_path = os.path.join(self.lock_dir, "out3.txt")
+        ready = multiprocessing.Event()
         holder = multiprocessing.Process(
-            target=_hold_and_record, args=(self.lock_dir, "/contended/repo3", out_path, 0.5))
+            target=_hold_and_record, args=(self.lock_dir, "/contended/repo3", out_path, 0.5, ready))
         holder.start()
-        time.sleep(0.1)
+        self.assertTrue(ready.wait(5), "holder process did not acquire the lock")
         start = time.time()
         with repo_lock.hold("/contended/repo3") as got:
             elapsed = time.time() - start
