@@ -58,10 +58,22 @@ def record_verification(repo: str, commit: str, command: str, kind: str, success
     os.makedirs(os.path.dirname(_path()), exist_ok=True)
     with _lock, open(_path(), "a") as f:
         f.write(json.dumps(row, separators=(",", ":")) + "\n")
+    try:
+        import remote_cas
+        remote_cas.put(remote_cas.key(repo, commit, row["dependency_fingerprint"], command, kind), row, success)
+    except Exception:
+        pass
     return row
 
 def reusable_verification(repo: str, commit: str, command: str, kind: str, limit=5000):
     dep = dependency_fingerprint(repo)
+    try:
+        import remote_cas
+        cached = remote_cas.get(remote_cas.key(repo, commit, dep, command, kind))
+        if cached:
+            return cached
+    except Exception:
+        pass
     try:
         with open(_path()) as f:
             rows = [json.loads(x) for x in f if x.strip()][-limit:]

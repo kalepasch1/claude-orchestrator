@@ -497,7 +497,7 @@ async def _execute_agentic(session, provider: str, model: str, prompt: str,
 
 async def execute_one(prompt: str, model: str, provider: str = "",
                       cwd: str = "", mode: str = "diff",
-                      timeout: float = 300) -> dict:
+                      timeout: float = 300, apply_diff: bool = True) -> dict:
     """Execute a single task. Returns the standard result dict."""
     try:
         _check_budget()
@@ -528,7 +528,7 @@ async def execute_one(prompt: str, model: str, provider: str = "",
     _record_spend(result["cost_usd"])
 
     # Apply diff to files if in diff mode and we got output
-    if mode == "diff" and cwd and result["returncode"] == 0 and result["text"]:
+    if apply_diff and mode == "diff" and cwd and result["returncode"] == 0 and result["text"]:
         try:
             modified = _apply_diff(file_cache, result["text"])
             _write_repo_files(cwd, file_cache, modified)
@@ -620,8 +620,27 @@ async def speculative_execute(task: dict,
 # Sync wrappers (for threaded runner)
 # ---------------------------------------------------------------------------
 
+_SYNC_LOOP = None
+_SYNC_THREAD = None
+_SYNC_LOCK = threading.Lock()
+
+def _persistent_loop():
+    global _SYNC_LOOP, _SYNC_THREAD
+    with _SYNC_LOCK:
+        if _SYNC_LOOP and _SYNC_THREAD and _SYNC_THREAD.is_alive():
+            return _SYNC_LOOP
+        ready = threading.Event()
+        def serve():
+            global _SYNC_LOOP
+            loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+            _SYNC_LOOP = loop; ready.set(); loop.run_forever()
+        _SYNC_THREAD = threading.Thread(target=serve, name="swarm-async-loop", daemon=True)
+        _SYNC_THREAD.start(); ready.wait(5)
+        return _SYNC_LOOP
+
 def run_swarm(prompt: str, model: str, provider: str = "", cwd: str = "",
-              timeout: float = 300, mode: str = "diff") -> dict:
+              timeout: float = 300, mode: str = "diff", apply_diff: bool = True,
+              repo_cache: bool = True) -> dict:
     """Synchronous entrypoint matching claude_cli.run() return shape.
 
     Safe to call from threaded code — creates its own event loop.
@@ -629,11 +648,10 @@ def run_swarm(prompt: str, model: str, provider: str = "", cwd: str = "",
     if not prompt:
         return _empty_result("swarm")
     try:
-        loop = asyncio.new_event_loop()
-        result = loop.run_until_complete(
-            execute_one(prompt, model, provider, cwd, mode, timeout))
-        loop.close()
-        return result
+        loop = _persistent_loop()
+        future = asyncio.run_coroutine_threadsafe(
+            execute_one(prompt, model, provider, cwd, mode, timeout, apply_diff), loop)
+        return future.result(timeout=timeout + 30)
     except Exception as e:
         log.warning("run_swarm error: %s", e)
         r = _empty_result(provider or "swarm")

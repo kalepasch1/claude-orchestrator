@@ -18,7 +18,7 @@ Env:
     ORCH_SWARM_HOURLY_CAP     hourly USD ceiling for swarm dispatch (default 15)
     ORCH_SWARM_MIN_QUEUED     minimum queued tasks to justify batch overhead (default 5)
 """
-import os, sys, time, logging, threading
+import os, sys, time, logging, threading, json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -138,6 +138,13 @@ def _is_api_eligible(task: dict) -> bool:
     """Determine if a task can be dispatched via direct HTTP API (swarm_executor)
     rather than requiring a CLI subprocess."""
     try:
+        import pathway_arbiter
+        decision = pathway_arbiter.decide(task)
+        task["execution_lane"] = decision["lane"]
+        task["_paid_api_eligible"] = decision["paid_api_eligible"]
+        pathway_arbiter.record(task, decision)
+        if decision["lane"] != "orchestrator_native":
+            return False
         # Check force_coder — if set to a CLI-only coder, must use CLI
         fc = str(task.get("force_coder") or "").lower()
         if fc:
@@ -230,7 +237,7 @@ def _dispatch_one_api(task: dict) -> dict:
             except Exception:
                 pass
             if not projects:
-                projects = {p["id"]: p for p in (db.select("projects", {"select": "id,repo_path"}) or [])}
+                projects = {p["id"]: p for p in (db.select("projects", {"select": "id,name,repo_path,default_base,test_cmd,build_cmd"}) or [])}
             proj = projects.get(task.get("project_id"), {})
             project_row = proj
             cwd = db.localize_repo_path(proj.get("repo_path", "")) if hasattr(db, "localize_repo_path") else ""
@@ -249,20 +256,42 @@ def _dispatch_one_api(task: dict) -> dict:
                                                    apply_winner=False)
             else:
                 result = swarm_executor.run_swarm(prompt=prompt, model=model, provider=provider,
-                                                  cwd=cwd, timeout=300, mode="diff")
+                                                  cwd=cwd, timeout=300, mode="diff", apply_diff=False)
         else:
             result = swarm_executor.run_swarm(prompt=prompt, model=model, provider=provider,
-                                              cwd=cwd, timeout=300, mode="diff")
+                                              cwd=cwd, timeout=300, mode="diff", apply_diff=False)
 
         cost = result.get("cost_usd", 0.0)
         _record_spend(cost)
 
-        # Update task based on result
+        # Candidate output must apply and pass the repository proof before DONE.
         if result.get("returncode", 1) == 0 and result.get("text"):
+            import delivery_fabric
+            if not cwd or not os.path.isdir(cwd):
+                raise RuntimeError("native proof requires a local repository")
+            proof = delivery_fabric.verify(cwd, result["text"], slug=slug,
+                base_ref=task.get("base_branch") or project_row.get("default_base") or "HEAD",
+                test_cmd=project_row.get("test_cmd") or "",
+                materialize=not bool(task.get("shadow_only")),
+                timeout=int(os.environ.get("ORCH_NATIVE_VERIFY_TIMEOUT", "900")))
+            if not proof.get("ok"):
+                db.update("tasks", {"id": task_id}, {"state": "QUEUED", "account": None,
+                    "note": f"native-proof-{proof.get('stage')}: {proof.get('detail','')[:220]}", "updated_at": "now()"})
+                return {"task_id": task_id, "slug": slug, "status": "requeued", "cost_usd": cost}
+            if task.get("shadow_only"):
+                try:
+                    import paired_trial_controller
+                    paired_trial_controller.record(task, {"verified": True, "wall_ms": proof.get("duration_ms", 0), "value": 1.0})
+                except Exception:
+                    pass
+                db.update("tasks", {"id": task_id}, {"state": "DONE", "result": json.dumps({"artifact_id": proof.get("artifact_id")}), "note": "paired-shadow verified; mutation intentionally discarded", "execution_lane": "orchestrator_native", "updated_at": "now()"})
+                return {"task_id": task_id, "slug": slug, "status": "shadow_done", "cost_usd": cost}
             db.update("tasks", {"id": task_id}, {
                 "state": "DONE",
-                "result": (result.get("text") or "")[:60000],
-                "note": f"swarm-parallel:{result.get('coder', 'api')} cost=${cost:.4f}",
+                "result": json.dumps({"artifact_id": proof.get("artifact_id"), "commit": proof.get("commit"), "files": proof.get("files")}),
+                "note": f"native-verified:{result.get('coder', 'api')} commit={proof.get('commit','')[:12]} cost=${cost:.4f}",
+                "artifact_commit": proof.get("commit"), "artifact_branch": proof.get("branch"),
+                "execution_lane": "orchestrator_native",
                 "updated_at": "now()",
             })
             log.info("parallel_dispatch: DONE %s (%.4f USD)", slug, cost)

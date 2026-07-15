@@ -159,6 +159,14 @@ class AccountPool:
         api_allowed = _api_billing_allowed()
         return [a for a in self.accts if a.get("type") != "api" or api_allowed]
 
+    def subscription_accounts(self):
+        self._maybe_reload()
+        return [a for a in self.accts if a.get("type") != "api"]
+
+    def subscriptions_exhausted(self):
+        accounts = self.subscription_accounts()
+        return bool(accounts) and not any(self._healthy(a) for a in accounts)
+
     def current(self):
         self._maybe_reload()
         usable = self._usable_accounts()
@@ -189,8 +197,7 @@ class AccountPool:
 
     def all_exhausted(self):
         """True iff no Claude account is currently healthy (every one is cooling down)."""
-        usable = self._usable_accounts()
-        return bool(usable) and not any(self._healthy(a) for a in usable)
+        return self.subscriptions_exhausted()
 
     def _write_exhausted_flag(self):
         """Persist/clear the cheap cross-module 'all Claude exhausted' signal."""
@@ -199,7 +206,7 @@ class AccountPool:
                 # Use the same billing-guard-filtered set as all_exhausted(). A
                 # disabled API row may have an old/expired cooldown and must not
                 # make this signal expire while subscriptions are still capped.
-                usable = self._usable_accounts()
+                usable = self.subscription_accounts()
                 soonest = min(self.state.get(a["name"], {}).get("cooldown_until", 0) for a in usable)
                 json.dump({"until": soonest}, open(EXHAUSTED_FLAG, "w"))
             elif os.path.exists(EXHAUSTED_FLAG):

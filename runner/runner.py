@@ -493,6 +493,16 @@ def run_task(t):
             set_state(t["id"], state="QUEUED", note="paused by kill switch")
             time.sleep(5); return
 
+        try:
+            import pathway_arbiter
+            _pathway = pathway_arbiter.decide(t)
+            t["execution_lane"] = _pathway["lane"]
+            t["_paid_api_eligible"] = _pathway["paid_api_eligible"]
+            db.update("tasks", {"id": t["id"]}, {"execution_lane": _pathway["lane"]})
+            pathway_arbiter.record(t, _pathway)
+        except Exception as e:
+            _log.warning("pathway arbitration unavailable for %s: %s", slug, e)
+
         # MAX REQUEUE GUARD: tasks bounced >N times by pre-hooks are forced through.
         # The 72% silent-failure rate was caused by topology/conflict/ensemble hooks
         # endlessly re-queuing tasks. Cap it and force execution.
@@ -1765,6 +1775,16 @@ def run_task(t):
             except Exception as _ae:
                 print(f"[artifacts] capture failed for {slug}: {_ae}")
 
+            if t.get("shadow_only"):
+                try:
+                    import paired_trial_controller
+                    paired_trial_controller.record(t, {"verified": True, "wall_ms": int((time.time()-t0)*1000), "value": 1.0})
+                except Exception as _pte:
+                    _log.warning("paired trial recording failed for %s: %s", slug, _pte)
+                set_state(t["id"], state="DONE", note="paired-shadow verified; mutation intentionally discarded")
+                record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0, cost=run_cost)
+                return
+
             # FLEET BRANCH SHARE: push the verified agent branch to origin so the OTHER runner
             # Mac's sweeper/merge-train can see it. Local-only branches were the root cause of
             # the recover-missing-branch churn (two Macs, one queue, branches on one disk).
@@ -2330,6 +2350,9 @@ _SCHEDULE = [
     ("queue-bankruptcy-3600", "queue_bankruptcy.py",    "interval", 3600), # close QUEUED tasks past ORCH_TASK_BANKRUPTCY_DAYS
     ("scoreboard-600",        "scoreboard.py",          "interval", 600),  # merged/day, first-pass rate, paused-minutes, queue mix
     ("workflow-compare-300",  "workflow_comparison.py", "interval", 300),  # Cowork vs native verified/integrated/deployed value
+    ("delivery-events-15",    "delivery_event_worker.py", "interval", 15),
+    ("native-verify-15",      "verification_worker.py", "interval", 15),
+    ("paired-trials-300",     "paired_trial_controller.py", "interval", 300),
     ("context-distill-3600",  "context_cache_distill.py","interval", 3600), # prune stale embedding-cache entries (unbounded growth fix)
     ("cost-intel-86400",      "cost_intelligence.py",   "interval", 86400), # daily: internal + external cost/value reports
     ("improve-roadmap-86400", "improvement_roadmap.py", "interval", 86400), # daily: 50x-500x claim, disclosed-assumption staged model

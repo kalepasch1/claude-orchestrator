@@ -180,13 +180,23 @@ class TierRouter:
             return {"tier": "sub", "provider": "claude", "model": "claude-sonnet-5",
                     "coder": "claude-cli", "reason": "kill_switch paused — default sub only"}
 
+        try:
+            import pathway_arbiter
+            _pathway = pathway_arbiter.decide(task)
+            pathway_arbiter.record(task, _pathway)
+            task["execution_lane"] = _pathway["lane"]
+            task["_paid_api_eligible"] = _pathway["paid_api_eligible"]
+        except Exception:
+            _pathway = {"lane": "cowork", "paid_api_eligible": False}
+        _force_native_lane = _pathway["lane"] == "orchestrator_native"
+
         # Capabilities that genuinely require Cowork must be dispatched before
         # generic Claude model calibration. Code/build tasks without these
         # requirements continue through the fully native orchestrator path.
         try:
             import vendor_capabilities, cowork_skills
             needs_cowork, cowork_caps = vendor_capabilities.requires_cowork_session(task)
-            if needs_cowork and cowork_skills.ENABLED:
+            if needs_cowork and cowork_skills.ENABLED and not _force_native_lane:
                 return {"tier": "sub", "provider": "claude",
                         "model": os.environ.get("ORCH_COWORK_SKILL_MODEL", "claude-sonnet-5"),
                         "coder": "cowork-skill", "skill_types": cowork_caps,
@@ -199,8 +209,11 @@ class TierRouter:
         model_tier = _DIFF_MODEL.get(diff, "fast")
         est = self._estimated_cost(task)
 
+        if _force_native_lane and _pathway.get("paid_api_eligible") and self._paid_allowed():
+            return self._pick_api(task, model_tier, "bundled Cowork exhausted → native overflow")
+
         # --- Cowork model calibration: right-size Claude model per task ---
-        if os.environ.get("ORCH_COWORK_MODEL_CALIBRATE", "true").lower() in ("true", "1"):
+        if not _force_native_lane and os.environ.get("ORCH_COWORK_MODEL_CALIBRATE", "true").lower() in ("true", "1"):
             kind = (task.get("kind") or "").lower()
             # Mechanical/docs/lint/test → Haiku (fast, $0)
             if kind in ("mechanical", "docs", "lint", "format", "bump", "test") or model_tier == "fast":
