@@ -81,8 +81,9 @@ def _batch_embed(texts):
     if time.time() < _EMBED_COOLDOWN_UNTIL:
         return []   # embeddings paused (rate-limited) -> keyword fallback
 
-    def _post(url, body, headers, retries=4):
-        """POST with exponential backoff on 429/5xx."""
+    def _post(url, body, headers, retries=None):
+        """POST with bounded backoff; inline retrieval must fail fast to keywords."""
+        retries = max(1, int(retries or os.environ.get("EMBED_PROVIDER_RETRIES", "1")))
         delay = 2.0
         for attempt in range(retries):
             try:
