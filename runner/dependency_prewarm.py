@@ -115,6 +115,35 @@ def _has_package(root):
     return os.path.isfile(os.path.join(root, "package.json"))
 
 
+def _copy_local_dependencies(repo, build_root):
+    """Stage manifest-declared file: dependencies without copying the whole repo."""
+    try:
+        with open(os.path.join(repo, "package.json"), encoding="utf-8") as f:
+            manifest = json.load(f)
+    except Exception:
+        return []
+    copied = []
+    deps = {}
+    for key in ("dependencies", "devDependencies", "optionalDependencies"):
+        deps.update(manifest.get(key) or {})
+    repo_real = os.path.realpath(repo)
+    for spec in deps.values():
+        if not str(spec).startswith("file:"):
+            continue
+        rel = str(spec)[len("file:"):].strip()
+        src = os.path.realpath(os.path.join(repo, rel))
+        if not (src == repo_real or src.startswith(repo_real + os.sep)) or not os.path.exists(src):
+            continue
+        dst = os.path.join(build_root, os.path.relpath(src, repo_real))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        if os.path.isdir(src):
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        else:
+            shutil.copy2(src, dst)
+        copied.append(rel)
+    return copied
+
+
 def package_roots(repo):
     """Return package roots worth warming/building, including common nested app dirs.
 
@@ -270,6 +299,7 @@ def ensure(repo, reason="prewarm", timeout=None):
         schema = os.path.join(repo, "schema.prisma")
         if os.path.isfile(schema):
             shutil.copy2(schema, os.path.join(build_root, "schema.prisma"))
+        _copy_local_dependencies(repo, build_root)
     except Exception as e:
         if build_root:
             shutil.rmtree(build_root, ignore_errors=True)
@@ -384,6 +414,25 @@ def link_shared_runtime(repo, worktree):
             except Exception:
                 pass
 
+    def activate_modules(src, dst):
+        if not os.path.isdir(src) or os.path.exists(dst):
+            return
+        mode = os.environ.get("ORCH_DEPS_ACTIVATION_MODE", "clone").lower()
+        if mode == "clone":
+            if os.uname().sysname == "Darwin":
+                cmd = ["cp", "-cR", src, dst]
+            else:
+                cmd = ["cp", "-a", "--reflink=auto", src, dst]
+            try:
+                copied = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+                if copied.returncode == 0 and os.path.isdir(dst):
+                    linked.append(dst)
+                    return
+            except Exception:
+                pass
+            shutil.rmtree(dst, ignore_errors=True)
+        link_one(src, dst)
+
     for shared in (".env", ".env.local"):
         link_one(os.path.join(repo, shared), os.path.join(worktree, shared))
 
@@ -394,7 +443,7 @@ def link_shared_runtime(repo, worktree):
             continue
         snapshot = _ready_snapshot(root)
         modules = os.path.join(snapshot, "node_modules") if snapshot else os.path.join(root, "node_modules")
-        link_one(modules, os.path.join(target_root, "node_modules"))
+        activate_modules(modules, os.path.join(target_root, "node_modules"))
         for shared in (".env", ".env.local"):
             link_one(os.path.join(root, shared), os.path.join(target_root, shared))
     return linked

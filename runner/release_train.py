@@ -504,6 +504,8 @@ def _refresh_staging_with_prod(repo, prod):
                 return True, repair_note
             subprocess.run(["git", "merge", "--abort"], cwd=tmp, capture_output=True)
             log = ((r.stdout or "")[-1500:] + "\n" + (r.stderr or "")[-1500:]).strip()
+            if repair_note:
+                log += f"\nlockfile auto-repair: {repair_note}"
             return False, log or "staging/prod merge conflict"
         return True, "staging refreshed from prod"
     except subprocess.TimeoutExpired:

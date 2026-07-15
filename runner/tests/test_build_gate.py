@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -152,13 +153,16 @@ class TestBuildGate(unittest.TestCase):
         self.assertIn("--ignore-scripts", calls[-1])
         self.assertFalse(os.path.exists(os.path.join(d, "node_modules")))
 
-    def test_dependency_snapshot_is_atomically_linked_into_worktree(self):
+    def test_dependency_snapshot_is_atomically_activated_in_worktree(self):
         d = tempfile.mkdtemp()
         worktree = tempfile.mkdtemp()
         with open(os.path.join(d, "package.json"), "w") as f:
             json.dump({"scripts": {"build": "echo ok"}}, f)
 
         def fake_run(cmd, **kwargs):
+            if cmd[0] == "cp":
+                shutil.copytree(cmd[-2], cmd[-1])
+                return MagicMock(returncode=0, stdout="", stderr="")
             os.makedirs(os.path.join(kwargs["cwd"], "node_modules"))
             p = MagicMock(returncode=0, stdout="", stderr="")
             return p
@@ -170,8 +174,21 @@ class TestBuildGate(unittest.TestCase):
         target = os.path.join(worktree, "node_modules")
         self.assertTrue(res["ok"])
         self.assertIn(target, linked)
-        self.assertTrue(os.path.islink(target))
-        self.assertIn("snapshots", os.path.realpath(target))
+        self.assertTrue(os.path.isdir(target))
+        self.assertFalse(os.path.samefile(target, os.path.join(res["snapshot"], "node_modules")))
+
+    def test_snapshot_stages_local_file_dependencies(self):
+        d = tempfile.mkdtemp()
+        local = os.path.join(d, "stubs", "shim")
+        os.makedirs(local)
+        with open(os.path.join(local, "package.json"), "w") as f:
+            json.dump({"name": "shim", "version": "1.0.0"}, f)
+        with open(os.path.join(d, "package.json"), "w") as f:
+            json.dump({"dependencies": {"shim": "file:./stubs/shim"}}, f)
+        target = tempfile.mkdtemp()
+        copied = dependency_prewarm._copy_local_dependencies(d, target)
+        self.assertEqual(copied, ["./stubs/shim"])
+        self.assertTrue(os.path.isfile(os.path.join(target, "stubs", "shim", "package.json")))
 
 
 if __name__ == "__main__":
