@@ -171,6 +171,8 @@ watch(user, async value => { if (value) await loadAll() })
         <NuxtLink :to="approvals.length ? '/sign-offs' : '/health'" class="overview-card" :class="{ attention: attentionCount }"><span class="overview-label">Needs attention</span><strong>{{ attentionCount }}</strong><p>{{ attentionCount ? 'decisions or recoveries are waiting' : 'nothing requires you right now' }}</p><span class="card-link">{{ attentionCount ? 'Review now' : 'View health' }} ↗</span></NuxtLink>
       </section>
 
+      <CompoundingIntelligence :project-id="selectedProject" />
+
       <section class="section-block">
         <div class="section-heading"><div><span class="eyebrow">Capability layer</span><h2>One interface, specialized intelligence</h2></div><NuxtLink to="/orchestrators">Explore all {{ capabilities.length }} capabilities ↗</NuxtLink></div>
         <div class="capability-grid">

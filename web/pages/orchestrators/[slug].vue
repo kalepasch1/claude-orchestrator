@@ -1047,8 +1047,9 @@ watch(slug, () => { refreshInsights() })
         </template>
         <!-- ===== CONFIG TAB ===== -->
         <div v-else-if="activeTab === 'config'" class="flex-1 overflow-y-auto p-6">
-          <div class="max-w-3xl mx-auto space-y-5">
+          <div class="max-w-6xl mx-auto space-y-5">
             <h3 class="text-lg font-semibold text-gray-900" style="font-family: 'Fraunces', serif;">Configuration — {{ APPS.find(a => a.id === selectedApp)?.name }}</h3>
+            <CompoundingIntelligence compact initial-scope="orchestrator" :initial-ref="slug" :initial-label="cap.name" :project-id="selectedProject" />
             <div class="bg-white border border-gray-200 rounded-xl p-5 space-y-4">
               <div v-for="s in domainSliders" :key="s.label">
                 <div class="flex justify-between text-sm mb-1"><span class="text-gray-600">{{ s.label }}</span><span class="font-mono text-gray-900 font-medium">{{ sliders[s.label] ?? s.default }}{{ s.unit }}</span></div>
