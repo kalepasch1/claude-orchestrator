@@ -17,7 +17,7 @@ Run on your Mac:
 
 It NEVER force-merges: verify-fail or test-fail creates an approval card and stops.
 """
-import os, sys, time, json, socket, subprocess, threading, datetime, hashlib, faulthandler, signal
+import os, sys, time, json, socket, subprocess, threading, datetime, hashlib, faulthandler, signal, re
 import log as _log_mod
 _log = _log_mod.get("runner")
 
