@@ -7,7 +7,7 @@ heuristic classifier to predict whether this model will succeed.  Abort and
 escalate in <5 s if confidence is low.  Saves 60-90 % of wasted cheap-model runs.
 
 Escalation chain (cheapest -> most capable):
-    deepseek-chat -> gemini-flash -> claude-haiku -> claude-sonnet -> claude-opus
+    DeepSeek current cheap model -> gemini-flash -> claude-haiku -> claude-sonnet -> claude-opus
 
 Env knobs:
     ORCH_MODEL_CASCADE          true/false (default true) - enable cascading
@@ -30,7 +30,7 @@ ENABLED = os.environ.get("ORCH_MODEL_CASCADE", "true").lower() in ("1", "true", 
 CONFIDENCE_MIN = float(os.environ.get("ORCH_CASCADE_CONFIDENCE_MIN", "0.6"))
 
 ESCALATION_CHAIN = [
-    "deepseek-chat",
+    os.environ.get("DEEPSEEK_CHEAP_MODEL", "deepseek-v4-flash"),
     "gemini-flash",
     "claude-haiku",
     "claude-sonnet",
