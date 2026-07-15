@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "version": 8,
   "journeys": [
     { "name": "command-center", "route": "/", "file": "pages/index.vue", "mustContain": ["What should we accomplish?", "/api/tasks/intake", "Autopilot"] },
     { "name": "connections", "route": "/connectors", "file": "pages/connectors.vue", "mustContain": ["Connections", "Connect"] },
@@ -19,6 +19,7 @@
     { "file": "components/FederationAssurance.vue", "mustContain": ["Propose sovereign trust", "Prepare selective evidence exchange", "Update causal twin", "Attest latest execution chain", "Delegate attenuated authority", "Propose verified-outcome contract", "Compile operating memory", "Predict inclusion barriers", "Convene adversarial court"] },
     { "file": "components/HivemindEconomy.vue", "mustContain": ["Required by default", "Autonomous improvement immune system", "Publish reusable learning", "Start bounded canary", "Credit ledger"] },
     { "file": "components/HivemindAdvanced.vue", "mustContain": ["Founder disclosure dial", "Compatibility without code transfer", "Pay only for incremental value", "One failure protects every adopter", "License derivatives, never the original", "Synthetic founder benchmarks"] },
+    { "file": "components/HivemindGovernance.vue", "mustContain": ["Learn collectively without pooling private models", "Turn terms into runtime boundaries", "Hedge shared-capability cascades", "Reward every role", "Price tomorrow’s collaboration", "Make a verified failure valuable", "ANONYMOUS CAPABILITY LINEAGE", "FOUNDER NETWORK CONSTITUTION", "Every safety gate"] },
     { "file": "components/PortfolioSafeSimulator.vue", "mustContain": ["bounded categories only", "Generate private simulation", "Privacy receipt"] }
   ]
 }
