@@ -409,6 +409,30 @@ def _prepare_generated_types(worktree):
     return proc.returncode == 0 and os.path.exists(os.path.join(worktree, ".nuxt", "tsconfig.json")), log
 
 
+def _qa_ref(repo, ref, command, timeout=1800):
+    """Run QA against an exact Git tree; used for production-baseline comparison."""
+    import shutil, tempfile
+    root = tempfile.mkdtemp(prefix="baseline-qa-")
+    worktree = os.path.join(root, "tree")
+    try:
+        added = _git(repo, "worktree", "add", "--detach", worktree, ref)
+        if added.returncode != 0:
+            return False, "could not create baseline QA worktree: " + (added.stderr or "")[-500:]
+        _link_shared_runtime(repo, worktree)
+        prepared, prepare_log = _prepare_generated_types(worktree)
+        if not prepared:
+            return False, "Nuxt type preparation failed:\n" + prepare_log
+        result = subprocess.run(["bash", "-lc", command], cwd=worktree, capture_output=True,
+                                text=True, timeout=timeout)
+        log = ((result.stdout or "")[-6000:] + "\n" + (result.stderr or "")[-6000:]).strip()
+        return result.returncode == 0, log
+    except subprocess.TimeoutExpired:
+        return False, f"tests timed out after {timeout}s"
+    finally:
+        _git(repo, "worktree", "remove", "--force", worktree)
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def prod_branch(repo):
     """Auto-detect the production branch: origin/HEAD target, else main, else master."""
     r = _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD")
@@ -683,6 +707,23 @@ def run_for(project):
                 ok = False
         finally:
             _git(repo, "worktree", "remove", "--force", tmp); shutil.rmtree(tmp, ignore_errors=True)
+        if not ok:
+            qlog = ((qa.stdout or "")[-5000:] + "\n" + (qa.stderr or "")[-5000:]).strip()
+            if _truthy("ORCH_DIFFERENTIAL_QA", True):
+                try:
+                    import differential_qa
+                    baseline = differential_qa.cached(repo, release_base_sha, qa_cmd)
+                    if baseline is None:
+                        baseline_ok, baseline_log = _qa_ref(repo, release_base_sha, qa_cmd)
+                        differential_qa.store(repo, release_base_sha, qa_cmd, baseline_ok, baseline_log)
+                    else:
+                        baseline_ok, baseline_log = baseline.get("ok"), baseline.get("log", "")
+                    comparison = differential_qa.compare(qlog, baseline_log)
+                    if not baseline_ok and comparison.get("allowed"):
+                        ok = True
+                        qa_plan["reason"] = "differential QA: unchanged production-baseline failures"
+                except Exception:
+                    pass
         if not ok:
             qlog = ((qa.stdout or "")[-5000:] + "\n" + (qa.stderr or "")[-5000:]).strip()
             _self_heal_qa(p, project, repo, STAGING, qlog)

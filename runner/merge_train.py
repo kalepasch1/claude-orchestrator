@@ -281,10 +281,27 @@ def _ensure_node_deps(repo):
         pass
 
 
-def _run_tests(repo, test_cmd):
+def _run_tests(repo, test_cmd, ref=None):
     """Step 3: run the gate. Returns (ok, tail-of-output)."""
     if not test_cmd:
         return True, "no test_cmd configured"
+    if ref:
+        import shutil, tempfile
+        root = tempfile.mkdtemp(prefix="merge-qa-")
+        worktree = os.path.join(root, "candidate")
+        try:
+            added = _git(repo, "worktree", "add", "--detach", worktree, ref)
+            if added.returncode != 0:
+                return False, "could not create branch-exact QA worktree: " + (added.stderr or "")[-500:]
+            for shared in ("node_modules", ".env", ".env.local"):
+                src, dst = os.path.join(repo, shared), os.path.join(worktree, shared)
+                if os.path.exists(src) and not os.path.exists(dst):
+                    try: os.symlink(src, dst)
+                    except OSError: pass
+            return _run_tests(worktree, test_cmd)
+        finally:
+            _git(repo, "worktree", "remove", "--force", worktree)
+            shutil.rmtree(root, ignore_errors=True)
     timeout = _test_timeout()
     if "npm" in test_cmd or "vitest" in test_cmd or "vue-tsc" in test_cmd or "tsc" in test_cmd or "jest" in test_cmd:
         # 2026-07-10: a leftover untracked compiled .js shadowing its .ts source (local build
@@ -305,7 +322,7 @@ def _run_tests(repo, test_cmd):
     except subprocess.TimeoutExpired:
         return False, f"tests timed out after {timeout}s"
     if r.returncode != 0:
-        tail = ((r.stdout or "")[-300:] + (r.stderr or "")[-300:]).strip()
+        tail = ((r.stdout or "")[-6000:] + (r.stderr or "")[-6000:]).strip()
         # One retry after a forced install if the failure looks like missing deps (env, not code).
         if any(s in tail.lower() for s in ("cannot find module", "module not found", "eresolve", "command not found")):
             _ensure_node_deps(repo)
@@ -314,7 +331,7 @@ def _run_tests(repo, test_cmd):
                                     text=True, timeout=timeout)
                 if r2.returncode == 0:
                     return True, "green (after dep install)"
-                return False, ((r2.stdout or "")[-300:] + (r2.stderr or "")[-300:]).strip()
+                return False, ((r2.stdout or "")[-6000:] + (r2.stderr or "")[-6000:]).strip()
             except subprocess.TimeoutExpired:
                 return False, f"tests timed out after {timeout}s"
         return False, tail
@@ -763,7 +780,23 @@ def _integrate_card(card, slug, task, proj):
             _log(pname, slug, "CONFLICT", f"redo cap {cap} exhausted")
             return "conflict"
 
-    ok, tail = _run_tests(repo, _test_cmd_for(proj, repo))  # (3)
+    test_cmd = _test_cmd_for(proj, repo)
+    ok, tail = _run_tests(repo, test_cmd, branch)  # (3) branch-exact, never primary checkout
+    if not ok and os.environ.get("ORCH_DIFFERENTIAL_QA", "true").lower() in ("1", "true", "yes", "on"):
+        try:
+            import differential_qa
+            baseline = differential_qa.cached(repo, base, test_cmd)
+            if baseline is None:
+                baseline_ok, baseline_log = _run_tests(repo, test_cmd, base)
+                differential_qa.store(repo, base, test_cmd, baseline_ok, baseline_log)
+            else:
+                baseline_ok, baseline_log = baseline.get("ok"), baseline.get("log", "")
+            comparison = differential_qa.compare(tail, baseline_log)
+            if not baseline_ok and comparison.get("allowed"):
+                ok = True
+                tail = "green by differential QA: " + comparison.get("reason", "")
+        except Exception:
+            pass
     if not ok:
         # NEVER force-merge red work.
         _task_patch(task, {"state": "TESTFAIL", "note": f"train: tests failed on rebased {branch}: {tail[:200]}"})

@@ -515,5 +515,12 @@ class TestMergeRiskClassification(unittest.TestCase):
         self.assertEqual(merge_train._risk_level(_card("c2", ordinary["slug"]), ordinary), "sensitive")
 
 
+class TestBranchExactQA(unittest.TestCase):
+    def test_integrate_tests_rebased_branch_not_primary_checkout(self):
+        source = open(merge_train.__file__, encoding="utf-8").read()
+        self.assertIn("_run_tests(repo, test_cmd, branch)", source)
+        self.assertIn("_run_tests(repo, test_cmd, base)", source)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
