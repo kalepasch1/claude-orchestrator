@@ -12,6 +12,7 @@ import release_train
 import route_evidence
 import selective_qa
 import merge_train
+import queue_velocity
 import db
 
 
@@ -88,6 +89,16 @@ def test_exact_attribution_clears_broad_window_false_positive(tmp_path, monkeypa
     result = release_attribution.apply([row], authoritative=True)[0]
     assert result["deployed"] is False
     assert result["deployment_evidence"] == "no-exact-release-link"
+
+
+def test_queue_depth_pages_past_postgrest_cap(monkeypatch):
+    calls = []
+    def select(_table, query):
+        calls.append(int(query["offset"]))
+        return [{"id": str(i)} for i in range(1000 if len(calls) < 3 else 595)]
+    monkeypatch.setattr(queue_velocity.db, "select", select)
+    assert queue_velocity._queue_depth() == 2595
+    assert calls == [0, 1000, 2000]
 
 
 def test_selective_qa_maps_imported_source_to_one_test(tmp_path):

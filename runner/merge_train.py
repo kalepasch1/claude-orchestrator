@@ -27,7 +27,7 @@ MERGE_CONFLICT_REDO_CAP). Test failures mark the task TESTFAIL — the train NEV
 Idempotent: handled cards get decided_by='train:*'; cards already handled by this train or by
 the legacy merge-handler are skipped.
 """
-import datetime, json, os, re, sys, subprocess, time
+import concurrent.futures, datetime, json, os, re, sys, subprocess, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import events
@@ -435,9 +435,13 @@ def _log(project, slug, outcome, extra=""):
 
 
 def _risk_level(card, task):
+    # Prompts include a fleet-wide security/compliance boilerplate. Scanning the
+    # complete prompt made virtually every ordinary task "sensitive" and reduced
+    # the train to one attempt per project. Classify the task's identity and the
+    # human/QA merge card; material remains an explicit fail-closed override.
     blob = " ".join(str(x or "") for x in (
         card.get("kind"), card.get("title"), card.get("why"), task.get("kind"),
-        task.get("slug"), task.get("prompt"), task.get("note")))
+        task.get("slug")))
     if task.get("material") or card.get("kind") == "material" or SENSITIVE_RE.search(blob):
         return "sensitive"
     if str(task.get("kind") or "").lower() in LOW_RISK_KINDS or str(task.get("slug") or "").startswith(("batch-mech", "lint-", "docs-")):
@@ -852,9 +856,12 @@ def train_run():
     caps = {"low": LOW_RISK_BATCH, "standard": STANDARD_BATCH, "sensitive": SENSITIVE_BATCH}
     ATTEMPT_OUTCOMES = ("merged", "testfail", "conflict", "push-pending")  # real attempts (tests ran) consume the cap
     scan_cap = int(os.environ.get("MERGE_TRAIN_SCAN_PER_PROJECT", "200"))
-    for pid, group in by_project.items():
+    def process_project(item):
+        pid, group = item
         proj = projects.get(pid, {})
-        summary["projects"] += 1
+        result = {"projects": 1, "merged": 0, "redo": 0, "testfail": 0,
+                  "conflict": 0, "skipped": 0,
+                  "risk": {"low": 0, "standard": 0, "sensitive": 0}}
         used = {"low": 0, "standard": 0, "sensitive": 0}
         scanned = 0
         # CONCURRENCY FIX (2026-07-08 merge-stall root cause): train_run() can be invoked
@@ -869,27 +876,40 @@ def train_run():
         repo_path = db.localize_repo_path(proj.get("repo_path", ""))
         with repo_lock.hold(repo_path, timeout=120) as got_lock:
             if not got_lock:
-                summary["skipped"] += len(group)
+                result["skipped"] += len(group)
                 print(f"merge_train: {proj.get('name') or pid} busy (another train holds the repo lock) — skipping this cycle")
-                continue
+                return result
             for card, slug, task, risk in _select_batch(group):
                 if used[risk] >= caps[risk] or scanned >= scan_cap:
                     continue
                 scanned += 1
-                summary["risk"][risk] += 1
+                result["risk"][risk] += 1
                 outcome = _integrate_card(card, slug, task, proj)
                 if outcome in ATTEMPT_OUTCOMES:
                     used[risk] += 1
                 if outcome == "merged":
-                    summary["merged"] += 1
+                    result["merged"] += 1
                 elif outcome == "redo":
-                    summary["redo"] += 1
+                    result["redo"] += 1
                 elif outcome == "testfail":
-                    summary["testfail"] += 1
+                    result["testfail"] += 1
                 elif outcome == "conflict":
-                    summary["conflict"] += 1
+                    result["conflict"] += 1
                 else:
-                    summary["skipped"] += 1
+                    result["skipped"] += 1
+        return result
+
+    items = list(by_project.items())
+    workers = min(len(items), max(1, int(os.environ.get("MERGE_TRAIN_PROJECT_WORKERS", "4"))))
+    if items:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers,
+                                                   thread_name_prefix="merge-project") as pool:
+            results = list(pool.map(process_project, items))
+        for result in results:
+            for key in ("projects", "merged", "redo", "testfail", "conflict", "skipped"):
+                summary[key] += result[key]
+            for risk, count in result["risk"].items():
+                summary["risk"][risk] += count
     print(f"merge_train: {summary['merged']} merged, {summary['redo']} redo, "
           f"{summary['testfail']} testfail, {summary['conflict']} conflict, "
           f"{summary['skipped']} skipped across {summary['projects']} project(s)")

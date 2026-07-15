@@ -50,8 +50,19 @@ def _save_state(state):
 
 def _queue_depth():
     try:
-        rows = db.select("tasks", {"select": "id", "state": "eq.QUEUED", "limit": "5001"}) or []
-        return len(rows)
+        # Supabase/PostgREST commonly caps every response at 1,000 rows even
+        # when a larger limit is requested. Page on a stable key so the PID sees
+        # the real backlog instead of a permanent, false depth=1000 plateau.
+        total = 0
+        page_size = 1000
+        for offset in range(0, int(os.environ.get("QUEUE_DEPTH_SCAN_MAX", "50000")), page_size):
+            rows = db.select("tasks", {"select": "id", "state": "eq.QUEUED",
+                                       "order": "created_at.asc", "limit": str(page_size),
+                                       "offset": str(offset)}) or []
+            total += len(rows)
+            if len(rows) < page_size:
+                break
+        return total
     except Exception:
         return 0
 

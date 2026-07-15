@@ -500,5 +500,20 @@ class TestEnsureNodeDepsCumulativeBudget(unittest.TestCase):
             self.assertEqual(len(calls), 1)
 
 
+class TestMergeRiskClassification(unittest.TestCase):
+    def test_injected_security_boilerplate_does_not_make_normal_task_sensitive(self):
+        task = _task("t1", "ordinary-dashboard")
+        task["prompt"] = "Fleet rules: never commit secrets; auth must fail closed; comply with privacy rules. Build dashboard."
+        task["note"] = "tests mention oauth dependency"
+        self.assertEqual(merge_train._risk_level(_card("c1", task["slug"]), task), "standard")
+
+    def test_task_identity_and_material_flag_remain_fail_closed(self):
+        task = _task("t1", "stripe-payment-auth")
+        self.assertEqual(merge_train._risk_level(_card("c1", task["slug"]), task), "sensitive")
+        ordinary = _task("t2", "ordinary-dashboard")
+        ordinary["material"] = True
+        self.assertEqual(merge_train._risk_level(_card("c2", ordinary["slug"]), ordinary), "sensitive")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
