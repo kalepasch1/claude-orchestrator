@@ -128,14 +128,28 @@ def _worktree_for(repo, branch):
     return None
 
 
+def _primary_worktree(repo):
+    """Git lists the repository's main worktree first, even from a linked one."""
+    out = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo,
+                         capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            return line[len("worktree "):].strip()
+    return None
+
+
 def _free_branch(repo, branch):
     """Unlock a branch that's still checked out in a leftover agent worktree. THIS was the root cause
     of the phantom CONFLICTs: git refuses to rebase/merge a branch that's checked out elsewhere, and the
     handler mislabeled that error as CONFLICT. Removing the stale worktree frees the branch."""
     wt = _worktree_for(repo, branch)
     if wt:
+        primary = _primary_worktree(repo)
+        if primary and os.path.realpath(wt) == os.path.realpath(primary):
+            return False
         subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=repo, capture_output=True)
     subprocess.run(["git", "worktree", "prune"], cwd=repo, capture_output=True)
+    return True
 
 
 def _rebase_isolated(repo, base, branch):

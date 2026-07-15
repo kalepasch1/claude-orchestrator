@@ -36,6 +36,7 @@ import agentic_repair
 import repo_lock         # per-repo mutex: concurrent train_run() calls must not race git refs
 import repo_hygiene      # strip stray untracked .js shadowing .ts before every test run
 import semantic_merge    # AST-level auto-resolution for rebase conflicts
+import integration_runtime
 
 
 def emit(kind, **fields):
@@ -696,7 +697,7 @@ def _resolve_tasks_batch(cards):
     return tasks_by_slug
 
 
-def _integrate_card(card, slug, task, proj):
+def _integrate_card(card, slug, task, proj, repo_override=None):
     """Run one card through the train steps. Returns the outcome string for the summary."""
     # 2026-07-11: proj["repo_path"] is one shared absolute path stored fleet-wide
     # (e.g. /Users/kpasch/Documents/foo). On a second machine with a different home
@@ -706,7 +707,7 @@ def _integrate_card(card, slug, task, proj):
     # machine). localize_repo_path() rewrites the /Users/<user>/ prefix to THIS host's
     # home when a local clone exists there, so this works on any machine without a
     # manual per-host workaround.
-    repo = db.localize_repo_path(proj.get("repo_path", ""))
+    repo = repo_override or db.localize_repo_path(proj.get("repo_path", ""))
     pname = proj.get("name") or str(task.get("project_id"))
     task_base = _normalize_task_base(repo, proj, task.get("base_branch") or proj.get("default_base", "main"))
     branch = f"agent/{slug}"
@@ -933,26 +934,33 @@ def train_run():
                 result["skipped"] += len(group)
                 print(f"merge_train: {proj.get('name') or pid} busy (another train holds the repo lock) — skipping this cycle")
                 return result
-            for card, slug, task, risk in _select_batch(group):
-                if used[risk] >= caps[risk] or scanned >= scan_cap:
-                    continue
-                scanned += 1
-                result["risk"][risk] += 1
-                outcome = _integrate_card(card, slug, task, proj)
-                if outcome in ATTEMPT_OUTCOMES:
-                    used[risk] += 1
-                if outcome == "merged":
-                    result["merged"] += 1
-                elif outcome == "already-integrated":
-                    result["already_integrated"] += 1
-                elif outcome == "redo":
-                    result["redo"] += 1
-                elif outcome == "testfail":
-                    result["testfail"] += 1
-                elif outcome == "conflict":
-                    result["conflict"] += 1
-                else:
-                    result["skipped"] += 1
+            try:
+                with integration_runtime.isolated_repo(repo_path, "merge_train") as integration_repo:
+                    for card, slug, task, risk in _select_batch(group):
+                        if used[risk] >= caps[risk] or scanned >= scan_cap:
+                            continue
+                        scanned += 1
+                        result["risk"][risk] += 1
+                        outcome = _integrate_card(
+                            card, slug, task, proj, repo_override=integration_repo
+                        )
+                        if outcome in ATTEMPT_OUTCOMES:
+                            used[risk] += 1
+                        if outcome == "merged":
+                            result["merged"] += 1
+                        elif outcome == "already-integrated":
+                            result["already_integrated"] += 1
+                        elif outcome == "redo":
+                            result["redo"] += 1
+                        elif outcome == "testfail":
+                            result["testfail"] += 1
+                        elif outcome == "conflict":
+                            result["conflict"] += 1
+                        else:
+                            result["skipped"] += 1
+            except integration_runtime.IntegrationRuntimeError as exc:
+                result["skipped"] += len(group)
+                print(f"merge_train: {proj.get('name') or pid} isolation blocked: {exc}")
         return result
 
     items = list(by_project.items())
@@ -972,6 +980,18 @@ def train_run():
           f"{summary['testfail']} testfail, {summary['conflict']} conflict, "
           f"{summary['skipped']} skipped across {summary['projects']} project(s)")
     return summary
+
+
+_train_run_unleased = train_run
+
+
+def train_run():
+    """Run the whole merge pass under the cross-train single-flight lease."""
+    timeout = float(os.environ.get("ORCH_INTEGRATION_LEASE_TIMEOUT_S", "0") or 0)
+    with integration_runtime.global_lease("merge_train", timeout=timeout) as acquired:
+        if not acquired:
+            return {"skipped": "another integration or release train owns the global lease"}
+        return _train_run_unleased()
 
 
 # scheduler-compat alias: the train IS the integration path now

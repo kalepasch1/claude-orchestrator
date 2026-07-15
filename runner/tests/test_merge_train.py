@@ -12,7 +12,7 @@ The train must:
   F) serialize per project, oldest approval first
   G) branch-missing approved cards remain live while the task is still being rebuilt
 """
-import os, sys, tempfile, unittest
+import contextlib, os, sys, tempfile, unittest
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -67,6 +67,10 @@ class TrainCase(unittest.TestCase):
             patch.object(merge_train.approval_merge, "_free_branch", return_value=None),
             patch.object(merge_train, "_paused", return_value=False),
             patch.object(merge_train.os.path, "isdir", return_value=True),
+            patch.object(merge_train.integration_runtime, "global_lease",
+                         side_effect=lambda *_a, **_k: contextlib.nullcontext(True)),
+            patch.object(merge_train.integration_runtime, "isolated_repo",
+                         side_effect=lambda repo, *_a, **_k: contextlib.nullcontext(repo)),
         ]
         self.mocks = {}
         for p in patches:

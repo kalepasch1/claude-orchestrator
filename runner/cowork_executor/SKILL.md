@@ -187,6 +187,8 @@ WHERE id='{id}';
 
 ## Step 3.5: HAND OFF TO THE CANONICAL TRAIN
 
+### RELEASE QUEUE ONLY
+
 Do not deploy from a task worktree. DONE branches are discovered by `merge_train.py`; it rebases
 and validates them under the repository lock. `release_train.py` then builds the staged batch in
 an ephemeral QA worktree and promotes production. This is the only deployment path.

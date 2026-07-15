@@ -23,6 +23,7 @@ RUNTIME_DIR = os.environ.get("CLAUDE_ORCH_HOME", os.path.join(REPO_ROOT, ".runti
 RELEASE_FLOW_FILE = os.path.join(RUNTIME_DIR, "release_flow.json")
 sys.path.insert(0, RUNNER_DIR)
 import db
+import integration_runtime
 
 # BATCH-DEV defaults: ship agent work to the unified staging branch quickly, but promote
 # prod in QA'd batches. This avoids improvement-by-improvement Vercel churn while keeping
@@ -608,9 +609,9 @@ def _merge_into_staging(repo, branch):
         _git(repo, "worktree", "prune")
 
 
-def _run_for_unlocked(project):
+def _run_for_unlocked(project, repo_override=None):
     p = (db.select("projects", {"select": "*", "name": f"eq.{project}"}) or [{}])[0]
-    repo = p.get("repo_path", "")
+    repo = repo_override or p.get("repo_path", "")
     if not repo or not os.path.isdir(repo):
         return {"project": project, "skip": "repo missing on this machine"}
     prod = p.get("prod_branch") or prod_branch(repo)
@@ -937,12 +938,24 @@ def run_for(project):
     repo = p.get("repo_path", "")
     if not repo or not os.path.isdir(repo):
         return {"project": project, "skip": "repo missing on this machine"}
+    lease_timeout = float(os.environ.get("ORCH_INTEGRATION_LEASE_TIMEOUT_S", "0") or 0)
+    with integration_runtime.global_lease("release_train", timeout=lease_timeout) as leased:
+        if not leased:
+            return {"project": project, "note": "release busy; global integration lease held"}
+        return _run_for_with_repo(project, repo)
+
+
+def _run_for_with_repo(project, repo):
     import repo_lock
     timeout = float(os.environ.get("ORCH_RELEASE_LOCK_TIMEOUT_S", "1") or 1)
     with repo_lock.hold(repo, timeout=timeout) as acquired:
         if not acquired:
             return {"project": project, "note": "release busy; existing train owns repo"}
-        return _run_for_unlocked(project)
+        try:
+            with integration_runtime.isolated_repo(repo, "release_train") as integration_repo:
+                return _run_for_unlocked(project, repo_override=integration_repo)
+        except integration_runtime.IntegrationRuntimeError as exc:
+            return {"project": project, "note": f"release isolation blocked: {exc}"}
 
 
 def _next_version():
@@ -973,14 +986,21 @@ def _release_due(project):
 
 def run():
     out = []
-    for p in db.select("projects", {"select": "name,auto_merge"}) or []:
-        if os.environ.get("ORCH_RELEASE_ALL_PROJECTS", "true").lower() == "true" or p.get("auto_merge"):
-            if p["name"] == "smoke-test":
-                continue
-            try:
-                out.append(run_for(p["name"]))
-            except Exception as e:
-                out.append({"project": p["name"], "error": str(e)[:120]})
+    lease_timeout = float(os.environ.get("ORCH_INTEGRATION_LEASE_TIMEOUT_S", "0") or 0)
+    with integration_runtime.global_lease("release_train", timeout=lease_timeout) as leased:
+        if not leased:
+            return [{"skipped": "another integration or release train owns the global lease"}]
+        for p in db.select("projects", {"select": "name,auto_merge"}) or []:
+            if os.environ.get("ORCH_RELEASE_ALL_PROJECTS", "true").lower() == "true" or p.get("auto_merge"):
+                if p["name"] == "smoke-test":
+                    continue
+                try:
+                    row = (db.select("projects", {"select": "repo_path", "name": f"eq.{p['name']}"}) or [{}])[0]
+                    repo = row.get("repo_path", "")
+                    out.append(_run_for_with_repo(p["name"], repo) if repo and os.path.isdir(repo)
+                               else {"project": p["name"], "skip": "repo missing on this machine"})
+                except Exception as e:
+                    out.append({"project": p["name"], "error": str(e)[:120]})
     return out
 
 
