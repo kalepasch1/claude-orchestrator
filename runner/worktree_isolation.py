@@ -17,6 +17,21 @@ def task_worktree_path(repo: str, slug: str) -> str:
     return os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", slug)
 
 
+def owner_marker_path(repo: str, slug: str) -> str:
+    wt_root = os.path.dirname(task_worktree_path(repo, slug))
+    return os.path.join(wt_root, ".orchestrator-owners", slug)
+
+
+def validate_owner(repo: str, slug: str, task_id: str, lease_token: str) -> None:
+    try:
+        with open(owner_marker_path(repo, slug), encoding="utf-8") as marker:
+            lines = [line.rstrip("\n") for line in marker.readlines()[:3]]
+    except OSError as exc:
+        raise WorktreeIsolationError("worktree owner marker is missing") from exc
+    if lines[:2] != [task_id, lease_token]:
+        raise WorktreeIsolationError("worktree is owned by another task or lease")
+
+
 def _git(repo: str, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args], cwd=repo, capture_output=True, text=True, timeout=120
@@ -54,23 +69,31 @@ def validate_task_worktree(repo: str, slug: str, worktree: str | None = None) ->
     return wt
 
 
-def ensure_task_worktree(repo: str, slug: str, base: str, setup_script: str) -> str:
+def ensure_task_worktree(repo: str, slug: str, base: str, setup_script: str, *,
+                         task_id: str | None = None, lease_token: str | None = None) -> str:
     """Create or reuse a task worktree while holding the repository lock."""
     wt = task_worktree_path(repo, slug)
     with repo_lock.hold(repo, timeout=120) as acquired:
         if not acquired:
             raise WorktreeIsolationError("repository isolation lock unavailable")
 
-        # Preserve interrupted work. Never reset or clean an existing valid checkout.
+        if not task_id or not lease_token:
+            raise WorktreeIsolationError("task and branch-lease identity are required")
+
+        # Preserve interrupted work only for the exact still-leased writer.
+        # A matching branch name is not ownership proof.
         if os.path.isdir(wt):
+            validate_owner(repo, slug, task_id, lease_token)
             return validate_task_worktree(repo, slug, wt)
 
         created = subprocess.run(
-            [setup_script, slug, base], cwd=repo, capture_output=True, text=True, timeout=300
+            [setup_script, slug, base, task_id, lease_token],
+            cwd=repo, capture_output=True, text=True, timeout=300,
         )
         if created.returncode:
             detail = (created.stderr or created.stdout or "unknown setup error").strip()[-1000:]
             raise WorktreeIsolationError(f"worktree setup failed: {detail}")
+        validate_owner(repo, slug, task_id, lease_token)
         return validate_task_worktree(repo, slug, wt)
 
 
@@ -81,12 +104,17 @@ def main() -> int:
     parser.add_argument("--repo", required=True)
     parser.add_argument("--slug", required=True)
     parser.add_argument("--base", required=True)
+    parser.add_argument("--task-id", required=True)
+    parser.add_argument("--lease-token", required=True)
     parser.add_argument(
         "--setup-script", default=os.path.join(os.path.dirname(__file__), "setup-worktrees.sh")
     )
     args = parser.parse_args()
     try:
-        print(ensure_task_worktree(args.repo, args.slug, args.base, args.setup_script))
+        print(ensure_task_worktree(
+            args.repo, args.slug, args.base, args.setup_script,
+            task_id=args.task_id, lease_token=args.lease_token,
+        ))
         return 0
     except WorktreeIsolationError as exc:
         print(f"worktree isolation failed: {exc}", file=__import__("sys").stderr)

@@ -5,7 +5,7 @@
 # meet again at integration time, one at a time (see integrate.sh).
 #
 # Usage:
-#   ./setup-worktrees.sh <task-slug> [base-branch]
+#   ./setup-worktrees.sh <task-slug> [base-branch] <task-id> <lease-token>
 # Example:
 #   ./setup-worktrees.sh simplify-ui main
 #
@@ -20,12 +20,34 @@ WT_ROOT="$(dirname "$REPO_ROOT")/${REPO_NAME}-wt"
 
 SLUG="${1:?usage: setup-worktrees.sh <task-slug> [base-branch]}"
 BASE="${2:-main}"
+TASK_ID="${3:-}"
+LEASE_TOKEN="${4:-}"
 BRANCH="agent/${SLUG}"
 DEST="${WT_ROOT}/${SLUG}"
 STAGING="${ORCH_STAGING_BRANCH:-orchestrator/dev}"
+OWNER_ROOT="${WT_ROOT}/.orchestrator-owners"
+OWNER_FILE="${OWNER_ROOT}/${SLUG}"
 
-mkdir -p "$WT_ROOT"
+if [ -z "$TASK_ID" ] || [ -z "$LEASE_TOKEN" ]; then
+  echo "branch lease required for ${BRANCH}" >&2
+  exit 73
+fi
+
+mkdir -p "$WT_ROOT" "$OWNER_ROOT"
 git -C "$REPO_ROOT" fetch origin "$BASE" --quiet || true
+
+# A live directory may only be reused by the exact task+lease that created it.
+# Never delete, reset, or force-adopt an unknown worktree: it may contain another
+# executor's uncommitted code.
+if [ -e "$DEST" ]; then
+  if [ -f "$OWNER_FILE" ] && [ "$(sed -n '1p' "$OWNER_FILE")" = "$TASK_ID" ] \
+     && [ "$(sed -n '2p' "$OWNER_FILE")" = "$LEASE_TOKEN" ]; then
+    echo "✅ worktree already owned: $DEST"
+    exit 0
+  fi
+  echo "refusing to overwrite worktree owned by another task: $DEST" >&2
+  exit 74
+fi
 
 # ZERO-CONFLICT MODEL: branch every agent off the CURRENT staging tip (which already contains all
 # prior merged work), not a fixed base. New work stacks on what's already done, so merging back into
@@ -39,6 +61,8 @@ if git -C "$REPO_ROOT" show-ref --verify --quiet "refs/heads/${BRANCH}"; then
 else
   git -C "$REPO_ROOT" worktree add "$DEST" -b "$BRANCH" "$BASE"
 fi
+
+printf '%s\n%s\n%s\n' "$TASK_ID" "$LEASE_TOKEN" "$BRANCH" > "$OWNER_FILE"
 
 # LOCK the worktree while a task is using it. Concurrent GC/prune loops (worktree_gc,
 # resource_governor) must not delete an in-use worktree; `git worktree remove --force`
