@@ -94,7 +94,7 @@ def _candidate(task, repo, provider, model, test_cmd=""):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def run_live(task, repo, providers, *, test_cmd="", history=None):
+def run_live(task, repo, providers, *, test_cmd="", history=None, apply_winner=True):
     """Generate isolated arms concurrently, blind-rank them, apply only winner."""
     import swarm_executor
     arms = []
@@ -114,11 +114,15 @@ def run_live(task, repo, providers, *, test_cmd="", history=None):
     original = next((c for c in candidates if anonymous_id(c.get("patch")) == anon), None)
     if not original or not original.get("applies"):
         return {"returncode": 1, "text": "no valid tournament patch", "ranking": decision.get("ranking", [])}
-    check = _git(repo, "apply", "--check", "-", input_text=original["patch"])
-    if check.returncode != 0:
-        return {"returncode": 1, "text": "winning patch no longer applies", "ranking": decision.get("ranking", [])}
-    applied = _git(repo, "apply", "-", input_text=original["patch"])
-    return {"returncode": 0 if applied.returncode == 0 else 1, "text": original["patch"],
+    if apply_winner:
+        check = _git(repo, "apply", "--check", "-", input_text=original["patch"])
+        if check.returncode != 0:
+            return {"returncode": 1, "text": "winning patch no longer applies", "ranking": decision.get("ranking", [])}
+        applied = _git(repo, "apply", "-", input_text=original["patch"])
+        returncode = 0 if applied.returncode == 0 else 1
+    else:
+        returncode = 0
+    return {"returncode": returncode, "text": original["patch"],
             "coder": f"tournament:{anon}", "winner_provider": original.get("provider"),
             "winner_model": original.get("model"), "cost_usd": sum(c.get("cost_usd", 0) for c in candidates),
             "ranking": decision.get("ranking", [])}

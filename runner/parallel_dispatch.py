@@ -236,7 +236,8 @@ def _dispatch_one_api(task: dict) -> dict:
                          if p in swarm_executor.PROVIDERS and provider_credentials.has(p)]
             if len(providers) >= 2:
                 result = patch_tournament.run_live(task, cwd, providers[:3],
-                                                   test_cmd=project_row.get("test_cmd") or "")
+                                                   test_cmd=project_row.get("test_cmd") or "",
+                                                   apply_winner=False)
             else:
                 result = swarm_executor.run_swarm(prompt=prompt, model=model, provider=provider,
                                                   cwd=cwd, timeout=300, mode="diff")
