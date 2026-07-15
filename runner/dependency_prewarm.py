@@ -220,8 +220,17 @@ def _ignore_scripts_cmd(manager, cmd):
 def _deps_ready_local(repo):
     if not os.path.isfile(os.path.join(repo, "package.json")):
         return True
+    try:
+        with open(os.path.join(repo, "package.json"), encoding="utf-8") as f:
+            manifest = json.load(f)
+        declared_deps = any(manifest.get(k) for k in
+                            ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"))
+    except Exception:
+        declared_deps = True
     nm = os.path.join(repo, "node_modules")
-    if not os.path.isdir(nm):
+    # `npm ci` legitimately creates no node_modules directory for a zero-dependency
+    # package. Treating that as broken caused infinite repair work for leaf packages.
+    if not os.path.isdir(nm) and declared_deps:
         return False
     scripts = _load_scripts(repo)
     joined = " ".join(str(v).lower() for v in scripts.values())
@@ -234,6 +243,8 @@ def _deps_ready_local(repo):
         required_bins.append(("vite",))
     if "tsc" in joined or "typescript" in joined or os.path.exists(os.path.join(repo, "tsconfig.json")):
         required_bins.append(("tsc", "vue-tsc"))
+    if not os.path.isdir(nm):
+        return not required_bins
     bin_dir = os.path.join(nm, ".bin")
     for choices in required_bins:
         if not any(os.path.exists(os.path.join(bin_dir, c)) for c in choices):
