@@ -13,6 +13,11 @@ CAPABILITY = {
                 "private preference discovery, adaptive digital twins, red teams, and explicit human authority boundaries."),
     "status": "productizable",
 }
+EVOLUTION_CAPABILITY = {"name": "Agentic Resolution Evolution", "slug": "resolution-evolution-analyze",
+    "domain": "resolution_intelligence", "status": "productizable",
+    "summary": "Route internal specialist-agent tournaments and ambient negotiation agents without creating human marketplaces or granting execution authority."}
+AGENT_ROLES = ("mediator-agent", "counsel-agent", "finance-agent", "insurance-agent", "expert-agent", "novelty-agent")
+WORK_SURFACES = ("email", "meeting", "word", "slack", "teams")
 PRODUCT_MODES = {"smarter": "legal_dispute_cade", "tomorrow": "payment_default_war_room", "apparently": "licensing_regulatory_cure", "pareto": "planning_goal_issue_resolution"}
 TRIGGERS = {"dispute", "settle", "settlement", "negotiate", "negotiation", "default", "overdue", "deficiency", "cure", "conflict", "impasse", "collection", "tribunal", "mediation", "reservation value", "payment obligation", "missed deadline", "regulator question"}
 
@@ -34,6 +39,19 @@ def build_envelope(event):
             "summary": event.get("summary") or event.get("title") or "Resolution signal", "dataClass": "derived-minimal",
             "privatePreferencesIncluded": False, "privilegedEvidenceIncluded": False,
             "authority": {"recommend": True, "draft": True, "externalExecution": False, "irreversibleAction": False, "humanApprovalRequired": True}}
+
+def build_agent_market_task(event):
+    """Internal agent commission only: never a broker, referral, or provider marketplace."""
+    return {**build_envelope(event), "capability": "resolution.evolution.analyze", "marketType": "internal_agent_tournament",
+            "agentRoles": list(AGENT_ROLES), "scoreOn": ["net_realized_value", "latency", "evidence_coverage", "calibration", "novelty", "compute_cost"],
+            "humanProviderMarketplace": False, "externalEngagement": False, "dissentSeatRequired": True}
+
+def build_ambient_agent_task(event, surface):
+    surface = str(surface).lower()
+    if surface not in WORK_SURFACES: raise ValueError("Unsupported ambient work surface")
+    return {**build_envelope(event), "capability": "resolution.evolution.analyze", "surface": surface,
+            "agentType": "ambient-resolution-agent", "detect": ["concession", "contradiction", "authority_issue", "pareto_trade"],
+            "humanCoach": False, "draftOnly": True, "externalMessageSent": False, "rawContentIncluded": False}
 
 def prompt_guidance(event):
     if not should_consider(event): return ""
