@@ -126,8 +126,8 @@ class TestCIWorkflowGeneration(unittest.TestCase):
         self.assertIn("secrets.ANTHROPIC_API_KEY", yml)
 
     def test_generate_valid_yaml(self):
-        import yaml
-        parsed = yaml.safe_load(ci_workflows.generate())
+        import json
+        parsed = json.loads(ci_workflows.generate())
         self.assertIn("jobs", parsed)
         self.assertIn("agent", parsed["jobs"])
 

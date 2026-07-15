@@ -37,7 +37,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install pytest PyYAML
+        run: pip install pytest
 
       - name: Run tests
         run: cd runner && python -m pytest tests/ -v --tb=short

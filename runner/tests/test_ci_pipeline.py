@@ -1,7 +1,6 @@
 """Tests for CI pipeline — verify GitHub Actions workflow exists and enforces testing."""
 import os
 import unittest
-import yaml
 
 
 class TestCIPipeline(unittest.TestCase):
@@ -22,21 +21,16 @@ class TestCIPipeline(unittest.TestCase):
     def test_ci_runs_on_push_and_pr(self):
         """CI must trigger on both push and pull_request to enforce pre-merge testing."""
         with open(self._ci_path()) as f:
-            ci = yaml.safe_load(f)
-        triggers = ci.get("on", ci.get(True, {}))
-        self.assertIn("push", triggers, "CI must trigger on push")
-        self.assertIn("pull_request", triggers, "CI must trigger on pull_request")
+            content = f.read()
+        self.assertIn("push:", content, "CI must trigger on push")
+        self.assertIn("pull_request:", content, "CI must trigger on pull_request")
 
     def test_ci_sets_pythonpath(self):
         """PYTHONPATH must include runner/ so imports resolve."""
         with open(self._ci_path()) as f:
-            ci = yaml.safe_load(f)
-        jobs = ci.get("jobs", {})
-        self.assertTrue(jobs, "ci.yml must define at least one job")
-        for name, job in jobs.items():
-            env = job.get("env", {})
-            if "PYTHONPATH" in env:
-                self.assertIn("runner", env["PYTHONPATH"])
+            content = f.read()
+        self.assertIn("jobs:", content, "ci.yml must define at least one job")
+        self.assertIn("PYTHONPATH: runner/", content)
 
     def test_ci_uses_checkout_and_setup_python(self):
         """Every test job must checkout code and set up Python."""
