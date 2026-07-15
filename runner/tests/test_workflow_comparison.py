@@ -14,6 +14,12 @@ class WorkflowComparisonTest(unittest.TestCase):
         self.assertEqual("cowork", workflow_comparison.workflow_for_outcome(
             {"model": "cowork-executor"}))
 
+    def test_cleared_cowork_account_is_recovered_from_note(self):
+        self.assertEqual("cowork", workflow_comparison.workflow_for_task(
+            {"account": None, "note": "cowork-executor: implemented and pushed"}))
+        self.assertEqual("orchestrator_native", workflow_comparison.workflow_for_task(
+            {"account": None, "note": "agentic coder: claude"}))
+
     def test_summarizes_delivery_stages_separately(self):
         rows = [
             {"model": "cowork-executor", "slug": "a", "tests_passed": True},

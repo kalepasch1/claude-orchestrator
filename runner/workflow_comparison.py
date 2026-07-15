@@ -23,6 +23,13 @@ def workflow_for_outcome(row):
     return "cowork" if model.startswith("cowork") else "orchestrator_native"
 
 
+def workflow_for_task(row):
+    account = str(row.get("account") or "").lower()
+    note = str(row.get("note") or "").lower()
+    return ("cowork" if account.startswith("cowork-") or "cowork-executor" in note
+            else "orchestrator_native")
+
+
 def _rate(value, total):
     return round(value / total, 3) if total else 0.0
 
@@ -75,9 +82,13 @@ def _outcomes(since):
         rows = db.select("outcomes", dict(common, select=(
             "model,project,kind,slug,integrated,tests_passed,usd,wall_ms,"
             "attempts,created_at"))) or []
+    # Exact attribution is outcome-id based.  Older deployments of the outcomes
+    # view do not expose id; slug-only fallback would incorrectly credit a new
+    # retry with an older release of the same slug, so deliberately do not use it.
     try:
         import release_attribution
-        rows = release_attribution.apply(rows, authoritative=True)
+        if rows and all(row.get("id") is not None for row in rows):
+            rows = release_attribution.apply(rows, authoritative=True)
     except Exception:
         pass
     return rows
@@ -85,14 +96,47 @@ def _outcomes(since):
 
 def _task_state(since):
     rows = db.select("tasks", {
-        "select": "id,state,account,updated_at", "updated_at": f"gte.{since}",
+        "select": "id,state,account,note,updated_at", "updated_at": f"gte.{since}",
         "order": "updated_at.desc", "limit": "5000",
     }) or []
     out = {"cowork": collections.Counter(), "orchestrator_native": collections.Counter()}
     for row in rows:
-        lane = "cowork" if str(row.get("account") or "").startswith("cowork-") else "orchestrator_native"
+        lane = workflow_for_task(row)
         out[lane][str(row.get("state") or "UNKNOWN")] += 1
     return {k: dict(v) for k, v in out.items()}
+
+
+def _release_participation(since):
+    """Count successful releases containing exact links from each workflow."""
+    releases = db.select("releases", {
+        "select": "id,project,deploy_status,deployed_at,created_at",
+        "created_at": f"gte.{since}", "order": "created_at.desc", "limit": "1000",
+    }) or []
+    green = {str(r.get("id")): r for r in releases
+             if str(r.get("deploy_status") or "").lower() in
+             {"success", "deployed", "ready", "green"}}
+    participants = {release_id: set() for release_id in green}
+    try:
+        import release_attribution
+        with open(release_attribution._path()) as handle:
+            for line in handle:
+                row = json.loads(line)
+                release_id = str(row.get("release_id") or "")
+                if release_id in participants:
+                    participants[release_id].add(workflow_for_outcome(row))
+    except Exception:
+        pass
+    by_workflow = {
+        lane: sum(lane in lanes for lanes in participants.values())
+        for lane in ("cowork", "orchestrator_native")
+    }
+    return {
+        "successful_releases": len(green),
+        "with_exact_links": sum(bool(lanes) for lanes in participants.values()),
+        "cowork_participating_releases": by_workflow["cowork"],
+        "native_participating_releases": by_workflow["orchestrator_native"],
+        "mixed_workflow_releases": sum(len(lanes) > 1 for lanes in participants.values()),
+    }
 
 
 def run(hours=WINDOW_H):
@@ -100,9 +144,11 @@ def run(hours=WINDOW_H):
     start = end - datetime.timedelta(hours=hours)
     since = start.isoformat()
     outcomes = summarize_outcomes(_outcomes(since), hours)
+    releases = _release_participation(since)
     payload = {
         "window_start": since, "window_end": end.isoformat(), "hours": hours,
         **outcomes, "task_state_transitions": _task_state(since),
+        "release_participation": releases,
     }
     native = outcomes["orchestrator_native"]
     cowork = outcomes["cowork"]
@@ -113,9 +159,12 @@ def run(hours=WINDOW_H):
         "native_to_cowork_integrated_throughput": (
             round(native["integrated_per_hour"] / cowork["integrated_per_hour"], 3)
             if cowork["integrated_per_hour"] else None),
-        "winner_by_deployed_value": (
-            "orchestrator_native" if native["deployed"] > cowork["deployed"] else
-            "cowork" if cowork["deployed"] > native["deployed"] else "insufficient_or_tied"),
+        "winner_by_successful_release_participation": (
+            "orchestrator_native"
+            if releases["native_participating_releases"] > releases["cowork_participating_releases"]
+            else "cowork"
+            if releases["cowork_participating_releases"] > releases["native_participating_releases"]
+            else "insufficient_or_tied"),
     }
     payload["coverage"] = {
         "comparable_quality": bool(native["attempts"] and cowork["attempts"]),
