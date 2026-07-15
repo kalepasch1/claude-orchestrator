@@ -177,7 +177,12 @@ def projects(project_id=None):
     return _projects
 
 
-def set_state(task_id, **kw):
+def set_state(task_id: str, **kw) -> None:
+    """Update a task row in Supabase, auto-setting updated_at to now().
+
+    Accepts arbitrary keyword args that map to columns on the tasks table
+    (e.g. state='DONE', note='...', cost=0.12).
+    """
     kw["updated_at"] = "now()"
     db.update("tasks", {"id": task_id}, kw)
     # Every non-running transition ends this executor's right to mutate the
