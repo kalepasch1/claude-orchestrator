@@ -1,0 +1,2 @@
+import { exchangeOAuth } from '../../../utils/connectorFabric'
+export default defineEventHandler(async (event) => { const query = getQuery(event); if (query.error) return sendRedirect(event, `/connectors?error=${encodeURIComponent(String(query.error))}`); if (!query.state || !query.code) throw createError({ statusCode: 400, message: 'state_and_code_required' }); await exchangeOAuth(event, String(query.state), String(query.code)); return sendRedirect(event, '/connectors?connected=1') })
