@@ -905,7 +905,8 @@ def train_run():
     pressure = _record_pressure(by_project, projects)
     summary = {"projects": 0, "merged": 0, "already_integrated": 0,
                "redo": 0, "testfail": 0, "conflict": 0,
-               "skipped": 0, "risk": {"low": 0, "standard": 0, "sensitive": 0},
+               "skipped": 0, "project_errors": 0,
+               "risk": {"low": 0, "standard": 0, "sensitive": 0},
                "pressure": pressure}
     caps = {"low": LOW_RISK_BATCH, "standard": STANDARD_BATCH, "sensitive": SENSITIVE_BATCH}
     ATTEMPT_OUTCOMES = ("merged", "testfail", "conflict", "push-pending")  # real attempts (tests ran) consume the cap
@@ -963,22 +964,39 @@ def train_run():
                 print(f"merge_train: {proj.get('name') or pid} isolation blocked: {exc}")
         return result
 
+    def process_project_isolated(item):
+        """One broken repo/toolchain must not abort every other project's train."""
+        pid, group = item
+        try:
+            result = process_project(item)
+            result["project_errors"] = 0
+            return result
+        except Exception as exc:
+            pname = (projects.get(pid, {}) or {}).get("name") or str(pid)
+            print(f"merge_train [{pname}] PROJECT-ERROR: {type(exc).__name__}: {str(exc)[:500]}",
+                  flush=True)
+            return {"projects": 1, "merged": 0, "already_integrated": 0,
+                    "redo": 0, "testfail": 0, "conflict": 0,
+                    "skipped": len(group), "project_errors": 1,
+                    "risk": {"low": 0, "standard": 0, "sensitive": 0}}
+
     items = list(by_project.items())
     workers = min(len(items), max(1, int(os.environ.get("MERGE_TRAIN_PROJECT_WORKERS", "4"))))
     if items:
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers,
                                                    thread_name_prefix="merge-project") as pool:
-            results = list(pool.map(process_project, items))
+            results = list(pool.map(process_project_isolated, items))
         for result in results:
             for key in ("projects", "merged", "already_integrated", "redo",
-                        "testfail", "conflict", "skipped"):
+                        "testfail", "conflict", "skipped", "project_errors"):
                 summary[key] += result[key]
             for risk, count in result["risk"].items():
                 summary["risk"][risk] += count
     print(f"merge_train: {summary['merged']} merged, {summary['already_integrated']} already, "
           f"{summary['redo']} redo, "
           f"{summary['testfail']} testfail, {summary['conflict']} conflict, "
-          f"{summary['skipped']} skipped across {summary['projects']} project(s)")
+          f"{summary['skipped']} skipped, {summary['project_errors']} project errors "
+          f"across {summary['projects']} project(s)")
     return summary
 
 
