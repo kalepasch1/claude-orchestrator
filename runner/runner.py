@@ -1423,7 +1423,10 @@ def run_task(t):
             if not tests_ok:
                 try:
                     if os.environ.get("ORCH_TEST_QUARANTINE", "true").lower() == "true":
-                        import test_quarantine, re
+                        # `re` is imported at module scope.  Importing it here makes
+                        # Python treat `re` as local throughout run_task(), causing
+                        # the earlier requeue guard to raise UnboundLocalError.
+                        import test_quarantine
                         # Extract failed test names from common runner patterns
                         _failed = []
                         for _pat in [
