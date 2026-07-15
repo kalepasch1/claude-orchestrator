@@ -67,8 +67,7 @@ def status():
         # restart briefly leaves several fresh base rows, prefer it; otherwise
         # use the highest active count rather than whichever PID wrote last.
         schedulers = [r for r in candidates if str(r.get("runner_id") or "").endswith("-scheduler")]
-        chosen = max(schedulers or candidates,
-                     key=lambda r: (int(r.get("active_tasks") or 0), r.get("last_seen") or ""))
+        chosen = max(schedulers or candidates, key=lambda r: r.get("last_seen") or "")
         row = dict(chosen)
         row["hostname"] = host
         if not base:
