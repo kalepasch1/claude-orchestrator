@@ -353,6 +353,43 @@ def _link_shared_runtime(repo, worktree):
                     pass
 
 
+def _prepare_generated_types(worktree):
+    """Generate worktree-local Nuxt types for root and nested packages.
+
+    ``.nuxt/tsconfig.json`` embeds checkout paths and therefore must never be
+    shared from the primary repository.  QA previously failed every nested
+    Nuxt app (notably Beethoven's ``web/`` package) before tests could run.
+    """
+    try:
+        import dependency_prewarm
+        roots = dependency_prewarm.package_roots(worktree)
+    except Exception:
+        roots = [worktree] if os.path.isfile(os.path.join(worktree, "package.json")) else []
+    logs = []
+    for root in roots:
+        package = os.path.join(root, "package.json")
+        try:
+            import json
+            with open(package, encoding="utf-8") as handle:
+                doc = json.load(handle)
+        except Exception:
+            continue
+        deps = {**(doc.get("dependencies") or {}), **(doc.get("devDependencies") or {})}
+        tsconfig = os.path.join(root, "tsconfig.json")
+        if "nuxt" not in deps or not os.path.isfile(tsconfig):
+            continue
+        generated = os.path.join(root, ".nuxt", "tsconfig.json")
+        if os.path.isfile(generated):
+            continue
+        proc = subprocess.run(
+            ["npx", "nuxi", "prepare"], cwd=root, capture_output=True, text=True, timeout=300
+        )
+        logs.append((proc.stdout or "")[-1000:] + (proc.stderr or "")[-1000:])
+        if proc.returncode or not os.path.isfile(generated):
+            return False, "\n".join(logs)[-2000:]
+    return True, "\n".join(logs)[-2000:]
+
+
 def prod_branch(repo):
     """Auto-detect the production branch: origin/HEAD target, else main, else master."""
     r = _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD")
@@ -546,6 +583,13 @@ def run_for(project):
                 pass
             _git(repo, "worktree", "add", "-f", tmp, STAGING)
             _link_shared_runtime(repo, tmp)
+            prepared, prepare_log = _prepare_generated_types(tmp)
+            if not prepared:
+                qlog = "Nuxt type preparation failed: " + prepare_log
+                _insert_failed_release(project, "qa", ahead, release_base_sha, staging_sha, qlog[-1600:])
+                _record_release_flow(project, "staging-red-qa", prod=prod, ahead=int(ahead),
+                                     note="Nuxt type preparation failed")
+                return {"project": project, "qa": "FAILED", "note": qlog[-500:]}
             qa = subprocess.run(["bash", "-lc", test_cmd], cwd=tmp, capture_output=True, text=True, timeout=1800)
             ok = qa.returncode == 0
         finally:
