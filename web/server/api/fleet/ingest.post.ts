@@ -4,6 +4,7 @@
 // rest (mirroring them into Bear's Smarter inbox).
 import { ingestEvent, type PlaneConfig } from '../../utils/fleetPlane';
 import { serviceClient, supabasePorts } from '../../utils/fleetSupabase';
+import { ingestTelemetryEvent } from '../../utils/telemetryLake';
 
 export default defineEventHandler(async (event) => {
   const secret = getHeader(event, 'x-fleet-secret') ?? '';
@@ -21,6 +22,9 @@ export default defineEventHandler(async (event) => {
     shadowMode: process.env.FLEET_SHADOW_MODE === 'true',
   };
   const { verdicts } = await ingestEvent(ports, cfg, body.event, body.proposedActions ?? []);
+  // Telemetry is observational and must never make the governed control-plane
+  // mutation fail if the analytics table is temporarily unavailable.
+  await ingestTelemetryEvent(body.event).catch(() => undefined);
   return {
     ok: true,
     routed: verdicts.map((v) => ({ decision: v.decision, tier: v.tier, summary: v.summary })),

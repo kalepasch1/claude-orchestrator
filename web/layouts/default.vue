@@ -3,7 +3,7 @@
     <button v-if="sidebarOpen" class="fixed inset-0 z-30 bg-black/30 backdrop-blur-sm md:hidden" aria-label="Close navigation" @click="sidebarOpen = false" />
     <aside class="app-sidebar fixed inset-y-0 left-0 z-40 flex w-72 flex-shrink-0 flex-col transition-transform md:static md:w-60 md:translate-x-0" :class="sidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'">
       <div class="brand-lockup">
-        <NuxtLink to="/" class="brand-mark"><span class="brand-glyph">M</span><span><b>Madeus</b><small>Orchestrator</small></span></NuxtLink>
+        <NuxtLink to="/" class="brand-mark"><MadeusLogo /></NuxtLink>
         <div class="fleet-status"><span :class="runnerCount > 0 ? 'live-dot' : 'live-dot muted'" />{{ runnerCount > 0 ? 'Fleet online' : 'Fleet offline' }}<NuxtLink v-if="pendingCount" to="/sign-offs">{{ pendingCount }}</NuxtLink></div>
       </div>
       <AdaptiveFocus :runner-count="runnerCount" :pending-approvals="pendingCount" :blocked-tasks="blockedCount" :ready-connectors="readyConnectorCount" />
@@ -30,7 +30,7 @@
         <button aria-label="Sign out" title="Sign out" @click="signOut">↗</button>
       </div>
     </aside>
-    <div class="flex min-w-0 flex-1 flex-col"><header class="mobile-header md:hidden"><button aria-label="Open navigation" @click="sidebarOpen = true">☰</button><span class="brand-glyph">M</span><b>Madeus</b></header><main class="app-main flex-1 overflow-y-auto"><slot /></main></div><UniversalCommand />
+    <div class="flex min-w-0 flex-1 flex-col"><header class="mobile-header md:hidden"><button aria-label="Open navigation" @click="sidebarOpen = true">☰</button><MadeusLogo compact /></header><main class="app-main flex-1 overflow-y-auto"><slot /></main></div><UniversalCommand />
   </div>
 </template>
 

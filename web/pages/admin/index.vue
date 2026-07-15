@@ -1,6 +1,6 @@
 <template>
   <div class="p-6">
-    <h2 class="text-xl font-semibold mb-6">Portfolio Overview</h2>
+    <div class="mb-6 flex items-center justify-between gap-3"><h2 class="text-xl font-semibold">Portfolio Overview</h2><NuxtLink to="/admin/capability-passport" class="rounded-lg border border-indigo-500/40 px-3 py-2 text-xs text-indigo-300 hover:bg-indigo-500/10">Capability passport & routing →</NuxtLink></div>
 
     <!-- App cards grid -->
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 mb-8">
@@ -46,8 +46,7 @@
         <span class="text-xs text-indigo-400 w-20">{{ a.product }}</span>
         <span class="text-sm flex-1">{{ a.title }}</span>
         <span class="text-xs px-1.5 py-0.5 rounded bg-indigo-900/50 text-indigo-300">{{ a.tier }}</span>
-        <button class="text-xs px-2 py-1 rounded bg-green-900/50 text-green-300 hover:bg-green-800/50" @click="decide(a.action_id, 'approved')">Approve</button>
-        <button class="text-xs px-2 py-1 rounded bg-red-900/50 text-red-300 hover:bg-red-800/50" @click="decide(a.action_id, 'denied')">Deny</button>
+        <NuxtLink to="/sign-offs" class="text-xs px-2 py-1 rounded bg-indigo-900/50 text-indigo-300 hover:bg-indigo-800/50">Review decision brief</NuxtLink>
       </div>
     </div>
   </div>
@@ -67,11 +66,6 @@ function timeAgo(dt: string) {
   const hrs = Math.floor(mins / 60)
   if (hrs < 24) return `${hrs}h ago`
   return `${Math.floor(hrs / 24)}d ago`
-}
-
-async function decide(actionId: string, status: string) {
-  await $fetch('/api/approvals/decide', { method: 'POST', body: { id: actionId, status } })
-  approvals.value = approvals.value.filter(a => a.action_id !== actionId)
 }
 
 async function load() {
