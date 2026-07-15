@@ -661,6 +661,11 @@ def run_commonbrain():
     import common_brain
     common_brain.run()
 
+def run_relationshipcrm():
+    """Prepare CRM facts/recommendations. Provider delivery is never called here."""
+    import relationship_crm
+    relationship_crm.run()
+
 
 def run_priority_scorer():
     """Score QUEUED tasks with default priority=1000 based on kind, slug, deps, and age."""
@@ -791,6 +796,7 @@ JOBS = {
     "modelportfolios": run_modelportfolios,
     "modelslashing": run_modelslashing,
     "commonbrain": run_commonbrain,
+    "relationshipcrm": run_relationshipcrm,
     "priority_scorer": run_priority_scorer,
     "quarantine_gc": run_quarantine_gc,
 }
@@ -821,6 +827,7 @@ if __name__ == "__main__":
         "stripe", "ownerreport", "worktreegc", "stuck_reaper", "remediate", "selfcheck",
         "quarantine", "credresolver", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain",
         "priority_scorer", "quarantine_gc",
+        "relationshipcrm",
         "release_kpi.py", "integrate_kpi.py", "fleet_control.py",
     }
     if job not in _SAFE_WHEN_PAUSED:

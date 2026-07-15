@@ -2288,6 +2288,7 @@ _SCHEDULE = [
     ("fleetsync-90",  "fleet_control.py",     "interval", 90),    # fleet gateway: central config + control + auto-pull (survives a busy main loop)
     ("stripe-daily",  "stripe",             "daily",    (6, 0)),  # pull real MRR from Stripe -> app_revenue
     ("ownerreport-wk","ownerreport",        "weekly",   (1, 7, 0)),# Monday owner report -> email
+    ("relationship-900","relationshipcrm",  "interval", 900),   # draft-only CRM intelligence; never sends
     ("revattr-daily", "revattr",            "daily",    (5, 45)),# attribute merges to revenue movement
     ("specwriter-wk", "specwriter",         "weekly",   (0, 5, 0)),# apps self-write SPEC.md
     ("prewarm-120",   "prewarm",            "interval", 120),   # warm next worktrees/context (0 spend)
