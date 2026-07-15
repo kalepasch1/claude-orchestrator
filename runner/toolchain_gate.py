@@ -25,7 +25,7 @@ RECOVERY_COOLDOWN = 3600  # don't re-queue recovery within 1 hour
 # Build commands to probe per project type
 PROBES = [
     {"files": ["package.json"], "cmd": ["npm", "--version"], "name": "npm"},
-    {"files": ["package.json", "tsconfig.json"], "cmd": ["npx", "tsc", "--version"], "name": "tsc"},
+    {"files": ["tsconfig.json"], "cmd": ["npx", "tsc", "--version"], "name": "tsc"},
     {"files": ["requirements.txt", "setup.py", "pyproject.toml"], "cmd": ["python3", "--version"], "name": "python3"},
     {"files": ["Cargo.toml"], "cmd": ["cargo", "--version"], "name": "cargo"},
     # Additional build tool probes added for broader coverage
@@ -86,7 +86,16 @@ def check_project(project_id, repo_path):
     if os.path.isfile(os.path.join(repo_path, "package.json")):
         try:
             import dependency_prewarm
-            if not dependency_prewarm.deps_ready(repo_path):
+            # Shared immutable snapshots can be inspected concurrently by
+            # version probes/activation. Require repeated negatives before
+            # publishing a project-wide red verdict from a transient read.
+            deps_ok = False
+            for _ in range(3):
+                if dependency_prewarm.deps_ready(repo_path):
+                    deps_ok = True
+                    break
+                time.sleep(0.2)
+            if not deps_ok:
                 failures.append({"tool": "node_modules",
                                  "error": "dependencies not installed/warmed (dependency_prewarm.deps_ready=False)"})
         except Exception:

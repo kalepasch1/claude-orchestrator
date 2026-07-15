@@ -82,15 +82,14 @@ class CheckProjectTest(unittest.TestCase):
         finally:
             shutil.rmtree(d)
 
-    def test_package_json_without_node_modules_flags(self):
+    def test_zero_dependency_package_does_not_require_node_modules(self):
         d = tempfile.mkdtemp()
         try:
             with open(os.path.join(d, "package.json"), "w") as f:
                 f.write("{}")
             result = toolchain_gate.check_project("p1", d)
-            tools = [f["tool"] for f in result["failures"]]
-            self.assertIn("node_modules", tools)
-            self.assertFalse(result["ready"])
+            self.assertEqual(result["failures"], [])
+            self.assertTrue(result["ready"])
         finally:
             shutil.rmtree(d)
 
