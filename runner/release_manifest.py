@@ -42,6 +42,51 @@ def changed_files(repo, base_sha, candidate_sha):
     return sorted(x for x in result.stdout.splitlines() if x) if result.returncode == 0 else []
 
 
+def _commit_in_range(repo, commit, base_sha, candidate_sha):
+    if not commit:
+        return False
+    inside = _git(repo, "merge-base", "--is-ancestor", str(commit), candidate_sha).returncode == 0
+    already = _git(repo, "merge-base", "--is-ancestor", str(commit), base_sha).returncode == 0
+    return inside and not already
+
+
+def discover_tasks(database, project_id, repo, base_sha, candidate_sha, limit=5000):
+    """Bind the frozen candidate to the exact merged task artifacts it contains."""
+    if not project_id:
+        return []
+    rows = database.select("tasks", {
+        "select": "id,slug,state,artifact_commit,model,execution_lane",
+        "project_id": f"eq.{project_id}", "state": "eq.MERGED",
+        "order": "updated_at.desc", "limit": str(limit),
+    }) or []
+    found = []
+    for row in rows:
+        if _commit_in_range(repo, row.get("artifact_commit"), base_sha, candidate_sha):
+            found.append({key: row.get(key) for key in
+                          ("id", "slug", "artifact_commit", "model", "execution_lane")
+                          if row.get(key) is not None})
+    return sorted(found, key=lambda row: str(row.get("slug") or row.get("id") or ""))
+
+
+def find_candidate(project, candidate_sha):
+    """Find a frozen manifest by release identity without relying on DB schema changes."""
+    try:
+        names = os.listdir(_dir())
+    except OSError:
+        return None
+    for name in names:
+        if not name.endswith(".json") or name.endswith(".gates.json"):
+            continue
+        try:
+            with open(os.path.join(_dir(), name), encoding="utf-8") as source:
+                manifest = json.load(source)
+            if manifest.get("project") == project and manifest.get("candidate_sha") == candidate_sha:
+                return manifest
+        except (OSError, ValueError):
+            continue
+    return None
+
+
 def create(project, repo, base_sha, candidate_sha, *, test_cmd="", build_cmd="", tasks=None):
     body = {
         "schema": 1, "project": project, "repo": os.path.basename(repo.rstrip(os.sep)),

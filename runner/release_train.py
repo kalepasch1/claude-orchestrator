@@ -587,9 +587,14 @@ def run_for(project):
     manifest = None
     try:
         import release_manifest
+        manifest_tasks = release_manifest.discover_tasks(
+            db, p.get("id"), repo, release_base_sha, staging_sha)
+        known_slugs = {str(t.get("slug") or "") for t in manifest_tasks}
+        manifest_tasks.extend({"slug": t.get("slug")} for t in candidates
+                              if str(t.get("slug") or "") not in known_slugs)
         manifest = release_manifest.create(project, repo, release_base_sha, staging_sha,
                                            test_cmd=test_cmd, build_cmd=bcmd,
-                                           tasks=[{"slug": t.get("slug")} for t in candidates])
+                                           tasks=manifest_tasks)
     except Exception:
         manifest = None
     # A full batch is already amortized and should ship immediately. Cadence is

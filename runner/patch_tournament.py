@@ -48,11 +48,12 @@ def choose(candidates, history=None):
         row["score"] = round(score(row, history), 6)
         blinded.append(row)
     blinded.sort(key=lambda row: (-row["score"], row["anonymous_id"]))
+    public_ranking = [{"anonymous_id": r["anonymous_id"], "score": r["score"]} for r in blinded]
     if not blinded or not (blinded[0].get("patch") or blinded[0].get("text")):
-        return {"winner": None, "ranking": blinded}
+        return {"winner": None, "ranking": public_ranking}
     winner = dict(blinded[0])
     winner.pop("provider", None); winner.pop("model", None)
-    return {"winner": winner, "ranking": [{"anonymous_id": r["anonymous_id"], "score": r["score"]} for r in blinded]}
+    return {"winner": winner, "ranking": public_ranking}
 
 
 def _git(repo, *args, input_text=None, timeout=180):
@@ -62,7 +63,8 @@ def _git(repo, *args, input_text=None, timeout=180):
 
 def _candidate(task, repo, provider, model, test_cmd=""):
     import swarm_executor
-    tmp = tempfile.mkdtemp(prefix="patch-arm-")
+    root = tempfile.mkdtemp(prefix="patch-arm-")
+    tmp = os.path.join(root, "worktree")
     added = False
     try:
         if _git(repo, "worktree", "add", "--detach", tmp, "HEAD").returncode != 0:
@@ -74,9 +76,17 @@ def _candidate(task, repo, provider, model, test_cmd=""):
         except Exception:
             pass
         result = swarm_executor.run_swarm(task.get("prompt", ""), model, provider, tmp,
-                                          timeout=float(os.environ.get("ORCH_PATCH_ARM_TIMEOUT", "300")), mode="diff")
-        patch = _git(tmp, "diff", "--binary").stdout
-        applies = bool(patch) and _git(tmp, "diff", "--check").returncode == 0
+                                          timeout=float(os.environ.get("ORCH_PATCH_ARM_TIMEOUT", "300")),
+                                          mode="diff", apply_diff=False, repo_cache=False)
+        try:
+            import patch_fabric
+            patch = patch_fabric.extract_diff(result.get("text") or "")
+        except Exception:
+            patch = result.get("text") or ""
+        check = _git(tmp, "apply", "--check", "-", input_text=patch) if patch else None
+        applies = bool(patch) and check.returncode == 0
+        if applies:
+            applies = _git(tmp, "apply", "-", input_text=patch).returncode == 0
         tests = False
         if applies and test_cmd:
             tested = subprocess.run(["bash", "-lc", test_cmd], cwd=tmp, capture_output=True,
@@ -84,14 +94,16 @@ def _candidate(task, repo, provider, model, test_cmd=""):
             tests = tested.returncode == 0
         return {"provider": provider, "model": model, "patch": patch, "applies": applies,
                 "tests_passed": tests if test_cmd else applies, "build_passed": False,
-                "cost_usd": float(result.get("cost_usd") or 0)}
+                "cost_usd": float(result.get("cost_usd") or 0),
+                "provider_returncode": result.get("returncode"),
+                "response_chars": len(result.get("text") or "")}
     except Exception as e:
         return {"provider": provider, "model": model, "patch": "", "applies": False,
                 "error": str(e)[:200]}
     finally:
         if added:
             _git(repo, "worktree", "remove", "--force", tmp)
-        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def run_live(task, repo, providers, *, test_cmd="", history=None, apply_winner=True):

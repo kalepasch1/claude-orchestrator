@@ -54,7 +54,16 @@ def attribute_release(project, repo, release, database=None):
     if database is None:
         import db as database
     messages = _messages(repo, release.get("from_sha"), release.get("to_sha"))
-    if not messages:
+    manifest = None
+    try:
+        import release_manifest
+        manifest = release_manifest.find_candidate(project, release.get("to_sha"))
+    except Exception:
+        manifest = None
+    manifest_tasks = manifest.get("tasks", []) if manifest else []
+    manifest_task_ids = {str(t.get("id")) for t in manifest_tasks if t.get("id")}
+    manifest_slugs = {str(t.get("slug") or "").lower() for t in manifest_tasks if t.get("slug")}
+    if not messages and not manifest_tasks:
         return {"attributed": 0, "reason": "no-release-commit-evidence"}
     outcomes = database.select("outcomes", {"select": "id,task_id,slug,model,project,integrated,created_at",
                                              "project": f"eq.{project}",
@@ -80,11 +89,13 @@ def attribute_release(project, repo, release, database=None):
     for outcome in outcomes:
         slug = str(outcome.get("slug") or "").lower()
         message_evidence = bool(slug and (slug in messages or f"agent/{slug}" in messages))
+        manifest_evidence = (str(outcome.get("task_id")) in manifest_task_ids
+                             or bool(slug and slug in manifest_slugs))
         task = tasks.get(str(outcome.get("task_id"))) or {}
         artifact_evidence = (str(task.get("state") or "").upper() == "MERGED"
                              and _commit_in_range(repo, task.get("artifact_commit"),
                                                   release.get("from_sha"), release.get("to_sha")))
-        if not message_evidence and not artifact_evidence:
+        if not message_evidence and not artifact_evidence and not manifest_evidence:
             continue
         key = (outcome.get("id"), release.get("id"))
         if key in keys:
@@ -98,7 +109,9 @@ def attribute_release(project, repo, release, database=None):
                      "task_id": outcome.get("task_id"), "slug": outcome.get("slug"),
                      "model": outcome.get("model"), "project": project,
                      "release_id": release.get("id"), "commit": release.get("to_sha"),
-                     "evidence": "git-release-range" if message_evidence else "task-artifact-release-range"})
+                     "evidence": ("immutable-release-manifest" if manifest_evidence else
+                                  "git-release-range" if message_evidence else
+                                  "task-artifact-release-range")})
     if rows:
         os.makedirs(os.path.dirname(_path()), exist_ok=True)
         with open(_path(), "a") as f:
@@ -107,7 +120,7 @@ def attribute_release(project, repo, release, database=None):
     return {"attributed": len(rows), "release_id": release.get("id")}
 
 
-def apply(outcomes):
+def apply(outcomes, authoritative=False):
     try:
         with open(_path()) as f:
             rows = [json.loads(x) for x in f if x.strip()]
@@ -122,6 +135,10 @@ def apply(outcomes):
         if row.get("id") in ids or key in by_slug:
             row["deployed"] = True
             row["deployment_evidence"] = "git-release-range"
+        elif authoritative and row.get("deployment_evidence") == "project-release-window":
+            row["deployed"] = False
+            row.pop("deploy_status", None)
+            row["deployment_evidence"] = "no-exact-release-link"
         result.append(row)
     return result
 

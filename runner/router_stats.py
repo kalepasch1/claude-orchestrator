@@ -47,7 +47,7 @@ def _rebuild():
     import datetime
     cutoff = (datetime.datetime.utcnow() - datetime.timedelta(hours=WINDOW_H)).isoformat()
     try:
-        rows = db.select("outcomes", {"select": "model,project,kind,integrated,tests_passed,usd,wall_ms,attempts,created_at,slug,input_tokens,output_tokens,diff_bytes,review_failures,deployed,deploy_status,note",
+        rows = db.select("outcomes", {"select": "id,task_id,model,project,kind,integrated,tests_passed,usd,wall_ms,attempts,created_at,slug,input_tokens,output_tokens,diff_bytes,review_failures,deployed,deploy_status,note",
                                       "created_at": f"gte.{cutoff}", "order": "created_at.desc",
                                       "limit": "5000"}) or []
     except Exception:
@@ -68,7 +68,7 @@ def _rebuild():
         # release evidence whenever it is available.
         try:
             import release_attribution
-            rows = release_attribution.apply(rows)
+            rows = release_attribution.apply(rows, authoritative=True)
         except Exception:
             pass
     except Exception:

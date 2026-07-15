@@ -68,7 +68,7 @@ def test_release_messages_returns_git_range_output(monkeypatch):
 
 def test_router_stats_consumes_exact_release_attribution():
     source = open(router_stats.__file__, encoding="utf-8").read()
-    assert "rows = release_attribution.apply(rows)" in source
+    assert "rows = release_attribution.apply(rows, authoritative=True)" in source
 
 
 def test_release_attribution_uses_merged_task_artifact_and_repairs_integrated(monkeypatch, tmp_path):

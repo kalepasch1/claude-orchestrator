@@ -125,7 +125,7 @@ def live_rows():
         _CACHE["rows"] = attach_release_evidence(outcomes, releases)
         try:
             import release_attribution
-            _CACHE["rows"] = release_attribution.apply(_CACHE["rows"])
+            _CACHE["rows"] = release_attribution.apply(_CACHE["rows"], authoritative=True)
         except Exception:
             pass
     except Exception:

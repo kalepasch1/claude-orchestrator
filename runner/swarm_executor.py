@@ -21,6 +21,31 @@ from typing import Dict, List, Optional, Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import provider_credentials
+
+
+def _load_env():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    try:
+        with open(path, encoding="utf-8") as source:
+            for raw in source:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                # Standalone tournament workers need credentials, but importing
+                # this module must not overwrite routing/test policy from .env.
+                credential = (key.endswith(("_API_KEY", "_ACCESS_TOKEN", "_AUTH_TOKEN"))
+                              or key in {"XAI_API_KEY", "GROK_API_KEY", "GROQ_API_KEY",
+                                         "DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY",
+                                         "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"})
+                if credential:
+                    os.environ.setdefault(key, value.split("#")[0].strip().strip('"').strip("'"))
+    except OSError:
+        pass
+
+
+_load_env()
 provider_credentials.activate_aliases()
 log = logging.getLogger(__name__)
 
