@@ -12,10 +12,11 @@ export const CANONICAL_NAVIGATION: readonly NavigationItem[] = Object.freeze([
   { label: 'Connections', icon: '↔', to: '/connectors', aliases: ['/connections', '/integrations'] },
   { label: 'Digital Twin', icon: '◐', to: '/digital-twin', aliases: ['/simulation'] },
   { label: 'Spend & ROI', icon: '$', to: '/spend' },
+  { label: 'Hivemind', icon: '✦', to: '/hivemind', aliases: ['/capability-market'] },
   { label: 'Loops', icon: '∞', to: '/loops' },
   { label: 'Inbox', icon: '⊡', to: '/inbox' },
   { label: 'Fleet', icon: '◉', to: '/fleet' },
   { label: 'Health', icon: '♡', to: '/health' },
 ])
 
-export const NAVIGATION_CONTRACT_VERSION = 1
+export const NAVIGATION_CONTRACT_VERSION = 2

@@ -1,0 +1,3 @@
+import {simulateSafePortfolio} from '../../utils/portfolioSimulation'
+const attempts=new Map<string,{count:number,reset:number}>()
+export default defineEventHandler(async event=>{const key=getRequestIP(event,{xForwardedFor:true})||'anonymous',time=Date.now(),prior=attempts.get(key);if(!prior||prior.reset<time)attempts.set(key,{count:1,reset:time+60_000});else if(++prior.count>12)throw createError({statusCode:429,message:'simulation_rate_limit'});try{return simulateSafePortfolio(await readBody(event))}catch(e:any){throw createError({statusCode:400,message:e?.message==='PORTFOLIO_SIZE'?'Choose between 1 and 25 ventures.':'Use only the privacy-safe categories provided.'})}})

@@ -111,6 +111,7 @@ useHead({
       <p>Not another place to ask questions.</p>
       <strong>The system accountable for what happens next.</strong>
     </section>
+    <PortfolioSafeSimulator />
 
     <section id="system" class="system-section">
       <div class="section-heading">
