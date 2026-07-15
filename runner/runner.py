@@ -496,7 +496,12 @@ def run_task(t):
         # MAX REQUEUE GUARD: tasks bounced >N times by pre-hooks are forced through.
         # The 72% silent-failure rate was caused by topology/conflict/ensemble hooks
         # endlessly re-queuing tasks. Cap it and force execution.
-        _requeue_count = int(t.get("_requeue_count") or 0)
+        # Reclaims return a fresh DB row, so the transient dict field alone used
+        # to reset this counter on every defer and made the escape hatch inert.
+        # Persisted notes are the source of truth across workers/restarts.
+        _note_requeue = re.search(r"\[requeue\s+(\d+)/\d+\]", str(t.get("note") or ""), re.I)
+        _requeue_count = max(int(t.get("_requeue_count") or 0),
+                             int(_note_requeue.group(1)) if _note_requeue else 0)
         _max_requeues = int(os.environ.get("ORCH_MAX_REQUEUE", "3"))
         _force_execute = _requeue_count >= _max_requeues
         if _force_execute:
@@ -2562,7 +2567,11 @@ def _reap_stale_periodic(job, expected_interval):
 _ZOMBIE_REAP_T = 0.0
 
 def _reap_zombie_tasks():
-    """Reclaim RUNNING tasks whose threads are dead (updated_at > 30min ago)."""
+    """Reclaim dead RUNNING tasks and promote elapsed RETRY work.
+
+    RETRY is intentionally not claimable. Previously nothing promoted it back
+    to QUEUED, so transient provider/capacity failures became permanent limbo.
+    """
     global _ZOMBIE_REAP_T
     if time.time() - _ZOMBIE_REAP_T < 300:
         return
@@ -2586,6 +2595,18 @@ def _reap_zombie_tasks():
                 reclaimed += 1
         if reclaimed:
             print(f"[zombie-reaper] reclaimed {reclaimed} stale RUNNING tasks")
+        retry_cutoff = (datetime.datetime.now(datetime.timezone.utc)
+                        - datetime.timedelta(seconds=int(os.environ.get("ORCH_RETRY_PROMOTE_AFTER_S", "120")))).isoformat()
+        retries = db.select("tasks", {"select": "id,note,updated_at", "state": "eq.RETRY",
+                                       "updated_at": f"lt.{retry_cutoff}", "limit": "250"}) or []
+        for task in retries:
+            note = str(task.get("note") or "")
+            db.update("tasks", {"id": task["id"]}, {
+                "state": "QUEUED", "updated_at": "now()",
+                "note": f"{note} | retry-promoter"[-1000:],
+            })
+        if retries:
+            print(f"[retry-promoter] returned {len(retries)} elapsed RETRY tasks to QUEUED")
     except Exception as e:
         print(f"[zombie-reaper] error: {e}")
 
@@ -2792,6 +2813,19 @@ def main():
     global _sched_bg_running
     _sched_bg_running = False
     active = []
+    # A model/build call can keep the main loop busy long enough for the fleet
+    # TTL to expire, falsely declaring this physical machine dead. Keep liveness
+    # independent from scheduling latency; the main-loop heartbeat still owns
+    # remote-control and fleet-control checks.
+    def _heartbeat_daemon():
+        interval = max(10, int(os.environ.get("ORCH_HEARTBEAT_INTERVAL_S", "30") or 30))
+        while True:
+            try:
+                db.heartbeat(RUNNER_ID, socket.gethostname(), len(active))
+            except Exception as exc:
+                _log.debug("background heartbeat failed: %s", exc)
+            time.sleep(interval)
+    threading.Thread(target=_heartbeat_daemon, daemon=True, name="heartbeat-daemon").start()
     # Delay first scheduler tick so tasks get claimed before 60+ periodic jobs run.
     # The scheduler will fire after 120s, giving the runner time to fill lanes first.
     _sched_t = time.time() + 60  # effectively 120s delay (checked at >= 60s elapsed)

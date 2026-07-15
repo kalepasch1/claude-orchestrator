@@ -477,7 +477,7 @@ def claim_task(runner_id):
         paused_pids = {name2id[n] for n in paused_names if n in name2id}
     except Exception:
         pass
-    claim_fields = "id,slug,project_id,deps,confidence,created_at,kind,note,priority"
+    claim_fields = "id,slug,project_id,deps,confidence,created_at,updated_at,kind,note,priority"
     queued = select("tasks", {"select": claim_fields,
                               "state": "eq.QUEUED",
                               "order": "created_at.asc",
@@ -514,12 +514,18 @@ def claim_task(runner_id):
                   flush=True)
     per_project_limit = max(1, int(os.environ.get("ORCH_PER_PROJECT_CODE_LANES", "1")))
     active_by_project = {}
+    active_release_by_project = {}
+    active_recovery_by_project = {}
     active_evidence = 0
     try:
         for r in (select("tasks", {"select": "project_id,slug,kind,note", "state": "in.(RUNNING,RETRY)"}) or []):
             pid = r.get("project_id")
             if pid:
                 active_by_project[pid] = active_by_project.get(pid, 0) + 1
+                if _is_release_fix_task(r):
+                    active_release_by_project[pid] = active_release_by_project.get(pid, 0) + 1
+                if _is_recovery_task(r):
+                    active_recovery_by_project[pid] = active_recovery_by_project.get(pid, 0) + 1
             if _is_evidence_task(r):
                 active_evidence += 1
     except Exception:
@@ -547,6 +553,28 @@ def claim_task(runner_id):
     def _churn(t):
         s = str(t.get("slug") or "")
         return 1 if deprio_churn and (s.startswith("cont-") or s.startswith("batch-mech")) else 0
+
+    def _cooling_down(t):
+        """Avoid instantly reclaiming work a worker deliberately deferred.
+
+        The old QUEUED -> RUNNING hot loop could reclaim the same conflict/toolchain
+        hold several times a minute, consuming a lane without doing useful work.
+        """
+        note = str(t.get("note") or "").lower()
+        seconds = 0
+        if note.startswith("held: project toolchain not ready"):
+            seconds = int(os.environ.get("ORCH_TOOLCHAIN_RECLAIM_COOLDOWN_S", "300"))
+        elif note.startswith(("conflict-predictor: deferring", "portfolio-plan deferred")):
+            seconds = int(os.environ.get("ORCH_CONFLICT_RECLAIM_COOLDOWN_S", "90"))
+        elif note.startswith(("fleet-topology: redirecting", "ensemble-predictor:")):
+            seconds = int(os.environ.get("ORCH_ROUTING_RECLAIM_COOLDOWN_S", "60"))
+        if not seconds or not t.get("updated_at"):
+            return False
+        try:
+            updated = datetime.datetime.fromisoformat(str(t["updated_at"]).replace("Z", "+00:00"))
+            return (datetime.datetime.now(datetime.timezone.utc) - updated).total_seconds() < seconds
+        except Exception:
+            return False
 
 
     # Kind+age composite score: prioritize bugfixes and older tasks within the same
@@ -698,9 +726,9 @@ def claim_task(runner_id):
         # Priority drains should not wait forever just because the same project already has one
         # unrelated task active. Keep the override bounded so one repo cannot consume the fleet.
         if _is_release_fix_task(t):
-            return max(per_project_limit, int(os.environ.get("ORCH_RELEASE_FIX_PER_PROJECT_CODE_LANES", "3")))
+            return max(1, int(os.environ.get("ORCH_RELEASE_FIX_PER_PROJECT_CODE_LANES", "1")))
         if _is_recovery_task(t):
-            return max(per_project_limit, int(os.environ.get("ORCH_RECOVERY_PER_PROJECT_CODE_LANES", "3")))
+            return max(1, int(os.environ.get("ORCH_RECOVERY_PER_PROJECT_CODE_LANES", "2")))
         if _is_evidence_task(t):
             return max(per_project_limit, int(os.environ.get("ORCH_EVIDENCE_PER_PROJECT_CODE_LANES", "2")))
         if _is_improvement_task(t):
@@ -731,9 +759,18 @@ def claim_task(runner_id):
                                t.get("created_at") or ""))
     done = _done_slugs()
     for t in queued or []:
-        pid = t.get("project_id")
-        if pid and active_by_project.get(pid, 0) >= _project_lane_limit(t):
+        if _cooling_down(t):
             continue
+        pid = t.get("project_id")
+        if pid:
+            if _is_release_fix_task(t):
+                occupied = active_release_by_project.get(pid, 0)
+            elif _is_recovery_task(t):
+                occupied = active_recovery_by_project.get(pid, 0)
+            else:
+                occupied = active_by_project.get(pid, 0)
+            if occupied >= _project_lane_limit(t):
+                continue
         if all(d in done for d in (t.get("deps") or [])):
             # optimistic claim: flip to RUNNING only if still QUEUED
             res = _req("PATCH", "/rest/v1/tasks",
@@ -743,6 +780,10 @@ def claim_task(runner_id):
             if res:
                 if pid:
                     active_by_project[pid] = active_by_project.get(pid, 0) + 1
+                    if _is_release_fix_task(t):
+                        active_release_by_project[pid] = active_release_by_project.get(pid, 0) + 1
+                    if _is_recovery_task(t):
+                        active_recovery_by_project[pid] = active_recovery_by_project.get(pid, 0) + 1
                 # Invalidate pre-optimization cache for claimed task
                 try:
                     import queue_preopt

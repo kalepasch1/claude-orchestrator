@@ -59,12 +59,18 @@ def check_project(project_id, repo_path):
         return {"ready": True, "failures": []}  # can't check, assume OK
 
     failures = []
+    probe_path = repo_path
+    try:
+        import dependency_prewarm
+        probe_path = dependency_prewarm.runtime_root(repo_path)
+    except Exception:
+        pass
     for probe in PROBES:
         # Only check if the project has the relevant config files
         if not any(os.path.isfile(os.path.join(repo_path, f)) for f in probe["files"]):
             continue
         try:
-            r = subprocess.run(probe["cmd"], capture_output=True, timeout=30, cwd=repo_path)
+            r = subprocess.run(probe["cmd"], capture_output=True, timeout=30, cwd=probe_path)
             if r.returncode != 0:
                 failures.append({"tool": probe["name"],
                                  "error": (r.stderr.decode()[:200] if r.stderr else "exit code " + str(r.returncode))})
@@ -89,13 +95,13 @@ def check_project(project_id, repo_path):
     return {"ready": len(failures) == 0, "failures": failures}
 
 
-def is_ready(project_id, repo_path=None):
+def is_ready(project_id, repo_path=None, force=False):
     """Check if a project's toolchain is ready. Uses cached result within CHECK_INTERVAL."""
     state = _load_state()
     entry = state.get(project_id, {})
 
     # Use cached result if fresh enough
-    if time.time() - entry.get("checked_at", 0) < CHECK_INTERVAL:
+    if not force and time.time() - entry.get("checked_at", 0) < CHECK_INTERVAL:
         return entry.get("ready", True)
 
     # Need a fresh check
@@ -173,7 +179,7 @@ def run():
     except Exception:
         return
     for p in projects:
-        is_ready(p["id"], p.get("repo_path"))
+        is_ready(p["id"], p.get("repo_path"), force=True)
 
 
 if __name__ == "__main__":

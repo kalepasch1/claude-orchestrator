@@ -149,6 +149,18 @@ class StateFileTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(nested))
         shutil.rmtree(self._tmp + "_nested", ignore_errors=True)
 
+    def test_force_bypasses_fresh_cached_failure(self):
+        self._write({"p1": {"ready": False, "checked_at": time.time()}})
+        with patch.object(toolchain_gate, "check_project",
+                          return_value={"ready": True, "failures": []}) as check:
+            self.assertTrue(toolchain_gate.is_ready("p1", "/tmp", force=True))
+        check.assert_called_once()
+
+    def _write(self, data):
+        os.makedirs(os.path.dirname(self._tmp), exist_ok=True)
+        with open(self._tmp, "w") as f:
+            json.dump(data, f)
+
 
 class ClaimPathBlockTest(unittest.TestCase):
 

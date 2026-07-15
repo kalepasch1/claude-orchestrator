@@ -397,6 +397,11 @@ def ensure_all(repo, reason="prewarm", timeout=None):
             "error": failed.get("error") if failed else None}
 
 
+def runtime_root(repo):
+    """Return the immutable warmed runtime when available, else the repo."""
+    return _ready_snapshot(repo) or repo
+
+
 def link_shared_runtime(repo, worktree):
     """Reuse warmed node_modules/env files in an ephemeral worktree.
 

@@ -588,7 +588,7 @@ def _merge_into_staging(repo, branch):
         _git(repo, "worktree", "prune")
 
 
-def run_for(project):
+def _run_for_unlocked(project):
     p = (db.select("projects", {"select": "*", "name": f"eq.{project}"}) or [{}])[0]
     repo = p.get("repo_path", "")
     if not repo or not os.path.isdir(repo):
@@ -899,6 +899,25 @@ def run_for(project):
     print(f"release_train {project}: staged {merged}, released {ahead} changes to {prod} "
           f"(push={'on' if pushed else 'off/local'})")
     return {"project": project, "prod": prod, "released": ahead, "pushed": pushed}
+
+
+def run_for(project):
+    """Run at most one git-mutating release train per repository.
+
+    Gate cooldowns alone cannot stop two processes that inspect the same SHA
+    before either writes its failure row. Sharing the merge-train repo lock
+    makes the check/build/push sequence single-flight across processes.
+    """
+    p = (db.select("projects", {"select": "repo_path", "name": f"eq.{project}"}) or [{}])[0]
+    repo = p.get("repo_path", "")
+    if not repo or not os.path.isdir(repo):
+        return {"project": project, "skip": "repo missing on this machine"}
+    import repo_lock
+    timeout = float(os.environ.get("ORCH_RELEASE_LOCK_TIMEOUT_S", "1") or 1)
+    with repo_lock.hold(repo, timeout=timeout) as acquired:
+        if not acquired:
+            return {"project": project, "note": "release busy; existing train owns repo"}
+        return _run_for_unlocked(project)
 
 
 def _next_version():
