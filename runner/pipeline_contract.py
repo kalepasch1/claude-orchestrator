@@ -256,6 +256,7 @@ def render_plan(plan: Dict[str, Any]) -> str:
         f"- QA panel: {', '.join(plan.get('qa_panel') or [])}",
         f"- legal gate: {plan.get('legal_gate')}",
         f"- merge/release: {plan.get('release')}",
+        "- deploy-cost rule: never run `vercel --prod`, `vercel deploy --prod`, or an equivalent CLI production deploy; never push main/master directly. Push only the task branch, then let the verified batch release train promote production.",
         "- coordination rule: reconcile with active loop-generated work, reuse prior solutions first, do not delete or overwrite unrelated queued improvements, and leave recovered work in the queue until shipped.",
     ]
     ctx = plan.get("collaboration") or []

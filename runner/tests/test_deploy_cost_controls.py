@@ -30,3 +30,17 @@ def test_cloud_runner_cannot_push_every_merge_to_production():
     assert "Environment=ORCH_PUSH_ON_MERGE=false" in service
     assert "Environment=RELEASE_MIN_BATCH=10" in service
     assert "Environment=RELEASE_INTERVAL_HOURS=6" in service
+
+
+def test_every_pipeline_prompt_forbids_manual_production_deploys():
+    source = (ROOT / "runner" / "pipeline_contract.py").read_text()
+    assert "never run `vercel --prod`" in source
+    assert "never push main/master directly" in source
+    assert "verified batch release train" in source
+
+
+def test_shared_production_push_hook_cannot_disappear():
+    hook = ROOT / "runner" / "hooks" / "pre-push"
+    assert hook.is_file()
+    source = hook.read_text()
+    assert "production_push_guard.py" in source
