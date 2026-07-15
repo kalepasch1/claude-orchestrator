@@ -45,25 +45,25 @@ class StatusQueryShapeTest(unittest.TestCase):
 
 
 class LivenessAggregationTest(unittest.TestCase):
-    def test_many_live_lanes_across_multiple_hosts_are_all_counted(self):
+    def test_logical_lanes_collapse_to_physical_hosts(self):
         """The exact shape of the production bug: dozens of genuinely live lanes across two
         machines must all be visible, not just a couple that happened to survive an arbitrary
         unordered fetch."""
         rows = []
         for i in range(1, 25):
             rows.append(_hb(f"Mac.lan lane {i}" if i > 1 else "Mac.lan",
-                             f"Mac.lan-1000-lane-{i}", active=1 if i <= 19 else 0))
+                             f"Mac.lan-1000-lane-{i}", active=19 if i == 1 else (1 if i <= 19 else 0)))
         for i in range(1, 17):
             rows.append(_hb(f"Mandys-MacBook-Pro.local lane {i}" if i > 1 else
                              "Mandys-MacBook-Pro.local",
-                             f"Mandys-1000-lane-{i}", active=1 if i <= 4 else 0))
+                             f"Mandys-1000-lane-{i}", active=4 if i == 1 else (1 if i <= 4 else 0)))
         fake_db = MagicMock()
         fake_db.select.return_value = rows
         with patch.object(fleet, "db", fake_db):
             s = fleet.status()
-        self.assertEqual(s["machines_live"], 40)
+        self.assertEqual(s["machines_live"], 2)
         self.assertEqual(s["in_use"], 23)
-        self.assertEqual(s["fleet_ceiling"], 40 * fleet.PER_MACHINE_MAX)
+        self.assertEqual(s["fleet_ceiling"], 2 * fleet.PER_MACHINE_MAX)
 
     def test_stale_rows_are_excluded_from_liveness(self):
         rows = [
