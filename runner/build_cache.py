@@ -10,6 +10,7 @@ Behavior-preserving: a cache miss simply falls back to a clean build.
 """
 from __future__ import annotations
 import hashlib, os, shutil, sys
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -51,7 +52,7 @@ def _cache_dir_for(key: str) -> str:
     return os.path.join(CACHE_ROOT, key)
 
 
-def restore(worktree: str, *, root: str | None = None) -> bool:
+def restore(worktree: str, *, root: Optional[str] = None) -> bool:
     """Restore cached build artifacts into *worktree*.  Returns True on hit."""
     key = cache_key(worktree)
     if not key:
@@ -76,7 +77,7 @@ def restore(worktree: str, *, root: str | None = None) -> bool:
     return restored
 
 
-def save(worktree: str, *, root: str | None = None) -> bool:
+def save(worktree: str, *, root: Optional[str] = None) -> bool:
     """Snapshot build artifacts from *worktree* into the cache.  Returns True on success."""
     key = cache_key(worktree)
     if not key:

@@ -2359,6 +2359,7 @@ _SCHEDULE = [
     ("tier-stats-300",     "tier_router_tick.py",      "interval", 300),   # tier routing stats + subscription capacity report
     ("fleet-topo-600",     "fleet_topology_tick.py",    "interval", 600),   # fleet topology optimization recommendations
     ("sub-recommend-3600", "sub_recommend_tick.py",     "interval", 3600),  # hourly subscription cost/value analysis
+    ("serviceagent-120",   "service_agent.py",          "interval", 120),   # proactive health fixer (throttle drift, merge starvation)
 ]
 _sched_last: dict = {}
 
@@ -2388,7 +2389,7 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      "portfolio_rebalancer.py", "batch_fusion.py",
                      "capacity_pacer.py", "account_partition.py",
                      "generator_feedback.py", "exhaustion_signal.py",
-                     "surge_planner.py",
+                     "surge_planner.py", "service_agent.py",
                      "pause_arbiter.py", "fleet_stuck_alarm.py", "queue_bankruptcy.py",
                      "scoreboard.py", "toolchain_gate.py", "context_cache_distill.py",
                      "cost_intelligence.py", "improvement_roadmap.py"}
