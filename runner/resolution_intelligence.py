@@ -18,6 +18,9 @@ EVOLUTION_CAPABILITY = {"name": "Agentic Resolution Evolution", "slug": "resolut
     "summary": "Route internal specialist-agent tournaments and ambient negotiation agents without creating human marketplaces or granting execution authority."}
 AGENT_ROLES = ("mediator-agent", "counsel-agent", "finance-agent", "insurance-agent", "expert-agent", "novelty-agent")
 WORK_SURFACES = ("email", "meeting", "word", "slack", "teams")
+JURISDICTION_GUARD = {"localAuthorityRequired": True, "winningOutcomeTransfers": False,
+    "invariantReuseAllowed": True, "parallelRuleValidations": 3, "localRuleReuseAllowed": False,
+    "regulatoryChangeReplay": True}
 PRODUCT_MODES = {"smarter": "legal_dispute_cade", "tomorrow": "payment_default_war_room", "apparently": "licensing_regulatory_cure", "pareto": "planning_goal_issue_resolution"}
 TRIGGERS = {"dispute", "settle", "settlement", "negotiate", "negotiation", "default", "overdue", "deficiency", "cure", "conflict", "impasse", "collection", "tribunal", "mediation", "reservation value", "payment obligation", "missed deadline", "regulator question"}
 
@@ -35,8 +38,11 @@ def route(event):
     return {"product": target, "mode": PRODUCT_MODES[target], "capability": "resolution.mesh.analyze"}
 
 def build_envelope(event):
+    jurisdiction = str(event.get("jurisdiction") or "US-general").strip()
     return {**route(event), "subjectId": event.get("subjectId"), "severity": event.get("severity", "info"),
             "summary": event.get("summary") or event.get("title") or "Resolution signal", "dataClass": "derived-minimal",
+            "jurisdiction": jurisdiction, "jurisdictionExplicit": bool(event.get("jurisdiction")),
+            "jurisdictionGuard": dict(JURISDICTION_GUARD),
             "privatePreferencesIncluded": False, "privilegedEvidenceIncluded": False,
             "authority": {"recommend": True, "draft": True, "externalExecution": False, "irreversibleAction": False, "humanApprovalRequired": True}}
 
@@ -57,5 +63,6 @@ def prompt_guidance(event):
     if not should_consider(event): return ""
     routed = route(event)
     return ("RESOLUTION INTELLIGENCE: consider capability resolution.mesh.analyze in " + routed["mode"] +
-            " mode. Preserve raw evidence and private preferences in the source product. Generate options and drafts only; "
+            " mode. Resolve a specific governing jurisdiction before treating a CADE conclusion as locally winning. "
+            "Cross-share only scoped invariants; parallel rules require three local validations and local rules never transfer. Preserve raw evidence and private preferences in the source product. Generate options and drafts only; "
             "require human approval for filing, payment, withdrawal, settlement, or any binding/irreversible action.")

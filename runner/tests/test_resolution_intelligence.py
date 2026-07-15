@@ -10,6 +10,7 @@ class TestResolutionIntelligence(unittest.TestCase):
         envelope = ri.build_envelope({"product": "smarter", "subjectId": "matter-1", "summary": "Settlement"})
         self.assertFalse(envelope["privatePreferencesIncluded"]); self.assertFalse(envelope["privilegedEvidenceIncluded"])
         self.assertFalse(envelope["authority"]["externalExecution"]); self.assertTrue(envelope["authority"]["humanApprovalRequired"])
+        self.assertFalse(envelope["jurisdictionGuard"]["winningOutcomeTransfers"]); self.assertEqual(envelope["jurisdictionGuard"]["parallelRuleValidations"], 3)
     def test_trigger_and_prompt_guidance(self):
         event = {"title": "Counterparty default risk"}; self.assertTrue(ri.should_consider(event)); self.assertIn("human approval", ri.prompt_guidance(event))
     def test_agent_market_is_internal_and_has_dissent(self):
@@ -18,5 +19,8 @@ class TestResolutionIntelligence(unittest.TestCase):
     def test_ambient_agent_is_not_a_human_coach_and_cannot_send(self):
         task=ri.build_ambient_agent_task({"product":"tomorrow","summary":"Payment default"},"teams")
         self.assertFalse(task["humanCoach"]); self.assertTrue(task["draftOnly"]); self.assertFalse(task["externalMessageSent"]); self.assertFalse(task["rawContentIncluded"])
+    def test_cade_routing_preserves_jurisdiction_and_blocks_winner_transfer(self):
+        task=ri.build_agent_market_task({"product":"smarter","summary":"CADE argument","jurisdiction":"US:CFTC"})
+        self.assertEqual(task["jurisdiction"],"US:CFTC"); self.assertTrue(task["jurisdictionExplicit"]); self.assertFalse(task["jurisdictionGuard"]["winningOutcomeTransfers"])
 
 if __name__ == "__main__": unittest.main()
