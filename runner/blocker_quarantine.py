@@ -24,62 +24,16 @@ MARK = "blocker-quarantine"
 REPLACEMENT_CATEGORIES = {"legal", "secret", "security"}
 
 _LEGAL = re.compile(
-    r"\blegal review\b|\blegal counsel\b|\bunauthorized practice of law\b|\bupl violation\b|"
-    r"\bregulatory (?:blocker|gate|violation|requirement)\b|"
-    r"\b(?:requires?|needs?) (?:a )?(?:formal )?(?:legal|compliance) (?:review|opinion|sign-?off|approval)\b|"
-    r"\bbroker[- ]dealer registration\b|\bmoney transmission licen[cs]e\b|"
-    r"\bsecurities (?:law|registration|violation)\b|"
-    r"\bcompliance opinion\b|\bpractice of law\b",
+    r"\b(legal review|legal counsel|upl|unauthorized practice|regulatory|licen[cs]ing|"
+    r"securities|broker[- ]dealer|investment advice|insurance|money transmission|"
+    r"tax|cpa|filing|compliance opinion|practice of law)\b",
     re.I,
 )
-# 2026-07-10: beethoven's own subject matter is API token/credential *pool management*
-# (module-level singleton acquire()/_pool.acquire() patterns, env vars like
-# CRON_SECRET/API_KEY_HASH_SECRET) -- so bare mentions of "token", "credential", "secret",
-# or "licensing" in a failure's log/prompt are normal domain vocabulary, not evidence of an
-# actual leak. The old bare-keyword regex misclassified ~22% of beethoven's QUARANTINED
-# backlog (158/709: "groomed: duplicate queued slug", "agent run failed after 3
-# error-retries", etc., none of them actual secret/legal issues) into secret/legal rework,
-# burning the constrained local-only coder track and masking the tasks' real failure. Now
-# require an actual violation-indicating word (hardcoded/exposed/leaked/committed/etc.) near
-# the secret-related term, not just its presence.
-_SECRET_VIOLATION_CONTEXT = re.compile(
-    r"\b(hardcoded|expos(?:ed|ure|ing)|leak(?:ed|age)?|committed|plaintext|logged|printed|"
-    r"detected|checked[- ]in|gitleaks|trufflehog)\b",
+_SECRET = re.compile(
+    r"\b(secret|api key|token|private key|credential|password|cron_secret|webhook secret|"
+    r"hardcoded.*(?:key|secret|token)|leak)\b|\.claude/settings\.local\.json",
     re.I,
 )
-_SECRET_TERM = re.compile(
-    r"\b(secret|api key|token|private key|credential|password)\b|cron_secret|webhook secret",
-    re.I,
-)
-_SECRET_EXPLICIT = re.compile(
-    r"hardcoded.*(?:key|secret|token)|\.claude/settings\.local\.json|gitleaks|trufflehog|"
-    r"\bleak(?:ed|age)?\b",
-    re.I,
-)
-
-
-# 2026-07-11: _SECRET_TERM matches the bare word "token" (routine in any auth-related codebase --
-# JWT/CSRF/session tokens) and _SECRET_VIOLATION_CONTEXT matches generic words like "detected" or
-# "logged" that appear constantly in linter/build/test output unrelated to any real leak. Checking
-# both regexes independently against the WHOLE evidence blob (which can be a long build/test log)
-# let them co-occur by pure coincidence -- e.g. a `nuxt build` failure log_tail mentioning an auth
-# "token" in one stack frame and a dependency scanner saying "N vulnerabilities detected" in
-# another, hundreds of characters apart, with zero relation to each other. Observed in production:
-# repeat `nuxt: command not found` build failures on rework-secret-* branches kept getting
-# reclassified as "secret" indefinitely. Require the two terms to actually be near each other
-# (same sentence/log line, not just the same multi-KB blob) before treating it as a real signal.
-_SECRET_PROXIMITY_CHARS = 80
-
-
-def _is_secret(evidence):
-    if _SECRET_EXPLICIT.search(evidence):
-        return True
-    for term_match in _SECRET_TERM.finditer(evidence):
-        start = max(0, term_match.start() - _SECRET_PROXIMITY_CHARS)
-        end = min(len(evidence), term_match.end() + _SECRET_PROXIMITY_CHARS)
-        if _SECRET_VIOLATION_CONTEXT.search(evidence[start:end]):
-            return True
-    return False
 _SECURITY = re.compile(
     r"\b(security regression|rls|hmac|csrf|xss|sql injection|input validation|"
     r"broad allowlist|overbroad permission|sensitive log|unsafe fallback)\b",
@@ -125,38 +79,10 @@ def _clean_note_for_classification(note):
     return text
 
 
-_REWORK_PREFIX_RE = re.compile(r"^rework-(?:[a-z]+-)?", re.I)
-
-
-def _strip_rework_noise(slug, max_strips=10):
-    """Strip leading 'rework-<category>-' (or bare 'rework-') segments so a task's OWN
-    replacement history never re-triggers its own classification.
-
-    blocker_quarantine renames a quarantined task to e.g. 'rework-secret-<original>'. If that
-    replacement later fails for ANY reason (a real conflict, a flaky test, an unrelated build
-    error), classify() re-scans its slug -- which now contains the literal word 'secret' from
-    the PREVIOUS rework, independent of the new failure's actual cause. That reclassifies it as
-    'secret' again, renames it to 'rework-secret-rework-secret-<original>', and repeats forever.
-    Observed in production: chains of 5+ nested 'rework-legal-rework-legal-...' on one task.
-    Stripping the prefix before classification breaks the self-reference; the ORIGINAL slug
-    (project/feature name) is still available for genuine signal."""
-    s = str(slug or "")
-    for _ in range(max_strips):
-        stripped = _REWORK_PREFIX_RE.sub("", s, count=1)
-        if stripped == s:
-            break
-        s = stripped
-    return s
-
-
-def _rework_depth(slug):
-    return len(re.findall(r"rework-", str(slug or ""), re.I))
-
-
 def _blocker_signal(task):
     return "\n".join(
         (
-            _strip_rework_noise(task.get("slug")),
+            str(task.get("slug") or ""),
             _clean_note_for_classification(task.get("note")),
             str(task.get("log_tail") or ""),
             str(task.get("kind") or ""),
@@ -165,41 +91,16 @@ def _blocker_signal(task):
     )
 
 
-def _evidence_signal(task):
-    """Note + log_tail ONLY -- no slug, no prompt. For secret/security specifically, a project's
-    or feature's NAME is not evidence of an actual leak. 'santas-secret-workshop' (a real project
-    name) or 'rework-secret-<prior-rework>' (this task's own quarantine history) both contain the
-    literal word 'secret' with zero relation to whether THIS failure actually exposed one.
-    Genuine secret/security blockers are described in the failure note or log
-    ("CRON_SECRET exposure in committed config", "gitleaks: hardcoded key detected"), which is
-    exactly what this signal keeps.
-
-    One more self-reference path: automated messages (train rebase-conflict notes, branch-missing
-    notes) often echo the task's OWN slug/branch name verbatim, e.g. "conflict on
-    agent/rework-secret-<slug>". That embeds the word "secret" in the evidence text with zero
-    relation to the actual failure (a plain rebase conflict here). Strip the task's own slug out
-    of the evidence before scanning so its own name can't self-trigger classification."""
-    note = _clean_note_for_classification(task.get("note"))
-    log_tail = str(task.get("log_tail") or "")
-    slug = str(task.get("slug") or "")
-    if slug:
-        note = note.replace(slug, "")
-        log_tail = log_tail.replace(slug, "")
-    return "\n".join((note, log_tail))
-
-
 def classify(task):
     blocker = _blocker_signal(task)
-    evidence = _evidence_signal(task)
     text = blocker + "\n" + str(task.get("prompt") or "")
     state = str(task.get("state") or "").upper()
-    # Secret/security classification must come from the blocker EVIDENCE (note/log), never from
-    # a slug or prompt that merely contains the word "secret"/"security" as part of an app or
-    # feature name. Misclassifying QA failures (or a project's own branding) as secret work
-    # sends the wrong directive to the agent and manufactures a self-reinforcing quarantine loop.
-    if _is_secret(evidence):
+    # Secret/security classification must come from the blocker evidence, not a broad prompt
+    # word like an app name. Misclassifying QA failures as secret work makes agents fix the
+    # wrong thing and slows the drain.
+    if _SECRET.search(blocker):
         return "secret"
-    if _SECURITY.search(evidence):
+    if _SECURITY.search(blocker):
         return "security"
     if _LEGAL.search(text):
         return "legal"
@@ -374,26 +275,11 @@ def _forced_coder(category):
 
 
 def _sensitivity(task, category):
-    """2026-07-10: ORCH_QUARANTINE_LOCAL_ONLY defaulting true used to short-circuit BEFORE the
-    category check below ever ran, forcing crown_jewel (local-only) sensitivity onto EVERY
-    quarantine-rework task regardless of category. provider_terms.py treats 'confidential' and
-    'crown_jewel' identically (both restrict to local/ollama only), so genuinely sensitive
-    categories (secret/security/legal) were already correctly local-only via the category
-    branch below -- but non-sensitive categories (buildfail, testfail, missing-branch, noop,
-    oversized, generic rework) were ALSO getting force-routed to local-only, and from there into
-    local_model_slots' single-heavy-model-at-a-time lock (fcntl.flock, one inference at a time,
-    fleet-wide on that machine). With quarantine now producing thousands of replacement tasks
-    (beethoven alone: 700+), that single lock became the dominant fleet throughput bottleneck
-    (RUNNING stuck at 3-8 despite a 15-slot scheduler ceiling) even while paid-API budget sat at
-    0% utilization. Now checks category FIRST: sensitive categories are unconditionally
-    confidential/local-only (unchanged behavior), and only non-sensitive categories consult
-    ORCH_QUARANTINE_LOCAL_ONLY / the dynamic privacy check, so they CAN use the full concurrent
-    coder pool like ordinary tasks do once that env var allows it."""
-    if category in ("secret", "security", "legal"):
-        return "confidential"
     local_only = os.environ.get("ORCH_QUARANTINE_LOCAL_ONLY", "true").lower() in ("1", "true", "yes", "on")
     if local_only:
         return "crown_jewel"
+    if category in ("secret", "security", "legal"):
+        return "confidential"
     return privacy.sensitivity(_signal(task))
 
 
@@ -507,34 +393,11 @@ def run(limit=DEFAULT_LIMIT):
     created = parked = skipped = 0
     repaired_original = 0
     categories = collections.Counter()
-    max_depth = int(os.environ.get("ORCH_QUARANTINE_MAX_REWORK_DEPTH", "2"))
-    escalated = 0
     for task in rows:
         if MARK in str(task.get("note") or ""):
             skipped += 1
             continue
         category = classify(task)
-        # DEPTH CAP: a task whose slug already carries 2+ nested "rework-" segments has already
-        # been through this pipeline that many times without landing. Spawning yet another nested
-        # replacement is how a single flaky/misclassified task became a 5-deep
-        # "rework-legal-rework-legal-rework-legal-..." chain in production, manufacturing
-        # QUARANTINED rows forever. Once the cap is hit, stop reworking automatically and put a
-        # human in the loop instead.
-        if category in REPLACEMENT_CATEGORIES and _rework_depth(task.get("slug")) >= max_depth:
-            note = (f"{MARK}: escalated after {max_depth}+ rework attempts (category={category}); "
-                    f"needs human review instead of another auto-rework. "
-                    f"Last blocker: {(task.get('note') or task.get('log_tail') or '')[:300]}")[:900]
-            try:
-                db.update("tasks", {"id": task["id"]}, {"state": "BLOCKED", "account": None,
-                                                         "updated_at": "now()", "note": note})
-                db.insert("approvals", {"project": str(task.get("project_id") or ""), "kind": "quarantine_escalation",
-                                        "title": f"{task.get('slug')}: stuck in {category} rework loop, needs a human",
-                                        "status": "pending", "detail": note,
-                                        "risk": "auto-rework kept respawning without resolving; likely misclassified or a genuine blocker only a human can clear"})
-                escalated += 1
-            except Exception:
-                skipped += 1
-            continue
         if category not in REPLACEMENT_CATEGORIES:
             try:
                 _repair_original(task, category)
@@ -578,7 +441,6 @@ def run(limit=DEFAULT_LIMIT):
         "parked": parked,
         "repaired_original": repaired_original,
         "skipped": skipped,
-        "escalated": escalated,
         "categories": dict(categories),
         "coder": os.environ.get("ORCH_QUARANTINE_CODER") or "ollama",
         "local_only": os.environ.get("ORCH_QUARANTINE_LOCAL_ONLY", "true").lower() in ("1", "true", "yes", "on"),

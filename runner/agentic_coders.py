@@ -460,8 +460,6 @@ def _stable_share(task):
 def pick(task, slot_index=0):
     """Choose an agentic coder, optimizing cost x capability x task difficulty.
 
-    - COWORK SKILL dispatch: tasks needing browser/doc/visual capabilities → Cowork session.
-    - CAPABILITY-AWARE routing: match task requirements to vendor strengths via vendor_capabilities.
     - FORCED coder (integrate self-heal) wins when usable.
     - Claude EXHAUSTED: pick the cheapest pooled coder that clears the task's capability need, so the
       fleet keeps completing work on other models (nothing waits for Claude to reset).
@@ -469,29 +467,6 @@ def pick(task, slot_index=0):
       large share of EASY tasks to the cheapest capable coder (free/local first) to save subscription
       capacity, and a diversification share of harder-but-safe tasks to the next coder.
     """
-    # --- Cowork skill dispatch: browser automation, document generation, etc. ---
-    try:
-        import cowork_skills
-        if cowork_skills.needs_skill(task):
-            return "cowork-skill"
-    except Exception:
-        pass
-
-    # --- Capability-aware vendor selection: route to best vendor for task needs ---
-    try:
-        import vendor_capabilities
-        required = vendor_capabilities.detect_required_capabilities(task)
-        non_code = required - {"text_completion", "code_generation"}
-        if non_code:
-            # Task needs specialized capabilities — find best vendor
-            ranked = vendor_capabilities.best_vendors_for_task(task, exclude={"local"})
-            if ranked and ranked[0][1] > 0.8:  # high-confidence match
-                best_vendor = ranked[0][0]
-                if best_vendor != "claude":
-                    return f"swarm:{best_vendor}"
-    except Exception:
-        pass
-
     pool = _pool()
     diff = _task_difficulty(task)
     need = int(task.get("_need") or 0) or (9 if diff == "critical" else _NEED[diff])
@@ -516,16 +491,6 @@ def pick(task, slot_index=0):
 
     forced = str(task.get("force_coder") or "").strip()
     if forced:
-        # "aider" names the execution seam, not a concrete pool entry. Resolve
-        # it to a usable non-Claude backend instead of silently falling through
-        # to a Claude subscription account.
-        if forced == "aider":
-            candidates = by_cost or sorted(
-                [c for c in pool if c["name"] != "claude" and _within_cap(c)],
-                key=lambda c: (adjusted_cost(c), -c["cap"]),
-            )
-            if candidates:
-                return candidates[0]["name"]
         fc = _spec(forced)
         if forced == "claude" and fc and fc["cap"] >= need and _within_cap(fc) and _allowed_by_terms(fc, sensitivity):
             return "claude"
@@ -550,16 +515,6 @@ def pick(task, slot_index=0):
         strongest = sorted([c for c in pool if c["name"] != "claude" and _within_cap(c)],
                            key=lambda c: -c["cap"])
         return strongest[0]["name"] if strongest else "claude"
-
-    # --- Swarm-aware routing: when tier_router says use API, return swarm coder ---
-    try:
-        if os.environ.get("ORCH_EXEC_MODE", "cli").lower() in ("hybrid", "api", "swarm"):
-            import tier_router
-            _decision = tier_router.route(task)
-            if _decision and _decision.get("tier") in ("api", "speculative"):
-                return f"swarm:{_decision.get('provider', 'deepseek')}"
-    except Exception:
-        pass
 
     # LEARNED ROUTER: prefer the coder that empirically converts THIS task-kind to merges most cheaply
     # ($/merge from our own outcomes). Returns None until there's enough signal, so it refines the
@@ -621,20 +576,11 @@ def pick(task, slot_index=0):
 
 
 def route(task):
-    """Structured route metadata for dashboards/policy probes.
-
-    Enhanced with capability detection, cowork skill awareness, and shadow logging.
-    """
+    """Structured route metadata for dashboards/policy probes."""
     name = pick(task)
     spec = _spec(name) or {"name": name, "cost": 1, "cap": 10}
     model = "claude" if name == "claude" else name
-    if name == "cowork-skill":
-        model = os.environ.get("ORCH_COWORK_SKILL_MODEL", "claude-sonnet-5")
-        provider = "claude"
-    elif name.startswith("swarm:"):
-        provider = name.split(":", 1)[1]
-        model = provider  # will be resolved by swarm_executor
-    elif spec.get("cmd"):
+    if spec.get("cmd"):
         m = re.search(r"--model\s+([^ ]+)", spec["cmd"])
         if m:
             model = m.group(1).strip("'\"")
@@ -646,50 +592,19 @@ def route(task):
             model = os.environ.get("ORCH_ESCALATION_MODEL", "claude-sonnet-4-6")
         else:
             model = os.environ.get("ORCH_DEFAULT_MODEL", "claude-haiku-4-5-20251001")
-    if name not in ("cowork-skill",) and not name.startswith("swarm:"):
-        provider = name
-        if model.startswith("openai/"):
-            provider = "openai"
-        elif model.startswith("gemini/"):
-            provider = "google"
-        elif model.startswith("deepseek/"):
-            provider = "deepseek"
-        elif model.startswith("ollama/"):
-            provider = "local"
-        elif name == "claude":
-            provider = "claude"
-
-    result = {"coder": name, "provider": provider, "model": model,
-              "cap": spec.get("cap"), "cost": spec.get("cost")}
-
-    # Enrich with capability metadata
-    try:
-        import vendor_capabilities
-        result["required_capabilities"] = sorted(vendor_capabilities.detect_required_capabilities(task))
-        needs_cowork, cowork_caps = vendor_capabilities.requires_cowork_session(task)
-        if needs_cowork:
-            result["cowork_skills_needed"] = cowork_caps
-    except Exception:
-        pass
-
-    # Shadow log: record routing decision for parallel validation analysis
-    if os.environ.get("ORCH_SHADOW_ROUTING", "true").lower() in ("true", "1"):
-        try:
-            import db
-            db.insert("routing_decisions", {
-                "task_id": task.get("id", ""),
-                "task_slug": task.get("slug", ""),
-                "coder": name,
-                "provider": provider,
-                "model": model,
-                "required_capabilities": json.dumps(result.get("required_capabilities", [])),
-                "cowork_skills": json.dumps(result.get("cowork_skills_needed", [])),
-                "_allow_dup": True,
-            })
-        except Exception:
-            pass
-
-    return result
+    provider = name
+    if model.startswith("openai/"):
+        provider = "openai"
+    elif model.startswith("gemini/"):
+        provider = "google"
+    elif model.startswith("deepseek/"):
+        provider = "deepseek"
+    elif model.startswith("ollama/"):
+        provider = "local"
+    elif name == "claude":
+        provider = "claude"
+    return {"coder": name, "provider": provider, "model": model,
+            "cap": spec.get("cap"), "cost": spec.get("cost")}
 
 
 def _ollama_model_for(spec, model):
@@ -718,40 +633,6 @@ def _agentic_event(kind, coder, model="", project=None, value=0, action=""):
 
 def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900, **kwargs):
     """Dispatch to the chosen agentic backend, returning claude_cli-shaped output."""
-    # --- Cowork skill path: browser automation, document generation, etc. ---
-    if coder == "cowork-skill":
-        try:
-            import cowork_skills
-            task = kwargs.get("task") or {"description": prompt, "prompt": prompt,
-                                          "slug": kwargs.get("slug", ""), "cwd": cwd}
-            result = cowork_skills.execute_skill(task)
-            return {
-                "text": json.dumps(result.get("data", {})),
-                "cost_usd": 0.0,
-                "input_tokens": 0, "output_tokens": 0,
-                "returncode": 0 if result.get("status") == "success" else 1,
-                "coder": "cowork-skill",
-                "skill_type": result.get("skill_type", ""),
-                "raw": result,
-            }
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning("cowork-skill failed (%s), falling back to claude", e)
-            coder = "claude"
-
-    # --- Swarm executor path: direct API calls, no CLI/aider overhead ---
-    if coder.startswith("swarm:"):
-        try:
-            import swarm_executor
-            provider = coder.split(":", 1)[1]
-            r = swarm_executor.run_swarm(prompt, model, provider=provider, cwd=cwd,
-                                         timeout=timeout, mode="agentic")
-            r["coder"] = coder
-            return r
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).warning("swarm path failed (%s), falling back to claude", e)
-            coder = "claude"  # fall through to normal path
     if coder == "claude":
         import claude_cli
         return claude_cli.run(prompt, model, cwd=cwd, env=env, project=project, timeout=timeout, **kwargs)

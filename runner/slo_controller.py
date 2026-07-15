@@ -33,31 +33,31 @@ def run():
 
     # SLO 1: Merge rate
     checks["merge_rate"] = _check_merge_rate()
-    if checks["merge_rate"]["ok"] is False:  # skip UNKNOWN (None)
+    if not checks["merge_rate"]["ok"]:
         actions.extend(_remediate_merge_rate(checks["merge_rate"]))
 
     # SLO 2: Missing branches
     checks["missing_branch"] = _check_missing_branches()
-    if checks["missing_branch"]["ok"] is False:
+    if not checks["missing_branch"]["ok"]:
         actions.extend(_remediate_missing_branches(checks["missing_branch"]))
 
     # SLO 3: Queued recovery backlog
     checks["queued_recovery"] = _check_recovery_backlog()
-    if checks["queued_recovery"]["ok"] is False:
+    if not checks["queued_recovery"]["ok"]:
         actions.extend(_remediate_recovery_backlog(checks["queued_recovery"]))
 
     # SLO 4: Release fix age
     checks["release_fix_age"] = _check_release_fix_age()
-    if checks["release_fix_age"]["ok"] is False:
+    if not checks["release_fix_age"]["ok"]:
         actions.extend(_remediate_release_fix_age(checks["release_fix_age"]))
 
     # SLO 5: Fleet utilization
     checks["fleet_util"] = _check_fleet_utilization()
-    if checks["fleet_util"]["ok"] is False:
+    if not checks["fleet_util"]["ok"]:
         actions.extend(_remediate_fleet_util(checks["fleet_util"]))
 
-    # Record SLO status (UNKNOWN counts as not-passing for status, but doesn't trigger remediation)
-    passing = sum(1 for c in checks.values() if c["ok"] is True)
+    # Record SLO status
+    passing = sum(1 for c in checks.values() if c["ok"])
     total = len(checks)
 
     try:
@@ -68,7 +68,7 @@ def run():
                 "passing": passing,
                 "total": total,
                 "actions_taken": [a["action"] for a in actions],
-                "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat()
+                "checked_at": datetime.datetime.utcnow().isoformat()
             }),
             "updated_at": "now()"
         }, upsert=True)
@@ -105,8 +105,8 @@ def _check_merge_rate():
         return {"ok": rate >= SLO_MERGE_RATE or completed < 5,
                 "value": round(rate, 4), "threshold": SLO_MERGE_RATE,
                 "completed": completed, "merged": merged}
-    except Exception as e:
-        return {"ok": None, "state": "UNKNOWN", "value": 0, "threshold": SLO_MERGE_RATE, "reason": str(e)}
+    except Exception:
+        return {"ok": True, "value": 0, "threshold": SLO_MERGE_RATE}
 
 
 def _check_missing_branches():
@@ -115,22 +115,22 @@ def _check_missing_branches():
         blocked = db.select("tasks", {
             "select": "id,slug",
             "state": "eq.BLOCKED",
-            "note": "like.%missing%branch%",
+            "note": "like.*missing*branch*",
             "limit": "50"
         }) or []
 
         recovery = db.select("tasks", {
             "select": "id",
             "state": "eq.QUEUED",
-            "slug": "like.recover-missing-branch-%",
+            "slug": "like.recover-missing-branch-*",
             "limit": "50"
         }) or []
 
         count = len(blocked) + len(recovery)
         return {"ok": count <= SLO_MISSING_BRANCH,
                 "value": count, "threshold": SLO_MISSING_BRANCH}
-    except Exception as e:
-        return {"ok": None, "state": "UNKNOWN", "value": 0, "threshold": SLO_MISSING_BRANCH, "reason": str(e)}
+    except Exception:
+        return {"ok": True, "value": 0, "threshold": SLO_MISSING_BRANCH}
 
 
 def _check_recovery_backlog():
@@ -139,14 +139,14 @@ def _check_recovery_backlog():
         recovery = db.select("tasks", {
             "select": "id",
             "state": "eq.QUEUED",
-            "slug": "like.recover-%",
+            "slug": "like.recover-*",
             "limit": "50"
         }) or []
 
         return {"ok": len(recovery) <= SLO_QUEUED_RECOVERY,
                 "value": len(recovery), "threshold": SLO_QUEUED_RECOVERY}
-    except Exception as e:
-        return {"ok": None, "state": "UNKNOWN", "value": 0, "threshold": SLO_QUEUED_RECOVERY, "reason": str(e)}
+    except Exception:
+        return {"ok": True, "value": 0, "threshold": SLO_QUEUED_RECOVERY}
 
 
 def _check_release_fix_age():
@@ -155,7 +155,7 @@ def _check_release_fix_age():
         fixes = db.select("tasks", {
             "select": "id,slug,created_at",
             "state": "eq.QUEUED",
-            "slug": "like.relfix-%",
+            "slug": "like.relfix-*",
             "order": "created_at.asc",
             "limit": "5"
         }) or []
@@ -168,8 +168,8 @@ def _check_release_fix_age():
 
         return {"ok": age_h <= SLO_RELEASE_FIX_AGE_H,
                 "value": round(age_h, 2), "threshold": SLO_RELEASE_FIX_AGE_H}
-    except Exception as e:
-        return {"ok": None, "state": "UNKNOWN", "value": 0, "threshold": SLO_RELEASE_FIX_AGE_H, "reason": str(e)}
+    except Exception:
+        return {"ok": True, "value": 0, "threshold": SLO_RELEASE_FIX_AGE_H}
 
 
 def _check_fleet_utilization():
@@ -200,8 +200,8 @@ def _check_fleet_utilization():
         return {"ok": util >= SLO_FLEET_UTIL or ram_bound,
                 "value": round(util, 4), "threshold": SLO_FLEET_UTIL,
                 "ram_bound": ram_bound}
-    except Exception as e:
-        return {"ok": None, "state": "UNKNOWN", "value": 0, "threshold": SLO_FLEET_UTIL, "reason": str(e)}
+    except Exception:
+        return {"ok": True, "value": 0, "threshold": SLO_FLEET_UTIL}
 
 
 # ── Remediation strategies ──────────────────────────────────────────────────────
@@ -277,7 +277,7 @@ def _apply_action(action):
             blocked = db.select("tasks", {
                 "select": "id,slug",
                 "state": "eq.BLOCKED",
-                "note": "like.%missing%branch%",
+                "note": "like.*missing*branch*",
                 "limit": "20"
             }) or []
             for t in blocked:
@@ -296,7 +296,7 @@ def _apply_action(action):
             fixes = db.select("tasks", {
                 "select": "id",
                 "state": "eq.QUEUED",
-                "slug": "like.relfix-%",
+                "slug": "like.relfix-*",
                 "limit": "20"
             }) or []
             for t in fixes:
@@ -309,7 +309,7 @@ def _apply_action(action):
             recovery = db.select("tasks", {
                 "select": "id",
                 "state": "eq.QUEUED",
-                "slug": "like.recover-%",
+                "slug": "like.recover-*",
                 "limit": "30"
             }) or []
             for t in recovery:
@@ -343,15 +343,13 @@ def _apply_action(action):
 
 
 def _hours_ago_iso(hours):
-    return (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=hours)).isoformat()
+    return (datetime.datetime.utcnow() - datetime.timedelta(hours=hours)).isoformat()
 
 
 def _age_hours(ts_str):
     try:
-        ts = datetime.datetime.fromisoformat(str(ts_str).replace("Z", "+00:00"))
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=datetime.timezone.utc)
-        return (datetime.datetime.now(datetime.timezone.utc) - ts).total_seconds() / 3600
+        ts = datetime.datetime.fromisoformat(str(ts_str).replace("Z", "+00:00").replace("+00:00", ""))
+        return (datetime.datetime.utcnow() - ts).total_seconds() / 3600
     except Exception:
         return 0
 

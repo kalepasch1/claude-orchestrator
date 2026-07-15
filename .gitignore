@@ -18,16 +18,3 @@ runner/.env.bak*
 # runner log (huge, machine-local — never commit)
 runner/runner.log
 .aider*
-
-# machine-local build caches — keep the worktree clean so fleet auto-pull isn't blocked
-.npm-cache/
-.pip-cache/
-.orch-context-cache.json
-runner/.env.pre-symlink-merge-*
-.vercel
-.env*
-
-# machine-local settings with PIDs, credentials, hardcoded paths
-.claude/settings.local.json
-
-runner/*.bak.wedgefix

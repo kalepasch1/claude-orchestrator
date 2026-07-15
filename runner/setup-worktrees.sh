@@ -12,8 +12,6 @@
 # Creates: ../<repo>-wt/<task-slug>  on branch  agent/<task-slug>
 
 set -euo pipefail
-# Inherited NODE_ENV=production makes npm omit devDependencies (broken installs/builds) — strip it.
-unset NODE_ENV || true
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 REPO_NAME="$(basename "$REPO_ROOT")"
 WT_ROOT="$(dirname "$REPO_ROOT")/${REPO_NAME}-wt"
@@ -40,12 +38,6 @@ else
   git -C "$REPO_ROOT" worktree add "$DEST" -b "$BRANCH" "$BASE"
 fi
 
-# LOCK the worktree while a task is using it. Concurrent GC/prune loops (worktree_gc,
-# resource_governor) must not delete an in-use worktree; `git worktree remove --force`
-# refuses locked worktrees unless doubly forced. worktree_gc unlocks after its safety
-# guards (task terminal + clean + aged) pass, so this never leaks disk.
-git -C "$REPO_ROOT" worktree lock "$DEST" --reason "task ${SLUG} in use" 2>/dev/null || true
-
 # Each worktree inherits .claude/settings.json from the repo automatically.
 # copy the repo's permission allowlist into the worktree so agents CANNOT push / trigger CI
 mkdir -p "$DEST/.claude"
@@ -53,12 +45,10 @@ mkdir -p "$DEST/.claude"
 
 # WARM DEPS: the agent's build-to-green loop dominates wall-clock, and a fresh worktree would
 # `npm install` from scratch every time (minutes). Symlink the main checkout's node_modules (and
-# reuse path-safe build caches) so `npm run build`/tests start instantly. Symlink = zero copy, zero disk.
+# reuse the build cache) so `npm run build`/tests start instantly. Symlink = zero copy, zero disk.
 # Disable with ORCH_WARM_DEPS=false. (npm/pnpm resolve a symlinked node_modules fine for builds.)
 if [ "${ORCH_WARM_DEPS:-true}" = "true" ]; then
-  # Never share .nuxt: generated tsconfig/type files contain absolute checkout
-  # paths and make QA in one worktree type-check stale sources from another.
-  for depdir in node_modules .next/cache node_modules/.cache; do
+  for depdir in node_modules .next/cache .nuxt node_modules/.cache; do
     src="$REPO_ROOT/$depdir"; dst="$DEST/$depdir"
     if [ -e "$src" ] && [ ! -e "$dst" ]; then
       mkdir -p "$(dirname "$dst")"
@@ -66,13 +56,5 @@ if [ "${ORCH_WARM_DEPS:-true}" = "true" ]; then
     fi
   done
 fi
-# NUXT TYPES: generated files are worktree-specific because they embed absolute
-# paths. Regenerate the type stubs once, best-effort, so tsc-based acceptance
-# checks use this checkout and can actually go green. Cheap (~seconds).
-if [ "${ORCH_NUXT_PREPARE:-true}" = "true" ] && [ ! -e "$DEST/.nuxt" ] && [ -f "$DEST/package.json" ] \
-   && grep -q '"nuxt"' "$DEST/package.json" 2>/dev/null; then
-  (cd "$DEST" && timeout 180 npx nuxi prepare >/dev/null 2>&1) || true
-fi
-
 echo "✅ worktree ready: $DEST  (branch $BRANCH, based on $BASE)"
 echo "   run an agent there with: scripts/orchestrate.sh"

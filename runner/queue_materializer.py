@@ -15,18 +15,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 MAX_DEPTH = int(os.environ.get("ORCH_DECOMPOSE_MAX_DEPTH", "2"))
-# 2026-07-11: CHILD_SCAN_LIMIT used to be a single unordered, unpaginated fetch cap. Once the
-# fleet-wide tasks table grew past that cap (observed: ~8700+ total rows against a 6000-row
-# limit, with no ORDER BY -- so which 6000 rows came back was whatever Postgres happened to
-# return), real children silently fell outside the snapshot. That made genuinely in-progress
-# DECOMPOSED parents look "orphaned" and get incorrectly quarantined -- the dominant driver of
-# a 2,400+ task QUARANTINED spike. Now paginated across the WHOLE table (bounded by
-# CHILD_SCAN_MAX_PAGES as a defensive ceiling, not a silent truncation) with stable ordering so
-# every page is disjoint and nothing is missed.
-CHILD_SCAN_PAGE_SIZE = int(os.environ.get("ORCH_MATERIALIZER_CHILD_SCAN_PAGE_SIZE", "1000"))
-CHILD_SCAN_MAX_PAGES = int(os.environ.get("ORCH_MATERIALIZER_CHILD_SCAN_MAX_PAGES", "50"))
-MAX_UPDATES = int(os.environ.get("ORCH_MATERIALIZER_MAX_UPDATES", "200"))
-RUN_BUDGET_S = int(os.environ.get("ORCH_MATERIALIZER_RUN_BUDGET_S", "240"))
+CHILD_SCAN_LIMIT = int(os.environ.get("ORCH_MATERIALIZER_CHILD_SCAN_LIMIT", "6000"))
+MAX_UPDATES = int(os.environ.get("ORCH_MATERIALIZER_MAX_UPDATES", "20"))
+RUN_BUDGET_S = int(os.environ.get("ORCH_MATERIALIZER_RUN_BUDGET_S", "90"))
 UPDATE_TIMEOUT_S = int(os.environ.get("ORCH_MATERIALIZER_UPDATE_TIMEOUT_S", "15"))
 
 
@@ -73,85 +64,27 @@ def _parse_deps(value):
 
 
 def _children_by_parent(parent_slugs):
-    """Build parent->children using paginated reads instead of deps containment queries.
+    """Build parent->children using one bounded read instead of deps containment queries.
 
     Some task tables store deps in a shape that PostgREST rejects for `cs.[...]`, which made this
     periodic job crash. A local map is also much faster for hundreds of DECOMPOSED parents.
-
-    Returns (child_map, complete). `complete` is False if the scan was cut short (hit the page
-    ceiling or an error) -- callers MUST treat an incomplete scan as "unknown", not "no children
-    found", since the orphan-detection logic downstream cannot tell the difference between a
-    parent with genuinely zero children and one whose children just fell outside a partial scan.
     """
     wanted = {str(s) for s in parent_slugs if s}
     out = {s: [] for s in wanted}
     if not wanted:
-        return out, True
-    offset = 0
-    for _ in range(CHILD_SCAN_MAX_PAGES):
-        try:
-            rows = db.select("tasks", {
-                "select": "id,slug,state,deps",
-                "order": "id.asc",
-                "limit": str(CHILD_SCAN_PAGE_SIZE),
-                "offset": str(offset),
-            }) or []
-        except Exception as e:
-            print(f"[materializer] child scan failed at offset {offset}: {e}")
-            return out, False
-        for row in rows:
-            for dep in _parse_deps(row.get("deps")):
-                dep = str(dep)
-                if dep in out:
-                    out[dep].append(row)
-        if len(rows) < CHILD_SCAN_PAGE_SIZE:
-            return out, True
-        offset += CHILD_SCAN_PAGE_SIZE
-    print(f"[materializer] child scan hit the {CHILD_SCAN_MAX_PAGES}-page ceiling "
-          f"({CHILD_SCAN_MAX_PAGES * CHILD_SCAN_PAGE_SIZE} rows) -- treating as incomplete")
-    return out, False
-
-
-def recover_false_orphans():
-    """Un-quarantine tasks that were falsely marked as orphans by the pre-fix scan.
-
-    These tasks have note='materializer: orphaned DECOMPOSED task (no children found after 24h)'
-    but may actually have live children now that the scan is fixed. Re-evaluate them.
-    """
-    quarantined = db.select("tasks", {
-        "select": "id,slug,state,note",
-        "state": "eq.QUARANTINED",
-        "note": "like.*materializer: orphaned*",
-        "order": "created_at.asc",
-        "limit": "200",
-    }) or []
-    if not quarantined:
-        return {"recovered": 0, "truly_orphaned": 0}
-
-    parent_slugs = [q.get("slug") for q in quarantined]
-    child_map, scan_complete = _children_by_parent(parent_slugs)
-    if not scan_complete:
-        print("[materializer] recovery scan incomplete — skipping to avoid false positives")
-        return {"recovered": 0, "truly_orphaned": 0, "skipped": "incomplete_scan"}
-
-    recovered = 0
-    truly_orphaned = 0
-    for q in quarantined:
-        slug = q.get("slug", "")
-        children = child_map.get(slug, [])
-        if children:
-            # Has children — was falsely quarantined. Restore to DECOMPOSED.
-            _update_task(q["id"], {
-                "state": "DECOMPOSED",
-                "note": f"materializer: recovered from false orphan quarantine ({len(children)} children found)"
-            })
-            recovered += 1
-        else:
-            truly_orphaned += 1
-
-    print(f"[materializer] orphan recovery: {recovered} restored to DECOMPOSED, "
-          f"{truly_orphaned} confirmed truly orphaned")
-    return {"recovered": recovered, "truly_orphaned": truly_orphaned}
+        return out
+    try:
+        rows = db.select("tasks", {"select": "id,slug,state,deps",
+                                   "limit": str(CHILD_SCAN_LIMIT)}) or []
+    except Exception as e:
+        print(f"[materializer] child scan failed: {e}")
+        return out
+    for row in rows:
+        for dep in _parse_deps(row.get("deps")):
+            dep = str(dep)
+            if dep in out:
+                out[dep].append(row)
+    return out
 
 
 def run():
@@ -172,16 +105,7 @@ def run():
         "order": "created_at.asc",
         "limit": "500"
     }) or []
-    child_map, scan_complete = _children_by_parent([p.get("slug") for p in parents])
-    if not scan_complete:
-        # 2026-07-11: an incomplete child scan cannot be trusted to say a parent has "no
-        # children" -- it may simply not have reached them yet. Orphan-quarantining on a
-        # partial view was the root cause of a 2,400+ task false-positive quarantine spike.
-        # Skip orphan detection entirely this run rather than act on uncertain data; the
-        # close/park/release paths below only need to know about children THAT WERE FOUND,
-        # so they're safe to keep running.
-        print("[materializer] child scan incomplete this run -- skipping orphan detection "
-              "(close/release/park of already-visible children still proceeds)")
+    child_map = _children_by_parent([p.get("slug") for p in parents])
 
     for parent in parents:
         pid = parent["id"]
@@ -191,23 +115,17 @@ def run():
         children = child_map.get(slug, [])
 
         if not children:
-            if not scan_complete:
-                continue
             # No children found — this decomposed task is orphaned
             # Check if it's been sitting for > 24h with no children
             try:
                 created = parent.get("created_at", "")
-                # Raised from 24h to 72h: children can be slow to appear when the queue is
-                # deep or decomposition cascades through multiple levels. 24h was too aggressive
-                # and caused 2,886 false-positive quarantines before the scan was fixed.
-                _orphan_timeout_h = float(os.environ.get("ORCH_ORPHAN_TIMEOUT_H", "72"))
-                if created and _age_hours(created) > _orphan_timeout_h:
+                if created and _age_hours(created) > 24:
                     attempted_updates += 1
                     if not can_update():
                         break
                     if _update_task(pid, {
                         "state": "QUARANTINED",
-                        "note": f"materializer: orphaned DECOMPOSED task (no children found after {_orphan_timeout_h:.0f}h)"
+                        "note": "materializer: orphaned DECOMPOSED task (no children found after 24h)"
                     }):
                         parked += 1
             except Exception:
@@ -258,13 +176,6 @@ def run():
     if closed or released or parked or attempted_updates >= MAX_UPDATES:
         print(f"[materializer] closed={closed} released={released} parked={parked} "
               f"attempted_updates={attempted_updates}/{MAX_UPDATES}")
-
-    # Recover tasks falsely quarantined by the pre-fix scan
-    try:
-        _recovery = recover_false_orphans()
-        released += _recovery.get("recovered", 0)
-    except Exception as e:
-        print(f"[materializer] recovery failed: {e}")
 
     return {"closed": closed, "released": released, "parked": parked,
             "attempted_updates": attempted_updates}

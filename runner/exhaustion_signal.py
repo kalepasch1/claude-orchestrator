@@ -23,17 +23,6 @@ STATE_FILE = os.path.join(HOME, "accounts_state.json")
 _STATE_DIR = os.path.join(HOME, "module_state")
 
 
-def _usable_account_rows():
-    """Return accounts that can actually supply Claude capacity."""
-    rows = db.select("accounts", {"select": "name,type,cooldown_until"}) or []
-    try:
-        import account_pool
-        api_allowed = account_pool._api_billing_allowed()
-    except Exception:
-        api_allowed = os.environ.get("ORCH_ALLOW_API_BILLING", "false").lower() == "true"
-    return [r for r in rows if r.get("type") != "api" or api_allowed]
-
-
 def _read_local_state():
     """Read local exhaustion state."""
     exhausted = False
@@ -73,10 +62,10 @@ def _read_local_state():
     }
 
 
-def _read_account_cooldowns(rows=None):
+def _read_account_cooldowns():
     """Read account cooldowns from DB."""
     try:
-        rows = _usable_account_rows() if rows is None else rows
+        rows = db.select("accounts", {"select": "name,cooldown_until"}) or []
         cooling = []
         for r in rows:
             cd = r.get("cooldown_until")
@@ -105,19 +94,10 @@ def _read_account_cooldowns(rows=None):
 def update():
     """Update exhaustion signal in DB for dashboard visibility."""
     local = _read_local_state()
-    try:
-        account_rows = _usable_account_rows()
-    except Exception:
-        account_rows = []
-    usable_names = {r.get("name") for r in account_rows}
-    db_cooling = _read_account_cooldowns(account_rows)
+    db_cooling = _read_account_cooldowns()
 
     # Merge local + DB state
-    # Local state can retain disabled API rows; keep only accounts that the
-    # billing guard permits when DB configuration is available.
-    local_cooling = [c for c in local["accounts_cooling"]
-                     if not usable_names or c.get("name") in usable_names]
-    all_cooling = local_cooling + db_cooling
+    all_cooling = local["accounts_cooling"] + db_cooling
     # Deduplicate by name
     seen = set()
     unique_cooling = []
@@ -127,7 +107,10 @@ def update():
             unique_cooling.append(c)
 
     # Count total accounts
-    total_accounts = len(account_rows) if account_rows else 2
+    try:
+        total_accounts = len(db.select("accounts", {"select": "name"}) or [])
+    except Exception:
+        total_accounts = 2
 
     all_exhausted = len(unique_cooling) >= total_accounts and total_accounts > 0
 

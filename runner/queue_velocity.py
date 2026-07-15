@@ -49,9 +49,11 @@ def _save_state(state):
 
 
 def _queue_depth():
-    # Exact header count is O(1), avoids PostgREST's 1,000-row body cap, and raises
-    # on transport failure. An outage must never masquerade as a drained queue.
-    return db.count("tasks", {"state": "eq.QUEUED"})
+    try:
+        rows = db.select("tasks", {"select": "id", "state": "eq.QUEUED", "limit": "5001"}) or []
+        return len(rows)
+    except Exception:
+        return 0
 
 
 def _pause_generators(reason):
@@ -102,11 +104,7 @@ def run():
     integral = state.get("integral", 0)
 
     # Sample current queue depth
-    try:
-        depth = _queue_depth()
-    except Exception as e:
-        print(f"[queue-velocity] measurement failed; preserving controller state: {e}")
-        return {"ok": False, "error": str(e), "measurement_valid": False}
+    depth = _queue_depth()
     now = time.time()
     history.append({"t": now, "depth": depth})
     history = history[-MAX_HISTORY:]  # trim

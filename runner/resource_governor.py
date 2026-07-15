@@ -15,48 +15,18 @@ import db
 
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 THROTTLE_FILE = os.path.join(HOME, "throttle")
-
-# 2026-07-11: CEILING/DISK_*/RAM_* used to be module-level constants snapshotted ONCE at import
-# time. fleet_control.load_config() pushes fleet-wide tuning (MAX_PARALLEL_CEILING, PER_TASK_GB,
-# RAM_FLOOR_GB, ...) into os.environ live every loop, but a long-running process never re-read
-# these frozen constants -- so a machine whose runner started before the last central tuning push
-# (e.g. one that hadn't been restarted recently) stayed stuck on whatever conservative defaults
-# it booted with, silently diverging from a machine that started fresh. This is the same class of
-# bug already fixed for runner.py's MAX_PARALLEL (see runner.py's eff_limit comment: "a stale/low
-# value throttled a 48GB box to 4 lanes"). Root-caused here: Mac 2 was clamped to ~4 concurrent
-# tasks against a 16-lane ceiling because its resource_governor process never picked up a tuned
-# PER_TASK_GB/RAM_FLOOR_GB pushed centrally after it last started. Read all of these live from
-# env on every call instead of freezing them at import.
-def _ceiling():
-    return int(os.environ.get("MAX_PARALLEL_CEILING", "12"))
-
-
-def _disk_soft():
-    return float(os.environ.get("DISK_SOFT_PCT", "80"))   # prune above this
-
-
-def _disk_hard():
-    return float(os.environ.get("DISK_HARD_PCT", "90"))   # throttle to 1 + alert
-
-
-def _ram_hard():
-    return float(os.environ.get("RAM_HARD_PCT", "82"))
-
-
-def _ram_floor_gb():
-    # Hard low-memory brake: if fewer than this many GB are available, PAUSE new task claims
-    # entirely (a single heavy task — e.g. an 8GB typecheck — could otherwise crash the Mac).
-    # 1.5GB was too low — macOS is already swapping/thrashing by then. Default 3GB, and the
-    # effective floor scales UP with machine size (see effective_floor_gb).
-    return float(os.environ.get("RAM_FLOOR_GB", "2.0"))
-
-
-def _per_task_gb():
-    # Headroom to reserve per concurrent task. A new task is only started if free RAM exceeds
-    # (floor + PER_TASK_GB), so concurrency is implicitly capped by available memory.
-    return float(os.environ.get("PER_TASK_GB", "0.15"))
-
-
+CEILING = int(os.environ.get("MAX_PARALLEL_CEILING", "12"))
+DISK_SOFT = float(os.environ.get("DISK_SOFT_PCT", "80"))   # prune above this
+DISK_HARD = float(os.environ.get("DISK_HARD_PCT", "90"))   # throttle to 1 + alert
+RAM_HARD = float(os.environ.get("RAM_HARD_PCT", "82"))
+# Hard low-memory brake: if fewer than this many GB are available, PAUSE new task claims
+# entirely (a single heavy task — e.g. an 8GB typecheck — could otherwise crash the Mac).
+# 1.5GB was too low — macOS is already swapping/thrashing by then. Default 3GB, and the
+# effective floor scales UP with machine size (see effective_floor_gb).
+RAM_FLOOR_GB = float(os.environ.get("RAM_FLOOR_GB", "6.0"))
+# Headroom to reserve per concurrent task. A new task is only started if free RAM exceeds
+# (floor + PER_TASK_GB), so concurrency is implicitly capped by available memory.
+PER_TASK_GB = float(os.environ.get("PER_TASK_GB", "1.5"))
 LOG_KEEP_DAYS = int(os.environ.get("LOG_KEEP_DAYS", "7"))
 PRUNE_NODE_MODULES = os.environ.get("PRUNE_NODE_MODULES", "false").lower() == "true"
 PRUNE_DOCKER = os.environ.get("PRUNE_DOCKER", "false").lower() == "true"
@@ -151,7 +121,7 @@ def effective_floor_gb():
     normally runs with most RAM committed to cache — on a large-RAM Mac that pushed the floor
     so high the runner never claimed. The kernel memory-pressure brake is the real anti-crash
     guard; this floor just keeps a sane emergency reserve.) Tune via RAM_FLOOR_GB in .env."""
-    return _ram_floor_gb()
+    return RAM_FLOOR_GB
 
 
 def mem_pressure_ok():
@@ -183,7 +153,7 @@ def pressure_should_block(free_gb=None, floor_gb=None):
     if free_gb is None:
         return True
     extra_tasks = float(os.environ.get("ORCH_PRESSURE_EXTRA_TASKS", "1.0") or 1.0)
-    return free_gb < floor_gb + (_per_task_gb() * extra_tasks)
+    return free_gb < floor_gb + (PER_TASK_GB * extra_tasks)
 
 
 def can_claim(n_active=0):
@@ -191,16 +161,14 @@ def can_claim(n_active=0):
     the gaps between the slower periodic govern() ticks. Returns (ok, reason)."""
     free = ram_free_gb()
     floor = effective_floor_gb()
-    per_task = _per_task_gb()
-    if free is not None and free < floor + per_task:
-        return False, f"low RAM {free}GB free < need {floor + per_task}GB (floor {floor}+task {per_task})"
+    if free is not None and free < floor + PER_TASK_GB:
+        return False, f"low RAM {free}GB free < need {floor + PER_TASK_GB}GB (floor {floor}+task {PER_TASK_GB})"
     if pressure_should_block(free, floor):
         return False, "kernel memory pressure warn/critical with low RAM headroom"
     try:
         used, _ = disk_pct()
-        hard = _disk_hard()
-        if used >= hard:
-            return False, f"disk {used}% >= hard {hard}%"
+        if used >= DISK_HARD:
+            return False, f"disk {used}% >= hard {DISK_HARD}%"
     except Exception:
         pass
     return True, "ok"
@@ -252,7 +220,7 @@ def _predicted_disk_pct(horizon_seconds=None):
     predicted = slope * (now + horizon_seconds) + intercept
     if slope <= 0:
         return predicted, None  # not growing
-    secs_to_hard = (_disk_hard() - (slope * now + intercept)) / slope
+    secs_to_hard = (DISK_HARD - (slope * now + intercept)) / slope
     return predicted, secs_to_hard / 3600
 
 
@@ -267,91 +235,13 @@ def _has_uncommitted_changes(wt_path, repo):
 
 
 def _is_branch_unmerged(branch, repo):
-    """Return True if branch is NOT merged into main (safety guard). Exact-name match —
-    the old substring check could mis-classify a branch as merged when its name was a
-    substring of another merged branch."""
+    """Return True if branch is NOT merged into main (safety guard)."""
     try:
         merged = subprocess.check_output(["git", "branch", "--merged", "main"],
                                          cwd=repo, text=True, timeout=10)
-        names = {l.strip().lstrip("* ").strip() for l in merged.splitlines()}
-        return branch not in names
+        return branch not in merged
     except Exception:
         return True  # assume unmerged if we can't check
-
-
-def _is_fresh_checkout(branch, repo):
-    """True if the branch tip is exactly main's tip. `git branch --merged main` counts a freshly
-    created agent branch as 'merged', but a tip identical to main means an executor just created
-    it and hasn't committed yet — NOT that its work landed. Deleting such a worktree rips it out
-    from under a running executor. (A truly merged branch normally points at its own last commit,
-    which main contains but does not equal.) Fail closed (True → caller skips)."""
-    try:
-        tip = subprocess.run(["git", "rev-parse", "--verify", "--quiet", branch],
-                             cwd=repo, capture_output=True, text=True, timeout=10)
-        main_tip = subprocess.run(["git", "rev-parse", "--verify", "--quiet", "main"],
-                                  cwd=repo, capture_output=True, text=True, timeout=10)
-        if tip.returncode != 0 or main_tip.returncode != 0:
-            return True
-        return tip.stdout.strip() == main_tip.stdout.strip()
-    except Exception:
-        return True
-
-
-def _wt_recently_active(path, min_age_min=None):
-    """True if the worktree (or its git admin dir/index) was touched recently. Fail closed."""
-    if min_age_min is None:
-        min_age_min = int(os.environ.get("WORKTREE_GC_MIN_AGE_MIN", "180"))
-    if min_age_min <= 0:
-        return False
-    cands = [path, os.path.join(path, ".git")]
-    try:
-        with open(os.path.join(path, ".git")) as f:
-            g = f.read().strip()
-        if g.startswith("gitdir:"):
-            admin = g.split(":", 1)[1].strip()
-            cands += [admin, os.path.join(admin, "index")]
-    except Exception:
-        return True
-    newest = 0.0
-    for c in cands:
-        try:
-            newest = max(newest, os.path.getmtime(c))
-        except Exception:
-            pass
-    if newest == 0.0:
-        return True
-    return newest > time.time() - min_age_min * 60
-
-
-def _agent_branch_safe_on_origin(branch, repo):
-    """Return True only if it is SAFE to delete this local agent branch — i.e. its work is
-    durably on origin. Safe iff the branch itself exists on origin, OR its tip commit is an
-    ancestor of an origin integration branch (already merged upstream). This is the fix for the
-    recover-missing-branch churn: a fail-soft branch-share push (runner.py) can leave a branch
-    local-only; deleting it here then loses the work fleet-wide. Never delete unshared work."""
-    try:
-        tip = subprocess.run(["git", "rev-parse", "--verify", "--quiet", branch],
-                             cwd=repo, capture_output=True, text=True, timeout=10).stdout.strip()
-        if not tip:
-            return True  # no such local branch / no commits — nothing to protect
-        # 1) branch present on origin as-is?
-        if subprocess.run(["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"],
-                          cwd=repo, capture_output=True, timeout=10).returncode == 0:
-            return True
-        # 2) tip already integrated into an origin branch (dev/staging/prod)?
-        targets = [t for t in (os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev"),
-                               os.environ.get("ORCH_CODE_MERGE_TARGET", "dev"),
-                               "main", "master") if t]
-        for tgt in targets:
-            ref = f"refs/remotes/origin/{tgt}"
-            if subprocess.run(["git", "show-ref", "--verify", "--quiet", ref],
-                              cwd=repo, capture_output=True, timeout=10).returncode == 0:
-                if subprocess.run(["git", "merge-base", "--is-ancestor", tip, ref],
-                                  cwd=repo, capture_output=True, timeout=10).returncode == 0:
-                    return True
-        return False
-    except Exception:
-        return False  # fail-closed: if unsure, do NOT delete
 
 
 def prune():
@@ -379,27 +269,9 @@ def prune():
                     if _is_branch_unmerged(b, repo):
                         freed_notes.append(f"SKIPPED (unmerged) {b}")
                         continue
-                    # SAFETY: a branch whose tip == main's tip looks 'merged' but is really a
-                    # FRESH checkout an executor just created and hasn't committed to — skip it.
-                    if _is_fresh_checkout(b, repo):
-                        freed_notes.append(f"SKIPPED (fresh checkout) {b}")
-                        continue
-                    # SAFETY: skip worktrees with recent filesystem/git activity (active executor)
-                    if _wt_recently_active(wt):
-                        freed_notes.append(f"SKIPPED (recently active) {b}")
-                        continue
-                    # SAFETY: never delete a local agent branch whose work isn't durably on origin
-                    # (fail-soft share push can leave it local-only → deleting loses work fleet-wide).
-                    origin_safe = _agent_branch_safe_on_origin(b, repo)
-                    # All guards passed: clear any creation lock so the worktree can be reclaimed.
-                    subprocess.run(["git", "worktree", "unlock", wt], cwd=repo, capture_output=True)
                     subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=repo, capture_output=True)
-                    if origin_safe:
-                        subprocess.run(["git", "branch", "-D", b], cwd=repo, capture_output=True)
-                        freed_notes.append(f"worktree {b}")
-                    else:
-                        # keep the branch ref (cheap), just reclaim the worktree dir
-                        freed_notes.append(f"worktree {b} (branch kept: not on origin)")
+                    subprocess.run(["git", "branch", "-D", b], cwd=repo, capture_output=True)
+                    freed_notes.append(f"worktree {b}")
 
         # 2) build caches (safe to delete; rebuilt on demand)
         for cache in ("**/.nuxt", "**/.output", "**/dist", "**/.next"):
@@ -445,18 +317,16 @@ def prune():
 
 
 def set_throttle(n):
-    n = max(1, min(n, _ceiling()))
-    with open(THROTTLE_FILE, "w") as f:
-        f.write(str(n))
+    n = max(1, min(n, CEILING))
+    open(THROTTLE_FILE, "w").write(str(n))
     return n
 
 
 def current_limit():
     try:
-        with open(THROTTLE_FILE) as f:
-            return max(1, min(int(f.read().strip()), _ceiling()))
+        return max(1, min(int(open(THROTTLE_FILE).read().strip()), CEILING))
     except Exception:
-        return _ceiling()
+        return CEILING
 
 
 def dashboard_gauge():
@@ -472,10 +342,10 @@ def dashboard_gauge():
         pass
     return {
         "disk_pct": used, "free_gb": free_gb,
-        "ram_pct": ram, "throttle": current_limit(), "ceiling": _ceiling(),
+        "ram_pct": ram, "throttle": current_limit(), "ceiling": CEILING,
         "ram_free_gb": ram_free_gb(), "ollama_loaded": ollama_loaded,
         "predicted_disk_pct_2h": pred_pct, "hours_to_hard": hours_to_hard,
-        "disk_soft": _disk_soft(), "disk_hard": _disk_hard(),
+        "disk_soft": DISK_SOFT, "disk_hard": DISK_HARD,
     }
 
 
@@ -522,11 +392,6 @@ def govern():
         pass
 
     eff_floor = effective_floor_gb()
-    per_task = _per_task_gb()
-    ceiling = _ceiling()
-    disk_soft = _disk_soft()
-    disk_hard = _disk_hard()
-    ram_hard = _ram_hard()
     pressure_bad = pressure_should_block(free_ram, eff_floor)
     if free_ram is not None:
         cur_reason = _global_pause_reason()
@@ -549,7 +414,7 @@ def govern():
             free_ram = ram_free_gb()
             ram = ram_pct()
             pressure_bad = pressure_should_block(free_ram, eff_floor)
-            if free_ram is not None and free_ram >= eff_floor + per_task and not pressure_bad:
+            if free_ram is not None and free_ram >= eff_floor + PER_TASK_GB and not pressure_bad:
                 cur_reason = _global_pause_reason()
                 if cur_reason == "auto:low-memory":
                     try:
@@ -559,19 +424,18 @@ def govern():
                     except Exception:
                         pass
             else:
-                # CLAMP, don't global-PAUSE. A global memory pause proved to be a sticky,
-                # oscillating fleet-killer (2026-07-10): it latched on a transient load spike and
-                # the resume never caught the recovery window, freezing everything for hours even
-                # at 30GB free. Clamping throttle to 1 is self-correcting, and the per-task
-                # can_claim() gate already blocks new claims when RAM is genuinely low — so a hard
-                # global pause is redundant AND dangerous. Never global-pause for memory again;
-                # lift any stale auto:low-memory pause instead.
                 set_throttle(1)
-                if cur_reason == "auto:low-memory":
+                if cur_reason is None:  # not already paused by anyone
+                    why = ("kernel memory pressure warn/critical" if pressure_bad
+                           else f"available RAM {free_ram}GB below floor {eff_floor}GB")
                     try:
                         import kill_switch
-                        kill_switch.resume(scope="global", by="governor")
-                        print("governor: lifting stale auto:low-memory pause — clamping instead")
+                        kill_switch.pause(scope="global", reason="auto:low-memory", by="governor")
+                        db.insert("approvals", {"project": "ORCHESTRATOR", "kind": "self",
+                            "title": f"Low memory: {free_ram}GB free — orchestrator paused",
+                            "why": why + "; paused new work to avoid a Mac crash.",
+                            "value": "Prevents an out-of-memory restart.",
+                            "risk": "Orchestrator auto-resumes when memory recovers."})
                     except Exception:
                         pass
                 print(f"governor: LOW MEMORY {free_ram}GB free (floor {eff_floor}, "
@@ -587,16 +451,16 @@ def govern():
 
     # Predictive check: prune now if trend says we'll hit DISK_HARD within the window
     pred_pct, hours_to_hard = _predicted_disk_pct()
-    if hours_to_hard is not None and 0 < hours_to_hard < PREDICT_WINDOW_H and used < disk_hard:
-        print(f"governor: predictive prune — at trend rate disk will hit {disk_hard}% in {hours_to_hard:.1f}h")
-        _event("predict", pred_pct, f"will breach {disk_hard}% in {hours_to_hard:.1f}h", "predictive prune")
+    if hours_to_hard is not None and 0 < hours_to_hard < PREDICT_WINDOW_H and used < DISK_HARD:
+        print(f"governor: predictive prune — at trend rate disk will hit {DISK_HARD}% in {hours_to_hard:.1f}h")
+        _event("predict", pred_pct, f"will breach {DISK_HARD}% in {hours_to_hard:.1f}h", "predictive prune")
         prune()
         used, free_gb = disk_pct()
 
-    if used >= disk_soft:
+    if used >= DISK_SOFT:
         prune()
         used, free_gb = disk_pct()                      # recheck after prune
-    if used >= disk_hard or (ram is not None and ram >= ram_hard):
+    if used >= DISK_HARD or (ram is not None and ram >= RAM_HARD):
         set_throttle(1); action = "throttle->1"
         _event("throttle", used, f"disk {used}% ram {ram}", "throttle to 1")
         try:
@@ -606,16 +470,16 @@ def govern():
                 "value": "Prevents a crash.", "risk": "Throughput reduced until pressure eases."})
         except Exception:
             pass
-    elif used < disk_soft - 10 and (ram is None or ram < ram_hard - 5) and (free_ram is None or free_ram > eff_floor + 1):
-        set_throttle(ceiling); action = f"throttle->{ceiling}"
-    elif (ram is None or ram < ram_hard - 3) and (free_ram is None or free_ram > eff_floor + 0.5):
+    elif used < DISK_SOFT - 10 and (ram is None or ram < RAM_HARD - 12) and (free_ram is None or free_ram > RAM_FLOOR_GB + 3):
+        set_throttle(CEILING); action = f"throttle->{CEILING}"
+    elif (ram is None or ram < RAM_HARD - 8) and (free_ram is None or free_ram > RAM_FLOOR_GB + 2):
         set_throttle(current_limit() + 1); action = "ease up"
     else:
         action = "hold (memory elevated)"
     # Memory-budget clamp: never allow more concurrent tasks than free RAM can hold,
     # regardless of what the disk/ram branches above decided.
     if free_ram is not None:
-        mem_budget = max(1, int((free_ram - eff_floor) / per_task))
+        mem_budget = max(1, int((free_ram - eff_floor) / PER_TASK_GB))
         if current_limit() > mem_budget:
             set_throttle(mem_budget)
             action += f"; mem-clamp->{mem_budget}"
@@ -623,11 +487,11 @@ def govern():
     latest_free = g.get("ram_free_gb")
     latest_ram = g.get("ram_pct")
     if (latest_free is not None
-            and used < disk_soft - 10
-            and (latest_ram is None or latest_ram < ram_hard - 5)
+            and used < DISK_SOFT - 10
+            and (latest_ram is None or latest_ram < RAM_HARD - 12)
             and not pressure_should_block(latest_free, eff_floor)):
-        recovered_budget = max(1, int((latest_free - eff_floor) / per_task))
-        recovered_target = min(ceiling, recovered_budget)
+        recovered_budget = max(1, int((latest_free - eff_floor) / PER_TASK_GB))
+        recovered_target = min(CEILING, recovered_budget)
         if recovered_target > current_limit():
             set_throttle(recovered_target)
             action += f"; mem-recover->{recovered_target}"

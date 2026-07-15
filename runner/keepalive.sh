@@ -22,14 +22,8 @@ case "${ORCH_CANONICAL_RUNTIME_HOME:-true}" in
     ;;
 esac
 export ORCH_LOG_DIR="${ORCH_LOG_DIR:-$CLAUDE_ORCH_HOME/logs}"
-export ORCH_BATCH_DEV_RELEASE="${ORCH_BATCH_DEV_RELEASE:-true}"
-export ORCH_CODE_MERGE_TARGET="${ORCH_CODE_MERGE_TARGET:-dev}"
-export ORCH_STAGING_BRANCH="${ORCH_STAGING_BRANCH:-orchestrator/dev}"
-export ORCH_PUSH_ON_DEV_MERGE="${ORCH_PUSH_ON_DEV_MERGE:-true}"
-export ORCH_PUSH_ON_MERGE="${ORCH_PUSH_ON_MERGE:-false}"
+export ORCH_PUSH_ON_MERGE="${ORCH_PUSH_ON_MERGE:-true}"
 export ORCH_PUSH_ON_RELEASE="${ORCH_PUSH_ON_RELEASE:-true}"
-export RELEASE_MIN_BATCH="${RELEASE_MIN_BATCH:-10}"
-export RELEASE_INTERVAL_HOURS="${RELEASE_INTERVAL_HOURS:-6}"
 mkdir -p "$ORCH_LOG_DIR"
 RUNNER_LOG="$ORCH_LOG_DIR/runner.log"
 LOCK_FILE="$CLAUDE_ORCH_HOME/runner.lock"
@@ -45,23 +39,7 @@ is_live_runner() {
   if [[ -z "$pid" ]]; then
     return 1
   fi
-  if ! ps -p "$pid" >/dev/null 2>&1; then
-    return 1
-  fi
-  # WEDGEFIX-B-WATCHDOG
-  prog="$CLAUDE_ORCH_HOME/runner.progress"
-  stall="${ORCH_RUNNER_STALL_SECONDS:-1800}"
-  if [[ -f "$prog" ]]; then
-    now="$(date +%s)"
-    mtime="$(stat -f %m "$prog" 2>/dev/null || stat -c %Y "$prog" 2>/dev/null)"
-    if [[ -n "$mtime" ]] && (( now - mtime > stall )); then
-      echo "[keepalive] runner $pid wedged: no progress $(( now - mtime ))s (>${stall}s) — restarting $(date)" >> "$RUNNER_LOG"
-      kill -9 "$pid" 2>/dev/null
-      rm -f "$LOCK_FILE"
-      return 1
-    fi
-  fi
-  return 0
+  ps -p "$pid" >/dev/null 2>&1
 }
 
 stay_resident() {

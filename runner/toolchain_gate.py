@@ -25,17 +25,9 @@ RECOVERY_COOLDOWN = 3600  # don't re-queue recovery within 1 hour
 # Build commands to probe per project type
 PROBES = [
     {"files": ["package.json"], "cmd": ["npm", "--version"], "name": "npm"},
-    {"files": ["tsconfig.json"], "cmd": ["npx", "tsc", "--version"], "name": "tsc"},
+    {"files": ["package.json", "tsconfig.json"], "cmd": ["npx", "tsc", "--version"], "name": "tsc"},
     {"files": ["requirements.txt", "setup.py", "pyproject.toml"], "cmd": ["python3", "--version"], "name": "python3"},
     {"files": ["Cargo.toml"], "cmd": ["cargo", "--version"], "name": "cargo"},
-    # Additional build tool probes added for broader coverage
-    {"files": ["yarn.lock"], "cmd": ["yarn", "--version"], "name": "yarn"},
-    {"files": ["pnpm-lock.yaml"], "cmd": ["pnpm", "--version"], "name": "pnpm"},
-    {"files": ["nuxt.config.ts", "nuxt.config.js"], "cmd": ["npx", "nuxi", "--version"], "name": "nuxt"},
-    {"files": ["next.config.js", "next.config.mjs", "next.config.ts"], "cmd": ["npx", "next", "--version"], "name": "next"},
-    {"files": ["vite.config.ts", "vite.config.js"], "cmd": ["npx", "vite", "--version"], "name": "vite"},
-    {"files": ["go.mod"], "cmd": ["go", "version"], "name": "go"},
-    {"files": ["Makefile"], "cmd": ["make", "--version"], "name": "make"},
 ]
 
 
@@ -59,20 +51,12 @@ def check_project(project_id, repo_path):
         return {"ready": True, "failures": []}  # can't check, assume OK
 
     failures = []
-    probe_path = repo_path
-    deps_ready_at_start = None
-    try:
-        import dependency_prewarm
-        probe_path = dependency_prewarm.runtime_root(repo_path)
-        deps_ready_at_start = dependency_prewarm.deps_ready(repo_path)
-    except Exception:
-        pass
     for probe in PROBES:
         # Only check if the project has the relevant config files
         if not any(os.path.isfile(os.path.join(repo_path, f)) for f in probe["files"]):
             continue
         try:
-            r = subprocess.run(probe["cmd"], capture_output=True, timeout=30, cwd=probe_path)
+            r = subprocess.run(probe["cmd"], capture_output=True, timeout=30, cwd=repo_path)
             if r.returncode != 0:
                 failures.append({"tool": probe["name"],
                                  "error": (r.stderr.decode()[:200] if r.stderr else "exit code " + str(r.returncode))})
@@ -88,16 +72,7 @@ def check_project(project_id, repo_path):
     if os.path.isfile(os.path.join(repo_path, "package.json")):
         try:
             import dependency_prewarm
-            # Shared immutable snapshots can be inspected concurrently by
-            # version probes/activation. Require repeated negatives before
-            # publishing a project-wide red verdict from a transient read.
-            deps_ok = bool(deps_ready_at_start)
-            for _ in range(3):
-                if dependency_prewarm.deps_ready(repo_path):
-                    deps_ok = True
-                    break
-                time.sleep(0.2)
-            if not deps_ok:
+            if not dependency_prewarm.deps_ready(repo_path):
                 failures.append({"tool": "node_modules",
                                  "error": "dependencies not installed/warmed (dependency_prewarm.deps_ready=False)"})
         except Exception:
@@ -106,13 +81,13 @@ def check_project(project_id, repo_path):
     return {"ready": len(failures) == 0, "failures": failures}
 
 
-def is_ready(project_id, repo_path=None, force=False):
+def is_ready(project_id, repo_path=None):
     """Check if a project's toolchain is ready. Uses cached result within CHECK_INTERVAL."""
     state = _load_state()
     entry = state.get(project_id, {})
 
     # Use cached result if fresh enough
-    if not force and time.time() - entry.get("checked_at", 0) < CHECK_INTERVAL:
+    if time.time() - entry.get("checked_at", 0) < CHECK_INTERVAL:
         return entry.get("ready", True)
 
     # Need a fresh check
@@ -125,18 +100,14 @@ def is_ready(project_id, repo_path=None, force=False):
             return True  # can't determine, don't block
 
     result = check_project(project_id, repo_path)
-    failure_streak = (0 if result["ready"] else int(entry.get("failure_streak") or 0) + 1)
-    confirmations = max(1, int(os.environ.get("ORCH_TOOLCHAIN_FAILURE_CONFIRMATIONS", "2")))
-    ready = bool(result["ready"] or failure_streak < confirmations)
     state[project_id] = {
-        "ready": ready,
+        "ready": result["ready"],
         "failures": result["failures"],
-        "failure_streak": failure_streak,
         "checked_at": time.time(),
         "recovery_queued_at": entry.get("recovery_queued_at", 0)
     }
 
-    if not ready:
+    if not result["ready"]:
         # Queue a single recovery task if we haven't recently
         if time.time() - entry.get("recovery_queued_at", 0) > RECOVERY_COOLDOWN:
             _queue_recovery(project_id, result["failures"])
@@ -144,7 +115,7 @@ def is_ready(project_id, repo_path=None, force=False):
         print(f"[toolchain] project {project_id} NOT READY: {result['failures']}")
 
     _save_state(state)
-    return ready
+    return result["ready"]
 
 
 def is_ready_cached(project_id):
@@ -174,9 +145,8 @@ def _queue_recovery(project_id, failures):
             "slug": f"toolchain-repair-{project_id[:8]}",
             "prompt": (f"The project's build toolchain has failures that must be fixed before "
                        f"any other tasks can run. Fix these issues:\n\n{errors}\n\n"
-                       f"Tools affected: {tool_names}. Ensure the relevant install command "
-                       f"(npm install / yarn install / pnpm install / pip install / cargo build) "
-                       f"and version checks all succeed after your fix."),
+                       f"Tools affected: {tool_names}. Ensure `npm install`, `npx tsc --version`, "
+                       f"and the project's build command all succeed after your fix."),
             "state": "QUEUED",
             "kind": "toolchain-repair",
             "material": True,
@@ -194,7 +164,7 @@ def run():
     except Exception:
         return
     for p in projects:
-        is_ready(p["id"], p.get("repo_path"), force=True)
+        is_ready(p["id"], p.get("repo_path"))
 
 
 if __name__ == "__main__":

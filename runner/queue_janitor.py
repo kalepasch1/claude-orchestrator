@@ -21,8 +21,7 @@ queue_janitor.py - automates the manual cleanup session of 2026-07-02, every cyc
 Everything is bounded, idempotent (the approvals_one_pending_per_issue index blocks
 duplicate cards), and audited via notes/notifications. No model spend.
 """
-import os, sys, glob, time, socket, subprocess
-import repo_hygiene
+import os, sys, glob, time, socket
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import agentic_repair
@@ -118,12 +117,6 @@ def release_orphaned_running():
     cutoff = time.time() - ORPHAN_RUNNING_MIN * 60
     import datetime
     for t in db.select("tasks", {"select": "*", "state": "eq.RUNNING"}) or []:
-        # COWORK DISPATCH: tasks claimed by Cowork sessions are NOT orphans — they run
-        # in a separate Cowork execution context, not as a local subprocess. The janitor
-        # can't see Cowork processes, so it must trust the account prefix and leave them alone.
-        acct = (t.get("account") or "")
-        if acct.startswith("cowork-"):
-            continue
         try:
             ts = datetime.datetime.fromisoformat(str(t.get("updated_at")).replace("Z", "+00:00")).timestamp()
         except Exception:
@@ -206,26 +199,8 @@ def refile_stranded_approvals():
     return made
 
 
-def _lock_has_live_holder(lock_path):
-    """True if any live process currently has this lock file open.
-
-    2026-07-10: age alone isn't sufficient proof a lock is abandoned -- a legitimately
-    slow git operation (large gc, long rebase) could still be running past LOCK_STALE_MIN,
-    and removing the lock out from under it risks a corrupted index. Verified manually via
-    `lsof` before clearing a stale Sustainable_Barks lock that day; this makes that check
-    automatic. Fail closed: if lsof itself can't be run, assume held and leave it alone --
-    a lock that lingers an extra cycle is far cheaper than one yanked from a live writer.
-    """
-    try:
-        out = subprocess.run(["lsof", "-t", lock_path], capture_output=True, text=True, timeout=10)
-        return bool(out.stdout.strip())
-    except Exception:
-        return True
-
-
 def clear_stale_git_locks():
-    """Remove .git/*.lock files older than LOCK_STALE_MIN in repos on this machine, but
-    only once no live process still has the file open (see _lock_has_live_holder)."""
+    """Remove .git/*.lock files older than LOCK_STALE_MIN in repos on this machine."""
     cleared = 0
     cutoff = time.time() - LOCK_STALE_MIN * 60
     for p in db.select("projects", {"select": "repo_path"}) or []:
@@ -234,35 +209,13 @@ def clear_stale_git_locks():
             continue
         for lock in glob.glob(os.path.join(repo, ".git", "*.lock")):
             try:
-                if os.path.getmtime(lock) >= cutoff:
-                    continue
-                if _lock_has_live_holder(lock):
-                    print(f"janitor: {lock} is stale by age but still held by a live process -- leaving it")
-                    continue
-                os.remove(lock)
-                cleared += 1
-                print(f"janitor: removed stale {lock}")
+                if os.path.getmtime(lock) < cutoff:
+                    os.remove(lock)
+                    cleared += 1
+                    print(f"janitor: removed stale {lock}")
             except Exception:
                 pass
     return cleared
-
-
-def clean_stray_js_across_projects():
-    """Periodic sweep (all registered repos on this machine) for untracked compiled .js
-    files shadowing their .ts source in ESM projects -- see repo_hygiene.py. This catches
-    the residue BEFORE an agent's own build/test attempt hits it, not just before
-    merge_train's test gate (which has its own call to the same helper). 2026-07-10:
-    tomorrow's server/ tree accumulated 4106 such files on one machine before this existed."""
-    cleaned = 0
-    for p in db.select("projects", {"select": "repo_path"}) or []:
-        repo = p.get("repo_path") or ""
-        if not repo or not os.path.isdir(os.path.join(repo, ".git")):
-            continue
-        try:
-            cleaned += len(repo_hygiene.clean_stray_js_duplicates(repo))
-        except Exception:
-            continue
-    return cleaned
 
 
 def run():
@@ -273,11 +226,9 @@ def run():
     empty = requeue_empty_runs()
     refiled = refile_stranded_approvals()
     locks = clear_stale_git_locks()
-    stray_js = clean_stray_js_across_projects()
     print(f"queue_janitor: heartbeat={'ok' if hb else 'FAIL'} orphans-released={orphans} unstuck={stuck} "
-          f"merge-released={merging} empty-agentic-repair={empty} cards-refiled={refiled} locks-cleared={locks} "
-          f"stray-js-cleaned={stray_js}")
-    return orphans + stuck + merging + empty + refiled + locks + stray_js
+          f"merge-released={merging} empty-agentic-repair={empty} cards-refiled={refiled} locks-cleared={locks}")
+    return orphans + stuck + merging + empty + refiled + locks
 
 
 if __name__ == "__main__":

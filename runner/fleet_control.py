@@ -19,7 +19,7 @@ WHOLE fleet from one place (Mission Control / the DB) and never touch a second m
 
 Pure DB + git; no model spend. Fail-soft: any error is swallowed so it can never wedge the runner.
 """
-import os, sys, time, socket, subprocess, datetime, json
+import os, sys, time, socket, subprocess, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import kill_switch
@@ -27,26 +27,6 @@ import kill_switch
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOST = socket.gethostname()
 _last_pull = {"t": 0.0}
-_ACK_FILE = os.path.join(os.environ.get("CLAUDE_ORCH_HOME", os.path.join(REPO, ".runtime")),
-                         "fleet-control-local-acks.json")
-
-
-def _local_acks():
-    try:
-        with open(_ACK_FILE, encoding="utf-8") as source:
-            return set(json.load(source) or [])
-    except Exception:
-        return set()
-
-
-def _mark_local_ack(control_id):
-    acks = _local_acks()
-    acks.add(str(control_id))
-    os.makedirs(os.path.dirname(_ACK_FILE), exist_ok=True)
-    tmp = _ACK_FILE + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as target:
-        json.dump(sorted(acks)[-500:], target)
-    os.replace(tmp, _ACK_FILE)
 
 # only these config keys may be pushed fleet-wide (never secrets). Anything containing a credential
 # marker is rejected outright.
@@ -70,10 +50,7 @@ def load_config():
         for row in (db.select("fleet_config", {"select": "key,value"}) or []):
             k, v = row.get("key"), row.get("value")
             if k and v is not None and _safe_key(k):
-                _v = str(v).strip()
-                if len(_v) >= 2 and _v[0] == chr(34) and _v[-1] == chr(34):
-                    _v = _v[1:-1]
-                os.environ[k] = _v
+                os.environ[k] = str(v)
                 n += 1
     except Exception:
         pass
@@ -93,13 +70,7 @@ def _has_upstream():
 
 
 def _dirty_worktree():
-    # Only TRACKED modifications should block auto-pull. Untracked files (stray build caches,
-    # logs, generated test artifacts) do NOT prevent a --ff-only pull — git itself refuses only
-    # if an incoming file would overwrite an untracked one. Counting untracked files here (plain
-    # `status --porcelain` lists them as `??`) permanently disabled auto-pull on any clone that
-    # had a single leftover file, which is what kept machines chronically stale despite
-    # ORCH_AUTO_PULL=true. Exclude untracked so a --ff-only pull can proceed.
-    return bool(_git("status", "--porcelain", "--untracked-files=no").stdout.strip())
+    return bool(_git("status", "--porcelain").stdout.strip())
 
 
 def _pull_safe():
@@ -189,8 +160,7 @@ def process_controls():
         target = str(r.get("target") or "all")
         handled = r.get("handled_by") or []
         aliases = _host_aliases()
-        if (not _target_matches(target) or any(h in handled for h in aliases)
-                or str(r.get("id")) in _local_acks()):
+        if not _target_matches(target) or any(h in handled for h in aliases):
             continue
         action = str(r.get("action") or "").lower()
         try:
@@ -227,10 +197,8 @@ def process_controls():
                       })
             done += 1
             if action == "git_pull" and params.get("restart", True):
-                _mark_local_ack(r["id"])
                 _restart()
             if action == "restart":
-                _mark_local_ack(r["id"])
                 _restart()
         except Exception as e:
             print(f"fleet_control: action '{action}' failed on {HOST}: {e}")

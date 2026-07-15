@@ -11,7 +11,7 @@ This module just gives visibility + capacity math across the fleet:
   capacity() -> aggregate concurrent slots currently in use vs the fleet ceiling
 Machines are considered LIVE if their heartbeat is within FLEET_TTL seconds.
 """
-import os, re, sys, datetime
+import os, sys, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
@@ -35,54 +35,16 @@ def _live(rows):
     return live
 
 
-STATUS_SCAN_LIMIT = int(os.environ.get("ORCH_FLEET_STATUS_SCAN_LIMIT", "500"))
-
-
 def status():
-    # 2026-07-11: runner_heartbeats accumulates one row PER RUNNER RESTART (each restart gets a
-    # new PID-based runner_id, and heartbeat() upserts on runner_id -- so restarts, not lane
-    # churn, are what grow this table over time). An unordered, unbounded select() could return
-    # an arbitrary slice dominated by long-dead rows, making _live() find almost nothing even
-    # when the fleet has dozens of genuinely live lanes -- this made fleet.capacity() report
-    # near-empty utilization while the real fleet was near-saturated. Order by last_seen DESC so
-    # the freshest rows are always the ones fetched, regardless of total table size/history.
-    rows = db.select("runner_heartbeats", {
-        "select": "*", "order": "last_seen.desc", "limit": str(STATUS_SCAN_LIMIT),
-    }) or []
-    # Logical lane heartbeats are visibility records, not extra physical machines.
-    # Counting each lane as a machine multiplied both active work and ceiling (one
-    # 60-slot runner appeared as six machines / 360 slots). Prefer the base runner's
-    # authoritative active_tasks value and collapse restarts by physical hostname.
-    live_rows = _live(rows)
-    groups = {}
-    for r in live_rows:
-        raw_host = r.get("hostname") or r.get("runner_id") or "unknown"
-        host = re.sub(r" lane \d+$", "", raw_host)
-        groups.setdefault(host, []).append(r)
-    live = []
-    for host, members in groups.items():
-        base = [r for r in members if (r.get("hostname") or "") == host]
-        candidates = base or members
-        # The scheduler heartbeat is the aggregate process-level record. If a
-        # restart briefly leaves several fresh base rows, prefer it; otherwise
-        # use the highest active count rather than whichever PID wrote last.
-        schedulers = [r for r in candidates if str(r.get("runner_id") or "").endswith("-scheduler")]
-        freshest = max(candidates, key=lambda r: r.get("last_seen") or "")
-        chosen = freshest
-        if schedulers:
-            scheduler = max(schedulers, key=lambda r: r.get("last_seen") or "")
-            try:
-                sched_at = datetime.datetime.fromisoformat(str(scheduler.get("last_seen")).replace("Z", "+00:00"))
-                fresh_at = datetime.datetime.fromisoformat(str(freshest.get("last_seen")).replace("Z", "+00:00"))
-                if (fresh_at - sched_at).total_seconds() <= int(os.environ.get("ORCH_SCHEDULER_HEARTBEAT_GRACE_S", "60")):
-                    chosen = scheduler
-            except Exception:
-                pass
-        row = dict(chosen)
-        row["hostname"] = host
-        if not base:
-            row["active_tasks"] = sum(int(r.get("active_tasks") or 0) for r in members)
-        live.append(row)
+    rows = db.select("runner_heartbeats", {"select": "*"}) or []
+    # collapse to the freshest heartbeat per hostname (a machine may have restarted -> new pid)
+    by_host = {}
+    for r in rows:
+        h = r.get("hostname") or r.get("runner_id")
+        cur = by_host.get(h)
+        if not cur or (r.get("last_seen") or "") > (cur.get("last_seen") or ""):
+            by_host[h] = r
+    live = _live(list(by_host.values()))
     return {
         "machines_live": len(live),
         "machines": [{"host": r.get("hostname"), "runner": r.get("runner_id"),

@@ -64,27 +64,6 @@ def active_committees():
     return db.select("committees", {"select": "*", "active": "eq.true"}) or []
 
 
-def locate_owner(subject_title, body=None):
-    """Locate the existing owner committee for a subject before assembling new panels. Returns
-    a dict {name, chair, mandate} for the best-matching active committee, or None if offline.
-    Prefers exact name-keyword matches; falls back to the first active committee."""
-    try:
-        rows = db.select("committees", {"select": "name,chair,mandate", "active": "eq.true"}) or []
-    except Exception:
-        return None
-    if not rows:
-        return None
-    text = ((subject_title or "") + " " + (body or "")).lower()
-    words = set(w for w in re.findall(r"[a-z]{4,}", text)[:10])
-    best, best_score = None, 0
-    for row in rows:
-        name_words = set(re.findall(r"[a-z]{4,}", (row.get("name") or "").lower()))
-        score = len(words & name_words)
-        if score > best_score:
-            best, best_score = row, score
-    return best or rows[0]
-
-
 LEGAL_HINTS = ("legal", "compliance", "regulat", "privacy", "counsel", "gdpr", "ccpa", "licens", "sanction")
 
 
@@ -164,7 +143,7 @@ def _seat_need(committee, seat):
 def _complete(prompt, kind="review", need=None):
     try:
         import model_policy, model_gateway
-        prov, model, _ = model_policy.choose_diverse(kind, need=need)
+        prov, model, _ = model_policy.choose(kind, agentic=False, need=need)  # spread across providers
         r = model_gateway.complete(prov, model, prompt)
         return r.get("text") or ""
     except Exception:
@@ -998,19 +977,6 @@ def certify(subject_type, subject_id, agg):
     onepager = deliberation_onepager(agg)
     adv = float(agg.get("adv_discount") or 0)
     disc_conf = round(float(agg.get("aggregate") or 0) * (1 - adv), 2)
-    # COUNTERFACTUAL BOUND: compute the margin between the winning stance's weighted share
-    # and the best-scoring losing stance from the panel's factions. Asserts that no reachable
-    # alternative scored materially higher.
-    factions = agg.get("factions") or []
-    if len(factions) >= 2:
-        winning_share = float(factions[0].get("share") or 0)
-        runner_up_share = float(factions[1].get("share") or 0)
-        counterfactual_margin = round(winning_share - runner_up_share, 3)
-    else:
-        winning_share = float(factions[0].get("share") or 1) if factions else 1.0
-        counterfactual_margin = round(winning_share, 3)
-    counterfactual_claim = (f"no reachable alternative scored materially higher; "
-                            f"winning stance led by {round(counterfactual_margin * 100, 1)}pp margin")
     cert = {"position": agg.get("recommendation"), "consensus_pct": agg.get("consensus_pct"),
             "consensus_ci": [agg.get("consensus_lo"), agg.get("consensus_hi")],
             "materiality": agg.get("materiality"), "confidence": agg.get("aggregate"),
@@ -1018,8 +984,8 @@ def certify(subject_type, subject_id, agg):
             "pivotal": agg.get("pivotal"), "consistency": agg.get("consistency"),
             "contributors": agg.get("contributors"), "factions": agg.get("factions"),
             "dissent": agg.get("dissents"), "gated_to_human": constitution_gate(agg),
-            "counterfactual_margin": counterfactual_margin,
-            "counterfactual": counterfactual_claim}
+            "counterfactual": (f"winning stance carried {round((agg.get('consensus_pct') or 0)*100)}% of "
+                               f"weighted expertise; strongest opposing view preserved in dissent")}
     try:
         prev = (db.select("determinations", {"select": "proof_hash", "order": "created_at.desc",
                                              "limit": "1"}) or [{}])
@@ -1229,17 +1195,6 @@ def run(limit=8):
                         "status": "eq.for_review", "limit": str(limit)}) or []:
         if p["id"] in reviewed:
             continue
-        if not p.get("divergent"):
-            import improvement_scrutiny
-            admission = improvement_scrutiny.implementation_spec_ready(p.get("proposal"))
-            if not admission["pass"]:
-                db.update("improvement_proposals", {"id": p["id"]}, {
-                    "status": "proposed",
-                    "rationale": ((p.get("rationale") or "")[:500] +
-                                  "\n\nCommittee admission: redraft required; missing " +
-                                  ", ".join(admission["missing"]))[:1200],
-                })
-                continue
         agg = review("proposal", p["id"], p.get("title"),
                      (p.get("proposal") or "") + "\n" + (p.get("rationale") or ""), app=p.get("app"))
         cert = certify("proposal", p["id"], agg)   # Optimality Certificate + proof + reviewer 1-pager

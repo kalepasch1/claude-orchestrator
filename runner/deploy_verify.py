@@ -126,11 +126,7 @@ def _git(repo, *args):
 
 def _rollback(project, repo, prod, last_good):
     _git(repo, "branch", "-f", prod, last_good)
-    push_rollback = os.environ.get(
-        "ORCH_PUSH_ON_ROLLBACK",
-        os.environ.get("ORCH_PUSH_ON_RELEASE", "true"),
-    ).lower() in ("1", "true", "yes", "on")
-    if push_rollback:
+    if os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() == "true":
         _git(repo, "push", "--force-with-lease", "origin", prod)
     print(f"deploy_verify: ROLLED BACK {project} {prod} -> {last_good[:8]}")
 
@@ -217,11 +213,6 @@ def run():
                       {"deploy_status": "success", "vercel_url": url, "deployed_at": "now()"})
             db.update("projects", {"name": project}, {"last_good_sha": release["to_sha"],
                       "vercel_project": vproj})
-            try:
-                import release_attribution
-                release_attribution.attribute_release(project, p.get("repo_path") or "", release, db)
-            except Exception as e:
-                print(f"deploy_verify: release attribution skipped for {project}: {str(e)[:160]}")
             print(f"deploy_verify: {project} deploy OK ({url})")
             continue
 

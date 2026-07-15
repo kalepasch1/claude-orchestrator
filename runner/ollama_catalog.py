@@ -158,58 +158,10 @@ def _canary_only_models():
     return [m.strip() for m in raw.split(",") if m.strip()]
 
 
-def _heavy_hot_lane_ram_floor_gb():
-    return float(os.environ.get("ORCH_HEAVY_OLLAMA_HOT_LANE_RAM_GB", "16"))
-
-
-def _heavy_hot_lane_headroom_gb():
-    return float(os.environ.get("ORCH_HEAVY_OLLAMA_HOT_LANE_HEADROOM_GB", "12"))
-
-
-def _model_ram_gb(model):
-    try:
-        import local_model_slots
-        return local_model_slots.ram_gb(model)
-    except Exception:
-        return 0
-
-
-def _is_heavy_for_hot_lane(model):
-    """Very heavy local models (e.g. codestral:22b) can clamp system RAM and throttle the
-    fleet down to a single lane when they get pulled into real agentic work. Keep them
-    canary/calibration-only by default; only let them into the hot lane when the box
-    clearly has the headroom, or the operator explicitly opts in."""
-    if _truthy("ORCH_TRUST_HEAVY_OLLAMA_HOT_LANE", False):
-        return False
-    need = _model_ram_gb(model)
-    if need < _heavy_hot_lane_ram_floor_gb():
-        return False
-    try:
-        import resource_governor
-        total = resource_governor.total_gb()
-    except Exception:
-        total = None
-    if total is None:
-        return True  # unknown headroom -> stay cautious, canary-only
-    # CRITICAL FIX (2026-07-10): reserve the CONCURRENT LANE budget, not just a flat headroom.
-    # The old check (total < need + 12) let qwen3-coder:30b (24GB) into the hot lane on a 48GB box
-    # because 24+12 < 48 — ignoring that N lanes of node/test work already consume the RAM. Result:
-    # the 30B loaded, crashed free RAM to <1GB, got clamped, reloaded next task = 110 clamp
-    # events/24h + OOM restarts. A heavy single model may only enter the hot lane when it fits
-    # ALONGSIDE the running fleet: total >= need + (lanes * per_task) + floor.
-    lanes = float(os.environ.get("MAX_PARALLEL", "10") or 10)
-    per_task = float(os.environ.get("PER_TASK_GB", "2.0") or 2.0)
-    floor = float(os.environ.get("RAM_FLOOR_GB", "8.0") or 8.0)
-    lane_budget = max(lanes * per_task, _heavy_hot_lane_headroom_gb())
-    return total < (need + lane_budget + floor)
-
-
 def _is_canary_only(candidate):
-    trust_gated = (candidate.get("trust") in ("unverified", "community-claim")
-                   and not _truthy("ORCH_TRUST_COMMUNITY_CLAUDE_OLLAMA", False))
-    if trust_gated:
-        return True
-    return _is_heavy_for_hot_lane(candidate.get("model"))
+    if _truthy("ORCH_TRUST_COMMUNITY_CLAUDE_OLLAMA", False):
+        return False
+    return candidate.get("trust") in ("unverified", "community-claim")
 
 
 def candidates(include_canary_only=False):
