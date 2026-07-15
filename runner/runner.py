@@ -594,7 +594,8 @@ def run_task(t):
         if sig:
             hit = result_cache.lookup(sig)
             if hit:
-                set_state(t["id"], state="DONE", note=f"cache hit: reused {hit.get('branch')}")
+                set_state(t["id"], state="DONE", note=f"cache hit: reused {hit.get('branch')}",
+                          artifact_branch=hit.get("branch") or f"agent/{slug}")
                 record(t, name, slug, kind, "cache", POOL.current(), 0, True, False, "", time.time())
                 return
 
@@ -637,7 +638,8 @@ def run_task(t):
             set_state(t["id"], state="RUNNING", note=f"replaying run {run_id}")
             try:
                 replay.replay(run_id, repo)
-                set_state(t["id"], state="DONE", note=f"replay complete: run {run_id}")
+                set_state(t["id"], state="DONE", note=f"replay complete: run {run_id}",
+                          artifact_branch=f"agent/{slug}")
             except Exception as e:
                 set_state(t["id"], state="BLOCKED", note=f"replay error: {e}")
             return
@@ -650,7 +652,8 @@ def run_task(t):
             set_state(t["id"], state="RUNNING", note=f"rotating {prov}/{kname}")
             result = rotate_keys.rotate(prov, kname, name)
             if result.get("ok"):
-                set_state(t["id"], state="DONE", note=result.get("note", "rotated"))
+                set_state(t["id"], state="DONE", note=result.get("note", "rotated"),
+                          artifact_branch=f"ops/{slug}")
             else:
                 set_state(t["id"], state="BLOCKED", note=result.get("note", "manual rotation needed"))
             return
@@ -1885,7 +1888,8 @@ def run_task(t):
                     f"Integration returned {result}. Keep the same task and branch, fix the root cause, rerun the failing build/test/merge path, and commit.",
                 ):
                     continue
-            set_state(t["id"], state=state_val, confidence=conf_score, note=_note)
+            set_state(t["id"], state=state_val, confidence=conf_score, note=_note,
+                      artifact_branch=branch_ref)
             if result in ("CONFLICT", "TESTFAIL", "BUILDFAIL"):
                 approval(name, "integrate", f"{slug} {result.lower()} on integrate",
                          why=f"could not auto-integrate ({result})", detail=out[-2000:])
@@ -2543,6 +2547,12 @@ _PERIODIC_PIDS = {}  # job_name -> (pid, launch_time)
 # stale-reap threshold scales with how often a job is actually supposed to run, instead of a
 # single hardcoded default that's wildly wrong for fast-cadence jobs (see _is_still_running).
 _JOB_INTERVAL = {job: args for (_key, job, stype, args) in _SCHEDULE if stype == "interval"}
+_JOB_MAX_RUNTIME = {
+    "merge_train.py": int(os.environ.get("ORCH_MERGE_TRAIN_MAX_RUNTIME_S", "7200")),
+    "release_train.py": int(os.environ.get("ORCH_RELEASE_TRAIN_MAX_RUNTIME_S", "7200")),
+    "releasetrain": int(os.environ.get("ORCH_RELEASE_TRAIN_MAX_RUNTIME_S", "7200")),
+    "integration_sweeper.py": int(os.environ.get("ORCH_INTEGRATION_SWEEPER_MAX_RUNTIME_S", "7200")),
+}
 
 
 def _is_still_running(job):
@@ -2583,7 +2593,8 @@ def _reap_stale_periodic(job, expected_interval):
     except OSError:
         del _PERIODIC_PIDS[job]
         return
-    if time.time() - launch_t > expected_interval * 5:
+    max_runtime = _JOB_MAX_RUNTIME.get(job, expected_interval * 5)
+    if time.time() - launch_t > max_runtime:
         try:
             os.kill(pid, 9)
             print(f"[reaper] killed stale periodic child {job} (pid {pid}, ran {int(time.time()-launch_t)}s)")
