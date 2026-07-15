@@ -262,10 +262,7 @@ class TestDecisionEngine(unittest.TestCase):
             [],  # No approved approvals
         ]
 
-        draft = {"draft": "Negotiation draft", "model": "test-model",
-                 "input_tokens": 1, "output_tokens": 1, "cost_usd": 0}
-        with patch.object(decision_engine, "generate_draft", return_value=draft):
-            result = decision_engine.poll_pending()
+        result = decision_engine.poll_pending()
 
         self.assertEqual(result, [])
         mock_insert.assert_not_called()
@@ -293,7 +290,10 @@ class TestDecisionEngine(unittest.TestCase):
         mock_select.side_effect = select_side_effect
         mock_insert.return_value = [{"id": "dec-123"}]
 
-        result = decision_engine.poll_pending()
+        draft = {"draft": "Negotiation draft", "model": "test-model",
+                 "input_tokens": 1, "output_tokens": 1, "cost_usd": 0}
+        with patch.object(decision_engine, "generate_draft", return_value=draft):
+            result = decision_engine.poll_pending()
 
         self.assertEqual(len(result), 1)
         # Note: mock_insert is called multiple times (usage_meter, then decision_processes)
