@@ -2580,15 +2580,36 @@ def _reap_zombie_tasks():
         running = db.select("tasks", {"select": "id,slug,updated_at,account", "state": "eq.RUNNING",
                                        "limit": "100"}) or []
         cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=30)).isoformat()
+        dead_cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+            seconds=int(os.environ.get("ORCH_DEAD_RUNNER_RECLAIM_GRACE_S", "180")))).isoformat()
+        heartbeat_cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+            seconds=int(os.environ.get("FLEET_TTL_S", "180")))).isoformat()
+        live_runner_ids = set()
+        try:
+            heartbeats = db.select("runner_heartbeats", {
+                "select": "runner_id,hostname,last_seen", "last_seen": f"gte.{heartbeat_cutoff}",
+                "order": "last_seen.desc", "limit": "500",
+            }) or []
+            live_runner_ids = {str(h.get("runner_id") or "") for h in heartbeats
+                               if " lane " not in str(h.get("hostname") or "")
+                               and not str(h.get("runner_id") or "").endswith("-scheduler")}
+        except Exception:
+            pass
         reclaimed = 0
         for t in running:
             # COWORK DISPATCH: skip tasks claimed by Cowork sessions — they run in a
             # separate execution context, not as a local subprocess.
             if (t.get("account") or "").startswith("cowork-"):
                 continue
-            if (t.get("updated_at") or "") < cutoff:
+            account = str(t.get("account") or "")
+            dead_runner_claim = (bool(live_runner_ids)
+                                 and bool(re.match(r"^(Mac[.]lan|Mandys-MacBook-Pro[.]local)-[0-9]+$", account))
+                                 and account not in live_runner_ids
+                                 and (t.get("updated_at") or "") < dead_cutoff)
+            if dead_runner_claim or (t.get("updated_at") or "") < cutoff:
                 patch = agentic_repair.repair_patch(
-                    t, "zombie-reaper: stale RUNNING >30min",
+                    t, ("zombie-reaper: expired runner heartbeat" if dead_runner_claim
+                        else "zombie-reaper: stale RUNNING >30min"),
                     category="orphaned-running",
                     directive="The worker died or stopped updating this RUNNING task. Resume the same task from existing branch/worktree/artifacts, finish the implementation, run checks, and commit.")
                 db.update("tasks", {"id": t["id"]}, patch)
