@@ -833,8 +833,13 @@ def _run_for_unlocked(project):
             if manifest:
                 release_manifest.record_gate(manifest["id"], "build", True, command=bcmd,
                                              detail="production build green")
-    except Exception:
-        pass
+    except Exception as e:
+        # A broken/misconfigured build gate is itself a red gate. Failing open
+        # here allowed unverified production commits to reach Vercel.
+        note = f"build gate failed closed: {type(e).__name__}: {e}"
+        _insert_failed_release(project, "build", ahead, release_base_sha, staging_sha, note)
+        _record_release_flow(project, "staging-build-gate-error", prod=prod, ahead=int(ahead), note=note[:300])
+        return {"project": project, "build": "RED", "note": note}
     # Promote only the exact tree that passed copy, QA, and build. Background
     # integration workers may advance staging while expensive gates run; that
     # newer tree belongs in the next release and must never borrow this proof.

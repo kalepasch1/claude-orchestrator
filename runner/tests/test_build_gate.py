@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -38,6 +39,33 @@ class TestBuildGate(unittest.TestCase):
             self.assertEqual(build_gate.detect_build_cmd(d), "pnpm typecheck")
         finally:
             build_gate.shutil.which = orig
+
+    def test_real_build_wins_over_typecheck(self):
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "package.json"), "w") as f:
+            json.dump({"scripts": {"typecheck": "vue-tsc --noEmit", "build": "nuxt build"}}, f)
+        self.assertEqual(build_gate.detect_build_cmd(d), "npm run build")
+
+    def test_vercel_build_command_wins(self):
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "package.json"), "w") as f:
+            json.dump({"scripts": {"build": "nuxt build", "build:vercel": "node scripts/preflight.mjs && nuxt build"}}, f)
+        with open(os.path.join(d, "vercel.json"), "w") as f:
+            json.dump({"buildCommand": "npm run build:vercel"}, f)
+        self.assertEqual(build_gate.detect_build_cmd(d), "npm run build:vercel")
+
+    def test_vercelignore_removes_tracked_build_dependency(self):
+        d = tempfile.mkdtemp()
+        subprocess.run(["git", "init", "-q", d], check=True)
+        os.makedirs(os.path.join(d, "scripts"))
+        with open(os.path.join(d, "scripts", "preflight.mjs"), "w") as f:
+            f.write("export {}\n")
+        with open(os.path.join(d, ".vercelignore"), "w") as f:
+            f.write("scripts/\n")
+        subprocess.run(["git", "add", "."], cwd=d, check=True)
+        removed = build_gate._apply_vercelignore(d)
+        self.assertEqual(removed, ["scripts/preflight.mjs"])
+        self.assertFalse(os.path.exists(os.path.join(d, "scripts", "preflight.mjs")))
 
     def test_dependency_prewarm_uses_npm_when_yarn_missing(self):
         d = tempfile.mkdtemp()

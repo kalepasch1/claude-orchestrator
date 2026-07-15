@@ -4,10 +4,9 @@ build_gate.py - the fix for "merges succeed but every Vercel deploy fails". Befo
 a prod branch, run the project's REAL production build in an isolated worktree. Only branches whose build
 is GREEN are allowed to merge — so build-breaking code can never reach main/master again.
 
-Fast + safe: symlinks the main repo's node_modules into the ephemeral worktree (no reinstall), runs the
-detected build (prefers typecheck when present — catches the TS/Nuxt errors that break Vercel — else the
-full build), with a timeout. Returns (ok, log). Auto-detects build_cmd from package.json and caches it on
-the project row.
+Fast + safe: symlinks the main repo's node_modules into the ephemeral worktree (no reinstall), applies
+.vercelignore to reproduce the uploaded source context, and runs the exact Vercel build command (or the
+real package build) with a timeout. Returns (ok, log). Auto-detects build_cmd and caches it on the project.
 """
 import os, sys, json, subprocess, tempfile, shutil, shlex
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -51,14 +50,31 @@ def _root_npm_cmd_without_package(repo, cmd):
     return cmd.startswith(("npm run ", "npm test", "yarn ", "pnpm ", "npx "))
 
 
+def _vercel_build_cmd(repo, package_root):
+    """Return the exact configured Vercel build command for a package root."""
+    path = os.path.join(package_root, "vercel.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            command = str((json.load(f) or {}).get("buildCommand") or "").strip()
+    except Exception:
+        return ""
+    if not command:
+        return ""
+    rel = os.path.relpath(package_root, repo)
+    return command if rel == "." else f"cd {shlex.quote(rel)} && {command}"
+
+
 def detect_build_cmd(repo):
-    """Prefer a fast typecheck (catches most Vercel build breaks), else the real build."""
+    """Use the exact Vercel command, then the real production build, never only typecheck."""
     roots = dependency_prewarm.package_roots(repo)
     if not roots:
         return os.environ.get("DEFAULT_BUILD_CMD", "")
     for root in roots:
+        vercel_cmd = _vercel_build_cmd(repo, root)
+        if vercel_cmd:
+            return vercel_cmd
         scripts = _load_scripts(root)
-        for s in ("typecheck", "type-check", "tsc", "build"):
+        for s in ("build:vercel", "build", "typecheck", "type-check", "tsc"):
             if s in scripts:
                 return script_cmd(repo, root, s)
         # Nuxt/Next default even without a script.
@@ -89,7 +105,7 @@ def _package_runner(repo):
 def build_cmd_for(project_row, repo):
     cmd = project_row.get("build_cmd")
     detected = detect_build_cmd(repo)
-    if cmd and _root_npm_cmd_without_package(repo, cmd) and detected:
+    if detected and cmd != detected:
         db.update("projects", {"name": project_row.get("name")}, {"build_cmd": detected})
         return detected
     if cmd:
@@ -99,7 +115,36 @@ def build_cmd_for(project_row, repo):
     return detected
 
 
-def run_build(repo, branch, build_cmd, timeout=600):
+def _apply_vercelignore(worktree):
+    """Remove tracked files excluded from Vercel's upload context in the disposable worktree."""
+    removed = []
+    roots = [worktree, *dependency_prewarm.package_roots(worktree)]
+    seen = set()
+    for root in roots:
+        ignore = os.path.join(root, ".vercelignore")
+        if not os.path.isfile(ignore) or ignore in seen:
+            continue
+        seen.add(ignore)
+        result = subprocess.run(
+            ["git", "ls-files", "-ci", "--exclude-from", ignore],
+            cwd=root, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"could not evaluate {os.path.relpath(ignore, worktree)}: {result.stderr.strip()}")
+        for rel in result.stdout.splitlines():
+            path = os.path.normpath(os.path.join(root, rel))
+            if not (path == worktree or path.startswith(worktree + os.sep)):
+                raise RuntimeError(f"unsafe Vercel ignore path: {rel}")
+            if os.path.isfile(path) or os.path.islink(path):
+                os.unlink(path)
+                removed.append(os.path.relpath(path, worktree))
+            elif os.path.isdir(path):
+                shutil.rmtree(path)
+                removed.append(os.path.relpath(path, worktree))
+    return sorted(set(removed))
+
+
+def run_build(repo, branch, build_cmd, timeout=900, vercel_context=True):
     """Green-build check of `branch` in an ephemeral worktree. Returns (ok, log)."""
     if not build_cmd:
         return True, "no build_cmd (skipped)"     # nothing to check -> don't block
@@ -114,9 +159,11 @@ def run_build(repo, branch, build_cmd, timeout=600):
             return False, "could not create build worktree"
         # Reuse warmed deps/env for the root and nested package apps.
         dependency_prewarm.link_shared_runtime(repo, tmp)
+        removed = _apply_vercelignore(tmp) if vercel_context else []
         r = subprocess.run(["bash", "-lc", build_cmd], cwd=tmp, capture_output=True, text=True, timeout=timeout)
         ok = r.returncode == 0
-        log = ((r.stdout or "")[-5000:] + "\n" + (r.stderr or "")[-5000:]).strip()
+        context = f"Vercel context removed {len(removed)} tracked file(s)"
+        log = (context + "\n" + (r.stdout or "")[-5000:] + "\n" + (r.stderr or "")[-5000:]).strip()
         return ok, log
     except subprocess.TimeoutExpired:
         return False, f"build timed out (>{timeout}s)"
