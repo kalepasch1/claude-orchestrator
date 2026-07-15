@@ -98,19 +98,20 @@ class TestRepoLock(unittest.TestCase):
             self.assertGreaterEqual(elapsed, 0.3, "blocking hold() should wait for the holder to release")
         holder.join(timeout=5)
 
-    def test_falls_back_to_unlocked_when_dir_uncreatable(self):
+    def test_fails_closed_when_dir_uncreatable(self):
         # point at a path that cannot be created as a directory (a file, not a dir)
         bad = os.path.join(self.lock_dir, "not_a_dir")
         with open(bad, "w") as f:
             f.write("x")
         os.environ["ORCH_REPO_LOCK_DIR"] = os.path.join(bad, "nested")
         import importlib
-        importlib.reload(repo_lock)
-        with repo_lock.hold("/some/repo") as got:
-            self.assertTrue(got, "fail-soft: unavailable lock infra should still yield True and proceed")
-        # restore
-        os.environ["ORCH_REPO_LOCK_DIR"] = self.lock_dir
-        importlib.reload(repo_lock)
+        try:
+            importlib.reload(repo_lock)
+            with repo_lock.hold("/some/repo") as got:
+                self.assertFalse(got, "unavailable lock infra must block shared git mutation")
+        finally:
+            os.environ["ORCH_REPO_LOCK_DIR"] = self.lock_dir
+            importlib.reload(repo_lock)
 
 
 if __name__ == "__main__":
