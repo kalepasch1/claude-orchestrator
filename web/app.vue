@@ -1,5 +1,5 @@
 <template>
-  <div v-if="!user" class="auth-page"><div class="auth-card"><div class="brand-glyph">M</div><div class="eyebrow">Madeus Orchestrator</div><h1>Turn intent into shipped work.</h1><p>One command surface for research, design, engineering, verification, and release.</p><div v-if="authError" class="inline-error">{{ authError }}</div><button :disabled="signingIn" class="primary-button" @click="signIn">{{ signingIn ? 'Opening workspace…' : 'Continue with Google' }} <span>↗</span></button><small>Your identity controls organization access and delegated capabilities.</small></div><div class="auth-aside"><span>Outcome-first orchestration</span><blockquote>“Describe the result. Madeus assembles and governs the path.”</blockquote><div><b>Adaptive routing</b><b>Independent QA</b><b>Verified release</b></div></div></div>
+  <PublicLanding v-if="!user" :signing-in="signingIn" :auth-error="authError" @sign-in="signIn" />
   <template v-else><NuxtLayout><NuxtPage /></NuxtLayout><PreActionGuidance /></template>
 </template>
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { deriveDecisionBrief } from '~/utils/decisionBrief'
 definePageMeta({ layout: 'default', alias: ['/index'] })
 
 const supabase = useSupabaseClient<any>()
@@ -179,8 +180,8 @@ watch(user, async value => { if (value) await loadAll() })
         <div class="section-heading"><div><span class="eyebrow">Your decision</span><h2>{{ operatorApprovals.length }} action{{ operatorApprovals.length === 1 ? '' : 's' }} only you can authorize</h2></div><NuxtLink to="/sign-offs">Review all ↗</NuxtLink></div>
         <div class="decision-list">
           <article v-for="approval in operatorApprovals" :key="approval.id" class="decision-row">
-            <div><div class="decision-meta"><span>{{ approval.kind || 'Approval' }}</span><span>{{ approval.project || 'Portfolio' }}</span><time>{{ ago(approval.created_at) }}</time></div><h3>{{ approval.title }}</h3><p>{{ approval.why || 'A protected action needs explicit authorization.' }}</p></div>
-            <div class="decision-actions"><button class="secondary-button" @click="decide(approval.id, 'denied')">Not now</button><button class="primary-button" @click="decide(approval.id, 'approved')">Approve</button></div>
+            <div><div class="decision-meta"><span>{{ approval.kind || 'Approval' }}</span><span>{{ approval.project || 'Portfolio' }}</span><time>{{ ago(approval.created_at) }}</time></div><h3>{{ approval.title }}</h3><p>{{ deriveDecisionBrief(approval).plainLanguage }}</p><p><b>{{ deriveDecisionBrief(approval).recommendation }}</b> · {{ deriveDecisionBrief(approval).confidence }}% evidence confidence · {{ deriveDecisionBrief(approval).reversibility.replaceAll('_', ' ') }}</p></div>
+            <div class="decision-actions"><NuxtLink class="primary-button" to="/sign-offs">Review decision brief</NuxtLink></div>
           </article>
         </div>
         <p v-if="approvalError" class="inline-error">{{ approvalError }}</p>

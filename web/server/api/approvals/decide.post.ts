@@ -1,9 +1,10 @@
 import { serviceClient } from '../../utils/fleetSupabase'
+import { deriveDecisionBrief } from '../../../utils/decisionBrief'
 
 type DecisionStatus = 'approved' | 'denied'
 
 export default defineEventHandler(async (event) => {
-  const body = await readBody<{ id?: string; status?: DecisionStatus; approver?: string }>(event)
+  const body = await readBody<{ id?: string; status?: DecisionStatus; approver?: string; authorizationBoundaryAcknowledged?: boolean }>(event)
   const id = body?.id
   const status = body?.status
   const approver = String(body?.approver || 'dashboard').trim() || 'dashboard'
@@ -19,6 +20,14 @@ export default defineEventHandler(async (event) => {
     .maybeSingle()
   if (readError) throw createError({ statusCode: 500, message: readError.message })
   if (!card) throw createError({ statusCode: 404, message: 'approval not found' })
+
+  const brief = deriveDecisionBrief(card)
+  if (status === 'approved' && brief.material && body.authorizationBoundaryAcknowledged !== true) {
+    throw createError({
+      statusCode: 428,
+      message: 'Material approval requires explicit acknowledgement that authorization is not execution or completion.',
+    })
+  }
 
   const now = new Date().toISOString()
   let patch: Record<string, any>
