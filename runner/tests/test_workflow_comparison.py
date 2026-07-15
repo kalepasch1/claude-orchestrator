@@ -33,6 +33,10 @@ class WorkflowComparisonTest(unittest.TestCase):
         self.assertEqual(1, result["orchestrator_native"]["deployed"])
         self.assertEqual(0.5, result["orchestrator_native"]["pass_rate"])
 
+    def test_time_parser_handles_postgrest_timestamps(self):
+        parsed = workflow_comparison._parse_time("2026-07-15T07:06:10.037319+00:00")
+        self.assertEqual(7, parsed.hour)
+
 
 if __name__ == "__main__":
     unittest.main()

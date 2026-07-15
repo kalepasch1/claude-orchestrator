@@ -65,10 +65,15 @@ def attribute_release(project, repo, release, database=None):
     manifest_slugs = {str(t.get("slug") or "").lower() for t in manifest_tasks if t.get("slug")}
     if not messages and not manifest_tasks:
         return {"attributed": 0, "reason": "no-release-commit-evidence"}
-    outcomes = database.select("outcomes", {"select": "id,task_id,slug,model,project,integrated,created_at",
-                                             "project": f"eq.{project}",
-                                             "order": "created_at.desc",
-                                             "limit": "5000"}) or []
+    outcome_query = {"select": "id,task_id,slug,model,project,integrated,created_at",
+                     "project": f"eq.{project}", "order": "created_at.desc", "limit": "5000"}
+    # An outcome cannot have caused a release that predates it.  Without this
+    # upper bound a retried slug can inherit an older deployment, reversing the
+    # measured winner between execution workflows.
+    release_time = release.get("deployed_at") or release.get("created_at")
+    if release_time:
+        outcome_query["created_at"] = f"lte.{release_time}"
+    outcomes = database.select("outcomes", outcome_query) or []
     unmatched_ids = [str(o.get("task_id")) for o in outcomes
                      if o.get("task_id") and str(o.get("slug") or "").lower() not in messages]
     tasks = {}

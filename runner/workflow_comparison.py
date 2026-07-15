@@ -82,15 +82,6 @@ def _outcomes(since):
         rows = db.select("outcomes", dict(common, select=(
             "model,project,kind,slug,integrated,tests_passed,usd,wall_ms,"
             "attempts,created_at"))) or []
-    # Exact attribution is outcome-id based.  Older deployments of the outcomes
-    # view do not expose id; slug-only fallback would incorrectly credit a new
-    # retry with an older release of the same slug, so deliberately do not use it.
-    try:
-        import release_attribution
-        if rows and all(row.get("id") is not None for row in rows):
-            rows = release_attribution.apply(rows, authoritative=True)
-    except Exception:
-        pass
     return rows
 
 
@@ -106,7 +97,14 @@ def _task_state(since):
     return {k: dict(v) for k, v in out.items()}
 
 
-def _release_participation(since):
+def _parse_time(value):
+    try:
+        return datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+
+def _release_participation(since, outcomes):
     """Count successful releases containing exact links from each workflow."""
     releases = db.select("releases", {
         "select": "id,project,deploy_status,deployed_at,created_at",
@@ -116,14 +114,24 @@ def _release_participation(since):
              if str(r.get("deploy_status") or "").lower() in
              {"success", "deployed", "ready", "green"}}
     participants = {release_id: set() for release_id in green}
+    by_outcome = {str(row.get("id")): row for row in outcomes if row.get("id") is not None}
+    deployed_ids = set()
     try:
         import release_attribution
         with open(release_attribution._path()) as handle:
             for line in handle:
                 row = json.loads(line)
                 release_id = str(row.get("release_id") or "")
-                if release_id in participants:
-                    participants[release_id].add(workflow_for_outcome(row))
+                outcome = by_outcome.get(str(row.get("outcome_id")))
+                if release_id not in participants or not outcome:
+                    continue
+                release_time = _parse_time(green[release_id].get("deployed_at") or
+                                           green[release_id].get("created_at"))
+                outcome_time = _parse_time(outcome.get("created_at"))
+                if release_time and outcome_time and outcome_time > release_time:
+                    continue
+                participants[release_id].add(workflow_for_outcome(outcome))
+                deployed_ids.add(str(row.get("outcome_id")))
     except Exception:
         pass
     by_workflow = {
@@ -136,15 +144,18 @@ def _release_participation(since):
         "cowork_participating_releases": by_workflow["cowork"],
         "native_participating_releases": by_workflow["orchestrator_native"],
         "mixed_workflow_releases": sum(len(lanes) > 1 for lanes in participants.values()),
-    }
+    }, deployed_ids
 
 
 def run(hours=WINDOW_H):
     end = datetime.datetime.now(datetime.timezone.utc)
     start = end - datetime.timedelta(hours=hours)
     since = start.isoformat()
-    outcomes = summarize_outcomes(_outcomes(since), hours)
-    releases = _release_participation(since)
+    outcome_rows = _outcomes(since)
+    releases, deployed_ids = _release_participation(since, outcome_rows)
+    for row in outcome_rows:
+        row["deployed"] = str(row.get("id")) in deployed_ids
+    outcomes = summarize_outcomes(outcome_rows, hours)
     payload = {
         "window_start": since, "window_end": end.isoformat(), "hours": hours,
         **outcomes, "task_state_transitions": _task_state(since),
