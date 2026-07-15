@@ -46,13 +46,26 @@ export default defineEventHandler(async event => {
   const xFrame = String(response.headers.get('x-frame-options') || '').toLowerCase()
   const policy = String(response.headers.get('content-security-policy') || '')
   const frameAllowed = xFrame !== 'deny' && !(xFrame === 'sameorigin' && parentOrigin !== targetOrigin) && ancestorAllows(policy, parentOrigin, targetOrigin)
+  const checkedAt = new Date().toISOString()
+  const gatewayUrl = `/api/previews/gateway/${encodeURIComponent(app)}/`
   return {
     app,
     available: true,
     embeddable: frameAllowed,
     url: frameAllowed ? finalUrl : null,
+    gateway_url: frameAllowed ? null : gatewayUrl,
     external_url: finalUrl,
     mode: 'verified-production',
-    reason: frameAllowed ? 'Verified live production alias.' : 'The application is live but its security policy requires opening it in a separate tab.',
+    reason: frameAllowed ? 'Verified live production alias.' : 'The application is live. Madeus is rendering it through the authenticated, read-only preview gateway because its native frame policy blocks direct embedding.',
+    proof: {
+      status: response.status,
+      checkedAt,
+      durableAlias: true,
+      frameAllowed,
+      gatewayReady: !frameAllowed,
+      deploymentId: response.headers.get('x-vercel-id'),
+      cache: response.headers.get('x-vercel-cache'),
+      contentType: response.headers.get('content-type'),
+    },
   }
 })

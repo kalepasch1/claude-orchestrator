@@ -129,6 +129,10 @@ const selectedModel = ref('claude-sonnet-4-6')
 const selectedKind = ref('build')
 const selectedMode = ref('build')
 const selectedProject = ref('')
+const { context: persistentContext, hydrated: contextHydrated } = usePersistentProjectContext(slug)
+const advancedOpen = computed({ get: () => persistentContext.advanced, set: value => { persistentContext.advanced = value } })
+const successCriteria = computed({ get: () => persistentContext.successCriteria, set: value => { persistentContext.successCriteria = value } })
+const outcomeConstraints = computed({ get: () => persistentContext.constraints, set: value => { persistentContext.constraints = value } })
 const projects = ref<any[]>([])
 const recentTasks = ref<any[]>([])
 const sliders = ref<Record<string, number>>({})
@@ -176,8 +180,9 @@ async function runDesignTool() {
 const iframeLoaded = ref(false)
 const iframeKey = ref(0)
 const previewLoading = ref(true)
-const previewTarget = ref<{ available: boolean; embeddable: boolean; url: string | null; external_url: string | null; reason: string; mode?: string } | null>(null)
-const previewUrl = computed(() => previewTarget.value?.url || '')
+const previewTarget = ref<{ available: boolean; embeddable: boolean; url: string | null; gateway_url?: string | null; external_url: string | null; reason: string; mode?: string; proof?: any } | null>(null)
+const previewUrl = computed(() => previewTarget.value?.url || previewTarget.value?.gateway_url || '')
+const usingPreviewGateway = computed(() => Boolean(previewTarget.value?.gateway_url && !previewTarget.value?.url))
 async function authedFetch<T = any>(url: string, options: any = {}): Promise<T> {
   const { data: { session } } = await supabase.auth.getSession()
   return $fetch<T>(url, { ...options, headers: { ...(options.headers || {}), ...(session?.access_token ? { authorization: `Bearer ${session.access_token}` } : {}) } })
@@ -267,6 +272,8 @@ const workspaceState = computed(() => ({
   activeTab: activeTab.value, selectedBranch: selectedBranch.value,
   sliders: { ...sliders.value }, terminalOutput: terminalOutput.value,
   selectedModel: selectedModel.value, selectedKind: selectedKind.value, selectedMode: selectedMode.value,
+  selectedProject: selectedProject.value, advanced: advancedOpen.value,
+  successCriteria: successCriteria.value, constraints: outcomeConstraints.value,
 }))
 
 async function autoSave() {
@@ -300,6 +307,10 @@ async function loadDraft() {
       if (c.selectedModel) selectedModel.value = c.selectedModel
       if (c.selectedKind) selectedKind.value = c.selectedKind
       if (c.selectedMode) selectedMode.value = c.selectedMode
+      if (c.selectedProject && projects.value.some(project => project.id === c.selectedProject)) selectedProject.value = c.selectedProject
+      if (typeof c.advanced === 'boolean') advancedOpen.value = c.advanced
+      if (typeof c.successCriteria === 'string') successCriteria.value = c.successCriteria
+      if (typeof c.constraints === 'string') outcomeConstraints.value = c.constraints
       lastSavedAt.value = new Date(data.updated_at).toLocaleTimeString()
       autoSaveStatus.value = 'saved'
     }
@@ -323,6 +334,10 @@ async function deployToProd() {
   deployLoading.value = true; deployStatus.value = 'preflight'; deployLog.value = []
   try {
     deployLog.value.push('Running pre-flight checks...')
+    const embedAudit: any = await authedFetch('/api/previews/audit')
+    const embedContract = embedAudit.checks?.find((check: any) => check.app === selectedApp.value)
+    if (!embedContract?.gatewayReady) throw new Error('The live-app preview contract is unhealthy. Release stopped before merge.')
+    deployLog.value.push(`✓ Live-app contract passing (${embedContract.nativeEmbed ? 'native embed' : 'secure gateway'})`)
     await new Promise(r => setTimeout(r, 800))
     deployLog.value.push('✓ Branch ' + selectedBranch.value + ' is clean')
     deployLog.value.push('✓ All tests passing')
@@ -346,7 +361,7 @@ async function deployToProd() {
     await new Promise(r => setTimeout(r, 600))
     deployLog.value.push('✓ Release: ' + taskSlug)
     deployLog.value.push('✓ Deploy task queued')
-    deployLog.value.push('✓ Merged to main')
+    deployLog.value.push('✓ Release train accepted the verified deployment request')
     deployStatus.value = 'success'
     loadDeploys(); loadData(); refreshInsights()
   } catch (e: any) {
@@ -545,7 +560,7 @@ async function runCommand() {
   if (!terminalPrompt.value.trim()) return
   terminalLoading.value = true; terminalOutput.value = ''
   try {
-    const request = `${terminalPrompt.value.trim()}\n\nWorkspace context: ${selectedApp.value}. Capability: ${cap.value.name}. Treat branch, model, vendor, research depth, and execution mode as automatic routing decisions.`
+    const request = [terminalPrompt.value.trim(), successCriteria.value ? `Success criteria: ${successCriteria.value}` : '', outcomeConstraints.value ? `Constraints: ${outcomeConstraints.value}` : '', `Workspace context: ${selectedApp.value}. Capability: ${cap.value.name}. Treat branch, model, vendor, research depth, and execution mode as automatic routing decisions.`].filter(Boolean).join('\n\n')
     const result: any = await authedFetch('/api/tasks/intake', { method: 'POST', body: { intent: request, project_id: selectedProject.value || undefined } })
     terminalOutput.value = '✓ Objective accepted: ' + result.task.slug + '\n  App: ' + result.project.name + '\n  Routing: Autopilot · triage · Colosseum · independent QA · verified release'
     terminalPrompt.value = ''; routeInfo.value = ''; loadData()
@@ -553,9 +568,17 @@ async function runCommand() {
   finally { terminalLoading.value = false }
 }
 
-onMounted(async () => { await loadData(); await loadDraft(); await loadDeploys(); await loadConnectors(); await resolvePreview(); refreshInsights() })
+onMounted(async () => { await loadData(); if (persistentContext.appId && APPS.some(app => app.id === persistentContext.appId)) selectedApp.value = persistentContext.appId; if (persistentContext.projectId && projects.value.some(project => project.id === persistentContext.projectId)) selectedProject.value = persistentContext.projectId; await loadDraft(); await loadDeploys(); await loadConnectors(); await resolvePreview(); refreshInsights() })
+watch(contextHydrated, ready => {
+  if (!ready) return
+  if (persistentContext.appId && APPS.some(app => app.id === persistentContext.appId)) selectedApp.value = persistentContext.appId
+  if (persistentContext.projectId && projects.value.some(project => project.id === persistentContext.projectId)) selectedProject.value = persistentContext.projectId
+})
 watch(user, u => { if (u) { loadData(); loadDraft(); loadDeploys(); loadConnectors(); resolvePreview() } })
 watch(selectedApp, () => { loadDraft(); loadDeploys(); refreshInsights(); resolvePreview() })
+watch(selectedApp, value => { if (contextHydrated.value) persistentContext.appId = value })
+watch(selectedProject, value => { if (contextHydrated.value) persistentContext.projectId = value })
+watch(cap, value => { if (contextHydrated.value) persistentContext.capability = value.name })
 watch(selectedBranch, resolvePreview)
 watch(slug, () => { refreshInsights() })
 </script>
@@ -626,7 +649,7 @@ watch(slug, () => { refreshInsights() })
               </div>
             </div>
             <div class="flex items-center gap-2">
-              <select v-model="selectedBranch" class="bg-white border border-gray-200 rounded px-2 py-1 text-[10px] text-gray-600 font-mono">
+              <select v-if="advancedOpen" v-model="selectedBranch" class="bg-white border border-gray-200 rounded px-2 py-1 text-[10px] text-gray-600 font-mono">
                 <option value="dev">dev</option>
                 <option :value="orchBranch">{{ orchBranch }}</option>
                 <option :value="'feature/'+selectedApp+'-redesign'">feature/{{ selectedApp }}-redesign</option>
@@ -634,7 +657,7 @@ watch(slug, () => { refreshInsights() })
                 <option :value="'hotfix/'+selectedApp">hotfix/{{ selectedApp }}</option>
                 <option value="main" class="font-bold">main (prod)</option>
               </select>
-              <button @click="showDeployPanel = !showDeployPanel"
+              <button v-if="advancedOpen" @click="showDeployPanel = !showDeployPanel"
                 class="px-3 py-1 text-[10px] rounded font-medium transition-colors"
                 :class="showDeployPanel ? 'bg-emerald-700 text-white' : 'bg-emerald-600 text-white hover:bg-emerald-700'">
                 {{ showDeployPanel ? '▼ Merge' : '🚢 Merge → Prod' }}
@@ -642,10 +665,11 @@ watch(slug, () => { refreshInsights() })
               <button @click="showInsights = !showInsights" class="px-2 py-1 text-[10px] border rounded" :class="showInsights ? 'bg-blue-50 text-blue-700 border-blue-200' : 'text-gray-500 border-gray-200'">
                 {{ showInsights ? 'Hide' : 'Show' }} CADE
               </button>
+              <button @click="advancedOpen = !advancedOpen" class="px-2 py-1 text-[10px] border rounded" :class="advancedOpen ? 'bg-gray-900 text-white border-gray-900' : 'text-gray-500 border-gray-200'">{{ advancedOpen ? 'Basic view' : 'Advanced' }}</button>
             </div>
           </div>
           <!-- INLINE DEPLOY PANEL (expandable) -->
-          <div v-if="showDeployPanel" class="border-b border-gray-200 bg-emerald-50/30 px-4 py-3 flex-shrink-0">
+          <div v-if="showDeployPanel && advancedOpen" class="border-b border-gray-200 bg-emerald-50/30 px-4 py-3 flex-shrink-0">
             <div class="flex items-center justify-between">
               <div class="flex items-center gap-3">
                 <span class="text-xs text-gray-600">Deploy</span>
@@ -690,14 +714,15 @@ watch(slug, () => { refreshInsights() })
                 <button @click="reloadIframe" class="text-gray-400 hover:text-gray-600 px-1">↻</button>
                 <a v-if="previewTarget?.external_url" :href="previewTarget.external_url" target="_blank" rel="noopener" class="text-gray-400 hover:text-gray-600 px-1">↗</a>
               </div>
+              <PreviewProofRibbon :proof="previewTarget?.proof" :gateway="usingPreviewGateway" :loading="previewLoading" />
               <div class="relative" style="height: 45vh; min-height: 280px;">
-                <div v-if="previewLoading || (previewTarget?.embeddable && !iframeLoaded)" class="absolute inset-0 bg-white flex items-center justify-center z-10">
+                <div v-if="previewLoading || (previewUrl && !iframeLoaded)" class="absolute inset-0 bg-white flex items-center justify-center z-10">
                   <div class="text-center space-y-2">
                     <div class="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
                     <p class="text-xs text-gray-400">Verifying {{ APPS.find(a => a.id === selectedApp)?.name }}...</p>
                   </div>
                 </div>
-                <div v-else-if="!previewTarget?.embeddable" class="absolute inset-0 flex items-center justify-center bg-white p-8">
+                <div v-else-if="!previewUrl" class="absolute inset-0 flex items-center justify-center bg-white p-8">
                   <div class="max-w-md text-center">
                     <div class="mx-auto grid h-10 w-10 place-items-center rounded-xl bg-emerald-50 text-emerald-700">↗</div>
                     <h3 class="mt-4 text-sm font-semibold text-gray-900">{{ previewTarget?.available ? 'Live app verified' : 'Preview temporarily unavailable' }}</h3>
@@ -715,6 +740,7 @@ watch(slug, () => { refreshInsights() })
                   @load="onIframeLoad"
                   class="w-full h-full border-0"
                   allow="clipboard-read; clipboard-write"
+                  sandbox="allow-forms allow-modals allow-popups allow-scripts allow-downloads"
                   referrerpolicy="no-referrer-when-downgrade"
                 />
               </div>
@@ -780,26 +806,8 @@ watch(slug, () => { refreshInsights() })
                 <div v-if="!insightsForActive.length" class="rounded-xl border border-dashed border-gray-200 bg-white p-6 text-center text-[11px] text-gray-400">No actionable guidance in this category yet.</div>
               </div>
 
-              <div class="sticky bottom-0 border-t border-gray-200 bg-white shadow-[0_-8px_24px_rgba(15,23,42,.06)]">
-                <div class="flex items-center justify-between border-b border-gray-100 px-3 py-2">
-                  <div>
-                    <div class="text-[9px] font-semibold uppercase tracking-[0.14em] text-blue-600">Prompt Madeus</div>
-                    <div class="mt-0.5 text-[10px] text-gray-500">Describe the outcome. Routing stays automatic.</div>
-                  </div>
-                  <span v-if="routeInfo" class="rounded-full bg-blue-50 px-2 py-0.5 text-[9px] text-blue-700">{{ routeInfo }}</span>
-                </div>
-                <div class="px-3 py-3">
-                  <div v-if="terminalOutput" class="mb-2 max-h-20 overflow-y-auto whitespace-pre-wrap rounded-lg bg-emerald-50 px-2.5 py-2 text-[10px] leading-4 text-emerald-800">{{ terminalOutput }}</div>
-                  <div class="flex items-center gap-2 rounded-xl border border-gray-200 bg-gray-50 px-2.5 py-2 focus-within:border-blue-400 focus-within:bg-white focus-within:ring-2 focus-within:ring-blue-100">
-                    <span class="text-blue-600">→</span>
-                    <textarea v-model="terminalPrompt" @keydown.meta.enter.prevent="runCommand" @keydown.ctrl.enter.prevent="runCommand" rows="2" placeholder="What should Madeus create, improve, or evaluate?" class="min-w-0 flex-1 resize-none bg-transparent text-[11px] leading-4 text-gray-900 outline-none placeholder-gray-400"></textarea>
-                    <button @click="runCommand" :disabled="terminalLoading || !terminalPrompt.trim()" class="rounded-lg bg-gray-900 px-3 py-1.5 text-[10px] font-semibold text-white hover:bg-black disabled:opacity-35">{{ terminalLoading ? '…' : 'Run' }}</button>
-                  </div>
-                  <div class="mt-1.5 flex items-center justify-between text-[9px] text-gray-400">
-                    <span>⌘↵ to execute</span><span>Colosseum · triage · QA · release</span>
-                  </div>
-                </div>
-              </div>
+              <div v-if="terminalOutput" class="mx-3 mb-2 max-h-20 overflow-y-auto whitespace-pre-wrap rounded-lg bg-emerald-50 px-2.5 py-2 text-[10px] leading-4 text-emerald-800">{{ terminalOutput }}</div>
+              <OutcomeCanvas v-model="terminalPrompt" v-model:successCriteria="successCriteria" v-model:constraints="outcomeConstraints" v-model:advanced="advancedOpen" :app-name="APPS.find(a => a.id === selectedApp)?.name || selectedApp" :capability="cap.name" :busy="terminalLoading" @submit="runCommand" />
             </aside>
             </div>
 
@@ -811,7 +819,7 @@ watch(slug, () => { refreshInsights() })
                   <h3 class="mt-1 text-base font-semibold text-gray-900">Measure, configure, and verify {{ cap.name }}</h3>
                   <p class="mt-1 text-xs text-gray-500">Supporting metrics and controls live below the app-and-action workbench so they add context without interrupting execution.</p>
                 </div>
-                <button @click="showConfig = !showConfig" class="shrink-0 rounded-lg border border-gray-200 bg-white px-3 py-2 text-[10px] font-semibold text-gray-700 hover:bg-gray-50">{{ showConfig ? 'Hide tuning' : 'Configure capability' }}</button>
+                <button v-if="advancedOpen" @click="showConfig = !showConfig" class="shrink-0 rounded-lg border border-gray-200 bg-white px-3 py-2 text-[10px] font-semibold text-gray-700 hover:bg-gray-50">{{ showConfig ? 'Hide tuning' : 'Configure capability' }}</button>
               </div>
               <!-- Design domain metrics -->
               <div v-if="cap.domain === 'product-design'" class="space-y-4">

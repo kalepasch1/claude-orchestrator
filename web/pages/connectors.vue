@@ -45,6 +45,8 @@ onMounted(load)
 
       <section class="trust-strip"><b>Secure by design</b><span>Provider consent</span><span>Minimum scopes</span><span>Encrypted credentials</span><span>Revocable access</span><span>Audited use</span></section>
 
+      <ConnectorUnlockGraph v-if="!loading && !error" :connectors="connectors" />
+
       <div class="toolbar">
         <label class="search"><span>⌕</span><input v-model="query" type="search" placeholder="Search tools, models, and capabilities…"></label>
         <div class="category-list"><button v-for="item in categories" :key="item" :class="{ active: category === item }" @click="category = item">{{ item }}</button></div>
