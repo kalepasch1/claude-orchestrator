@@ -153,6 +153,30 @@ def test_minimal_commit_extracts_only_artifact_files_onto_fresh_base(tmp_path):
     assert git(repo, "show", "agent/task:noise.txt") == "base"
 
 
+def test_minimal_commit_preserves_all_commits_when_artifact_is_branch_tip(tmp_path):
+    repo = init_repo(tmp_path)
+    (repo / "base.txt").write_text("base\n")
+    git(repo, "add", "."); git(repo, "commit", "-m", "base")
+    base = git(repo, "rev-parse", "HEAD")
+    base_branch = git(repo, "branch", "--show-current")
+    git(repo, "switch", "-c", "agent/multi")
+    (repo / "one.txt").write_text("one\n")
+    git(repo, "add", "one.txt"); git(repo, "commit", "-m", "one")
+    (repo / "two.txt").write_text("two\n")
+    git(repo, "add", "two.txt"); git(repo, "commit", "-m", "two")
+    tip = git(repo, "rev-parse", "HEAD")
+    git(repo, "switch", base_branch)
+
+    result = minimal_commit.extract(
+        str(repo), "agent/multi", base, {"slug": "multi", "artifact_commit": tip}
+    )
+
+    assert result["ok"], result
+    assert result["files"] == ["one.txt", "two.txt"]
+    assert git(repo, "show", "agent/multi:one.txt") == "one"
+    assert git(repo, "show", "agent/multi:two.txt") == "two"
+
+
 def test_accelerators_are_wired_into_delivery_paths():
     release_source = open(release_train.__file__, encoding="utf-8").read()
     dispatch_source = open(parallel_dispatch.__file__, encoding="utf-8").read()
