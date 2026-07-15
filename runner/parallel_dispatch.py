@@ -41,7 +41,10 @@ _CLI_ONLY_CODERS = frozenset({"aider", "cursor", "copilot", "cline"})
 _CLI_ONLY_KINDS = frozenset({"replay"})
 
 # Slug prefixes that require CLI execution
-_CLI_ONLY_SLUG_PREFIXES = ("ROTATE_KEY:",)
+_CLI_ONLY_SLUG_PREFIXES = (
+    "ROTATE_KEY:", "qafix-", "relfix-", "buildfix-", "deployfix-",
+    "copyfix-", "recover-missing-branch-",
+)
 
 
 def _normalized_swarm_model(provider: str, model: str, task: dict, registry: dict) -> tuple:
@@ -150,9 +153,15 @@ def _is_api_eligible(task: dict) -> bool:
         kind = str(task.get("kind") or "").lower()
         if kind in _CLI_ONLY_KINDS:
             return False
+        slug = str(task.get("slug") or "")
+        safe_fast_kind = kind in {"mechanical", "chore", "docs", "cleanup", "test", "canary"}
+        safe_canary = slug.startswith("secondary-flow-live-canary-") or slug.startswith("canary-")
+        if (not safe_fast_kind and not safe_canary
+                and os.environ.get("ORCH_SWARM_COMPLEX_ENABLED", "false").lower()
+                not in ("1", "true", "yes", "on")):
+            return False
 
         # Check slug prefixes
-        slug = str(task.get("slug") or "")
         for prefix in _CLI_ONLY_SLUG_PREFIXES:
             if slug.startswith(prefix):
                 return False
