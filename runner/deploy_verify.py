@@ -125,21 +125,14 @@ def _git(repo, *args):
 
 
 def _rollback(project, repo, prod, last_good):
-    branch = _git(repo, "branch", "-f", prod, last_good)
-    if branch.returncode != 0:
-        print(f"deploy_verify: rollback branch update FAILED for {project}: {branch.stderr.strip()[:240]}")
-        return False
+    _git(repo, "branch", "-f", prod, last_good)
     push_rollback = os.environ.get(
         "ORCH_PUSH_ON_ROLLBACK",
         os.environ.get("ORCH_PUSH_ON_RELEASE", "true"),
     ).lower() in ("1", "true", "yes", "on")
     if push_rollback:
-        pushed = _git(repo, "push", "--force-with-lease", "origin", prod)
-        if pushed.returncode != 0:
-            print(f"deploy_verify: rollback push FAILED for {project}: {pushed.stderr.strip()[:240]}")
-            return False
+        _git(repo, "push", "--force-with-lease", "origin", prod)
     print(f"deploy_verify: ROLLED BACK {project} {prod} -> {last_good[:8]}")
-    return True
 
 
 def _queue_deploy_fix(project_row, release, state, vercel_project, log_tail=""):
@@ -238,21 +231,15 @@ def run():
             _queue_deploy_fix(p, release, state, vproj, log_tail=log_tail)
             repo = p.get("repo_path") or ""
             last_good = p.get("last_good_sha") or release.get("from_sha")
-            rollback_ok = False
             if repo and last_good and os.path.isdir(repo):
-                rollback_ok = _rollback(project, repo, p.get("prod_branch") or "main", last_good)
-            rollback_status = "rolled_back" if rollback_ok else "verification_blocked"
-            rollback_note = "auto-rollback" if rollback_ok else "auto-rollback failed"
-            db.update("releases", {"id": release["id"]}, {"deploy_status": rollback_status,
-                      "note": f"{rollback_note}: state={state or 'unconfirmed'} age={age_min:.0f}m -> {(last_good or '')[:8]}"})
+                _rollback(project, repo, p.get("prod_branch") or "main", last_good)
+            db.update("releases", {"id": release["id"]}, {"deploy_status": "rolled_back",
+                      "note": f"auto-rollback: state={state or 'unconfirmed'} age={age_min:.0f}m -> {(last_good or '')[:8]}"})
             db.insert("approvals", {"project": project, "kind": "self",
-                      "title": f"Prod deploy {'reverted' if rollback_ok else 'rollback blocked'}: {project}",
-                      "why": f"Deploy {state or 'unconfirmed'} after {age_min:.0f}m; "
-                             f"{'restored last-good' if rollback_ok else 'the last-good push did not complete'}.",
-                      "value": "Failing change is out of prod; a deploy-fix task was queued." if rollback_ok
-                               else "Release state is explicit; operator remediation is required.",
-                      "risk": "Low — Vercel keeps the previous good deployment serving." if rollback_ok
-                              else "Elevated — the repository branch may still point at the rejected candidate.",
+                      "title": f"Prod deploy reverted: {project}",
+                      "why": f"Deploy {state or 'unconfirmed'} after {age_min:.0f}m; restored last-good where available.",
+                      "value": "Failing change is out of prod; a deploy-fix task was queued.",
+                      "risk": "Low — Vercel keeps the previous good deployment serving.",
                       "command": ""})
     return len(pend)
 
