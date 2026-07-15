@@ -143,7 +143,7 @@ def run(limit=120):
             left += 1
             continue
 
-        # A repeated no-op means the instruction was too vague or context was lost. Keep it in the cue
+        # A repeated no-op means the instruction was too vague or context was lost. Keep it in the queue
         # with an explicit implementation directive instead of marking it DONE.
         if (_NOOP.search(signal) and rc >= 1) or _READY_UNCOMMITTED.search(signal):
             upd = agentic_repair.repair_patch(
@@ -324,7 +324,7 @@ def recover_pending_manual_reviews(limit=500):
 
 
 def recover_auto_closed_noops(limit=500):
-    """Put tasks that were incorrectly marked DONE for no-op retries back into the cue."""
+    """Put tasks that were incorrectly marked DONE for no-op retries back into the queue."""
     if os.environ.get("ORCH_RECOVER_AUTO_CLOSED_NOOPS", "false").lower() not in ("1", "true", "yes", "on"):
         return 0
     rows = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,log_tail",
