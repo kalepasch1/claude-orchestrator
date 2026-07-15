@@ -923,7 +923,7 @@ def train_run():
         # thread is mid-train, skip this cycle rather than block indefinitely -- the next
         # scheduled pass (or the next task completion) will pick it back up.
         repo_path = db.localize_repo_path(proj.get("repo_path", ""))
-        with repo_lock.hold(repo_path, timeout=120) as got_lock:
+        with repo_lock.hold(repo_path, timeout=300, priority=True) as got_lock:
             if not got_lock:
                 result["skipped"] += len(group)
                 print(f"merge_train: {proj.get('name') or pid} busy (another train holds the repo lock) — skipping this cycle")
