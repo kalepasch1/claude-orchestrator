@@ -1,131 +1,152 @@
 #!/usr/bin/env python3
 """
-cx_tribunal_model.py - Tribunal Audience-Read Model.
+cx_tribunal_model.py - Audience-read forecaster for escalated determinations.
 
-For recent escalated determinations, forecast how the ACTUAL decision-maker
+For recent escalated determinations, forecasts how the ACTUAL decision-maker
 (owner / regulator / investor depending on subject_type + domain) would likely
-react, and attach a short "audience read" (inbox kind='tribunal') so drafted
+react, and attaches a short "audience read" (inbox kind='tribunal') so drafted
 outputs are tuned to who reads them.
 
-Reuses model_gateway.complete + the determination's contributors/factions as
-context; bounded to a few per run. No schema change; does not edit committees.py.
+Reuses model_gateway.complete + the determination's contributors/factions as context.
+Bounded to a few per run. No schema change; does not edit committees.py.
 """
-import os, sys, json
+import os, sys, re, json, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
-import model_gateway
 
-MAX_PER_RUN = int(os.environ.get("TRIBUNAL_BATCH", "5"))
-
-# Map subject_type + domain to the likely actual decision-maker persona
-AUDIENCE_MAP = {
-    ("legal", None): "regulator or external counsel",
-    ("legal", "ip"): "patent/trademark examiner or IP counsel",
-    ("legal", "compliance"): "compliance officer or regulator",
-    ("strategic", None): "owner / founder",
-    ("strategic", "growth"): "owner focused on revenue and market share",
-    ("strategic", "product"): "owner focused on product-market fit",
-    ("financial", None): "investor or financial advisor",
-    ("financial", "fundraising"): "potential investor doing due diligence",
-    ("technical", None): "owner wearing the technical lead hat",
-}
+MAX_PER_RUN = int(os.environ.get("ORCH_TRIBUNAL_LIMIT", "5") or 5)
+LOOKBACK_DAYS = int(os.environ.get("ORCH_TRIBUNAL_LOOKBACK", "14") or 14)
 
 
-def _resolve_audience(subject_type, domain):
-    """Determine who the actual decision-maker is for this determination."""
-    st = (subject_type or "").lower().strip()
-    dom = (domain or "").lower().strip() or None
-    return (AUDIENCE_MAP.get((st, dom))
-            or AUDIENCE_MAP.get((st, None))
-            or "owner / founder")
+def _complete(prompt, need=3):
+    """Complete a prompt via model_gateway."""
+    try:
+        import model_policy, model_gateway
+        prov, model, _ = model_policy.choose("review", agentic=False, need=need)
+        r = model_gateway.complete(prov, model, prompt)
+        return r.get("text") or ""
+    except Exception:
+        return ""
+
+
+def _json_parse(text):
+    """Extract a JSON object from text."""
+    m = re.search(r"\{.*\}", text, re.S)
+    try:
+        return json.loads(m.group(0)) if m else {}
+    except Exception:
+        return {}
+
+
+def _audience_type(det):
+    """Infer the actual decision-maker type from subject_type and domain."""
+    st = (det.get("subject_type") or "").lower()
+    domain = (det.get("domain") or det.get("committee") or "").lower()
+
+    if any(k in st for k in ["regulation", "compliance", "legal"]):
+        return "regulator"
+    if any(k in st for k in ["investment", "fund", "portfolio", "financial"]):
+        return "investor"
+    if any(k in domain for k in ["regulatory", "compliance", "policy"]):
+        return "regulator"
+    if any(k in domain for k in ["investor", "capital", "fund"]):
+        return "investor"
+    return "owner"
 
 
 def _recent_escalated():
-    """Fetch recent committee opinions that lack a tribunal audience-read."""
-    already = {r.get("title", "").replace("Tribunal: ", "")
-               for r in (db.select("inbox", {
-                   "select": "title",
-                   "kind": "eq.tribunal",
-                   "order": "created_at.desc",
-                   "limit": "200",
-               }) or [])}
-
-    opinions = db.select("committee_opinions", {
-        "select": "subject_id,subject_title,subject_type,opinion,"
-                  "consensus_verdict,conviction,app,contributors",
-        "order": "created_at.desc",
+    """Fetch recent escalated determinations without a tribunal audience read."""
+    cutoff = (datetime.datetime.now(datetime.timezone.utc)
+              - datetime.timedelta(days=LOOKBACK_DAYS)).isoformat()
+    dets = db.select("determinations", {
+        "select": "id,title,position,consensus_pct,materiality,confidence,"
+                  "factions,dissent,subject_type,domain,committee",
+        "created_at": f"gte.{cutoff}",
+        "escalated": "eq.true",
+        "order": "materiality.desc",
         "limit": str(MAX_PER_RUN * 3),
     }) or []
+    if not dets:
+        return []
 
-    fresh = []
-    for op in opinions:
-        title = op.get("subject_title") or ""
-        if title and title not in already:
-            fresh.append(op)
-            already.add(title)
-        if len(fresh) >= MAX_PER_RUN:
-            break
-    return fresh
-
-
-def _build_audience_read(opinion, audience):
-    """Use model_gateway to forecast how the audience would react."""
-    subject = opinion.get("subject_title", "unknown")
-    verdict = opinion.get("consensus_verdict", "")
-    conviction = opinion.get("conviction", "")
-    opinion_text = (opinion.get("opinion") or "")[:1500]
-    contributors = opinion.get("contributors") or ""
-    if isinstance(contributors, list):
-        contributors = ", ".join(str(c) for c in contributors)
-    elif isinstance(contributors, dict):
-        contributors = json.dumps(contributors)
-
-    prompt = (
-        f"You are modeling the reaction of: {audience}.\n\n"
-        f"A committee just made this determination:\n"
-        f"Subject: {subject}\nVerdict: {verdict} (conviction {conviction}/10)\n"
-        f"Contributors/factions: {str(contributors)[:500]}\n"
-        f"Opinion:\n{opinion_text}\n\n"
-        f"Forecast how this specific audience ({audience}) would likely react. "
-        f"Consider: what they care about, what they'd push back on, what would "
-        f"reassure them, and what framing/language would land best.\n\n"
-        f"Respond in 2-3 short paragraphs. No preamble."
-    )
+    # Filter out those that already have a tribunal inbox entry
+    have = set()
     try:
-        result = model_gateway.complete("local", "llama3.1", prompt)
-        return (result or {}).get("text", "")
+        existing = db.select("inbox", {
+            "select": "ref_id",
+            "kind": "eq.tribunal",
+        }) or []
+        have = {r["ref_id"] for r in existing if r.get("ref_id")}
     except Exception:
-        # Fail-soft: return a minimal static read
-        try:
-            conv = int(conviction or 0)
-        except (ValueError, TypeError):
-            conv = 0
-        return (f"Audience ({audience}): likely focused on {verdict} verdict. "
-                f"Conviction {conviction}/10 may {'reassure' if conv >= 7 else 'concern'} them.")
+        pass
+    return [d for d in dets if d["id"] not in have][:MAX_PER_RUN]
+
+
+def _forecast_reaction(det, audience_type):
+    """Use LLM to forecast how the decision-maker would react."""
+    factions = det.get("factions") or "none recorded"
+    dissent = det.get("dissent") or "none"
+    prompt = (
+        f"You are modeling how a {audience_type} would react to this determination.\n\n"
+        f"Title: {det.get('title','')}\n"
+        f"Position: {det.get('position','')}\n"
+        f"Consensus: {det.get('consensus_pct','')}%\n"
+        f"Materiality: {det.get('materiality','')}\n"
+        f"Factions: {json.dumps(factions)[:500]}\n"
+        f"Dissent: {json.dumps(dissent)[:300]}\n\n"
+        f"As a {audience_type}, what would concern you most? What framing would "
+        f"you find most credible? What would make you reject this?\n\n"
+        "Return JSON: {\"likely_reaction\":\"...\",\"key_concern\":\"...\","
+        "\"recommended_framing\":\"...\",\"rejection_risk\":\"low|medium|high\"}"
+    )
+    text = _complete(prompt, need=3)
+    return _json_parse(text) if text else {}
 
 
 def run():
-    """Entry point for periodic scheduling."""
-    escalations = _recent_escalated()
-    if not escalations:
-        return
+    """Main entry point. Attach audience reads to recent escalated determinations."""
+    dets = _recent_escalated()
+    if not dets:
+        print("cx_tribunal_model: no unprocessed escalated determinations found")
+        return 0
 
-    for esc in escalations:
-        subject_type = esc.get("subject_type") or ""
-        domain = esc.get("app") or ""
-        audience = _resolve_audience(subject_type, domain)
-
-        audience_read = _build_audience_read(esc, audience)
-        if not audience_read:
+    n = 0
+    for det in dets:
+        audience_type = _audience_type(det)
+        forecast = _forecast_reaction(det, audience_type)
+        if not forecast:
             continue
 
-        title = esc.get("subject_title", "")[:80]
+        # Build the audience-read note
+        audience_read = (
+            f"[Audience: {audience_type}] "
+            f"Likely reaction: {forecast.get('likely_reaction', 'unknown')[:200]}. "
+            f"Key concern: {forecast.get('key_concern', 'unknown')[:150]}. "
+            f"Recommended framing: {forecast.get('recommended_framing', '')[:150]}. "
+            f"Rejection risk: {forecast.get('rejection_risk', 'unknown')}."
+        )
+
+        # Insert as inbox kind='tribunal'
         try:
             db.insert("inbox", {
                 "kind": "tribunal",
-                "title": f"Tribunal: {title}",
-                "body": audience_read[:2000],
-                "app": esc.get("app"),
+                "ref_id": det["id"],
+                "subject": f"Audience read: {det.get('title', '')[:120]}",
+                "body": audience_read[:1000],
+                "meta": json.dumps({
+                    "audience_type": audience_type,
+                    "rejection_risk": forecast.get("rejection_risk", "unknown"),
+                    "determination_id": det["id"],
+                }),
             })
-        except Exception:
-            pass
+            n += 1
+            print(f"cx_tribunal_model: attached {audience_type} read for '{det.get('title','')[:60]}'")
+        except Exception as e:
+            print(f"cx_tribunal_model: failed to insert tribunal read: {e}")
+
+    print(f"cx_tribunal_model: processed {n}/{len(dets)} determinations")
+    return n
+
+
+if __name__ == "__main__":
+    run()
