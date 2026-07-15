@@ -11,6 +11,8 @@ memory/
 reports/
 runner/
 scripts/
+!web/scripts/
+!web/scripts/**
 supabase/
 tasks/
 triage/
@@ -19,4 +21,3 @@ triage/
 *.md
 *.py
 *.sh
-
