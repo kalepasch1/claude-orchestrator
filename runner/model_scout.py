@@ -309,6 +309,14 @@ def consider_adopt(provider, model, st):
     tier = _classify_tier(provider, model)
     incumbent, env = _incumbent(provider, tier)
     if not env:
+        # A transport adapter alone is not an activated model capability. Until
+        # the provider has a fleet tier target, surface the missing activation
+        # contract rather than silently discarding the newly discovered model.
+        journal("pending-activation", f"{provider}:{model} — routable but no {tier} tier target")
+        _escalate(f"Activate new {provider} model: {model}",
+                  f"The gateway can route {provider}, but model scout has no fleet "
+                  f"configuration target for its {tier} tier. Not evaluated or adopted.",
+                  "Declare a tier environment target and incumbent, then run the eval proof.")
         return
     new_eval = evaluate(provider, model)
     if not new_eval or new_eval["n"] == 0 or new_eval["quality"] <= 0:  # totally broken/unreachable

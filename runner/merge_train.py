@@ -37,6 +37,11 @@ import repo_lock         # per-repo mutex: concurrent train_run() calls must not
 import repo_hygiene      # strip stray untracked .js shadowing .ts before every test run
 import semantic_merge    # AST-level auto-resolution for rebase conflicts
 
+
+def emit(kind, **fields):
+    """Public fail-soft event adapter used by integrations and diagnostics."""
+    return events.emit(kind, **fields)
+
 MARK = "train"                                   # decided_by prefix => handled by the train
 SKIP_PREFIXES = ("merge-handler", "train")       # cards already handled by any integration path
 MERGE_KINDS = ("verify", "material", "integrate")

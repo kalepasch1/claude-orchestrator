@@ -12,6 +12,12 @@ Docker images, and ~/Library/Caches behind opt-in flags.
 import os, sys, time, shutil, subprocess, glob, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import events
+
+
+def emit(kind, **fields):
+    """Public fail-soft event adapter used by integrations and diagnostics."""
+    return events.emit(kind, **fields)
 
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 THROTTLE_FILE = os.path.join(HOME, "throttle")

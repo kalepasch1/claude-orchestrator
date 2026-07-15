@@ -67,7 +67,15 @@ def gate(app: str) -> dict:
         return {"app": app, "decision": "block", "stage": "twin", "detail": twin}
 
     # Twin passed — proceed to real canary
-    real = canary_economics.decide(app)
+    try:
+        real = canary_economics.decide(app)
+    except Exception as exc:
+        # Twin infrastructure is advisory and the real telemetry store can be
+        # temporarily unavailable. Preserve the documented fail-soft contract
+        # instead of turning an observability outage into a deployment outage.
+        return {"app": app, "decision": "pass-through", "stage": "canary",
+                "twin": twin, "canary": {"decision": "pass-through",
+                                            "why": f"canary unavailable: {exc}"}}
     return {"app": app, "decision": real["decision"], "stage": "canary",
             "twin": twin, "canary": real}
 

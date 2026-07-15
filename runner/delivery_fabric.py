@@ -15,7 +15,8 @@ def verify(repo,raw_patch,slug,base_ref='HEAD',test_cmd='',materialize=True,time
   if _git(tree,'apply','--index','--whitespace=error-all','-',input_text=patch).returncode:return {'ok':False,'stage':'apply'}
   tail='git invariants passed'
   if test_cmd:
-   tested=subprocess.run(['bash','-lc',test_cmd],cwd=tree,capture_output=True,text=True,timeout=timeout);tail=((tested.stdout or '')+(tested.stderr or ''))[-3000:]
+   test_env=os.environ.copy();test_env['PYTHONPYCACHEPREFIX']=os.path.join(tree,'.orch-pycache')
+   tested=subprocess.run(['bash','-lc',test_cmd],cwd=tree,env=test_env,capture_output=True,text=True,timeout=timeout);tail=((tested.stdout or '')+(tested.stderr or ''))[-3000:]
    if tested.returncode:return {'ok':False,'stage':'tests','detail':tail}
   tree_sha=_git(tree,'write-tree').stdout.strip();commit=_git(tree,'commit-tree',tree_sha,'-p',base_sha,'-m','native: '+re.sub(r'[^\w.-]+','-',slug)[:100]).stdout.strip()
   receipt={'schema':'orchestrator.verification/v1','base_sha':base_sha,'commit_sha':commit,'patch_sha256':hashlib.sha256(patch.encode()).hexdigest(),'protocol':protocol,'files':files,'test_cmd':test_cmd,'host':socket.gethostname(),'tests_passed':True};artifact=hashlib.sha256(json.dumps(receipt,sort_keys=True).encode()).hexdigest();branch='agent/'+re.sub(r'[^\w.-]+','-',slug)[:100]
