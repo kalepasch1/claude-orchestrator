@@ -40,13 +40,12 @@ def _normalize_base(repo, proj, requested):
 def _claimable_next(limit):
     """Mirror db.claim_task ordering to predict which tasks will run next (dep-satisfied, QUEUED)."""
     projs = {p["id"]: p for p in (db.select("projects", {"select": "*"}) or [])}
-    done = {t["slug"] for t in (db.select("tasks", {"select": "slug", "state": "in.(DONE,MERGED)",
-                                                    "limit": "5000"}) or [])}
+    done = db.done_slugs()
     q = db.select("tasks", {"select": "id,slug,project_id,created_at,deps,prompt,base_branch,kind,note,confidence,material",
                             "state": "eq.QUEUED",
                             "order": "created_at.asc",
                             "limit": str(max(limit * 25, QUEUE_SCAN_LIMIT))}) or []
-    q = [t for t in q if all(d in done for d in (t.get("deps") or []))]
+    q = [t for t in q if db.deps_satisfied(t.get("deps") or [], done)]
     recovery_backlog = (
         os.environ.get("ORCH_RECOVERY_JUMP_QUEUE", "true").lower() in ("true", "1", "yes", "on")
         and any(str(t.get("slug") or "").startswith(RECOVERY_PREFIX) for t in q)

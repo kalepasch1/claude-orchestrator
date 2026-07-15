@@ -19,11 +19,11 @@ _STATE = {"over_since": None}
 
 def _claimable_weighted():
     projs = {p["id"]: p for p in (db.select("projects", {"select": "*"}) or [])}
-    done = {t["slug"] for t in (db.select("tasks", {"select": "slug", "state": "in.(DONE,MERGED)"}) or [])}
+    done = db.done_slugs()
     q = db.select("tasks", {"select": "project_id,deps", "state": "eq.QUEUED"}) or []
     depth = wdemand = 0
     for t in q:
-        if all(d in done for d in (t.get("deps") or [])):
+        if db.deps_satisfied(t.get("deps") or [], done):
             depth += 1
             wdemand += float((projs.get(t.get("project_id"), {}) or {}).get("concurrency_weight") or 1)
     return depth, wdemand

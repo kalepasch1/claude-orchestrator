@@ -18,9 +18,9 @@ import db
 
 
 def _claimable():
-    done = {t["slug"] for t in (db.select("tasks", {"select": "slug", "state": "in.(DONE,MERGED)"}) or [])}
+    done = db.done_slugs()
     q = db.select("tasks", {"select": "deps", "state": "eq.QUEUED"}) or []
-    return sum(1 for t in q if all(d in done for d in (t.get("deps") or [])))
+    return sum(1 for t in q if db.deps_satisfied(t.get("deps") or [], done))
 
 
 def run(runner_id="startup"):

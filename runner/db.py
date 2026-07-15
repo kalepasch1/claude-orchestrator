@@ -405,12 +405,43 @@ def _is_evidence_task(t):
             or "routing sample" in note)
 
 
+# ── cross-project dependency helpers ───────────────────────────────
+
+def parse_dep_ref(dep):
+    """Parse a dependency reference into (project_name, slug) tuple.
+
+    A dep entry may be:
+    - ``"my-task-slug"``        -> (None, "my-task-slug")   project-local
+    - ``"project:task-slug"``   -> ("project", "task-slug") cross-project
+
+    Only the first colon is significant so slugs themselves can't contain colons
+    (they're kebab-case by convention anyway).
+    """
+    if ":" in dep:
+        project_name, slug = dep.split(":", 1)
+        return (project_name, slug)
+    return (None, dep)
+
+
+def deps_satisfied(deps, done=None):
+    """Return True if every entry in *deps* is present in the done-slug set.
+
+    Accepts both bare slugs and ``project:slug`` cross-project references.
+    If *done* is None, the cached done-slug set is used.
+    """
+    if not deps:
+        return True
+    if done is None:
+        done = done_slugs()
+    return all(d in done for d in deps)
+
+
 # ── done-slug cache (T4 hardening) ─────────────────────────────────
 _done_cache_lock = threading.Lock()
 _done_cache = {"slugs": set(), "ts": 0.0, "ttl": 60.0}
 
 
-def _done_slugs():
+def done_slugs():
     """Return cached set of DONE/MERGED slugs, refreshing every 60s.
 
     The set contains bare slugs (backward-compatible project-local lookup)
@@ -451,6 +482,9 @@ def _done_slugs():
         _done_cache["slugs"] = slugs
         _done_cache["ts"] = time.time()
         return _done_cache["slugs"]
+
+# backward-compat alias (was private before cross-project deps)
+_done_slugs = done_slugs
 
 
 def invalidate_done_cache():
@@ -772,7 +806,7 @@ def claim_task(runner_id):
                                prio.get(t.get("project_id"), 5),
                                -float(roi_w.get(t.get("project_id"), 1) or 1),
                                t.get("created_at") or ""))
-    done = _done_slugs()
+    done = done_slugs()
     for t in queued or []:
         if _cooling_down(t):
             continue
@@ -786,7 +820,7 @@ def claim_task(runner_id):
                 occupied = active_by_project.get(pid, 0)
             if occupied >= _project_lane_limit(t):
                 continue
-        if all(d in done for d in (t.get("deps") or [])):
+        if deps_satisfied(t.get("deps") or [], done):
             # optimistic claim: flip to RUNNING only if still QUEUED
             res = _req("PATCH", "/rest/v1/tasks",
                        body={"state": "RUNNING", "account": runner_id, "updated_at": "now()"},
