@@ -442,10 +442,7 @@ class TestEnsureIntegrationCard(unittest.TestCase):
 
 
 class TestEnsureNodeDepsCumulativeBudget(unittest.TestCase):
-    """2026-07-10: a single merge_train.py process sat idle for 74+ minutes holding a repo's
-    exclusive lock (blocking every other project's merges in that run) because
-    _ensure_node_deps gave EVERY nested package.json its own fresh MERGE_TRAIN_NPM_TIMEOUT
-    (default 600s) budget instead of one cumulative budget for the whole call."""
+    """Dependency hydration follows the test working directory, not every nested package."""
 
     def _make_repo(self, tmp, n_packages):
         repo = os.path.join(tmp, "repo")
@@ -456,36 +453,23 @@ class TestEnsureNodeDepsCumulativeBudget(unittest.TestCase):
                 f.write("{}")
         return repo
 
-    def test_stops_installing_once_cumulative_budget_exhausted(self):
+    def test_unrelated_nested_packages_are_not_installed(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._make_repo(tmp, n_packages=5)
+            with open(os.path.join(repo, "package.json"), "w") as f:
+                f.write("{}")
             calls = []
 
             def fake_run(*args, **kwargs):
                 calls.append(kwargs.get("cwd"))
                 return MagicMock(returncode=0)
 
-            # Simulate time passing: first call starts the clock, budget exhausts after 2 calls.
-            clock = {"t": 0.0}
-
-            def fake_monotonic():
-                clock["t"] += 250  # each check advances the clock by 250s
-                return clock["t"]
-
-            with patch.object(merge_train.subprocess, "run", side_effect=fake_run), \
-                 patch.object(merge_train.time, "monotonic", side_effect=fake_monotonic), \
-                 patch.dict(os.environ, {"MERGE_TRAIN_NPM_TOTAL_TIMEOUT": "900",
-                                          "MERGE_TRAIN_NPM_TIMEOUT": "600"}, clear=False):
+            with patch.object(merge_train.subprocess, "run", side_effect=fake_run):
                 merge_train._ensure_node_deps(repo)
 
-            # deadline = t0 + 900 where t0 is the first monotonic() call (250); budget runs out
-            # partway through the 5 packages, so not all 5 should have been installed.
-            self.assertLess(len(calls), 5)
-            self.assertGreater(len(calls), 0)
+            self.assertEqual(calls, [os.path.realpath(repo)])
 
-    def test_a_single_hung_install_does_not_block_remaining_packages_forever(self):
-        """One nested package's install can still individually time out; the loop must move
-        on to the next package rather than treating that as fatal."""
+    def test_explicit_cd_package_is_hydrated(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._make_repo(tmp, n_packages=2)
             calls = []
@@ -496,14 +480,12 @@ class TestEnsureNodeDepsCumulativeBudget(unittest.TestCase):
                     raise subprocess.TimeoutExpired(cmd="npm install", timeout=600)
                 return MagicMock(returncode=0)
 
-            with patch.object(merge_train.subprocess, "run", side_effect=fake_run), \
-                 patch.dict(os.environ, {"MERGE_TRAIN_NPM_TOTAL_TIMEOUT": "900",
-                                          "MERGE_TRAIN_NPM_TIMEOUT": "600"}, clear=False):
-                merge_train._ensure_node_deps(repo)
+            with patch.object(merge_train.subprocess, "run", side_effect=fake_run):
+                merge_train._ensure_node_deps(repo, "cd pkg1 && npm test")
 
-            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls, [os.path.realpath(os.path.join(repo, "pkg1"))])
 
-    def test_single_package_repo_still_gets_installed(self):
+    def test_single_explicit_package_still_gets_installed(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._make_repo(tmp, n_packages=1)
             calls = []
@@ -513,7 +495,7 @@ class TestEnsureNodeDepsCumulativeBudget(unittest.TestCase):
                 return MagicMock(returncode=0)
 
             with patch.object(merge_train.subprocess, "run", side_effect=fake_run):
-                merge_train._ensure_node_deps(repo)
+                merge_train._ensure_node_deps(repo, "npm --prefix pkg0 test")
 
             self.assertEqual(len(calls), 1)
 
