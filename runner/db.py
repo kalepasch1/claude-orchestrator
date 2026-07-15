@@ -75,6 +75,45 @@ _ensure_tool_path()
 URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 HTTP_TIMEOUT = float(os.environ.get("ORCH_SUPABASE_TIMEOUT", "15") or 15)
+
+# ── SECRET HYGIENE (2026-07-15) ──────────────────────────────────────────────
+# Redact API keys, service keys, and other secrets from strings before they are
+# stored in the database (task notes, log_tail, error messages). Prevents secrets
+# from leaking into the tasks table via raw command output or tracebacks.
+_SECRET_PATTERNS = re.compile(
+    r"("
+    # Anthropic API keys (sk-ant-api03-...)
+    r"sk-ant-api\S{10,}"
+    r"|"
+    # Supabase service role keys (eyJ...)
+    r"eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}"
+    r"|"
+    # Generic long API key patterns (key=..., token=..., secret=..., password=...)
+    r"(?:(?:api[_-]?key|secret[_-]?key|service[_-]?key|token|password|credential)"
+    r"\s*[=:]\s*['\"]?)([A-Za-z0-9_/+\-.]{16,})"
+    r"|"
+    # OpenAI keys (sk-...)
+    r"sk-[A-Za-z0-9]{20,}"
+    r"|"
+    # Generic bearer tokens
+    r"Bearer\s+[A-Za-z0-9_\-/.]{20,}"
+    r")",
+    re.I,
+)
+
+
+def redact_secrets(text):
+    """Replace secret-like patterns in *text* with [REDACTED]. Fail-soft: returns
+    original text on any error so it never blocks writes."""
+    if not text or not isinstance(text, str):
+        return text
+    try:
+        return _SECRET_PATTERNS.sub("[REDACTED]", text)
+    except Exception:
+        return text
+
+
+_TASK_SENSITIVE_FIELDS = {"note", "log_tail"}
 HTTP_RETRIES = int(os.environ.get("ORCH_SUPABASE_RETRIES", "1") or 1)
 HTTP_RETRY_STATUSES = {429, 500, 502, 503, 504, 521, 522, 523}  # incl. Cloudflare origin-down codes so monitors ride through Supabase capacity blips instead of silently no-op'ing
 
@@ -234,6 +273,11 @@ def count(table, params=None):
 
 
 def insert(table, row, upsert=False):
+    # SECRET HYGIENE: redact secrets from sensitive fields on task insert too.
+    if table == "tasks" and isinstance(row, dict):
+        for field in _TASK_SENSITIVE_FIELDS:
+            if field in row and isinstance(row[field], str):
+                row[field] = redact_secrets(row[field])
     # IDEMPOTENT TASK ENQUEUE (2026-07-10): the queue has no UNIQUE(project_id, slug) constraint,
     # so ~20 different generators that db.insert("tasks", ...) directly kept creating duplicate
     # QUEUED rows (5-at-a-time, recurring — the sentinel dedupe was firing 45x/24h just cleaning up
@@ -354,6 +398,13 @@ def upsert(table, row):
 
 
 def update(table, match, patch):
+    # SECRET HYGIENE: redact secrets from sensitive task fields before DB write.
+    # Applied here (the single choke point for all task updates) so every caller
+    # — set_state, blocker_quarantine, error-retry, etc. — gets automatic protection.
+    if table == "tasks" and isinstance(patch, dict):
+        for field in _TASK_SENSITIVE_FIELDS:
+            if field in patch and isinstance(patch[field], str):
+                patch[field] = redact_secrets(patch[field])
     params = {k: f"eq.{v}" for k, v in match.items()}
     try:
         return _req("PATCH", f"/rest/v1/{table}", body=patch,
