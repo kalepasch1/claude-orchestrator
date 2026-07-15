@@ -131,6 +131,10 @@ def _rebase_onto_base(repo, branch, base):
     return approval_merge._rebase_isolated(repo, base, branch)
 
 
+def _already_integrated(repo, branch, base):
+    return _git(repo, "merge-base", "--is-ancestor", branch, base).returncode == 0
+
+
 def _try_semantic_merge(repo, branch, base):
     """Attempt AST-level semantic merge when rebase fails.
 
@@ -735,6 +739,16 @@ def _integrate_card(card, slug, task, proj):
         return "branch-missing"
 
     _refresh_base(repo, base)                                     # (1)
+    if _already_integrated(repo, branch, base):
+        _task_patch(task, {"state": "MERGED",
+                           "note": f"train: already integrated in {base}"})
+        db.update("approvals", {"id": card["id"]},
+                  {"decided_by": f"{MARK}:ALREADY_INTEGRATED"})
+        _attribute_merge_outcome(slug, task)
+        _attribute_train_outcome(slug, task, "already-integrated", integrated=True)
+        approval_merge._free_branch(repo, branch)
+        _log(pname, slug, "ALREADY", f"present in {base}; no ref advance")
+        return "already-integrated"
     _task_patch(task, {"state": MERGING_STATE, "note": f"train: integrating {branch} into {base}"})
 
     if not _rebase_onto_base(repo, branch, base):                 # (2)
@@ -883,7 +897,8 @@ def train_run():
         by_project.setdefault(t.get("project_id"), []).append((c, slug, t))
 
     pressure = _record_pressure(by_project, projects)
-    summary = {"projects": 0, "merged": 0, "redo": 0, "testfail": 0, "conflict": 0,
+    summary = {"projects": 0, "merged": 0, "already_integrated": 0,
+               "redo": 0, "testfail": 0, "conflict": 0,
                "skipped": 0, "risk": {"low": 0, "standard": 0, "sensitive": 0},
                "pressure": pressure}
     caps = {"low": LOW_RISK_BATCH, "standard": STANDARD_BATCH, "sensitive": SENSITIVE_BATCH}
@@ -892,7 +907,8 @@ def train_run():
     def process_project(item):
         pid, group = item
         proj = projects.get(pid, {})
-        result = {"projects": 1, "merged": 0, "redo": 0, "testfail": 0,
+        result = {"projects": 1, "merged": 0, "already_integrated": 0,
+                  "redo": 0, "testfail": 0,
                   "conflict": 0, "skipped": 0,
                   "risk": {"low": 0, "standard": 0, "sensitive": 0}}
         used = {"low": 0, "standard": 0, "sensitive": 0}
@@ -922,6 +938,8 @@ def train_run():
                     used[risk] += 1
                 if outcome == "merged":
                     result["merged"] += 1
+                elif outcome == "already-integrated":
+                    result["already_integrated"] += 1
                 elif outcome == "redo":
                     result["redo"] += 1
                 elif outcome == "testfail":
@@ -939,11 +957,13 @@ def train_run():
                                                    thread_name_prefix="merge-project") as pool:
             results = list(pool.map(process_project, items))
         for result in results:
-            for key in ("projects", "merged", "redo", "testfail", "conflict", "skipped"):
+            for key in ("projects", "merged", "already_integrated", "redo",
+                        "testfail", "conflict", "skipped"):
                 summary[key] += result[key]
             for risk, count in result["risk"].items():
                 summary["risk"][risk] += count
-    print(f"merge_train: {summary['merged']} merged, {summary['redo']} redo, "
+    print(f"merge_train: {summary['merged']} merged, {summary['already_integrated']} already, "
+          f"{summary['redo']} redo, "
           f"{summary['testfail']} testfail, {summary['conflict']} conflict, "
           f"{summary['skipped']} skipped across {summary['projects']} project(s)")
     return summary

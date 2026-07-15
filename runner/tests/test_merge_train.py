@@ -58,6 +58,7 @@ class TrainCase(unittest.TestCase):
             patch.object(merge_train, "db", self.mock_db),
             patch.object(merge_train, "_branch_exists", return_value=True),
             patch.object(merge_train, "_refresh_base", return_value=None),
+            patch.object(merge_train, "_already_integrated", return_value=False),
             patch.object(merge_train, "_rebase_onto_base", return_value=True),
             patch.object(merge_train, "_run_tests", return_value=(True, "green")),
             patch.object(merge_train, "_ff_base", return_value=True),
@@ -159,6 +160,19 @@ class TestCleanMerge(TrainCase):
         self.assertEqual(cps[-1]["decided_by"], "train:MERGED")
         self.assertTrue(any(tbl == "outcomes" and m.get("slug") == "feat-x" and p.get("integrated") is True
                             for tbl, m, p in self.updates))
+
+    def test_already_integrated_card_does_not_count_as_new_merge(self):
+        self.cards = [_card("c1", "feat-x")]
+        self.tasks = [_task("t1", "feat-x")]
+        self.mocks["_already_integrated"].return_value = True
+        summary = merge_train.train_run()
+        self.assertEqual(summary["merged"], 0)
+        self.assertEqual(summary["already_integrated"], 1)
+        self.mocks["_run_tests"].assert_not_called()
+        self.mocks["_ff_base"].assert_not_called()
+        self.assertEqual(self.task_updates("t1")[-1]["state"], "MERGED")
+        self.assertEqual(self.card_updates("c1")[-1]["decided_by"],
+                         "train:ALREADY_INTEGRATED")
 
     def test_merge_never_forced_when_tests_green_but_ff_and_rebase_used(self):
         """The train's git surface is rebase + ff only — verify both were invoked."""
