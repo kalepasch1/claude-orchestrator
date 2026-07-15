@@ -2218,6 +2218,7 @@ _SCHEDULE = [
     ("selfdeploy-180","self_deploy.py",     "interval", 180),   # canary-gated exec-into-new-code (no human restarts)
     ("intake-120",    "intake_watcher.py",  "interval", 120),   # auto-ingest dropped task lists
     ("drafts-90",     "decision_drafts.py", "interval", 90),    # auto-draft on founder directives
+    ("businesscreative-15", "business_os_worker.py", "interval", 15), # atomically claim cost-capped creative jobs; outputs always enter review
 
 
     ("anomaly-3600",  "anomaly.py",         "interval", 3600),

@@ -5,8 +5,14 @@ create table if not exists governed_business_documents (id uuid primary key defa
 create table if not exists business_financial_events (id uuid primary key default gen_random_uuid(),organization_id uuid not null references orchestrator_organizations(id) on delete cascade,external_key text,direction text not null check(direction in('inflow','outflow')),event_type text not null check(event_type in('income','expense','invoice','payment','refund','tax','payroll','transfer')),amount numeric(18,2) not null check(amount>=0),currency text not null default 'USD',category text,occurred_at timestamptz not null,status text not null default 'normalized' check(status in('pending','normalized','attention','approved','settled','void')),counterparty text,business_line text,tax_treatment jsonb not null default '{}',evidence jsonb not null default '{}',source jsonb not null default '{}',created_by uuid references auth.users(id),created_at timestamptz not null default now(),updated_at timestamptz not null default now(),unique(organization_id,external_key));
 create table if not exists business_opportunities (id uuid primary key default gen_random_uuid(),organization_id uuid not null references orchestrator_organizations(id) on delete cascade,action_run_id uuid references business_action_runs(id) on delete set null,domain text not null,title text not null,summary text not null,confidence numeric not null default 0 check(confidence between 0 and 1),expected_value_usd numeric(18,2) not null default 0,state text not null default 'discovered' check(state in('discovered','evidence_required','review','approved','executing','realized','rejected','expired')),evidence jsonb not null default '{}',created_by uuid references auth.users(id),created_at timestamptz not null default now(),updated_at timestamptz not null default now());
 create table if not exists creative_production_jobs (id uuid primary key default gen_random_uuid(),organization_id uuid not null references orchestrator_organizations(id) on delete cascade,action_run_id uuid references business_action_runs(id) on delete set null,capability text not null check(capability in('motion','image','3d')),brief text not null,selected_provider text,provider_candidates text[] not null default '{}',controls jsonb not null default '{}',status text not null default 'draft' check(status in('draft','connector_required','ready','generating','review','approved','published','failed','cancelled')),outputs jsonb not null default '[]',provenance jsonb not null default '{}',created_by uuid not null references auth.users(id),created_at timestamptz not null default now(),updated_at timestamptz not null default now());
+create table if not exists creative_runtime_status (id boolean primary key default true check(id),providers text[] not null default '{}',worker text,checked_at timestamptz not null default now());
+alter table creative_production_jobs add column if not exists claimed_by text;
+alter table creative_production_jobs add column if not exists claimed_at timestamptz;
+alter table creative_production_jobs add column if not exists attempts integer not null default 0;
+alter table creative_production_jobs add column if not exists next_attempt_at timestamptz;
+alter table creative_production_jobs add column if not exists last_error text;
 create index if not exists business_action_runs_org_state_idx on business_action_runs(organization_id,state,created_at desc); create index if not exists workforce_lifecycle_org_status_idx on workforce_lifecycle_cases(organization_id,status,created_at desc); create index if not exists governed_documents_org_status_idx on governed_business_documents(organization_id,status,created_at desc); create index if not exists financial_events_org_time_idx on business_financial_events(organization_id,occurred_at desc); create index if not exists opportunities_org_value_idx on business_opportunities(organization_id,expected_value_usd desc); create index if not exists creative_jobs_org_status_idx on creative_production_jobs(organization_id,status,created_at desc);
-alter table business_action_runs enable row level security; alter table workforce_lifecycle_cases enable row level security; alter table governed_business_documents enable row level security; alter table business_financial_events enable row level security; alter table business_opportunities enable row level security; alter table creative_production_jobs enable row level security;
+alter table business_action_runs enable row level security; alter table workforce_lifecycle_cases enable row level security; alter table governed_business_documents enable row level security; alter table business_financial_events enable row level security; alter table business_opportunities enable row level security; alter table creative_production_jobs enable row level security; alter table creative_runtime_status enable row level security;
 create or replace function create_governed_employee_onboarding(p_run_id uuid,p_organization_id uuid,p_created_by uuid,p_employee_name text,p_employee_email text,p_role_title text,p_jurisdiction text,p_start_date date default null) returns jsonb language plpgsql security definer set search_path=public as $$
 declare v_case workforce_lifecycle_cases; v_document governed_business_documents;
 begin
@@ -16,4 +22,19 @@ begin
  return jsonb_build_object('workforce_case',to_jsonb(v_case),'nda_draft',to_jsonb(v_document));
 end $$;
 revoke all on function create_governed_employee_onboarding(uuid,uuid,uuid,text,text,text,text,date) from public; grant execute on function create_governed_employee_onboarding(uuid,uuid,uuid,text,text,text,text,date) to service_role;
+create or replace function claim_creative_production_job(p_worker text) returns setof creative_production_jobs language plpgsql security definer set search_path=public as $$
+declare v_id uuid;
+begin
+ select id into v_id from creative_production_jobs
+ where attempts < 3
+   and (next_attempt_at is null or next_attempt_at <= now())
+   and (status='ready' or (status='generating' and claimed_at < now() - interval '20 minutes'))
+ order by created_at asc for update skip locked limit 1;
+ if v_id is null then return; end if;
+ return query update creative_production_jobs set status='generating',claimed_by=p_worker,claimed_at=now(),attempts=attempts+1,updated_at=now()
+ where id=v_id returning *;
+end $$;
+revoke all on function claim_creative_production_job(text) from public;
+grant execute on function claim_creative_production_job(text) to service_role;
 comment on table workforce_lifecycle_cases is 'Consent-first workforce coordination; individual health scoring and protected-trait inference are prohibited.';
+comment on function claim_creative_production_job(text) is 'Cross-runner single-claimer creative job lease with stale-worker recovery and bounded attempts.';
