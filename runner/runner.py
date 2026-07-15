@@ -108,6 +108,7 @@ import capacity_pacer, account_partition, generator_feedback
 import exhaustion_signal, surge_planner
 import agentic_repair
 import cowork_dispatch
+import worktree_isolation
 try:
     import warm_pool
 except ImportError:
@@ -662,9 +663,18 @@ def run_task(t):
             POOL.record_use(acct)
             set_state(t["id"], state="RUNNING", model=visible_model, attempt=attempt,
                       account=(acct or {}).get("name"), note=f"agentic coder: {coder}")
-            subprocess.run([os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"), slug, base],
-                           cwd=repo, capture_output=True)
-            wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", slug)
+            # Worktree isolation is a hard invariant. Never fall back to the shared
+            # project checkout when setup fails: that was the concurrent rewrite path.
+            try:
+                wt = worktree_isolation.ensure_task_worktree(
+                    repo, slug, base,
+                    os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"),
+                )
+            except worktree_isolation.WorktreeIsolationError as e:
+                set_state(t["id"], state="RETRY", note=f"git-isolation blocked execution: {e}")
+                record(t, name, slug, kind, visible_model, acct, attempt,
+                       False, False, f"worktree isolation: {e}", t0)
+                return
             env = dict(os.environ); env.update(POOL.env_for(acct))
             # inject this project's external-provider secrets (values never logged)
             try:
@@ -821,7 +831,7 @@ def run_task(t):
                     _integrating_existing = False
             # ZERO-TOKEN FIRST PATCH: try applying known-good diff before any model call
             try:
-                _zt = cade_tournaments.zero_token_patch(t, wt if os.path.isdir(wt) else repo)
+                _zt = cade_tournaments.zero_token_patch(t, wt)
                 if _zt and _zt.get("applied"):
                     set_state(t["id"], note=f"zero-token patch applied ({_zt['method']})")
                     # Skip agent entirely — go straight to integration
@@ -835,9 +845,9 @@ def run_task(t):
                 _log.debug("hook zero_token_patch failed: %s", e)
             # INTENT COMPILER: check if task matches a compiled deterministic script
             try:
-                _compiled = intent_compiler.get_compiled(t, wt if os.path.isdir(wt) else repo)
+                _compiled = intent_compiler.get_compiled(t, wt)
                 if _compiled:
-                    _comp_result = intent_compiler.execute(_compiled, wt if os.path.isdir(wt) else repo, t["id"])
+                    _comp_result = intent_compiler.execute(_compiled, wt, t["id"])
                     if _comp_result.get("success"):
                         set_state(t["id"], note=f"compiled-intent: executed deterministic script (0 tokens)")
                         r = {"text": "compiled intent replay — deterministic script, zero model call",
@@ -858,7 +868,7 @@ def run_task(t):
                 else:
                     _pm = pattern_compiler.match(t)
                 if _pm and _pm.get("confidence", 0) > 0.7:
-                    _pc_result = pattern_compiler.execute(_pm, wt if os.path.isdir(wt) else repo, t["id"])
+                    _pc_result = pattern_compiler.execute(_pm, wt, t["id"])
                     if _pc_result and _pc_result.get("success"):
                         set_state(t["id"], note=f"pattern-compiler: deterministic replay (conf={_pm['confidence']:.0%}, pattern={_pm.get('pattern_id', '?')})")
                         r = {"text": f"pattern-compiler replay — {_pc_result.get('files_changed', 0)} files, zero model call",
@@ -919,7 +929,7 @@ def run_task(t):
             _uk = {}
             if not _fast.get("skip_all"):
                 try:
-                    _uk = unified_knowledge.query(t, name, wt if os.path.isdir(wt) else repo, attempt)
+                    _uk = unified_knowledge.query(t, name, wt, attempt)
                     if _uk.get("matches"):
                         draft_prompt = unified_knowledge._apply_match(draft_prompt, _uk["matches"][0])
                         set_state(t["id"], note=f"unified-knowledge: {len(_uk['matches'])} matches, best={_uk['matches'][0].get('source', '?')} (conf={_uk['matches'][0].get('confidence', 0):.0%})")
@@ -928,7 +938,7 @@ def run_task(t):
             # ADAPTIVE PIPELINE: collapse stages when cached results found
             if not _fast.get("skip_all"):
                 try:
-                    _ap = adaptive_pipeline.plan(t, name, wt if os.path.isdir(wt) else repo)
+                    _ap = adaptive_pipeline.plan(t, name, wt)
                     if _ap.get("collapsed"):
                         draft_prompt = _ap.get("enriched_prompt", draft_prompt)
                         set_state(t["id"], note=f"adaptive-pipeline: collapsed {len(_ap['collapsed'])} stages, saving ~{_ap.get('estimated_savings_tokens', 0)} tokens")
@@ -1150,7 +1160,7 @@ def run_task(t):
                             _swarm_mode = "diff" if kind in ("mechanical", "chore", "cleanup", "test", "docs") else "agentic"
                             r = swarm_executor.run_swarm(
                                 draft_prompt, _swarm_model, provider=_swarm_provider,
-                                cwd=wt if os.path.isdir(wt) else repo,
+                                cwd=wt,
                                 timeout=int(os.environ.get("TASK_TIMEOUT", "900")),
                                 mode=_swarm_mode,
                             )
@@ -1165,13 +1175,13 @@ def run_task(t):
                         except Exception as _sw_err:
                             _log.warning("swarm_executor failed (%s); falling back to agentic_coders", _sw_err)
                             r = agentic_coders.run(coder, draft_prompt, model,
-                                                   cwd=wt if os.path.isdir(wt) else repo, env=env,
+                                                   cwd=wt, env=env,
                                                    project=name, max_turns=60, permission="acceptEdits",
                                                    timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
                     else:
                         # --- DEFAULT PATH: subscription CLI/SDK via agentic_coders ---
                         r = agentic_coders.run(coder, draft_prompt, model,
-                                               cwd=wt if os.path.isdir(wt) else repo, env=env,
+                                               cwd=wt, env=env,
                                                project=name, max_turns=60, permission="acceptEdits",
                                                timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
                 r.setdefault("coder", coder)
@@ -1402,7 +1412,7 @@ def run_task(t):
             if not _integrating_existing:
                 try:
                     import session_proof
-                    proof = session_proof.verify_session(t, out, wt if os.path.isdir(wt) else repo, f"agent/{slug}")
+                    proof = session_proof.verify_session(t, out, wt, f"agent/{slug}")
                     if not proof.get("ok") and not t.get("_proof_retry"):
                         t["_proof_retry"] = True
                         prompt = session_proof.reinjection_prompt(t)
@@ -1603,7 +1613,7 @@ def run_task(t):
             # enough data to reconstruct its work without re-running the agent.
             try:
                 task_artifacts.capture(repo, slug, f"agent/{slug}", base,
-                                       wt if os.path.isdir(wt) else repo,
+                                       wt,
                                        test_log=out[-5000:], cost=run_cost)
             except Exception as _ae:
                 print(f"[artifacts] capture failed for {slug}: {_ae}")
@@ -1803,7 +1813,7 @@ def run_task(t):
             # OUTPUT RECYCLING: recycle partial work from failures
             try:
                 if not integrated:
-                    output_recycling.recycle(t["id"], wt if os.path.isdir(wt) else repo,
+                    output_recycling.recycle(t["id"], wt,
                                              out, error="integration failed")
             except Exception as e:
                 _log.debug("hook output_recycling_recycle failed: %s", e)
@@ -1868,7 +1878,7 @@ def run_task(t):
                 if not integrated:
                     import prompt_bankruptcy as _pb_check
                     if _pb_check.is_bankrupt(t):
-                        _bd_subs = bankruptcy_decompose.decompose(t, name, wt if os.path.isdir(wt) else repo)
+                        _bd_subs = bankruptcy_decompose.decompose(t, name, wt)
                         if _bd_subs:
                             set_state(t["id"], note=f"bankrupt → decomposed into {len(_bd_subs)} sub-tasks")
             except Exception as e:

@@ -18,8 +18,8 @@ pass -- an infinite loop that grew QUARANTINED/QUEUED counts while MERGED stayed
 
 Fix: every git-mutating integration step for a given repo acquires this lock first. Concurrent
 callers now queue up and run one at a time per repo (matching what the train's docstring always
-claimed), instead of racing. Fail-soft: if the lock file itself can't be opened/locked, proceed
-unlocked rather than wedge the runner -- a missed lock is a lot cheaper than a stuck fleet.
+claimed), instead of racing. Lock infrastructure failures fail closed: skipping one mutation is
+recoverable; allowing concurrent writers into shared refs can destroy or strand fleet work.
 """
 import contextlib
 import fcntl
@@ -43,14 +43,14 @@ def hold(repo, timeout=None):
     """Exclusive lock scoped to `repo`. Yields True if the lock was acquired, False if the
     lock could not be obtained within `timeout` -- callers should skip their git-mutating
     work on False rather than proceed unprotected. If the locking infrastructure itself is
-    unavailable (no repo, disk full, etc.), fail-soft to unlocked so a lock bug never becomes
-    a full fleet outage."""
+    unavailable (no repo, disk full, etc.), fail closed so callers never mutate shared refs
+    without serialization."""
     f = None
     try:
         os.makedirs(LOCK_DIR, exist_ok=True)
         f = open(_lock_path(repo), "a+")
     except Exception:
-        yield True  # fail-soft: locking infra unavailable, proceed unlocked
+        yield False
         return
     acquired = False
     try:

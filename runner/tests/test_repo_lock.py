@@ -24,6 +24,15 @@ def _hold_and_record(lock_dir, repo, out_path, hold_seconds):
             f.write(f"end {time.time()}\n")
 
 
+def _wait_until_holder_acquired(out_path, timeout=3.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            return
+        time.sleep(0.02)
+    raise AssertionError("lock-holder process did not acquire the repository lock")
+
+
 class TestRepoLock(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -63,7 +72,7 @@ class TestRepoLock(unittest.TestCase):
         holder = multiprocessing.Process(
             target=_hold_and_record, args=(self.lock_dir, "/contended/repo", out_path, 2.0))
         holder.start()
-        time.sleep(0.4)  # let the holder acquire first
+        _wait_until_holder_acquired(out_path)
         got_it = None
         with repo_lock.hold("/contended/repo", timeout=0.5) as got:
             got_it = got
@@ -75,7 +84,7 @@ class TestRepoLock(unittest.TestCase):
         holder = multiprocessing.Process(
             target=_hold_and_record, args=(self.lock_dir, "/contended/repo2", out_path, 0.5))
         holder.start()
-        time.sleep(0.1)
+        _wait_until_holder_acquired(out_path)
         with repo_lock.hold("/contended/repo2", timeout=5) as got:
             self.assertTrue(got, "caller should acquire once the holder releases within the timeout")
         holder.join(timeout=5)
@@ -85,7 +94,7 @@ class TestRepoLock(unittest.TestCase):
         holder = multiprocessing.Process(
             target=_hold_and_record, args=(self.lock_dir, "/contended/repo3", out_path, 0.5))
         holder.start()
-        time.sleep(0.1)
+        _wait_until_holder_acquired(out_path)
         start = time.time()
         with repo_lock.hold("/contended/repo3") as got:
             elapsed = time.time() - start
@@ -93,19 +102,20 @@ class TestRepoLock(unittest.TestCase):
             self.assertGreaterEqual(elapsed, 0.3, "blocking hold() should wait for the holder to release")
         holder.join(timeout=5)
 
-    def test_falls_back_to_unlocked_when_dir_uncreatable(self):
+    def test_fails_closed_when_dir_uncreatable(self):
         # point at a path that cannot be created as a directory (a file, not a dir)
         bad = os.path.join(self.lock_dir, "not_a_dir")
         with open(bad, "w") as f:
             f.write("x")
         os.environ["ORCH_REPO_LOCK_DIR"] = os.path.join(bad, "nested")
         import importlib
-        importlib.reload(repo_lock)
-        with repo_lock.hold("/some/repo") as got:
-            self.assertTrue(got, "fail-soft: unavailable lock infra should still yield True and proceed")
-        # restore
-        os.environ["ORCH_REPO_LOCK_DIR"] = self.lock_dir
-        importlib.reload(repo_lock)
+        try:
+            importlib.reload(repo_lock)
+            with repo_lock.hold("/some/repo") as got:
+                self.assertFalse(got, "unavailable lock infra must block shared git mutation")
+        finally:
+            os.environ["ORCH_REPO_LOCK_DIR"] = self.lock_dir
+            importlib.reload(repo_lock)
 
 
 if __name__ == "__main__":
