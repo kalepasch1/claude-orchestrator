@@ -13,6 +13,12 @@ def run_once():
   try:
    import dependency_prewarm;dependency_prewarm.link_shared_runtime(repo,tree)
   except Exception:pass
+  # Nuxt worktrees intentionally exclude generated .nuxt state. Generate its
+  # type/config contract before Vitest or typecheck, just as CI does.
+  web=os.path.join(tree,'web')
+  if os.path.isfile(os.path.join(web,'nuxt.config.ts')) and not os.path.isfile(os.path.join(web,'.nuxt','tsconfig.json')):
+   prepared=subprocess.run(['npx','nuxi','prepare'],cwd=web,capture_output=True,text=True,timeout=300)
+   if prepared.returncode:raise RuntimeError('Nuxt prepare failed: '+((prepared.stdout or '')+(prepared.stderr or ''))[-1000:])
   dep=proof_graph.dependency_fingerprint(tree)
   for cmd in job.get('commands') or []:
    k=remote_cas.key(repo,job['commit_sha'],dep,cmd,job.get('image') or '');cached=remote_cas.get(k)
