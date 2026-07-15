@@ -251,7 +251,7 @@ def _try_semantic_merge(repo, branch, base):
         return False
 
 
-def _ensure_node_deps(repo):
+def _ensure_node_deps(repo, test_cmd=""):
     """A node repo whose node_modules is missing makes every test/typecheck fail with
     'cannot find module' — an ENVIRONMENT failure, not a code failure, that was TESTFAIL-ing
     all JS/TS merges (2026-07-10: smarter 'cannot find module vue'). Lazily install deps once
@@ -267,14 +267,25 @@ def _ensure_node_deps(repo):
     (MERGE_TRAIN_NPM_TOTAL_TIMEOUT, default 900s) across all installs triggered by a single
     call, so a monorepo with many nested packages can't multiply timeouts into an effectively
     unbounded hold on the repo lock."""
-    total_budget = float(os.environ.get("MERGE_TRAIN_NPM_TOTAL_TIMEOUT", "900"))
+    total_budget = float(os.environ.get("MERGE_TRAIN_NPM_TOTAL_TIMEOUT", "180"))
     per_install_cap = int(os.environ.get("MERGE_TRAIN_NPM_TIMEOUT", "600"))
     deadline = time.monotonic() + total_budget
+    # The gate runs in repo unless the command explicitly changes directory or
+    # uses npm --prefix. Walking every package in a monorepo hydrated unrelated
+    # examples/services and turned one branch check into a 15-minute lock hold.
+    roots = [repo]
+    for pattern in (r"(?:^|[;&])\s*cd\s+([^\s;&]+)", r"--prefix(?:=|\s+)([^\s;&]+)"):
+        for match in re.finditer(pattern, test_cmd or ""):
+            candidate = match.group(1).strip("'\"")
+            if not os.path.isabs(candidate):
+                candidate = os.path.join(repo, candidate)
+            if os.path.isdir(candidate):
+                roots.append(candidate)
+    roots = list(dict.fromkeys(os.path.realpath(root) for root in roots))
     try:
-        for root, _dirs, files in os.walk(repo):
-            if ".git" in root or "/node_modules" in root:
-                _dirs[:] = [d for d in _dirs if d != "node_modules" and d != ".git"]
-            if "package.json" in files and not os.path.isdir(os.path.join(root, "node_modules")):
+        for root in roots:
+            if (os.path.isfile(os.path.join(root, "package.json"))
+                    and not os.path.isdir(os.path.join(root, "node_modules"))):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break  # cumulative budget exhausted; leave any further packages uninstalled
@@ -325,7 +336,7 @@ def _run_tests(repo, test_cmd, ref=None):
                 print(f"merge_train: cleaned {len(cleaned)} stray untracked .js file(s) shadowing .ts in {repo}")
         except Exception:
             pass
-        _ensure_node_deps(repo)
+        _ensure_node_deps(repo, test_cmd)
     try:
         r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
                            text=True, timeout=timeout)
