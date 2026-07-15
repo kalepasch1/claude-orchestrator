@@ -1,0 +1,8 @@
+import { describe, expect, it } from 'vitest'
+import { compileBusinessAction } from './businessOperatingSystem'
+describe('Business Operating System action compiler', () => {
+  it('approval-gates workforce actions', () => { const plan = compileBusinessAction({ action: 'employee_onboarding', values: { employee_name: 'Sam', employee_email: 'sam@example.com', role_title: 'Designer', jurisdiction: 'Delaware' } }); expect(plan.state).toBe('approval_required'); expect(plan.guardrails.join(' ')).toContain('No covert surveillance'); expect(plan.guardrails.join(' ')).toContain('authorized legal review') })
+  it('refuses prohibited individual data', () => { expect(() => compileBusinessAction({ action: 'capacity_review', values: { individual_health_score: 92 } })).toThrow(/privacy_prohibited_fields/); expect(() => compileBusinessAction({ action: 'capacity_review', values: { medical_history: 'private' } })).toThrow(/privacy_prohibited_fields/) })
+  it('requires executable inputs', () => { expect(() => compileBusinessAction({ action: 'creative_motion', values: {} })).toThrow(/missing_required_fields:brief/); expect(() => compileBusinessAction({ action: 'tax_strategy', values: {} })).toThrow(/missing_required_fields:jurisdiction/) })
+  it('creates deterministic creative evidence', () => { const input = { action: 'creative_3d', objective: 'Create model', values: { brief: 'A web-ready asset' } }; const first = compileBusinessAction(input); const second = compileBusinessAction(input); expect(first.state).toBe('planned'); expect(first.guardrails.join(' ')).toContain('content credentials'); expect(first.evidence_digest).toBe(second.evidence_digest) })
+})

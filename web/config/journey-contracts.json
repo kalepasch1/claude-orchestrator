@@ -1,9 +1,10 @@
 {
-  "version": 5,
+  "version": 6,
   "journeys": [
     { "name": "command-center", "route": "/", "file": "pages/index.vue", "mustContain": ["What should we accomplish?", "/api/tasks/intake", "Autopilot"] },
     { "name": "connections", "route": "/connectors", "file": "pages/connectors.vue", "mustContain": ["Connections", "Connect"] },
     { "name": "digital-twin", "route": "/digital-twin", "file": "pages/digital-twin.vue", "mustContain": ["Portfolio digital twin"] },
+    { "name": "business-os", "route": "/business", "file": "pages/business.vue", "mustContain": ["Business operating system", "/api/business/action", "Workforce intelligence contract", "On-platform production fabric"] },
     { "name": "capability-passport", "route": "/admin/capability-passport", "file": "pages/admin/capability-passport.vue", "mustContain": ["Capability passport & routing", "CapabilityEvolution"] }
   ],
   "criticalActions": [

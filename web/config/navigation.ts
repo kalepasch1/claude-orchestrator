@@ -9,6 +9,7 @@ export const CANONICAL_NAVIGATION: readonly NavigationItem[] = Object.freeze([
   { label: 'Sign-offs', icon: '○', to: '/sign-offs' },
   { label: 'Queue', icon: '≡', to: '/queue' },
   { label: 'Orchestrators', icon: '◈', to: '/orchestrators' },
+  { label: 'Business OS', icon: '◇', to: '/business' },
   { label: 'Connections', icon: '↔', to: '/connectors', aliases: ['/connections', '/integrations'] },
   { label: 'Digital Twin', icon: '◐', to: '/digital-twin', aliases: ['/simulation'] },
   { label: 'Spend & ROI', icon: '$', to: '/spend' },
@@ -18,4 +19,4 @@ export const CANONICAL_NAVIGATION: readonly NavigationItem[] = Object.freeze([
   { label: 'Health', icon: '♡', to: '/health' },
 ])
 
-export const NAVIGATION_CONTRACT_VERSION = 1
+export const NAVIGATION_CONTRACT_VERSION = 2

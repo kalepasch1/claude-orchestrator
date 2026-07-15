@@ -50,5 +50,18 @@ export default defineEventHandler(async (event) => {
     .select('*')
     .maybeSingle()
   if (error) throw createError({ statusCode: 500, message: error.message })
+  if (data && data.status !== 'pending' && ['legal', 'material'].includes(String(card.kind)) && card.slug) {
+    const { data: businessRun } = await sb.from('business_action_runs').select('id,action').eq('id', card.slug).maybeSingle()
+    if (businessRun) {
+      const next = data.status === 'approved' ? 'approved' : 'cancelled'
+      const transitioned = await sb.from('business_action_runs').update({ state: next, updated_at: now, outcome: { approval_id: data.id, decision: data.status, decided_at: now, authorization_is_not_execution: true } }).eq('id', businessRun.id)
+      if (transitioned.error) throw createError({ statusCode: 500, message: 'business_action_transition_failed' })
+      if (data.status === 'approved') {
+        await sb.from('governed_business_documents').update({ status: 'approved', approval_evidence: { approval_id: data.id, decided_at: now, authorization_is_not_signature: true }, updated_at: now }).eq('action_run_id', businessRun.id).in('status', ['legal_review', 'approval_required'])
+        await sb.from('workforce_lifecycle_cases').update({ status: 'onboarding', updated_at: now }).eq('action_run_id', businessRun.id).eq('status', 'preboarding')
+        await sb.from('business_opportunities').update({ state: 'review', updated_at: now }).eq('action_run_id', businessRun.id).eq('state', 'evidence_required')
+      }
+    }
+  }
   return { ok: true, approval: data }
 })
