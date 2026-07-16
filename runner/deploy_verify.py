@@ -29,6 +29,15 @@ TERMINAL_GOOD = {"READY"}
 TERMINAL_BAD = {"ERROR", "CANCELED", "FAILED"}
 
 
+def _ignored_build_cancel(deployment):
+    """Vercel uses CANCELED for a successful Ignored Build Step decision."""
+    deployment = deployment or {}
+    state = deployment.get("state") or deployment.get("readyState")
+    message = " ".join(str(deployment.get(key) or "")
+                       for key in ("errorCode", "errorMessage"))
+    return state == "CANCELED" and "ignored build step" in message.lower()
+
+
 class VercelAuthError(RuntimeError):
     pass
 
@@ -219,9 +228,13 @@ def run():
         state = (dep or {}).get("state") or (dep or {}).get("readyState")
         url = (dep or {}).get("url")
 
-        if state in TERMINAL_GOOD:
+        ignored_build = _ignored_build_cancel(dep)
+        if state in TERMINAL_GOOD or ignored_build:
+            note = ("provider ignored build: release contains no deployable-root changes"
+                    if ignored_build else release.get("note") or "")
             db.update("releases", {"id": release["id"]},
-                      {"deploy_status": "success", "vercel_url": url, "deployed_at": "now()"})
+                      {"deploy_status": "success", "vercel_url": url,
+                       "deployed_at": "now()", "note": note})
             db.update("projects", {"name": project}, {"last_good_sha": release["to_sha"],
                       "vercel_project": vproj})
             try:
@@ -229,7 +242,8 @@ def run():
                 release_attribution.attribute_release(project, p.get("repo_path") or "", release, db)
             except Exception as e:
                 print(f"deploy_verify: release attribution skipped for {project}: {str(e)[:160]}")
-            print(f"deploy_verify: {project} deploy OK ({url})")
+            suffix = "ignored non-deployable changes" if ignored_build else url
+            print(f"deploy_verify: {project} deploy OK ({suffix})")
             continue
 
         age_min = _age_minutes(release)
