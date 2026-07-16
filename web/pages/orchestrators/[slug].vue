@@ -1,7 +1,19 @@
 <script setup lang="ts">
 import { DESIGN_CAPABILITIES, DESIGN_CATEGORIES, type DesignCapability } from '~/config/designCapabilities'
+import { capabilityBySlug } from '~/config/orchestratorCapabilities'
 
-definePageMeta({ layout: 'default' })
+const LEGACY_CAPABILITY_REDIRECTS: Record<string, string> = {
+  'deploy-orchestrator': '/orchestrators/engineering-orchestrator',
+  'review-orchestrator': '/orchestrators/engineering-orchestrator',
+  'optimize-orchestrator': '/orchestrators/engineering-orchestrator',
+  'preflight-inspector': '/orchestrators/engineering-orchestrator',
+  'remediation-orchestrator': '/orchestrators/engineering-orchestrator',
+  'entity-formation': '/orchestrators/legal-orchestrator',
+  'colosseum-evaluator': '/orchestrators',
+  'learn-orchestrator': '/orchestrators',
+  'queue-orchestrator': '/queue',
+}
+definePageMeta({ layout: 'default', middleware: to => LEGACY_CAPABILITY_REDIRECTS[String(to.params.slug)] ? navigateTo(LEGACY_CAPABILITY_REDIRECTS[String(to.params.slug)], { redirectCode: 301 }) : undefined })
 const route = useRoute()
 const slug = computed(() => route.params.slug as string)
 const supabase = useSupabaseClient<any>()
@@ -115,7 +127,12 @@ const LEGAL_DOCS: Record<string, { name: string; type: string; status: string }[
 const orchBranch = computed(() => `orch/${slug.value}/${selectedApp.value}`)
 
 // --- State ---
-const cap = computed(() => CAPS[slug.value] || { name: slug.value, domain: 'platform', status: 'unknown', maturity: 0, regulated: false, summary: '' })
+const cap = computed(() => {
+  const registered = capabilityBySlug(slug.value)
+  const legacy = CAPS[slug.value]
+  if (registered) return { ...legacy, name: registered.name, domain: registered.domain, summary: registered.summary, status: legacy?.status || 'trusted', maturity: legacy?.maturity || 85, regulated: legacy?.regulated || false }
+  return legacy || { name: slug.value, domain: 'platform', status: 'unknown', maturity: 0, regulated: false, summary: '' }
+})
 const insights = computed(() => DOMAIN_INSIGHTS[cap.value.domain] || DOMAIN_INSIGHTS.platform)
 const bots = computed(() => DOMAIN_BOTS[cap.value.domain] || [])
 const domainSliders = computed(() => DOMAIN_SLIDERS[cap.value.domain] || DOMAIN_SLIDERS.platform)
@@ -129,6 +146,9 @@ const selectedModel = ref('claude-sonnet-4-6')
 const selectedKind = ref('build')
 const selectedMode = ref('build')
 const selectedProject = ref('')
+const { profile: proficiency, record: recordProficiency } = useAdaptiveProficiency(computed(() => `orchestrator:${slug.value}`))
+const { track: trackExperience } = useExperienceTelemetry('orchestrator-workspace')
+const { simplified: frictionSimplified, complete: completeJourney, churn: recordConfigurationChurn } = useJourneyFriction(computed(() => `orchestrator:${slug.value}`))
 const { context: persistentContext, hydrated: contextHydrated } = usePersistentProjectContext(slug)
 const advancedOpen = computed({ get: () => persistentContext.advanced, set: value => { persistentContext.advanced = value } })
 const successCriteria = computed({ get: () => persistentContext.successCriteria, set: value => { persistentContext.successCriteria = value } })
@@ -140,6 +160,7 @@ const showOverride = ref(false)
 const routeInfo = ref('')
 const selectedBranch = ref('dev')
 const showConfig = ref(false)
+function toggleAdvanced() { persistentContext.advanced = !persistentContext.advanced; recordConfigurationChurn(); if (persistentContext.advanced) recordProficiency('advanced'); trackExperience('guidance_followed', { action: 'toggle_advanced', enabled: persistentContext.advanced, stage: proficiency.value.stage }) }
 
 // Design command center
 const designCategory = ref<(typeof DESIGN_CATEGORIES)[number]>('All')
@@ -519,6 +540,18 @@ const appDocs = computed(() => LEGAL_DOCS[selectedApp.value] || LEGAL_DOCS.defau
 const insightsForActive = computed(() => insightHistory.value.filter(i => i.key === activeInsight.value))
 const expandedInsight = computed(() => insightHistory.value.find(entry => entry.id === expandedInsightId.value) || null)
 
+function expandInsight(entry: CadeInsight) {
+  expandedInsightId.value = entry.id
+  recordProficiency('expanded')
+  trackExperience('guidance_followed', { action: 'expand_recommendation', insight: entry.id, confidence: entry.confidence, stage: proficiency.value.stage })
+}
+
+function useSandboxPrompt(prompt: string) {
+  terminalPrompt.value = prompt
+  expandedInsightId.value = ''
+  trackExperience('guidance_followed', { action: 'sandbox_adjust', stage: proficiency.value.stage })
+}
+
 function editInsightPlan(entry: CadeInsight) {
   terminalPrompt.value = `${entry.recommendation} Focus on: ${entry.message}. Verify the expected outcome: ${entry.outcome}`
   routeInfo.value = 'CADE recommendation ready for editing'
@@ -567,12 +600,13 @@ async function runCommand() {
     const request = [terminalPrompt.value.trim(), successCriteria.value ? `Success criteria: ${successCriteria.value}` : '', outcomeConstraints.value ? `Constraints: ${outcomeConstraints.value}` : '', `Workspace context: ${selectedApp.value}. Capability: ${cap.value.name}. Treat branch, model, vendor, research depth, and execution mode as automatic routing decisions.`].filter(Boolean).join('\n\n')
     const result: any = await authedFetch('/api/tasks/intake', { method: 'POST', body: { intent: request, project_id: selectedProject.value || undefined } })
     terminalOutput.value = '✓ Objective accepted: ' + result.task.slug + '\n  App: ' + result.project.name + '\n  Routing: Madeus Autopilot · independent QA · verified release'
+    completeJourney(); recordProficiency('completed'); trackExperience('action_completed', { action: 'outcome_submitted', task: result.task.slug, stage: proficiency.value.stage })
     terminalPrompt.value = ''; routeInfo.value = ''; loadData()
   } catch (e: any) { terminalOutput.value = 'Error: ' + (e.message || String(e)) }
   finally { terminalLoading.value = false }
 }
 
-onMounted(async () => { await loadData(); if (persistentContext.appId && APPS.some(app => app.id === persistentContext.appId)) selectedApp.value = persistentContext.appId; if (persistentContext.projectId && projects.value.some(project => project.id === persistentContext.projectId)) selectedProject.value = persistentContext.projectId; await loadDraft(); await loadDeploys(); await loadConnectors(); await resolvePreview(); refreshInsights() })
+onMounted(async () => { await loadData(); if (persistentContext.appId && APPS.some(app => app.id === persistentContext.appId)) selectedApp.value = persistentContext.appId; if (persistentContext.projectId && projects.value.some(project => project.id === persistentContext.projectId)) selectedProject.value = persistentContext.projectId; if (!terminalPrompt.value && typeof route.query.intent === 'string') terminalPrompt.value = route.query.intent; if (proficiency.value.showAdvancedByDefault) persistentContext.advanced = true; await loadDraft(); await loadDeploys(); await loadConnectors(); await resolvePreview(); refreshInsights() })
 watch(contextHydrated, ready => {
   if (!ready) return
   if (persistentContext.appId && APPS.some(app => app.id === persistentContext.appId)) selectedApp.value = persistentContext.appId
@@ -635,7 +669,7 @@ watch(slug, () => { refreshInsights() })
               <button @click="showInsights = !showInsights" class="px-2 py-1 text-[10px] border rounded" :class="showInsights ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'text-gray-500 border-gray-200'">
                 {{ showInsights ? 'Hide' : 'Show' }} guidance
               </button>
-              <button @click="advancedOpen = !advancedOpen" class="px-2 py-1 text-[10px] border rounded" :class="advancedOpen ? 'bg-gray-900 text-white border-gray-900' : 'text-gray-500 border-gray-200'">{{ advancedOpen ? 'Basic view' : 'Advanced' }}</button>
+              <button @click="toggleAdvanced" class="px-2 py-1 text-[10px] border rounded" :class="advancedOpen ? 'bg-gray-900 text-white border-gray-900' : 'text-gray-500 border-gray-200'">{{ advancedOpen ? 'Basic view' : 'Advanced' }}</button>
             </div>
           </div>
           <!-- VISUAL CONTEXT + TOOLS AREA (scrollable) -->
@@ -733,7 +767,7 @@ watch(slug, () => { refreshInsights() })
                       <option value="focused">Focused improvement</option>
                       <option value="full">Full implementation</option>
                     </select>
-                    <button @click="expandedInsightId = entry.id" class="rounded-md border border-gray-200 px-2 py-1.5 text-[10px] font-medium text-gray-600 hover:bg-gray-50">Expand</button>
+                    <button @click="expandInsight(entry)" class="rounded-md border border-gray-200 px-2 py-1.5 text-[10px] font-medium text-gray-600 hover:bg-gray-50">Expand</button>
                     <button @click="editInsightPlan(entry)" :disabled="entry.resolved" class="rounded-md border border-gray-200 px-2 py-1.5 text-[10px] font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-40">Edit</button>
                     <button @click="implementInsight(entry)" :disabled="entry.implementing || entry.resolved" class="rounded-md bg-gray-900 px-2.5 py-1.5 text-[10px] font-semibold text-white hover:bg-black disabled:bg-emerald-600">
                       {{ entry.resolved ? '✓ Queued' : entry.implementing ? 'Queuing…' : 'Implement' }}
@@ -750,6 +784,7 @@ watch(slug, () => { refreshInsights() })
 
             <!-- DOMAIN-SPECIFIC CAPABILITIES below the app + command workbench -->
             <div class="p-4 space-y-4">
+              <div v-if="proficiency.stage === 'guided' || frictionSimplified" class="flex items-center justify-between gap-4 rounded-xl border border-emerald-200 bg-emerald-50/60 px-4 py-3"><div><div class="text-[9px] font-semibold uppercase tracking-wider text-emerald-800">{{ frictionSimplified ? 'Simplified from your usage' : 'Guided workspace' }}</div><p class="mt-1 text-[10px] leading-4 text-emerald-950">Start with the outcome box above. Madeus will choose the project context, specialists, tools, verification, and release path. Advanced controls appear as they become useful.</p></div><button class="shrink-0 rounded-lg border border-emerald-300 bg-white px-3 py-2 text-[9px] font-semibold text-emerald-900" @click="toggleAdvanced">Show advanced</button></div>
               <CadeOperatingSystem
                 :app="APPS.find(a => a.id === selectedApp)?.name || selectedApp"
                 :capability="cap.name"
@@ -758,6 +793,7 @@ watch(slug, () => { refreshInsights() })
                 :outcome="insightsForActive[0]?.outcome"
                 @use-prompt="useCadePrompt"
               />
+              <ProofTimeline :tasks="recentTasks" :deployments="recentDeploys" :capability="cap.name" />
               <div class="flex items-end justify-between gap-4">
                 <div>
                   <div class="text-[10px] font-semibold uppercase tracking-[0.16em] text-gray-400">Capability workspace</div>
@@ -1031,6 +1067,7 @@ watch(slug, () => { refreshInsights() })
                 </div>
 
                 <div v-else class="mt-3 grid gap-3 md:grid-cols-2"><div class="rounded-2xl border border-gray-200 p-4"><div class="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Before</div><p class="mt-2 text-xs leading-5 text-gray-600">The current signal remains informational, manually interpreted, and disconnected from execution.</p></div><div class="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-4"><div class="text-[10px] font-semibold uppercase tracking-wider text-emerald-800">After</div><p class="mt-2 text-xs leading-5 text-emerald-950">{{ expandedInsight.recommendation }} The resulting task includes evidence, owners, verification, and rollout controls.</p></div></div>
+                <RecommendationSandbox :title="expandedInsight.title" :recommendation="expandedInsight.recommendation" :confidence="expandedInsight.confidence" @adjust="useSandboxPrompt" @implement="implementInsight(expandedInsight)" />
               </section>
 
               <section>
