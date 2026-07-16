@@ -19,6 +19,7 @@ import { saveOpportunityAction } from '../../utils/regulatoryOpportunity'
 import { saveExecutionAction } from '../../utils/regulatoryExecution'
 import { saveSovereigntyAction } from '../../utils/regulatorySovereignty'
 import { saveImmuneSystemAction } from '../../utils/regulatoryImmuneSystem'
+import { saveProofMarketAction } from '../../utils/regulatoryProofMarket'
 
 export default defineEventHandler(async event => {
   const user = await requireConnectorUser(event)
@@ -80,6 +81,10 @@ export default defineEventHandler(async event => {
   if (['compile_law','swarm_certification','immune_response','authority_clearing','proof_module','evidence_stream','enforcement_rehearsal','authority_decay'].includes(body?.action)) {
     const context = await organizationContext(user); requireOrgAdmin(context)
     return saveImmuneSystemAction(context.membership.organization_id, body.action, body)
+  }
+  if (['privacy_passport','coordinate_transaction','counterparty_order','provider_swarm','causal_memory','customer_outcome_twin','runtime_receipt','capacity_reservation'].includes(body?.action)) {
+    const context = await organizationContext(user); requireOrgAdmin(context)
+    return saveProofMarketAction(context.membership.organization_id, body.action, body)
   }
   throw createError({ statusCode: 400, message: 'unknown_regulatory_action' })
 })

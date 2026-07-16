@@ -34,5 +34,8 @@ export function createRegulatoryPolicyClient(options: { baseUrl: string; fleetSe
     attestProductBehavior(input: Record<string, any>) { return invoke({ action: 'product_attestation', ...input }) },
     compileLawControls(input: Record<string, any>) { return invoke({ action: 'compile_law', ...input }) },
     reportAuthorityDegradation(input: Record<string, any>) { return invoke({ action: 'immune_response', ...input }) },
+    coordinateTransaction(input: Record<string, any>) { return invoke({ action: 'coordinate_transaction', ...input }) },
+    createComplianceReceipt(input: Record<string, any>) { return invoke({ action: 'runtime_receipt', ...input }) },
+    simulateCustomerOutcomes(input: Record<string, any>) { return invoke({ action: 'customer_outcome_twin', ...input }) },
   }
 }

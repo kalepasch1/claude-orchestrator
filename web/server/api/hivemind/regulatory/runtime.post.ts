@@ -5,6 +5,7 @@ import { recordRegulatoryFeedback } from '../../../utils/regulatoryOpportunity'
 import { saveExecutionAction } from '../../../utils/regulatoryExecution'
 import { saveSovereigntyAction } from '../../../utils/regulatorySovereignty'
 import { saveImmuneSystemAction } from '../../../utils/regulatoryImmuneSystem'
+import { saveProofMarketAction } from '../../../utils/regulatoryProofMarket'
 
 function authorized(event: any) {
   const expected = Buffer.from(process.env.FLEET_SHARED_SECRET || '')
@@ -28,5 +29,8 @@ export default defineEventHandler(async event => {
   if (body.action === 'product_attestation') return saveSovereigntyAction(organizationId, 'product_attestation', body)
   if (body.action === 'immune_response') return saveImmuneSystemAction(organizationId, 'immune_response', body)
   if (body.action === 'compile_law') return saveImmuneSystemAction(organizationId, 'compile_law', body)
+  if (body.action === 'coordinate_transaction') return saveProofMarketAction(organizationId, 'coordinate_transaction', body)
+  if (body.action === 'runtime_receipt') return saveProofMarketAction(organizationId, 'runtime_receipt', body)
+  if (body.action === 'customer_outcome_twin') return saveProofMarketAction(organizationId, 'customer_outcome_twin', body)
   throw createError({ statusCode: 400, message: 'unknown_regulatory_runtime_action' })
 })
