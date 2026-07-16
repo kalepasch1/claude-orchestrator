@@ -2305,6 +2305,7 @@ _SCHEDULE = [
     ("improve-3am",   "improve",            "daily",    (3, 15)),# deeper improvement sweep in the research window
     ("improvemeas-dy","improvemeasure",     "daily",    (5, 20)),# learn which improvement kinds pay off
     ("committees-900","committees",         "interval", 900),   # expert committees weigh in on proposals/decisions
+    ("cadeextras-dy", "cadeextras",           "daily",    (4, 30)),# run cx_* extras daily at 4:30am
     ("committeecal-dy","committeecal",       "daily",    (5, 40)),# reweight committees + seats by predictive accuracy
     ("committeedock-dy","committeedocket",   "daily",    (4, 10)),# continuous docket: re-review shipped features
     ("committeedig-wk","committeedigest",    "daily",    (6, 5)), # owner brief of sharpest dissents/reversals

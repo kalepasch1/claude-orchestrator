@@ -375,6 +375,11 @@ def run_improvemeasure():
     import improvement_measure; improvement_measure.run()
 
 
+def run_cadeextras():
+    """Auto-discover and run all cx_*.py extra modules."""
+    import cade_extras; cade_extras.run()
+
+
 def run_committees():
     """Convene expert committees (Legal, BizDev/Marketing, Finance, Product, Security, Growth, Risk)
     on business-model proposals + legal/strategic decisions."""
@@ -755,6 +760,7 @@ JOBS = {
     "decisionbriefs": run_decisionbriefs,
     "improve": run_improve,
     "improvemeasure": run_improvemeasure,
+    "cadeextras": run_cadeextras,
     "committees": run_committees,
     "committeecal": run_committeecal,
     "committeedocket": run_committeedocket,
