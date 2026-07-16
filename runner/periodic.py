@@ -668,6 +668,12 @@ def run_priority_scorer():
     priority_scorer.run()
 
 
+def run_branchrecov():
+    """Scheduled branch detection+recovery across all projects (every 4h)."""
+    import branch_recovery_periodic
+    branch_recovery_periodic.run()
+
+
 def run_quarantine_gc():
     """GC non-recoverable quarantined tasks (PATCH TEMPLATE, dedup) to reduce scan noise."""
     import quarantine_gc
@@ -793,6 +799,7 @@ JOBS = {
     "commonbrain": run_commonbrain,
     "priority_scorer": run_priority_scorer,
     "quarantine_gc": run_quarantine_gc,
+    "branchrecov": run_branchrecov,
 }
 
 if __name__ == "__main__":
