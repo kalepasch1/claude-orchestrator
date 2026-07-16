@@ -29,7 +29,11 @@ JURISDICTION_GUARD = {"localAuthorityRequired": True, "winningOutcomeTransfers":
     "bitemporalReconstruction": True, "propositionDependencyReplay": True, "multidimensionalUncertainty": True,
     "proceduralCade": True, "counterfactualLocalCourts": True, "proofBoundPolicyCompiler": True,
     "dataPoisoningDefense": True, "confidentialFederatedLearning": True, "remedyRealization": True,
-    "selfHealingWorkProduct": True, "silentFinalizedAdviceMutation": False}
+    "selfHealingWorkProduct": True, "silentFinalizedAdviceMutation": False,
+    "causalWorldModel": True, "valueOfInformationResearch": True, "signedRegulatoryObservatory": True,
+    "versionedPolicyDsl": True, "verifiableCadeReceipts": True, "strategicAdaptation": True,
+    "portfolioContagion": True, "reversibleActiveLearning": True, "layeredAssuranceUx": True,
+    "jurisdictionCanaries": True, "automaticPromotion": False}
 PRODUCT_MODES = {"smarter": "legal_dispute_cade", "tomorrow": "payment_default_war_room", "apparently": "licensing_regulatory_cure", "pareto": "planning_goal_issue_resolution"}
 TRIGGERS = {"dispute", "settle", "settlement", "negotiate", "negotiation", "default", "overdue", "deficiency", "cure", "conflict", "impasse", "collection", "tribunal", "mediation", "reservation value", "payment obligation", "missed deadline", "regulator question"}
 
@@ -61,7 +65,8 @@ def build_agent_market_task(event):
             "agentRoles": list(AGENT_ROLES), "scoreOn": ["net_realized_value", "jurisdictional_accuracy", "appeal_survival", "regulator_acceptance", "implementation_success", "evidence_coverage", "calibration", "novelty", "compute_cost"],
             "humanProviderMarketplace": False, "externalEngagement": False, "dissentSeatRequired": True,
             "promotionScope": "jurisdiction_local", "globalPromotionAllowed": False, "proofCarryingOutputRequired": True,
-            "poisoningDefenseRequired": True, "uncertaintyDimensionsRequired": True, "proceduralTrackRequired": True}
+            "poisoningDefenseRequired": True, "uncertaintyDimensionsRequired": True, "proceduralTrackRequired": True,
+            "causalMechanismEvidenceRequired": True, "computationReceiptRequired": True, "canaryBeforePromotion": True}
 
 def build_ambient_agent_task(event, surface):
     surface = str(surface).lower()
@@ -75,5 +80,5 @@ def prompt_guidance(event):
     routed = route(event)
     return ("RESOLUTION INTELLIGENCE: consider capability resolution.mesh.analyze in " + routed["mode"] +
             " mode. Run choice-of-law preflight and separate local CADE tracks before treating a conclusion as locally winning; never average conflicts into a consolidated merits answer. "
-            "Maintain bitemporal authority state, proposition dependencies, multidimensional uncertainty, local procedure, counterfactual panels, proof-bound policy, poisoning defense, privacy-preserving federation, remedy realization, and approval-gated self-healing in addition to the jurisdiction graph, hierarchy, transfer price, regulatory futures, monitors, impacts, and proof drafts. Cross-share only proof-certified invariants; parallel rules require three local validations, local rules never transfer, authorities decay, jurisdiction drift blocks autonomy, and harmful transfer blocks future reuse. Preserve raw evidence and private preferences in the source product. Generate options and drafts only; "
+            "Maintain causal mechanisms, value-of-information research, signed regulatory observations, versioned policy DSL, verifiable computation receipts, strategic adaptation, portfolio contagion, reversible active learning, layered assurance, and canary-gated promotion in addition to bitemporal authority, proposition dependencies, uncertainty, local procedure, counterfactuals, poisoning defense, federation, remedy realization, and self-healing. Cross-share only proof-certified invariants; parallel rules require three local validations, local rules never transfer, authorities decay, jurisdiction drift blocks autonomy, and harmful transfer blocks future reuse. Preserve raw evidence and private preferences in the source product. Generate options and drafts only; "
             "require human approval for filing, payment, withdrawal, settlement, or any binding/irreversible action.")
