@@ -72,3 +72,23 @@ The Connections UI supports encrypted, organization-scoped credential bundles fo
 - OpenAI Responses can facilitate non-binding internal preparation with strict structured output. It cannot authorize or represent an external effect.
 
 Provider-specific missing fields create a minimum human-input request in the Virtual Executive Team UI. Answering it updates only the waiting step and resumes the same idempotent saga.
+
+## Provider intelligence mesh
+
+The built-in gateway learns field-path mappings only from verified executions. Values are never stored in the mapping model, and a mapping cannot change an execution until it has at least three successful observations and 90% confidence. A stable randomized holdout compares this optimization layer against the existing safe baseline; it never withholds the underlying business operation.
+
+Every request runs through a non-mutating provider digital twin before credentials are leased. Production requests with a blocking or review verdict do not reach the provider. Treatment routes rank eligible accounts by observed fees, settlement latency, failure rate, jurisdiction, and risk. Webhook, polling, and read-after-write evidence normalize into `provider-finality/v1` records before causal metrics are updated.
+
+Signed adapters are compiled from OpenAPI 3 specifications only for pinned provider sandbox origins. They remain inactive until an HSM signature and a live, all-2xx sandbox conformance run both succeed.
+
+For short-lived credentials, configure:
+
+```text
+CONNECTOR_CREDENTIAL_BROKER_URL=https://broker.example.com
+CONNECTOR_CREDENTIAL_BROKER_TOKEN=deployment-secret
+CONNECTOR_CREDENTIAL_BROKER_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----\n..."
+CONNECTOR_HSM_SIGNER_URL=https://signer.example.com
+CONNECTOR_HSM_SIGNER_TOKEN=deployment-secret
+```
+
+The broker response must bind the credential digest, reference, lease ID, expiry, nonce, and key ID under an Ed25519 signature. Leases over 15 minutes, expired leases, nonce mismatches, digest mismatches, and invalid signatures fail closed. Only the credential reference and lease evidence are persisted.
