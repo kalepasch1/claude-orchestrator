@@ -6,6 +6,7 @@ import { frontierCockpit, runRegulatoryFrontierAutopilot } from './regulatoryFro
 import { opportunityCockpit, runRegulatoryOpportunityAutopilot } from './regulatoryOpportunity'
 import { executionCockpit, runRegulatoryExecutionAutopilot } from './regulatoryExecution'
 import { runRegulatorySovereigntyAutopilot, sovereigntyCockpit } from './regulatorySovereignty'
+import { immuneSystemCockpit, runRegulatoryImmuneAutopilot } from './regulatoryImmuneSystem'
 
 type ActivitySource = {
   source_type?: string
@@ -314,6 +315,7 @@ export async function runRegulatoryAutopilot(organizationId: string, trigger: 's
   const opportunity = await runRegulatoryOpportunityAutopilot(organizationId)
   const execution = await runRegulatoryExecutionAutopilot(organizationId)
   const sovereignty = await runRegulatorySovereigntyAutopilot(organizationId)
+  const immune = await runRegulatoryImmuneAutopilot(organizationId)
   const outcomes = [
     assessmentsCreated ? { kind: 'regulatory', title: `${assessmentsCreated} activity boundar${assessmentsCreated === 1 ? 'y' : 'ies'} checked` } : null,
     pathsUpdated ? { kind: 'readiness', title: `${pathsUpdated} license path${pathsUpdated === 1 ? '' : 's'} refreshed` } : null,
@@ -323,6 +325,7 @@ export async function runRegulatoryAutopilot(organizationId: string, trigger: 's
     opportunity.counterfactuals_updated ? { kind: 'opportunity', title: `${opportunity.counterfactuals_updated} lawful-market unlock${opportunity.counterfactuals_updated === 1 ? '' : 's'} refreshed` } : null,
     execution.attention_allocations_updated ? { kind: 'supervision', title: `${execution.attention_allocations_updated} high-value review allocation${execution.attention_allocations_updated === 1 ? '' : 's'} refreshed` } : null,
     sovereignty.examiner_forecasts_updated ? { kind: 'examination', title: `${sovereignty.examiner_forecasts_updated} examiner forecast${sovereignty.examiner_forecasts_updated === 1 ? '' : 's'} refreshed` } : null,
+    immune.proof_gaps_contained ? { kind: 'authority', title: `${immune.proof_gaps_contained} product proof gap${immune.proof_gaps_contained === 1 ? '' : 's'} contained` } : null,
   ].filter(Boolean)
   const exceptions = [
     ...(relationshipAlerts ? [{ kind: 'relationship', severity: 'high', title: 'Activity outside current relationship coverage', outcome: `${relationshipAlerts} change${relationshipAlerts === 1 ? '' : 's'} contained pending review.` }] : []),
@@ -350,6 +353,7 @@ export async function regulatoryCockpit(user: any) {
   const opportunity = await opportunityCockpit(organizationId)
   const execution = await executionCockpit(organizationId)
   const sovereignty = await sovereigntyCockpit(organizationId)
+  const immune = await immuneSystemCockpit(organizationId)
   let { data: profile } = await sb.from('regulatory_capability_profiles').select('*').eq('organization_id', organizationId).maybeSingle()
   if (!profile) {
     const created = await sb.from('regulatory_capability_profiles').upsert({ organization_id: organizationId, updated_by: user.id }).select().single()
@@ -379,6 +383,7 @@ export async function regulatoryCockpit(user: any) {
     opportunity,
     execution,
     sovereignty,
+    immune,
     summary: {
       active_relationships: (relationships.data || []).filter((item: any) => item.status === 'active').length,
       application_ready: (paths.data || []).filter((item: any) => item.simulation_status === 'application_ready').length,

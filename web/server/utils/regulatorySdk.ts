@@ -32,5 +32,7 @@ export function createRegulatoryPolicyClient(options: { baseUrl: string; fleetSe
     recordFeedbackOutcome(input: Record<string, any>) { return invoke({ action: 'feedback_outcome', ...input }) },
     recordLaunchTelemetry(input: Record<string, any>) { return invoke({ action: 'launch_telemetry', ...input, explicit_approval: false }) },
     attestProductBehavior(input: Record<string, any>) { return invoke({ action: 'product_attestation', ...input }) },
+    compileLawControls(input: Record<string, any>) { return invoke({ action: 'compile_law', ...input }) },
+    reportAuthorityDegradation(input: Record<string, any>) { return invoke({ action: 'immune_response', ...input }) },
   }
 }

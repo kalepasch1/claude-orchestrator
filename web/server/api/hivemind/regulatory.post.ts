@@ -18,6 +18,7 @@ import { executeFrontierRun, grantBoundedRegulatorAccess } from '../../utils/reg
 import { saveOpportunityAction } from '../../utils/regulatoryOpportunity'
 import { saveExecutionAction } from '../../utils/regulatoryExecution'
 import { saveSovereigntyAction } from '../../utils/regulatorySovereignty'
+import { saveImmuneSystemAction } from '../../utils/regulatoryImmuneSystem'
 
 export default defineEventHandler(async event => {
   const user = await requireConnectorUser(event)
@@ -75,6 +76,10 @@ export default defineEventHandler(async event => {
   if (['product_attestation','structure','catastrophe','launch_tournament','review_effectiveness'].includes(body?.action)) {
     const context = await organizationContext(user); requireOrgAdmin(context)
     return saveSovereigntyAction(context.membership.organization_id, body.action, body)
+  }
+  if (['compile_law','swarm_certification','immune_response','authority_clearing','proof_module','evidence_stream','enforcement_rehearsal','authority_decay'].includes(body?.action)) {
+    const context = await organizationContext(user); requireOrgAdmin(context)
+    return saveImmuneSystemAction(context.membership.organization_id, body.action, body)
   }
   throw createError({ statusCode: 400, message: 'unknown_regulatory_action' })
 })
