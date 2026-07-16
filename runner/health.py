@@ -9,10 +9,12 @@ import db
 
 
 def scores():
+    """Return all projects sorted by ascending health score (worst first)."""
     return db.select("v_project_health", {"select": "*", "order": "health_score.asc"}) or []
 
 
 def inbox():
+    """Return the unified action inbox — approvals, blockers, and alerts across all projects."""
     return db.select("v_action_inbox", {"select": "*"}) or []
 
 
