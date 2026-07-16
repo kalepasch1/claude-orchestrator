@@ -220,4 +220,6 @@ def test_accelerators_are_wired_into_delivery_paths():
     assert "patch_tournament.run_live" in dispatch_source
     assert "minimal_commit.extract" in merge_source
     assert "blocker_portfolio.scores" in db_source
+    assert 'task_patch.pop("artifact_ref", None)' in dispatch_source
+    assert 'query["select"] = "id,slug,state,artifact_commit,model,execution_lane"' in open(release_manifest.__file__, encoding="utf-8").read()
     assert "_load_env()" in open(swarm_executor.__file__, encoding="utf-8").read()

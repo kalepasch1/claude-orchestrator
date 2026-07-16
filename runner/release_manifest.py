@@ -54,11 +54,14 @@ def discover_tasks(database, project_id, repo, base_sha, candidate_sha, limit=50
     """Bind the frozen candidate to the exact merged task artifacts it contains."""
     if not project_id:
         return []
-    rows = database.select("tasks", {
-        "select": "id,slug,state,artifact_commit,artifact_ref,model,execution_lane",
-        "project_id": f"eq.{project_id}", "state": "eq.MERGED",
-        "order": "updated_at.desc", "limit": str(limit),
-    }) or []
+    query = {"select": "id,slug,state,artifact_commit,artifact_ref,model,execution_lane",
+             "project_id": f"eq.{project_id}", "state": "eq.MERGED",
+             "order": "updated_at.desc", "limit": str(limit)}
+    try:
+        rows = database.select("tasks", query) or []
+    except Exception:
+        query["select"] = "id,slug,state,artifact_commit,model,execution_lane"
+        rows = database.select("tasks", query) or []
     found = []
     for row in rows:
         if _commit_in_range(repo, row.get("artifact_commit"), base_sha, candidate_sha):

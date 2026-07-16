@@ -333,7 +333,7 @@ def _dispatch_one_api(task: dict) -> dict:
                     pass
                 db.update("tasks", {"id": task_id}, {"state": "DONE", "result": json.dumps({"artifact_id": proof.get("artifact_id")}), "note": "paired-shadow verified; mutation intentionally discarded", "execution_lane": "orchestrator_native", "updated_at": "now()"})
                 return {"task_id": task_id, "slug": slug, "status": "shadow_done", "cost_usd": cost}
-            db.update("tasks", {"id": task_id}, {
+            task_patch = {
                 "state": "DONE",
                 "result": json.dumps({"artifact_id": proof.get("artifact_id"), "commit": proof.get("commit"), "artifact_ref": proof.get("artifact_ref"), "patch_id": proof.get("patch_id"), "files": proof.get("files")}),
                 "note": f"native-verified:{result.get('coder', 'api')} commit={proof.get('commit','')[:12]} cost=${cost:.4f}",
@@ -341,7 +341,14 @@ def _dispatch_one_api(task: dict) -> dict:
                 "artifact_ref": proof.get("artifact_ref"),
                 "execution_lane": "orchestrator_native",
                 "updated_at": "now()",
-            })
+            }
+            try:
+                db.update("tasks", {"id": task_id}, task_patch)
+            except Exception:
+                # Mixed-version rollout: the immutable remote Git ref is already
+                # durable; retain it in result JSON until the additive DB column lands.
+                task_patch.pop("artifact_ref", None)
+                db.update("tasks", {"id": task_id}, task_patch)
             log.info("parallel_dispatch: DONE %s (%.4f USD)", slug, cost)
             return {"task_id": task_id, "slug": slug, "status": "done", "cost_usd": cost}
         else:

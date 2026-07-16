@@ -74,6 +74,13 @@ def capture(repo, slug, branch, base, wt, test_log="", cost=None):
     try:
         db.insert(ARTIFACTS_TABLE, row, upsert=True)
     except Exception as e:
+        # Preserve the shared replay payload on old schemas; the immutable ref
+        # itself is already published to the Git remote.
+        try:
+            compatible = {k: v for k, v in row.items() if k not in ("artifact_ref", "patch_id")}
+            db.insert(ARTIFACTS_TABLE, compatible, upsert=True)
+        except Exception:
+            pass
         # Fallback: store as JSON file locally
         try:
             art_dir = os.path.join(os.environ.get("CLAUDE_ORCH_HOME",

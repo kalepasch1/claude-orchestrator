@@ -869,7 +869,13 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
     # Rebase changes the commit SHA. Freeze the accepted integration candidate
     # before QA so attribution follows the exact commit that can reach release.
     try:
-        _task_patch(task, _freeze_integration_identity(repo, branch, task, slug))
+        frozen_identity = _freeze_integration_identity(repo, branch, task, slug)
+        try:
+            _task_patch(task, frozen_identity)
+        except Exception:
+            # The Git ref is authoritative. Keep exact-commit attribution live
+            # during rolling upgrades where artifact_ref is not in DB yet.
+            _task_patch(task, {"artifact_commit": frozen_identity["artifact_commit"]})
     except Exception as exc:
         _task_patch(task, {"state": "BLOCKED", "note": f"train: immutable integration identity failed: {str(exc)[:160]}"})
         _log(pname, slug, "BLOCKED", "immutable integration identity failed")
