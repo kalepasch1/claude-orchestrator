@@ -38,11 +38,33 @@ def _git(repo: str, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def is_nested_in(child: str, parent: str) -> bool:
+    """True if `child` lives inside `parent` (not equal to it)."""
+    child = os.path.realpath(child)
+    parent = os.path.realpath(parent)
+    if child == parent:
+        return False
+    try:
+        return os.path.commonpath([child, parent]) == parent
+    except ValueError:  # different drives / unrelated roots
+        return False
+
+
 def validate_task_worktree(repo: str, slug: str, worktree: str | None = None) -> str:
     repo = os.path.realpath(repo)
     wt = os.path.realpath(worktree or task_worktree_path(repo, slug))
     if wt == repo:
         raise WorktreeIsolationError("task worktree resolved to the primary checkout")
+    # A worktree nested inside the primary checkout is never valid, even though it
+    # "works" at first. When it is later pruned, its .git gitlink dangles and breaks
+    # `git status` repo-wide (fatal: not a git repository), which silently disables
+    # the sentinel's own dirty-check and the merge pipeline. It also gets swept by
+    # stash and can be committed as a gitlink. Observed 2026-07-16 with
+    # claude-orchestrator/claude-orchestrator-wt/agent-cade-inbound-triage.
+    if is_nested_in(wt, repo):
+        raise WorktreeIsolationError(
+            f"task worktree must be a sibling of the primary checkout, not nested inside it: {wt}"
+        )
     if not os.path.isdir(wt):
         raise WorktreeIsolationError(f"task worktree is missing: {wt}")
 
