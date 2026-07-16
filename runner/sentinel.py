@@ -171,6 +171,25 @@ def on_db_recovery():
 DRIFT_ALERT_AFTER = int(os.environ.get("SENTINEL_DRIFT_ALERT_AFTER", "3"))
 
 
+def _base_held_by_worktree(stderr):
+    """True when git refused the checkout because another worktree holds the branch."""
+    return "already used by worktree" in (stderr or "")
+
+
+def _worktree_holding(branch):
+    """Path of the worktree that has `branch` checked out, or None."""
+    out = git("worktree", "list", "--porcelain").stdout
+    path = None
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            path = line[len("worktree "):].strip()
+        elif line.startswith("branch ") and path:
+            if line[len("branch "):].strip() in (f"refs/heads/{branch}", branch):
+                if os.path.realpath(path) != os.path.realpath(REPO):
+                    return path
+    return None
+
+
 def checkout_guard(st=None):
     """Return the primary checkout to BASE_BRANCH after drift.
 
@@ -194,6 +213,23 @@ def checkout_guard(st=None):
 
     # Try the switch first: a clean-enough tree needs no stash at all.
     r = git("checkout", BASE_BRANCH)
+
+    if r.returncode != 0 and _base_held_by_worktree(r.stderr):
+        # git refuses: "fatal: 'master' is already used by worktree at <path>".
+        # No amount of stashing fixes this, so the old code would have retried
+        # forever. Observed 2026-07-16: a leftover worktree holding master blocked
+        # every restore for ~10min while drift kept re-parking the tree.
+        # A stale admin entry is safely reclaimable; a live one is not ours to yank.
+        git("worktree", "prune")
+        r = git("checkout", BASE_BRANCH)
+        if r.returncode != 0:
+            holder = _worktree_holding(BASE_BRANCH)
+            emit("base-branch-held", branch=BASE_BRANCH, holder=holder)
+            log("base-branch-held",
+                f"cannot restore {BASE_BRANCH}: held by worktree at {holder or 'unknown'} — "
+                f"remove it (git worktree remove) or the primary checkout stays drifted")
+            return
+
     if r.returncode != 0:
         # Stash TRACKED modifications only, so a dirty tree can't wedge us forever.
         if git("status", "--porcelain", "--untracked-files=no").stdout.strip():

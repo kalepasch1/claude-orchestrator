@@ -144,3 +144,58 @@ class TestEscalation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBaseBranchHeldByWorktree(unittest.TestCase):
+    """A worktree holding the base branch made restore structurally impossible.
+
+    2026-07-16: a leftover worktree had master checked out, so every
+    `git checkout master` in the primary failed with
+    'fatal: master is already used by worktree at <path>'. No amount of stashing
+    fixes that, so the guard retried forever while drift kept re-parking the tree.
+    """
+
+    def test_prunes_stale_worktree_then_recovers(self):
+        state = {"pruned": False}
+
+        def git_impl(*args):
+            if args[:2] == ("branch", "--show-current"):
+                return _R(stdout="agent/x\n")
+            if args[:2] == ("worktree", "prune"):
+                state["pruned"] = True
+                return _R()
+            if args[0] == "checkout":
+                if state["pruned"]:
+                    return _R()  # stale entry gone -> checkout succeeds
+                return _R(returncode=1,
+                          stderr="fatal: 'master' is already used by worktree at /tmp/stale")
+            return _R()
+
+        calls, _ = _guard(git_impl)
+        self.assertTrue(state["pruned"], "should prune stale worktree admin entries")
+        self.assertTrue(any(c[:2] == ("worktree", "prune") for c in calls))
+
+    def test_live_worktree_is_named_not_yanked(self):
+        """A live worktree is someone else's work — alert, never force-remove."""
+        def git_impl(*args):
+            if args[:2] == ("branch", "--show-current"):
+                return _R(stdout="agent/x\n")
+            if args[0] == "checkout":
+                return _R(returncode=1,
+                          stderr="fatal: 'master' is already used by worktree at /tmp/live")
+            if args[:2] == ("worktree", "list"):
+                return _R(stdout="worktree /tmp/live\nbranch refs/heads/master\n")
+            return _R()
+
+        calls, _ = _guard(git_impl)
+        # never destroys the blocking worktree
+        self.assertFalse(any(c[:2] == ("worktree", "remove") for c in calls))
+        # and does not pointlessly stash: stashing cannot fix a held branch
+        self.assertFalse(any(c and c[0] == "stash" for c in calls))
+
+    def test_helper_detects_git_refusal(self):
+        self.assertTrue(sentinel._base_held_by_worktree(
+            "fatal: 'master' is already used by worktree at /tmp/x"))
+        self.assertFalse(sentinel._base_held_by_worktree("error: local changes"))
+        self.assertFalse(sentinel._base_held_by_worktree(""))
+        self.assertFalse(sentinel._base_held_by_worktree(None))
