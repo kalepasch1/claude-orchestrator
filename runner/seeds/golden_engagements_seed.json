@@ -1,0 +1,38 @@
+{
+  "matter_id": "cftc-prediction-markets-2026",
+  "title": "Prediction Markets; Public Interest Determinations",
+  "agency": "CFTC",
+  "stages": [
+    {
+      "name": "anprm",
+      "stage_input": "CFTC issues ANPRM on event contracts",
+      "real_next_document": "91 FR 12516",
+      "real_outcome": "Public comment period opened"
+    },
+    {
+      "name": "nprm",
+      "stage_input": "CFTC publishes NPRM based on ANPRM comments",
+      "real_next_document": "FR doc 2026-11854 (91 FR 35806)",
+      "real_outcome": "Proposed rule for public interest determinations"
+    },
+    {
+      "name": "related_nprm",
+      "stage_input": "Related NPRM on event contract amendments",
+      "real_next_document": "FR doc 2026-13239",
+      "real_outcome": "Additional proposed amendments"
+    },
+    {
+      "name": "comment_period",
+      "stage_input": "Public comment period on NPRM",
+      "real_next_document": null,
+      "real_outcome": "Awaiting comments and final rule"
+    }
+  ],
+  "metadata": {
+    "fr_doc_number": "2026-11854",
+    "fr_citation": "91 FR 35806",
+    "publication_date": "2026-06-12",
+    "anprm_citation": "91 FR 12516",
+    "related_nprm_doc": "2026-13239"
+  }
+}
