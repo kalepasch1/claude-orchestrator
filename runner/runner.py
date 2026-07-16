@@ -2405,6 +2405,7 @@ _SCHEDULE = [
     ("fleet-topo-600",     "fleet_topology_tick.py",    "interval", 600),   # fleet topology optimization recommendations
     ("sub-recommend-3600", "sub_recommend_tick.py",     "interval", 3600),  # hourly subscription cost/value analysis
     ("serviceagent-120",   "service_agent.py",          "interval", 120),   # proactive health fixer (throttle drift, merge starvation)
+    ("rtmon-300",          "realtime_approval_monitor.py","interval", 300),  # realtime approval monitor polling fallback (every 5 min)
 ]
 _sched_last: dict = {}
 

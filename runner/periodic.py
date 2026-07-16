@@ -668,6 +668,12 @@ def run_priority_scorer():
     priority_scorer.run()
 
 
+def run_rtmon():
+    """Realtime approval monitor polling fallback (every 5 min)."""
+    import realtime_approval_monitor
+    realtime_approval_monitor.run()
+
+
 def run_quarantine_gc():
     """GC non-recoverable quarantined tasks (PATCH TEMPLATE, dedup) to reduce scan noise."""
     import quarantine_gc
@@ -793,6 +799,7 @@ JOBS = {
     "commonbrain": run_commonbrain,
     "priority_scorer": run_priority_scorer,
     "quarantine_gc": run_quarantine_gc,
+    "rtmon": run_rtmon,
 }
 
 if __name__ == "__main__":
