@@ -806,6 +806,7 @@ watch(slug, () => { refreshInsights() })
                 :outcome="insightsForActive[0]?.outcome"
                 @use-prompt="useCadePrompt"
               />
+              <OutcomeIntelligenceLive :app="APPS.find(a => a.id === selectedApp)?.name || selectedApp" :capability="cap.name" :project-id="selectedProject" />
               <ProofTimeline :tasks="recentTasks" :deployments="recentDeploys" :capability="cap.name" />
               <div class="flex items-end justify-between gap-4">
                 <div>
