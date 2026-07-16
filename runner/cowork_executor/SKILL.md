@@ -211,6 +211,7 @@ SELECT release_branch_execution_lease(
 ### 3g. Mark DONE
 ```sql
 UPDATE tasks SET state='DONE',
+  artifact_branch='agent/{slug}',
   note='cowork-executor-v6: implemented and pushed'
 WHERE id='{id}';
 ```
