@@ -56,26 +56,49 @@ def attempt_auto_rebase(branch, base, repo_path):
 
     Only attempts trivial rebases (no conflict markers). Aborts on any
     conflict and restores the original state.
+
+    repo_path is the project's PRIMARY checkout (projects.repo_path), so this
+    function must always put it back on the branch it found. It previously
+    checked out `branch` and never returned, parking the primary tree on an
+    agent branch indefinitely — 1001 checkout-drift events by 2026-07-16. That
+    drift is load-bearing: while parked on an agent branch, the repo runs that
+    branch's code and honours that branch's .gitignore, so fixes committed to
+    master are silently inert exactly when they are needed.
     """
     if not ENABLED or not repo_path or not os.path.isdir(repo_path):
+        return False
+
+    rc, original = _git("branch", "--show-current", cwd=repo_path)
+    if rc != 0 or not original:
+        # Detached HEAD or unreadable: we cannot promise to restore it, so don't move it.
+        log.info("auto-rebase skipped for %s: cannot determine current branch", branch)
         return False
 
     rc, _ = _git("checkout", branch, cwd=repo_path)
     if rc != 0:
         return False
 
-    rc, out = _git("rebase", base, cwd=repo_path)
-    if rc != 0:
-        _git("rebase", "--abort", cwd=repo_path)
-        with _lock:
-            _stats["rebase_failures"] += 1
-        log.info("auto-rebase failed for %s onto %s: %s", branch, base, out[:200])
-        return False
+    try:
+        rc, out = _git("rebase", base, cwd=repo_path)
+        if rc != 0:
+            _git("rebase", "--abort", cwd=repo_path)
+            with _lock:
+                _stats["rebase_failures"] += 1
+            log.info("auto-rebase failed for %s onto %s: %s", branch, base, out[:200])
+            return False
 
-    with _lock:
-        _stats["rebase_successes"] += 1
-    log.info("auto-rebase succeeded for %s onto %s", branch, base)
-    return True
+        with _lock:
+            _stats["rebase_successes"] += 1
+        log.info("auto-rebase succeeded for %s onto %s", branch, base)
+        return True
+    finally:
+        # Always hand the primary checkout back exactly as we found it.
+        back, _ = _git("checkout", original, cwd=repo_path)
+        if back != 0:
+            log.warning(
+                "auto-rebase could not restore %s to '%s' — primary checkout left on '%s'",
+                repo_path, original, branch,
+            )
 
 
 def serialize_conflicting_task(task, blocking_slug):
