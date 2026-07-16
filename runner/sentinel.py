@@ -7,9 +7,12 @@ required a human session, so the orchestrator never sits broken:
                         MODE: runs the DB-independent git deploy sweep (rate-limited) so
                         deployments continue; on recovery re-ingests intake drops and
                         re-asserts the fleet_config baseline.
-  2. Checkout drift  -> main repo parked on an agent branch (aborted rebase etc.): stash any
-                        dirt, return to the canonical base branch, ff-pull. (Root cause of the
-                        2026-07-08/09 stale-code incidents.)
+  2. Checkout drift  -> main repo parked on an agent branch (aborted rebase etc.): return to
+                        the canonical base branch, ff-pull. Stashes TRACKED dirt only if the
+                        switch is actually blocked, and never untracked files. Escalates after
+                        3 consecutive failures instead of retrying silently forever.
+                        (Root cause of the 2026-07-08/09 stale-code incidents; its own -u stash
+                        was the root cause of the 07-08..16 intake-drop losses.)
   3. Runner health   -> 0 runners: kickstart the launchd service. >1 runner/keepalive:
                         kill the orphans (SIGKILL; supervisor-lock holder wins).
   4. RAM clamp       -> free RAM under floor+2GB with a big local model loaded: unload the
@@ -165,23 +168,99 @@ def on_db_recovery():
 
 # ── 2. checkout drift guard ───────────────────────────────────────────────────
 
-def checkout_guard():
+DRIFT_ALERT_AFTER = int(os.environ.get("SENTINEL_DRIFT_ALERT_AFTER", "3"))
+
+
+def checkout_guard(st=None):
+    """Return the primary checkout to BASE_BRANCH after drift.
+
+    NEVER stashes untracked files. `git stash push -u` here destroyed 282 batches of
+    queued work (2026-07-08..16): every intake drop landing in the ~2min window between
+    a drop and a sentinel tick was swept into a stash and silently lost. Untracked files
+    are also not what blocks a branch switch, so -u bought nothing. If a genuine untracked
+    collision ever does block the checkout, we now alert instead of destroying the file.
+    """
+    st = {} if st is None else st
     gitdir = os.path.join(REPO, ".git")
     if any(os.path.isdir(os.path.join(gitdir, d)) for d in ("rebase-merge", "rebase-apply")):
         return  # a rebase is genuinely in progress somewhere — do not interfere
     branch = git("branch", "--show-current").stdout.strip()
     if branch == BASE_BRANCH:
+        st.pop("drift_fail_count", None)
+        st.pop("drift_branch", None)
         git("pull", "--ff-only", "origin", BASE_BRANCH, timeout=180)
         return
     log("checkout-drift", f"main checkout on '{branch}' — restoring {BASE_BRANCH}")
-    if git("status", "--porcelain").stdout.strip():
-        git("stash", "push", "-u", "-m", f"sentinel-drift-{branch}-{int(time.time())}")
+
+    # Try the switch first: a clean-enough tree needs no stash at all.
     r = git("checkout", BASE_BRANCH)
     if r.returncode != 0:
-        log("checkout-failed", r.stderr[-120:])
+        # Stash TRACKED modifications only, so a dirty tree can't wedge us forever.
+        if git("status", "--porcelain", "--untracked-files=no").stdout.strip():
+            git("stash", "push", "-m", f"sentinel-drift-{branch}-{int(time.time())}")
+            r = git("checkout", BASE_BRANCH)
+
+    if r.returncode != 0:
+        # Still stuck. Count consecutive failures and escalate rather than spin silently:
+        # the old code logged and returned every 2min for 8 days with nobody notified.
+        n = int(st.get("drift_fail_count", 0)) + 1 if st.get("drift_branch") == branch else 1
+        st["drift_fail_count"] = n
+        st["drift_branch"] = branch
+        log("checkout-failed", f"attempt {n} on '{branch}': {r.stderr[-160:]}")
+        if n >= DRIFT_ALERT_AFTER:
+            emit("checkout-wedged", branch=branch, attempts=n, stderr=r.stderr[-400:])
+            log("checkout-wedged",
+                f"primary checkout stuck on '{branch}' after {n} attempts — human needed")
         return
+
+    st.pop("drift_fail_count", None)
+    st.pop("drift_branch", None)
     git("pull", "--ff-only", "origin", BASE_BRANCH, timeout=180)
     log("checkout-restored", BASE_BRANCH)
+
+
+# ── 2b. nested-worktree hygiene ───────────────────────────────────────────────
+
+QUARANTINE = os.path.join(os.path.dirname(REPO), "_quarantine")
+
+
+def nested_worktree_guard():
+    """Quarantine agent worktrees nested inside the primary checkout.
+
+    A worktree here works until it is pruned; then its `.git` gitlink points at a
+    gitdir that no longer exists and EVERY `git status` in the repo dies with
+    'fatal: not a git repository'. That silently disables the sentinel's own
+    dirty-check, the merge pipeline, and anything else shelling out to git.
+    Worktrees belong in the sibling `<repo>-wt/` (see worktree_isolation.py).
+
+    We move rather than delete: a dangling worktree has no gitdir, so git cannot
+    tell us whether it holds uncommitted work. Never destroy what we can't inspect.
+    """
+    for root in (os.path.join(REPO, os.path.basename(REPO) + "-wt"),):
+        if not os.path.isdir(root):
+            continue
+        for name in sorted(os.listdir(root)):
+            wt = os.path.join(root, name)
+            link = os.path.join(wt, ".git")
+            if not os.path.isfile(link):
+                continue
+            try:
+                with open(link) as f:
+                    gitdir = f.read().strip().removeprefix("gitdir:").strip()
+            except OSError:
+                continue
+            if os.path.isdir(gitdir):
+                log("nested-worktree-live", f"{wt} is nested but still live — leaving alone")
+                emit("nested-worktree-live", path=wt)
+                continue
+            try:
+                os.makedirs(QUARANTINE, exist_ok=True)
+                dest = os.path.join(QUARANTINE, f"{name}-{int(time.time())}")
+                os.rename(wt, dest)
+                log("nested-worktree-quarantined", f"{wt} (dangling gitdir) -> {dest}")
+                emit("nested-worktree-quarantined", path=wt, dest=dest)
+            except OSError as e:
+                log("nested-worktree-quarantine-failed", f"{wt}: {e}")
 
 
 # ── 3. runner singleton guard ─────────────────────────────────────────────────
@@ -374,7 +453,11 @@ def main():
     was_down = int(st.get("db_misses", 0)) >= DB_DOWN_THRESHOLD
     st["db_misses"] = 0 if up else int(st.get("db_misses", 0)) + 1
     try:
-        checkout_guard()
+        nested_worktree_guard()  # before checkout_guard: it repairs `git status` itself
+    except Exception as e:
+        log("nested-worktree-guard-error", e)
+    try:
+        checkout_guard(st)
     except Exception as e:
         log("checkout-guard-error", e)
     try:
