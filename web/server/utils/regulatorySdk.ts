@@ -30,5 +30,6 @@ export function createRegulatoryPolicyClient(options: { baseUrl: string; fleetSe
     measureObligation(input: Record<string, any>) { return invoke({ action: 'obligation', ...input }) },
     recordAuthoritySource(input: Record<string, any>) { return invoke({ action: 'authority_source', ...input }) },
     recordFeedbackOutcome(input: Record<string, any>) { return invoke({ action: 'feedback_outcome', ...input }) },
+    recordLaunchTelemetry(input: Record<string, any>) { return invoke({ action: 'launch_telemetry', ...input, explicit_approval: false }) },
   }
 }

@@ -4,6 +4,7 @@ import { appBaseUrl, serviceClient } from './fleetSupabase'
 import { runTemporalRegulatoryAutopilot } from './regulatoryTemporal'
 import { frontierCockpit, runRegulatoryFrontierAutopilot } from './regulatoryFrontier'
 import { opportunityCockpit, runRegulatoryOpportunityAutopilot } from './regulatoryOpportunity'
+import { executionCockpit, runRegulatoryExecutionAutopilot } from './regulatoryExecution'
 
 type ActivitySource = {
   source_type?: string
@@ -310,6 +311,7 @@ export async function runRegulatoryAutopilot(organizationId: string, trigger: 's
   const temporal = await runTemporalRegulatoryAutopilot(organizationId)
   const frontier = await runRegulatoryFrontierAutopilot(organizationId)
   const opportunity = await runRegulatoryOpportunityAutopilot(organizationId)
+  const execution = await runRegulatoryExecutionAutopilot(organizationId)
   const outcomes = [
     assessmentsCreated ? { kind: 'regulatory', title: `${assessmentsCreated} activity boundar${assessmentsCreated === 1 ? 'y' : 'ies'} checked` } : null,
     pathsUpdated ? { kind: 'readiness', title: `${pathsUpdated} license path${pathsUpdated === 1 ? '' : 's'} refreshed` } : null,
@@ -317,6 +319,7 @@ export async function runRegulatoryAutopilot(organizationId: string, trigger: 's
     temporal.obligations_at_risk ? { kind: 'agreement', title: `${temporal.obligations_at_risk} agreement obligation${temporal.obligations_at_risk === 1 ? '' : 's'} need attention` } : null,
     frontier.systemic_risk_score >= 50 ? { kind: 'resilience', title: 'A concentrated relationship dependency needs attention' } : null,
     opportunity.counterfactuals_updated ? { kind: 'opportunity', title: `${opportunity.counterfactuals_updated} lawful-market unlock${opportunity.counterfactuals_updated === 1 ? '' : 's'} refreshed` } : null,
+    execution.attention_allocations_updated ? { kind: 'supervision', title: `${execution.attention_allocations_updated} high-value review allocation${execution.attention_allocations_updated === 1 ? '' : 's'} refreshed` } : null,
   ].filter(Boolean)
   const exceptions = [
     ...(relationshipAlerts ? [{ kind: 'relationship', severity: 'high', title: 'Activity outside current relationship coverage', outcome: `${relationshipAlerts} change${relationshipAlerts === 1 ? '' : 's'} contained pending review.` }] : []),
@@ -342,6 +345,7 @@ export async function regulatoryCockpit(user: any) {
   try { autopilot = await runRegulatoryAutopilot(organizationId, 'session') } catch {}
   const frontier = await frontierCockpit(organizationId)
   const opportunity = await opportunityCockpit(organizationId)
+  const execution = await executionCockpit(organizationId)
   let { data: profile } = await sb.from('regulatory_capability_profiles').select('*').eq('organization_id', organizationId).maybeSingle()
   if (!profile) {
     const created = await sb.from('regulatory_capability_profiles').upsert({ organization_id: organizationId, updated_by: user.id }).select().single()
@@ -369,6 +373,7 @@ export async function regulatoryCockpit(user: any) {
     evidence_rooms: evidenceRooms.data || [], feature_controls: featureControls.data || [], strategy_options: strategyOptions.data || [],
     frontier,
     opportunity,
+    execution,
     summary: {
       active_relationships: (relationships.data || []).filter((item: any) => item.status === 'active').length,
       application_ready: (paths.data || []).filter((item: any) => item.simulation_status === 'application_ready').length,
