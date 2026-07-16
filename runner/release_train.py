@@ -39,6 +39,7 @@ RELEASE_FIX_PREFIXES = ("relfix-", "buildfix-", "deployfix-")
 QA_FIX_PREFIXES = ("qafix-",)
 COPY_FIX_PREFIXES = ("copyfix-",)
 RED_GATE_COOLDOWN_MIN = float(os.environ.get("ORCH_RELEASE_RED_GATE_COOLDOWN_MIN", "180"))
+QA_EVIDENCE_CHARS_PER_STREAM = 12000
 
 # release_kpi writes this: the set of apps whose recent prod deploys keep failing, so we promote their
 # tests to a HARD release gate until they recover (self-tuning loop). Read fail-soft.
@@ -453,7 +454,11 @@ def _qa_ref(repo, ref, command, timeout=1800):
                 return False, "Nuxt type preparation failed:\n" + prepare_log
             result = subprocess.run(["bash", "-lc", command], cwd=worktree, capture_output=True,
                                     text=True, timeout=timeout)
-            log = ((result.stdout or "")[-6000:] + "\n" + (result.stderr or "")[-6000:]).strip()
+            log = (
+                (result.stdout or "")[-QA_EVIDENCE_CHARS_PER_STREAM:]
+                + "\n"
+                + (result.stderr or "")[-QA_EVIDENCE_CHARS_PER_STREAM:]
+            ).strip()
             return result.returncode == 0, f"overlay:{overlay['commit'][:12]} {log}"
     except subprocess.TimeoutExpired:
         return False, f"tests timed out after {timeout}s"
@@ -786,7 +791,11 @@ def _run_for_unlocked(project, repo_override=None):
             qa = subprocess.CompletedProcess(qa_cmd, 1, "", f"QA overlay failed: {exc}")
             ok = False
         if not ok:
-            qlog = ((qa.stdout or "")[-5000:] + "\n" + (qa.stderr or "")[-5000:]).strip()
+            qlog = (
+                (qa.stdout or "")[-QA_EVIDENCE_CHARS_PER_STREAM:]
+                + "\n"
+                + (qa.stderr or "")[-QA_EVIDENCE_CHARS_PER_STREAM:]
+            ).strip()
             if _truthy("ORCH_DIFFERENTIAL_QA", True):
                 try:
                     import differential_qa
@@ -803,7 +812,11 @@ def _run_for_unlocked(project, repo_override=None):
                 except Exception:
                     pass
         if not ok:
-            qlog = ((qa.stdout or "")[-5000:] + "\n" + (qa.stderr or "")[-5000:]).strip()
+            qlog = (
+                (qa.stdout or "")[-QA_EVIDENCE_CHARS_PER_STREAM:]
+                + "\n"
+                + (qa.stderr or "")[-QA_EVIDENCE_CHARS_PER_STREAM:]
+            ).strip()
             _self_heal_qa(p, project, repo, STAGING, qlog)
             _insert_failed_release(project, "qa", ahead, release_base_sha, staging_sha,
                                    f"staging QA failed (tests required) — self-heal queued: {qlog[-160:]}")

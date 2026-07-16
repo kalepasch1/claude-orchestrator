@@ -14,6 +14,8 @@ _LOC = re.compile(r"(?<=[:(])\d+(?=[:),])")
 _HASH = re.compile(r"\b[0-9a-f]{12,40}\b", re.I)
 _SIGNAL = re.compile(r"error|fail|assert|TS\d{4}|✖|×|not assignable|cannot find", re.I)
 _INFRA = re.compile(r"timed out|timeout|ENOMEM|out of memory|killed|cannot find module|module not found|command not found|dependency prewarm", re.I)
+_CACHE_SCHEMA = "v2-equal-qa-evidence"
+_CACHE_LOG_CHARS = 24000
 
 
 def signatures(log):
@@ -60,7 +62,7 @@ def _cache_path():
 
 
 def cache_key(repo, ref, command):
-    raw = f"{os.path.realpath(repo)}\0{ref}\0{command}"
+    raw = f"{_CACHE_SCHEMA}\0{os.path.realpath(repo)}\0{ref}\0{command}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -81,7 +83,7 @@ def store(repo, ref, command, ok, log):
         except Exception:
             data = {}
         data[cache_key(repo, ref, command)] = {
-            "at": time.time(), "ok": bool(ok), "log": str(log or "")[-12000:]}
+            "at": time.time(), "ok": bool(ok), "log": str(log or "")[-_CACHE_LOG_CHARS:]}
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as target:
             json.dump(data, target)

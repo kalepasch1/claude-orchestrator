@@ -18,3 +18,10 @@ def test_new_candidate_failure_is_blocked():
 def test_timeout_and_dependency_failures_are_never_waived():
     assert differential_qa.compare("tests timed out after 300s", "tests timed out after 300s")["allowed"] is False
     assert differential_qa.compare("Cannot find module vue", "Cannot find module vue")["allowed"] is False
+
+
+def test_cache_key_changes_with_evidence_schema():
+    key = differential_qa.cache_key("/tmp/repo", "abc123", "npm test")
+    assert key != __import__("hashlib").sha256(
+        b"/tmp/repo\0abc123\0npm test"
+    ).hexdigest()
