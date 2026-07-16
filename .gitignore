@@ -32,3 +32,14 @@ runner/.env.pre-symlink-merge-*
 
 runner/*.bak.wedgefix
 runner/.preopt_cache/
+
+# Intake drops + their receipts are ephemeral queue state, never tracked.
+# Untracked-and-not-ignored made sentinel's `git stash push -u` sweep every
+# drop into a stash within ~2.5min of landing (282 sentinel-drift stashes).
+intake/*.md
+intake/processed/*.md
+
+# Agent worktrees must never live inside the primary checkout: a committed
+# gitlink here dangles as soon as the worktree is pruned, which breaks
+# `git status` repo-wide (fatal: not a git repository).
+claude-orchestrator-wt/
