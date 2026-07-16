@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { deriveDecisionBrief } from '~/utils/decisionBrief'
+import type { LogLine } from '~/types/log'
 definePageMeta({ layout: 'default', alias: ['/index'] })
 
 const supabase = useSupabaseClient<any>()
@@ -21,6 +22,23 @@ const lastRoute = ref<any>(null)
 const stopLoading = ref(false)
 const globalPaused = ref(false)
 const approvalError = ref('')
+
+// ── run_logs realtime ring buffer ────────────────────────────────────────────
+const LOG_RING_MAX = 500
+const logLines = ref<LogLine[]>([])
+
+function pushLogRow(row: { ts?: string; level?: string; source?: string; message?: string }) {
+  const line: LogLine = {
+    ts: row.ts ?? new Date().toISOString(),
+    level: (['debug', 'info', 'warn', 'error'].includes(row.level ?? '') ? row.level : 'info') as LogLine['level'],
+    source: row.source ?? undefined,
+    message: row.message ?? '',
+  }
+  const buf = logLines.value
+  buf.push(line)
+  // trim to ring-buffer cap (slice from end to keep recent)
+  if (buf.length > LOG_RING_MAX) logLines.value = buf.slice(buf.length - LOG_RING_MAX)
+}
 function signalOutcome(tone: 'success' | 'error', title: string, detail: string) { if (import.meta.client) window.dispatchEvent(new CustomEvent('madeus:outcome', { detail: { tone, title, detail } })) }
 
 async function authedFetch<T = any>(url: string, opts: any = {}): Promise<T> {
@@ -116,12 +134,27 @@ async function togglePause() {
 
 let refreshTimer: any
 let realtimeSub: any
+let logSub: any
 onMounted(async () => {
   if (user.value) await loadAll()
   refreshTimer = setInterval(() => { if (user.value) loadAll() }, 30_000)
   realtimeSub = supabase.channel('command-center-live').on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, loadAll).on('postgres_changes', { event: '*', schema: 'public', table: 'approvals' }, loadAll).subscribe()
+
+  // seed with recent log rows then subscribe to inserts
+  if (user.value) {
+    const { data: seed } = await supabase.from('run_logs').select('ts,level,source,message').order('ts', { ascending: false }).limit(LOG_RING_MAX)
+    if (seed && seed.length) {
+      // seed comes newest-first; reverse so oldest is at index 0
+      seed.reverse().forEach((r: any) => pushLogRow(r))
+    }
+  }
+  logSub = supabase.channel('run-logs-live')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'run_logs' }, (payload: any) => {
+      pushLogRow(payload.new)
+    })
+    .subscribe()
 })
-onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer); if (realtimeSub) supabase.removeChannel(realtimeSub) })
+onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer); if (realtimeSub) supabase.removeChannel(realtimeSub); if (logSub) supabase.removeChannel(logSub) })
 watch(user, async value => { if (value) await loadAll() })
 </script>
 
@@ -199,6 +232,11 @@ watch(user, async value => { if (value) await loadAll() })
             <div v-if="expandedTask === task.id" class="activity-detail"><p>{{ task.prompt?.replace(/# User objective\s*/i, '').slice(0, 360) }}</p><div><span>Routing</span>{{ task.model || 'Autopilot selecting the best available route' }}</div><div><span>Execution note</span>{{ task.note || 'Preparing execution context' }}</div></div>
           </article>
         </div>
+      </section>
+
+      <section class="section-block">
+        <div class="section-heading"><div><span class="eyebrow">Fleet telemetry</span><h2>Live log stream</h2></div></div>
+        <LogView :lines="logLines" title="Run logs" :max-lines="LOG_RING_MAX" height="24rem" />
       </section>
     </main>
   </div>
