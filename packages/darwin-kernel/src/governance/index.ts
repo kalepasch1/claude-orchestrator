@@ -34,3 +34,4 @@ export function governAction(params: {
   });
   return { verdict, receipt };
 }
+export * from './receiptProjection.ts';
