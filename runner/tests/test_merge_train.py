@@ -63,6 +63,8 @@ class TrainCase(unittest.TestCase):
             patch.object(merge_train, "_run_tests", return_value=(True, "green")),
             patch.object(merge_train, "_ff_base", return_value=True),
             patch.object(merge_train, "_push_base", return_value=""),
+            patch.object(merge_train, "_freeze_integration_identity",
+                         return_value={"artifact_commit": "rebased-sha", "artifact_ref": "refs/orchestrator/integrations/t1/0001/proof"}),
             patch.object(merge_train, "_delete_branch", return_value=None),
             patch.object(merge_train.approval_merge, "_free_branch", return_value=None),
             patch.object(merge_train, "_paused", return_value=False),

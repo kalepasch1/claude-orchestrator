@@ -289,7 +289,10 @@ def _dispatch_one_api(task: dict) -> dict:
 
         tournament_on = os.environ.get("ORCH_PATCH_TOURNAMENT", "true").lower() in ("1", "true", "yes", "on")
         release_fix = str(task.get("slug") or "").startswith(("qafix-", "buildfix-", "relfix-", "deployfix-", "toolchain-repair-"))
-        if tournament_on and release_fix and cwd:
+        recovery_or_high_risk = (int(task.get("transient_retries") or 0) > 0
+            or str(task.get("kind") or "").lower() in ("build-fix", "release-fix", "recovery")
+            or bool(task.get("material")))
+        if tournament_on and (release_fix or recovery_or_high_risk) and cwd:
             import patch_tournament, provider_credentials
             providers = [p for p in ("xai", "deepseek", "groq", "openai", "google")
                          if p in swarm_executor.PROVIDERS and provider_credentials.has(p)]
@@ -316,7 +319,8 @@ def _dispatch_one_api(task: dict) -> dict:
                 base_ref=task.get("base_branch") or project_row.get("default_base") or "HEAD",
                 test_cmd=project_row.get("test_cmd") or "",
                 materialize=not bool(task.get("shadow_only")),
-                timeout=int(os.environ.get("ORCH_NATIVE_VERIFY_TIMEOUT", "900")))
+                timeout=int(os.environ.get("ORCH_NATIVE_VERIFY_TIMEOUT", "900")),
+                task_id=task_id, attempt=task.get("attempt") or 1)
             if not proof.get("ok"):
                 db.update("tasks", {"id": task_id}, {"state": "QUEUED", "account": None,
                     "note": f"native-proof-{proof.get('stage')}: {proof.get('detail','')[:220]}", "updated_at": "now()"})
@@ -331,9 +335,10 @@ def _dispatch_one_api(task: dict) -> dict:
                 return {"task_id": task_id, "slug": slug, "status": "shadow_done", "cost_usd": cost}
             db.update("tasks", {"id": task_id}, {
                 "state": "DONE",
-                "result": json.dumps({"artifact_id": proof.get("artifact_id"), "commit": proof.get("commit"), "files": proof.get("files")}),
+                "result": json.dumps({"artifact_id": proof.get("artifact_id"), "commit": proof.get("commit"), "artifact_ref": proof.get("artifact_ref"), "patch_id": proof.get("patch_id"), "files": proof.get("files")}),
                 "note": f"native-verified:{result.get('coder', 'api')} commit={proof.get('commit','')[:12]} cost=${cost:.4f}",
                 "artifact_commit": proof.get("commit"), "artifact_branch": proof.get("branch"),
+                "artifact_ref": proof.get("artifact_ref"),
                 "execution_lane": "orchestrator_native",
                 "updated_at": "now()",
             })

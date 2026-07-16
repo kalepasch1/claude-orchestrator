@@ -52,7 +52,11 @@ def record_release(repo: str, release: dict, success: bool, provider="", url="")
 
 def record_verification(repo: str, commit: str, command: str, kind: str, success: bool) -> dict:
     """Record an exact commit+dependency proof for safe verification reuse."""
-    row = {"at": time.time(), "type": "verification", "repo": os.path.basename(repo.rstrip(os.sep)),
+    capsule = hashlib.sha256(json.dumps({"repo": os.path.basename(repo.rstrip(os.sep)),
+        "commit": commit, "dependency_fingerprint": dependency_fingerprint(repo),
+        "command": command, "kind": kind}, sort_keys=True).encode()).hexdigest()
+    row = {"at": time.time(), "type": "verification", "capsule_id": capsule,
+           "repo": os.path.basename(repo.rstrip(os.sep)),
            "commit": commit, "dependency_fingerprint": dependency_fingerprint(repo),
            "command": command, "kind": kind, "success": bool(success)}
     os.makedirs(os.path.dirname(_path()), exist_ok=True)

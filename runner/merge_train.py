@@ -117,6 +117,21 @@ def _task_patch(task, patch):
     db.update("tasks", {"id": task["id"]}, patch)
 
 
+def _freeze_integration_identity(repo, branch, task, slug):
+    """Freeze the post-rebase candidate before any QA or base mutation."""
+    import task_refs
+    rebased_result = _git(repo, "rev-parse", branch)
+    if rebased_result.returncode:
+        raise RuntimeError(rebased_result.stderr[-160:] or "rebased commit missing")
+    rebased = rebased_result.stdout.strip()
+    identity = task_refs.publish(repo, task.get("id") or slug,
+                                 task.get("attempt") or 1, rebased,
+                                 namespace="integrations")
+    if not identity.get("ok"):
+        raise RuntimeError(identity.get("reason") or "integration ref failed")
+    return {"artifact_commit": rebased, "artifact_ref": identity["ref"]}
+
+
 def _refresh_base(repo, base):
     """Step 1: make sure our view of the base is fresh (best-effort fetch from origin)."""
     try:
@@ -622,9 +637,15 @@ def _select_batch(group):
                           {"decided_by": f"{MARK}:dup-card", "status": "approved"})
             except Exception:
                 pass
+    try:
+        import blocker_portfolio
+        value_scores = blocker_portfolio.scores([task for _, _, task in newest_by_slug.values()])
+    except Exception:
+        value_scores = {}
     annotated = [(card, slug, task, _risk_level(card, task))
                  for card, slug, task in newest_by_slug.values()]
     annotated.sort(key=lambda e: ({"low": 0, "standard": 1, "sensitive": 2}[e[3]],
+                                  -value_scores.get(str(e[2].get("id") or e[2].get("slug") or ""), 0),
                                   str(e[0].get("created_at") or "")))
     return annotated
 
@@ -845,6 +866,14 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
             return "conflict"
 
     test_cmd = _test_cmd_for(proj, repo)
+    # Rebase changes the commit SHA. Freeze the accepted integration candidate
+    # before QA so attribution follows the exact commit that can reach release.
+    try:
+        _task_patch(task, _freeze_integration_identity(repo, branch, task, slug))
+    except Exception as exc:
+        _task_patch(task, {"state": "BLOCKED", "note": f"train: immutable integration identity failed: {str(exc)[:160]}"})
+        _log(pname, slug, "BLOCKED", "immutable integration identity failed")
+        return "conflict"
     ok, tail = _run_tests(repo, test_cmd, branch)  # (3) branch-exact, never primary checkout
     if not ok and os.environ.get("ORCH_DIFFERENTIAL_QA", "true").lower() in ("1", "true", "yes", "on"):
         try:

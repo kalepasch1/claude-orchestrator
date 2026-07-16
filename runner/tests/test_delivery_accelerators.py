@@ -14,6 +14,8 @@ import selective_qa
 import merge_train
 import queue_velocity
 import db
+import task_refs
+import patch_recovery
 
 
 def git(repo, *args):
@@ -133,6 +135,36 @@ def test_patch_tournament_blinds_identity_and_prefers_valid_deployed_value():
     empty = patch_tournament.choose([{"provider": "xai", "model": "grok", "patch": ""}])
     assert empty["winner"] is None
     assert set(empty["ranking"][0]) == {"anonymous_id", "score"}
+    red = patch_tournament.choose([{"provider": "xai", "patch": "diff --git a/a b/a\n",
+                                    "applies": True, "tests_passed": False}])
+    assert red["winner"] is None
+
+
+def test_immutable_task_refs_survive_mutable_branch_rewrite(tmp_path):
+    repo = init_repo(tmp_path)
+    (repo / "a.txt").write_text("base\n"); git(repo, "add", "."); git(repo, "commit", "-m", "base")
+    (repo / "a.txt").write_text("first\n"); git(repo, "add", "."); git(repo, "commit", "-m", "first")
+    first = git(repo, "rev-parse", "HEAD")
+    identity = task_refs.publish(str(repo), "task/one", 1, first, push=False)
+    assert identity["ok"]
+    git(repo, "branch", "agent/task-one", first)
+    (repo / "a.txt").write_text("second\n"); git(repo, "add", "."); git(repo, "commit", "-m", "second")
+    git(repo, "branch", "-f", "agent/task-one", "HEAD")
+    assert task_refs.resolve(str(repo), identity["ref"]) == first
+    assert git(repo, "rev-parse", "agent/task-one") != first
+
+
+def test_missing_branch_recovers_from_immutable_ref_without_model(tmp_path, monkeypatch):
+    repo = init_repo(tmp_path)
+    (repo / "a.txt").write_text("base\n"); git(repo, "add", "."); git(repo, "commit", "-m", "base")
+    base = git(repo, "rev-parse", "HEAD")
+    (repo / "a.txt").write_text("fixed\n"); git(repo, "add", "."); git(repo, "commit", "-m", "fix")
+    tip = git(repo, "rev-parse", "HEAD")
+    identity = task_refs.publish(str(repo), "t1", 1, tip, push=False)
+    monkeypatch.setattr(patch_recovery.db, "select", lambda *_a, **_k: [{"artifact_ref": identity["ref"], "artifact_commit": tip}])
+    result = patch_recovery._immutable_ref_recovery(str(repo), "fix-one", "agent/fix-one", base)
+    assert result["ok"] and result["commit"] == tip
+    assert git(repo, "rev-parse", "agent/fix-one") == tip
 
 
 def test_minimal_commit_extracts_only_artifact_files_onto_fresh_base(tmp_path):
