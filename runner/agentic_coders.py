@@ -186,6 +186,22 @@ def _auto_coders():
         except Exception:
             locals_ = [{"model": os.environ.get("OLLAMA_MODEL", "llama3.1"),
                         "cap": int(os.environ.get("ORCH_LOCAL_AGENTIC_CAP", "5"))}]
+        disabled_local = {
+            m.strip().lower()
+            for m in os.environ.get("ORCH_DISABLED_OLLAMA_AGENTIC_MODELS", "").split(",")
+            if m.strip()
+        }
+        max_hot_ram = float(os.environ.get("ORCH_MAX_HOT_OLLAMA_RAM_GB", "14") or 14)
+        try:
+            import local_model_slots
+            locals_ = [
+                lc for lc in locals_
+                if str(lc.get("model") or "").lower() not in disabled_local
+                and local_model_slots.ram_gb(lc.get("model")) <= max_hot_ram
+            ]
+        except Exception:
+            locals_ = [lc for lc in locals_
+                       if str(lc.get("model") or "").lower() not in disabled_local]
         for idx, lc in enumerate(sorted(locals_, key=lambda c: (-int(c.get("cap") or 0), c.get("model") or ""))[:4]):
             name = "ollama" if idx == 0 else f"ollama-{idx + 1}"
             coders.append({"name": name, "cmd": _aider_cmd("ollama/" + lc["model"]), "auto": True,

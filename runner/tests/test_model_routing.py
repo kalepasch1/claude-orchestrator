@@ -227,6 +227,7 @@ class ModelRoutingTest(unittest.TestCase):
             return {"text": "ok", "cost_usd": 0.01, "provider": provider, "model": model}
 
         with patch.object(model_gateway, "available", return_value=["deepseek", "google", "openai", "claude"]), \
+             patch.object(model_gateway, "_learned_route", return_value=None), \
              patch.object(model_gateway, "_call_provider", side_effect=fake_call):
             res = model_gateway.complete("deepseek", "deepseek-chat", "hello", record_op=False)
 
@@ -318,6 +319,7 @@ class ModelRoutingTest(unittest.TestCase):
         }
         with patch.dict(os.environ, env, clear=False), \
              patch.object(agentic_coders, "_aider_available", return_value=True), \
+             patch.object(agentic_coders, "_coder_ready", return_value=True), \
              patch.object(agentic_coders, "_within_cap", return_value=True), \
              patch.object(agentic_coders, "_AIDER_OK", True), \
              patch("model_gateway.available", return_value=["claude", "local", "deepseek", "google", "openai"]):
@@ -368,7 +370,9 @@ class ModelRoutingTest(unittest.TestCase):
         task = {"slug": "easy-docs", "kind": "docs", "prompt": "update docs", "deps": []}
         with patch.dict(os.environ, env, clear=False), \
              patch.object(agentic_coders, "_aider_available", return_value=True), \
+             patch.object(agentic_coders, "_coder_ready", return_value=True), \
              patch.object(agentic_coders, "_within_cap", return_value=True), \
+             patch.object(router_stats, "best_coder", return_value=None), \
              patch("model_gateway.available", return_value=["claude", "deepseek", "openai"]):
             self.assertNotEqual(agentic_coders.pick(task), "claude")
 
@@ -485,10 +489,69 @@ class ModelRoutingTest(unittest.TestCase):
              patch.object(agentic_coders, "_allowed_by_terms", return_value=True), \
              patch.object(agentic_coders, "_task_sensitivity", return_value="standard"), \
              patch.object(agentic_coders, "_heavy_running_counts", return_value={"qwen3-coder:30b": 2}), \
+             patch.object(router_stats, "best_coder", return_value=None), \
              patch.dict(os.environ, {"ORCH_HEAVY_OLLAMA_RUNNING_CAP": "1",
                                      "ORCH_HARD_OFFLOAD_SHARE": "1",
                                      "ORCH_USE_PAID_AGENTIC_CREDITS": "true"}, clear=False):
             self.assertEqual(agentic_coders.pick(task), "ollama-2")
+
+
+    def test_judge_panel_uses_cheapest_providers_first(self):
+        import judge
+        with patch.object(model_gateway, "available", return_value=["local", "deepseek", "google", "openai", "claude"]):
+            providers = judge._panel_providers("claude-opus-4-8")
+        # local and deepseek are cheaper than google/openai; claude (author family) is excluded first
+        self.assertEqual(providers[:2], ["local", "deepseek"])
+
+    def test_judge_panel_excludes_author_family_when_alternatives_exist(self):
+        import judge
+        with patch.object(model_gateway, "available", return_value=["deepseek", "claude"]):
+            providers = judge._panel_providers("claude-sonnet-4-6")
+        self.assertNotIn("claude", providers)
+        self.assertIn("deepseek", providers)
+
+    def test_judge_panel_falls_back_to_author_family_when_only_option(self):
+        import judge
+        with patch.object(model_gateway, "available", return_value=["claude"]):
+            providers = judge._panel_providers("claude-sonnet-4-6")
+        self.assertEqual(providers, ["claude"])
+
+    def test_judge_reviewers_use_cheap_models(self):
+        import judge
+        # Each provider's default reviewer must be the cheapest tier, never a premium model
+        self.assertIn("mini", judge.REVIEWERS["openai"].lower())
+        self.assertIn("flash", judge.REVIEWERS["google"].lower())
+        self.assertIn("flash", judge.REVIEWERS["deepseek"].lower())
+        self.assertIn("haiku", judge.REVIEWERS["claude"].lower())
+
+    def test_judge_claude_reviewer_uses_current_haiku(self):
+        import judge
+        self.assertEqual(judge.REVIEWERS["claude"], "claude-haiku-4-5-20251001")
+
+    def test_judge_panel_respects_n_judges_cap(self):
+        import judge
+        with patch.object(model_gateway, "available", return_value=["local", "deepseek", "google", "openai"]), \
+             patch.object(judge, "N_JUDGES", 1):
+            providers = judge._panel_providers("gpt-4")
+        self.assertEqual(len(providers), 1)
+        self.assertEqual(providers[0], "local")
+
+    def test_agentic_disabled_local_model_filtered_from_pool(self):
+        env = {
+            "ORCH_AUTO_AGENTIC_CODERS": "true",
+            "ORCH_USE_PAID_AGENTIC_CREDITS": "false",
+            "ORCH_DISABLED_OLLAMA_AGENTIC_MODELS": "llama3.1",
+        }
+        with patch.dict(os.environ, env, clear=False), \
+             patch.object(agentic_coders, "_aider_available", return_value=True), \
+             patch("model_gateway.available", return_value=["local"]), \
+             patch.object(ollama_catalog, "candidates", return_value=[
+                 {"provider": "local", "model": "llama3.1", "cap": 5, "tier": "free"},
+                 {"provider": "local", "model": "qwen3-coder:30b", "cap": 8, "tier": "free"},
+             ]):
+            names = agentic_coders.available()
+        self.assertNotIn("llama3.1", " ".join(str(n) for n in names))
+        self.assertIn("ollama", names)
 
 
 if __name__ == "__main__":

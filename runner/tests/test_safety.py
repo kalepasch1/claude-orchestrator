@@ -8,6 +8,7 @@ B) session_watcher must NEVER close a tab for a session whose output shows in-pr
 C) secrets_manager must NEVER write secret values to any Supabase insert.
 D) kill_switch must NEVER allow paused projects to run tasks.
 E) improvement_miner must NEVER exceed budget caps or deploy degraded experiments.
+F) Slack edge functions must fail-secure (return 503) when required env-var secrets are absent.
 """
 import os, sys, tempfile, subprocess, json, unittest, time
 from unittest.mock import patch
@@ -666,6 +667,58 @@ class TestAutoApprovalSafety(unittest.TestCase):
             self.assertFalse(result, "autoapprove disabled should return False")
         finally:
             approval_merge.AUTOAPPROVE_ENABLED = orig_enabled
+
+
+# ── F: Slack edge-function fail-secure (static source check) ─────────────────
+
+class TestSlackEdgeFunctionFailSecure(unittest.TestCase):
+    """
+    Structural tests: verify the Slack edge-function TypeScript sources contain
+    the required fail-secure guards and no hardcoded tokens.
+    These run without Deno/network access.
+    """
+
+    _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    def _read_fn(self, name):
+        path = os.path.join(self._REPO_ROOT, "supabase", "functions", name, "index.ts")
+        with open(path) as f:
+            return f.read()
+
+    def test_slack_notify_no_hardcoded_bot_token(self):
+        """slack-notify must not contain a hardcoded xoxb- token in non-comment code."""
+        src = self._read_fn("slack-notify")
+        non_comment = "\n".join(
+            ln for ln in src.splitlines() if not ln.lstrip().startswith("//")
+        )
+        self.assertNotIn("xoxb-", non_comment, "slack-notify contains a hardcoded Bot Token")
+
+    def test_slack_notify_fails_secure_when_token_absent(self):
+        """slack-notify must return 503 when SLACK_BOT_TOKEN is empty."""
+        src = self._read_fn("slack-notify")
+        # Must check the token variable and return a non-200 before using it
+        self.assertIn("SLACK_BOT_TOKEN", src)
+        self.assertIn("503", src, "slack-notify must return 503 when token is unset")
+        self.assertIn("not configured", src)
+
+    def test_slack_interactions_no_hardcoded_signing_secret(self):
+        """slack-interactions must not contain a hardcoded signing secret."""
+        src = self._read_fn("slack-interactions")
+        import re
+        # A hardcoded signing secret would be a long hex string; also check for literal assignment
+        self.assertNotRegex(src, r'["\'][0-9a-f]{32,}["\']',
+                            "slack-interactions contains what looks like a hardcoded signing secret")
+
+    def test_slack_interactions_fails_secure_when_signing_absent(self):
+        """slack-interactions must return 503 and verify() must return False when SLACK_SIGNING_SECRET unset."""
+        src = self._read_fn("slack-interactions")
+        self.assertIn("SLACK_SIGNING_SECRET", src)
+        self.assertIn("503", src, "slack-interactions must return 503 when signing secret is unset")
+        # verify() must NOT return true (allow through) when SIGNING is empty
+        self.assertNotIn("if (!SIGNING) return true", src,
+                         "verify() must not bypass signature check when SIGNING is unset")
+        self.assertIn("if (!SIGNING) return false", src,
+                      "verify() must return false when SIGNING is unset")
 
 
 if __name__ == "__main__":
