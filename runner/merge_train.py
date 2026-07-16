@@ -785,7 +785,19 @@ def _paused():
 
 
 def train_run():
-    """Entry point: run the integration train across all projects (serialized per project)."""
+    """Entry point: run the integration train across all projects (serialized per project).
+
+    Returns a summary dict with keys:
+        projects  (int)  — number of projects processed
+        merged    (int)  — branches successfully fast-forwarded into base
+        redo      (int)  — branches re-queued due to stale-base rebase conflicts
+        testfail  (int)  — branches whose tests failed after rebase
+        conflict  (int)  — branches with unresolvable merge conflicts
+        skipped   (int)  — branches skipped (cap reached or repo locked)
+        risk      (dict) — counts by risk tier: low / standard / sensitive
+        pressure  (dict) — per-project queue pressure snapshot
+        paused    (bool) — present and True when the train is paused via fleet_config
+    """
     if _paused():
         print("merge_train: paused — skipping")
         return {"paused": True}
