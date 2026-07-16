@@ -111,6 +111,28 @@ def test_train_lr_bounds_too_large():
     assert 0.0 <= score <= 1.0, "training with large lr should produce valid score"
 
 
+def test_train_epochs_bounds_zero():
+    """Zero epochs should be clamped to 1."""
+    p = RiskPredictor(weights=[0.0, 0.0, 0.0, 0.0, 0.0], bias=0.0)
+    examples = [({"lines_changed": 100, "files_changed": 10, "has_tests": False,
+                 "author_pass_rate": 0.5, "test_coverage_pct": 50}, False)]
+    p.train(examples, lr=0.01, epochs=0)
+    score = p.predict_risk(lines_changed=100, files_changed=10, has_tests=False,
+                          author_pass_rate=0.5, test_coverage_pct=50)
+    assert 0.0 <= score <= 1.0, "training with zero epochs should not crash"
+
+
+def test_train_epochs_bounds_too_large():
+    """Epochs > 10000 should be clamped to 10000."""
+    p = RiskPredictor(weights=[0.0, 0.0, 0.0, 0.0, 0.0], bias=0.0)
+    examples = [({"lines_changed": 10, "files_changed": 1, "has_tests": True,
+                 "author_pass_rate": 0.9, "test_coverage_pct": 90}, True)]
+    p.train(examples, lr=0.01, epochs=100000)
+    score = p.predict_risk(lines_changed=10, files_changed=1, has_tests=True,
+                          author_pass_rate=0.9, test_coverage_pct=90)
+    assert 0.0 <= score <= 1.0, "training with large epochs should produce valid score"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
