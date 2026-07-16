@@ -105,5 +105,156 @@ def run():
     print(f"self-review filed {made} improvement proposals (approve them in the dashboard).")
 
 
+###############################################################################
+# Monthly subsystem job audit
+###############################################################################
+
+# Infrastructure jobs that must never be disabled regardless of ranking.
+_INFRASTRUCTURE_JOBS = frozenset({
+    "txn", "resource_governor.py", "resource_medic.py", "sentinel.py",
+    "db_recovery_sprint.py", "resilience_mesh.py", "fleet_control.py",
+    "selfcheck", "selfheal", "exhaustion_signal.py",
+    "fleet_stuck_alarm.py", "lane_scheduler.py", "service_agent.py",
+})
+
+
+def _load_schedule():
+    """Import _SCHEDULE from runner.py, fail-soft to empty list."""
+    try:
+        import runner as _runner_mod
+        return list(getattr(_runner_mod, "_SCHEDULE", []))
+    except Exception:
+        return []
+
+
+def _fetch_kpi_contributions():
+    """Return {job_script: float} of KPI contribution from outcomes.
+
+    KPI contribution = count of outcomes whose ``source`` field matches the job
+    script name and that passed tests, weighted by 1.0 each.  Fail-soft: if the
+    table or column doesn't exist we return an empty dict (every job scores 0).
+    """
+    try:
+        rows = db.select("outcomes", {
+            "select": "source,tests_passed",
+            "order": "created_at.desc",
+            "limit": "5000",
+        }) or []
+    except Exception:
+        return {}
+    kpi = collections.defaultdict(float)
+    for r in rows:
+        src = r.get("source") or ""
+        if r.get("tests_passed"):
+            kpi[src] += 1.0
+    return dict(kpi)
+
+
+def _fetch_incident_counts():
+    """Return {job_script: int} of incidents attributed to each job.
+
+    Reads the ``incidents`` table (columns ``source``, ``severity``).  If the
+    table doesn't exist we return an empty dict — no penalties applied.
+    """
+    try:
+        rows = db.select("incidents", {
+            "select": "source,severity",
+            "limit": "5000",
+        }) or []
+    except Exception:
+        return {}
+    counts = collections.defaultdict(int)
+    for r in rows:
+        src = r.get("source") or ""
+        counts[src] += 1
+    return dict(counts)
+
+
+INCIDENT_PENALTY_WEIGHT = float(os.environ.get("ORCH_INCIDENT_PENALTY", "2.0"))
+
+
+def audit_subsystem_jobs():
+    """Enumerate every scheduled job, rank by value, propose disabling bottom decile.
+
+    Returns a list of dicts, each containing:
+        key, job, schedule_type, kpi_contribution, incident_count, value,
+        rank, is_infrastructure, disable_recommendation
+    sorted by value descending (rank 1 = highest value).
+    """
+    schedule = _load_schedule()
+    if not schedule:
+        return []
+
+    kpi_map = _fetch_kpi_contributions()
+    incident_map = _fetch_incident_counts()
+
+    records = []
+    for entry in schedule:
+        key, job, stype, args = entry[0], entry[1], entry[2], entry[3]
+        kpi = kpi_map.get(job, 0.0)
+        incidents = incident_map.get(job, 0)
+        value = kpi - (incidents * INCIDENT_PENALTY_WEIGHT)
+        records.append({
+            "key": key,
+            "job": job,
+            "schedule_type": stype,
+            "schedule_args": args,
+            "kpi_contribution": kpi,
+            "incident_count": incidents,
+            "value": value,
+            "is_infrastructure": job in _INFRASTRUCTURE_JOBS,
+            "rank": 0,
+            "disable_recommendation": False,
+        })
+
+    # Sort by value descending (highest value first)
+    records.sort(key=lambda r: r["value"], reverse=True)
+    for i, rec in enumerate(records):
+        rec["rank"] = i + 1
+
+    # Bottom decile threshold (at least 1 job must be in the bottom decile
+    # when there are 10+ jobs; for fewer, no recommendations are made).
+    total = len(records)
+    if total >= 10:
+        cutoff_rank = total - max(1, total // 10) + 1
+        for rec in records:
+            if rec["rank"] >= cutoff_rank and not rec["is_infrastructure"]:
+                rec["disable_recommendation"] = True
+
+    return records
+
+
+def run_monthly_audit():
+    """Entry point: run audit_subsystem_jobs and persist results."""
+    records = audit_subsystem_jobs()
+    if not records:
+        print("monthly audit: no scheduled jobs found — nothing to audit.")
+        return records
+
+    # Write to subsystem_audits table (fail-soft)
+    written = 0
+    for rec in records:
+        try:
+            db.insert("subsystem_audits", {
+                "key": rec["key"],
+                "job": rec["job"],
+                "schedule_type": rec["schedule_type"],
+                "kpi_contribution": rec["kpi_contribution"],
+                "incident_count": rec["incident_count"],
+                "value": rec["value"],
+                "rank": rec["rank"],
+                "is_infrastructure": rec["is_infrastructure"],
+                "disable_recommendation": rec["disable_recommendation"],
+            })
+            written += 1
+        except Exception as e:
+            print(f"monthly audit: failed to write record for {rec['key']}: {e}")
+
+    disabled = [r for r in records if r["disable_recommendation"]]
+    print(f"monthly audit: {len(records)} jobs audited, {written} written, "
+          f"{len(disabled)} flagged for disable review.")
+    return records
+
+
 if __name__ == "__main__":
     run()
