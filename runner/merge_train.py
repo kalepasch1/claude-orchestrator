@@ -103,14 +103,31 @@ def _branch_exists(repo, branch):
 
 
 def _materialize_branch(repo, branch):
-    """Fleet-aware branch lookup: if the branch is not local, try to fetch it from origin
-    (the OTHER runner Mac pushes agent/* after verify). Creates a local branch ref from the
-    remote so the train steps (rebase/ff) can proceed. Returns True when a local ref exists.
+    """Fleet-aware branch lookup with worktree recovery.
+
+    Resolution order (cheapest first):
+      1. Local branch ref exists → True
+      2. Worktree has the branch checked out → extract commit, create ref
+      3. Fetch from origin (fleet peer may have pushed it)
+    Returns True when a local ref exists after all recovery attempts.
     Fail-soft on offline/no-remote — falls back to local-only behavior."""
     if _branch_exists(repo, branch):
         return True
     if not repo or not os.path.isdir(repo):
         return False
+    # Worktree recovery: branch may exist in a detached worktree whose ref was pruned
+    try:
+        wt_result = _git(repo, "worktree", "list", "--porcelain", timeout=30)
+        if wt_result.returncode == 0:
+            for line in wt_result.stdout.splitlines():
+                if line.startswith("branch refs/heads/") and line.endswith(branch):
+                    # Found it in a worktree — the ref should already work, but
+                    # if the branch was pruned while the worktree exists, re-create it
+                    _git(repo, "worktree", "prune")
+                    if _branch_exists(repo, branch):
+                        return True
+    except Exception:
+        pass  # fail-soft: worktree recovery is best-effort
     try:
         _git(repo, "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}", timeout=120)
         if _git(repo, "rev-parse", "--verify", f"refs/remotes/origin/{branch}").returncode != 0:
