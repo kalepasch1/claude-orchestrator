@@ -558,7 +558,15 @@ def claim_task(runner_id):
     project-priority band, prefer higher-ROI projects (projects.concurrency_weight, set from
     cost-per-merge by roi.py) and then FIFO. This makes the highest expected-value work run first
     under any capacity limit — and stays correct across MULTIPLE machines because the final claim
-    is an atomic optimistic PATCH (state=QUEUED -> RUNNING), so two runners never double-claim."""
+    is an atomic optimistic PATCH (state=QUEUED -> RUNNING), so two runners never double-claim.
+
+    Includes failover to local SQLite mirror when DB is unavailable (ORCH_OFFLINE_CLAIM_HOST)."""
+    try:
+        import local_queue
+        local_queue.init_mirror()
+    except Exception:
+        pass
+
     prio, roi_w, project_names, paused_pids, local_repo_pids = {}, {}, {}, set(), None
     try:
         projs = select("projects", {"select": "id,name,priority,concurrency_weight,repo_path"}) or []
@@ -579,28 +587,46 @@ def claim_task(runner_id):
     except Exception:
         pass
     claim_fields = "id,slug,project_id,deps,confidence,created_at,updated_at,kind,note,priority"
-    queued = select("tasks", {"select": claim_fields,
-                              "state": "eq.QUEUED",
-                              "order": "created_at.asc",
-                              "limit": str(CLAIM_SCAN_LIMIT)}) or []
-    # PostgREST/Supabase caps large result sets at 1,000 rows. Urgent new work
-    # otherwise sits outside an oldest-first scan and cannot be prioritized at
-    # all. Pull bounded escape hatches for deployment blockers and evidence
-    # tasks, then let the normal atomic ranking/claim path decide among them.
-    escape_filters = (
-        "(slug.like.relfix-*,slug.like.qafix-*,slug.like.deployfix-*,slug.like.buildfix-*,slug.like.copyfix-*,slug.like.toolchain-repair-*)",
-        "(slug.like.canary-*,slug.like.*-canary-*,kind.eq.canary,note.ilike.*coder-canary*,note.ilike.*routing%20sample*)",
-    )
-    seen_ids = {t.get("id") for t in queued}
-    for expression in escape_filters:
+    queued = []
+    db_error_occurred = False
+    try:
+        queued = select("tasks", {"select": claim_fields,
+                                  "state": "eq.QUEUED",
+                                  "order": "created_at.asc",
+                                  "limit": str(CLAIM_SCAN_LIMIT)}) or []
+        # PostgREST/Supabase caps large result sets at 1,000 rows. Urgent new work
+        # otherwise sits outside an oldest-first scan and cannot be prioritized at
+        # all. Pull bounded escape hatches for deployment blockers and evidence
+        # tasks, then let the normal atomic ranking/claim path decide among them.
+        escape_filters = (
+            "(slug.like.relfix-*,slug.like.qafix-*,slug.like.deployfix-*,slug.like.buildfix-*,slug.like.copyfix-*,slug.like.toolchain-repair-*)",
+            "(slug.like.canary-*,slug.like.*-canary-*,kind.eq.canary,note.ilike.*coder-canary*,note.ilike.*routing%20sample*)",
+        )
+        seen_ids = {t.get("id") for t in queued}
+        for expression in escape_filters:
+            try:
+                extra = select("tasks", {"select": claim_fields, "state": "eq.QUEUED",
+                                          "or": expression, "order": "created_at.desc", "limit": "200"}) or []
+            except Exception:
+                extra = []
+            for task in extra:
+                if task.get("id") not in seen_ids:
+                    queued.append(task); seen_ids.add(task.get("id"))
+        # Sync successful queued retrieval to local mirror
         try:
-            extra = select("tasks", {"select": claim_fields, "state": "eq.QUEUED",
-                                      "or": expression, "order": "created_at.desc", "limit": "200"}) or []
+            import local_queue
+            local_queue.sync_to_mirror(queued)
+            local_queue.record_db_success()
         except Exception:
-            extra = []
-        for task in extra:
-            if task.get("id") not in seen_ids:
-                queued.append(task); seen_ids.add(task.get("id"))
+            pass
+    except Exception as e:
+        db_error_occurred = True
+        try:
+            import local_queue
+            if local_queue.record_db_error():
+                pass
+        except Exception:
+            pass
     queued = [t for t in queued if t.get("project_id") not in paused_pids]  # skip paused projects
     # HOST AFFINITY: only claim tasks whose project repo exists on this machine. No-op on the
     # machine that owns the repos (all present) and when localization is disabled; prevents a
@@ -931,6 +957,24 @@ def claim_task(runner_id):
                     pass
                 invalidate_done_cache()
                 return res[0]
+
+    # OFFLINE FAILOVER: if DB is down and we failed to claim normally, try mirror
+    try:
+        import local_queue
+        if local_queue.is_offline_mode() or db_error_occurred:
+            if local_queue.should_retry_db():
+                try:
+                    test_select = select("tasks", {"select": "id", "limit": "1"})
+                    local_queue.record_db_success()
+                except Exception:
+                    pass
+            if local_queue.is_offline_mode():
+                offline_task = local_queue.claim_task_offline(runner_id)
+                if offline_task:
+                    return offline_task
+    except Exception:
+        pass
+
     return None
 
 
