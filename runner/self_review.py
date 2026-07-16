@@ -22,6 +22,92 @@ import db
 
 REVIEW_MODEL = os.environ.get("SELF_REVIEW_MODEL", "claude-opus-4-8")
 
+# ── Infrastructure jobs: exempt from incident penalties ──────────────────────
+INFRA_JOBS = frozenset(os.environ.get("ORCH_INFRA_JOBS",
+    "kill_switch,pause_arbiter,billing_guard,fleet_stuck_alarm,heartbeat,sentinel,"
+    "groom_task_queue,scoreboard,self_review"
+).split(","))
+
+
+def score_job_kpi(job_name):
+    """Query the scoreboard/outcomes to return KPI contribution for a job.
+
+    Returns a float: positive means the job contributed to merges/quality,
+    zero means neutral, negative means it consumed resources without output.
+    Fail-soft: returns 0.0 on any error or missing data.
+    """
+    if not job_name:
+        return 0.0
+    try:
+        rows = db.select("outcomes", {
+            "select": "tests_passed,integrated,usd,slug",
+            "slug": f"like.*{job_name}*",
+            "order": "created_at.desc",
+            "limit": "500",
+        }) or []
+    except Exception:
+        return 0.0
+    if not rows:
+        return 0.0
+    merges = sum(1 for r in rows if r.get("integrated"))
+    passes = sum(1 for r in rows if r.get("tests_passed"))
+    fails = sum(1 for r in rows if not r.get("tests_passed"))
+    spend = sum(float(r.get("usd") or 0) for r in rows)
+    n = len(rows)
+    # KPI = merge contribution minus cost-weighted failures
+    # Each merge is +1.0, each pass-but-not-merged is +0.25, each fail is -0.5
+    # Spend penalty: -1 per dollar spent (capped)
+    score = (merges * 1.0) + ((passes - merges) * 0.25) + (fails * -0.5) - min(spend, n * 0.5)
+    return round(score, 3)
+
+
+def count_job_incidents(job_name):
+    """Count incidents for a job: pause_arbiter trips, revert postmortems, build failures.
+
+    Infrastructure jobs (kill_switch, pause_arbiter, etc.) are exempt and always return 0.
+    Fail-soft: returns 0 on any error or partial data.
+    """
+    if not job_name:
+        return 0
+    # Infrastructure jobs don't get penalized
+    if job_name in INFRA_JOBS:
+        return 0
+    total = 0
+    # 1. Build failures from outcomes
+    try:
+        rows = db.select("outcomes", {
+            "select": "id",
+            "slug": f"like.*{job_name}*",
+            "tests_passed": "is.false",
+            "limit": "1000",
+        }) or []
+        total += len(rows)
+    except Exception:
+        pass  # fail-soft: partial data is fine
+    # 2. Revert postmortems from postmortems table
+    try:
+        rows = db.select("postmortems", {
+            "select": "id",
+            "slug": f"like.*{job_name}*",
+            "limit": "500",
+        }) or []
+        total += len(rows)
+    except Exception:
+        pass  # fail-soft: table may not exist
+    # 3. Pause arbiter trips (controls table, pause events referencing this job)
+    try:
+        rows = db.select("controls", {
+            "select": "key",
+            "scope": "eq.global",
+            "paused": "is.true",
+            "key": f"like.*{job_name}*",
+            "limit": "200",
+        }) or []
+        total += len(rows)
+    except Exception:
+        pass  # fail-soft: partial data is fine
+    return total
+
 
 def stats():
     rows = db.select("outcomes", {"select": "*", "order": "created_at.desc", "limit": "2000"}) or []
