@@ -34,9 +34,15 @@ class PricingTier:
         return self.max_units is None
 
     def cost_for_units(self, units: int) -> float:
-        """Calculate cost for a given number of units within this tier."""
-        applicable = min(units, self.max_units or units) - self.min_units + 1
-        applicable = max(0, applicable)
+        """Calculate cost for a given number of units within this tier.
+
+        Only counts units that fall within [min_units, max_units].
+        Returns flat_fee + (applicable_units * unit_price).
+        """
+        if units < self.min_units:
+            return 0.0
+        upper = self.max_units if self.max_units is not None else units
+        applicable = min(units, upper) - self.min_units + 1
         return self.flat_fee + (applicable * self.unit_price)
 
 
@@ -48,15 +54,23 @@ class PricingGrid:
     currency: str = "USD"
     effective_date: Optional[str] = None
 
+    @property
+    def sorted_tiers(self) -> List[PricingTier]:
+        """Tiers sorted by min_units ascending."""
+        return sorted(self.tiers, key=lambda t: t.min_units)
+
     def total_cost(self, units: int) -> float:
-        """Calculate total cost across all tiers for a given unit count."""
+        """Calculate total cost across all tiers for a given unit count.
+
+        Walks tiers in ascending order, consuming units until exhausted.
+        """
         total = 0.0
         remaining = units
-        for tier in sorted(self.tiers, key=lambda t: t.min_units):
+        for tier in self.sorted_tiers:
             if remaining <= 0:
                 break
-            tier_max = (tier.max_units or float('inf')) - tier.min_units + 1
-            applicable = min(remaining, tier_max)
+            tier_capacity = (tier.max_units - tier.min_units + 1) if tier.max_units is not None else remaining
+            applicable = min(remaining, tier_capacity)
             total += tier.flat_fee + (applicable * tier.unit_price)
             remaining -= applicable
         return round(total, 2)
@@ -94,8 +108,9 @@ class PricingGridReconstructionUtil:
                 flat_fee=float(rt.get("flat_fee", 0)),
                 metadata=rt.get("metadata", {}),
             ))
-        tiers.sort(key=lambda t: t.min_units)
-        return PricingGrid(product_id=product_id, tiers=tiers, currency=currency)
+        grid = PricingGrid(product_id=product_id, tiers=tiers, currency=currency)
+        grid.tiers = grid.sorted_tiers  # normalize order on construction
+        return grid
 
     @staticmethod
     def from_flat_price(product_id: str, unit_price: float,
@@ -112,17 +127,19 @@ class PricingGridReconstructionUtil:
     def merge_grids(grids: List[PricingGrid]) -> PricingGrid:
         """Merge multiple grids for the same product (e.g., from different sources).
 
-        Takes the grid with the most tiers as the base.
+        Takes the grid with the most tiers as the base. Uses sorted_tiers
+        to ensure consistent ordering in the result.
         """
         if not grids:
             raise ValueError("cannot merge empty grid list")
         base = max(grids, key=lambda g: len(g.tiers))
-        return PricingGrid(
+        merged = PricingGrid(
             product_id=base.product_id,
-            tiers=sorted(base.tiers, key=lambda t: t.min_units),
+            tiers=base.sorted_tiers,
             currency=base.currency,
             effective_date=base.effective_date,
         )
+        return merged
 
     @staticmethod
     def validate_grid(grid: PricingGrid) -> Tuple[bool, List[str]]:
