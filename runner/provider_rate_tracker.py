@@ -20,6 +20,13 @@ Usage:
     # sort providers so unthrottled ones come first
     ordered = prt.preferred_order(["claude", "deepseek", "openai"])
 """
+# PEP 604 (`int | None`) in a signature is evaluated at DEFINITION time, which is a
+# TypeError on Python 3.9 — the interpreter this fleet runs. Without this import the
+# module cannot even be imported, so test_provider_rate_tracker.py aborted collection
+# of the WHOLE suite on orchestrator/dev, which is the release_train's verification
+# gate. Net effect: nothing could be promoted dev -> master (13 days of divergence).
+from __future__ import annotations
+
 import os
 import threading
 import time

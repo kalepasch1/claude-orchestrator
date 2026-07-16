@@ -12,6 +12,10 @@ Usage:
     python generate_dashboard.py --open             # generate and open in browser
 """
 
+# PEP 604 (`X | None`) in a signature is evaluated at definition time -> TypeError on
+# Python 3.9, this fleet's interpreter. Without this the module cannot be imported.
+from __future__ import annotations
+
 import os
 import sys
 import json
