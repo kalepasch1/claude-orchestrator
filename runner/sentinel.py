@@ -419,7 +419,19 @@ def stale_code_guard():
             break
         except OSError:
             continue
-    head = git("rev-parse", "HEAD").stdout.strip()
+    if not boot:
+        # No boot marker => the `if boot and ...` below is falsy => this guard silently
+        # does NOTHING, forever. Observed 2026-07-16: no .runner_boot_commit existed, the
+        # runner sat 14h on code from 04:00 and never learned about fixes landed on master,
+        # so the patches to the drift/stash bugs stayed inert until a human noticed the
+        # checkout drifting. Fail loudly rather than failing open.
+        log("stale-code-unknown",
+            "no .runner_boot_commit — cannot tell whether the runner is on current code")
+        emit("stale-code-unknown", repo=REPO)
+        return
+    # Compare against BASE_BRANCH, not HEAD: while the checkout is drifted onto an agent
+    # branch, HEAD is that branch's tip and this comparison is meaningless.
+    head = git("rev-parse", BASE_BRANCH).stdout.strip()
     if boot and head and boot != head:
         if not os.path.exists(req):
             with open(req, "w") as f:
