@@ -19,8 +19,10 @@ EVOLUTION_CAPABILITY = {"name": "Agentic Resolution Evolution", "slug": "resolut
 AGENT_ROLES = ("mediator-agent", "counsel-agent", "finance-agent", "insurance-agent", "expert-agent", "novelty-agent")
 WORK_SURFACES = ("email", "meeting", "word", "slack", "teams")
 JURISDICTION_GUARD = {"localAuthorityRequired": True, "winningOutcomeTransfers": False,
-    "invariantReuseAllowed": True, "parallelRuleValidations": 3, "localRuleReuseAllowed": False,
-    "regulatoryChangeReplay": True}
+    "choiceOfLawPreflight": True, "consolidatedMeritsAnswerAllowed": False,
+    "invariantReuseAllowed": True, "invariantProofCertificateRequired": True,
+    "parallelRuleValidations": 3, "localRuleReuseAllowed": False, "authorityTemporalDecay": True,
+    "jurisdictionDriftBlocksAutonomy": True, "negativeTransferBlocksReuse": True, "regulatoryChangeReplay": True}
 PRODUCT_MODES = {"smarter": "legal_dispute_cade", "tomorrow": "payment_default_war_room", "apparently": "licensing_regulatory_cure", "pareto": "planning_goal_issue_resolution"}
 TRIGGERS = {"dispute", "settle", "settlement", "negotiate", "negotiation", "default", "overdue", "deficiency", "cure", "conflict", "impasse", "collection", "tribunal", "mediation", "reservation value", "payment obligation", "missed deadline", "regulator question"}
 
@@ -63,6 +65,6 @@ def prompt_guidance(event):
     if not should_consider(event): return ""
     routed = route(event)
     return ("RESOLUTION INTELLIGENCE: consider capability resolution.mesh.analyze in " + routed["mode"] +
-            " mode. Resolve a specific governing jurisdiction before treating a CADE conclusion as locally winning. "
-            "Cross-share only scoped invariants; parallel rules require three local validations and local rules never transfer. Preserve raw evidence and private preferences in the source product. Generate options and drafts only; "
+            " mode. Run choice-of-law preflight and separate local CADE tracks before treating a conclusion as locally winning; never average conflicts into a consolidated merits answer. "
+            "Cross-share only proof-certified invariants; parallel rules require three local validations, local rules never transfer, authorities decay, jurisdiction drift blocks autonomy, and harmful transfer blocks future reuse. Preserve raw evidence and private preferences in the source product. Generate options and drafts only; "
             "require human approval for filing, payment, withdrawal, settlement, or any binding/irreversible action.")

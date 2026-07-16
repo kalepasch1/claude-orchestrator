@@ -11,6 +11,8 @@ class TestResolutionIntelligence(unittest.TestCase):
         self.assertFalse(envelope["privatePreferencesIncluded"]); self.assertFalse(envelope["privilegedEvidenceIncluded"])
         self.assertFalse(envelope["authority"]["externalExecution"]); self.assertTrue(envelope["authority"]["humanApprovalRequired"])
         self.assertFalse(envelope["jurisdictionGuard"]["winningOutcomeTransfers"]); self.assertEqual(envelope["jurisdictionGuard"]["parallelRuleValidations"], 3)
+        self.assertTrue(envelope["jurisdictionGuard"]["choiceOfLawPreflight"]); self.assertFalse(envelope["jurisdictionGuard"]["consolidatedMeritsAnswerAllowed"])
+        self.assertTrue(envelope["jurisdictionGuard"]["invariantProofCertificateRequired"]); self.assertTrue(envelope["jurisdictionGuard"]["jurisdictionDriftBlocksAutonomy"])
     def test_trigger_and_prompt_guidance(self):
         event = {"title": "Counterparty default risk"}; self.assertTrue(ri.should_consider(event)); self.assertIn("human approval", ri.prompt_guidance(event))
     def test_agent_market_is_internal_and_has_dissent(self):
