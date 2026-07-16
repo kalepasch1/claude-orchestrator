@@ -3,6 +3,7 @@ import { runtimeAgreementPolicy, runtimeFeaturePolicy, recordRuntimeEvidence, me
 import { recordAuthoritySource, runtimeDeploymentGate } from '../../../utils/regulatoryFrontier'
 import { recordRegulatoryFeedback } from '../../../utils/regulatoryOpportunity'
 import { saveExecutionAction } from '../../../utils/regulatoryExecution'
+import { saveSovereigntyAction } from '../../../utils/regulatorySovereignty'
 
 function authorized(event: any) {
   const expected = Buffer.from(process.env.FLEET_SHARED_SECRET || '')
@@ -23,5 +24,6 @@ export default defineEventHandler(async event => {
   if (body.action === 'authority_source') return recordAuthoritySource(organizationId, body)
   if (body.action === 'feedback_outcome') return recordRegulatoryFeedback(organizationId, body)
   if (body.action === 'launch_telemetry') return saveExecutionAction(organizationId, '00000000-0000-0000-0000-000000000000', 'launch_telemetry', { ...body, explicit_approval: false })
+  if (body.action === 'product_attestation') return saveSovereigntyAction(organizationId, 'product_attestation', body)
   throw createError({ statusCode: 400, message: 'unknown_regulatory_runtime_action' })
 })
