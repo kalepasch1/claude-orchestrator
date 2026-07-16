@@ -324,6 +324,9 @@ class _PatternTransfer:
     def _patterns_from_outcomes(self, project):
         """Reconstruct patterns from the outcomes table when compiled_patterns unavailable."""
         try:
+            # outcomes carries the success signal (integrated) but has no state/diff/
+            # files_changed columns. merged_diffs is the only table with changed-file
+            # paths, keyed by the same (project, slug).
             rows = db.select("outcomes", {
                 "project": "eq.%s" % project,
                 "select": "slug,integrated",
@@ -333,6 +336,21 @@ class _PatternTransfer:
             if not rows:
                 return []
 
+            files_by_slug = {}
+            for m in (db.select("merged_diffs", {
+                "project": "eq.%s" % project,
+                "select": "slug,files",
+                "limit": "500",
+            }) or []):
+                fc = m.get("files")
+                if isinstance(fc, str):
+                    try:
+                        fc = json.loads(fc)
+                    except Exception:
+                        fc = []
+                if isinstance(fc, list):
+                    files_by_slug[m.get("slug")] = fc
+
             # group by slug prefix (first two tokens)
             groups = {}
             for r in rows:
@@ -341,7 +359,7 @@ class _PatternTransfer:
                 if not prefix:
                     continue
                 if prefix not in groups:
-                    groups[prefix] = {"total": 0, "success": 0, "diffs": [], "files": []}
+                    groups[prefix] = {"total": 0, "success": 0, "files": []}
                 groups[prefix]["total"] += 1
                 if r.get("integrated"):
                     groups[prefix]["success"] += 1
@@ -373,7 +391,6 @@ class _PatternTransfer:
             rows = db.select("outcomes", {
                 "project": "eq.%s" % project,
                 "slug": "like.%s*" % prefix,
-                "state": "eq.DONE",
                 "limit": "50",
             })
             if not rows:

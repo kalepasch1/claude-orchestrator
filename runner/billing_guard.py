@@ -64,7 +64,12 @@ def run():
         import subscription_guard
         a = subscription_guard.audit()
         api_allowed = bool(a["api_allowed"])
-        if a["api_keys_present"] and not a["api_allowed"]:
+        # Subscription-primary + exhaustion-only overflow legitimately RETAINS the key so
+        # swarm_executor can serve the fallback (subscription_guard.overflow_enabled()).
+        # Treat that as expected billing: otherwise the key reads as a leak, and the spend
+        # trips the $2 subscription tripwire into a no-TTL fleet pause.
+        billing_expected = api_allowed or bool(a.get("overflow"))
+        if a["api_keys_present"] and not billing_expected:
             g = subscription_guard.enforce()
             msg = f"API key(s) present in env while billing blocked: {a['api_keys_present']}"
             if _strict_key_presence_pause() or not a.get("subscription_mode"):
@@ -74,6 +79,7 @@ def run():
                 warnings.append(msg + f"; stripped={g.get('stripped', [])}")
     except Exception as e:
         findings.append(f"subscription_guard audit failed: {e}")
+        billing_expected = False
 
     # 2) real billable spend check (subscription real_usd should be 0)
     real_day = 0.0
@@ -81,7 +87,7 @@ def run():
         import claude_cli
         s = claude_cli.status()
         real_day = float(s.get("usd_last_day", 0) or 0)
-        trip = _trip_usd(api_allowed)
+        trip = _trip_usd(billing_expected)
         if real_day > trip:
             findings.append(f"REAL API spend today ${real_day:.2f} > trip ${trip:.2f}")
             key_presence_only = False

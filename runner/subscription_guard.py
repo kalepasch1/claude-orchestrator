@@ -64,11 +64,36 @@ def _api_key_vars():
             if k == "ANTHROPIC_API_KEY" or k.startswith("ANTHROPIC_API_KEY_")]
 
 
+def overflow_enabled():
+    """Subscription-primary with API-direct overflow ONLY when Max is exhausted.
+
+    claude_cli routes to swarm_executor (a direct Messages-API call) when
+    ORCH_EXEC_MODE=api|hybrid|swarm AND account_pool.claude_exhausted(); swarm_executor
+    reads ANTHROPIC_API_KEY from this process's env. Stripping the key would make that
+    fallback silently no-op, which is what stalled the fleet whenever Max capped out.
+
+    This is deliberately NOT is_api_allowed(): that one demands ORCH_USE_SUBSCRIPTION=false,
+    which also hands the key to the Claude Code CLI subprocess on EVERY run (billing API
+    rates for all work, not just overflow). Keeping SUB_ON=true means claude_cli still pops
+    the key out of the CLI subprocess env, so normal runs stay on the Max subscription and
+    only the exhausted path can bill. Paths that would bill unconditionally (batch_pass,
+    type="api" accounts) gate on is_api_allowed()/require_api_or_skip() and stay blocked.
+    """
+    return (os.environ.get("ORCH_EXEC_MODE", "cli").lower() in ("api", "hybrid", "swarm")
+            and API_OPT_IN
+            and _env_purchased_credits(False))
+
+
 def enforce():
     """Strip every Anthropic API key from the process env unless API billing is explicitly allowed.
     Returns a dict describing what was done (for logging)."""
     if is_api_allowed():
         return {"enforced": False, "reason": "API billing explicitly opted in (ORCH_ALLOW_API_BILLING=true)",
+                "stripped": []}
+    if overflow_enabled():
+        return {"enforced": False, "overflow": True,
+                "reason": "subscription-primary; API key retained for exhaustion-only overflow "
+                          "(ORCH_EXEC_MODE=%s)" % os.environ.get("ORCH_EXEC_MODE", "cli"),
                 "stripped": []}
     stripped = []
     for k in _api_key_vars():
@@ -80,10 +105,17 @@ def enforce():
 
 
 def audit():
-    """Report residual API-billing exposure (should be clean after enforce())."""
+    """Report residual API-billing exposure (should be clean after enforce()).
+
+    `overflow` means a retained key is legitimate (exhaustion-only fallback), NOT that
+    unconditional API billing is allowed — callers that gate spend should treat
+    `api_allowed or overflow` as "billing is expected", so a retained key is not
+    mistaken for a leak. See overflow_enabled().
+    """
     return {"subscription_mode": SUB_ON, "api_opt_in": API_OPT_IN,
             "api_keys_present": _api_key_vars(),
             "api_allowed": is_api_allowed(),
+            "overflow": overflow_enabled(),
             "billing_blocked_flag": os.environ.get("ORCH_API_BILLING_BLOCKED") == "1"}
 
 
