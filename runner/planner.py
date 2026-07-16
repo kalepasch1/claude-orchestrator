@@ -19,6 +19,7 @@ import os, sys, json, subprocess, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import claude_cli
 import tdd_gate
+import wiring_policy
 
 PLAN_MODEL = os.environ.get("PLAN_MODEL", "claude-opus-4-8")
 
@@ -41,6 +42,7 @@ defines the shared interfaces/types/API signatures/DB schema that the others bui
 against (and ONLY those - no implementation). EVERY other task MUST list "contracts"
 in its deps. This lets parallel branches agree on boundaries up front so they cannot
 structurally conflict at merge time.
+""" + wiring_policy.WIRING_RULE + """
 REQUEST:
 """
 
@@ -134,8 +136,10 @@ def plan(master: str, repo: str = None) -> list:
                              f"patterns to maximize first-pass merge rate):\n{lesson}\n\n")
             except Exception:
                 pass
+    # Inject import-graph context so the model knows what's wired vs orphaned
+    import_ctx = wiring_policy._build_import_context(repo)
     try:
-        r = claude_cli.run(META + spec + master, PLAN_MODEL,
+        r = claude_cli.run(META + spec + import_ctx + master, PLAN_MODEL,
                            timeout=int(os.environ.get("PLAN_TIMEOUT", "300")))
         m = re.search(r"\[.*\]", r["text"], re.S)
         tasks = json.loads(m.group(0)) if m else []
@@ -146,6 +150,9 @@ def plan(master: str, repo: str = None) -> list:
 
     # Apply TDD-first enforcement if configured
     tasks = _apply_tdd_gating(tasks)
+
+    # Apply wiring reminders to tasks that create logic without surfaces
+    _, tasks = wiring_policy.augment_plan(tasks, repo)
 
     return tasks
 
