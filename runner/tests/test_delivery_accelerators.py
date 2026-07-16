@@ -16,6 +16,7 @@ import queue_velocity
 import db
 import task_refs
 import patch_recovery
+import commit_overlay
 
 
 def git(repo, *args):
@@ -154,6 +155,33 @@ def test_immutable_task_refs_survive_mutable_branch_rewrite(tmp_path):
     assert git(repo, "rev-parse", "agent/task-one") != first
 
 
+def test_commit_overlay_materializes_exact_tree_without_worktree_registration(tmp_path):
+    repo = init_repo(tmp_path)
+    (repo / "value.txt").write_text("committed\n")
+    git(repo, "add", "."); git(repo, "commit", "-m", "base")
+    commit = git(repo, "rev-parse", "HEAD")
+    before = git(repo, "worktree", "list", "--porcelain")
+    (repo / "value.txt").write_text("dirty-primary\n")
+    with commit_overlay.checkout(str(repo), commit) as overlay:
+        assert (os.path.exists(os.path.join(overlay["path"], ".git"))) is False
+        assert open(os.path.join(overlay["path"], "value.txt")).read() == "committed\n"
+        assert overlay["registered_worktree"] is False
+    assert git(repo, "worktree", "list", "--porcelain") == before
+
+
+def test_merge_qa_uses_overlay_and_never_registers_worktree(tmp_path):
+    repo = init_repo(tmp_path)
+    (repo / "value.txt").write_text("green\n")
+    git(repo, "add", "."); git(repo, "commit", "-m", "base")
+    commit = git(repo, "rev-parse", "HEAD")
+    before = git(repo, "worktree", "list", "--porcelain")
+    ok, detail = merge_train._run_tests(
+        str(repo), "python3 -c \"assert open('value.txt').read().strip() == 'green'\"", commit)
+    assert ok, detail
+    assert detail.startswith("overlay:")
+    assert git(repo, "worktree", "list", "--porcelain") == before
+
+
 def test_missing_branch_recovers_from_immutable_ref_without_model(tmp_path, monkeypatch):
     repo = init_repo(tmp_path)
     (repo / "a.txt").write_text("base\n"); git(repo, "add", "."); git(repo, "commit", "-m", "base")
@@ -222,4 +250,8 @@ def test_accelerators_are_wired_into_delivery_paths():
     assert "blocker_portfolio.scores" in db_source
     assert 'task_patch.pop("artifact_ref", None)' in dispatch_source
     assert 'query["select"] = "id,slug,state,artifact_commit,model,execution_lane"' in open(release_manifest.__file__, encoding="utf-8").read()
+    assert "commit_overlay.checkout" in merge_source
+    assert "commit_overlay.checkout" in release_source
+    assert "ThreadPoolExecutor" in release_source
+    assert "global_lease" not in __import__("inspect").getsource(release_train.run)
     assert "_load_env()" in open(swarm_executor.__file__, encoding="utf-8").read()

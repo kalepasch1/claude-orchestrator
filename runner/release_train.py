@@ -16,7 +16,7 @@ Flow per project:
   4. if green AND batch/cadence gates are satisfied: record last_good = prod tip, merge staging -> prod, push.
      deploy_verify then confirms Vercel success or rolls back to last_good.
 """
-import os, sys, subprocess, datetime, json, tempfile
+import concurrent.futures, os, sys, subprocess, datetime, json, tempfile, threading
 RUNNER_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(RUNNER_DIR)
 RUNTIME_DIR = os.environ.get("CLAUDE_ORCH_HOME", os.path.join(REPO_ROOT, ".runtime"))
@@ -43,6 +43,7 @@ RED_GATE_COOLDOWN_MIN = float(os.environ.get("ORCH_RELEASE_RED_GATE_COOLDOWN_MIN
 # release_kpi writes this: the set of apps whose recent prod deploys keep failing, so we promote their
 # tests to a HARD release gate until they recover (self-tuning loop). Read fail-soft.
 _GATE_FILE = os.path.join(tempfile.gettempdir(), "orch-release-gate.json")
+_FLOW_LOCK = threading.Lock()
 
 
 def _truthy(name, default=False):
@@ -72,24 +73,27 @@ def _record_release_flow(project, status, **extra):
     """Small local status file so dashboard/autopilot can show staged-vs-prod release state."""
     try:
         os.makedirs(RUNTIME_DIR, exist_ok=True)
-        state = {}
-        if os.path.exists(RELEASE_FLOW_FILE):
-            try:
-                with open(RELEASE_FLOW_FILE, encoding="utf-8") as f:
-                    state = json.load(f) or {}
-            except Exception:
-                state = {}
-        state[project] = {
-            "at": datetime.datetime.utcnow().isoformat() + "Z",
-            "status": status,
-            "staging_branch": STAGING,
-            "release_min_batch": MIN_BATCH,
-            "release_interval_hours": RELEASE_INTERVAL_HOURS,
-            "prod_push_enabled": _truthy("ORCH_PUSH_ON_RELEASE", True),
-            **extra,
-        }
-        with open(RELEASE_FLOW_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2, sort_keys=True)
+        with _FLOW_LOCK:
+            state = {}
+            if os.path.exists(RELEASE_FLOW_FILE):
+                try:
+                    with open(RELEASE_FLOW_FILE, encoding="utf-8") as f:
+                        state = json.load(f) or {}
+                except Exception:
+                    state = {}
+            state[project] = {
+                "at": datetime.datetime.utcnow().isoformat() + "Z",
+                "status": status,
+                "staging_branch": STAGING,
+                "release_min_batch": MIN_BATCH,
+                "release_interval_hours": RELEASE_INTERVAL_HOURS,
+                "prod_push_enabled": _truthy("ORCH_PUSH_ON_RELEASE", True),
+                **extra,
+            }
+            tmp = RELEASE_FLOW_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2, sort_keys=True)
+            os.replace(tmp, RELEASE_FLOW_FILE)
     except Exception:
         pass
 
@@ -439,26 +443,20 @@ def _prepare_generated_types(worktree):
 
 def _qa_ref(repo, ref, command, timeout=1800):
     """Run QA against an exact Git tree; used for production-baseline comparison."""
-    import shutil, tempfile
-    root = tempfile.mkdtemp(prefix="baseline-qa-")
-    worktree = os.path.join(root, "tree")
+    import commit_overlay
     try:
-        added = _git(repo, "worktree", "add", "--detach", worktree, ref)
-        if added.returncode != 0:
-            return False, "could not create baseline QA worktree: " + (added.stderr or "")[-500:]
-        _link_shared_runtime(repo, worktree)
-        prepared, prepare_log = _prepare_generated_types(worktree)
-        if not prepared:
-            return False, "Nuxt type preparation failed:\n" + prepare_log
-        result = subprocess.run(["bash", "-lc", command], cwd=worktree, capture_output=True,
-                                text=True, timeout=timeout)
-        log = ((result.stdout or "")[-6000:] + "\n" + (result.stderr or "")[-6000:]).strip()
-        return result.returncode == 0, log
+        with commit_overlay.checkout(repo, ref, prefix="baseline-qa-overlay-") as overlay:
+            worktree = overlay["path"]
+            _link_shared_runtime(repo, worktree)
+            prepared, prepare_log = _prepare_generated_types(worktree)
+            if not prepared:
+                return False, "Nuxt type preparation failed:\n" + prepare_log
+            result = subprocess.run(["bash", "-lc", command], cwd=worktree, capture_output=True,
+                                    text=True, timeout=timeout)
+            log = ((result.stdout or "")[-6000:] + "\n" + (result.stderr or "")[-6000:]).strip()
+            return result.returncode == 0, f"overlay:{overlay['commit'][:12]} {log}"
     except subprocess.TimeoutExpired:
         return False, f"tests timed out after {timeout}s"
-    finally:
-        _git(repo, "worktree", "remove", "--force", worktree)
-        shutil.rmtree(root, ignore_errors=True)
 
 
 def prod_branch(repo):
@@ -759,8 +757,7 @@ def _run_for_unlocked(project, repo_override=None):
             return held
         if _recent_failed_gate(project, staging_sha, "qa"):
             return {"project": project, "qa": "HELD", "note": "unchanged staging SHA already failed QA recently"}
-        import tempfile, shutil
-        tmp = tempfile.mkdtemp(prefix="qa-")
+        import commit_overlay
         try:
             try:
                 import dependency_prewarm
@@ -775,17 +772,19 @@ def _run_for_unlocked(project, repo_override=None):
                     return {"project": project, "qa": "FAILED", "note": "dependency prewarm failed; held"}
             except Exception:
                 pass
-            _git(repo, "worktree", "add", "-f", tmp, STAGING)
-            _link_shared_runtime(repo, tmp)
-            prepared, prepare_log = _prepare_generated_types(tmp)
-            if prepared:
-                qa = subprocess.run(["bash", "-lc", qa_cmd], cwd=tmp, capture_output=True, text=True, timeout=1800)
-                ok = qa.returncode == 0
-            else:
-                qa = subprocess.CompletedProcess(qa_cmd, 1, "", "Nuxt type preparation failed:\n" + prepare_log)
-                ok = False
-        finally:
-            _git(repo, "worktree", "remove", "--force", tmp); shutil.rmtree(tmp, ignore_errors=True)
+            with commit_overlay.checkout(repo, staging_sha, prefix="release-qa-overlay-") as overlay:
+                tmp = overlay["path"]
+                _link_shared_runtime(repo, tmp)
+                prepared, prepare_log = _prepare_generated_types(tmp)
+                if prepared:
+                    qa = subprocess.run(["bash", "-lc", qa_cmd], cwd=tmp, capture_output=True, text=True, timeout=1800)
+                    ok = qa.returncode == 0
+                else:
+                    qa = subprocess.CompletedProcess(qa_cmd, 1, "", "Nuxt type preparation failed:\n" + prepare_log)
+                    ok = False
+        except Exception as exc:
+            qa = subprocess.CompletedProcess(qa_cmd, 1, "", f"QA overlay failed: {exc}")
+            ok = False
         if not ok:
             qlog = ((qa.stdout or "")[-5000:] + "\n" + (qa.stderr or "")[-5000:]).strip()
             if _truthy("ORCH_DIFFERENTIAL_QA", True):
@@ -938,11 +937,7 @@ def run_for(project):
     repo = p.get("repo_path", "")
     if not repo or not os.path.isdir(repo):
         return {"project": project, "skip": "repo missing on this machine"}
-    lease_timeout = float(os.environ.get("ORCH_INTEGRATION_LEASE_TIMEOUT_S", "0") or 0)
-    with integration_runtime.global_lease("release_train", timeout=lease_timeout) as leased:
-        if not leased:
-            return {"project": project, "note": "release busy; global integration lease held"}
-        return _run_for_with_repo(project, repo)
+    return _run_for_with_repo(project, repo)
 
 
 def _run_for_with_repo(project, repo):
@@ -985,23 +980,22 @@ def _release_due(project):
 
 
 def run():
-    out = []
-    lease_timeout = float(os.environ.get("ORCH_INTEGRATION_LEASE_TIMEOUT_S", "0") or 0)
-    with integration_runtime.global_lease("release_train", timeout=lease_timeout) as leased:
-        if not leased:
-            return [{"skipped": "another integration or release train owns the global lease"}]
-        for p in db.select("projects", {"select": "name,auto_merge"}) or []:
-            if os.environ.get("ORCH_RELEASE_ALL_PROJECTS", "true").lower() == "true" or p.get("auto_merge"):
-                if p["name"] == "smoke-test":
-                    continue
-                try:
-                    row = (db.select("projects", {"select": "repo_path", "name": f"eq.{p['name']}"}) or [{}])[0]
-                    repo = row.get("repo_path", "")
-                    out.append(_run_for_with_repo(p["name"], repo) if repo and os.path.isdir(repo)
-                               else {"project": p["name"], "skip": "repo missing on this machine"})
-                except Exception as e:
-                    out.append({"project": p["name"], "error": str(e)[:120]})
-    return out
+    projects = [p for p in (db.select("projects", {"select": "name,auto_merge,repo_path"}) or [])
+                if p.get("name") != "smoke-test" and
+                (os.environ.get("ORCH_RELEASE_ALL_PROJECTS", "true").lower() == "true" or p.get("auto_merge"))]
+    def worker(p):
+        try:
+            repo = db.localize_repo_path(p.get("repo_path", ""))
+            return (_run_for_with_repo(p["name"], repo) if repo and os.path.isdir(repo)
+                    else {"project": p["name"], "skip": "repo missing on this machine"})
+        except Exception as exc:
+            return {"project": p.get("name"), "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+    workers = min(len(projects), max(1, int(os.environ.get("ORCH_RELEASE_PROJECT_WORKERS", "4"))))
+    if not projects:
+        return []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers,
+                                               thread_name_prefix="release-project") as pool:
+        return list(pool.map(worker, projects))
 
 
 # ── dependency-aware release orchestration ────────────────────────────────────

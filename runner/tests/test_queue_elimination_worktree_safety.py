@@ -49,6 +49,7 @@ class ApplyAndVerifyNeverTouchesRepoCwdTest(unittest.TestCase):
         results = [
             _proc(returncode=0),          # apply --check (repo)
             _proc(returncode=0),          # worktree add (repo)
+            _proc(returncode=0),          # worktree lock (repo)
             _proc(returncode=0),          # apply --3way (wt)
             _proc(returncode=0),          # test cmd (wt)
             _proc(returncode=0),          # git add -A (wt)
@@ -79,6 +80,7 @@ class ApplyAndVerifyNeverTouchesRepoCwdTest(unittest.TestCase):
         results = [
             _proc(returncode=0),                 # apply --check
             _proc(returncode=0),                 # worktree add
+            _proc(returncode=0),                 # worktree lock
             _proc(returncode=0),                 # apply --3way
             _proc(returncode=0),                 # test
             _proc(returncode=0), _proc(returncode=0),  # add -A, commit
@@ -87,8 +89,8 @@ class ApplyAndVerifyNeverTouchesRepoCwdTest(unittest.TestCase):
         with patch("os.path.isdir", return_value=True), patch("os.makedirs"), \
              patch("subprocess.run", side_effect=results) as m:
             qe._apply_and_verify(REPO, "diff", "task123")
-        apply_call = m.call_args_list[2]
-        test_call = m.call_args_list[3]
+        apply_call = next(c for c in m.call_args_list if c.args[0] == ["git", "apply", "--3way"])
+        test_call = next(c for c in m.call_args_list if c.kwargs.get("shell") is True)
         self.assertEqual(apply_call.args[0], ["git", "apply", "--3way"])
         self.assertNotEqual(apply_call.kwargs.get("cwd"), REPO)
         self.assertNotEqual(test_call.kwargs.get("cwd"), REPO)
@@ -107,6 +109,7 @@ class ApplyAndVerifyOutcomesTest(unittest.TestCase):
         results = [
             _proc(returncode=0),   # check
             _proc(returncode=0),   # worktree add
+            _proc(returncode=0),   # worktree lock
             _proc(returncode=1),   # apply --3way fails
         ]
         with patch("os.path.isdir", return_value=True), patch("os.makedirs"), \
@@ -122,6 +125,7 @@ class ApplyAndVerifyOutcomesTest(unittest.TestCase):
         results = [
             _proc(returncode=0),   # check
             _proc(returncode=0),   # worktree add
+            _proc(returncode=0),   # worktree lock
             _proc(returncode=0),   # apply --3way
             _proc(returncode=1),   # test fails
         ]
@@ -137,6 +141,7 @@ class ApplyAndVerifyOutcomesTest(unittest.TestCase):
         results = [
             _proc(returncode=0),   # check
             _proc(returncode=0),   # worktree add
+            _proc(returncode=0),   # worktree lock
             _proc(returncode=0),   # apply --3way
             _proc(returncode=0),   # test passes
             _proc(returncode=0),   # git add -A
@@ -158,7 +163,7 @@ class ApplyAndVerifyOutcomesTest(unittest.TestCase):
     def test_exception_during_apply_cleans_up(self):
         with patch("os.path.isdir", return_value=True), patch("os.makedirs"), \
              patch.object(qe, "_cleanup_worktree") as cleanup, \
-             patch("subprocess.run", side_effect=[_proc(0), _proc(0), RuntimeError("boom")]):
+             patch("subprocess.run", side_effect=[_proc(0), _proc(0), _proc(0), RuntimeError("boom")]):
             result = qe._apply_and_verify(REPO, "diff", "task123")
         self.assertFalse(result["success"])
         self.assertIn("boom", result["reason"])

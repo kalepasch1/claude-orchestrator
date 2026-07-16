@@ -69,14 +69,15 @@ def test_merge_and_release_share_one_global_lease(tmp_path, monkeypatch):
     assert not thread.is_alive()
 
 
-def test_both_trains_use_shared_runtime_source_contract():
+def test_merge_is_global_but_release_is_project_isolated():
     runner = Path(__file__).parents[1]
     merge = (runner / "merge_train.py").read_text()
     release = (runner / "release_train.py").read_text()
     assert 'global_lease("merge_train"' in merge
     assert 'isolated_repo(repo_path, "merge_train")' in merge
-    assert 'global_lease("release_train"' in release
     assert 'isolated_repo(repo, "release_train")' in release
+    assert "ThreadPoolExecutor" in release
+    assert 'global_lease("release_train"' not in release
 
 
 def test_free_branch_never_removes_primary_when_called_from_linked_worktree(

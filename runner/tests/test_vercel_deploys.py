@@ -61,14 +61,16 @@ class TestDeployVerify(unittest.TestCase):
     def test_bad_deploy_queues_fix_and_rolls_back(self):
         fake = FakeDB()
         fake.rows["deploy_health"] = [{"app": "app", "vercel_project": "app-prod"}]
-        fake.rows["projects"] = [{"id": "p1", "name": "app", "repo_path": "", "default_base": "main"}]
+        fake.rows["projects"] = [{"id": "p1", "name": "app", "repo_path": "/repo", "default_base": "main"}]
         fake.rows["releases"] = [{
             "id": "r1", "project": "app", "deploy_status": "building", "from_sha": "aaa",
             "to_sha": "bbb", "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }]
         with patch.object(deploy_verify, "db", fake), \
              patch.object(deploy_verify, "_latest_deploy", return_value={"state": "ERROR", "uid": "d1"}), \
-             patch.object(deploy_verify, "_deployment_events", return_value="build failed"):
+             patch.object(deploy_verify, "_deployment_events", return_value="build failed"), \
+             patch.object(deploy_verify.os.path, "isdir", return_value=True), \
+             patch.object(deploy_verify, "_rollback", return_value=True):
             deploy_verify.run()
         self.assertTrue(any(t == "tasks" and r["slug"].startswith("deployfix-app-")
                             for t, r in fake.inserts))
