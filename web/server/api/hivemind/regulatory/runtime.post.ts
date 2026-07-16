@@ -1,5 +1,6 @@
 import { timingSafeEqual } from 'node:crypto'
 import { runtimeAgreementPolicy, runtimeFeaturePolicy, recordRuntimeEvidence, measureRuntimeObligation } from '../../../utils/regulatoryTemporal'
+import { recordAuthoritySource, runtimeDeploymentGate } from '../../../utils/regulatoryFrontier'
 
 function authorized(event: any) {
   const expected = Buffer.from(process.env.FLEET_SHARED_SECRET || '')
@@ -16,5 +17,7 @@ export default defineEventHandler(async event => {
   if (body.action === 'agreement_policy') return runtimeAgreementPolicy(organizationId, body)
   if (body.action === 'evidence') return recordRuntimeEvidence(organizationId, body)
   if (body.action === 'obligation') return measureRuntimeObligation(organizationId, body)
+  if (body.action === 'deployment_gate') return runtimeDeploymentGate(organizationId, body)
+  if (body.action === 'authority_source') return recordAuthoritySource(organizationId, body)
   throw createError({ statusCode: 400, message: 'unknown_regulatory_runtime_action' })
 })

@@ -14,6 +14,7 @@ import {
   saveTemporalScenario,
   selectStrategyOption,
 } from '../../utils/regulatoryTemporal'
+import { executeFrontierRun, grantBoundedRegulatorAccess } from '../../utils/regulatoryFrontier'
 
 export default defineEventHandler(async event => {
   const user = await requireConnectorUser(event)
@@ -51,6 +52,14 @@ export default defineEventHandler(async event => {
   if (body?.action === 'select_strategy') {
     const context = await organizationContext(user); requireOrgAdmin(context)
     return selectStrategyOption(context.membership.organization_id, String(body.option_id || ''))
+  }
+  if (['worldline','systemic_risk','examination','acquisition','capital','dispute_prevention'].includes(body?.action)) {
+    const context = await organizationContext(user)
+    return executeFrontierRun(context.membership.organization_id, body.action, body)
+  }
+  if (body?.action === 'regulator_access') {
+    const context = await organizationContext(user); requireOrgAdmin(context)
+    return grantBoundedRegulatorAccess(context.membership.organization_id, user.id, body)
   }
   throw createError({ statusCode: 400, message: 'unknown_regulatory_action' })
 })
