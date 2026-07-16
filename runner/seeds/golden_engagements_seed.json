@@ -1,0 +1,32 @@
+[
+  {
+    "id": "seed-fr-001",
+    "source": "federal_register",
+    "title": "Proposed Rule: Beneficial Ownership Reporting",
+    "url": "https://www.federalregister.gov/documents/2024/01/01/example",
+    "full_text_url": "https://www.federalregister.gov/documents/full_text/example.htm",
+    "published": "2024-01-15",
+    "stage": "proposed_rule",
+    "agency": "FinCEN"
+  },
+  {
+    "id": "seed-edgar-001",
+    "source": "edgar",
+    "title": "Annual Report Filing - Example Corp",
+    "url": "https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&company=example",
+    "full_text_url": "https://www.sec.gov/Archives/edgar/data/example/filing.htm",
+    "published": "2024-02-10",
+    "stage": "annual_filing",
+    "cik": "0001234567"
+  },
+  {
+    "id": "seed-fr-002",
+    "source": "federal_register",
+    "title": "Final Rule: Anti-Money Laundering Program",
+    "url": "https://www.federalregister.gov/documents/2024/03/01/example2",
+    "full_text_url": "https://www.federalregister.gov/documents/full_text/example2.htm",
+    "published": "2024-03-01",
+    "stage": "final_rule",
+    "agency": "FinCEN"
+  }
+]
