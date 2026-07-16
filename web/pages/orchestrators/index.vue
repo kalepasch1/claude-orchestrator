@@ -59,7 +59,14 @@ async function submit(chosenProject?: string) {
   } finally { submitting.value = false }
 }
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  try {
+    const pending = JSON.parse(sessionStorage.getItem('madeus:pending-command') || 'null')
+    if (pending?.intent && Date.now() - Number(pending.created_at || 0) < 86_400_000) prompt.value = String(pending.intent)
+    if (pending) sessionStorage.removeItem('madeus:pending-command')
+  } catch { sessionStorage.removeItem('madeus:pending-command') }
+})
 </script>
 
 <template>

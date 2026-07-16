@@ -606,7 +606,19 @@ async function runCommand() {
   finally { terminalLoading.value = false }
 }
 
-onMounted(async () => { await loadData(); if (persistentContext.appId && APPS.some(app => app.id === persistentContext.appId)) selectedApp.value = persistentContext.appId; if (persistentContext.projectId && projects.value.some(project => project.id === persistentContext.projectId)) selectedProject.value = persistentContext.projectId; if (!terminalPrompt.value && typeof route.query.intent === 'string') terminalPrompt.value = route.query.intent; if (proficiency.value.showAdvancedByDefault) persistentContext.advanced = true; await loadDraft(); await loadDeploys(); await loadConnectors(); await resolvePreview(); refreshInsights() })
+onMounted(async () => {
+  await loadData()
+  if (persistentContext.appId && APPS.some(app => app.id === persistentContext.appId)) selectedApp.value = persistentContext.appId
+  if (persistentContext.projectId && projects.value.some(project => project.id === persistentContext.projectId)) selectedProject.value = persistentContext.projectId
+  if (!terminalPrompt.value && typeof route.query.intent === 'string') terminalPrompt.value = route.query.intent
+  try {
+    const pending = JSON.parse(sessionStorage.getItem('madeus:pending-command') || 'null')
+    if (!terminalPrompt.value && pending?.intent && Date.now() - Number(pending.created_at || 0) < 86_400_000) terminalPrompt.value = String(pending.intent)
+    if (pending) sessionStorage.removeItem('madeus:pending-command')
+  } catch { sessionStorage.removeItem('madeus:pending-command') }
+  if (proficiency.value.showAdvancedByDefault) persistentContext.advanced = true
+  await loadDraft(); await loadDeploys(); await loadConnectors(); await resolvePreview(); refreshInsights()
+})
 watch(contextHydrated, ready => {
   if (!ready) return
   if (persistentContext.appId && APPS.some(app => app.id === persistentContext.appId)) selectedApp.value = persistentContext.appId
@@ -789,6 +801,7 @@ watch(slug, () => { refreshInsights() })
                 :app="APPS.find(a => a.id === selectedApp)?.name || selectedApp"
                 :capability="cap.name"
                 :domain="cap.domain"
+                :project-id="selectedProject"
                 :recommendation="insightsForActive[0]?.recommendation"
                 :outcome="insightsForActive[0]?.outcome"
                 @use-prompt="useCadePrompt"

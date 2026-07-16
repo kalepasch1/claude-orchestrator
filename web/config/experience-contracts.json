@@ -32,7 +32,10 @@
       "states": {
         "idle": ["command-trigger", "⌘K"],
         "search": ["suggestions", "activeIndex"],
-        "no-match": ["No exact destination found", "Route this outcome"],
+        "multimodal": ["attachments", "addFiles", "command/context"],
+        "voice": ["dictate", "SpeechRecognition"],
+        "durable-handoff": ["madeus:pending-command", "rememberPending"],
+        "no-match": ["Madeus preserves attached context", "Route this outcome"],
         "proof": ["command-proof", "proof.digest"],
         "error": ["command-error", "error"]
       }
