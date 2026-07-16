@@ -2219,6 +2219,7 @@ _SCHEDULE = [
     ("intake-120",    "intake_watcher.py",  "interval", 120),   # auto-ingest dropped task lists
     ("drafts-90",     "decision_drafts.py", "interval", 90),    # auto-draft on founder directives
     ("businesscreative-15", "business_os_worker.py", "interval", 15), # atomically claim cost-capped creative jobs; outputs always enter review
+    ("virtualexec-30", "virtual_executive_worker.py", "interval", 30), # predict work and execute only policy/credential/approval-authorized saga steps
 
 
     ("anomaly-3600",  "anomaly.py",         "interval", 3600),
