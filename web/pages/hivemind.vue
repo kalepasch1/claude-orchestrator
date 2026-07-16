@@ -4,6 +4,7 @@ definePageMeta({ layout: 'default' })
 
 <template>
   <HivemindGovernance />
+  <RegulatoryCapability />
   <section class="expert-controls">
     <details>
       <summary>

@@ -1,6 +1,7 @@
 import { createHash, createHmac, randomBytes } from 'node:crypto'
 import { organizationContext } from './adaptiveFabric'
 import { serviceClient } from './fleetSupabase'
+import { runRegulatoryAutopilot } from './regulatoryCapability'
 
 type CreditRow = {
   amount_cents: number | string
@@ -361,12 +362,13 @@ export async function runOrganizationAutopilot(organizationId: string, trigger: 
     if (recent) return recent
   }
   const startedAt = now()
-  const [failures, simulations, treasury, immunity, derivations] = await Promise.all([
+  const [failures, simulations, treasury, immunity, derivations, regulatory] = await Promise.all([
     classifyUnprocessedFailures(organizationId),
     simulateOpenProposals(organizationId),
     clearTreasury(organizationId),
     containImmuneSignals(organizationId),
     deriveFollowOnOpportunities(organizationId),
+    runRegulatoryAutopilot(organizationId, trigger).catch((error: any) => ({ status: 'failed', outcomes: [], exceptions: [], error: bounded(error?.message, 120) })),
   ])
   const outcomes = [
     failures ? { kind: 'learning', title: `${failures} failure pattern${failures === 1 ? '' : 's'} made reusable` } : null,
@@ -374,14 +376,16 @@ export async function runOrganizationAutopilot(organizationId: string, trigger: 
     derivations ? { kind: 'opportunity', title: `${derivations} verified follow-on opportunit${derivations === 1 ? 'y' : 'ies'} found` } : null,
     treasury.available_cents ? { kind: 'earnings', title: 'Credits cleared and ready', amount_cents: treasury.available_cents } : null,
     immunity.contained ? { kind: 'protection', title: `${immunity.contained} affected permission set${immunity.contained === 1 ? '' : 's'} contained` } : null,
+    ...(regulatory.outcomes || []),
   ].filter(Boolean)
-  const exceptions = immunity.alerts
+  const exceptions = [...immunity.alerts, ...(regulatory.exceptions || [])]
   const operations = {
     failures_classified: failures,
     proposals_simulated: simulations,
     opportunities_derived: derivations,
     immune_containments: immunity.contained,
     treasury_snapshot_digest: digest(treasury),
+    regulatory_run_status: regulatory.status,
     private_payloads_processed: false,
   }
   const run = {
