@@ -20,6 +20,7 @@ GIT_TIMEOUT = int(os.environ.get("WORKTREE_GC_GIT_TIMEOUT", "90"))
 
 
 def _run_git(args, repo):
+    """Execute a git command in the given repo, with timeout protection."""
     try:
         return subprocess.run(args, cwd=repo, capture_output=True, text=True, timeout=GIT_TIMEOUT)
     except TypeError:
