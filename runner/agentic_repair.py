@@ -36,10 +36,12 @@ REPLACEMENT_ONLY_CATEGORIES = {"legal", "secret", "security"}
 
 
 def is_technical(category):
+    """Return True if the failure category is a technical (auto-repairable) issue."""
     return str(category or "rework") in TECHNICAL_CATEGORIES
 
 
 def replacement_required(category):
+    """Return True if the category requires full prompt replacement (legal/secret/security)."""
     return str(category or "") in REPLACEMENT_ONLY_CATEGORIES
 
 
