@@ -14,18 +14,24 @@ import subprocess
 
 CONTRACT_VERSION = "executor-contract-v1"
 REQUIRED_WORKTREE_KEYWORDS = ("task_id", "lease_token")
+_CODE_SHA = None
 
 
 def code_sha() -> str:
+    global _CODE_SHA
+    if _CODE_SHA is not None:
+        return _CODE_SHA
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     try:
         result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=root,
                                 capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
-            return result.stdout.strip()
+            _CODE_SHA = result.stdout.strip()
+            return _CODE_SHA
     except Exception:
         pass
-    return "unknown"
+    _CODE_SHA = "unknown"
+    return _CODE_SHA
 
 
 def check() -> dict:
