@@ -198,7 +198,14 @@ def repo_runnable_here(repo_path):
     exists (possibly via localize_repo_path). Used by claim_task to enforce host affinity."""
     if not repo_path:
         return True
-    return os.path.isdir(localize_repo_path(repo_path))
+    loc = localize_repo_path(repo_path)
+    if not os.path.isdir(loc):
+        return False
+    try:
+        os.listdir(loc)
+        return True
+    except (PermissionError, OSError):
+        return False
 
 
 def _req(method, path, body=None, headers=None, params=None):

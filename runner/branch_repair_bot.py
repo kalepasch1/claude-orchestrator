@@ -76,6 +76,11 @@ def check_task(task, repo):
         "action": "none",
     }
 
+    if not repo or not os.path.isdir(repo):
+        result["status"] = "check_failed"
+        result["action"] = "manual"
+        return result
+
     if not _branch_exists(repo, branch):
         result["status"] = "missing"
         result["action"] = "requeue"

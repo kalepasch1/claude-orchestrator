@@ -45,3 +45,21 @@ work to. Once the fleet is healthy, prefer the drop-box.
 - **DO** gate resource expansion (new pool entries) on memory checks via `resource_governor.can_claim()` to prevent wedging under pressure
 - **AVOID** blocking the caller on slow I/O—if a cache miss is likely, accept it and fall back rather than synchronous disk waits
 - **DO** provide `stats()` and `invalidate()` methods so operators and tests can observe/control pool state
+
+
+## Learned from merged work (auto)
+Here are the extracted conventions:
+
+**Followed Conventions:**
+
+* The code uses a consistent naming convention for variables and functions (e.g., `lc` instead of `local_coder`, `cd_until` instead of `cooldown_until_time`)
+* The code uses comments to explain complex logic, making it easier to understand
+* The use of Python's built-in logging module for logging purposes
+* The use of environment variables to configure the application
+
+**To Avoid on First Try:**
+
+* Avoid overusing nested if-else statements and instead opt for a more modular approach
+* Use type hints for function parameters and return types to improve code readability
+* Use consistent indentation and spacing throughout the codebase
+* Avoid using magic numbers and instead define named constants or functions to compute them

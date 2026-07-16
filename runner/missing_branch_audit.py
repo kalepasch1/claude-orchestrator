@@ -78,12 +78,20 @@ def auto_recover_missing_branches(dry_run=True, max_recover=10):
         max_recover: Maximum number of recovery tasks to create per run
     """
     import time as _time
-    projects = {p["id"]: p for p in (db.select("projects", {"select": "*"}) or [])}
-    done_tasks = db.select("tasks", {
-        "select": "id,slug,project_id,state,prompt,kind,base_branch",
-        "state": "eq.DONE",
-        "limit": "2000",
-    }) or []
+    try:
+        projects = {p["id"]: p for p in (db.select("projects", {"select": "*"}) or [])}
+    except Exception as e:
+        print(f"auto_recover: DB error fetching projects: {e}")
+        return {"recovered": 0, "missing": 0}
+    try:
+        done_tasks = db.select("tasks", {
+            "select": "id,slug,project_id,state,prompt,kind,base_branch",
+            "state": "eq.DONE",
+            "limit": "2000",
+        }) or []
+    except Exception as e:
+        print(f"auto_recover: DB error fetching tasks: {e}")
+        return {"recovered": 0, "missing": 0}
 
     missing = []
     for t in done_tasks:
