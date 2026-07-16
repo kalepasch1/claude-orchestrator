@@ -7,6 +7,15 @@ The runner uses the SERVICE ROLE key so it bypasses RLS. Set:
 """
 import os, re, json, socket, time, datetime, threading, urllib.request, urllib.parse, urllib.error
 
+
+class TransientDBError(Exception):
+    """Raised when a Supabase/PostgREST request fails with a retryable HTTP status (e.g. 409 Conflict).
+
+    Callers can catch this to distinguish transient DB collisions from permanent errors.
+    The original urllib.error.HTTPError is chained via __cause__.
+    """
+    pass
+
 # Load runner/.env directly from Python so launchd agents pick up all env vars
 # (EMBED_PROVIDER, ANTHROPIC_API_KEY, etc.) even when the shell wrapper can't
 # source the file due to macOS TCC restrictions.
@@ -288,7 +297,7 @@ def _req(method, path, body=None, headers=None, params=None):
             # idempotent and safe to ignore. No callers depend on the return value
             # of insert(), so returning None is safe.
             if e.code == 409:
-                return None
+                raise TransientDBError(f"HTTP 409 Conflict on {method} {path}") from e
             if method != "GET" or e.code not in HTTP_RETRY_STATUSES or attempt >= attempts - 1:
                 raise
             time.sleep(min(12, 2 ** attempt) + (0.1 * attempt))
@@ -413,20 +422,18 @@ def insert(table, row, upsert=False):
     h = {"Prefer": "return=representation" + (",resolution=merge-duplicates" if upsert else "")}
     try:
         result = _req("POST", f"/rest/v1/{table}", body=row, headers=h)
-    except urllib.error.HTTPError as e:
+    except TransientDBError:
         # 409 = duplicate key: the row already exists, so the write intent is satisfied. A retried
         # task re-inserting an outcome/row used to raise HTTP 409 -> "runner exception: Conflict" ->
         # BLOCKED, which stalled merges. Retry idempotently as an upsert; if that still can't apply,
         # swallow it so a duplicate never crashes the task.
-        if e.code == 409:
-            if upsert:
-                return None
-            try:
-                return _req("POST", f"/rest/v1/{table}",
-                            body=row, headers={"Prefer": "return=representation,resolution=merge-duplicates"})
-            except Exception:
-                return None
-        raise
+        if upsert:
+            return None
+        try:
+            return _req("POST", f"/rest/v1/{table}",
+                        body=row, headers={"Prefer": "return=representation,resolution=merge-duplicates"})
+        except Exception:
+            return None
 
     # POST-INSERT DEDUP RECONCILIATION (2026-07-15): the SELECT-then-INSERT guard above
     # prevents same-machine duplicates via _dedup_lock, but two Macs can still race past
@@ -481,13 +488,11 @@ def update(table, match, patch):
     try:
         return _req("PATCH", f"/rest/v1/{table}", body=patch,
                     headers={"Prefer": "return=representation"}, params=params)
-    except urllib.error.HTTPError as e:
+    except TransientDBError:
         # 409 = a concurrent write (the two Macs racing the same row). The write intent is already
         # satisfied by the other writer, so treat it as a no-op instead of letting it bubble up as a
         # "runner exception: HTTP 409 conflict" that terminally BLOCKS the task (this froze 200+ tasks).
-        if e.code == 409:
-            return None
-        raise
+        return None
 
 
 def rpc(fn, args):
