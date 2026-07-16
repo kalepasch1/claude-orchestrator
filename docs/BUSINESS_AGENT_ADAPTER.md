@@ -107,3 +107,9 @@ The autonomy layer adds eight controls without widening provider authority:
 - The Provider Intelligence UI exposes these proofs, decisions, dependency risks, workload attestations, and regulatory coverage instead of reducing them to a task-complete badge.
 
 The broker must independently validate the workload token signature and exchange it for a provider lease. The orchestrator validates claims before exchange and the returned HSM signature afterward; neither check substitutes for the other.
+
+## Provider sovereignty mesh
+
+Production provider work is additionally guarded by a database-owned atomic route claim and a network-wide mutation clearance key. The latter deliberately excludes provider identity so retries cannot double-apply the same business mutation through a different rail. HSM credential leases require a fresh allowlisted TEE measurement by default. Set `CONNECTOR_TEE_REQUIRED=false` only for an explicitly accepted non-production migration window.
+
+Verified field mappings leave an organization only as RSA-OAEP sealed envelopes. The application can consume only signed aggregates with at least five organizations, five observations, and 90% confidence; it never reads another organization's contribution. Custom WASM adapters are limited to 1 MiB, state-free exports, allowlisted host imports, and an attested default-deny sandbox. Signed primary-authority snapshots generate review proposals and never activate legal, tax, employment, or compliance rules without professional review.
