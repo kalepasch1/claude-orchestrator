@@ -25,7 +25,7 @@ N_JUDGES = int(os.environ.get("JUDGE_PANEL_SIZE", "2"))
 # cheapest capable reviewer per provider
 REVIEWERS = {
     "openai": os.environ.get("JUDGE_OPENAI_MODEL", "gpt-5.4-mini"),
-    "google": os.environ.get("JUDGE_GOOGLE_MODEL", "gemini-2.5-flash"),
+    "google": os.environ.get("JUDGE_GOOGLE_MODEL", "gemini-2.0-flash"),
     "deepseek": os.environ.get("JUDGE_DEEPSEEK_MODEL", "deepseek-v4-flash"),
     "local": os.environ.get("OLLAMA_MODEL", "llama3.1"),
     "claude": "claude-haiku-4-5-20241022",
