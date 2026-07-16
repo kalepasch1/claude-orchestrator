@@ -83,7 +83,7 @@ def _shelve_lowest_ev(count):
         for t in tasks:
             try:
                 db.update("tasks", {"id": t["id"]},
-                          {"state": "QUARANTINED",
+                          {"state": "SHELVED",
                            "note": f"shelved by queue-velocity PID (low EV, integral too high)"})
                 shelved += 1
             except Exception:

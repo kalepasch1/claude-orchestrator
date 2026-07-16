@@ -773,17 +773,22 @@ def claim_task(runner_id):
                                -float(roi_w.get(t.get("project_id"), 1) or 1),
                                t.get("created_at") or ""))
     # PREFLIGHT: skip tasks with notes indicating prior quarantine cycle
-    _SKIP_NOTE_PATTERNS = ("swarm-parallel-fail", "legacy direct improvement",
-                           "Meta-decomposition loop", "queue-bankruptcy",
-                           "sentinel-dedupe", "semantic-dedupe", "preflight:")
+    try:
+        import preflight_filter as _pf
+        _skip_note = _pf.should_skip_note
+    except ImportError:
+        _SKIP_NOTE_PATTERNS = ("swarm-parallel-fail", "legacy direct improvement",
+                               "Meta-decomposition loop", "queue-bankruptcy",
+                               "sentinel-dedupe", "semantic-dedupe", "preflight:",
+                               "non-actionable:", "GC:")
+        _skip_note = lambda n: any(pat in n for pat in _SKIP_NOTE_PATTERNS)
 
     done = _done_slugs()
     for t in queued or []:
         if _cooling_down(t):
             continue
         # Skip recycled/garbage tasks before claiming
-        t_note = str(t.get("note") or "")
-        if any(pat in t_note for pat in _SKIP_NOTE_PATTERNS):
+        if _skip_note(str(t.get("note") or "")):
             continue
         pid = t.get("project_id")
         if pid:

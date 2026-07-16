@@ -599,7 +599,8 @@ def run_task(t):
         if sig:
             hit = result_cache.lookup(sig)
             if hit:
-                set_state(t["id"], state="DONE", note=f"cache hit: reused {hit.get('branch')}")
+                set_state(t["id"], state="DONE", note=f"cache hit: reused {hit.get('branch')}",
+                          artifact_branch=hit.get("branch") or f"agent/{slug}")
                 record(t, name, slug, kind, "cache", POOL.current(), 0, True, False, "", time.time())
                 return
 
@@ -642,7 +643,8 @@ def run_task(t):
             set_state(t["id"], state="RUNNING", note=f"replaying run {run_id}")
             try:
                 replay.replay(run_id, repo)
-                set_state(t["id"], state="DONE", note=f"replay complete: run {run_id}")
+                set_state(t["id"], state="DONE", note=f"replay complete: run {run_id}",
+                          artifact_branch=f"agent/{slug}")
             except Exception as e:
                 set_state(t["id"], state="BLOCKED", note=f"replay error: {e}")
             return
@@ -655,7 +657,8 @@ def run_task(t):
             set_state(t["id"], state="RUNNING", note=f"rotating {prov}/{kname}")
             result = rotate_keys.rotate(prov, kname, name)
             if result.get("ok"):
-                set_state(t["id"], state="DONE", note=result.get("note", "rotated"))
+                set_state(t["id"], state="DONE", note=result.get("note", "rotated"),
+                          artifact_branch=f"ops/{slug}")
             else:
                 set_state(t["id"], state="BLOCKED", note=result.get("note", "manual rotation needed"))
             return
@@ -672,7 +675,8 @@ def run_task(t):
                 for s in secrets:
                     rotate_keys.rotate(prov, s["name"], s.get("project"))
                 kill_switch.pause(scope="global", reason=f"security panic: {prov} keys revoked", by="runner")
-                set_state(t["id"], state="DONE", note=f"revoked {len(secrets)} {prov} key(s), runner paused")
+                set_state(t["id"], state="DONE", note=f"revoked {len(secrets)} {prov} key(s), runner paused",
+                          artifact_branch=f"ops/{slug}")
             except Exception as e:
                 set_state(t["id"], state="BLOCKED", note=f"panic revoke error: {e}")
             return
@@ -1801,7 +1805,8 @@ def run_task(t):
                     paired_trial_controller.record(t, {"verified": True, "wall_ms": int((time.time()-t0)*1000), "value": 1.0})
                 except Exception as _pte:
                     _log.warning("paired trial recording failed for %s: %s", slug, _pte)
-                set_state(t["id"], state="DONE", note="paired-shadow verified; mutation intentionally discarded")
+                set_state(t["id"], state="DONE", note="paired-shadow verified; mutation intentionally discarded",
+                          artifact_branch=f"shadow/{slug}")
                 record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0, cost=run_cost)
                 return
 
@@ -1905,7 +1910,8 @@ def run_task(t):
                     f"Integration returned {result}. Keep the same task and branch, fix the root cause, rerun the failing build/test/merge path, and commit.",
                 ):
                     continue
-            set_state(t["id"], state=state_val, confidence=conf_score, note=_note)
+            set_state(t["id"], state=state_val, confidence=conf_score, note=_note,
+                      artifact_branch=branch_ref)
             if result in ("CONFLICT", "TESTFAIL", "BUILDFAIL"):
                 approval(name, "integrate", f"{slug} {result.lower()} on integrate",
                          why=f"could not auto-integrate ({result})", detail=out[-2000:])
@@ -3117,7 +3123,8 @@ def main():
                                 _rec = patch_recovery.recover(_repo, slug.replace("recover-missing-branch-", ""), _base, project=_proj.get("name"))
                                 if _rec.get("ok"):
                                     set_state(t["id"], state="DONE",
-                                              note=f"patch-recovery: {_rec['method']} (zero-spend)")
+                                              note=f"patch-recovery: {_rec['method']} (zero-spend)",
+                                              artifact_branch=_rec.get("branch") or f"agent/{slug}")
                                     print(f"[patch-recovery] {slug}: recovered via {_rec['method']}")
                                     continue
                         except Exception as e:

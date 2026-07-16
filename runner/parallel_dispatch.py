@@ -23,6 +23,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+try:
+    import preflight_filter as _preflight
+except ImportError:
+    _preflight = None
 
 log = logging.getLogger(__name__)
 
@@ -202,7 +206,10 @@ _RECYCLED_NOTE_RE = _re.compile(
 
 
 def _preflight_check(task: dict) -> str:
-    """Pre-dispatch quality gate. Returns '' if OK, or quarantine reason."""
+    """Pre-dispatch quality gate. Delegates to preflight_filter module if available."""
+    if _preflight:
+        return _preflight.preflight_check(task)
+    # Inline fallback if module unavailable
     prompt = str(task.get("prompt") or "")
     note = str(task.get("note") or "")
     attempt = task.get("attempt") or 0
@@ -331,7 +338,7 @@ def _dispatch_one_api(task: dict) -> dict:
                     paired_trial_controller.record(task, {"verified": True, "wall_ms": proof.get("duration_ms", 0), "value": 1.0})
                 except Exception:
                     pass
-                db.update("tasks", {"id": task_id}, {"state": "DONE", "result": json.dumps({"artifact_id": proof.get("artifact_id")}), "note": "paired-shadow verified; mutation intentionally discarded", "execution_lane": "orchestrator_native", "updated_at": "now()"})
+                db.update("tasks", {"id": task_id}, {"state": "DONE", "result": json.dumps({"artifact_id": proof.get("artifact_id")}), "note": "paired-shadow verified; mutation intentionally discarded", "artifact_branch": f"shadow/{slug}", "execution_lane": "orchestrator_native", "updated_at": "now()"})
                 return {"task_id": task_id, "slug": slug, "status": "shadow_done", "cost_usd": cost}
             task_patch = {
                 "state": "DONE",

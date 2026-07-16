@@ -175,13 +175,13 @@ The upstream vendors have already analyzed and pre-drafted this. Your job: apply
 **All task types — Claude ships real code:**
 - **recovery / missing-branch** → Check for existing branch first. Implement the recovery or reconstruct the patch.
 - **toolchain-repair** → Run the failing command via `start_process`, fix what it reports.
-- **bugfix / qafix / relfix** → Minimal targeted fix. If tests already pass: commit a verification doc, mark DONE.
+- **bugfix / qafix / relfix** → Minimal targeted fix. If tests already pass and fix is already merged: SHELVE the task (don't commit verification docs).
 - **build / feature / canary** → Implement as described. Read existing patterns for conventions.
 - **improve-* / high-level** → Find ONE concrete bottleneck in the relevant file, implement the improvement.
-- **"secret" / "legal" / "sensitive" / "vague"** → Category labels only. Implement the code change described. If no code target: create `docs/{slug}-analysis.md` and commit it.
+- **"secret" / "legal" / "sensitive" / "vague"** → Category labels only. Implement the code change described. If no code target exists: SHELVE the task with reason — do NOT create analysis docs.
 - **Truly ambiguous** → Read `{worktree_path}/CLAUDE.md`, grep for slug keywords, find the most relevant file, make a meaningful targeted improvement.
 
-**Rule: something real must be committed. No exceptions.**
+**Rule: only commit real code changes. If no meaningful code change is possible, SHELVE the task — never create stub files or empty commits.**
 
 ### 3e. Commit
 ```bash
@@ -190,7 +190,7 @@ git add -A
 git diff --cached --stat
 git commit --no-verify -m "agent: {slug}" 2>&1
 ```
-If `nothing to commit` → create `docs/{slug}-stub.md` with implementation notes and commit that.
+If `nothing to commit` → SHELVE the task with reason "no actionable code change". Do NOT create stub files or push empty branches.
 
 ### 3f. Push
 ```bash
