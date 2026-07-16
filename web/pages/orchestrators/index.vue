@@ -29,7 +29,7 @@ const DOMAINS = [
   { key: 'security', label: 'Security', icon: '🔒' },
   { key: 'platform', label: 'Platform', icon: '🏗' },
   { key: 'terminal', label: 'Command Terminal', icon: '▸' },
-  { key: 'bots', label: 'CADE Bots', icon: '🤖' },
+  { key: 'bots', label: 'Specialist Bots', icon: '🤖' },
 ]
 
 const MODELS = [
@@ -40,7 +40,7 @@ const MODELS = [
   { label: 'Cowork Executor', value: 'cowork-executor' },
 ]
 
-const CADE_BOTS = [
+const SPECIALIST_BOTS = [
   { name: 'Change Type Analyzer', group: 'Triage', status: 'active' },
   { name: 'Impact Scope Assessor', group: 'Triage', status: 'active' },
   { name: 'Regression Detector', group: 'Triage', status: 'active' },
@@ -231,12 +231,12 @@ watch(user, u => { if (u) loadData() })
         </div>
       </div>
 
-      <!-- CADE Bots -->
+      <!-- Specialist Bots -->
       <div v-else-if="activeDomain === 'bots'" class="p-6 max-w-4xl space-y-4">
-        <h2 class="text-lg font-semibold text-gray-900" style="font-family: 'Fraunces', serif;">CADE Bot Fleet</h2>
+        <h2 class="text-lg font-semibold text-gray-900" style="font-family: 'Fraunces', serif;">Specialist Bot Fleet</h2>
         <p class="text-xs text-gray-500">60 bots across 15 groups powering automated quality, analytics, and optimization.</p>
         <div class="space-y-2">
-          <div v-for="b in CADE_BOTS" :key="b.name" class="bg-white border border-gray-200 rounded-xl p-4 flex items-center justify-between">
+          <div v-for="b in SPECIALIST_BOTS" :key="b.name" class="bg-white border border-gray-200 rounded-xl p-4 flex items-center justify-between">
             <div class="flex items-center gap-3">
               <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
               <div>

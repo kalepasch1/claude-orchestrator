@@ -29,7 +29,7 @@ const filtered = computed(() => {
   return projectFilter.value === 'all' ? list : list.filter((a: any) => a.project === projectFilter.value)
 })
 
-// ── CADE library ──────────────────────────────────────────────────────────────
+// ── Decision library ─────────────────────────────────────────────────────────
 interface CadeEntry { context: string; action: string; approveValue: string; denyRisk: string; evidence: string; isLegal: boolean; legalProjects: string[] }
 const KNOWN_CADE: Record<string, CadeEntry> = {
   'b400bd23-8aea-4096-aaa8-12ac5357989a': {
@@ -77,7 +77,7 @@ function getCade(a: any): CadeEntry {
   }
 }
 
-// ── AI Hivemind Assessment ────────────────────────────────────────────────────
+// ── AI Consensus Assessment ───────────────────────────────────────────────────
 interface AiAssessment { recommendation: string; confidence: number; reasoning: string; risks: string[]; legalExposure: boolean }
 const AI_ASSESSMENTS: Record<string, AiAssessment> = {
   'b400bd23-8aea-4096-aaa8-12ac5357989a': {
@@ -240,7 +240,7 @@ watch(user, u => { if (u) loadAll() })
         <div class="text-xs text-gray-400 mt-1">All gates are clear</div>
       </div>
 
-      <!-- CADE + AI Approval Cards -->
+      <!-- Decision + AI Approval Cards -->
       <div v-else class="space-y-5">
         <div v-for="a in filtered" :key="a.id"
           class="bg-white border border-gray-200 border-l-2 rounded-lg overflow-hidden"
@@ -261,7 +261,7 @@ watch(user, u => { if (u) loadAll() })
             <h3 class="text-sm font-medium text-gray-900 leading-snug" style="font-family:'Fraunces',serif;">{{ a.title }}</h3>
           </div>
 
-          <!-- CADE Sections -->
+          <!-- Decision Sections -->
           <div class="px-5 space-y-2 pb-3">
             <div class="rounded border border-gray-200 overflow-hidden">
               <div class="px-3 py-1 bg-gray-50 border-b border-gray-200"><span class="text-[9px] font-medium text-gray-500 tracking-[0.15em] uppercase">Context</span></div>
@@ -283,10 +283,10 @@ watch(user, u => { if (u) loadAll() })
               <div class="px-3 py-2.5 text-xs text-gray-600 leading-relaxed">{{ getCade(a).evidence }}</div>
             </div>
 
-            <!-- ── AI Hivemind Assessment ─────────────────────────────────── -->
+            <!-- ── AI Consensus Assessment ────────────────────────────────── -->
             <div class="rounded border border-blue-200 overflow-hidden">
               <div class="px-3 py-1 bg-blue-50 border-b border-blue-200 flex items-center gap-2">
-                <span class="text-[9px] font-medium text-blue-600 tracking-[0.15em] uppercase">AI Hivemind Assessment</span>
+                <span class="text-[9px] font-medium text-blue-600 tracking-[0.15em] uppercase">AI Consensus Assessment</span>
                 <span class="text-[8px] text-blue-400">· claude-orchestrator intelligence</span>
               </div>
               <div class="px-3 py-3 space-y-3">
