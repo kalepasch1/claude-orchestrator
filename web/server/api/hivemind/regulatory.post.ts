@@ -15,6 +15,7 @@ import {
   selectStrategyOption,
 } from '../../utils/regulatoryTemporal'
 import { executeFrontierRun, grantBoundedRegulatorAccess } from '../../utils/regulatoryFrontier'
+import { saveOpportunityAction } from '../../utils/regulatoryOpportunity'
 
 export default defineEventHandler(async event => {
   const user = await requireConnectorUser(event)
@@ -60,6 +61,10 @@ export default defineEventHandler(async event => {
   if (body?.action === 'regulator_access') {
     const context = await organizationContext(user); requireOrgAdmin(context)
     return grantBoundedRegulatorAccess(context.membership.organization_id, user.id, body)
+  }
+  if (['select_counterfactual','safe_harbor','incident_twin','capacity','match_capacity'].includes(body?.action)) {
+    const context = await organizationContext(user); requireOrgAdmin(context)
+    return saveOpportunityAction(context.membership.organization_id, user.id, body.action, body)
   }
   throw createError({ statusCode: 400, message: 'unknown_regulatory_action' })
 })

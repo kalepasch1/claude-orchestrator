@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { serviceClient } from './fleetSupabase'
+import { createCausalityReceipt } from './regulatoryOpportunity'
 
 const now = () => new Date().toISOString()
 const bounded = (value: any, limit = 400) => String(value || '').trim().slice(0, limit)
@@ -130,6 +131,8 @@ export async function runtimeDeploymentGate(organizationId: string, values: any)
   if (!row.project_ref || !row.release_ref) throw createError({ statusCode: 400, message: 'project_and_release_required' })
   const { data, error } = await serviceClient().from('regulatory_deployment_gates').insert(row).select().single()
   if (error) throw createError({ statusCode: 500, message: error.message })
+  const receipt = createCausalityReceipt({ subject_type: 'deployment_gate', subject_id: data.id, decision: data.decision, causes: data.reasons, authority_refs: [{ policy_digest: data.policy_digest }], evidence_refs: [{ digest: data.authority_snapshot?.digest }], counterfactuals: data.required_actions })
+  await serviceClient().from('regulatory_causality_receipts').upsert({ organization_id: organizationId, ...receipt }, { onConflict: 'receipt_digest' })
   return data
 }
 
