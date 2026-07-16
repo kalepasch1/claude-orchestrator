@@ -8,7 +8,9 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_web_only_auto_deploys_production_branch():
     config = json.loads((ROOT / "web" / "vercel.json").read_text())
     assert config["git"]["deploymentEnabled"] == {"*": False, "master": True}
-    assert config["ignoreCommand"] == "git diff --quiet HEAD^ HEAD -- . ../packages/darwin-kernel"
+    assert config["ignoreCommand"] == (
+        "bash -c 'git diff --quiet ${VERCEL_GIT_PREVIOUS_SHA:-HEAD^} HEAD -- . ../packages/darwin-kernel'"
+    )
 
 
 def test_release_defaults_batch_builds():
