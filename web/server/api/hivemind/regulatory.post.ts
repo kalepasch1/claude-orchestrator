@@ -7,6 +7,13 @@ import {
   updateRegulatoryProfile,
 } from '../../utils/regulatoryCapability'
 import { organizationContext, requireOrgAdmin } from '../../utils/adaptiveFabric'
+import {
+  electCadeSettlement,
+  saveAgreementControls,
+  saveFeatureControl,
+  saveTemporalScenario,
+  selectStrategyOption,
+} from '../../utils/regulatoryTemporal'
 
 export default defineEventHandler(async event => {
   const user = await requireConnectorUser(event)
@@ -24,6 +31,26 @@ export default defineEventHandler(async event => {
   if (body?.action === 'relationship') {
     const context = await organizationContext(user); requireOrgAdmin(context)
     return createRegulatoryRelationship(user, body)
+  }
+  if (body?.action === 'forecast') {
+    const context = await organizationContext(user)
+    return saveTemporalScenario(context.membership.organization_id, body)
+  }
+  if (body?.action === 'agreement_controls') {
+    const context = await organizationContext(user); requireOrgAdmin(context)
+    return saveAgreementControls(context.membership.organization_id, user.id, body)
+  }
+  if (body?.action === 'feature_control') {
+    const context = await organizationContext(user); requireOrgAdmin(context)
+    return saveFeatureControl(context.membership.organization_id, user.id, body)
+  }
+  if (body?.action === 'cade_settlement') {
+    const context = await organizationContext(user); requireOrgAdmin(context)
+    return electCadeSettlement(context.membership.organization_id, body)
+  }
+  if (body?.action === 'select_strategy') {
+    const context = await organizationContext(user); requireOrgAdmin(context)
+    return selectStrategyOption(context.membership.organization_id, String(body.option_id || ''))
   }
   throw createError({ statusCode: 400, message: 'unknown_regulatory_action' })
 })

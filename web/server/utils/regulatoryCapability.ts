@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { organizationContext } from './adaptiveFabric'
 import { appBaseUrl, serviceClient } from './fleetSupabase'
+import { runTemporalRegulatoryAutopilot } from './regulatoryTemporal'
 
 type ActivitySource = {
   source_type?: string
@@ -304,11 +305,17 @@ export async function runRegulatoryAutopilot(organizationId: string, trigger: 's
   for (const source of sources) assessmentsCreated += (await ingestRegulatorySource(organizationId, source)).assessments.length
   const pathsUpdated = await updateReadiness(organizationId)
   const relationshipAlerts = await monitorRelationships(organizationId)
+  const temporal = await runTemporalRegulatoryAutopilot(organizationId)
   const outcomes = [
     assessmentsCreated ? { kind: 'regulatory', title: `${assessmentsCreated} activity boundar${assessmentsCreated === 1 ? 'y' : 'ies'} checked` } : null,
     pathsUpdated ? { kind: 'readiness', title: `${pathsUpdated} license path${pathsUpdated === 1 ? '' : 's'} refreshed` } : null,
+    temporal.evidence_rooms_updated ? { kind: 'evidence', title: `${temporal.evidence_rooms_updated} evidence room${temporal.evidence_rooms_updated === 1 ? '' : 's'} refreshed` } : null,
+    temporal.obligations_at_risk ? { kind: 'agreement', title: `${temporal.obligations_at_risk} agreement obligation${temporal.obligations_at_risk === 1 ? '' : 's'} need attention` } : null,
   ].filter(Boolean)
-  const exceptions = relationshipAlerts ? [{ kind: 'relationship', severity: 'high', title: 'Activity outside current relationship coverage', outcome: `${relationshipAlerts} change${relationshipAlerts === 1 ? '' : 's'} contained pending review.` }] : []
+  const exceptions = [
+    ...(relationshipAlerts ? [{ kind: 'relationship', severity: 'high', title: 'Activity outside current relationship coverage', outcome: `${relationshipAlerts} change${relationshipAlerts === 1 ? '' : 's'} contained pending review.` }] : []),
+    ...(temporal.obligations_at_risk ? [{ kind: 'agreement', severity: 'high', title: 'Agreement performance is drifting', outcome: `${temporal.obligations_at_risk} obligation${temporal.obligations_at_risk === 1 ? '' : 's'} are due soon or past due.` }] : []),
+  ]
   const run = {
     organization_id: organizationId, trigger, signals_processed: sources.length, assessments_created: assessmentsCreated,
     paths_updated: pathsUpdated, relationship_alerts: relationshipAlerts, outcomes, exceptions,
@@ -331,21 +338,33 @@ export async function regulatoryCockpit(user: any) {
     const created = await sb.from('regulatory_capability_profiles').upsert({ organization_id: organizationId, updated_by: user.id }).select().single()
     profile = created.data
   }
-  const [assessments, paths, relationships, events, assistance] = await Promise.all([
+  const [assessments, paths, relationships, events, assistance, scenarios, agreementControls, obligations, evidenceRooms, featureControls, strategyOptions, settlementElections] = await Promise.all([
     sb.from('regulatory_activity_assessments').select('*, signal:regulatory_activity_signals(source_type,source_ref,project_ref,materiality,last_seen_at)').eq('organization_id', organizationId).eq('status', 'current').order('created_at', { ascending: false }).limit(40),
     sb.from('regulatory_readiness_paths').select('*').eq('organization_id', organizationId).order('readiness_score', { ascending: false }).limit(30),
     sb.from('regulatory_relationships').select('*').eq('organization_id', organizationId).order('updated_at', { ascending: false }).limit(30),
     sb.from('regulatory_relationship_events').select('*').eq('organization_id', organizationId).in('status', ['open','contained']).order('created_at', { ascending: false }).limit(40),
     sb.from('regulatory_assistance_requests').select('*').eq('organization_id', organizationId).order('created_at', { ascending: false }).limit(30),
+    sb.from('regulatory_temporal_scenarios').select('*').eq('organization_id', organizationId).eq('status', 'current').order('created_at', { ascending: false }).limit(12),
+    sb.from('regulatory_agreement_controls').select('*').eq('organization_id', organizationId).order('updated_at', { ascending: false }).limit(30),
+    sb.from('regulatory_obligation_ledger').select('*').eq('organization_id', organizationId).order('due_at', { ascending: true }).limit(80),
+    sb.from('regulatory_evidence_rooms').select('*').eq('organization_id', organizationId).order('updated_at', { ascending: false }).limit(30),
+    sb.from('regulatory_feature_controls').select('*').eq('organization_id', organizationId).order('updated_at', { ascending: false }).limit(40),
+    sb.from('regulatory_strategy_options').select('*').eq('organization_id', organizationId).eq('status', 'available').order('created_at', { ascending: false }).limit(60),
+    sb.from('regulatory_cade_settlement_elections').select('*').eq('organization_id', organizationId).order('created_at', { ascending: false }).limit(30),
   ])
   return {
     role: context.membership.role, profile, autopilot,
     attention: events.data || [], assessments: assessments.data || [], paths: paths.data || [], relationships: relationships.data || [], assistance: assistance.data || [],
+    foresight: { scenarios: scenarios.data || [] },
+    agreements: { controls: agreementControls.data || [], obligations: obligations.data || [], settlement_elections: settlementElections.data || [] },
+    evidence_rooms: evidenceRooms.data || [], feature_controls: featureControls.data || [], strategy_options: strategyOptions.data || [],
     summary: {
       active_relationships: (relationships.data || []).filter((item: any) => item.status === 'active').length,
       application_ready: (paths.data || []).filter((item: any) => item.simulation_status === 'application_ready').length,
       boundaries_to_review: (assessments.data || []).filter((item: any) => ['not_covered','counsel_required'].includes(item.verdict)).length,
       contained_changes: (events.data || []).filter((item: any) => item.status === 'contained').length,
+      obligations_at_risk: (obligations.data || []).filter((item: any) => ['at_risk','breached','disputed'].includes(item.status)).length,
+      evidence_rooms_ready: (evidenceRooms.data || []).filter((item: any) => ['review_ready','application_ready'].includes(item.status)).length,
     },
     disclaimer: 'Decision support only. Coverage depends on verified facts, jurisdiction, executed agreements, required registrations, and regulator acceptance where applicable.',
   }
