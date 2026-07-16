@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 build_cache.py — cache node_modules + .nuxt artifacts keyed by lockfile hash.
 
