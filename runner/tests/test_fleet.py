@@ -114,6 +114,19 @@ class LivenessAggregationTest(unittest.TestCase):
         self.assertEqual(c["free"], fleet.PER_MACHINE_MAX - 3)
         self.assertEqual(c["machines"], 1)
 
+    def test_contract_skew_is_visible_per_host(self):
+        rows = [
+            {**_hb("Mac.lan", "Mac.lan-1", active=2, age_s=1),
+             "code_sha": "new", "contract_hash": "good"},
+            {**_hb("Mac.lan", "Mac.lan-old", active=1, age_s=2),
+             "code_sha": "old", "contract_hash": "old"},
+        ]
+        fake_db = MagicMock(); fake_db.select.return_value = rows
+        with patch.object(fleet, "db", fake_db):
+            machine = fleet.status()["machines"][0]
+        self.assertEqual(2, machine["contract_variants"])
+        self.assertFalse(machine["contract_compatible"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -521,6 +521,21 @@ def claim_task(runner_id):
                   f"on {socket.gethostname()} (host affinity). Idle until a runnable repo exists.",
                   flush=True)
     per_project_limit = max(1, int(os.environ.get("ORCH_PER_PROJECT_CODE_LANES", "1")))
+    # A known-broken toolchain is a project-wide root blocker.  Only its one
+    # repair task may claim a lane; every dependent task would otherwise spend
+    # a model call merely to rediscover the same missing dependency.
+    toolchain_blocked_pids = set()
+    try:
+        blockers = select("tasks", {
+            "select": "project_id,slug", "state": "in.(QUEUED,RUNNING,RETRY)",
+            "slug": "like.toolchain-repair-*", "limit": "500",
+        }) or []
+        toolchain_blocked_pids = {r.get("project_id") for r in blockers if r.get("project_id")}
+    except Exception:
+        pass
+    if toolchain_blocked_pids:
+        queued = [t for t in queued if (t.get("project_id") not in toolchain_blocked_pids
+                                        or str(t.get("slug") or "").startswith("toolchain-repair-"))]
     active_by_project = {}
     active_release_by_project = {}
     active_recovery_by_project = {}
@@ -742,7 +757,9 @@ def claim_task(runner_id):
         if _is_release_fix_task(t):
             return max(1, int(os.environ.get("ORCH_RELEASE_FIX_PER_PROJECT_CODE_LANES", "1")))
         if _is_recovery_task(t):
-            return max(1, int(os.environ.get("ORCH_RECOVERY_PER_PROJECT_CODE_LANES", "2")))
+            # Missing-branch retries compete for the same refs and locks.  One
+            # deterministic recovery owner per project prevents retry storms.
+            return max(1, int(os.environ.get("ORCH_RECOVERY_PER_PROJECT_CODE_LANES", "1")))
         if _is_evidence_task(t):
             return max(per_project_limit, int(os.environ.get("ORCH_EVIDENCE_PER_PROJECT_CODE_LANES", "2")))
         if _is_improvement_task(t):
@@ -850,19 +867,41 @@ def _prune_stale_heartbeats():
 
 
 def heartbeat(runner_id, hostname, active):
-    insert("runner_heartbeats",
-           {"runner_id": runner_id, "hostname": hostname, "active_tasks": active,
-            "last_seen": "now()"}, upsert=True)
+    """Publish liveness plus a best-effort executor compatibility proof.
+
+    The fallback keeps rolling upgrades safe while a host has the older
+    heartbeat schema or has not yet received the migration.
+    """
+    row = {"runner_id": runner_id, "hostname": hostname, "active_tasks": active,
+           "last_seen": "now()"}
+    try:
+        import runtime_contract
+        proof = runtime_contract.check()
+        row.update({k: proof[k] for k in ("code_sha", "contract_hash", "contract_version")})
+    except Exception:
+        pass
+    try:
+        insert("runner_heartbeats", row, upsert=True)
+    except Exception:
+        # Compatibility with remotes that have not yet applied the additive migration.
+        row = {k: v for k, v in row.items()
+               if k not in ("code_sha", "contract_hash", "contract_version")}
+        insert("runner_heartbeats", row, upsert=True)
     if os.environ.get("ORCH_LOGICAL_RUNNERS", "true").lower() not in ("true", "1", "yes"):
         return
     try:
         target = max(1, min(10, int(os.environ.get("ORCH_RUNNER_FLEET_TARGET", "8"))))
         for i in range(2, target + 1):
             lane_id = f"{runner_id}-lane-{i}"
-            insert("runner_heartbeats",
-                   {"runner_id": lane_id, "hostname": f"{hostname} lane {i}",
-                    "active_tasks": 1 if active >= i else 0, "last_seen": "now()"},
-                   upsert=True)
+            lane = dict(row)
+            lane.update({"runner_id": lane_id, "hostname": f"{hostname} lane {i}",
+                         "active_tasks": 1 if active >= i else 0, "last_seen": "now()"})
+            try:
+                insert("runner_heartbeats", lane, upsert=True)
+            except Exception:
+                insert("runner_heartbeats", {k: v for k, v in lane.items()
+                                               if k not in ("code_sha", "contract_hash", "contract_version")},
+                       upsert=True)
     except Exception:
         pass
     _prune_stale_heartbeats()

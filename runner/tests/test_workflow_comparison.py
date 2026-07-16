@@ -33,6 +33,17 @@ class WorkflowComparisonTest(unittest.TestCase):
         self.assertEqual(1, result["orchestrator_native"]["deployed"])
         self.assertEqual(0.5, result["orchestrator_native"]["pass_rate"])
 
+    def test_zero_runtime_merge_receipt_does_not_inflate_executor_rate(self):
+        rows = [
+            {"model": "ollama", "slug": "real", "tests_passed": False,
+             "integrated": False, "wall_ms": 1000},
+            {"model": "ollama", "slug": "receipt", "tests_passed": True,
+             "integrated": True, "wall_ms": 0, "usd": 0},
+        ]
+        result = workflow_comparison.summarize_outcomes(rows, 1)
+        self.assertEqual(1, result["orchestrator_native"]["attempts"])
+        self.assertEqual(0, result["orchestrator_native"]["tests_passed"])
+
     def test_time_parser_handles_postgrest_timestamps(self):
         parsed = workflow_comparison._parse_time("2026-07-15T07:06:10.037319+00:00")
         self.assertEqual(7, parsed.hour)

@@ -80,13 +80,27 @@ def status():
                 pass
         row = dict(chosen)
         row["hostname"] = host
+        # A host can briefly have an old scheduler and a fresh runner process.
+        # Surface that version skew instead of silently treating their combined
+        # task counts as one healthy machine.
+        contracts = {}
+        for member in members:
+            key = (member.get("code_sha") or "unknown", member.get("contract_hash") or "unknown")
+            contracts[key] = contracts.get(key, 0) + 1
+        dominant, count = max(contracts.items(), key=lambda item: item[1])
+        row["code_sha"], row["contract_hash"] = dominant
+        row["contract_variants"] = len(contracts)
+        row["contract_compatible"] = len(contracts) == 1 and dominant[1] != "unknown"
         if not base:
             row["active_tasks"] = sum(int(r.get("active_tasks") or 0) for r in members)
         live.append(row)
     return {
         "machines_live": len(live),
         "machines": [{"host": r.get("hostname"), "runner": r.get("runner_id"),
-                      "active": r.get("active_tasks"), "last_seen": r.get("last_seen")} for r in live],
+                      "active": r.get("active_tasks"), "last_seen": r.get("last_seen"),
+                      "code_sha": r.get("code_sha"), "contract_hash": r.get("contract_hash"),
+                      "contract_variants": r.get("contract_variants"),
+                      "contract_compatible": r.get("contract_compatible")} for r in live],
         "fleet_ceiling": len(live) * PER_MACHINE_MAX,
         "in_use": sum(int(r.get("active_tasks") or 0) for r in live),
         "per_machine_max": PER_MACHINE_MAX,

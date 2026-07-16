@@ -474,6 +474,20 @@ def _agentic_repair_continue(t, category, failure, attempt, directive=None):
 
 def run_task(t):
     with _sem:
+        # Do not turn an incompatible long-lived daemon into a stream of
+        # zero-diff model failures.  A fresh daemon publishes its contract in
+        # the heartbeat; an old in-memory module simply yields this claim.
+        try:
+            import runtime_contract
+            _contract = runtime_contract.check()
+            if not _contract["ok"]:
+                set_state(t["id"], state="QUEUED",
+                          note=f"runtime-contract blocked: {_contract['detail']}")
+                return
+        except Exception as _contract_error:
+            set_state(t["id"], state="QUEUED",
+                      note=f"runtime-contract unavailable: {str(_contract_error)[:160]}")
+            return
         try:
             import task_slicer
             if task_slicer.pre_agent_hook(t):
