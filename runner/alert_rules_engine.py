@@ -60,6 +60,11 @@ DEFAULT_RULES = [
 
 
 def _compare(value, operator, threshold):
+    """Compare a metric value against a threshold using the given operator.
+
+    Supported operators: gt, lt, gte, lte, eq.
+    Returns False on type-conversion errors or unknown operators.
+    """
     try:
         value = float(value)
         threshold = float(threshold)
