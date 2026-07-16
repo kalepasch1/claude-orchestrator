@@ -28,6 +28,38 @@ CANONICAL_ENV = {
 }
 
 
+def load_local_env(path=None):
+    """Load only provider credentials when invoked outside runner.py.
+
+    Standalone probes and workers must not depend on importing runner.py or
+    swarm_executor.py first; that import-order dependency previously produced
+    empty bearer tokens for valid funded accounts.
+    """
+    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    allowed = {name for names in ALIASES.values() for name in names}
+    loaded = []
+    try:
+        with open(path, encoding="utf-8") as source:
+            for raw in source:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                if key not in allowed or os.environ.get(key, "").strip():
+                    continue
+                value = value.split("#", 1)[0].strip().strip('"').strip("'")
+                if value:
+                    os.environ[key] = value
+                    loaded.append(key)
+    except OSError:
+        pass
+    return loaded
+
+
+load_local_env()
+
+
 def env_names(provider):
     return ALIASES.get(str(provider or "").lower(), ())
 

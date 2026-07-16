@@ -15,6 +15,17 @@ import os
 import db
 
 
+def is_executor_attempt(row):
+    """Exclude delayed zero-runtime merge receipts from model-performance rates."""
+    try:
+        import route_evidence
+        return not route_evidence._is_backfill_attribution(row)
+    except Exception:
+        # Compatibility signature for installations without route_evidence.
+        return not (bool(row.get("integrated")) and bool(row.get("tests_passed"))
+                    and float(row.get("wall_ms") or 0) == 0.0)
+
+
 WINDOW_H = float(os.environ.get("WORKFLOW_COMPARISON_HOURS", "2"))
 
 
@@ -40,6 +51,8 @@ def summarize_outcomes(rows, hours):
         "integrated": 0, "deployed": 0, "wall_ms": 0.0, "usd": 0.0,
     })
     for row in rows or []:
+        if not is_executor_attempt(row):
+            continue
         bucket = buckets[workflow_for_outcome(row)]
         bucket["attempts"] += 1
         bucket["unique_tasks"].add(row.get("task_id") or

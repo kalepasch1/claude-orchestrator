@@ -19,16 +19,20 @@ def extract(repo, branch, base, task, *, max_files=40):
     source = artifact if artifact and _exists(repo, artifact) else branch
     if not _exists(repo, source) or not _exists(repo, base):
         return {"ok": False, "reason": "missing source or base"}
+    mb = _git(repo, "merge-base", base, source)
+    if mb.returncode != 0:
+        return {"ok": False, "reason": "no merge base"}
+    merge_base = mb.stdout.strip()
     if source == artifact:
-        parent = _git(repo, "rev-parse", f"{source}^")
-        if parent.returncode != 0:
-            return {"ok": False, "reason": "artifact has no parent"}
-        start = parent.stdout.strip()
+        branch_tip = _git(repo, "rev-parse", branch)
+        artifact_is_tip = branch_tip.returncode == 0 and branch_tip.stdout.strip() == source
+        count = _git(repo, "rev-list", "--count", f"{merge_base}..{source}")
+        commits = int(count.stdout.strip() or "0") if count.returncode == 0 else 0
+        # A tip artifact may represent a multi-commit implementation. Selecting
+        # only tip^..tip silently drops all earlier task commits.
+        start = merge_base if artifact_is_tip and commits > 1 else f"{source}^"
     else:
-        mb = _git(repo, "merge-base", base, source)
-        if mb.returncode != 0:
-            return {"ok": False, "reason": "no merge base"}
-        start = mb.stdout.strip()
+        start = merge_base
     names = _git(repo, "diff", "--name-only", start, source)
     files = [x for x in names.stdout.splitlines() if x] if names.returncode == 0 else []
     if not files or len(files) > max_files:
@@ -60,4 +64,3 @@ def extract(repo, branch, base, task, *, max_files=40):
     if _git(repo, "branch", "-f", branch, sha).returncode != 0:
         return {"ok": False, "reason": "could not update branch", "files": files}
     return {"ok": True, "commit": sha, "files": files, "source": source}
-

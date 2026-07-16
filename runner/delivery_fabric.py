@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import hashlib,json,os,re,shutil,socket,subprocess,tempfile,time,patch_protocol
 def _git(repo,*args,input_text=None,timeout=180):return subprocess.run(['git',*args],cwd=repo,input=input_text,capture_output=True,text=True,timeout=timeout)
-def verify(repo,raw_patch,slug,base_ref='HEAD',test_cmd='',materialize=True,timeout=900):
+def verify(repo,raw_patch,slug,base_ref='HEAD',test_cmd='',materialize=True,timeout=900,task_id=None,attempt=1):
  started=time.monotonic();base=_git(repo,'rev-parse',base_ref)
  if base.returncode:return {'ok':False,'stage':'base','detail':base.stderr[-1000:]}
  base_sha=base.stdout.strip();root=tempfile.mkdtemp(prefix='orch-proof-');tree=os.path.join(root,'tree');added=False
@@ -15,7 +15,8 @@ def verify(repo,raw_patch,slug,base_ref='HEAD',test_cmd='',materialize=True,time
   if _git(tree,'apply','--index','--whitespace=error-all','-',input_text=patch).returncode:return {'ok':False,'stage':'apply'}
   tail='git invariants passed'
   if test_cmd:
-   tested=subprocess.run(['bash','-lc',test_cmd],cwd=tree,capture_output=True,text=True,timeout=timeout);tail=((tested.stdout or '')+(tested.stderr or ''))[-3000:]
+   test_env=os.environ.copy();test_env['PYTHONPYCACHEPREFIX']=os.path.join(tree,'.orch-pycache')
+   tested=subprocess.run(['bash','-lc',test_cmd],cwd=tree,env=test_env,capture_output=True,text=True,timeout=timeout);tail=((tested.stdout or '')+(tested.stderr or ''))[-3000:]
    if tested.returncode:return {'ok':False,'stage':'tests','detail':tail}
   tree_sha=_git(tree,'write-tree').stdout.strip();commit=_git(tree,'commit-tree',tree_sha,'-p',base_sha,'-m','native: '+re.sub(r'[^\w.-]+','-',slug)[:100]).stdout.strip()
   receipt={'schema':'orchestrator.verification/v1','base_sha':base_sha,'commit_sha':commit,'patch_sha256':hashlib.sha256(patch.encode()).hexdigest(),'protocol':protocol,'files':files,'test_cmd':test_cmd,'host':socket.gethostname(),'tests_passed':True};artifact=hashlib.sha256(json.dumps(receipt,sort_keys=True).encode()).hexdigest();branch='agent/'+re.sub(r'[^\w.-]+','-',slug)[:100]
@@ -23,7 +24,13 @@ def verify(repo,raw_patch,slug,base_ref='HEAD',test_cmd='',materialize=True,time
    current=_git(repo,'rev-parse','--verify','refs/heads/'+branch);old=current.stdout.strip() if current.returncode==0 else '0'*40
    update=_git(repo,'update-ref','refs/heads/'+branch,commit,old)
    if update.returncode:return {'ok':False,'stage':'materialize','detail':update.stderr[-1000:]}
-  result={'ok':True,'artifact_id':artifact,'base_sha':base_sha,'commit':commit,'branch':branch if materialize else None,'files':files,'test_tail':tail,'duration_ms':int((time.monotonic()-started)*1000),'receipt':receipt}
+  immutable={}
+  if materialize:
+   try:
+    import task_refs;immutable=task_refs.publish(repo,task_id or slug,attempt,commit)
+   except Exception as exc:immutable={'ok':False,'reason':str(exc)[:200]}
+   if not immutable.get('ok'):return {'ok':False,'stage':'immutable-ref','detail':immutable.get('reason','publish failed')}
+  result={'ok':True,'artifact_id':artifact,'base_sha':base_sha,'commit':commit,'branch':branch if materialize else None,'artifact_ref':immutable.get('ref'),'patch_id':immutable.get('patch_id'),'files':files,'test_tail':tail,'duration_ms':int((time.monotonic()-started)*1000),'receipt':receipt}
   try:
    import capability_activation;capability_activation.record('branchless_delivery_proof',artifact,effect=True,outcome='verified',metrics={'duration_ms':result['duration_ms'],'files':len(files),'materialized':materialize})
   except Exception:pass

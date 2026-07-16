@@ -49,9 +49,10 @@ def choose(candidates, history=None):
         blinded.append(row)
     blinded.sort(key=lambda row: (-row["score"], row["anonymous_id"]))
     public_ranking = [{"anonymous_id": r["anonymous_id"], "score": r["score"]} for r in blinded]
-    if not blinded or not (blinded[0].get("patch") or blinded[0].get("text")):
+    eligible = [r for r in blinded if r.get("applies") and r.get("tests_passed")]
+    if not eligible or not (eligible[0].get("patch") or eligible[0].get("text")):
         return {"winner": None, "ranking": public_ranking}
-    winner = dict(blinded[0])
+    winner = dict(eligible[0])
     winner.pop("provider", None); winner.pop("model", None)
     return {"winner": winner, "ranking": public_ranking}
 

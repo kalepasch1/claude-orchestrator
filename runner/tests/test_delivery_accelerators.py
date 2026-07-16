@@ -14,6 +14,9 @@ import selective_qa
 import merge_train
 import queue_velocity
 import db
+import task_refs
+import patch_recovery
+import commit_overlay
 
 
 def git(repo, *args):
@@ -133,6 +136,74 @@ def test_patch_tournament_blinds_identity_and_prefers_valid_deployed_value():
     empty = patch_tournament.choose([{"provider": "xai", "model": "grok", "patch": ""}])
     assert empty["winner"] is None
     assert set(empty["ranking"][0]) == {"anonymous_id", "score"}
+    red = patch_tournament.choose([{"provider": "xai", "patch": "diff --git a/a b/a\n",
+                                    "applies": True, "tests_passed": False}])
+    assert red["winner"] is None
+
+
+def test_immutable_task_refs_survive_mutable_branch_rewrite(tmp_path):
+    repo = init_repo(tmp_path)
+    (repo / "a.txt").write_text("base\n"); git(repo, "add", "."); git(repo, "commit", "-m", "base")
+    (repo / "a.txt").write_text("first\n"); git(repo, "add", "."); git(repo, "commit", "-m", "first")
+    first = git(repo, "rev-parse", "HEAD")
+    identity = task_refs.publish(str(repo), "task/one", 1, first, push=False)
+    assert identity["ok"]
+    git(repo, "branch", "agent/task-one", first)
+    (repo / "a.txt").write_text("second\n"); git(repo, "add", "."); git(repo, "commit", "-m", "second")
+    git(repo, "branch", "-f", "agent/task-one", "HEAD")
+    assert task_refs.resolve(str(repo), identity["ref"]) == first
+    assert git(repo, "rev-parse", "agent/task-one") != first
+
+
+def test_commit_overlay_materializes_exact_tree_without_worktree_registration(tmp_path):
+    repo = init_repo(tmp_path)
+    (repo / "value.txt").write_text("committed\n")
+    git(repo, "add", "."); git(repo, "commit", "-m", "base")
+    commit = git(repo, "rev-parse", "HEAD")
+    before = git(repo, "worktree", "list", "--porcelain")
+    (repo / "value.txt").write_text("dirty-primary\n")
+    with commit_overlay.checkout(str(repo), commit) as overlay:
+        assert (os.path.exists(os.path.join(overlay["path"], ".git"))) is False
+        assert open(os.path.join(overlay["path"], "value.txt")).read() == "committed\n"
+        assert overlay["registered_worktree"] is False
+    assert git(repo, "worktree", "list", "--porcelain") == before
+
+
+def test_commit_overlay_omits_external_dependency_link_for_explicit_runtime_mount(tmp_path):
+    repo = init_repo(tmp_path)
+    os.symlink("/outside/mutable/node_modules", repo / "node_modules")
+    (repo / "app.py").write_text("VALUE = 1\n")
+    git(repo, "add", "."); git(repo, "commit", "-m", "tracked runtime link")
+    with commit_overlay.checkout(str(repo), "HEAD") as overlay:
+        assert not os.path.lexists(os.path.join(overlay["path"], "node_modules"))
+        assert overlay["omitted_runtime_links"] == ["node_modules"]
+        assert os.path.isfile(os.path.join(overlay["path"], "app.py"))
+
+
+def test_merge_qa_uses_overlay_and_never_registers_worktree(tmp_path):
+    repo = init_repo(tmp_path)
+    (repo / "value.txt").write_text("green\n")
+    git(repo, "add", "."); git(repo, "commit", "-m", "base")
+    commit = git(repo, "rev-parse", "HEAD")
+    before = git(repo, "worktree", "list", "--porcelain")
+    ok, detail = merge_train._run_tests(
+        str(repo), "python3 -c \"assert open('value.txt').read().strip() == 'green'\"", commit)
+    assert ok, detail
+    assert detail.startswith("overlay:")
+    assert git(repo, "worktree", "list", "--porcelain") == before
+
+
+def test_missing_branch_recovers_from_immutable_ref_without_model(tmp_path, monkeypatch):
+    repo = init_repo(tmp_path)
+    (repo / "a.txt").write_text("base\n"); git(repo, "add", "."); git(repo, "commit", "-m", "base")
+    base = git(repo, "rev-parse", "HEAD")
+    (repo / "a.txt").write_text("fixed\n"); git(repo, "add", "."); git(repo, "commit", "-m", "fix")
+    tip = git(repo, "rev-parse", "HEAD")
+    identity = task_refs.publish(str(repo), "t1", 1, tip, push=False)
+    monkeypatch.setattr(patch_recovery.db, "select", lambda *_a, **_k: [{"artifact_ref": identity["ref"], "artifact_commit": tip}])
+    result = patch_recovery._immutable_ref_recovery(str(repo), "fix-one", "agent/fix-one", base)
+    assert result["ok"] and result["commit"] == tip
+    assert git(repo, "rev-parse", "agent/fix-one") == tip
 
 
 def test_minimal_commit_extracts_only_artifact_files_onto_fresh_base(tmp_path):
@@ -153,6 +224,30 @@ def test_minimal_commit_extracts_only_artifact_files_onto_fresh_base(tmp_path):
     assert git(repo, "show", "agent/task:noise.txt") == "base"
 
 
+def test_minimal_commit_preserves_all_commits_when_artifact_is_branch_tip(tmp_path):
+    repo = init_repo(tmp_path)
+    (repo / "base.txt").write_text("base\n")
+    git(repo, "add", "."); git(repo, "commit", "-m", "base")
+    base = git(repo, "rev-parse", "HEAD")
+    base_branch = git(repo, "branch", "--show-current")
+    git(repo, "switch", "-c", "agent/multi")
+    (repo / "one.txt").write_text("one\n")
+    git(repo, "add", "one.txt"); git(repo, "commit", "-m", "one")
+    (repo / "two.txt").write_text("two\n")
+    git(repo, "add", "two.txt"); git(repo, "commit", "-m", "two")
+    tip = git(repo, "rev-parse", "HEAD")
+    git(repo, "switch", base_branch)
+
+    result = minimal_commit.extract(
+        str(repo), "agent/multi", base, {"slug": "multi", "artifact_commit": tip}
+    )
+
+    assert result["ok"], result
+    assert result["files"] == ["one.txt", "two.txt"]
+    assert git(repo, "show", "agent/multi:one.txt") == "one"
+    assert git(repo, "show", "agent/multi:two.txt") == "two"
+
+
 def test_accelerators_are_wired_into_delivery_paths():
     release_source = open(release_train.__file__, encoding="utf-8").read()
     dispatch_source = open(parallel_dispatch.__file__, encoding="utf-8").read()
@@ -164,4 +259,10 @@ def test_accelerators_are_wired_into_delivery_paths():
     assert "patch_tournament.run_live" in dispatch_source
     assert "minimal_commit.extract" in merge_source
     assert "blocker_portfolio.scores" in db_source
+    assert 'task_patch.pop("artifact_ref", None)' in dispatch_source
+    assert 'query["select"] = "id,slug,state,artifact_commit,model,execution_lane"' in open(release_manifest.__file__, encoding="utf-8").read()
+    assert "commit_overlay.checkout" in merge_source
+    assert "commit_overlay.checkout" in release_source
+    assert "ThreadPoolExecutor" in release_source
+    assert "global_lease" not in __import__("inspect").getsource(release_train.run)
     assert "_load_env()" in open(swarm_executor.__file__, encoding="utf-8").read()

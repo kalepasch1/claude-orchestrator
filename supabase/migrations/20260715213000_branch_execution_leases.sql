@@ -14,12 +14,15 @@ create table if not exists public.branch_execution_leases (
   released_at timestamptz,
   primary key (project_id, branch)
 );
+
 create index if not exists branch_execution_leases_task_idx
   on public.branch_execution_leases(task_id);
 create index if not exists branch_execution_leases_expiry_idx
   on public.branch_execution_leases(expires_at)
   where released_at is null;
+
 alter table public.branch_execution_leases enable row level security;
+
 create or replace function public.acquire_branch_execution_lease(
   p_project_id uuid,
   p_branch text,
@@ -81,6 +84,7 @@ begin
   return false;
 end;
 $$;
+
 create or replace function public.heartbeat_branch_execution_lease(
   p_project_id uuid,
   p_branch text,
@@ -107,6 +111,7 @@ begin
   return changed = 1;
 end;
 $$;
+
 create or replace function public.release_branch_execution_lease(
   p_project_id uuid,
   p_branch text,
@@ -130,6 +135,7 @@ begin
   return changed = 1;
 end;
 $$;
+
 revoke all on public.branch_execution_leases from anon, authenticated;
 grant execute on function public.acquire_branch_execution_lease(uuid,text,uuid,text,uuid,text,text,integer)
   to authenticated, service_role;
@@ -137,3 +143,4 @@ grant execute on function public.heartbeat_branch_execution_lease(uuid,text,uuid
   to authenticated, service_role;
 grant execute on function public.release_branch_execution_lease(uuid,text,uuid,uuid)
   to authenticated, service_role;
+

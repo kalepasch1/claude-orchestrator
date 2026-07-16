@@ -1,0 +1,68 @@
+#!/usr/bin/env python3
+"""Immutable, cross-host Git identities for task artifacts.
+
+Mutable ``agent/<slug>`` branches remain a compatibility pointer for the merge
+train.  Correctness and attribution use create-only refs: a later worker may
+rebase the patch, but it can never overwrite the source artifact identity.
+"""
+from __future__ import annotations
+import hashlib
+import re
+import subprocess
+
+
+def _git(repo, *args, input_text=None, timeout=180):
+    return subprocess.run(["git", *args], cwd=repo, input=input_text,
+                          capture_output=True, text=True, timeout=timeout)
+
+
+def _safe(value):
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "task")).strip("-.")[:120] or "task"
+
+
+def patch_id(repo, commit):
+    """Stable patch identity, preserved by ordinary rebases."""
+    shown = _git(repo, "show", "--pretty=format:", "--binary", str(commit))
+    if shown.returncode:
+        return ""
+    identified = _git(repo, "patch-id", "--stable", input_text=shown.stdout)
+    return identified.stdout.split()[0] if identified.returncode == 0 and identified.stdout.split() else ""
+
+
+def publish(repo, task_id, attempt, commit, *, push=True, namespace="tasks"):
+    resolved = _git(repo, "rev-parse", str(commit))
+    if resolved.returncode:
+        return {"ok": False, "reason": "commit-missing", "detail": resolved.stderr[-300:]}
+    sha = resolved.stdout.strip()
+    digest = patch_id(repo, sha) or hashlib.sha256(sha.encode()).hexdigest()
+    ref = f"refs/orchestrator/{_safe(namespace)}/{_safe(task_id)}/{int(attempt or 1):04d}/{digest[:20]}"
+    has_origin = _git(repo, "remote", "get-url", "origin").returncode == 0
+    current = _git(repo, "rev-parse", "--verify", ref)
+    if current.returncode == 0:
+        ok = current.stdout.strip() == sha
+        pushed = False
+        if ok and push and has_origin:
+            sent = _git(repo, "push", "origin", f"{ref}:{ref}", timeout=240)
+            pushed = sent.returncode == 0
+            if not pushed:
+                return {"ok": False, "ref": ref, "commit": sha, "patch_id": digest,
+                        "pushed": False, "reason": "remote-publish-failed", "detail": sent.stderr[-300:]}
+        return {"ok": ok, "ref": ref, "commit": sha, "patch_id": digest,
+                "pushed": pushed, "reason": "exists" if ok else "immutable-ref-collision"}
+    created = _git(repo, "update-ref", ref, sha, "0" * 40)
+    if created.returncode:
+        return {"ok": False, "ref": ref, "commit": sha, "patch_id": digest,
+                "reason": "create-failed", "detail": created.stderr[-300:]}
+    pushed = False
+    if push and has_origin:
+        sent = _git(repo, "push", "origin", f"{ref}:{ref}", timeout=240)
+        pushed = sent.returncode == 0
+        if not pushed:
+            return {"ok": False, "ref": ref, "commit": sha, "patch_id": digest,
+                    "pushed": False, "reason": "remote-publish-failed", "detail": sent.stderr[-300:]}
+    return {"ok": True, "ref": ref, "commit": sha, "patch_id": digest, "pushed": pushed}
+
+
+def resolve(repo, ref):
+    result = _git(repo, "rev-parse", "--verify", str(ref))
+    return result.stdout.strip() if result.returncode == 0 else ""

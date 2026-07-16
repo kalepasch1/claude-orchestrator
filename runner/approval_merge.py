@@ -128,14 +128,28 @@ def _worktree_for(repo, branch):
     return None
 
 
+def _primary_worktree(repo):
+    """Git lists the repository's main worktree first, even from a linked one."""
+    out = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo,
+                         capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            return line[len("worktree "):].strip()
+    return None
+
+
 def _free_branch(repo, branch):
     """Unlock a branch that's still checked out in a leftover agent worktree. THIS was the root cause
     of the phantom CONFLICTs: git refuses to rebase/merge a branch that's checked out elsewhere, and the
     handler mislabeled that error as CONFLICT. Removing the stale worktree frees the branch."""
     wt = _worktree_for(repo, branch)
     if wt:
+        primary = _primary_worktree(repo)
+        if primary and os.path.realpath(wt) == os.path.realpath(primary):
+            return False
         subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=repo, capture_output=True)
     subprocess.run(["git", "worktree", "prune"], cwd=repo, capture_output=True)
+    return True
 
 
 def _rebase_isolated(repo, base, branch):
@@ -357,3 +371,41 @@ def run():
 
 if __name__ == "__main__":
     run()
+
+
+def _rebase_conflict_details(repo, base, branch):
+    """Return a summary of conflicting files when a rebase of `branch` onto `base` would fail.
+
+    Uses `git diff --name-only` to identify files changed on both sides, then checks
+    which ones have overlapping hunks. Runs read-only — never modifies the repo.
+    Returns: dict with 'conflicting_files' (list) and 'base_only'/'branch_only' counts.
+    """
+    result = {"conflicting_files": [], "base_only": 0, "branch_only": 0}
+    try:
+        merge_base = subprocess.run(
+            ["git", "merge-base", base, branch],
+            cwd=repo, capture_output=True, text=True, timeout=10,
+        )
+        if merge_base.returncode != 0:
+            return result
+        mb = merge_base.stdout.strip()
+
+        base_files = subprocess.run(
+            ["git", "diff", "--name-only", mb, base],
+            cwd=repo, capture_output=True, text=True, timeout=10,
+        )
+        branch_files = subprocess.run(
+            ["git", "diff", "--name-only", mb, branch],
+            cwd=repo, capture_output=True, text=True, timeout=10,
+        )
+
+        base_set = set(f for f in (base_files.stdout or "").strip().split("\n") if f)
+        branch_set = set(f for f in (branch_files.stdout or "").strip().split("\n") if f)
+
+        overlap = sorted(base_set & branch_set)
+        result["conflicting_files"] = overlap[:20]  # cap to avoid huge lists
+        result["base_only"] = len(base_set - branch_set)
+        result["branch_only"] = len(branch_set - base_set)
+    except Exception:
+        pass
+    return result

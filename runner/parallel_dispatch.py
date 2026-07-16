@@ -23,6 +23,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+try:
+    import preflight_filter as _preflight
+except ImportError:
+    _preflight = None
 
 log = logging.getLogger(__name__)
 
@@ -189,6 +193,45 @@ def _is_api_eligible(task: dict) -> bool:
         return False
 
 
+import re as _re
+
+# Patterns indicating non-actionable garbage prompts — filter BEFORE dispatch
+_GARBAGE_PROMPT_RE = _re.compile(
+    r"PATCH TEMPLATE [0-9a-f]|patch-template-corrupt|^[\s#\-\*]*$", _re.I)
+
+# Notes indicating a task already went through a quarantine cycle
+_RECYCLED_NOTE_RE = _re.compile(
+    r"swarm-parallel-fail|legacy direct improvement|Meta-decomposition loop|"
+    r"queue-bankruptcy|sentinel-dedupe|semantic-dedupe", _re.I)
+
+
+def _preflight_check(task: dict) -> str:
+    """Pre-dispatch quality gate. Delegates to preflight_filter module if available."""
+    if _preflight:
+        return _preflight.preflight_check(task)
+    # Inline fallback if module unavailable
+    prompt = str(task.get("prompt") or "")
+    note = str(task.get("note") or "")
+    attempt = task.get("attempt") or 0
+    if _GARBAGE_PROMPT_RE.search(prompt):
+        return "preflight: PATCH TEMPLATE or garbage prompt (auto-quarantine)"
+    body = prompt
+    for marker in ("## ORCHESTRATION PIPELINE CONTRACT", "## TASK", "## OBJECTIVE"):
+        idx = body.find(marker)
+        if idx >= 0:
+            body = body[idx:]
+    lines = [l for l in body.split("\n") if l.strip() and not l.startswith("- source:")
+             and not l.startswith("- project:") and not l.startswith("- task class:")
+             and not l.startswith("- preflight") and not l.startswith("- strategy")]
+    if len(lines) < 2 and len(prompt) < 80:
+        return "preflight: prompt too short/empty to be actionable"
+    if _RECYCLED_NOTE_RE.search(note):
+        return f"preflight: recycled task ({note[:80]})"
+    if attempt >= 4:
+        return f"preflight: exhausted {attempt} attempts without success"
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Batch claiming
 # ---------------------------------------------------------------------------
@@ -253,7 +296,10 @@ def _dispatch_one_api(task: dict) -> dict:
 
         tournament_on = os.environ.get("ORCH_PATCH_TOURNAMENT", "true").lower() in ("1", "true", "yes", "on")
         release_fix = str(task.get("slug") or "").startswith(("qafix-", "buildfix-", "relfix-", "deployfix-", "toolchain-repair-"))
-        if tournament_on and release_fix and cwd:
+        recovery_or_high_risk = (int(task.get("transient_retries") or 0) > 0
+            or str(task.get("kind") or "").lower() in ("build-fix", "release-fix", "recovery")
+            or bool(task.get("material")))
+        if tournament_on and (release_fix or recovery_or_high_risk) and cwd:
             import patch_tournament, provider_credentials
             providers = [p for p in ("xai", "deepseek", "groq", "openai", "google")
                          if p in swarm_executor.PROVIDERS and provider_credentials.has(p)]
@@ -280,7 +326,8 @@ def _dispatch_one_api(task: dict) -> dict:
                 base_ref=task.get("base_branch") or project_row.get("default_base") or "HEAD",
                 test_cmd=project_row.get("test_cmd") or "",
                 materialize=not bool(task.get("shadow_only")),
-                timeout=int(os.environ.get("ORCH_NATIVE_VERIFY_TIMEOUT", "900")))
+                timeout=int(os.environ.get("ORCH_NATIVE_VERIFY_TIMEOUT", "900")),
+                task_id=task_id, attempt=task.get("attempt") or 1)
             if not proof.get("ok"):
                 db.update("tasks", {"id": task_id}, {"state": "QUEUED", "account": None,
                     "note": f"native-proof-{proof.get('stage')}: {proof.get('detail','')[:220]}", "updated_at": "now()"})
@@ -291,16 +338,24 @@ def _dispatch_one_api(task: dict) -> dict:
                     paired_trial_controller.record(task, {"verified": True, "wall_ms": proof.get("duration_ms", 0), "value": 1.0})
                 except Exception:
                     pass
-                db.update("tasks", {"id": task_id}, {"state": "DONE", "result": json.dumps({"artifact_id": proof.get("artifact_id")}), "note": "paired-shadow verified; mutation intentionally discarded", "execution_lane": "orchestrator_native", "updated_at": "now()"})
+                db.update("tasks", {"id": task_id}, {"state": "DONE", "result": json.dumps({"artifact_id": proof.get("artifact_id")}), "note": "paired-shadow verified; mutation intentionally discarded", "artifact_branch": f"shadow/{slug}", "execution_lane": "orchestrator_native", "updated_at": "now()"})
                 return {"task_id": task_id, "slug": slug, "status": "shadow_done", "cost_usd": cost}
-            db.update("tasks", {"id": task_id}, {
+            task_patch = {
                 "state": "DONE",
-                "result": json.dumps({"artifact_id": proof.get("artifact_id"), "commit": proof.get("commit"), "files": proof.get("files")}),
+                "result": json.dumps({"artifact_id": proof.get("artifact_id"), "commit": proof.get("commit"), "artifact_ref": proof.get("artifact_ref"), "patch_id": proof.get("patch_id"), "files": proof.get("files")}),
                 "note": f"native-verified:{result.get('coder', 'api')} commit={proof.get('commit','')[:12]} cost=${cost:.4f}",
                 "artifact_commit": proof.get("commit"), "artifact_branch": proof.get("branch"),
+                "artifact_ref": proof.get("artifact_ref"),
                 "execution_lane": "orchestrator_native",
                 "updated_at": "now()",
-            })
+            }
+            try:
+                db.update("tasks", {"id": task_id}, task_patch)
+            except Exception:
+                # Mixed-version rollout: the immutable remote Git ref is already
+                # durable; retain it in result JSON until the additive DB column lands.
+                task_patch.pop("artifact_ref", None)
+                db.update("tasks", {"id": task_id}, task_patch)
             log.info("parallel_dispatch: DONE %s (%.4f USD)", slug, cost)
             return {"task_id": task_id, "slug": slug, "status": "done", "cost_usd": cost}
         else:
@@ -403,10 +458,30 @@ def dispatch_swarm_batch(runner_id: str, active_threads: list = None,
 
         stats["dispatched"] = len(claimed)
 
+        # PREFLIGHT FILTER: auto-quarantine garbage tasks before dispatch
+        dispatchable = []
+        preflight_killed = 0
+        for t in claimed:
+            reason = _preflight_check(t)
+            if reason:
+                try:
+                    db.update("tasks", {"id": t.get("id")}, {
+                        "state": "QUARANTINED", "note": reason, "updated_at": "now()"})
+                    log.info("parallel_dispatch: preflight-quarantine %s: %s",
+                             t.get("slug", "?"), reason)
+                    preflight_killed += 1
+                except Exception:
+                    dispatchable.append(t)  # fail-open
+            else:
+                dispatchable.append(t)
+        if preflight_killed:
+            log.info("parallel_dispatch: preflight filtered %d/%d", preflight_killed, len(claimed))
+        stats["preflight_killed"] = preflight_killed
+
         # Partition into API-eligible vs CLI-only
         api_tasks = []
         cli_tasks = []
-        for t in claimed:
+        for t in dispatchable:
             if _is_api_eligible(t):
                 api_tasks.append(t)
             else:

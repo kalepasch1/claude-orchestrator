@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Tests for release_train.py — dependency-aware release orchestration."""
-import os, sys, unittest
+import json, os, sys, tempfile, unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from release_train import sequence_releases, CyclicDependencyError
+from release_train import _prepare_generated_types, sequence_releases, CyclicDependencyError
 
 
 class TestLinearChain(unittest.TestCase):
@@ -124,6 +125,32 @@ class TestReleaseSnapshotOrdering(unittest.TestCase):
             text = source.read()
         self.assertIn("to_sha = staging_sha", text)
         self.assertIn('"snapshot": "CHANGED"', text)
+
+
+class TestGeneratedTypePreparation(unittest.TestCase):
+    def test_prepares_nested_nuxt_package_root(self):
+        with tempfile.TemporaryDirectory() as repo:
+            web = os.path.join(repo, "web")
+            os.makedirs(web)
+            with open(os.path.join(web, "package.json"), "w", encoding="utf-8") as f:
+                json.dump({"dependencies": {"nuxt": "3.0.0"}}, f)
+            with open(os.path.join(web, "tsconfig.json"), "w", encoding="utf-8") as f:
+                json.dump({"extends": "./.nuxt/tsconfig.json"}, f)
+
+            def prepare(_cmd, cwd, **_kwargs):
+                generated = os.path.join(cwd, ".nuxt")
+                os.makedirs(generated)
+                with open(os.path.join(generated, "tsconfig.json"), "w", encoding="utf-8") as f:
+                    f.write("{}")
+                return type("Result", (), {"returncode": 0, "stdout": "prepared", "stderr": ""})()
+
+            with mock.patch("dependency_prewarm.package_roots", return_value=[web]), \
+                    mock.patch("release_train.subprocess.run", side_effect=prepare) as run:
+                ok, log = _prepare_generated_types(repo)
+
+            self.assertTrue(ok, log)
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_args.kwargs["cwd"], web)
 
 
 if __name__ == "__main__":

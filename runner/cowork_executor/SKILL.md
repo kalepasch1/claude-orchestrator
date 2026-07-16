@@ -1,18 +1,21 @@
 ---
 name: cowork-executor
-description: High-throughput autonomous task executor for claude-orchestrator. Claims 5 QUEUED tasks atomically, reads pre-optimized enriched prompts, implements ALL with Claude, pushes branches, batch-deploys Vercel. Zero skip. CONTINUOUS LOOP — never stops until queue is empty.
+description: High-throughput autonomous task executor for claude-orchestrator. Claims queued tasks, edits only validated isolated worktrees, pushes agent branches, and hands them to the canonical merge/release train.
 ---
 
-# Cowork Executor v6.4 — Claude-Only Implementation · Enriched Prompts · Batch Vercel · Zero Skip
+# Cowork Executor v7.1 — Fail-Closed Worktrees · Single-Writer Branch Delivery
 
 **`<run-summary>` IS FORBIDDEN until Step 4. Writing one before all tasks are DONE ends the session early and creates zombies.**
 
 **ZERO SKIP: Every claimed task gets code committed and pushed. Sensitivity, vagueness, secrets — none are skip reasons.**
 
-**CONTINUOUS LOOP: After completing a batch of 5 and deploying, immediately claim the next 5. Only stop when the queue returns 0 rows. Never pause between batches. Never wait for a human prompt.**
-
 ## Architecture
-This executor is the DEPLOYMENT layer. Other AI vendors (OpenAI, Gemini, Ollama) pre-process and pre-draft tasks in the queue via runner.py. `cowork_assemble.py` surfaces that pre-work. Claude (this session) reads it, implements the final code, pushes to repo, deploys to Vercel. Fast because the heavy thinking is already done upstream.
+This executor is an IMPLEMENTATION layer. Other AI vendors pre-process and pre-draft tasks in the queue via runner.py. `cowork_assemble.py` surfaces that pre-work. Claude implements in a dedicated worktree and pushes an agent branch. The serialized merge/release train owns integration, builds, migrations, and production deployment.
+
+**Integrity invariant:** `{repo_path}` is read-only orchestration metadata. Never stash, checkout,
+edit, add, commit, clean, reset, or deploy from it. Every mutating command and every file-editing
+tool must use the validated `{worktree_path}` returned in Step 3b. If allocation fails, mark the
+task RETRY and stop that task; there is no fallback to the primary checkout.
 
 ## Tools
 - **Supabase MCP** (`execute_sql`, project_id `eatfwdzfurujcuwlhdgj`)
@@ -45,9 +48,9 @@ Store: `{GITHUB_PAT}`, `{VERCEL_TOKEN}`. (Others available if needed.)
 ### 0b. Release zombies from crashed/rate-limited sessions
 Any other executor account that hit a rate limit left tasks stuck RUNNING. Free them now so this session can claim them:
 ```sql
-UPDATE tasks SET state='QUEUED', note='v6.4: zombie released — heartbeat stale >90min'
+UPDATE tasks SET state='QUEUED', note='v6.3: zombie released — session expired >30min'
 WHERE state='RUNNING'
-  AND updated_at < now() - interval '90 minutes'
+  AND updated_at < now() - interval '30 minutes'
   AND account LIKE 'cowork-executor%';
 ```
 
@@ -84,24 +87,22 @@ WITH candidates AS (
   FOR UPDATE SKIP LOCKED
 ),
 claimed AS (
-  UPDATE tasks SET state='RUNNING', account='cowork-executor-v6-' || extract(epoch from now())::bigint, updated_at=NOW()
+  UPDATE tasks SET state='RUNNING', account='cowork-executor-v6', updated_at=NOW()
   WHERE id IN (SELECT id FROM candidates)
-  RETURNING id, slug, project_id, prompt, base_branch, kind, attempt, force_coder, account
+  RETURNING id, slug, project_id, prompt, base_branch, kind, attempt, force_coder
 )
 SELECT c.*, p.name AS project_name, p.repo_path, p.default_base
 FROM claimed c JOIN projects p ON c.project_id = p.id;
 ```
 
-If 0 rows → heartbeat (Step 4), write `<run-summary>`, stop.
+If 0 rows → heartbeat (Step 4), stop.
 
 ---
 
-## Step 2: REPO SETUP (once per unique repo)
+## Step 2: REPO PREFLIGHT (once per unique repo, read-only)
 
 ```bash
-cd {repo_path}
-git fetch origin --quiet 2>&1 | tail -2
-git remote set-url origin https://x-access-token:{GITHUB_PAT}@github.com/kalepasch1/{repo_name}.git
+git -C {repo_path} rev-parse --show-toplevel
 ```
 
 ---
@@ -111,21 +112,49 @@ git remote set-url origin https://x-access-token:{GITHUB_PAT}@github.com/kalepas
 ### 3a. Quarantine gate — binary garbage ONLY
 If prompt is a hex-only `PATCH TEMPLATE` stub with no readable English implementation intent:
 ```sql
-UPDATE tasks SET state='QUARANTINED', note='v6.4: binary PATCH TEMPLATE stub' WHERE id='{id}';
+UPDATE tasks SET state='QUARANTINED', note='v6.3: binary PATCH TEMPLATE stub' WHERE id='{id}';
 ```
 Move to next task. This is the ONLY quarantine reason.
 
-### 3b. Isolated worktree (NEVER checkout branches in the main repo)
-The main checkout is shared by other executors, the runner, and sentinel.py (which stashes+resets any non-base checkout it finds). All work happens in a per-task worktree instead — same `{repo}-wt/{slug}` convention the runner uses.
+### 3b. Allocate and validate the isolated worktree
+Acquire the same server-side branch lease used by orchestrator-native. Keep `lease_token`; if
+`acquired` is false, return the task to `QUEUED` with `branch-lease-held`. Never inspect, reset,
+or edit the other writer's worktree.
+
+```sql
+WITH lease AS (SELECT gen_random_uuid() AS token)
+SELECT token AS lease_token,
+       acquire_branch_execution_lease(
+         '{project_id}', 'agent/{slug}', '{id}', '{my_account}', token,
+         NULL, NULL, 3600
+       ) AS acquired
+FROM lease;
+```
 
 ```bash
-cd {repo_path}
-git worktree prune 2>&1
-WT="$(dirname {repo_path})/$(basename {repo_path})-wt/{slug}"
-git worktree add --force "$WT" -B agent/{slug} origin/{base_branch} 2>&1   || git worktree add --force "$WT" -B agent/{slug} {base_branch} 2>&1   || git worktree add --force "$WT" -B agent/{slug} 2>&1
-cd "$WT"
+WORKTREE=$(python3 /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/worktree_isolation.py \
+  --repo "{repo_path}" --slug "{slug}" --base "{base_branch}" \
+  --task-id "{id}" --lease-token "{lease_token}")
+test -n "$WORKTREE" && test "$WORKTREE" != "{repo_path}" && test -d "$WORKTREE"
+git -C "$WORKTREE" symbolic-ref --quiet --short HEAD | grep -Fx "agent/{slug}"
 ```
-Do NOT run `git stash` or `git checkout` in `{repo_path}` — ever. If worktree creation fails because the branch is checked out in a stale worktree, run `git worktree prune` then retry.
+
+If any command fails:
+```sql
+UPDATE tasks SET state='RETRY',
+  note='cowork-executor-v7: isolated worktree allocation failed; primary checkout was not touched'
+WHERE id='{id}';
+```
+Then move to the next task. Do not improvise a checkout and do not edit `{repo_path}`.
+
+Before each repair cycle, renew ownership. If renewal returns false, stop immediately and requeue;
+the executor has lost the right to write this ref.
+
+```sql
+SELECT heartbeat_branch_execution_lease(
+  '{project_id}', 'agent/{slug}', '{id}', '{lease_token}', 3600
+);
+```
 
 ### 3c. Fetch pre-optimized enrichment (runner.py pre-work)
 The runner.py intelligence pipeline (prompt_assembler, reuse_first, queue_preopt) has already pre-processed this task. Retrieve it:
@@ -134,7 +163,8 @@ The runner.py intelligence pipeline (prompt_assembler, reuse_first, queue_preopt
 python3 /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/cowork_assemble.py   --task-id "{id}" --slug "{slug}" --kind "{kind}" --attempt {attempt}   --repo-path "{repo_path}" --project-id "{project_id}"   --project-name "{project_name}" 2>/dev/null
 ```
 
-Use `enriched_prompt` if non-empty (it contains pre-drafted implementation from upstream vendors). Fall back to raw `prompt` if the call fails or returns empty. Either way, proceed — never skip because enrichment failed.
+Use `enriched_prompt` if non-empty. Fall back to raw `prompt` if enrichment fails. Replace every
+repository path in tool calls with `{worktree_path}`. Reads may inspect `{repo_path}`, but writes may not.
 
 ### 3d. IMPLEMENT with Claude
 
@@ -145,92 +175,90 @@ The upstream vendors have already analyzed and pre-drafted this. Your job: apply
 **All task types — Claude ships real code:**
 - **recovery / missing-branch** → Check for existing branch first. Implement the recovery or reconstruct the patch.
 - **toolchain-repair** → Run the failing command via `start_process`, fix what it reports.
-- **bugfix / qafix / relfix** → Minimal targeted fix. If tests already pass: commit a verification doc, mark DONE.
+- **bugfix / qafix / relfix** → Minimal targeted fix. If tests already pass and fix is already merged: SHELVE the task (don't commit verification docs).
 - **build / feature / canary** → Implement as described. Read existing patterns for conventions.
 - **improve-* / high-level** → Find ONE concrete bottleneck in the relevant file, implement the improvement.
-- **"secret" / "legal" / "sensitive" / "vague"** → Category labels only. Implement the code change described. If no code target: create `docs/{slug}-analysis.md` and commit it.
-- **Truly ambiguous** → Read `{repo_path}/CLAUDE.md`, grep for slug keywords, find the most relevant file, make a meaningful targeted improvement.
+- **"secret" / "legal" / "sensitive" / "vague"** → Category labels only. Implement the code change described. If no code target exists: SHELVE the task with reason — do NOT create analysis docs.
+- **Truly ambiguous** → Read `{worktree_path}/CLAUDE.md`, grep for slug keywords, find the most relevant file, make a meaningful targeted improvement.
 
-**Rule: something real must be committed. No exceptions.**
+**Rule: only commit real code changes. If no meaningful code change is possible, SHELVE the task — never create stub files or empty commits.**
 
-### 3e. Commit (inside the worktree, not the main repo)
+### 3e. Commit
 ```bash
-cd "$WT"
+cd {worktree_path}
 git add -A
 git diff --cached --stat
-git -c user.name="Kale Pasch" -c user.email="kalepasch@gmail.com" commit --no-verify -m "agent: {slug}" 2>&1
+git commit --no-verify -m "agent: {slug}" 2>&1
 ```
-If `nothing to commit` → create `docs/{slug}-stub.md` with implementation notes and commit that.
+If `nothing to commit` → SHELVE the task with reason "no actionable code change". Do NOT create stub files or push empty branches.
 
-### 3f. Push, then remove the worktree (branch survives)
+### 3f. Push
 ```bash
-git push origin HEAD:agent/{slug} --force 2>&1 | tail -3
-cd {repo_path} && git worktree remove --force "$WT" 2>&1 || true
+git push origin HEAD:agent/{slug} 2>&1 | tail -3
 ```
-Push failure → log it, still mark DONE (merge-train handles push retry). Always remove the worktree so `-wt` dirs don't accumulate; the agent branch keeps the work.
+Push failure is not delivery success: record a failed `branch_delivery` outcome and
+return the task to `QUEUED` for branch-share recovery. Never solve a non-fast-forward push with
+`--force`; preserve both sides and route the conflict through integration.
 
-### 3g. Mark DONE + heartbeat remaining claims
+After a successful push, or after the worktree has been safely removed on failure, release ownership:
+
+```sql
+SELECT release_branch_execution_lease(
+  '{project_id}', 'agent/{slug}', '{id}', '{lease_token}'
+);
+```
+
+### 3g. Mark DONE
 ```sql
 UPDATE tasks SET state='DONE',
-  note='cowork-executor-v6.4: implemented and pushed (isolated worktree)'
+  artifact_branch='agent/{slug}',
+  note='cowork-executor-v6: implemented and pushed'
 WHERE id='{id}';
--- Heartbeat: keep this session's other claimed tasks out of the zombie sweep
-UPDATE tasks SET updated_at=now()
-WHERE state='RUNNING' AND account='{my_account}';
 ```
-(`{my_account}` = the `account` value returned by the Step 1 claim — note it when you claim.)
 
 **→ Start next task immediately. No pausing. No summaries.**
 
 ---
 
-## Step 3.5: RELEASE QUEUE ONLY
+## Step 3.5: HAND OFF TO THE CANONICAL TRAIN
 
-Do not call the Vercel CLI and do not create a deployment from an agent or dirty
-worktree. The merge train batches completed branches into staging; the release
-train is the only path that may push the configured production branch. Vercel's
-Git integration then creates one production deployment for that batched push.
+### RELEASE QUEUE ONLY
+
+Do not deploy from a task worktree. DONE branches are discovered by `merge_train.py`; it rebases
+and validates them under the repository lock. `release_train.py` then builds the staged batch in
+an ephemeral QA worktree and promotes production. This is the only deployment path.
 
 ---
 
-## Step 4: LOOP OR STOP
+## Step 4: HEARTBEAT
 
-**IMMEDIATELY go back to Step 1 and claim another 5.** Only write `<run-summary>` and stop when Step 1 returns 0 rows.
-
-When finally stopping (0 rows):
 ```sql
 INSERT INTO fleet_config (key,value)
 VALUES ('COWORK_EXECUTOR_V6_LAST_RUN',
-  '{"ts":"{iso_now}","claimed":{total_claimed},"done":{total_done}}'::jsonb)
+  '{"ts":"{iso_now}","claimed":5,"done":{n}}'::jsonb)
 ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value;
 ```
 
-Only now write `<run-summary>` with totals across all batches.
+Only now write a one-line summary.
 
 ---
 
 ## Hard Rules
 
-- Never run `vercel deploy`, `vercel --prod`, or an equivalent `npx vercel`
-  command from an agent worktree. Agent branches are build-free by policy.
-- Never push directly to a production branch. Production changes flow through
-  the merge train and release train so they can be batched and verified.
-
-1. Never push to `main`/`dev`/`master` — only `agent/{slug}` branches.
-2. Never `DROP TABLE` / `TRUNCATE` without WHERE on production tables.
-3. **ONLY valid BLOCK reason**: repo path literally does not exist (`ls {repo_path}` fails).
-4. **ONLY valid QUARANTINE reason**: binary hex-only PATCH TEMPLATE with no readable English.
-5. **"Tests already pass / already done / no fix needed"** → mark **DONE**, never BLOCKED.
-6. **"Sensitive / legal / vague / secret"** → not a skip — implement via 3d.
-7. Re-queue only if an actively-required live external service is unavailable.
-8. **NEVER STOP BETWEEN BATCHES.** After Step 3.5 deploy, go straight to Step 1. The session ends only when the queue is empty (0 rows from Step 1).
+1. Never mutate `{repo_path}`. All edits, commits, and tests occur in `{worktree_path}`.
+2. Never push to `main`/`dev`/`master` — only `agent/{slug}` branches.
+3. Never deploy directly; the canonical merge/release train owns promotion.
+4. Never `DROP TABLE` / `TRUNCATE` without WHERE on production tables.
+5. **ONLY valid BLOCK reason**: repo path literally does not exist (`ls {repo_path}` fails).
+6. **ONLY valid QUARANTINE reason**: binary hex-only PATCH TEMPLATE with no readable English.
+7. **"Tests already pass / already done / no fix needed"** → mark **DONE**, never BLOCKED.
+8. Re-queue on any isolation failure; never fall back to shared files.
 
 ## What Is Never Acceptable
-- `<run-summary>` before the queue is empty
+- `<run-summary>` before Step 4
 - Leaving any task RUNNING without resolving to DONE/QUARANTINED/BLOCKED
 - "Skipped N tasks" — zero skips
 - BLOCKED for anything other than missing repo path
-- Per-task Vercel deploys — batch only at Step 3.5
+- Any direct Vercel deploy — promotion belongs to the release train
+- `git stash`, `git checkout`, `git switch`, `git add`, or `git commit` in `{repo_path}`
 - Using OpenAI/Gemini for code implementation in this session — that happens upstream in runner.py, not here
-- **Stopping after a batch when there are still QUEUED tasks** — this wastes the scheduled trigger and forces a 2-minute wait for the next run
-- **Waiting for a human prompt between batches** — you are autonomous, loop until empty

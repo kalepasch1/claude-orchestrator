@@ -54,7 +54,6 @@ class ApplyAndVerifyNeverTouchesRepoCwdTest(unittest.TestCase):
             _proc(returncode=0),          # test cmd (wt)
             _proc(returncode=0),          # git add -A (wt)
             _proc(returncode=0),          # git commit (wt)
-            _proc(returncode=0),          # worktree unlock (repo, cleanup)
             _proc(returncode=0),          # worktree remove (repo, cleanup)
         ]
         with patch("os.path.isdir", return_value=True), \
@@ -85,13 +84,13 @@ class ApplyAndVerifyNeverTouchesRepoCwdTest(unittest.TestCase):
             _proc(returncode=0),                 # apply --3way
             _proc(returncode=0),                 # test
             _proc(returncode=0), _proc(returncode=0),  # add -A, commit
-            _proc(returncode=0), _proc(returncode=0),  # cleanup (unlock, remove)
+            _proc(returncode=0),                 # cleanup
         ]
         with patch("os.path.isdir", return_value=True), patch("os.makedirs"), \
              patch("subprocess.run", side_effect=results) as m:
             qe._apply_and_verify(REPO, "diff", "task123")
-        apply_call = m.call_args_list[3]
-        test_call = m.call_args_list[4]
+        apply_call = next(c for c in m.call_args_list if c.args[0] == ["git", "apply", "--3way"])
+        test_call = next(c for c in m.call_args_list if c.kwargs.get("shell") is True)
         self.assertEqual(apply_call.args[0], ["git", "apply", "--3way"])
         self.assertNotEqual(apply_call.kwargs.get("cwd"), REPO)
         self.assertNotEqual(test_call.kwargs.get("cwd"), REPO)

@@ -148,7 +148,7 @@ class TestSweep(unittest.TestCase):
     def test_sweep_only_touches_legal_gated(self):
         pending = [card(id="p1", kind="material", why="routine build"),   # not gated
                    card(id="p2", radar_tag="regulatory",
-                        why="general solicitation question")]             # gated
+                        why="general solicitation for securities offering forces registration")]  # gated
         hist = [decided("general solicitation", "CHOSEN: Proceed with guardrails")
                 for _ in range(6)]
 

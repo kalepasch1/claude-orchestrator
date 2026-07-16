@@ -75,6 +75,45 @@ _ensure_tool_path()
 URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 HTTP_TIMEOUT = float(os.environ.get("ORCH_SUPABASE_TIMEOUT", "15") or 15)
+
+# ── SECRET HYGIENE (2026-07-15) ──────────────────────────────────────────────
+# Redact API keys, service keys, and other secrets from strings before they are
+# stored in the database (task notes, log_tail, error messages). Prevents secrets
+# from leaking into the tasks table via raw command output or tracebacks.
+_SECRET_PATTERNS = re.compile(
+    r"("
+    # Anthropic API keys (sk-ant-api03-...)
+    r"sk-ant-api\S{10,}"
+    r"|"
+    # Supabase service role keys (eyJ...)
+    r"eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}"
+    r"|"
+    # Generic long API key patterns (key=..., token=..., secret=..., password=...)
+    r"(?:(?:api[_-]?key|secret[_-]?key|service[_-]?key|token|password|credential)"
+    r"\s*[=:]\s*['\"]?)([A-Za-z0-9_/+\-.]{16,})"
+    r"|"
+    # OpenAI keys (sk-...)
+    r"sk-[A-Za-z0-9]{20,}"
+    r"|"
+    # Generic bearer tokens
+    r"Bearer\s+[A-Za-z0-9_\-/.]{20,}"
+    r")",
+    re.I,
+)
+
+
+def redact_secrets(text):
+    """Replace secret-like patterns in *text* with [REDACTED]. Fail-soft: returns
+    original text on any error so it never blocks writes."""
+    if not text or not isinstance(text, str):
+        return text
+    try:
+        return _SECRET_PATTERNS.sub("[REDACTED]", text)
+    except Exception:
+        return text
+
+
+_TASK_SENSITIVE_FIELDS = {"note", "log_tail"}
 HTTP_RETRIES = int(os.environ.get("ORCH_SUPABASE_RETRIES", "1") or 1)
 HTTP_RETRY_STATUSES = {429, 500, 502, 503, 504, 521, 522, 523}  # incl. Cloudflare origin-down codes so monitors ride through Supabase capacity blips instead of silently no-op'ing
 
@@ -234,6 +273,11 @@ def count(table, params=None):
 
 
 def insert(table, row, upsert=False):
+    # SECRET HYGIENE: redact secrets from sensitive fields on task insert too.
+    if table == "tasks" and isinstance(row, dict):
+        for field in _TASK_SENSITIVE_FIELDS:
+            if field in row and isinstance(row[field], str):
+                row[field] = redact_secrets(row[field])
     # IDEMPOTENT TASK ENQUEUE (2026-07-10): the queue has no UNIQUE(project_id, slug) constraint,
     # so ~20 different generators that db.insert("tasks", ...) directly kept creating duplicate
     # QUEUED rows (5-at-a-time, recurring — the sentinel dedupe was firing 45x/24h just cleaning up
@@ -296,7 +340,7 @@ def insert(table, row, upsert=False):
                 pass
     h = {"Prefer": "return=representation" + (",resolution=merge-duplicates" if upsert else "")}
     try:
-        return _req("POST", f"/rest/v1/{table}", body=row, headers=h)
+        result = _req("POST", f"/rest/v1/{table}", body=row, headers=h)
     except urllib.error.HTTPError as e:
         # 409 = duplicate key: the row already exists, so the write intent is satisfied. A retried
         # task re-inserting an outcome/row used to raise HTTP 409 -> "runner exception: Conflict" ->
@@ -312,6 +356,41 @@ def insert(table, row, upsert=False):
                 return None
         raise
 
+    # POST-INSERT DEDUP RECONCILIATION (2026-07-15): the SELECT-then-INSERT guard above
+    # prevents same-machine duplicates via _dedup_lock, but two Macs can still race past
+    # the SELECT check simultaneously and both INSERT. This post-insert check detects that
+    # race: if multiple QUEUED rows now share (project_id, slug), keep only the oldest and
+    # DELETE the rest. This closes the cross-machine race window that previously required
+    # the groom_task_queue sentinel to clean up after the fact (producing the
+    # "groomed: duplicate queued slug" failures ~45x/24h).
+    if (table == "tasks" and isinstance(row, dict) and not upsert
+            and row.get("slug") and row.get("project_id")):
+        try:
+            dupes = select("tasks", {
+                "select": "id,created_at",
+                "project_id": f"eq.{row['project_id']}",
+                "slug": f"eq.{row['slug']}",
+                "state": "eq.QUEUED",
+                "order": "created_at.asc",
+            }) or []
+            if len(dupes) > 1:
+                # Keep the oldest (first by created_at), delete the rest
+                keeper_id = dupes[0]["id"]
+                for dup in dupes[1:]:
+                    try:
+                        _req("DELETE", "/rest/v1/tasks",
+                             params={"id": f"eq.{dup['id']}", "state": "eq.QUEUED"})
+                    except Exception:
+                        pass
+                import logging
+                logging.getLogger("db").info(
+                    "post-insert-dedup: removed %d duplicate QUEUED rows for slug=%s (kept %s)",
+                    len(dupes) - 1, row["slug"], keeper_id)
+        except Exception:
+            pass  # fail-soft: groom_task_queue sentinel is the backstop
+
+    return result
+
 
 def upsert(table, row):
     """Compatibility helper for modules that store idempotent control rows."""
@@ -319,6 +398,13 @@ def upsert(table, row):
 
 
 def update(table, match, patch):
+    # SECRET HYGIENE: redact secrets from sensitive task fields before DB write.
+    # Applied here (the single choke point for all task updates) so every caller
+    # — set_state, blocker_quarantine, error-retry, etc. — gets automatic protection.
+    if table == "tasks" and isinstance(patch, dict):
+        for field in _TASK_SENSITIVE_FIELDS:
+            if field in patch and isinstance(patch[field], str):
+                patch[field] = redact_secrets(patch[field])
     params = {k: f"eq.{v}" for k, v in match.items()}
     try:
         return _req("PATCH", f"/rest/v1/{table}", body=patch,
@@ -521,6 +607,21 @@ def claim_task(runner_id):
                   f"on {socket.gethostname()} (host affinity). Idle until a runnable repo exists.",
                   flush=True)
     per_project_limit = max(1, int(os.environ.get("ORCH_PER_PROJECT_CODE_LANES", "1")))
+    # A known-broken toolchain is a project-wide root blocker.  Only its one
+    # repair task may claim a lane; every dependent task would otherwise spend
+    # a model call merely to rediscover the same missing dependency.
+    toolchain_blocked_pids = set()
+    try:
+        blockers = select("tasks", {
+            "select": "project_id,slug", "state": "in.(QUEUED,RUNNING,RETRY)",
+            "slug": "like.toolchain-repair-*", "limit": "500",
+        }) or []
+        toolchain_blocked_pids = {r.get("project_id") for r in blockers if r.get("project_id")}
+    except Exception:
+        pass
+    if toolchain_blocked_pids:
+        queued = [t for t in queued if (t.get("project_id") not in toolchain_blocked_pids
+                                        or str(t.get("slug") or "").startswith("toolchain-repair-"))]
     active_by_project = {}
     active_release_by_project = {}
     active_recovery_by_project = {}
@@ -742,7 +843,9 @@ def claim_task(runner_id):
         if _is_release_fix_task(t):
             return max(1, int(os.environ.get("ORCH_RELEASE_FIX_PER_PROJECT_CODE_LANES", "1")))
         if _is_recovery_task(t):
-            return max(1, int(os.environ.get("ORCH_RECOVERY_PER_PROJECT_CODE_LANES", "2")))
+            # Missing-branch retries compete for the same refs and locks.  One
+            # deterministic recovery owner per project prevents retry storms.
+            return max(1, int(os.environ.get("ORCH_RECOVERY_PER_PROJECT_CODE_LANES", "1")))
         if _is_evidence_task(t):
             return max(per_project_limit, int(os.environ.get("ORCH_EVIDENCE_PER_PROJECT_CODE_LANES", "2")))
         if _is_improvement_task(t):
@@ -772,9 +875,23 @@ def claim_task(runner_id):
                                prio.get(t.get("project_id"), 5),
                                -float(roi_w.get(t.get("project_id"), 1) or 1),
                                t.get("created_at") or ""))
+    # PREFLIGHT: skip tasks with notes indicating prior quarantine cycle
+    try:
+        import preflight_filter as _pf
+        _skip_note = _pf.should_skip_note
+    except ImportError:
+        _SKIP_NOTE_PATTERNS = ("swarm-parallel-fail", "legacy direct improvement",
+                               "Meta-decomposition loop", "queue-bankruptcy",
+                               "sentinel-dedupe", "semantic-dedupe", "preflight:",
+                               "non-actionable:", "GC:")
+        _skip_note = lambda n: any(pat in n for pat in _SKIP_NOTE_PATTERNS)
+
     done = _done_slugs()
     for t in queued or []:
         if _cooling_down(t):
+            continue
+        # Skip recycled/garbage tasks before claiming
+        if _skip_note(str(t.get("note") or "")):
             continue
         pid = t.get("project_id")
         if pid:
@@ -836,19 +953,41 @@ def _prune_stale_heartbeats():
 
 
 def heartbeat(runner_id, hostname, active):
-    insert("runner_heartbeats",
-           {"runner_id": runner_id, "hostname": hostname, "active_tasks": active,
-            "last_seen": "now()"}, upsert=True)
+    """Publish liveness plus a best-effort executor compatibility proof.
+
+    The fallback keeps rolling upgrades safe while a host has the older
+    heartbeat schema or has not yet received the migration.
+    """
+    row = {"runner_id": runner_id, "hostname": hostname, "active_tasks": active,
+           "last_seen": "now()"}
+    try:
+        import runtime_contract
+        proof = runtime_contract.check()
+        row.update({k: proof[k] for k in ("code_sha", "contract_hash", "contract_version")})
+    except Exception:
+        pass
+    try:
+        insert("runner_heartbeats", row, upsert=True)
+    except Exception:
+        # Compatibility with remotes that have not yet applied the additive migration.
+        row = {k: v for k, v in row.items()
+               if k not in ("code_sha", "contract_hash", "contract_version")}
+        insert("runner_heartbeats", row, upsert=True)
     if os.environ.get("ORCH_LOGICAL_RUNNERS", "true").lower() not in ("true", "1", "yes"):
         return
     try:
         target = max(1, min(10, int(os.environ.get("ORCH_RUNNER_FLEET_TARGET", "8"))))
         for i in range(2, target + 1):
             lane_id = f"{runner_id}-lane-{i}"
-            insert("runner_heartbeats",
-                   {"runner_id": lane_id, "hostname": f"{hostname} lane {i}",
-                    "active_tasks": 1 if active >= i else 0, "last_seen": "now()"},
-                   upsert=True)
+            lane = dict(row)
+            lane.update({"runner_id": lane_id, "hostname": f"{hostname} lane {i}",
+                         "active_tasks": 1 if active >= i else 0, "last_seen": "now()"})
+            try:
+                insert("runner_heartbeats", lane, upsert=True)
+            except Exception:
+                insert("runner_heartbeats", {k: v for k, v in lane.items()
+                                               if k not in ("code_sha", "contract_hash", "contract_version")},
+                       upsert=True)
     except Exception:
         pass
     _prune_stale_heartbeats()

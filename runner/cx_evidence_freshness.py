@@ -9,8 +9,8 @@ that grounded it:
   - whether the optional live external-evidence layer could have supplied reality
     checks for legal/pricing/privacy/competitive decisions
 
-The job is read-only over source evidence and writes only a pending owner-review card
-for stale candidates (approvals.kind='stale_evidence'). No schema changes.
+The job is read-only over source evidence and writes only an inbox alert
+for stale candidates (inbox.kind='stale_evidence'). No schema changes.
 """
 import datetime
 import json
@@ -245,13 +245,13 @@ def _score(det, apps):
 
 
 def _existing_stale_keys():
-    rows = _safe_select("approvals", {
-        "select": "title,detail,status,kind",
+    rows = _safe_select("inbox", {
+        "select": "title,body,status,kind",
         "kind": "eq.stale_evidence",
-        "status": "eq.pending",
+        "status": "eq.unread",
         "limit": "500",
     })
-    blob = "\n".join(f"{r.get('title') or ''}\n{r.get('detail') or ''}" for r in rows)
+    blob = "\n".join(f"{r.get('title') or ''}\n{r.get('body') or ''}" for r in rows)
     return set(re.findall(r"determination_id[=:]\s*([^\s,}\]]+)", blob))
 
 
@@ -260,15 +260,24 @@ def _file_review(score):
     title = f"Re-review stale evidence: {(score.get('title') or 'untitled determination')[:120]}"
     why = "; ".join(score.get("reasons") or ["evidence freshness score below threshold"])
     detail = json.dumps(score, indent=2, default=str)
-    return _safe_insert("approvals", {
-        "project": score.get("app") or "ORCHESTRATOR",
+    body = (
+        f"determination_id={det_id}\n"
+        f"Scored {score['score']}/100 for evidence freshness: {why}.\n"
+        f"Re-review decisions that may have been made on stale revenue, merge, or external evidence.\n\n"
+        f"{detail}"
+    )
+    return _safe_insert("inbox", {
         "kind": "stale_evidence",
         "title": title,
-        "why": f"Determination {det_id} scored {score['score']}/100 for evidence freshness: {why}.",
-        "value": "Re-review decisions that may have been made on stale revenue, merge, or external evidence.",
-        "risk": "Low - review card only; no app data or schema changes.",
-        "detail": f"determination_id={det_id}\n{detail}",
-        "command": "",
+        "body": body[:3000],
+        "status": "unread",
+        "meta": json.dumps({
+            "determination_id": det_id,
+            "app": score.get("app"),
+            "score": score.get("score"),
+            "max_age_days": score.get("max_age_days"),
+            "reasons": score.get("reasons"),
+        }, default=str),
     })
 
 

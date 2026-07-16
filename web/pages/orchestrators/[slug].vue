@@ -1,7 +1,19 @@
 <script setup lang="ts">
 import { DESIGN_CAPABILITIES, DESIGN_CATEGORIES, type DesignCapability } from '~/config/designCapabilities'
+import { capabilityBySlug } from '~/config/orchestratorCapabilities'
 
-definePageMeta({ layout: 'default' })
+const LEGACY_CAPABILITY_REDIRECTS: Record<string, string> = {
+  'deploy-orchestrator': '/orchestrators/engineering-orchestrator',
+  'review-orchestrator': '/orchestrators/engineering-orchestrator',
+  'optimize-orchestrator': '/orchestrators/engineering-orchestrator',
+  'preflight-inspector': '/orchestrators/engineering-orchestrator',
+  'remediation-orchestrator': '/orchestrators/engineering-orchestrator',
+  'entity-formation': '/orchestrators/legal-orchestrator',
+  'colosseum-evaluator': '/orchestrators',
+  'learn-orchestrator': '/orchestrators',
+  'queue-orchestrator': '/queue',
+}
+definePageMeta({ layout: 'default', middleware: to => LEGACY_CAPABILITY_REDIRECTS[String(to.params.slug)] ? navigateTo(LEGACY_CAPABILITY_REDIRECTS[String(to.params.slug)], { redirectCode: 301 }) : undefined })
 const route = useRoute()
 const slug = computed(() => route.params.slug as string)
 const supabase = useSupabaseClient<any>()
@@ -18,7 +30,7 @@ const CAPS: Record<string, { name: string; domain: string; status: string; matur
   'growth-orchestrator': { name: 'Growth Orchestrator', domain: 'growth', status: 'trusted', maturity: 79, regulated: false, summary: 'Growth experiments, A/B tests, conversion optimization, and BD autopilot.' },
   'entity-formation': { name: 'Entity Formation Filing', domain: 'legal-ops', status: 'productizable', maturity: 95, regulated: false, summary: 'Jurisdiction-aware entity formation: Articles, EIN, Operating Agreements.' },
   'legal-orchestrator': { name: 'Legal Orchestrator', domain: 'legal-ops', status: 'trusted', maturity: 87, regulated: true, summary: 'Legal review, compliance, contracts, and regulatory workflows.' },
-  'colosseum-evaluator': { name: 'Colosseum Evaluator', domain: 'platform', status: 'experimental', maturity: 72, regulated: false, summary: 'Head-to-head model evaluations for optimal task routing.' },
+  'colosseum-evaluator': { name: 'Routing Intelligence', domain: 'platform', status: 'experimental', maturity: 72, regulated: false, summary: 'Automatic specialist, model, and tool evaluation for every outcome.' },
   'learn-orchestrator': { name: 'Learning Orchestrator', domain: 'platform', status: 'trusted', maturity: 81, regulated: false, summary: 'Pattern capture, shared knowledge building, and routing improvement.' },
   'queue-orchestrator': { name: 'Queue Orchestrator', domain: 'platform', status: 'trusted', maturity: 84, regulated: false, summary: 'Task grooming, slug conflicts, priority lanes, and throughput.' },
   'design-orchestrator': { name: 'Chief Design Orchestrator', domain: 'product-design', status: 'trusted', maturity: 82, regulated: false, summary: 'UI/UX improvements, creative generation, and brand consistency.' },
@@ -115,7 +127,12 @@ const LEGAL_DOCS: Record<string, { name: string; type: string; status: string }[
 const orchBranch = computed(() => `orch/${slug.value}/${selectedApp.value}`)
 
 // --- State ---
-const cap = computed(() => CAPS[slug.value] || { name: slug.value, domain: 'platform', status: 'unknown', maturity: 0, regulated: false, summary: '' })
+const cap = computed(() => {
+  const registered = capabilityBySlug(slug.value)
+  const legacy = CAPS[slug.value]
+  if (registered) return { ...legacy, name: registered.name, domain: registered.domain, summary: registered.summary, status: legacy?.status || 'trusted', maturity: legacy?.maturity || 85, regulated: legacy?.regulated || false }
+  return legacy || { name: slug.value, domain: 'platform', status: 'unknown', maturity: 0, regulated: false, summary: '' }
+})
 const insights = computed(() => DOMAIN_INSIGHTS[cap.value.domain] || DOMAIN_INSIGHTS.platform)
 const bots = computed(() => DOMAIN_BOTS[cap.value.domain] || [])
 const domainSliders = computed(() => DOMAIN_SLIDERS[cap.value.domain] || DOMAIN_SLIDERS.platform)
@@ -129,6 +146,9 @@ const selectedModel = ref('claude-sonnet-4-6')
 const selectedKind = ref('build')
 const selectedMode = ref('build')
 const selectedProject = ref('')
+const { profile: proficiency, record: recordProficiency } = useAdaptiveProficiency(computed(() => `orchestrator:${slug.value}`))
+const { track: trackExperience } = useExperienceTelemetry('orchestrator-workspace')
+const { simplified: frictionSimplified, complete: completeJourney, churn: recordConfigurationChurn } = useJourneyFriction(computed(() => `orchestrator:${slug.value}`))
 const { context: persistentContext, hydrated: contextHydrated } = usePersistentProjectContext(slug)
 const advancedOpen = computed({ get: () => persistentContext.advanced, set: value => { persistentContext.advanced = value } })
 const successCriteria = computed({ get: () => persistentContext.successCriteria, set: value => { persistentContext.successCriteria = value } })
@@ -140,6 +160,7 @@ const showOverride = ref(false)
 const routeInfo = ref('')
 const selectedBranch = ref('dev')
 const showConfig = ref(false)
+function toggleAdvanced() { persistentContext.advanced = !persistentContext.advanced; recordConfigurationChurn(); if (persistentContext.advanced) recordProficiency('advanced'); trackExperience('guidance_followed', { action: 'toggle_advanced', enabled: persistentContext.advanced, stage: proficiency.value.stage }) }
 
 // Design command center
 const designCategory = ref<(typeof DESIGN_CATEGORIES)[number]>('All')
@@ -166,11 +187,11 @@ async function runDesignTool() {
     const controls = tool.controls.map(control => `${control}: ${String((builderSettings as any)[control])}`).join(', ')
     const route: any = await authedFetch('/api/connectors/route-plan', { method: 'POST', body: { capability: tool.capability, intent: builderPrompt.value } }).catch(() => null)
     const selected = route?.selected
-    const providerInstruction = selected?.connected ? `Use connected provider ${selected.name} via account ${selected.account_label || 'Primary'}.` : 'Choose the strongest connected or native provider through Colosseum; request a connector only if execution truly requires it.'
+    const providerInstruction = selected?.connected ? `Use connected provider ${selected.name} via account ${selected.account_label || 'Primary'}.` : 'Choose the strongest connected or native provider automatically; request a connector only if execution truly requires it.'
     const intent = [`Use ${tool.name} for ${selectedApp.value}.`, builderPrompt.value.trim(), `Creative controls: ${controls}.`, providerInstruction, `Required outputs: ${tool.outputs.join(', ')}.`, 'Preserve editable sources, provenance, accessibility, brand constraints, and independent visual QA.'].join('\n')
     const result: any = await authedFetch('/api/tasks/intake', { method: 'POST', body: { intent, project_id: selectedProject.value || undefined } })
     builderNotice.value = `Queued ${result.task.slug}${selected ? ` via ${selected.name}` : ''}. Madeus will return reviewable outputs and evidence.`
-    terminalOutput.value = `✓ ${tool.name} queued: ${result.task.slug}\n  Provider: ${selected?.name || 'Colosseum auto-selection'}\n  Outputs: ${tool.outputs.join(' · ')}`
+    terminalOutput.value = `✓ ${tool.name} queued: ${result.task.slug}\n  Provider: ${selected?.name || 'Madeus auto-selection'}\n  Outputs: ${tool.outputs.join(' · ')}`
     await loadData()
   } catch (error: any) { builderNotice.value = error?.data?.message || error?.message || 'The design workflow could not be queued.' }
   finally { builderRunning.value = false }
@@ -519,6 +540,18 @@ const appDocs = computed(() => LEGAL_DOCS[selectedApp.value] || LEGAL_DOCS.defau
 const insightsForActive = computed(() => insightHistory.value.filter(i => i.key === activeInsight.value))
 const expandedInsight = computed(() => insightHistory.value.find(entry => entry.id === expandedInsightId.value) || null)
 
+function expandInsight(entry: CadeInsight) {
+  expandedInsightId.value = entry.id
+  recordProficiency('expanded')
+  trackExperience('guidance_followed', { action: 'expand_recommendation', insight: entry.id, confidence: entry.confidence, stage: proficiency.value.stage })
+}
+
+function useSandboxPrompt(prompt: string) {
+  terminalPrompt.value = prompt
+  expandedInsightId.value = ''
+  trackExperience('guidance_followed', { action: 'sandbox_adjust', stage: proficiency.value.stage })
+}
+
 function editInsightPlan(entry: CadeInsight) {
   terminalPrompt.value = `${entry.recommendation} Focus on: ${entry.message}. Verify the expected outcome: ${entry.outcome}`
   routeInfo.value = 'CADE recommendation ready for editing'
@@ -538,12 +571,12 @@ async function implementInsight(entry: CadeInsight) {
       `Expected outcome: ${entry.outcome}`,
       `Execution scope: ${scope}. Rollout: ${rollout}. ${approval ? 'Stop for operator approval after producing the preview and evidence.' : 'Proceed through normal policy gates without an extra preview approval.'}`,
       `Hivemind signals: ${entry.signals.join(', ')}. Rationale: ${entry.why}`,
-      'Use automatic triage, Colosseum routing, independent QA, and verified release gates.',
+      'Use automatic routing, independent QA, and verified release gates.',
     ].join('\n')
     const result: any = await authedFetch('/api/tasks/intake', { method: 'POST', body: { intent, project_id: selectedProject.value || undefined } })
     entry.resolved = true
     insightNotice.value = `Queued ${result.task.slug}. Madeus selected the route, model, branch, QA, and release policy.`
-    terminalOutput.value = `✓ CADE implementation queued: ${result.task.slug}\n  Outcome: ${entry.outcome}\n  Routing: Autopilot · triage · Colosseum · independent QA · verified release`
+    terminalOutput.value = `✓ Implementation queued: ${result.task.slug}\n  Outcome: ${entry.outcome}\n  Routing: Madeus Autopilot · independent QA · verified release`
     await loadData()
   } catch (error: any) {
     insightNotice.value = error?.data?.message || error?.message || 'The recommendation could not be queued. Try again.'
@@ -566,13 +599,26 @@ async function runCommand() {
   try {
     const request = [terminalPrompt.value.trim(), successCriteria.value ? `Success criteria: ${successCriteria.value}` : '', outcomeConstraints.value ? `Constraints: ${outcomeConstraints.value}` : '', `Workspace context: ${selectedApp.value}. Capability: ${cap.value.name}. Treat branch, model, vendor, research depth, and execution mode as automatic routing decisions.`].filter(Boolean).join('\n\n')
     const result: any = await authedFetch('/api/tasks/intake', { method: 'POST', body: { intent: request, project_id: selectedProject.value || undefined } })
-    terminalOutput.value = '✓ Objective accepted: ' + result.task.slug + '\n  App: ' + result.project.name + '\n  Routing: Autopilot · triage · Colosseum · independent QA · verified release'
+    terminalOutput.value = '✓ Objective accepted: ' + result.task.slug + '\n  App: ' + result.project.name + '\n  Routing: Madeus Autopilot · independent QA · verified release'
+    completeJourney(); recordProficiency('completed'); trackExperience('action_completed', { action: 'outcome_submitted', task: result.task.slug, stage: proficiency.value.stage })
     terminalPrompt.value = ''; routeInfo.value = ''; loadData()
   } catch (e: any) { terminalOutput.value = 'Error: ' + (e.message || String(e)) }
   finally { terminalLoading.value = false }
 }
 
-onMounted(async () => { await loadData(); if (persistentContext.appId && APPS.some(app => app.id === persistentContext.appId)) selectedApp.value = persistentContext.appId; if (persistentContext.projectId && projects.value.some(project => project.id === persistentContext.projectId)) selectedProject.value = persistentContext.projectId; await loadDraft(); await loadDeploys(); await loadConnectors(); await resolvePreview(); refreshInsights() })
+onMounted(async () => {
+  await loadData()
+  if (persistentContext.appId && APPS.some(app => app.id === persistentContext.appId)) selectedApp.value = persistentContext.appId
+  if (persistentContext.projectId && projects.value.some(project => project.id === persistentContext.projectId)) selectedProject.value = persistentContext.projectId
+  if (!terminalPrompt.value && typeof route.query.intent === 'string') terminalPrompt.value = route.query.intent
+  try {
+    const pending = JSON.parse(sessionStorage.getItem('madeus:pending-command') || 'null')
+    if (!terminalPrompt.value && pending?.intent && Date.now() - Number(pending.created_at || 0) < 86_400_000) terminalPrompt.value = String(pending.intent)
+    if (pending) sessionStorage.removeItem('madeus:pending-command')
+  } catch { sessionStorage.removeItem('madeus:pending-command') }
+  if (proficiency.value.showAdvancedByDefault) persistentContext.advanced = true
+  await loadDraft(); await loadDeploys(); await loadConnectors(); await resolvePreview(); refreshInsights()
+})
 watch(contextHydrated, ready => {
   if (!ready) return
   if (persistentContext.appId && APPS.some(app => app.id === persistentContext.appId)) selectedApp.value = persistentContext.appId
@@ -592,15 +638,7 @@ watch(slug, () => { refreshInsights() })
     <div class="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-gray-50/50 flex-shrink-0">
       <div class="flex items-center gap-3">
         <NuxtLink to="/orchestrators" class="text-[10px] text-gray-400 hover:text-gray-600 uppercase tracking-wider">← Back</NuxtLink>
-        <div class="flex items-center gap-2">
-          <h2 class="text-sm font-bold text-gray-900" style="font-family: 'Fraunces', serif;">{{ cap.name }}</h2>
-          <span class="text-[10px] font-medium" :class="statusColor(cap.status)">{{ cap.status }}</span>
-          <span v-if="cap.regulated" class="text-[10px] text-red-500">regulated</span>
-          <div class="flex items-center gap-1 ml-1">
-            <div class="w-16 h-1 bg-gray-200 rounded-full overflow-hidden"><div class="h-full rounded-full" :class="maturityColor(cap.maturity)" :style="'width:'+cap.maturity+'%'"></div></div>
-            <span class="text-[9px] text-gray-400 font-mono">{{ cap.maturity }}%</span>
-          </div>
-        </div>
+        <div><h2 class="text-sm font-bold text-gray-900" style="font-family: 'Fraunces', serif;">{{ cap.name }}</h2><p class="mt-0.5 text-[9px] text-gray-400">{{ cap.summary }}</p></div>
       </div>
       <div class="flex items-center gap-3">
         <!-- App selector (was in sidebar) -->
@@ -609,18 +647,6 @@ watch(slug, () => { refreshInsights() })
           <select v-model="selectedApp" class="bg-white border border-gray-200 rounded px-2 py-1 text-xs text-gray-700">
             <option v-for="app in APPS" :key="app.id" :value="app.id">{{ app.name }}</option>
           </select>
-        </div>
-        <!-- Tab buttons (were in sidebar nav) -->
-        <div class="flex items-center gap-1 bg-gray-100 rounded-lg p-0.5">
-          <button v-for="tab in [
-            { key: 'workspace', label: 'Workspace', icon: '▸' },
-            { key: 'config', label: 'Config', icon: '⚙' },
-            { key: 'history', label: 'History', icon: '📋' },
-          ]" :key="tab.key" @click="activeTab = tab.key"
-            class="flex items-center gap-1 px-3 py-1.5 text-xs rounded-md transition-colors"
-            :class="activeTab === tab.key ? 'bg-white text-blue-700 font-medium shadow-sm' : 'text-gray-600 hover:text-gray-900'">
-            <span class="text-[11px]">{{ tab.icon }}</span>{{ tab.label }}
-          </button>
         </div>
         <!-- Project selector -->
         <select v-model="selectedProject" class="bg-white border border-gray-200 rounded px-2 py-1 text-[10px] text-gray-700">
@@ -638,8 +664,7 @@ watch(slug, () => { refreshInsights() })
     <div class="flex flex-1 overflow-hidden min-h-0">
       <!-- CENTER: Main workspace -->
       <div class="flex-1 flex flex-col overflow-hidden min-w-0">
-        <!-- ===== WORKSPACE TAB ===== -->
-        <template v-if="activeTab === 'workspace'">
+        <template>
           <!-- Workspace top bar -->
           <div class="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-white flex-shrink-0">
             <div class="flex items-center gap-3">
@@ -653,56 +678,10 @@ watch(slug, () => { refreshInsights() })
               </div>
             </div>
             <div class="flex items-center gap-2">
-              <select v-if="advancedOpen" v-model="selectedBranch" class="bg-white border border-gray-200 rounded px-2 py-1 text-[10px] text-gray-600 font-mono">
-                <option value="dev">dev</option>
-                <option :value="orchBranch">{{ orchBranch }}</option>
-                <option :value="'feature/'+selectedApp+'-redesign'">feature/{{ selectedApp }}-redesign</option>
-                <option :value="'design/'+selectedApp+'-updates'">design/{{ selectedApp }}-updates</option>
-                <option :value="'hotfix/'+selectedApp">hotfix/{{ selectedApp }}</option>
-                <option value="main" class="font-bold">main (prod)</option>
-              </select>
-              <button v-if="advancedOpen" @click="showDeployPanel = !showDeployPanel"
-                class="px-3 py-1 text-[10px] rounded font-medium transition-colors"
-                :class="showDeployPanel ? 'bg-emerald-700 text-white' : 'bg-emerald-600 text-white hover:bg-emerald-700'">
-                {{ showDeployPanel ? '▼ Merge' : '🚢 Merge → Prod' }}
+              <button @click="showInsights = !showInsights" class="px-2 py-1 text-[10px] border rounded" :class="showInsights ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'text-gray-500 border-gray-200'">
+                {{ showInsights ? 'Hide' : 'Show' }} guidance
               </button>
-              <button @click="showInsights = !showInsights" class="px-2 py-1 text-[10px] border rounded" :class="showInsights ? 'bg-blue-50 text-blue-700 border-blue-200' : 'text-gray-500 border-gray-200'">
-                {{ showInsights ? 'Hide' : 'Show' }} CADE
-              </button>
-              <button @click="advancedOpen = !advancedOpen" class="px-2 py-1 text-[10px] border rounded" :class="advancedOpen ? 'bg-gray-900 text-white border-gray-900' : 'text-gray-500 border-gray-200'">{{ advancedOpen ? 'Basic view' : 'Advanced' }}</button>
-            </div>
-          </div>
-          <!-- INLINE DEPLOY PANEL (expandable) -->
-          <div v-if="showDeployPanel && advancedOpen" class="border-b border-gray-200 bg-emerald-50/30 px-4 py-3 flex-shrink-0">
-            <div class="flex items-center justify-between">
-              <div class="flex items-center gap-3">
-                <span class="text-xs text-gray-600">Deploy</span>
-                <select v-model="selectedBranch" class="bg-white border border-gray-200 rounded px-2 py-1 text-[10px] font-mono text-gray-700">
-                  <option value="dev">dev</option>
-                  <option :value="orchBranch">{{ orchBranch }}</option>
-                  <option :value="'feature/'+selectedApp+'-redesign'">feature/{{ selectedApp }}-redesign</option>
-                  <option :value="'design/'+selectedApp+'-updates'">design/{{ selectedApp }}-updates</option>
-                  <option :value="'hotfix/'+selectedApp">hotfix/{{ selectedApp }}</option>
-                </select>
-                <span class="text-gray-400 text-xs">→ merge to</span>
-                <span class="px-2 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] font-mono rounded font-semibold">main (prod)</span>
-              </div>
-              <button @click="deployToProd" :disabled="deployLoading || selectedBranch === 'main'"
-                class="px-4 py-1.5 text-xs font-medium rounded-lg transition-all"
-                :class="deployLoading ? 'bg-amber-500 text-white' : selectedBranch === 'main' ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-emerald-600 hover:bg-emerald-700 text-white'">
-                {{ deployLoading ? (deployStatus === 'preflight' ? 'Pre-flight...' : 'Merging...') : 'Merge → Prod' }}
-              </button>
-            </div>
-            <div v-if="deployLog.length" class="mt-2 bg-gray-900 rounded-lg px-3 py-2 max-h-[120px] overflow-y-auto" style="font-family: 'JetBrains Mono', monospace;">
-              <div v-for="(line, i) in deployLog" :key="i" class="text-[11px] leading-relaxed" :class="line.startsWith('✓') ? 'text-emerald-400' : line.startsWith('✗') ? 'text-red-400' : 'text-gray-400'">{{ line }}</div>
-            </div>
-            <div v-if="recentDeploys.length" class="mt-2 space-y-1">
-              <div v-for="d in recentDeploys.slice(0, 3)" :key="d.id" class="flex items-center gap-2 text-[10px]">
-                <span class="w-1.5 h-1.5 rounded-full" :class="d.deploy_status === 'deployed' ? 'bg-emerald-500' : 'bg-red-500'"></span>
-                <span class="font-mono text-gray-500">{{ d.version }}</span>
-                <span class="text-gray-400 truncate flex-1">{{ d.note }}</span>
-                <span class="text-gray-400">{{ timeAgo(d.created_at) }}</span>
-              </div>
+              <button @click="toggleAdvanced" class="px-2 py-1 text-[10px] border rounded" :class="advancedOpen ? 'bg-gray-900 text-white border-gray-900' : 'text-gray-500 border-gray-200'">{{ advancedOpen ? 'Basic view' : 'Advanced' }}</button>
             </div>
           </div>
           <!-- VISUAL CONTEXT + TOOLS AREA (scrollable) -->
@@ -722,7 +701,7 @@ watch(slug, () => { refreshInsights() })
               <div class="relative" style="height: 45vh; min-height: 280px;">
                 <div v-if="previewLoading || (previewUrl && !iframeLoaded)" class="absolute inset-0 bg-white flex items-center justify-center z-10">
                   <div class="text-center space-y-2">
-                    <div class="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+                    <div class="w-6 h-6 border-2 border-emerald-700 border-t-transparent rounded-full animate-spin mx-auto"></div>
                     <p class="text-xs text-gray-400">Verifying {{ APPS.find(a => a.id === selectedApp)?.name }}...</p>
                   </div>
                 </div>
@@ -755,7 +734,7 @@ watch(slug, () => { refreshInsights() })
               <div class="px-4 py-3 border-b border-gray-200 bg-white">
                 <div class="flex items-center justify-between">
                   <div>
-                    <div class="text-[10px] text-gray-400 uppercase tracking-[0.16em] font-semibold">CADE super intelligence</div>
+                    <div class="text-[10px] text-emerald-800 uppercase tracking-[0.16em] font-semibold">Decision guidance</div>
                     <div class="mt-1 text-sm font-semibold text-gray-900">Understand → decide → implement</div>
                   </div>
                   <div class="flex items-center gap-1.5 rounded-full bg-emerald-50 px-2 py-1">
@@ -775,13 +754,13 @@ watch(slug, () => { refreshInsights() })
               </div>
 
               <div class="flex-1 overflow-y-auto p-3 space-y-2">
-                <div v-if="insightNotice" class="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[10px] leading-4 text-blue-800">{{ insightNotice }}</div>
+                <div v-if="insightNotice" class="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[10px] leading-4 text-emerald-800">{{ insightNotice }}</div>
                 <article v-for="entry in insightsForActive" :key="entry.id" class="rounded-xl border bg-white p-3 shadow-sm" :class="entry.resolved ? 'border-emerald-200' : 'border-gray-200'">
                   <div class="flex items-start justify-between gap-3">
                     <div class="min-w-0">
                       <div class="flex items-center gap-1.5">
                         <span class="h-1.5 w-1.5 rounded-full" :class="severityDot(entry.severity)"></span>
-                        <span class="text-[9px] font-semibold uppercase tracking-wider" :class="entry.severity === 'high' ? 'text-red-600' : entry.severity === 'warning' ? 'text-amber-600' : 'text-blue-600'">{{ entry.severity === 'info' ? 'Opportunity' : entry.severity }}</span>
+                        <span class="text-[9px] font-semibold uppercase tracking-wider" :class="entry.severity === 'high' ? 'text-red-600' : entry.severity === 'warning' ? 'text-amber-600' : 'text-emerald-700'">{{ entry.severity === 'info' ? 'Opportunity' : entry.severity }}</span>
                       </div>
                       <h4 class="mt-1 text-xs font-semibold leading-4 text-gray-900">{{ entry.title }}</h4>
                     </div>
@@ -800,7 +779,7 @@ watch(slug, () => { refreshInsights() })
                       <option value="focused">Focused improvement</option>
                       <option value="full">Full implementation</option>
                     </select>
-                    <button @click="expandedInsightId = entry.id" class="rounded-md border border-gray-200 px-2 py-1.5 text-[10px] font-medium text-gray-600 hover:bg-gray-50">Expand</button>
+                    <button @click="expandInsight(entry)" class="rounded-md border border-gray-200 px-2 py-1.5 text-[10px] font-medium text-gray-600 hover:bg-gray-50">Expand</button>
                     <button @click="editInsightPlan(entry)" :disabled="entry.resolved" class="rounded-md border border-gray-200 px-2 py-1.5 text-[10px] font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-40">Edit</button>
                     <button @click="implementInsight(entry)" :disabled="entry.implementing || entry.resolved" class="rounded-md bg-gray-900 px-2.5 py-1.5 text-[10px] font-semibold text-white hover:bg-black disabled:bg-emerald-600">
                       {{ entry.resolved ? '✓ Queued' : entry.implementing ? 'Queuing…' : 'Implement' }}
@@ -817,14 +796,18 @@ watch(slug, () => { refreshInsights() })
 
             <!-- DOMAIN-SPECIFIC CAPABILITIES below the app + command workbench -->
             <div class="p-4 space-y-4">
+              <div v-if="proficiency.stage === 'guided' || frictionSimplified" class="flex items-center justify-between gap-4 rounded-xl border border-emerald-200 bg-emerald-50/60 px-4 py-3"><div><div class="text-[9px] font-semibold uppercase tracking-wider text-emerald-800">{{ frictionSimplified ? 'Simplified from your usage' : 'Guided workspace' }}</div><p class="mt-1 text-[10px] leading-4 text-emerald-950">Start with the outcome box above. Madeus will choose the project context, specialists, tools, verification, and release path. Advanced controls appear as they become useful.</p></div><button class="shrink-0 rounded-lg border border-emerald-300 bg-white px-3 py-2 text-[9px] font-semibold text-emerald-900" @click="toggleAdvanced">Show advanced</button></div>
               <CadeOperatingSystem
                 :app="APPS.find(a => a.id === selectedApp)?.name || selectedApp"
                 :capability="cap.name"
                 :domain="cap.domain"
+                :project-id="selectedProject"
                 :recommendation="insightsForActive[0]?.recommendation"
                 :outcome="insightsForActive[0]?.outcome"
                 @use-prompt="useCadePrompt"
               />
+              <OutcomeIntelligenceLive :app="APPS.find(a => a.id === selectedApp)?.name || selectedApp" :capability="cap.name" :project-id="selectedProject" />
+              <ProofTimeline :tasks="recentTasks" :deployments="recentDeploys" :capability="cap.name" />
               <div class="flex items-end justify-between gap-4">
                 <div>
                   <div class="text-[10px] font-semibold uppercase tracking-[0.16em] text-gray-400">Capability workspace</div>
@@ -839,7 +822,7 @@ watch(slug, () => { refreshInsights() })
                   <div class="border-b border-gray-100 p-4">
                     <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                       <div>
-                        <div class="text-[10px] font-semibold uppercase tracking-[0.16em] text-blue-600">Creative capability cloud</div>
+                      <div class="text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-800">Creative capability cloud</div>
                         <h4 class="mt-1 text-lg font-semibold text-gray-900">Design, generate, animate, test, and ship</h4>
                         <p class="mt-1 max-w-3xl text-xs leading-5 text-gray-500">Madeus selects the strongest connected model or app for the job. You choose the creative outcome and constraints—not vendors, model IDs, or routing mechanics.</p>
                       </div>
@@ -877,10 +860,10 @@ watch(slug, () => { refreshInsights() })
                   </div>
                 </section>
 
-                <section v-if="activeDesignTool" class="rounded-2xl border border-blue-200 bg-blue-50/40 p-4">
+                <section v-if="activeDesignTool" class="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-4">
                   <div class="flex items-start justify-between gap-4">
                     <div>
-                      <div class="text-[10px] font-semibold uppercase tracking-[0.16em] text-blue-600">Active builder</div>
+                      <div class="text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-800">Active builder</div>
                       <h4 class="mt-1 text-base font-semibold text-gray-900">{{ activeDesignTool.name }}</h4>
                       <p class="mt-1 text-xs text-gray-500">{{ activeDesignTool.summary }}</p>
                     </div>
@@ -892,10 +875,10 @@ watch(slug, () => { refreshInsights() })
                   <div class="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
                     <label v-if="activeDesignTool.controls.includes('format')" class="text-[10px] font-medium text-gray-500">Output<select v-model="builderSettings.format" class="mt-1 w-full rounded-lg border bg-white px-2 py-2 text-[10px]"><option>Production assets</option><option>Editable source</option><option>Concept board</option><option>Implementation spec</option></select></label>
                     <label v-if="activeDesignTool.controls.includes('ratio')" class="text-[10px] font-medium text-gray-500">Aspect ratio<select v-model="builderSettings.ratio" class="mt-1 w-full rounded-lg border bg-white px-2 py-2 text-[10px]"><option>16:9</option><option>1:1</option><option>4:5</option><option>9:16</option><option>Auto set</option></select></label>
-                    <label v-if="activeDesignTool.controls.includes('variants')" class="text-[10px] font-medium text-gray-500">Variants<input v-model.number="builderSettings.variants" type="range" min="1" max="12" class="mt-2 w-full accent-blue-600"><span class="font-mono text-gray-900">{{ builderSettings.variants }}</span></label>
-                    <label v-if="activeDesignTool.controls.includes('duration')" class="text-[10px] font-medium text-gray-500">Duration<input v-model.number="builderSettings.duration" type="range" min="2" max="30" class="mt-2 w-full accent-blue-600"><span class="font-mono text-gray-900">{{ builderSettings.duration }}s</span></label>
+                    <label v-if="activeDesignTool.controls.includes('variants')" class="text-[10px] font-medium text-gray-500">Variants<input v-model.number="builderSettings.variants" type="range" min="1" max="12" class="mt-2 w-full accent-emerald-700"><span class="font-mono text-gray-900">{{ builderSettings.variants }}</span></label>
+                    <label v-if="activeDesignTool.controls.includes('duration')" class="text-[10px] font-medium text-gray-500">Duration<input v-model.number="builderSettings.duration" type="range" min="2" max="30" class="mt-2 w-full accent-emerald-700"><span class="font-mono text-gray-900">{{ builderSettings.duration }}s</span></label>
                     <label v-if="activeDesignTool.controls.includes('fidelity')" class="text-[10px] font-medium text-gray-500">Fidelity<select v-model="builderSettings.fidelity" class="mt-1 w-full rounded-lg border bg-white px-2 py-2 text-[10px]"><option>Fast concept</option><option>High</option><option>Production</option></select></label>
-                    <label v-if="activeDesignTool.controls.includes('brand')" class="flex items-center justify-between rounded-lg border bg-white px-3 py-2 text-[10px] font-medium text-gray-600">Lock brand<input v-model="builderSettings.brand" type="checkbox" class="accent-blue-600"></label>
+                    <label v-if="activeDesignTool.controls.includes('brand')" class="flex items-center justify-between rounded-lg border bg-white px-3 py-2 text-[10px] font-medium text-gray-600">Lock brand<input v-model="builderSettings.brand" type="checkbox" class="accent-emerald-700"></label>
                   </div>
                   <div class="mt-4 flex flex-wrap items-center justify-between gap-3">
                     <div class="text-[10px] text-gray-500">Madeus will compare eligible routes, preserve sources and provenance, and return outputs behind a review gate.</div>
@@ -904,7 +887,7 @@ watch(slug, () => { refreshInsights() })
                       <button @click="runDesignTool" :disabled="builderRunning || !builderPrompt.trim()" class="rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-40">{{ builderRunning ? 'Routing…' : 'Create with Madeus' }}</button>
                     </div>
                   </div>
-                  <div v-if="builderNotice" class="mt-3 rounded-lg border border-blue-200 bg-white px-3 py-2 text-[10px] text-blue-800">{{ builderNotice }}</div>
+                  <div v-if="builderNotice" class="mt-3 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-[10px] text-emerald-800">{{ builderNotice }}</div>
                 </section>
 
                 <div class="grid grid-cols-4 gap-3">
@@ -1038,50 +1021,14 @@ watch(slug, () => { refreshInsights() })
                 <div v-if="showConfig" class="mt-3 bg-white border border-gray-200 rounded-lg p-4 space-y-3">
                   <div v-for="s in domainSliders" :key="s.label">
                     <div class="flex justify-between text-xs mb-1"><span class="text-gray-600">{{ s.label }}</span><span class="font-mono text-gray-900 font-medium">{{ sliders[s.label] ?? s.default }}{{ s.unit }}</span></div>
-                    <input type="range" :min="s.min" :max="s.max" v-model.number="sliders[s.label]" class="w-full h-1.5 bg-gray-200 rounded-full appearance-none cursor-pointer accent-blue-600" />
+                    <input type="range" :min="s.min" :max="s.max" v-model.number="sliders[s.label]" class="w-full h-1.5 bg-gray-200 rounded-full appearance-none cursor-pointer accent-emerald-700" />
                   </div>
+                  <div class="border-t border-gray-100 pt-3"><div class="mb-2 text-[9px] font-semibold uppercase tracking-wider text-gray-400">Active specialists</div><div class="flex flex-wrap gap-1.5"><span v-for="b in bots" :key="b" class="rounded-full bg-emerald-50 px-2 py-1 text-[9px] text-emerald-800">{{ b }}</span></div></div>
                 </div>
               </div>
             </div>
           </div>
         </template>
-        <!-- ===== CONFIG TAB ===== -->
-        <div v-else-if="activeTab === 'config'" class="flex-1 overflow-y-auto p-6">
-          <div class="max-w-3xl mx-auto space-y-5">
-            <h3 class="text-lg font-semibold text-gray-900" style="font-family: 'Fraunces', serif;">Configuration — {{ APPS.find(a => a.id === selectedApp)?.name }}</h3>
-            <div class="bg-white border border-gray-200 rounded-xl p-5 space-y-4">
-              <div v-for="s in domainSliders" :key="s.label">
-                <div class="flex justify-between text-sm mb-1"><span class="text-gray-600">{{ s.label }}</span><span class="font-mono text-gray-900 font-medium">{{ sliders[s.label] ?? s.default }}{{ s.unit }}</span></div>
-                <input type="range" :min="s.min" :max="s.max" v-model.number="sliders[s.label]" class="w-full h-1.5 bg-gray-200 rounded-full appearance-none cursor-pointer accent-blue-600" />
-              </div>
-            </div>
-            <div class="bg-white border border-gray-200 rounded-xl p-5">
-              <div class="text-xs font-semibold text-gray-700 mb-3">CADE Bots — {{ cap.domain }}</div>
-              <div class="space-y-1.5">
-                <div v-for="b in bots" :key="b" class="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-lg">
-                  <div class="flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span><span class="text-sm text-gray-700">{{ b }}</span></div>
-                  <span class="text-[10px] text-emerald-600 font-medium">Active</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- ===== HISTORY TAB ===== -->
-        <div v-else-if="activeTab === 'history'" class="flex-1 overflow-y-auto p-6">
-          <div class="max-w-3xl mx-auto space-y-5">
-            <h3 class="text-lg font-semibold text-gray-900" style="font-family: 'Fraunces', serif;">Task History</h3>
-            <div class="space-y-1.5">
-              <div v-for="t in recentTasks" :key="t.id" class="bg-white border border-gray-200 rounded-lg px-4 py-3 flex items-center gap-3 text-sm">
-                <span class="font-mono text-base" :class="stateClass(t.state)">{{ stateIcon(t.state) }}</span>
-                <span class="text-gray-900 flex-1 truncate">{{ t.slug }}</span>
-                <span class="text-xs text-gray-400 px-2 py-0.5 bg-gray-50 rounded">{{ t.kind || '—' }}</span>
-                <span class="text-xs text-gray-400">{{ timeAgo(t.created_at) }}</span>
-              </div>
-              <div v-if="!recentTasks.length" class="text-center py-8 text-gray-400 text-sm">No tasks yet</div>
-            </div>
-          </div>
-        </div>
       </div>
 
     </div>
@@ -1091,7 +1038,7 @@ watch(slug, () => { refreshInsights() })
         <section class="flex max-h-[94vh] w-full max-w-6xl flex-col overflow-hidden rounded-t-3xl bg-white shadow-2xl sm:rounded-3xl">
           <header class="flex items-start justify-between gap-5 border-b border-gray-200 px-5 py-4 sm:px-7">
             <div>
-              <div class="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[.16em] text-blue-600"><span class="h-2 w-2 rounded-full" :class="severityDot(expandedInsight.severity)"></span> CADE decision brief · {{ expandedInsight.confidence }}% confidence</div>
+              <div class="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[.16em] text-emerald-800"><span class="h-2 w-2 rounded-full" :class="severityDot(expandedInsight.severity)"></span> Decision brief · {{ expandedInsight.confidence }}% confidence</div>
               <h2 class="mt-2 text-xl font-semibold text-gray-950 sm:text-2xl">{{ expandedInsight.title }}</h2>
               <p class="mt-1 max-w-4xl text-sm leading-6 text-gray-500">{{ expandedInsight.message }}</p>
             </div>
@@ -1133,7 +1080,8 @@ watch(slug, () => { refreshInsights() })
                   <div class="space-y-2 p-4 leading-6"><p class="bg-red-50 px-2 text-red-700 line-through">The provider may retain customer data as reasonably necessary.</p><p class="bg-emerald-50 px-2 text-emerald-800">The provider will delete or irreversibly anonymize customer data within 30 days after termination, except where retention is required by applicable law.</p><p class="text-gray-500">Rationale: replaces an undefined retention standard with a measurable obligation and legal exception.</p></div>
                 </div>
 
-                <div v-else class="mt-3 grid gap-3 md:grid-cols-2"><div class="rounded-2xl border border-gray-200 p-4"><div class="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Before</div><p class="mt-2 text-xs leading-5 text-gray-600">The current signal remains informational, manually interpreted, and disconnected from execution.</p></div><div class="rounded-2xl border border-blue-200 bg-blue-50/40 p-4"><div class="text-[10px] font-semibold uppercase tracking-wider text-blue-700">After</div><p class="mt-2 text-xs leading-5 text-blue-900">{{ expandedInsight.recommendation }} The resulting task includes evidence, owners, verification, and rollout controls.</p></div></div>
+                <div v-else class="mt-3 grid gap-3 md:grid-cols-2"><div class="rounded-2xl border border-gray-200 p-4"><div class="text-[10px] font-semibold uppercase tracking-wider text-gray-400">Before</div><p class="mt-2 text-xs leading-5 text-gray-600">The current signal remains informational, manually interpreted, and disconnected from execution.</p></div><div class="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-4"><div class="text-[10px] font-semibold uppercase tracking-wider text-emerald-800">After</div><p class="mt-2 text-xs leading-5 text-emerald-950">{{ expandedInsight.recommendation }} The resulting task includes evidence, owners, verification, and rollout controls.</p></div></div>
+                <RecommendationSandbox :title="expandedInsight.title" :recommendation="expandedInsight.recommendation" :confidence="expandedInsight.confidence" @adjust="useSandboxPrompt" @implement="implementInsight(expandedInsight)" />
               </section>
 
               <section>

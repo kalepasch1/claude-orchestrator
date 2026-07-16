@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "surfaces": [
+    {
+      "name": "connectors",
+      "file": "pages/connectors.vue",
+      "states": {
+        "loading": ["loading", "Loading your connection fabric"],
+        "error": ["error", "Retry"],
+        "empty": ["!filtered.length", "No connections match"],
+        "connected": ["connected_accounts", "Revoke"],
+        "expanded": ["connector-details", "Capabilities &amp; access"]
+      }
+    },
+    {
+      "name": "orchestrator-command-center",
+      "file": "pages/orchestrators/[slug].vue",
+      "states": {
+        "loading": ["previewLoading", "Verifying"],
+        "unavailable": ["!previewUrl", "Check again"],
+        "embedded": ["<iframe", "PreviewProofRibbon"],
+        "guided": ["Guided workspace", "frictionSimplified"],
+        "advanced": ["advancedOpen", "Configuration & Tuning"],
+        "expanded": ["expandedInsight", "RecommendationSandbox"],
+        "proof": ["ProofTimeline", "recentDeploys"],
+        "legacy-consolidation": ["LEGACY_CAPABILITY_REDIRECTS", "remediation-orchestrator"]
+      }
+    },
+    {
+      "name": "universal-command",
+      "file": "components/UniversalCommand.vue",
+      "states": {
+        "idle": ["command-trigger", "⌘K"],
+        "search": ["suggestions", "activeIndex"],
+        "multimodal": ["attachments", "addFiles", "command/context"],
+        "voice": ["dictate", "SpeechRecognition"],
+        "durable-handoff": ["madeus:pending-command", "rememberPending"],
+        "no-match": ["Madeus preserves attached context", "Route this outcome"],
+        "proof": ["command-proof", "proof.digest"],
+        "error": ["command-error", "error"]
+      }
+    }
+  ],
+  "requiredPalette": ["#194c36", "#fff"],
+  "forbiddenLegacyPalette": ["#635bff", "#6557d8", "#6d5dfc"]
+}

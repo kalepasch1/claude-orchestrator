@@ -151,6 +151,17 @@ def invalidate_all():
     """Clear the entire pre-optimization cache."""
     with _cache_lock:
         _cache.clear()
+    # The cache is shared across runner processes. Clearing only this process's
+    # memory lets another consumer immediately resurrect stale disk entries.
+    try:
+        for name in os.listdir(_DISK_DIR):
+            if name.endswith(".json"):
+                try:
+                    os.remove(os.path.join(_DISK_DIR, name))
+                except OSError:
+                    pass
+    except OSError:
+        pass
 
 
 def stats():

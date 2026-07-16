@@ -69,6 +69,12 @@ def _acquire_singleton():
 
 
 if __name__ == "__main__":
+    _maintenance_lock = os.environ.get(
+        "ORCH_MAINTENANCE_LOCK", os.path.join(_CANONICAL_RUNTIME_HOME, "maintenance.lock")
+    )
+    if os.path.exists(_maintenance_lock):
+        print(f"maintenance lock present at {_maintenance_lock} — runner start blocked")
+        sys.exit(75)
     try:
         faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
     except Exception as e:
@@ -108,6 +114,7 @@ import graduated_autonomy, live_bidding, multi_agent_pipeline
 import speculative_diff, adaptive_budget, transfer_learning
 import pipeline_fusion, prompt_distillation, output_recycling
 import cade_tournaments
+import branch_lease
 import queue_elimination, adaptive_pipeline, unified_knowledge
 import fast_path, batch_fusion, proof_propagation
 import intent_compiler, ensemble_predictor, bankruptcy_decompose
@@ -116,6 +123,7 @@ import capacity_pacer, account_partition, generator_feedback
 import exhaustion_signal, surge_planner
 import agentic_repair
 import cowork_dispatch
+import worktree_isolation
 try:
     import warm_pool
 except ImportError:
@@ -169,9 +177,18 @@ def projects(project_id=None):
     return _projects
 
 
-def set_state(task_id, **kw):
+def set_state(task_id: str, **kw) -> None:
+    """Update a task row in Supabase, auto-setting updated_at to now().
+
+    Accepts arbitrary keyword args that map to columns on the tasks table
+    (e.g. state='DONE', note='...', cost=0.12).
+    """
     kw["updated_at"] = "now()"
     db.update("tasks", {"id": task_id}, kw)
+    # Every non-running transition ends this executor's right to mutate the
+    # branch. A crashed worker is covered by the server-side lease TTL.
+    if kw.get("state") in {"QUEUED", "DONE", "MERGED", "BLOCKED", "QUARANTINED"}:
+        branch_lease.release(str(task_id))
 
 
 def _next_non_claude_coder(task, exclude=()):
@@ -462,6 +479,20 @@ def _agentic_repair_continue(t, category, failure, attempt, directive=None):
 
 def run_task(t):
     with _sem:
+        # Do not turn an incompatible long-lived daemon into a stream of
+        # zero-diff model failures.  A fresh daemon publishes its contract in
+        # the heartbeat; an old in-memory module simply yields this claim.
+        try:
+            import runtime_contract
+            _contract = runtime_contract.check()
+            if not _contract["ok"]:
+                set_state(t["id"], state="QUEUED",
+                          note=f"runtime-contract blocked: {_contract['detail']}")
+                return
+        except Exception as _contract_error:
+            set_state(t["id"], state="QUEUED",
+                      note=f"runtime-contract unavailable: {str(_contract_error)[:160]}")
+            return
         try:
             import task_slicer
             if task_slicer.pre_agent_hook(t):
@@ -587,7 +618,8 @@ def run_task(t):
         if sig:
             hit = result_cache.lookup(sig)
             if hit:
-                set_state(t["id"], state="DONE", note=f"cache hit: reused {hit.get('branch')}")
+                set_state(t["id"], state="DONE", note=f"cache hit: reused {hit.get('branch')}",
+                          artifact_branch=hit.get("branch") or f"agent/{slug}")
                 record(t, name, slug, kind, "cache", POOL.current(), 0, True, False, "", time.time())
                 return
 
@@ -630,7 +662,8 @@ def run_task(t):
             set_state(t["id"], state="RUNNING", note=f"replaying run {run_id}")
             try:
                 replay.replay(run_id, repo)
-                set_state(t["id"], state="DONE", note=f"replay complete: run {run_id}")
+                set_state(t["id"], state="DONE", note=f"replay complete: run {run_id}",
+                          artifact_branch=f"agent/{slug}")
             except Exception as e:
                 set_state(t["id"], state="BLOCKED", note=f"replay error: {e}")
             return
@@ -643,7 +676,8 @@ def run_task(t):
             set_state(t["id"], state="RUNNING", note=f"rotating {prov}/{kname}")
             result = rotate_keys.rotate(prov, kname, name)
             if result.get("ok"):
-                set_state(t["id"], state="DONE", note=result.get("note", "rotated"))
+                set_state(t["id"], state="DONE", note=result.get("note", "rotated"),
+                          artifact_branch=f"ops/{slug}")
             else:
                 set_state(t["id"], state="BLOCKED", note=result.get("note", "manual rotation needed"))
             return
@@ -660,7 +694,8 @@ def run_task(t):
                 for s in secrets:
                     rotate_keys.rotate(prov, s["name"], s.get("project"))
                 kill_switch.pause(scope="global", reason=f"security panic: {prov} keys revoked", by="runner")
-                set_state(t["id"], state="DONE", note=f"revoked {len(secrets)} {prov} key(s), runner paused")
+                set_state(t["id"], state="DONE", note=f"revoked {len(secrets)} {prov} key(s), runner paused",
+                          artifact_branch=f"ops/{slug}")
             except Exception as e:
                 set_state(t["id"], state="BLOCKED", note=f"panic revoke error: {e}")
             return
@@ -669,7 +704,7 @@ def run_task(t):
         if kind == "speculative":
             _spec_acct = POOL.current(); POOL.record_use(_spec_acct)
             env = dict(os.environ); env.update(POOL.env_for(_spec_acct))
-            res = speculative.run(repo, slug, base, prompt, test_cmd, env=env)
+            res = speculative.run(repo, slug, base, prompt, test_cmd, env=env, task=t)
             w = res["winner"]
             if not w:
                 set_state(t["id"], state="BLOCKED", note="no speculative variant passed")
@@ -679,6 +714,12 @@ def run_task(t):
             set_state(t["id"], state=result, model=w["model"], note=f"speculative winner {w['vslug']} ({w['model']})")
             record(t, name, slug, kind, w["model"], POOL.current(), 1, True, result == "MERGED", "", t0); return
         attempt = 0
+        branch_ref = f"agent/{slug}"
+        _branch_lease = branch_lease.acquire(t, repo, branch_ref, base)
+        if not _branch_lease:
+            set_state(t["id"], state="QUEUED",
+                      note=f"branch-lease-held: another executor owns {branch_ref}")
+            return
         # ADAPTIVE RETRY BUDGET: use historical success data to set max retries
         _max_attempts = 4
         try:
@@ -690,6 +731,10 @@ def run_task(t):
             _log.debug("hook retry_budget failed: %s", e)
         while attempt < _max_attempts:
             attempt += 1
+            if not branch_lease.heartbeat(str(t["id"])):
+                set_state(t["id"], state="QUEUED",
+                          note=f"branch-lease-lost: refusing to mutate {branch_ref}")
+                return
             # COST-FIRST model routing: cheapest model that can do the job, escalate one tier
             # per failed attempt. Opus is used ONLY for genuinely heavy work or after retries —
             # an intake "opus"/"sonnet" tag is treated as advisory, NOT a license to burn Opus.
@@ -740,23 +785,17 @@ def run_task(t):
             set_state(t["id"], state="RUNNING", model=visible_model, attempt=attempt,
                       account=(acct or {}).get("name") or f"agentic:{coder}",
                       note=f"agentic coder: {coder}")
-            # GIT ISOLATION: prevent concurrent agents from touching the main working tree.
-            # When ORCH_GIT_ISOLATION=worktree_only, all agent work happens in worktrees
-            # and the main repo's .git/index.lock is never contested. This eliminates
-            # the 622 permission errors from fleet agents competing for the same repo.
-            if os.environ.get("ORCH_GIT_ISOLATION", "").lower() == "worktree_only":
-                _lockfile = os.path.join(repo, ".git", "index.lock")
-                if os.path.exists(_lockfile):
-                    try:
-                        _lock_age = time.time() - os.path.getmtime(_lockfile)
-                        if _lock_age > 30:  # stale lock older than 30s
-                            os.remove(_lockfile)
-                            set_state(t["id"], note=f"git-isolation: removed stale index.lock ({_lock_age:.0f}s old)")
-                    except (OSError, PermissionError):
-                        pass
-            subprocess.run([os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"), slug, base],
-                           cwd=repo, capture_output=True)
-            wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", slug)
+            try:
+                wt = worktree_isolation.ensure_task_worktree(
+                    repo, slug, base,
+                    os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"),
+                    task_id=str(t["id"]), lease_token=_branch_lease["token"],
+                )
+            except worktree_isolation.WorktreeIsolationError as e:
+                set_state(t["id"], state="RETRY", note=f"git-isolation blocked execution: {e}")
+                record(t, name, slug, kind, visible_model, acct, attempt,
+                       False, False, f"worktree isolation: {e}", t0)
+                return
             env = dict(os.environ)
             if acct:
                 env.update(POOL.env_for(acct))
@@ -895,7 +934,6 @@ def run_task(t):
             # that branch instead of spending another model call. Ensure the branch has a worktree,
             # because downstream verify/build steps operate on filesystem paths.
             _integrating_existing = False
-            branch_ref = f"agent/{slug}"
             if not _must_run_agent_for_evidence(t, slug):
                 try:
                     _av = subprocess.run(["git", "rev-list", "--count", f"{base}..{branch_ref}"],
@@ -908,8 +946,13 @@ def run_task(t):
                             except Exception as e:
                                 _log.debug("hook free_branch failed: %s", e)
                             os.makedirs(os.path.dirname(wt), exist_ok=True)
-                            subprocess.run(["git", "worktree", "add", "-f", wt, branch_ref],
-                                           cwd=repo, capture_output=True, timeout=180)
+                            # setup-worktrees owns creation; never force-adopt a branch
+                            # that another task may still have checked out.
+                            subprocess.run(
+                                [os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"), slug, base,
+                                 str(t["id"]), _branch_lease["token"]],
+                                cwd=repo, capture_output=True, timeout=180,
+                            )
                             # Lock while in use — concurrent GC/prune must not delete it mid-task.
                             subprocess.run(["git", "worktree", "lock", wt, "--reason", f"task {slug} in use"],
                                            cwd=repo, capture_output=True, timeout=30)
@@ -918,7 +961,7 @@ def run_task(t):
                     _integrating_existing = False
             # ZERO-TOKEN FIRST PATCH: try applying known-good diff before any model call
             try:
-                _zt = cade_tournaments.zero_token_patch(t, wt if os.path.isdir(wt) else repo)
+                _zt = cade_tournaments.zero_token_patch(t, wt)
                 if _zt and _zt.get("applied"):
                     set_state(t["id"], note=f"zero-token patch applied ({_zt['method']})")
                     # Skip agent entirely — go straight to integration
@@ -932,9 +975,9 @@ def run_task(t):
                 _log.debug("hook zero_token_patch failed: %s", e)
             # INTENT COMPILER: check if task matches a compiled deterministic script
             try:
-                _compiled = intent_compiler.get_compiled(t, wt if os.path.isdir(wt) else repo)
+                _compiled = intent_compiler.get_compiled(t, wt)
                 if _compiled:
-                    _comp_result = intent_compiler.execute(_compiled, wt if os.path.isdir(wt) else repo, t["id"])
+                    _comp_result = intent_compiler.execute(_compiled, wt, t["id"])
                     if _comp_result.get("success"):
                         set_state(t["id"], note=f"compiled-intent: executed deterministic script (0 tokens)")
                         r = {"text": "compiled intent replay — deterministic script, zero model call",
@@ -955,7 +998,7 @@ def run_task(t):
                 else:
                     _pm = pattern_compiler.match(t)
                 if _pm and _pm.get("confidence", 0) > 0.7:
-                    _pc_result = pattern_compiler.execute(_pm, wt if os.path.isdir(wt) else repo, t["id"])
+                    _pc_result = pattern_compiler.execute(_pm, wt, t["id"])
                     if _pc_result and _pc_result.get("success"):
                         set_state(t["id"], note=f"pattern-compiler: deterministic replay (conf={_pm['confidence']:.0%}, pattern={_pm.get('pattern_id', '?')})")
                         r = {"text": f"pattern-compiler replay — {_pc_result.get('files_changed', 0)} files, zero model call",
@@ -1019,7 +1062,7 @@ def run_task(t):
             _uk = {}
             if not _fast.get("skip_all"):
                 try:
-                    _uk = unified_knowledge.query(t, name, wt if os.path.isdir(wt) else repo, attempt)
+                    _uk = unified_knowledge.query(t, name, wt, attempt)
                     if _uk.get("matches"):
                         draft_prompt = unified_knowledge._apply_match(draft_prompt, _uk["matches"][0])
                         set_state(t["id"], note=f"unified-knowledge: {len(_uk['matches'])} matches, best={_uk['matches'][0].get('source', '?')} (conf={_uk['matches'][0].get('confidence', 0):.0%})")
@@ -1028,7 +1071,7 @@ def run_task(t):
             # ADAPTIVE PIPELINE: collapse stages when cached results found
             if not _fast.get("skip_all"):
                 try:
-                    _ap = adaptive_pipeline.plan(t, name, wt if os.path.isdir(wt) else repo)
+                    _ap = adaptive_pipeline.plan(t, name, wt)
                     if _ap.get("collapsed"):
                         draft_prompt = _ap.get("enriched_prompt", draft_prompt)
                         set_state(t["id"], note=f"adaptive-pipeline: collapsed {len(_ap['collapsed'])} stages, saving ~{_ap.get('estimated_savings_tokens', 0)} tokens")
@@ -1266,7 +1309,7 @@ def run_task(t):
                             _swarm_mode = "diff" if kind in ("mechanical", "chore", "cleanup", "test", "docs") else "agentic"
                             r = swarm_executor.run_swarm(
                                 draft_prompt, _swarm_model, provider=_swarm_provider,
-                                cwd=wt if os.path.isdir(wt) else repo,
+                                cwd=wt,
                                 timeout=int(os.environ.get("TASK_TIMEOUT", "900")),
                                 mode=_swarm_mode,
                             )
@@ -1281,13 +1324,13 @@ def run_task(t):
                         except Exception as _sw_err:
                             _log.warning("swarm_executor failed (%s); falling back to agentic_coders", _sw_err)
                             r = agentic_coders.run(coder, draft_prompt, model,
-                                                   cwd=wt if os.path.isdir(wt) else repo, env=env,
+                                                   cwd=wt, env=env,
                                                    project=name, max_turns=60, permission="acceptEdits",
                                                    timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
                     else:
                         # --- DEFAULT PATH: subscription CLI/SDK via agentic_coders ---
                         r = agentic_coders.run(coder, draft_prompt, model,
-                                               cwd=wt if os.path.isdir(wt) else repo, env=env,
+                                               cwd=wt, env=env,
                                                project=name, max_turns=60, permission="acceptEdits",
                                                timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
                 r.setdefault("coder", coder)
@@ -1425,6 +1468,11 @@ def run_task(t):
                 except Exception:
                     pass
                 back = min(300, 2 ** attempt * 5)
+                try:
+                    import provider_rate_tracker
+                    provider_rate_tracker.record_rate_limit(coder, cooldown_s=back)
+                except Exception:
+                    pass
                 set_state(t["id"], state="RETRY", note=f"rate-limited, backoff {back}s")
                 time.sleep(min(back, 30)); continue
 
@@ -1569,7 +1617,7 @@ def run_task(t):
             if not _integrating_existing:
                 try:
                     import session_proof
-                    proof = session_proof.verify_session(t, out, wt if os.path.isdir(wt) else repo, f"agent/{slug}")
+                    proof = session_proof.verify_session(t, out, wt, f"agent/{slug}")
                     if not proof.get("ok") and not t.get("_proof_retry"):
                         t["_proof_retry"] = True
                         prompt = session_proof.reinjection_prompt(t)
@@ -1770,7 +1818,7 @@ def run_task(t):
             # enough data to reconstruct its work without re-running the agent.
             try:
                 task_artifacts.capture(repo, slug, f"agent/{slug}", base,
-                                       wt if os.path.isdir(wt) else repo,
+                                       wt,
                                        test_log=out[-5000:], cost=run_cost)
             except Exception as _ae:
                 print(f"[artifacts] capture failed for {slug}: {_ae}")
@@ -1781,7 +1829,8 @@ def run_task(t):
                     paired_trial_controller.record(t, {"verified": True, "wall_ms": int((time.time()-t0)*1000), "value": 1.0})
                 except Exception as _pte:
                     _log.warning("paired trial recording failed for %s: %s", slug, _pte)
-                set_state(t["id"], state="DONE", note="paired-shadow verified; mutation intentionally discarded")
+                set_state(t["id"], state="DONE", note="paired-shadow verified; mutation intentionally discarded",
+                          artifact_branch=f"shadow/{slug}")
                 record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0, cost=run_cost)
                 return
 
@@ -1885,7 +1934,8 @@ def run_task(t):
                     f"Integration returned {result}. Keep the same task and branch, fix the root cause, rerun the failing build/test/merge path, and commit.",
                 ):
                     continue
-            set_state(t["id"], state=state_val, confidence=conf_score, note=_note)
+            set_state(t["id"], state=state_val, confidence=conf_score, note=_note,
+                      artifact_branch=branch_ref)
             if result in ("CONFLICT", "TESTFAIL", "BUILDFAIL"):
                 approval(name, "integrate", f"{slug} {result.lower()} on integrate",
                          why=f"could not auto-integrate ({result})", detail=out[-2000:])
@@ -1980,7 +2030,7 @@ def run_task(t):
             # OUTPUT RECYCLING: recycle partial work from failures
             try:
                 if not integrated:
-                    output_recycling.recycle(t["id"], wt if os.path.isdir(wt) else repo,
+                    output_recycling.recycle(t["id"], wt,
                                              out, error="integration failed")
             except Exception as e:
                 _log.debug("hook output_recycling_recycle failed: %s", e)
@@ -2045,7 +2095,7 @@ def run_task(t):
                 if not integrated:
                     import prompt_bankruptcy as _pb_check
                     if _pb_check.is_bankrupt(t):
-                        _bd_subs = bankruptcy_decompose.decompose(t, name, wt if os.path.isdir(wt) else repo)
+                        _bd_subs = bankruptcy_decompose.decompose(t, name, wt)
                         if _bd_subs:
                             set_state(t["id"], note=f"bankrupt → decomposed into {len(_bd_subs)} sub-tasks")
             except Exception as e:
@@ -2359,6 +2409,7 @@ _SCHEDULE = [
     ("tier-stats-300",     "tier_router_tick.py",      "interval", 300),   # tier routing stats + subscription capacity report
     ("fleet-topo-600",     "fleet_topology_tick.py",    "interval", 600),   # fleet topology optimization recommendations
     ("sub-recommend-3600", "sub_recommend_tick.py",     "interval", 3600),  # hourly subscription cost/value analysis
+    ("serviceagent-120",   "service_agent.py",          "interval", 120),   # proactive health fixer (throttle drift, merge starvation)
 ]
 _sched_last: dict = {}
 
@@ -2388,7 +2439,7 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      "portfolio_rebalancer.py", "batch_fusion.py",
                      "capacity_pacer.py", "account_partition.py",
                      "generator_feedback.py", "exhaustion_signal.py",
-                     "surge_planner.py",
+                     "surge_planner.py", "service_agent.py",
                      "pause_arbiter.py", "fleet_stuck_alarm.py", "queue_bankruptcy.py",
                      "scoreboard.py", "toolchain_gate.py", "context_cache_distill.py",
                      "cost_intelligence.py", "improvement_roadmap.py"}
@@ -3058,6 +3109,15 @@ def main():
                             t = db.claim_task(RUNNER_ID)
                         _touch_progress()  # WEDGEFIX-B-PROGRESS
                     if t:
+                        # PREDICTIVE-PREEMPTION: skip tasks with >=3 consecutive failures
+                        try:
+                            import failure_forecast
+                            if failure_forecast.should_skip(t.get("id", ""), db):
+                                print(f"SKIP forecasted-fail {t.get('id','')}", flush=True)
+                                t = None
+                        except Exception as e:
+                            _log.debug("hook failure_forecast failed: %s", e)
+                    if t:
                         print(f"[claim] {t.get('slug','')} (project={t.get('project_id','?')[:8]}) active={len(active)+1}/{eff_limit}", flush=True)
                         # REUSE-FIRST: adapt an already-solved implementation instead of rebuilding
                         try:
@@ -3087,7 +3147,8 @@ def main():
                                 _rec = patch_recovery.recover(_repo, slug.replace("recover-missing-branch-", ""), _base, project=_proj.get("name"))
                                 if _rec.get("ok"):
                                     set_state(t["id"], state="DONE",
-                                              note=f"patch-recovery: {_rec['method']} (zero-spend)")
+                                              note=f"patch-recovery: {_rec['method']} (zero-spend)",
+                                              artifact_branch=_rec.get("branch") or f"agent/{slug}")
                                     print(f"[patch-recovery] {slug}: recovered via {_rec['method']}")
                                     continue
                         except Exception as e:

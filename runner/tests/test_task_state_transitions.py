@@ -81,3 +81,14 @@ class TaskStateTransitionTest(unittest.TestCase):
         db.update.side_effect = lambda table, match, patch: updates.update(patch)
 
         with patch.object(auto_remediate, "db", db), \
+             patch.object(auto_remediate, "recover_pending_manual_reviews", return_value=0), \
+             patch.object(auto_remediate, "recover_auto_closed_noops", return_value=0), \
+             patch.object(auto_remediate, "recover_shelved", return_value=(0, 0)), \
+             patch.object(auto_remediate, "offload_budget_capacity_backlog", return_value=0):
+            auto_remediate.run(limit=1)
+
+        self.assertEqual(updates.get("state"), "SHELVED")
+
+
+if __name__ == "__main__":
+    unittest.main()

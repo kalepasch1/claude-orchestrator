@@ -8,7 +8,7 @@ Fast + safe: symlinks the main repo's node_modules into the ephemeral worktree (
 .vercelignore to reproduce the uploaded source context, and runs the exact Vercel build command (or the
 real package build) with a timeout. Returns (ok, log). Auto-detects build_cmd and caches it on the project.
 """
-import os, sys, json, subprocess, tempfile, shutil, shlex
+import fnmatch, os, sys, json, subprocess, tempfile, shutil, shlex
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import dependency_prewarm
@@ -115,7 +115,39 @@ def build_cmd_for(project_row, repo):
     return detected
 
 
-def _apply_vercelignore(worktree):
+def _matches_ignore(rel, pattern):
+    pattern = pattern.strip().replace("\\", "/")
+    rel = rel.replace("\\", "/")
+    if pattern.startswith("/"):
+        pattern = pattern[1:]
+    if pattern.endswith("/"):
+        return rel == pattern[:-1] or rel.startswith(pattern)
+    if "/" not in pattern:
+        return any(fnmatch.fnmatch(part, pattern) for part in rel.split("/"))
+    return fnmatch.fnmatch(rel, pattern)
+
+
+def _ignored_from_files(root, files, ignore):
+    patterns = []
+    with open(ignore, encoding="utf-8", errors="replace") as source:
+        for raw in source:
+            value = raw.strip()
+            if value and not value.startswith("#"):
+                patterns.append(value)
+    ignored = []
+    for rel in files:
+        matched = False
+        for pattern in patterns:
+            negate = pattern.startswith("!")
+            candidate = pattern[1:] if negate else pattern
+            if _matches_ignore(rel, candidate):
+                matched = not negate
+        if matched:
+            ignored.append(rel)
+    return ignored
+
+
+def _apply_vercelignore(worktree, tracked_files=None):
     """Remove tracked files excluded from Vercel's upload context in the disposable worktree."""
     removed = []
     roots = [worktree, *dependency_prewarm.package_roots(worktree)]
@@ -125,13 +157,24 @@ def _apply_vercelignore(worktree):
         if not os.path.isfile(ignore) or ignore in seen:
             continue
         seen.add(ignore)
-        result = subprocess.run(
-            ["git", "ls-files", "-ci", "--exclude-from", ignore],
-            cwd=root, capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"could not evaluate {os.path.relpath(ignore, worktree)}: {result.stderr.strip()}")
-        for rel in result.stdout.splitlines():
+        if tracked_files is None:
+            result = subprocess.run(
+                ["git", "ls-files", "-ci", "--exclude-from", ignore],
+                cwd=root, capture_output=True, text=True,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"could not evaluate {os.path.relpath(ignore, worktree)}: {result.stderr.strip()}")
+            candidates = result.stdout.splitlines()
+        else:
+            prefix = os.path.relpath(root, worktree)
+            candidates = []
+            for item in tracked_files:
+                if prefix == ".":
+                    candidates.append(item)
+                elif item.startswith(prefix.rstrip(os.sep) + "/"):
+                    candidates.append(item[len(prefix.rstrip(os.sep)) + 1:])
+            candidates = _ignored_from_files(root, candidates, ignore)
+        for rel in candidates:
             path = os.path.normpath(os.path.join(root, rel))
             if not (path == worktree or path.startswith(worktree + os.sep)):
                 raise RuntimeError(f"unsafe Vercel ignore path: {rel}")
@@ -145,33 +188,29 @@ def _apply_vercelignore(worktree):
 
 
 def run_build(repo, branch, build_cmd, timeout=900, vercel_context=True):
-    """Green-build check of `branch` in an ephemeral worktree. Returns (ok, log)."""
+    """Green-build an exact commit in an unregistered disposable overlay."""
     if not build_cmd:
         return True, "no build_cmd (skipped)"     # nothing to check -> don't block
     if os.environ.get("ORCH_BUILD_GATE_INSTALL_DEPS", "true").lower() in ("true", "1", "yes", "on"):
         warmed = dependency_prewarm.ensure_all(repo, reason="build_gate")
         if not warmed.get("ok"):
             return False, "dependency prewarm failed: " + (warmed.get("error") or str(warmed))[-1200:]
-    tmp = tempfile.mkdtemp(prefix="build-")
+    import commit_overlay
     try:
-        if subprocess.run(["git", "worktree", "add", "-f", tmp, branch],
-                          cwd=repo, capture_output=True).returncode != 0:
-            return False, "could not create build worktree"
-        # Reuse warmed deps/env for the root and nested package apps.
-        dependency_prewarm.link_shared_runtime(repo, tmp)
-        removed = _apply_vercelignore(tmp) if vercel_context else []
-        r = subprocess.run(["bash", "-lc", build_cmd], cwd=tmp, capture_output=True, text=True, timeout=timeout)
-        ok = r.returncode == 0
-        context = f"Vercel context removed {len(removed)} tracked file(s)"
-        log = (context + "\n" + (r.stdout or "")[-5000:] + "\n" + (r.stderr or "")[-5000:]).strip()
-        return ok, log
+        with commit_overlay.checkout(repo, branch, prefix="build-overlay-") as overlay:
+            tmp = overlay["path"]
+            dependency_prewarm.link_shared_runtime(repo, tmp)
+            removed = _apply_vercelignore(tmp, overlay["files"]) if vercel_context else []
+            r = subprocess.run(["bash", "-lc", build_cmd], cwd=tmp, capture_output=True, text=True, timeout=timeout)
+            ok = r.returncode == 0
+            context = (f"overlay {overlay['commit'][:12]}; Vercel context removed "
+                       f"{len(removed)} tracked file(s)")
+            log = (context + "\n" + (r.stdout or "")[-5000:] + "\n" + (r.stderr or "")[-5000:]).strip()
+            return ok, log
     except subprocess.TimeoutExpired:
         return False, f"build timed out (>{timeout}s)"
     except Exception as e:
         return False, f"build error: {e}"
-    finally:
-        subprocess.run(["git", "worktree", "remove", "--force", tmp], cwd=repo, capture_output=True, timeout=60)
-        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def check(project_name, branch):

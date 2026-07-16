@@ -1,16 +1,25 @@
 #!/usr/bin/env python3
 """
-cade_scorecard.py - Pure aggregator for CADE fleet telemetry.
+cade_scorecard.py - Pure aggregator for per-app CADE telemetry into fleet scorecard.
 
 Takes per-app CADE KPI dicts (win-rate lift, calibration gap, alignment recall/surprise,
-override failure-rate) and produces:
-  (a) a normalized fleet scorecard
-  (b) a weakest_app + recommended_next_capability hint
+override failure-rate) — shapes from apparently's GET /api/firm-api/positions/kpi and
+/alignment-kpi — and produces:
+  (a) a normalized fleet scorecard (0-1 scores per dimension per app)
+  (b) a weakest_app + recommended_next_capability hint for the scheduler
 
-Pure functions only (inputs passed in; no live HTTP). Does NOT wire into the live
-scheduler (that is a follow-up, human-approved).
+The run() function fetches telemetry from the controls table, aggregates via the pure
+functions below, stores the fleet scorecard snapshot, and returns the scheduler hint.
 """
+import os, sys, json, time, datetime
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import db
 
+# How many recent telemetry snapshots to keep per app
+MAX_HISTORY = int(os.environ.get("ORCH_SCORECARD_HISTORY", "50"))
+
+
+# ─── Pure Functions ───
 
 def normalize_kpi(raw, *, floor=0.0, ceiling=1.0):
     """Clamp and normalize a raw KPI value to [0, 1]. Higher is better."""
@@ -112,3 +121,105 @@ def weakest_app(apps):
         "gap": worst_gap,
         "recommended_next_capability": recommended,
     }
+
+
+# ─── DB-Backed Telemetry Fetch ───
+
+def _load_app_telemetry():
+    """Fetch per-app CADE telemetry from the controls table.
+
+    Expects a controls row with key='cade_app_telemetry' whose value is a JSON dict
+    of {app_name: {win_rate_lift, calibration_gap, alignment_recall,
+    alignment_surprise, override_failure}}.
+
+    These KPIs originate from apparently's GET /api/firm-api/positions/kpi
+    and /alignment-kpi endpoints, ingested by the telemetry sync job.
+    """
+    try:
+        rows = db.select("controls", {
+            "select": "value",
+            "key": "eq.cade_app_telemetry",
+        })
+        if rows and rows[0].get("value"):
+            v = rows[0]["value"]
+            return json.loads(v) if isinstance(v, str) else v
+    except Exception:
+        pass
+    return {}
+
+
+def _save_scorecard_snapshot(scorecard, hint):
+    """Persist the latest fleet scorecard snapshot into controls for dashboard use."""
+    snapshot = {
+        "timestamp": time.time(),
+        "iso": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "scorecard": scorecard,
+        "weakest": hint,
+        "app_count": len(scorecard),
+    }
+
+    # Load existing history and append
+    history = []
+    try:
+        rows = db.select("controls", {
+            "select": "value",
+            "key": "eq.cade_fleet_scorecard",
+        })
+        if rows and rows[0].get("value"):
+            v = rows[0]["value"]
+            prev = json.loads(v) if isinstance(v, str) else v
+            history = prev.get("history", [])
+    except Exception:
+        pass
+
+    history.append(snapshot)
+    history = history[-MAX_HISTORY:]
+
+    try:
+        db.upsert("controls", {
+            "key": "cade_fleet_scorecard",
+            "value": json.dumps({
+                "current": snapshot,
+                "history": history,
+            }, default=str),
+        })
+    except Exception:
+        pass
+
+
+# ─── Runner Entry Point ───
+
+def run():
+    """Periodic aggregator: fetch per-app CADE telemetry, build fleet scorecard,
+    persist snapshot, and return the scheduler hint.
+
+    Returns dict with status, app_count, scorecard rows, and weakest_app hint.
+    """
+    apps = _load_app_telemetry()
+    if not apps:
+        print("[cade_scorecard] no app telemetry found")
+        return {"status": "no_data", "app_count": 0, "scorecard": [], "weakest": None}
+
+    sc = fleet_scorecard(apps)
+    hint = weakest_app(apps)
+
+    _save_scorecard_snapshot(sc, hint)
+
+    # Log summary
+    print(f"[cade_scorecard] {len(sc)} apps scored")
+    for row in sc:
+        print(f"  {row['app']}: {row['score']:.4f}")
+    if hint:
+        print(f"  weakest: {hint['app']} (score={hint['score']:.4f}, "
+              f"gap={hint['gap']}, next={hint['recommended_next_capability']})")
+
+    return {
+        "status": "ok",
+        "app_count": len(sc),
+        "scorecard": sc,
+        "weakest": hint,
+    }
+
+
+if __name__ == "__main__":
+    print(json.dumps(run(), indent=2, default=str))
