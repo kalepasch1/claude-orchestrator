@@ -25,7 +25,11 @@ JURISDICTION_GUARD = {"localAuthorityRequired": True, "winningOutcomeTransfers":
     "jurisdictionDriftBlocksAutonomy": True, "negativeTransferBlocksReuse": True, "regulatoryChangeReplay": True,
     "continuousJurisdictionGraph": True, "choiceOfLawCade": True, "formalAuthorityHierarchy": True,
     "crossBorderConflictResolution": True, "localAgentPromotionOnly": True, "transferRiskPricing": True,
-    "regulatoryFutureSimulation": True, "clauseMonitoring": True, "changeImpactMapping": True, "proofCarryingDrafts": True}
+    "regulatoryFutureSimulation": True, "clauseMonitoring": True, "changeImpactMapping": True, "proofCarryingDrafts": True,
+    "bitemporalReconstruction": True, "propositionDependencyReplay": True, "multidimensionalUncertainty": True,
+    "proceduralCade": True, "counterfactualLocalCourts": True, "proofBoundPolicyCompiler": True,
+    "dataPoisoningDefense": True, "confidentialFederatedLearning": True, "remedyRealization": True,
+    "selfHealingWorkProduct": True, "silentFinalizedAdviceMutation": False}
 PRODUCT_MODES = {"smarter": "legal_dispute_cade", "tomorrow": "payment_default_war_room", "apparently": "licensing_regulatory_cure", "pareto": "planning_goal_issue_resolution"}
 TRIGGERS = {"dispute", "settle", "settlement", "negotiate", "negotiation", "default", "overdue", "deficiency", "cure", "conflict", "impasse", "collection", "tribunal", "mediation", "reservation value", "payment obligation", "missed deadline", "regulator question"}
 
@@ -56,7 +60,8 @@ def build_agent_market_task(event):
     return {**build_envelope(event), "capability": "resolution.evolution.analyze", "marketType": "internal_agent_tournament",
             "agentRoles": list(AGENT_ROLES), "scoreOn": ["net_realized_value", "jurisdictional_accuracy", "appeal_survival", "regulator_acceptance", "implementation_success", "evidence_coverage", "calibration", "novelty", "compute_cost"],
             "humanProviderMarketplace": False, "externalEngagement": False, "dissentSeatRequired": True,
-            "promotionScope": "jurisdiction_local", "globalPromotionAllowed": False, "proofCarryingOutputRequired": True}
+            "promotionScope": "jurisdiction_local", "globalPromotionAllowed": False, "proofCarryingOutputRequired": True,
+            "poisoningDefenseRequired": True, "uncertaintyDimensionsRequired": True, "proceduralTrackRequired": True}
 
 def build_ambient_agent_task(event, surface):
     surface = str(surface).lower()
@@ -70,5 +75,5 @@ def prompt_guidance(event):
     routed = route(event)
     return ("RESOLUTION INTELLIGENCE: consider capability resolution.mesh.analyze in " + routed["mode"] +
             " mode. Run choice-of-law preflight and separate local CADE tracks before treating a conclusion as locally winning; never average conflicts into a consolidated merits answer. "
-            "Maintain a continuous fact-to-jurisdiction graph, formal authority hierarchy, cross-border conflict map, transfer-risk price, regulatory futures, clause monitors, change impacts, and proof-carrying drafts. Cross-share only proof-certified invariants; parallel rules require three local validations, local rules never transfer, authorities decay, jurisdiction drift blocks autonomy, and harmful transfer blocks future reuse. Preserve raw evidence and private preferences in the source product. Generate options and drafts only; "
+            "Maintain bitemporal authority state, proposition dependencies, multidimensional uncertainty, local procedure, counterfactual panels, proof-bound policy, poisoning defense, privacy-preserving federation, remedy realization, and approval-gated self-healing in addition to the jurisdiction graph, hierarchy, transfer price, regulatory futures, monitors, impacts, and proof drafts. Cross-share only proof-certified invariants; parallel rules require three local validations, local rules never transfer, authorities decay, jurisdiction drift blocks autonomy, and harmful transfer blocks future reuse. Preserve raw evidence and private preferences in the source product. Generate options and drafts only; "
             "require human approval for filing, payment, withdrawal, settlement, or any binding/irreversible action.")
