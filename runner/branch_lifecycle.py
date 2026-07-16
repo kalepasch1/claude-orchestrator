@@ -200,10 +200,95 @@ def zero_spend_recovery_eligible(task, repo_path):
 
 
 # ---------------------------------------------------------------------------
+# Smart branch prioritization
+# ---------------------------------------------------------------------------
+def prioritize_branches(repo_path, task_states, stale_days=None):
+    """Rank agent branches by cleanup urgency and recovery value.
+
+    *task_states* maps slug -> {'state': str, 'attempt': int, 'kind': str}.
+    Returns sorted list of dicts with branch, action, priority, reason.
+
+    Actions: 'cleanup' (safe to delete), 'recover' (worth re-queuing),
+             'keep' (active work), 'investigate' (ambiguous).
+    Priority: 1 = most urgent.
+    """
+    stale_days = stale_days if stale_days is not None else STALE_DAYS
+    if not repo_path or not os.path.isdir(repo_path):
+        return []
+
+    try:
+        r = subprocess.run(
+            ["git", "branch", "--list", "agent/*"],
+            cwd=repo_path, capture_output=True, text=True, timeout=30,
+        )
+        if r.returncode != 0:
+            return []
+        branches = [b.strip().lstrip("* ") for b in r.stdout.splitlines() if b.strip()]
+    except Exception:
+        return []
+
+    results = []
+    for branch in branches:
+        slug = branch.replace("agent/", "", 1) if branch.startswith("agent/") else branch
+        task = task_states.get(slug, {})
+        state = task.get("state", "")
+        attempt = int(task.get("attempt") or 0)
+        kind = task.get("kind", "")
+        stale = is_stale(repo_path, branch, stale_days)
+        epoch = branch_last_commit_epoch(repo_path, branch)
+        age_days = (time.time() - epoch) / 86400 if epoch else 999
+
+        if state in ("MERGED", "DONE"):
+            results.append({"branch": branch, "slug": slug, "action": "cleanup",
+                            "priority": 1, "reason": f"task {state}", "age_days": round(age_days, 1)})
+        elif state == "QUARANTINED":
+            results.append({"branch": branch, "slug": slug, "action": "cleanup",
+                            "priority": 2, "reason": "quarantined", "age_days": round(age_days, 1)})
+        elif state in ("FAILED", "ERROR", "BLOCKED") and attempt < MAX_RETRIES:
+            # Recovery candidates — prioritize bugfixes and recoveries
+            pri = 3 if kind in ("recovery", "bugfix", "toolchain-repair") else 4
+            results.append({"branch": branch, "slug": slug, "action": "recover",
+                            "priority": pri, "reason": f"{state} attempt {attempt}",
+                            "age_days": round(age_days, 1)})
+        elif state == "RUNNING":
+            results.append({"branch": branch, "slug": slug, "action": "keep",
+                            "priority": 10, "reason": "active", "age_days": round(age_days, 1)})
+        elif stale:
+            results.append({"branch": branch, "slug": slug, "action": "investigate",
+                            "priority": 5, "reason": f"stale ({age_days:.0f}d), no task match",
+                            "age_days": round(age_days, 1)})
+        elif not state:
+            # Orphan branch — no task found
+            results.append({"branch": branch, "slug": slug, "action": "investigate",
+                            "priority": 6, "reason": "orphan (no matching task)",
+                            "age_days": round(age_days, 1)})
+
+    results.sort(key=lambda x: (x["priority"], -x.get("age_days", 0)))
+    return results
+
+
+def cleanup_report(repo_path, task_states, stale_days=None):
+    """Generate a summary report of branch management actions needed."""
+    ranked = prioritize_branches(repo_path, task_states, stale_days)
+    actions = {"cleanup": [], "recover": [], "keep": [], "investigate": []}
+    for r in ranked:
+        actions.get(r["action"], []).append(r)
+    return {
+        "total_branches": len(ranked),
+        "cleanup": len(actions["cleanup"]),
+        "recoverable": len(actions["recover"]),
+        "active": len(actions["keep"]),
+        "investigate": len(actions["investigate"]),
+        "top_actions": ranked[:15],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Stats
 # ---------------------------------------------------------------------------
 _stats_lock = threading.Lock()
-_stats = {"validations": 0, "stale_checks": 0, "recovery_checks": 0, "cleanups_found": 0}
+_stats = {"validations": 0, "stale_checks": 0, "recovery_checks": 0, "cleanups_found": 0,
+          "prioritizations": 0}
 
 
 def stats():
