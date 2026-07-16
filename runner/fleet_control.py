@@ -49,11 +49,13 @@ def _mark_local_ack(control_id):
     os.replace(tmp, _ACK_FILE)
 
 # only these config keys may be pushed fleet-wide (never secrets). Anything containing a credential
-# marker is rejected outright.
+# marker is rejected outright. Note: ORCH_GIT_PAT is *not* stored in fleet_config (PAT value comes
+# from local env). Use ORCH_GIT_AUTH_REQUIRED to signal that auth is needed; the actual PAT is
+# managed per-machine via environment.
 _SAFE_PREFIXES = ("ORCH_", "MAX_PARALLEL", "PER_TASK_GB", "RAM_FLOOR_GB", "RAM_", "RELEASE_", "QUEUE_",
                   "CONT_", "JANITOR_", "REMEDIATION_", "DEFAULT_TEST_CMD", "TASK_TIMEOUT", "ENABLE_",
                   "SESSION_", "ACCOUNT_COOLDOWN", "MERGE_", "DEPLOY_", "INTEGRATE_", "COST_")
-_DENY_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "PWD", "CREDENTIAL")
+_DENY_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "PWD", "CREDENTIAL", "PAT")
 
 
 def _safe_key(k):

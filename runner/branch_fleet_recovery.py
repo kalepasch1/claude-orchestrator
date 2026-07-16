@@ -3,18 +3,20 @@
 branch_fleet_recovery.py - fleet-wide missing branch auto-recovery.
 
 When a branch is missing across all fleet machines, attempts recovery:
-  1. Check if branch exists on any remote, fetch if so
-  2. If missing everywhere, requeue task for re-execution
+  1. Check if branch exists on any remote, fetch if so (requires git auth)
+  2. If missing everywhere or auth fails, requeue task for re-execution
 
 Env vars:
     ORCH_FLEET_BRANCH_RECOVERY   "true" (default) to enable
     ORCH_FLEET_RECOVERY_BATCH    max tasks per run (default: 5)
+    ORCH_GIT_PAT                 Personal Access Token for private repos
 """
 import os, subprocess, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import log as _log_mod
 _log = _log_mod.get("branch_fleet_recovery")
 import db
+import git_auth
 
 ENABLED = os.environ.get("ORCH_FLEET_BRANCH_RECOVERY", "true").lower() in ("1", "true", "yes", "on")
 BATCH_SIZE = int(os.environ.get("ORCH_FLEET_RECOVERY_BATCH", "5"))
@@ -22,6 +24,7 @@ DRY_RUN = os.environ.get("ORCH_FLEET_RECOVERY_DRY_RUN", "false").lower() in ("1"
 TIMEOUT = int(os.environ.get("ORCH_FLEET_RECOVERY_TIMEOUT_S", "60"))
 
 def _git(repo, *args):
+    """Run git command without auth (for local checks)."""
     try:
         r = subprocess.run(["git"] + list(args), cwd=repo,
                            capture_output=True, text=True, timeout=TIMEOUT)
@@ -34,8 +37,8 @@ def _branch_exists_local(repo, branch):
     return rc == 0
 
 def _branch_exists_remote(repo, branch):
-    rc, out, _ = _git(repo, "ls-remote", "--heads", "origin", branch)
-    return rc == 0 and bool(out.strip())
+    """Check if branch exists on remote, using authenticated git operations."""
+    return git_auth.branch_exists_remote(repo, branch, "origin")
 
 def recover_branch(task, repo_path, base_branch="master"):
     slug = task.get("slug", "")
@@ -45,13 +48,18 @@ def recover_branch(task, repo_path, base_branch="master"):
     if _branch_exists_remote(repo_path, branch):
         if DRY_RUN:
             return {"recovered": False, "strategy": "dry_run"}
-        rc, _, err = _git(repo_path, "fetch", "origin", f"{branch}:{branch}")
-        if rc == 0:
+        # Use authenticated git operations for fetch
+        ok, err = git_auth.fetch_branch(repo_path, branch, "origin")
+        if ok:
             _log.info("recovered %s from remote", branch)
             return {"recovered": True, "strategy": "fetched_remote"}
-        _log.warning("fetch failed for %s: %s", branch, err)
+        _log.warning("fetch failed for %s (auth may be required)", branch)
     if DRY_RUN:
         return {"recovered": False, "strategy": "dry_run"}
+    # Check if PAT is configured
+    if not git_auth.pat_available():
+        _log.info("skipping recovery for %s (PAT unavailable)", slug)
+        return {"recovered": False, "strategy": "pat_unavailable"}
     recovery_slug = f"recover-{slug}"
     try:
         existing = db.select("tasks", {"select": "id", "slug": f"eq.{recovery_slug}",
