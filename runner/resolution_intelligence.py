@@ -22,7 +22,10 @@ JURISDICTION_GUARD = {"localAuthorityRequired": True, "winningOutcomeTransfers":
     "choiceOfLawPreflight": True, "consolidatedMeritsAnswerAllowed": False,
     "invariantReuseAllowed": True, "invariantProofCertificateRequired": True,
     "parallelRuleValidations": 3, "localRuleReuseAllowed": False, "authorityTemporalDecay": True,
-    "jurisdictionDriftBlocksAutonomy": True, "negativeTransferBlocksReuse": True, "regulatoryChangeReplay": True}
+    "jurisdictionDriftBlocksAutonomy": True, "negativeTransferBlocksReuse": True, "regulatoryChangeReplay": True,
+    "continuousJurisdictionGraph": True, "choiceOfLawCade": True, "formalAuthorityHierarchy": True,
+    "crossBorderConflictResolution": True, "localAgentPromotionOnly": True, "transferRiskPricing": True,
+    "regulatoryFutureSimulation": True, "clauseMonitoring": True, "changeImpactMapping": True, "proofCarryingDrafts": True}
 PRODUCT_MODES = {"smarter": "legal_dispute_cade", "tomorrow": "payment_default_war_room", "apparently": "licensing_regulatory_cure", "pareto": "planning_goal_issue_resolution"}
 TRIGGERS = {"dispute", "settle", "settlement", "negotiate", "negotiation", "default", "overdue", "deficiency", "cure", "conflict", "impasse", "collection", "tribunal", "mediation", "reservation value", "payment obligation", "missed deadline", "regulator question"}
 
@@ -51,14 +54,15 @@ def build_envelope(event):
 def build_agent_market_task(event):
     """Internal agent commission only: never a broker, referral, or provider marketplace."""
     return {**build_envelope(event), "capability": "resolution.evolution.analyze", "marketType": "internal_agent_tournament",
-            "agentRoles": list(AGENT_ROLES), "scoreOn": ["net_realized_value", "latency", "evidence_coverage", "calibration", "novelty", "compute_cost"],
-            "humanProviderMarketplace": False, "externalEngagement": False, "dissentSeatRequired": True}
+            "agentRoles": list(AGENT_ROLES), "scoreOn": ["net_realized_value", "jurisdictional_accuracy", "appeal_survival", "regulator_acceptance", "implementation_success", "evidence_coverage", "calibration", "novelty", "compute_cost"],
+            "humanProviderMarketplace": False, "externalEngagement": False, "dissentSeatRequired": True,
+            "promotionScope": "jurisdiction_local", "globalPromotionAllowed": False, "proofCarryingOutputRequired": True}
 
 def build_ambient_agent_task(event, surface):
     surface = str(surface).lower()
     if surface not in WORK_SURFACES: raise ValueError("Unsupported ambient work surface")
     return {**build_envelope(event), "capability": "resolution.evolution.analyze", "surface": surface,
-            "agentType": "ambient-resolution-agent", "detect": ["concession", "contradiction", "authority_issue", "pareto_trade"],
+            "agentType": "ambient-resolution-agent", "detect": ["concession", "contradiction", "authority_issue", "authority_decay", "jurisdiction_drift", "pareto_trade"],
             "humanCoach": False, "draftOnly": True, "externalMessageSent": False, "rawContentIncluded": False}
 
 def prompt_guidance(event):
@@ -66,5 +70,5 @@ def prompt_guidance(event):
     routed = route(event)
     return ("RESOLUTION INTELLIGENCE: consider capability resolution.mesh.analyze in " + routed["mode"] +
             " mode. Run choice-of-law preflight and separate local CADE tracks before treating a conclusion as locally winning; never average conflicts into a consolidated merits answer. "
-            "Cross-share only proof-certified invariants; parallel rules require three local validations, local rules never transfer, authorities decay, jurisdiction drift blocks autonomy, and harmful transfer blocks future reuse. Preserve raw evidence and private preferences in the source product. Generate options and drafts only; "
+            "Maintain a continuous fact-to-jurisdiction graph, formal authority hierarchy, cross-border conflict map, transfer-risk price, regulatory futures, clause monitors, change impacts, and proof-carrying drafts. Cross-share only proof-certified invariants; parallel rules require three local validations, local rules never transfer, authorities decay, jurisdiction drift blocks autonomy, and harmful transfer blocks future reuse. Preserve raw evidence and private preferences in the source product. Generate options and drafts only; "
             "require human approval for filing, payment, withdrawal, settlement, or any binding/irreversible action.")

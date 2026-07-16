@@ -13,11 +13,12 @@ class TestResolutionIntelligence(unittest.TestCase):
         self.assertFalse(envelope["jurisdictionGuard"]["winningOutcomeTransfers"]); self.assertEqual(envelope["jurisdictionGuard"]["parallelRuleValidations"], 3)
         self.assertTrue(envelope["jurisdictionGuard"]["choiceOfLawPreflight"]); self.assertFalse(envelope["jurisdictionGuard"]["consolidatedMeritsAnswerAllowed"])
         self.assertTrue(envelope["jurisdictionGuard"]["invariantProofCertificateRequired"]); self.assertTrue(envelope["jurisdictionGuard"]["jurisdictionDriftBlocksAutonomy"])
+        self.assertTrue(envelope["jurisdictionGuard"]["continuousJurisdictionGraph"]); self.assertTrue(envelope["jurisdictionGuard"]["proofCarryingDrafts"])
     def test_trigger_and_prompt_guidance(self):
         event = {"title": "Counterparty default risk"}; self.assertTrue(ri.should_consider(event)); self.assertIn("human approval", ri.prompt_guidance(event))
     def test_agent_market_is_internal_and_has_dissent(self):
         task=ri.build_agent_market_task({"product":"smarter","summary":"Settlement"})
-        self.assertEqual(task["marketType"],"internal_agent_tournament"); self.assertFalse(task["humanProviderMarketplace"]); self.assertFalse(task["externalEngagement"]); self.assertIn("novelty-agent",task["agentRoles"])
+        self.assertEqual(task["marketType"],"internal_agent_tournament"); self.assertFalse(task["humanProviderMarketplace"]); self.assertFalse(task["externalEngagement"]); self.assertIn("novelty-agent",task["agentRoles"]); self.assertEqual(task["promotionScope"],"jurisdiction_local"); self.assertFalse(task["globalPromotionAllowed"])
     def test_ambient_agent_is_not_a_human_coach_and_cannot_send(self):
         task=ri.build_ambient_agent_task({"product":"tomorrow","summary":"Payment default"},"teams")
         self.assertFalse(task["humanCoach"]); self.assertTrue(task["draftOnly"]); self.assertFalse(task["externalMessageSent"]); self.assertFalse(task["rawContentIncluded"])
