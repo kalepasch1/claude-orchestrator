@@ -54,6 +54,29 @@ def deduplicate_slug(slug: str, existing_slugs) -> str:
     return f"{slug}-{n}"
 
 
+def sanitize_slug(raw: str, max_length: int = 80) -> str:
+    """Convert an arbitrary string into a valid task slug.
+
+    Lowercases, replaces non-alphanumeric chars with hyphens, collapses
+    consecutive hyphens, and trims to *max_length*.
+
+    >>> sanitize_slug("Fix OAuth Flow!!!")
+    'fix-oauth-flow'
+    >>> sanitize_slug("  --too  many   spaces--  ")
+    'too-many-spaces'
+    >>> sanitize_slug("")
+    'unnamed'
+    """
+    import re
+    s = (raw or "").lower().strip()
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    if not s:
+        return "unnamed"
+    if len(s) > max_length:
+        s = s[:max_length].rstrip("-")
+    return s
+
+
 def validate_slug(slug: str) -> tuple:
     """Validate a task slug against naming conventions.
 
