@@ -15,3 +15,10 @@ def _refresh():
         rows = db.sql("SELECT key, value FROM fleet_config") or []
         _cache = {r["key"]: r["value"] for r in rows}
         _cache_ts = time.time()
+
+def force_refresh():
+    """
+    Forces an immediate refresh of the configuration cache from the database.
+    This can be used to ensure the latest configuration is loaded without waiting for the TTL.
+    """
+    _refresh()
