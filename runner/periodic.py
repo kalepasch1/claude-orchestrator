@@ -765,6 +765,7 @@ JOBS = {
     "committeeminutes": run_committeeminutes,
     "committeekg": run_committeekg,
     "committeemeta": run_committeemeta,
+    "cadeextras": run_cadeextras,
     "credresolver": run_credential_resolver,
     "stuck_reaper": run_stuck_reaper,
     "remediate": run_remediate,
