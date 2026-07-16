@@ -113,3 +113,87 @@ def run():
 if __name__ == "__main__":
     import json
     print(json.dumps(run(), indent=2, default=str))
+
+
+def throughput_signal(window_minutes=30):
+    """Measure actual task throughput over the recent window.
+
+    Returns dict with:
+        tasks_completed: int — tasks finished in window
+        avg_duration_seconds: float — average task duration
+        tasks_per_hour: float — completion rate
+        bottleneck: str — 'compute' | 'queue_empty' | 'balanced'
+    """
+    try:
+        rows = db.sql(
+            f"SELECT id, state, updated_at, finished_at "
+            f"FROM tasks "
+            f"WHERE state IN ('DONE', 'MERGED') "
+            f"AND finished_at > now() - interval '{int(window_minutes)} minutes' "
+            f"ORDER BY finished_at DESC"
+        ) or []
+    except Exception:
+        return {"tasks_completed": 0, "avg_duration_seconds": 0, "tasks_per_hour": 0, "bottleneck": "unknown"}
+
+    completed = len(rows)
+    tasks_per_hour = completed * (60 / max(window_minutes, 1))
+
+    # Check queue depth for bottleneck classification
+    try:
+        queued = db.sql("SELECT count(*) as cnt FROM tasks WHERE state = 'QUEUED'")
+        queue_depth = int(queued[0]["cnt"]) if queued else 0
+    except Exception:
+        queue_depth = 0
+
+    try:
+        running = db.sql("SELECT count(*) as cnt FROM tasks WHERE state = 'RUNNING'")
+        running_count = int(running[0]["cnt"]) if running else 0
+    except Exception:
+        running_count = 0
+
+    if queue_depth > 20 and running_count > 0:
+        bottleneck = "compute"  # lots queued, runners busy
+    elif queue_depth < 3:
+        bottleneck = "queue_empty"  # nothing to do
+    else:
+        bottleneck = "balanced"
+
+    return {
+        "tasks_completed": completed,
+        "tasks_per_hour": round(tasks_per_hour, 1),
+        "queue_depth": queue_depth,
+        "running": running_count,
+        "bottleneck": bottleneck,
+        "window_minutes": window_minutes,
+    }
+
+
+def elastic_recommendation():
+    """Combine demand signal and throughput signal for scaling recommendation.
+
+    Returns: dict with action ('scale_up', 'scale_down', 'hold') and reason.
+    """
+    demand = run()
+    throughput = throughput_signal()
+
+    if demand["recommend"] > 0 and throughput["bottleneck"] == "compute":
+        return {
+            "action": "scale_up",
+            "workers": demand["recommend"],
+            "reason": f"High demand ({demand['weighted_demand']:.0f}) with compute bottleneck "
+                      f"({throughput['queue_depth']} queued, {throughput['running']} running)",
+        }
+
+    if throughput["bottleneck"] == "queue_empty" and demand["weighted_demand"] < 5:
+        return {
+            "action": "scale_down",
+            "workers": 0,
+            "reason": f"Queue nearly empty ({throughput['queue_depth']}), low demand",
+        }
+
+    return {
+        "action": "hold",
+        "workers": 0,
+        "reason": f"Balanced: {throughput['tasks_per_hour']}/hr throughput, "
+                  f"{throughput['queue_depth']} queued",
+    }
