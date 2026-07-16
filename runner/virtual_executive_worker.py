@@ -17,7 +17,7 @@ def _digest(value):
 
 def _adapter_url(provider):
     key = "BUSINESS_AGENT_" + str(provider or "PROFESSIONAL").upper().replace("-", "_") + "_URL"
-    return os.environ.get(key) or os.environ.get("BUSINESS_AGENT_ADAPTER_URL")
+    return os.environ.get(key) or os.environ.get("BUSINESS_AGENT_ADAPTER_URL") or os.environ.get("ORCHESTRATOR_WEB_URL")
 
 
 def _call_adapter(step, saga, agent):
@@ -72,17 +72,30 @@ def execute_once(worker=None):
     agent = agent_rows[0] if agent_rows else {}
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
     if not step.get("external_effect"):
-        output = {"status": "completed", "artifact": "internal_control_record", "operation": step.get("operation")}
+        facilitated = _call_adapter(step, saga, agent) if _adapter_url(step.get("connector_provider")) else None
+        output = facilitated if facilitated and facilitated.get("ok") else {"status": "completed", "artifact": "internal_control_record", "operation": step.get("operation")}
         db.update("agentic_business_saga_steps", {"id": step["id"], "state": "claimed"}, {
             "state": "completed", "completed_at": now, "claimed_by": None, "claimed_at": None,
             "updated_at": now, "output": output,
-            "evidence": {**(step.get("evidence") or {}), "worker": worker, "effect": "internal_reversible_work_completed", "output_digest": _digest(output)},
+            "evidence": {**(step.get("evidence") or {}), "worker": worker, "effect": "internal_reversible_work_completed", "facilitated_by": facilitated.get("provider") if facilitated and facilitated.get("ok") else None, "output_digest": _digest(output)},
         })
         _finish_saga(step["saga_id"])
         return {"status": "completed", "step_id": step["id"], "external_effect": False}
     result = _call_adapter(step, saga, agent)
+    if result.get("human_input_required"):
+        fields = [str(value) for value in result.get("human_input_required") if value]
+        db.update("agentic_business_saga_steps", {"id": step["id"], "state": "claimed"}, {"state": "waiting_input", "claimed_by": None, "claimed_at": None, "updated_at": now, "evidence": {**(step.get("evidence") or {}), "required_provider_input": fields}})
+        db.update("agentic_business_sagas", {"id": step["saga_id"]}, {"state": "waiting_input", "updated_at": now})
+        db.insert("business_human_input_requests", {"organization_id": saga.get("organization_id"), "saga_id": step["saga_id"], "agent_key": agent.get("agent_key") or "operations_chief", "prompt": "Provide " + ", ".join(value.replace("_", " ") for value in fields) + " to continue " + str(step.get("operation") or "provider execution") + ".", "input_schema": {value: {"type": "string", "required": True} for value in fields}, "reason": "The connected provider requires these minimum fields.", "blocking": True, "resume_action": {"action": "resume_provider_step", "step_id": step["id"]}})
+        return {"status": "waiting_input", "step_id": step["id"], "fields": fields}
     if result.get("ok"):
         receipt = result.get("receipt_digest") or _digest({"step": step["id"], "external_ref": result.get("external_ref"), "result": result})
+        if result.get("pending_finality"):
+            db.update("agentic_business_saga_steps", {"id": step["id"], "state": "claimed"}, {
+                "state": "executing", "claimed_by": None, "claimed_at": None, "updated_at": now,
+                "output": result, "evidence": {**(step.get("evidence") or {}), "approval_id": step.get("approval_id"), "provisional_receipt_digest": receipt, "external_ref": result.get("external_ref"), "worker": worker, "finality": "provider_pending"},
+            })
+            return {"status": "provider_pending", "step_id": step["id"], "external_effect": True, "external_ref": result.get("external_ref")}
         db.update("agentic_business_saga_steps", {"id": step["id"], "state": "claimed"}, {
             "state": "completed", "completed_at": now, "claimed_by": None, "claimed_at": None, "updated_at": now,
             "output": result, "evidence": {**(step.get("evidence") or {}), "approval_id": step.get("approval_id"), "receipt_digest": receipt, "worker": worker},
@@ -117,8 +130,24 @@ def predict_work(limit=200):
     return {"predictions": created}
 
 
+def reconcile_pending(limit=25):
+    base = _adapter_url(None)
+    if not base:
+        return {"checked": 0, "reason": "adapter_not_configured"}
+    rows = db.select("business_provider_executions", {"select": "id", "state": "eq.provider_pending", "order": "updated_at.asc", "limit": str(limit)}) or []
+    results = []
+    for row in rows:
+        request = urllib.request.Request(base.rstrip("/") + "/v1/business-saga/reconcile", data=json.dumps({"execution_id": row["id"]}).encode(), method="POST", headers={"content-type": "application/json", "x-fleet-secret": os.environ.get("FLEET_SHARED_SECRET", "")})
+        try:
+            with urllib.request.urlopen(request, timeout=45) as response:
+                results.append(json.loads(response.read().decode() or "{}"))
+        except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+            results.append({"status": "error", "error": str(exc)[:200]})
+    return {"checked": len(rows), "verified": sum(1 for item in results if item.get("status") == "verified"), "failed": sum(1 for item in results if item.get("status") == "failed")}
+
+
 def run_once():
-    return {"execution": execute_once(), "prediction": predict_work()}
+    return {"execution": execute_once(), "prediction": predict_work(), "reconciliation": reconcile_pending()}
 
 
 if __name__ == "__main__":

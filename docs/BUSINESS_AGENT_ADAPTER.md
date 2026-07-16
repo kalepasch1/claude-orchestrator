@@ -57,3 +57,18 @@ An error response uses `ok: false`, `retryable: true|false`, and a non-sensitive
 - Compensation operations require their own approval and authority check; an adapter may not infer permission from the original action.
 
 No adapter configuration means no external effect. This is intentional and is covered by automated tests.
+
+## Built-in provider gateway
+
+When `ORCHESTRATOR_WEB_URL` or `BUSINESS_AGENT_ADAPTER_URL` points at the orchestrator web application, the runner uses the built-in signed routes at `/v1/business-saga/execute` and `/v1/business-saga/reconcile`.
+
+The Connections UI supports encrypted, organization-scoped credential bundles for Stripe, DocuSign, Gusto, Plaid Transfer, and Avalara. Sandbox is always the default. A workflow must explicitly select production and must still satisfy its step approval and exact organizational-authority scope.
+
+- Stripe supports bounded payouts, refunds, invoice preparation, idempotency keys, signed events, and status reconciliation.
+- DocuSign supports version-pinned envelope issuance and HMAC-verified completion evidence.
+- Gusto supports employee records, payroll preparation, and payroll submission acknowledgements.
+- Plaid performs transfer authorization before creation and waits for settlement or funds-available finality.
+- Avalara creates uncommitted tax transactions and evidence; statutory filing remains fail-closed until a qualified filing provider or professional adapter is configured.
+- OpenAI Responses can facilitate non-binding internal preparation with strict structured output. It cannot authorize or represent an external effect.
+
+Provider-specific missing fields create a minimum human-input request in the Virtual Executive Team UI. Answering it updates only the waiting step and resumes the same idempotent saga.

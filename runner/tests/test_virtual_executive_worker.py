@@ -29,6 +29,13 @@ class VirtualExecutiveWorkerTests(unittest.TestCase):
   self.assertEqual(result['status'],'blocked')
   self.assertTrue(any(c.args[2].get('state')=='blocked' for c in update.call_args_list))
 
+ def test_external_step_waits_for_provider_finality(self):
+  step={'id':'s3','saga_id':'g3','operation':'submit_payroll','connector_provider':'payroll','external_effect':True,'state':'claimed','evidence':{},'attempt_count':1,'approval_id':'p1'}
+  with patch.object(worker.db,'rpc',return_value=[step]),patch.object(worker.db,'select',side_effect=[[{'id':'g3','agent_id':'a3'}],[{'id':'a3','agent_key':'payroll_controller'}]]),patch.object(worker,'_call_adapter',return_value={'ok':True,'pending_finality':True,'external_ref':'payroll-1','receipt_digest':'receipt'}),patch.object(worker.db,'update') as update:
+   result=worker.execute_once('worker')
+  self.assertEqual(result['status'],'provider_pending')
+  self.assertTrue(any(c.args[2].get('state')=='executing' for c in update.call_args_list))
+
  def test_prediction_is_idempotently_upserted(self):
   obligation={'id':'o1','organization_id':'org','contract_id':'c1','obligation':'Pay invoice','due_at':'2026-08-01T00:00:00Z','status':'open'}
   with patch.object(worker.db,'select',side_effect=[[obligation],[]]),patch.object(worker.db,'insert') as insert:

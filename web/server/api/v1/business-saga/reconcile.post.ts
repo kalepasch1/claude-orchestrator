@@ -1,0 +1,4 @@
+import{timingSafeEqual}from'node:crypto'
+import{reconcileProviderExecution}from'../../../utils/businessProviderFabric'
+const same=(a:string,b:string)=>{const x=Buffer.from(a),y=Buffer.from(b);return x.length===y.length&&timingSafeEqual(x,y)}
+export default defineEventHandler(async event=>{const supplied=getHeader(event,'x-fleet-secret')||'',expected=process.env.FLEET_SHARED_SECRET||'';if(!expected||!same(supplied,expected))throw createError({statusCode:401,message:'bad_fleet_secret'});const body=await readBody<any>(event);if(!body?.execution_id)throw createError({statusCode:400,message:'execution_id_required'});try{return await reconcileProviderExecution(body.execution_id)}catch(error:any){throw createError({statusCode:502,message:String(error?.message||'provider_reconciliation_failed').slice(0,200)})}})

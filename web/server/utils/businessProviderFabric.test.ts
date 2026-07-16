@@ -1,0 +1,12 @@
+import{createHmac}from'node:crypto'
+import{describe,expect,it}from'vitest'
+import{buildProviderRequest,canReviseExecutionInput,expandConnectedProviders,verifyDocuSignWebhook,verifyStripeWebhook}from'./businessProviderFabric'
+describe('business provider fabric',()=>{
+ it('maps vendor accounts to functional connector domains',()=>expect(expandConnectedProviders(['gusto','plaid','docusign','avalara'])).toEqual(expect.arrayContaining(['payroll','hris','banking','esign','tax'])))
+ it('builds idempotent Stripe payout requests without arbitrary URLs',()=>{const request:any=buildProviderRequest('stripe','send_payment',{amount:2500,currency:'usd',description:'invoice'},{api_key:'rk_test'},'step-key');expect(request.url).toBe('https://api.stripe.com/v1/payouts');expect(request.headers['idempotency-key']).toBe('step-key');expect(request.body.get('amount')).toBe('2500')})
+ it('pins DocuSign envelopes to an allowlisted host',()=>{expect(()=>buildProviderRequest('docusign','issue_contract',{envelope:{}},{access_token:'x',account_id:'a',base_url:'https://evil.test'},'k')).toThrow('invalid_docusign_base_url')})
+ it('keeps statutory filing fail closed',()=>expect(()=>buildProviderRequest('avalara','file_tax_return',{}, {},'k')).toThrow('statutory_filing_provider_or_professional_required'))
+ it('allows input completion only after a missing-input failure',()=>{expect(canReviseExecutionInput({request_digest:'old',state:'failed',error_code:'missing_provider_input:payroll_id'},'new')).toBe(true);expect(canReviseExecutionInput({request_digest:'old',state:'failed',error_code:'provider_declined'},'new')).toBe(false);expect(canReviseExecutionInput({request_digest:'old',state:'provider_pending'},'new')).toBe(false)})
+ it('verifies Stripe timestamped signatures and rejects replay-age',()=>{const raw='{"id":"evt"}',timestamp=Math.floor(Date.now()/1000),secret='whsec_test',sig=createHmac('sha256',secret).update(`${timestamp}.${raw}`).digest('hex'),header=`t=${timestamp},v1=${sig}`;expect(verifyStripeWebhook(raw,header,secret)).toBe(true);expect(verifyStripeWebhook(raw,header,secret,Date.now()+600000)).toBe(false)})
+ it('verifies DocuSign HMAC signatures',()=>{const raw='{"event":"envelope-completed"}',secret='secret',sig=createHmac('sha256',secret).update(raw).digest('base64');expect(verifyDocuSignWebhook(raw,sig,secret)).toBe(true);expect(verifyDocuSignWebhook(raw,'bad',secret)).toBe(false)})
+})

@@ -30,7 +30,7 @@ export function hashState(value: string) { return createHash('sha256').update(va
 export function pkceChallenge(verifier: string) { return createHash('sha256').update(verifier).digest('base64url') }
 
 export async function requireConnectorUser(event: H3Event) { const user = await serverSupabaseUser(event); if (!user) throw createError({ statusCode: 401, message: 'authentication_required' }); return user }
-export function providerConfigured(provider: string) { const definition = CONNECTOR_BY_ID[provider]; if (definition?.auth === 'api-key' || provider === 'remote-mcp') return !!process.env.CONNECTOR_VAULT_KEY; const config = OAUTH_CONFIG[provider]; return !!(config && process.env[config.clientEnv] && process.env.CONNECTOR_VAULT_KEY) }
+export function providerConfigured(provider: string) { const definition = CONNECTOR_BY_ID[provider]; if (['api-key','service-account'].includes(String(definition?.auth)) || provider === 'remote-mcp') return !!process.env.CONNECTOR_VAULT_KEY; const config = OAUTH_CONFIG[provider]; return !!(config && process.env[config.clientEnv] && process.env.CONNECTOR_VAULT_KEY) }
 export function safeAccount(row: any) { const { access_token_ciphertext, refresh_token_ciphertext, ...safe } = row; return { ...safe, has_access_token: !!access_token_ciphertext, has_refresh_token: !!refresh_token_ciphertext } }
 
 export async function beginOAuth(event: H3Event, provider: string, scopes: string[], resource?: string) {
