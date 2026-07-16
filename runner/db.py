@@ -503,6 +503,22 @@ _done_cache_lock = threading.Lock()
 _done_cache = {"slugs": set(), "ts": 0.0, "ttl": 60.0}
 
 
+def parse_dep_ref(ref):
+    """Parse a dependency reference into (project_name, slug).
+
+    - 'apparently:curation-layer-land' → ('apparently', 'curation-layer-land')
+    - 'my-task' → (None, 'my-task')
+    - 'proj-1:my-task:v2' → ('proj-1', 'my-task:v2')
+    """
+    if not ref or not isinstance(ref, str):
+        return None, None
+    ref = ref.strip()
+    if ':' not in ref:
+        return None, ref
+    project, _, slug = ref.partition(':')
+    return project.strip() or None, slug.strip()
+
+
 def _done_slugs():
     """Return cached set of DONE/MERGED slugs, refreshing every 60s.
 
@@ -551,6 +567,87 @@ def invalidate_done_cache():
     with _done_cache_lock:
         _done_cache["slugs"] = set()
         _done_cache["ts"] = 0.0
+
+
+def deps_satisfied(deps, done_cache=None):
+    """Check if all dependencies are satisfied (in DONE/MERGED state).
+
+    Supports both bare slugs (project-local) and cross-project refs (project:slug).
+    Cross-project deps not in the cache are queried from the DB. Missing projects
+    or tasks are logged as debug messages; task stays QUEUED (fail-soft).
+
+    Args:
+        deps: list of dependency refs (bare slugs or 'project:slug' format)
+        done_cache: set of done slugs (from _done_slugs()). If None, fetches fresh.
+
+    Returns: True if all deps are satisfied, False otherwise.
+    """
+    import logging
+    log = logging.getLogger("db")
+
+    if not deps:
+        return True
+
+    if done_cache is None:
+        done_cache = _done_slugs()
+
+    # Build project_name -> project_id map for cross-project lookups
+    proj_map = {}
+    try:
+        for p in (select("projects", {"select": "id,name"}) or []):
+            if p.get("name") and p.get("id"):
+                proj_map[p["name"]] = p["id"]
+    except Exception:
+        pass
+
+    for dep in deps:
+        if not dep or not isinstance(dep, str):
+            continue
+
+        proj_name, slug = parse_dep_ref(dep)
+
+        if proj_name is None:
+            # Bare slug: check done cache (backward compat, project-local)
+            if dep not in done_cache:
+                log.debug(f"dep not satisfied: {slug} (not in done cache)")
+                return False
+        else:
+            # Cross-project ref: check cache first, then DB
+            qualified = f"{proj_name}:{slug}"
+            if qualified in done_cache:
+                continue
+
+            # Not in cache: query DB for this specific cross-project task
+            if proj_name not in proj_map:
+                log.debug(f"dep not satisfied: {proj_name}:{slug} (unknown project)")
+                return False
+
+            try:
+                # Check if task exists and is DONE/MERGED
+                rows = select("tasks", {
+                    "select": "state",
+                    "project_id": f"eq.{proj_map[proj_name]}",
+                    "slug": f"eq.{slug}",
+                    "state": "in.(DONE,MERGED)",
+                    "limit": "1"
+                }) or []
+
+                if not rows:
+                    # Task not found in DONE/MERGED state; log what state it's in
+                    state_rows = select("tasks", {
+                        "select": "state",
+                        "project_id": f"eq.{proj_map[proj_name]}",
+                        "slug": f"eq.{slug}",
+                        "limit": "1"
+                    }) or []
+                    state = state_rows[0].get("state", "unknown") if state_rows else "not found"
+                    log.debug(f"dep not satisfied: {proj_name}:{slug} (state={state})")
+                    return False
+            except Exception as e:
+                log.debug(f"dep not satisfied: {proj_name}:{slug} (lookup error: {e})")
+                return False
+
+    return True
 
 
 def claim_task(runner_id):
@@ -910,7 +1007,7 @@ def claim_task(runner_id):
                 occupied = active_by_project.get(pid, 0)
             if occupied >= _project_lane_limit(t):
                 continue
-        if all(d in done for d in (t.get("deps") or [])):
+        if deps_satisfied(t.get("deps") or [], done):
             # optimistic claim: flip to RUNNING only if still QUEUED
             res = _req("PATCH", "/rest/v1/tasks",
                        body={"state": "RUNNING", "account": runner_id, "updated_at": "now()"},

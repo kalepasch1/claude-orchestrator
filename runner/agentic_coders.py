@@ -531,7 +531,15 @@ def pick(task, slot_index=0):
         except Exception:
             return float(c["cost"])
 
-    by_cost = sorted([c for c in usable if c["name"] != "claude"], key=lambda c: (adjusted_cost(c), -c["cap"]))
+    try:
+        import provider_rate_tracker as _prt
+        def _throttle_penalty(c):
+            return 100 if _prt.is_throttled(c.get("name", "")) else 0
+    except Exception:
+        def _throttle_penalty(c):
+            return 0
+    by_cost = sorted([c for c in usable if c["name"] != "claude"],
+                     key=lambda c: (_throttle_penalty(c), adjusted_cost(c), -c["cap"]))
 
     forced = str(task.get("force_coder") or "").strip()
     if forced:
