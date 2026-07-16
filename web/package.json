@@ -6,8 +6,8 @@
     "dev": "nuxt dev",
     "postinstall": "npm run verify:deps",
     "predev": "npm run verify:deps",
-    "prebuild": "npm run verify:deps && npm run verify:navigation && npm run verify:journeys",
-    "pretest": "npm run verify:deps && npm run verify:navigation && npm run verify:journeys",
+    "prebuild": "npm run verify:deps && npm run verify:navigation && npm run verify:journeys && npm run verify:experience",
+    "pretest": "npm run verify:deps && npm run verify:navigation && npm run verify:journeys && npm run verify:experience",
     "build": "nuxt build",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
@@ -16,7 +16,8 @@
     "verify:deps": "node scripts/verify-dependency-graph.mjs",
     "verify:navigation": "node scripts/verify-navigation-contract.mjs",
     "verify:journeys": "node scripts/verify-journey-contracts.mjs",
-    "verify:embeds": "node scripts/verify-embed-contracts.mjs"
+    "verify:embeds": "node scripts/verify-embed-contracts.mjs",
+    "verify:experience": "node scripts/verify-experience-contracts.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

@@ -1,5 +1,5 @@
 {
-  "version": 5,
+  "version": 6,
   "journeys": [
     { "name": "command-center", "route": "/", "file": "pages/index.vue", "mustContain": ["What should we accomplish?", "/api/tasks/intake", "Autopilot"] },
     { "name": "connections", "route": "/connectors", "file": "pages/connectors.vue", "mustContain": ["Connections", "Connect"] },
@@ -12,7 +12,7 @@
     { "file": "components/CapabilityRoutePlanner.vue", "mustContain": ["Explain route", "Record successful outcome"] },
     { "file": "components/CapabilityEvolution.vue", "mustContain": ["Simulate adaptive interface", "Inspect and refresh now", "Save privacy controls", "Apply accessibility profile"] },
     { "file": "components/PreActionGuidance.vue", "mustContain": ["Continue with guardrails"] },
-    { "file": "components/UniversalCommand.vue", "mustContain": ["Universal capability command", "Open canonical destination", "Least privilege"] },
+    { "file": "components/UniversalCommand.vue", "mustContain": ["Universal capability command", "Continue with this outcome", "Least privilege", "command/context", "madeus:pending-command"] },
     { "file": "components/ExecutionConstitution.vue", "mustContain": ["Capture current world", "Issue temporary scoped grant", "Sign and publish capability", "Compile governed consensus", "Create governed warranty", "Run certification", "Capture release state", "Preview latest replay"] },
     { "file": "components/ConstitutionalAutonomy.vue", "mustContain": ["Establish institution", "Record privacy-safe evidence", "Propose evidence-weighted allocation", "Issue committed credential", "Generate least-disruptive response", "Compile and contract-test policy", "Seal encrypted continuity capsule", "Run adversarial contract matrix"] },
     { "file": "components/FederationAssurance.vue", "mustContain": ["Propose sovereign trust", "Prepare selective evidence exchange", "Update causal twin", "Attest latest execution chain", "Delegate attenuated authority", "Propose verified-outcome contract", "Compile operating memory", "Predict inclusion barriers", "Convene adversarial court"] }
