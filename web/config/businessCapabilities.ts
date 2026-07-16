@@ -9,6 +9,7 @@ export const BUSINESS_DOMAINS = [
   { id: 'creative' as const, label: 'Studio', icon: '✦', summary: 'Motion, Photoshop-class image editing, 3D, and governed production.' },
 ] as const
 export const BUSINESS_CAPABILITIES: BusinessCapability[] = [
+  { id: 'autonomous-fabric', domain: 'operations', name: 'Contract-to-operations fabric', summary: 'Compile signed clauses into idempotent workforce, finance, tax, security, procurement, CRM, renewal, payment, and legal action graphs.', outcome: 'Exception-only autonomous operating graph', risk: 'high', action: 'autonomous_operations', requires: [] },
   { id: 'operating-plan', domain: 'operations', name: 'Autonomous operating plan', summary: 'Continuously rank work by causal value, urgency, dependencies, risk, and attention cost.', outcome: 'A proof-backed next-best-action plan', risk: 'medium', action: 'operating_plan', requires: [] },
   { id: 'line-health', domain: 'operations', name: 'Business-line health', summary: 'Detect constraint, margin, delivery, compliance, and customer-risk changes before they become incidents.', outcome: 'Exception-only operating brief', risk: 'low', action: 'business_health', requires: [] },
   { id: 'onboard', domain: 'workforce', name: 'Employee onboarding', summary: 'Create a role-specific, jurisdiction-aware onboarding plan and cross-populate the legal evidence pack.', outcome: 'Onboarding case + governed NDA draft', risk: 'high', action: 'employee_onboarding', requires: ['employee_name', 'employee_email', 'role_title', 'jurisdiction'] },
