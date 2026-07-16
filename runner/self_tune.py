@@ -25,6 +25,7 @@ BAD_INTEGRATE = float(os.environ.get("SELFTUNE_BAD", "0.25"))    # merge rate th
 
 
 def _stats(project):
+    """Compute recent test-pass and integration rates for a project."""
     rows = db.select("outcomes", {"select": "tests_passed,integrated",
                                   "project": f"eq.{project}",
                                   "order": "created_at.desc", "limit": str(WINDOW)}) or []
