@@ -1,3 +1,4 @@
+# conftest.py provides shared fixtures for all runner tests.
 """Suite-wide isolation for tests that mutate process-global state."""
 import os
 import sys
