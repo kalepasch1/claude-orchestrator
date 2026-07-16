@@ -169,6 +169,17 @@ def test_commit_overlay_materializes_exact_tree_without_worktree_registration(tm
     assert git(repo, "worktree", "list", "--porcelain") == before
 
 
+def test_commit_overlay_omits_external_dependency_link_for_explicit_runtime_mount(tmp_path):
+    repo = init_repo(tmp_path)
+    os.symlink("/outside/mutable/node_modules", repo / "node_modules")
+    (repo / "app.py").write_text("VALUE = 1\n")
+    git(repo, "add", "."); git(repo, "commit", "-m", "tracked runtime link")
+    with commit_overlay.checkout(str(repo), "HEAD") as overlay:
+        assert not os.path.lexists(os.path.join(overlay["path"], "node_modules"))
+        assert overlay["omitted_runtime_links"] == ["node_modules"]
+        assert os.path.isfile(os.path.join(overlay["path"], "app.py"))
+
+
 def test_merge_qa_uses_overlay_and_never_registers_worktree(tmp_path):
     repo = init_repo(tmp_path)
     (repo / "value.txt").write_text("green\n")

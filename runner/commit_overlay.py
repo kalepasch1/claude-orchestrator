@@ -31,6 +31,12 @@ def _safe_member(member, destination):
     return True
 
 
+def _omittable_runtime_link(member):
+    normalized = member.name.strip("/")
+    return (normalized in {"node_modules", ".env", ".env.local"}
+            or normalized.endswith("/node_modules"))
+
+
 def materialize(repo, ref, destination=None):
     started = time.monotonic()
     resolved = _git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")
@@ -42,9 +48,13 @@ def materialize(repo, ref, destination=None):
     archive = subprocess.Popen(["git", "archive", "--format=tar", commit], cwd=repo,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     files = []
+    omitted_runtime_links = []
     try:
         with tarfile.open(fileobj=archive.stdout, mode="r|") as stream:
             for member in stream:
+                if not _safe_member(member, destination) and _omittable_runtime_link(member):
+                    omitted_runtime_links.append(member.name)
+                    continue
                 if not _safe_member(member, destination):
                     raise RuntimeError(f"unsafe archive member: {member.name}")
                 stream.extract(member, destination, set_attrs=True)
@@ -58,6 +68,7 @@ def materialize(repo, ref, destination=None):
         shutil.rmtree(destination, ignore_errors=True)
         raise
     return {"path": destination, "commit": commit, "files": sorted(files),
+            "omitted_runtime_links": sorted(omitted_runtime_links),
             "duration_ms": int((time.monotonic() - started) * 1000),
             "registered_worktree": False}
 
