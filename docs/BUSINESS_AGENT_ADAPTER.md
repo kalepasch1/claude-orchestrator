@@ -92,3 +92,18 @@ CONNECTOR_HSM_SIGNER_TOKEN=deployment-secret
 ```
 
 The broker response must bind the credential digest, reference, lease ID, expiry, nonce, and key ID under an Ed25519 signature. Leases over 15 minutes, expired leases, nonce mismatches, digest mismatches, and invalid signatures fail closed. Only the credential reference and lease evidence are persisted.
+
+## Provider autonomy mesh
+
+The autonomy layer adds eight controls without widening provider authority:
+
+- Verified mappings contribute schema fingerprints and HMAC field-name tokens to a privacy-epoch aggregate. No values or reversible source paths leave the organization, and a federated mapping requires five organizations, five observations, and 90% confidence before use.
+- Every eligible account is scored in a counterfactual route plan with `mutation_count=0`; the selected provider is still invoked once through the existing idempotent execution ledger.
+- OpenAPI adapters receive an HSM-signed, default-deny capability proof. Live sandbox conformance, generated valid/boundary/negative schema cases, and the capability proof must all pass before activation.
+- Credential leasing prefers a platform workload-identity JWT read from `CONNECTOR_WORKLOAD_IDENTITY_TOKEN_FILE`. The JWT must use an allowlisted issuer and audience and expire within 15 minutes. Static broker bearer tokens require `CONNECTOR_ALLOW_LEGACY_BROKER_TOKEN=true`.
+- Randomized outcomes also run through a sequential, baseline-adjusted analysis with an explicit alpha-spending budget. An early promotion or harm stop is recorded; repeated peeking cannot silently change the decision rule.
+- Finality outcomes build an observed settlement dependency graph and attach the lowest-failure alternate connector where available.
+- Regulatory rules compile into a small allowlisted invariant language (`required`, `equals`, `one_of`, `minimum`, `maximum`, `date_not_past`). Active rules require an HTTPS source, effective date, source digest, and professional-review attestation.
+- The Provider Intelligence UI exposes these proofs, decisions, dependency risks, workload attestations, and regulatory coverage instead of reducing them to a task-complete badge.
+
+The broker must independently validate the workload token signature and exchange it for a provider lease. The orchestrator validates claims before exchange and the returned HSM signature afterward; neither check substitutes for the other.
