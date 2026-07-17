@@ -89,6 +89,10 @@ class AccountPool:
             self._state_ts = now
 
     def _load_cfg(self):
+        """Load account configuration from Supabase (primary) or local JSON (fallback).
+
+        Accounts are ordered by priority for failover. Machine-affinity filtering
+        ensures each Mac only uses accounts assigned to it (or unassigned global ones)."""
         # 1) Supabase `accounts` table is the source of truth (visible in dashboard,
         #    survives restarts, set by Cowork). Ordered by priority asc = failover order.
         try:
