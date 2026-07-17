@@ -16,6 +16,10 @@ import db
 
 
 def current():
+    """Return the active in-progress version record, or a default v1 stub if none exists.
+
+    The fallback ensures callers always get a dict with at least a 'version' key,
+    even on a fresh install before any version row has been inserted."""
     v = db.select("versions", {"select": "*", "status": "eq.in_progress",
                                "order": "opened_at.desc", "limit": "1"}) or []
     return v[0] if v else {"version": "v1"}
