@@ -43,3 +43,11 @@ The `tomorrow` project row already points at `/Users/kpasch/Documents/tomorrow/t
   then add a Database Webhook on `approvals` INSERT → `slack-notify`.
 - **Schedules:** point the v2 `scripts/setup-scheduler.sh` at this runner for the 2–5 AM
   research window, overnight deploys, nightly `self_review.py` + `anomaly.py` + `optimizer`.
+
+## Runtime location note
+
+On macOS machines where Full Disk Access resets have caused crash-loops, the runner
+should execute from `~/claude-orchestrator` (outside `~/Documents`) rather than the
+project `repo_path`. See `docs/RUNTIME-LOCATION.md` for the full setup: symlinked
+`.env`, updated launchd plists, and `.zprofile` autostart. Project `repo_path` values
+remain under `~/Documents` for cross-machine compatibility.
