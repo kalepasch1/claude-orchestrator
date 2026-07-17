@@ -15,8 +15,9 @@ import db
 
 
 PROTECTED_STATES = ("RUNNING", "RETRY")
+# Approval kinds that indicate an in-flight merge; their slugs are protected from GC.
 MERGE_KINDS = ("verify", "material", "integrate")
-GIT_TIMEOUT = int(os.environ.get("WORKTREE_GC_GIT_TIMEOUT", "90"))
+GIT_TIMEOUT = int(os.environ.get("WORKTREE_GC_GIT_TIMEOUT", "90"))  # seconds
 
 
 def _run_git(args, repo):
