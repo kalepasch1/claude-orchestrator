@@ -76,7 +76,10 @@ URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 HTTP_TIMEOUT = float(os.environ.get("ORCH_SUPABASE_TIMEOUT", "15") or 15)
 HTTP_RETRIES = int(os.environ.get("ORCH_SUPABASE_RETRIES", "1") or 1)
-HTTP_RETRY_STATUSES = {429, 500, 502, 503, 504, 521, 522, 523}  # incl. Cloudflare origin-down codes so monitors ride through Supabase capacity blips instead of silently no-op'ing
+# Retry on transient HTTP errors: 429 (rate-limited), 5xx (server errors),
+# plus Cloudflare origin-down codes (521-523) so monitors ride through
+# Supabase capacity blips instead of silently no-op'ing.
+HTTP_RETRY_STATUSES = {429, 500, 502, 503, 504, 521, 522, 523}
 RECOVERY_PREFIX = "recover-missing-branch-"
 CANARY_PREFIX = "canary-"
 IMPROVEMENT_PREFIX = "improve-"
