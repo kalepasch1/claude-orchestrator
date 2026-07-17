@@ -51,11 +51,13 @@ PRESSURE_CRIT = int(os.environ.get("MEDIC_PRESSURE_CRIT_PCT", "12"))   # free% b
 
 
 def _now():
-    return datetime.datetime.utcnow()
+    """Return current UTC time. Uses timezone-aware constructor (utcnow is deprecated >=3.12)."""
+    return datetime.datetime.now(datetime.timezone.utc)
 
 
 def journal(bot, action, detail="", durable=False):
-    row = {"at": _now().isoformat() + "Z", "bot": bot, "action": action,
+    ts = _now().isoformat().replace("+00:00", "Z")  # compact UTC suffix
+    row = {"at": ts, "bot": bot, "action": action,
            "detail": str(detail)[:300], "durable": bool(durable)}
     print(f"medic[{bot}] {action} {str(detail)[:120]}", flush=True)
     try:
@@ -236,8 +238,8 @@ def _recent_events(minutes):
         for line in open(JOURNAL):
             try:
                 r = json.loads(line)
-                t = datetime.datetime.fromisoformat(r["at"].replace("Z", ""))
-                if t >= cutoff:
+                t = datetime.datetime.fromisoformat(r["at"].replace("Z", "+00:00"))
+                if t.replace(tzinfo=None) >= cutoff.replace(tzinfo=None):
                     events.append((r.get("bot", ""), r.get("action", ""), r.get("detail", "")))
             except Exception:
                 continue
