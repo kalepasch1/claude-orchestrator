@@ -37,5 +37,8 @@ export function createRegulatoryPolicyClient(options: { baseUrl: string; fleetSe
     coordinateTransaction(input: Record<string, any>) { return invoke({ action: 'coordinate_transaction', ...input }) },
     createComplianceReceipt(input: Record<string, any>) { return invoke({ action: 'runtime_receipt', ...input }) },
     simulateCustomerOutcomes(input: Record<string, any>) { return invoke({ action: 'customer_outcome_twin', ...input }) },
+    prepareAtomicTransaction(input: Record<string, any>) { return invoke({ action: 'atomic_transaction', ...input }) },
+    verifyZkProof(input: Record<string, any>) { return invoke({ action: 'verify_zk_proof', ...input }) },
+    recordCapacityPerformance(input: Record<string, any>) { return invoke({ action: 'capacity_performance', ...input }) },
   }
 }

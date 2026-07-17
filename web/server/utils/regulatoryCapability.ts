@@ -8,6 +8,7 @@ import { executionCockpit, runRegulatoryExecutionAutopilot } from './regulatoryE
 import { runRegulatorySovereigntyAutopilot, sovereigntyCockpit } from './regulatorySovereignty'
 import { immuneSystemCockpit, runRegulatoryImmuneAutopilot } from './regulatoryImmuneSystem'
 import { proofMarketCockpit } from './regulatoryProofMarket'
+import { atomicAssuranceCockpit } from './regulatoryAtomicAssurance'
 
 type ActivitySource = {
   source_type?: string
@@ -356,6 +357,7 @@ export async function regulatoryCockpit(user: any) {
   const sovereignty = await sovereigntyCockpit(organizationId)
   const immune = await immuneSystemCockpit(organizationId)
   const proofMarket = await proofMarketCockpit(organizationId)
+  const atomicAssurance = await atomicAssuranceCockpit(organizationId)
   let { data: profile } = await sb.from('regulatory_capability_profiles').select('*').eq('organization_id', organizationId).maybeSingle()
   if (!profile) {
     const created = await sb.from('regulatory_capability_profiles').upsert({ organization_id: organizationId, updated_by: user.id }).select().single()
@@ -387,6 +389,7 @@ export async function regulatoryCockpit(user: any) {
     sovereignty,
     immune,
     proof_market: proofMarket,
+    atomic_assurance: atomicAssurance,
     summary: {
       active_relationships: (relationships.data || []).filter((item: any) => item.status === 'active').length,
       application_ready: (paths.data || []).filter((item: any) => item.simulation_status === 'application_ready').length,

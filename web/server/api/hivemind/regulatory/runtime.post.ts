@@ -6,6 +6,7 @@ import { saveExecutionAction } from '../../../utils/regulatoryExecution'
 import { saveSovereigntyAction } from '../../../utils/regulatorySovereignty'
 import { saveImmuneSystemAction } from '../../../utils/regulatoryImmuneSystem'
 import { saveProofMarketAction } from '../../../utils/regulatoryProofMarket'
+import { saveAtomicAssuranceAction } from '../../../utils/regulatoryAtomicAssurance'
 
 function authorized(event: any) {
   const expected = Buffer.from(process.env.FLEET_SHARED_SECRET || '')
@@ -32,5 +33,8 @@ export default defineEventHandler(async event => {
   if (body.action === 'coordinate_transaction') return saveProofMarketAction(organizationId, 'coordinate_transaction', body)
   if (body.action === 'runtime_receipt') return saveProofMarketAction(organizationId, 'runtime_receipt', body)
   if (body.action === 'customer_outcome_twin') return saveProofMarketAction(organizationId, 'customer_outcome_twin', body)
+  if (body.action === 'atomic_transaction') return saveAtomicAssuranceAction(organizationId, 'atomic_transaction', body)
+  if (body.action === 'verify_zk_proof') return saveAtomicAssuranceAction(organizationId, 'verify_zk_proof', body)
+  if (body.action === 'capacity_performance') return saveAtomicAssuranceAction(organizationId, 'capacity_performance', body)
   throw createError({ statusCode: 400, message: 'unknown_regulatory_runtime_action' })
 })

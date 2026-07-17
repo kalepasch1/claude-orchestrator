@@ -20,6 +20,7 @@ import { saveExecutionAction } from '../../utils/regulatoryExecution'
 import { saveSovereigntyAction } from '../../utils/regulatorySovereignty'
 import { saveImmuneSystemAction } from '../../utils/regulatoryImmuneSystem'
 import { saveProofMarketAction } from '../../utils/regulatoryProofMarket'
+import { saveAtomicAssuranceAction } from '../../utils/regulatoryAtomicAssurance'
 
 export default defineEventHandler(async event => {
   const user = await requireConnectorUser(event)
@@ -85,6 +86,10 @@ export default defineEventHandler(async event => {
   if (['privacy_passport','coordinate_transaction','counterparty_order','provider_swarm','causal_memory','customer_outcome_twin','runtime_receipt','capacity_reservation'].includes(body?.action)) {
     const context = await organizationContext(user); requireOrgAdmin(context)
     return saveProofMarketAction(context.membership.organization_id, body.action, body)
+  }
+  if (['register_zk_verifier','verify_zk_proof','atomic_transaction','purpose_consent','proof_challenge','liability_attribution','unit_economics','customer_remedy','capacity_performance'].includes(body?.action)) {
+    const context = await organizationContext(user); requireOrgAdmin(context)
+    return saveAtomicAssuranceAction(context.membership.organization_id, body.action, body)
   }
   throw createError({ statusCode: 400, message: 'unknown_regulatory_action' })
 })
