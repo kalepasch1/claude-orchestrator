@@ -8,6 +8,16 @@ branches are free to merge and disk stays clean.
 
 Runs ON THE RUNNER MACHINE only (paths must match — never from a sandbox with remapped paths). Safe:
 only removes worktrees whose task is in a terminal/queued state, never a RUNNING one.
+
+Safety invariants:
+  - RUNNING and RETRY tasks are always protected (see PROTECTED_STATES).
+  - Pending/approved merge approvals are also protected to avoid racing the merge handler.
+  - Before removing a worktree, the branch is pushed to origin (unless ORCH_SHARE_AGENT_BRANCHES
+    is disabled) so work is never lost — this eliminated the recover-missing-branch churn.
+
+Environment variables:
+  WORKTREE_GC_GIT_TIMEOUT   Max seconds for any single git subprocess (default: 90).
+  ORCH_SHARE_AGENT_BRANCHES Push agent branches to origin before GC (default: true).
 """
 import os, sys, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
