@@ -19,6 +19,7 @@ LEDGER = os.path.join(HOME, "cost.jsonl")
 PRICES = {
     "claude-haiku-4-5-20251001": (1.0, 5.0),
     "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-sonnet-5": (3.0, 15.0),
     "claude-opus-4-8": (15.0, 75.0),
 }
 _IN = re.compile(r"(input|prompt)[ _]tokens[\"':\s]+([0-9,]+)", re.I)
