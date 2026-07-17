@@ -21,6 +21,7 @@ PRICES = {
     "claude-sonnet-4-6": (3.0, 15.0),
     "claude-sonnet-5": (3.0, 15.0),
     "claude-opus-4-8": (15.0, 75.0),
+    "claude-fable-5": (3.0, 15.0),
 }
 _IN = re.compile(r"(input|prompt)[ _]tokens[\"':\s]+([0-9,]+)", re.I)
 _OUT = re.compile(r"(output|completion)[ _]tokens[\"':\s]+([0-9,]+)", re.I)
