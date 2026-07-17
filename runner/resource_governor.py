@@ -579,5 +579,13 @@ def govern():
     return g
 
 
+def stats() -> dict:
+    """Return a snapshot of current resource state for observability."""
+    g = dashboard_gauge()
+    g["current_limit"] = current_limit()
+    g["ceiling"] = _ceiling()
+    return g
+
+
 if __name__ == "__main__":
     print(json.dumps(govern()))
