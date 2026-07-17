@@ -6,10 +6,11 @@ Slice-3: eliminates manual branch handling that causes inconsistencies and merge
   - Auto-deletes merged/abandoned branches after a grace period
   - Auto-rebases stale branches onto fresh base to prevent conflicts
   - Enforces naming conventions (agent/<slug>)
+  - Cleans up stale worktrees that block branch operations
 
 Runs periodically via the runner loop. Only operates on local repos.
 """
-import datetime, os, subprocess, sys
+import datetime, os, subprocess, sys, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import branch_naming
@@ -19,6 +20,21 @@ GRACE_HOURS = int(os.environ.get("ORCH_BRANCH_GRACE_HOURS", "24"))
 GIT_TIMEOUT = int(os.environ.get("ORCH_GIT_TIMEOUT", "60"))
 BRANCH_PREFIX = "agent/"
 
+# Maximum slug length to prevent filesystem/git issues
+MAX_SLUG_LENGTH = int(os.environ.get("ORCH_MAX_SLUG_LENGTH", "200"))
+# Pattern for valid slug characters
+_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
+
+
+def _log_info(msg):
+    """Structured log output."""
+    print(f"git_auto_branch: {msg}")
+
+
+def _log_warn(msg):
+    """Warning-level log output."""
+    print(f"git_auto_branch [WARN]: {msg}")
+
 
 def _git(args, repo):
     """Run a git command, return (stdout, ok)."""
@@ -26,8 +42,31 @@ def _git(args, repo):
         r = subprocess.run(["git"] + args, cwd=repo, capture_output=True,
                            text=True, timeout=GIT_TIMEOUT)
         return r.stdout.strip(), r.returncode == 0
-    except Exception:
+    except subprocess.TimeoutExpired:
+        _log_warn(f"git timeout ({GIT_TIMEOUT}s) for: git {' '.join(args[:3])}")
         return "", False
+    except Exception as exc:
+        _log_warn(f"git error for {args[:3]}: {exc}")
+        return "", False
+
+
+def validate_slug(slug):
+    """Validate a branch slug. Returns (ok, reason)."""
+    if not slug:
+        return False, "empty slug"
+    if len(slug) > MAX_SLUG_LENGTH:
+        return False, f"slug exceeds {MAX_SLUG_LENGTH} chars ({len(slug)})"
+    if slug.startswith("-") or slug.startswith("."):
+        return False, "slug must not start with - or ."
+    if slug.endswith(".lock"):
+        return False, "slug must not end with .lock (git restriction)"
+    if ".." in slug:
+        return False, "slug must not contain .. (git restriction)"
+    # Allow the common slug pattern but warn on unusual chars
+    if not _SLUG_RE.match(slug):
+        # Don't reject — many existing slugs have unusual patterns — just flag it
+        _log_warn(f"slug has unusual characters: {slug[:80]}")
+    return True, "valid"
 
 
 def _active_slugs():
@@ -60,6 +99,48 @@ def _done_slugs():
         return {r["slug"]: r.get("updated_at", "") for r in rows if r.get("slug")}
     except Exception:
         return {}
+
+
+def cleanup_stale_worktrees(repo):
+    """Prune git worktrees that reference missing directories, then remove
+    worktrees for terminal-state tasks. This prevents 'already checked out'
+    errors that block branch operations.
+    Returns count of worktrees removed."""
+    if not repo or not os.path.isdir(repo):
+        return 0
+    # First: let git prune broken worktree references
+    _git(["worktree", "prune"], repo)
+
+    out, ok = _git(["worktree", "list", "--porcelain"], repo)
+    if not ok:
+        return 0
+
+    active = _active_slugs()
+    terminal = {**_merged_slugs(), **_done_slugs()}
+
+    # Parse worktree list — format: "worktree <path>\nHEAD <sha>\nbranch refs/heads/<name>\n\n"
+    removed = 0
+    current_path = None
+    current_branch = None
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            current_path = line[len("worktree "):]
+            current_branch = None
+        elif line.startswith("branch refs/heads/"):
+            current_branch = line[len("branch refs/heads/"):]
+        elif line == "" and current_path and current_branch:
+            # End of a worktree entry — evaluate for removal
+            if current_branch.startswith(BRANCH_PREFIX):
+                slug = current_branch.removeprefix(BRANCH_PREFIX)
+                if slug not in active and slug in terminal:
+                    _, ok = _git(["worktree", "remove", "--force", current_path], repo)
+                    if ok:
+                        removed += 1
+                        _log_info(f"removed stale worktree: {current_path}")
+            current_path = None
+            current_branch = None
+
+    return removed
 
 
 def cleanup_merged_branches(repo):
@@ -95,12 +176,18 @@ def cleanup_merged_branches(repo):
         _, ok = _git(["branch", "-D", branch], repo)
         if ok:
             removed += 1
+            _log_info(f"deleted branch: {branch}")
     return removed
 
 
 def ensure_branch(repo, slug, base="master"):
     """Create a correctly-named branch for a task if it doesn't exist yet.
-    Returns the branch name or None on failure."""
+    Validates the slug before creating. Returns the branch name or None on failure."""
+    ok, reason = validate_slug(slug)
+    if not ok:
+        _log_warn(f"ensure_branch rejected slug: {reason}")
+        return None
+
     branch = f"{BRANCH_PREFIX}{slug}"
     # Check if branch already exists
     _, exists = _git(["rev-parse", "--verify", branch], repo)
@@ -109,10 +196,13 @@ def ensure_branch(repo, slug, base="master"):
     # Create from base
     _, ok = _git(["branch", branch, base], repo)
     if ok:
+        _log_info(f"created branch: {branch}")
         return branch
     # Base might need fetching
     _git(["fetch", "origin", base], repo)
     _, ok = _git(["branch", branch, f"origin/{base}"], repo)
+    if ok:
+        _log_info(f"created branch: {branch} (after fetch)")
     return branch if ok else None
 
 
@@ -165,8 +255,10 @@ def rebase_stale_branches(repo, base="master"):
         _, ok = _git(["rebase", base, branch], repo)
         if ok:
             rebased += 1
+            _log_info(f"rebased {branch} onto {base} (was {behind} commits behind)")
         else:
             _git(["rebase", "--abort"], repo)  # clean up failed rebase
+            _log_warn(f"rebase failed for {branch}, aborted")
     return rebased
 
 
@@ -175,19 +267,22 @@ def run():
     try:
         projects = db.select("projects", {"select": "id,name,repo_path,default_base"}) or []
     except Exception:
-        print("git_auto_branch: could not load projects")
-        return {"cleaned": 0, "rebased": 0}
+        _log_warn("could not load projects")
+        return {"cleaned": 0, "rebased": 0, "worktrees_removed": 0}
     total_cleaned = 0
     total_rebased = 0
+    total_worktrees = 0
     for p in projects:
         repo = p.get("repo_path")
         if not repo or not os.path.isdir(repo):
             continue
         base = p.get("default_base") or "master"
+        # Clean worktrees first — this unblocks branch deletion
+        total_worktrees += cleanup_stale_worktrees(repo)
         total_cleaned += cleanup_merged_branches(repo)
         total_rebased += rebase_stale_branches(repo, base)
-    print(f"git_auto_branch: cleaned {total_cleaned}, rebased {total_rebased}")
-    return {"cleaned": total_cleaned, "rebased": total_rebased}
+    _log_info(f"cleaned {total_cleaned}, rebased {total_rebased}, worktrees removed {total_worktrees}")
+    return {"cleaned": total_cleaned, "rebased": total_rebased, "worktrees_removed": total_worktrees}
 
 
 if __name__ == "__main__":
