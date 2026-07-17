@@ -41,3 +41,24 @@ def store(sig, project, slug, branch, summary):
                                    "branch": branch, "summary": summary[:1000]}, upsert=True)
     except Exception:
         pass
+
+
+def invalidate(sig=None, project=None):
+    """Remove cache entries by signature or project. Useful after schema changes or
+    force-rebuilds where stale cached results would cause silent regressions."""
+    try:
+        if sig:
+            db.delete("result_cache", {"signature": f"eq.{sig}"})
+        elif project:
+            db.delete("result_cache", {"project": f"eq.{project}"})
+    except Exception:
+        pass
+
+
+def stats():
+    """Return cache size and total hits for diagnostics."""
+    try:
+        rows = db.select("result_cache", {"select": "signature,hits"}) or []
+        return {"entries": len(rows), "total_hits": sum(r.get("hits", 0) or 0 for r in rows)}
+    except Exception:
+        return {"entries": 0, "total_hits": 0}
