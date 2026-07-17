@@ -102,6 +102,7 @@ PROJECT_PRIORITY_ORDER = {
 
 
 def _project_rank_name(name):
+    """Return numeric priority for *name* (lower = higher priority, 9 = default/unknown)."""
     return PROJECT_PRIORITY_ORDER.get(str(name or "").strip().lower(), 9)
 
 
