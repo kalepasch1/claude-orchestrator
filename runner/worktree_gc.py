@@ -22,6 +22,9 @@ GIT_TIMEOUT = int(os.environ.get("WORKTREE_GC_GIT_TIMEOUT", "90"))
 def _run_git(args, repo):
     try:
         return subprocess.run(args, cwd=repo, capture_output=True, text=True, timeout=GIT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        # Return a failed-looking result so callers degrade gracefully instead of crashing.
+        return subprocess.CompletedProcess(args, returncode=124, stdout="", stderr="git timeout")
     except TypeError:
         # Unit tests monkeypatch subprocess.run with a minimal signature.
         return subprocess.run(args, cwd=repo, capture_output=True, text=True)
