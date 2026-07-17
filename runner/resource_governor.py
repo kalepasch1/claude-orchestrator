@@ -82,6 +82,7 @@ os.makedirs(HOME, exist_ok=True)
 
 
 def _event(kind, value=None, detail="", action=""):
+    """Persist a resource-governor event to the DB for operator dashboards (fail-soft)."""
     try:
         db.insert("resource_events", {"kind": kind, "value": value, "detail": detail[:500], "action": action})
     except Exception:
