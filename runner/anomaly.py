@@ -20,6 +20,7 @@ def _rate(rows, pred):
 
 
 def check():
+    """Compare recent task outcomes against a baseline window and return alerts for metric spikes."""
     try:
         rows = db.select("outcomes", {"select": "*", "order": "created_at.desc", "limit": "300"}) or []
     except Exception as e:
