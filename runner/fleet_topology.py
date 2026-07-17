@@ -263,6 +263,7 @@ def current_capacity():
 
 
 def recommend_topology(target_tasks_hour=None):
+    """Suggest fleet sizing to meet *target_tasks_hour* throughput, or current demand if None."""
     try:
         return _get().recommend_topology(target_tasks_hour)
     except Exception:
