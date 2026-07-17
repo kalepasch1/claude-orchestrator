@@ -56,6 +56,11 @@ def gc_repo(repo):
         return 0
     main_worktree = os.path.abspath(repo)
     protected = _protected_slugs()
+    if protected is None:
+        # FAIL CLOSED: DB unreachable — we cannot know which tasks are RUNNING.
+        # Deleting on an empty set is what wiped executors' worktrees mid-task.
+        print(f"worktree_gc: task DB unavailable — failing closed, skipping GC for {repo}")
+        return 0
     out = _run_git(["git", "worktree", "list", "--porcelain"], repo).stdout
     removed = 0
     path = branch = None
