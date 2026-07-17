@@ -44,16 +44,22 @@ def _ram_hard():
 
 
 def _ram_floor_gb():
-    # Hard low-memory brake: if fewer than this many GB are available, PAUSE new task claims
-    # entirely (a single heavy task — e.g. an 8GB typecheck — could otherwise crash the Mac).
-    # 1.5GB was too low — macOS is already swapping/thrashing by then. Default 3GB, and the
-    # effective floor scales UP with machine size (see effective_floor_gb).
+    """Minimum free RAM (GB) before pausing new task claims entirely.
+
+    Hard low-memory brake: if fewer than this many GB are available, PAUSE new task claims
+    entirely (a single heavy task — e.g. an 8GB typecheck — could otherwise crash the Mac).
+    1.5GB was too low — macOS is already swapping/thrashing by then. Default 2GB, and the
+    effective floor scales UP with machine size (see effective_floor_gb).
+    """
     return float(os.environ.get("RAM_FLOOR_GB", "2.0"))
 
 
 def _per_task_gb():
-    # Headroom to reserve per concurrent task. A new task is only started if free RAM exceeds
-    # (floor + PER_TASK_GB), so concurrency is implicitly capped by available memory.
+    """RAM headroom (GB) reserved per concurrent task.
+
+    A new task is only started if free RAM exceeds (floor + PER_TASK_GB), so concurrency
+    is implicitly capped by available memory.
+    """
     return float(os.environ.get("PER_TASK_GB", "0.15"))
 
 
