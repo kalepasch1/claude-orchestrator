@@ -57,10 +57,13 @@ def _per_task_gb():
     return float(os.environ.get("PER_TASK_GB", "0.15"))
 
 
+# --- Pruning knobs (opt-in per category) ---
 LOG_KEEP_DAYS = int(os.environ.get("LOG_KEEP_DAYS", "7"))
 PRUNE_NODE_MODULES = os.environ.get("PRUNE_NODE_MODULES", "false").lower() == "true"
 PRUNE_DOCKER = os.environ.get("PRUNE_DOCKER", "false").lower() == "true"
 PRUNE_LIB_CACHES = os.environ.get("PRUNE_LIB_CACHES", "false").lower() == "true"
+# Predictive throttling: fit a trend line to recent disk_pct samples and throttle
+# preemptively if extrapolation breaches DISK_HARD within this many hours.
 PREDICT_WINDOW_H = float(os.environ.get("PREDICT_DISK_WINDOW_H", "2"))
 os.makedirs(HOME, exist_ok=True)
 
