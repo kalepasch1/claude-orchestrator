@@ -28,6 +28,8 @@ import os, json, time
 
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 CFG = os.path.join(HOME, "accounts.json")
+# Default cooldown period (seconds) before a rate-limited account becomes eligible again.
+DEFAULT_COOLDOWN_SECS = 4 * 3600  # 4 hours
 STATE = os.path.join(HOME, "accounts_state.json")
 # Re-probe interval after an account hits a limit. Most limits are SHORT (rolling 5-hour / session /
 # rate), not the weekly cap, so we re-try Claude every 20 min and use cheap models in the gap — this
