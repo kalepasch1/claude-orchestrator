@@ -49,6 +49,7 @@ def _load_env():
         os.environ.setdefault(k, v)
 
 def _ensure_tool_path():
+    """Prepend standard tool directories to PATH so git/python/brew are available in launchd."""
     paths = (
         "/opt/homebrew/bin",
         "/usr/local/bin",
