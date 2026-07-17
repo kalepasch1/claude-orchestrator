@@ -58,6 +58,11 @@ class _Slot:
         except Exception:
             return False
 
+    def __repr__(self):
+        return (f"_Slot(repo={os.path.basename(self.repo)!r}, "
+                f"age={self.age():.0f}s, hits={self.hits}, "
+                f"stale={self.is_stale()})")
+
 
 def _read_claude_md(repo):
     for name in _CLAUDE_MD_NAMES:
