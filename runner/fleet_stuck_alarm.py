@@ -30,13 +30,16 @@ STUCK_THRESHOLD_S = int(os.environ.get("ORCH_STUCK_ALARM_S", "900"))
 
 
 def _load_state():
+    """Load alarm state from local JSON (survives DB outages)."""
     try:
-        return json.load(open(STATE_FILE))
+        with open(STATE_FILE) as f:
+            return json.load(f)
     except Exception:
         return {}
 
 
 def _save_state(state):
+    """Persist alarm state to local JSON (fail-soft on permission errors)."""
     try:
         os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
         with open(STATE_FILE, "w") as f:
@@ -57,6 +60,7 @@ def _counts():
 
 
 def run():
+    """Check if the fleet is stuck (queued>0, running==0) and auto-remediate if sustained."""
     state = _load_state()
     try:
         queued, running = _counts()
