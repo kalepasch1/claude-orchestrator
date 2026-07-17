@@ -95,3 +95,10 @@ published as a database row that the *next* task claim reads fresh. No runner re
 queue drains, no global pause, and no in-flight task is ever required to make an improvement
 live. The only thing "in the background" means here is "not on the critical path of a task
 that's already running" — it does not mean "invisible" or "unmeasured."
+
+## Glossary
+
+- **Proactive loop**: Background job that discovers improvements without blocking task execution
+- **Hot-swap**: Updating routing or config mid-flight without restarting runners
+- **Spend cap**: Daily budget limit for model API calls, tracked per-runner
+- **Canary task**: Small safe improvement used to validate a coder routing path
