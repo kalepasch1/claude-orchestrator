@@ -43,6 +43,10 @@ def get(name: str) -> logging.Logger:
     return logging.getLogger(name)
 
 
-def with_task(logger: logging.Logger, task_id) -> logging.LoggerAdapter:
-    """Return a LoggerAdapter that prefixes messages with a task ID."""
-    return logging.LoggerAdapter(logger, {"task_id": task_id})
+def with_task(logger: logging.Logger, task_id: str = "") -> logging.LoggerAdapter:
+    """Return a LoggerAdapter that prefixes messages with a task ID.
+
+    Accepts None or empty string gracefully — returns an adapter with
+    an empty task_id so callers never need a guard.
+    """
+    return logging.LoggerAdapter(logger, {"task_id": task_id or ""})
