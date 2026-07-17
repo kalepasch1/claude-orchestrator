@@ -12,12 +12,14 @@ import subprocess
 
 
 def _git(repo, *args, input_text=None, timeout=180):
+    """Run a git command in the given repo, returning a CompletedProcess."""
     return subprocess.run(["git", *args], cwd=repo, input=input_text,
                           capture_output=True, text=True, timeout=timeout)
 
 
 def _safe(value):
     return re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "task")).strip("-.")[:120] or "task"
+    """Sanitize a value for use in git ref paths. Replaces non-alnum chars, strips dots, truncates to 120."""
 
 
 def patch_id(repo, commit):
