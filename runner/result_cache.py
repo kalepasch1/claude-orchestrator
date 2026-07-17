@@ -4,16 +4,18 @@ result_cache.py - semantic-ish result cache. Identical/near-identical tasks (sam
 same normalized prompt, same base commit) reuse the prior result instead of paying for a
 fresh run. Stored in Supabase `result_cache`.
 """
-import os, sys, hashlib, re, subprocess, datetime
+import os, sys, hashlib, re, subprocess, datetime, typing
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 
-def _norm(prompt):
+def _norm(prompt: typing.Optional[str]) -> str:
+    """Collapse whitespace and lowercase for prompt dedup comparison."""
     return re.sub(r"\s+", " ", (prompt or "").strip().lower())
 
 
-def signature(project, prompt, repo, base="main"):
+def signature(project: str, prompt: str, repo: str, base: str = "main") -> str:
+    """SHA-256 cache key from (project, base-commit, normalised prompt)."""
     try:
         commit = subprocess.check_output(["git", "rev-parse", base], cwd=repo, text=True).strip()
     except Exception:
@@ -22,20 +24,22 @@ def signature(project, prompt, repo, base="main"):
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def lookup(sig):
+def lookup(sig: str) -> typing.Optional[dict]:
+    """Return cached result row if present; bump hit counter. None on miss."""
     try:
         rows = db.select("result_cache", {"select": "*", "signature": f"eq.{sig}"}) or []
         if rows:
             db.update("result_cache", {"signature": sig},
                       {"hits": (rows[0].get("hits", 0) or 0) + 1,
-                       "last_used": datetime.datetime.utcnow().isoformat()})
+                       "last_used": datetime.datetime.now(datetime.timezone.utc).isoformat()})
             return rows[0]
     except Exception:
         pass
     return None
 
 
-def store(sig, project, slug, branch, summary):
+def store(sig: str, project: str, slug: str, branch: str, summary: str) -> None:
+    """Upsert a cache entry (truncates summary to 1000 chars)."""
     try:
         db.insert("result_cache", {"signature": sig, "project": project, "slug": slug,
                                    "branch": branch, "summary": summary[:1000]}, upsert=True)
