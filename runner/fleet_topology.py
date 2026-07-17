@@ -176,7 +176,11 @@ class FleetTopology:
 
         # 2. If we have cowork-capable subs not running Cowork terminals, recommend starting them
         cowork_capable = sum(1 for s in self._subscriptions if s.get("vendor") == "anthropic")
-        cowork_running = 0  # TODO: detect running Cowork terminals
+        # Detect running Cowork terminals from machine metadata (each machine
+        # reports its active_cowork_sessions count during heartbeat).
+        cowork_running = sum(
+            m.get("active_cowork_sessions", 0) for m in self._machines
+        )
         if cowork_capable > 0 and cowork_running < cowork_capable * COWORK_PER_SUB:
             recommendations.append({
                 "action": "start_cowork_terminals",
