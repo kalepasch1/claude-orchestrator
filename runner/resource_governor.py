@@ -387,6 +387,7 @@ def prune():
 
 
 def set_throttle(n):
+    """Persist concurrency limit *n* (clamped to [1, ceiling]) and return the effective value."""
     n = max(1, min(n, _ceiling()))
     with open(THROTTLE_FILE, "w") as f:
         f.write(str(n))
