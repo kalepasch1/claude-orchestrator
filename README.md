@@ -89,3 +89,6 @@ conflict pile-up in your earlier sessions.
 Supabase **cron** for fully-hosted scheduling; per-partner roles/permissions; live cost
 charts (Chart.js); auto-extract knowledge after every task; move the runner to a cloud
 VM for 24/7 independence.
+
+### Build Security Considerations
+It is critical to regularly audit and update all build-time dependencies to mitigate security vulnerabilities.
