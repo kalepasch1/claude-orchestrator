@@ -29,6 +29,7 @@ def _classify(note):
     return "unknown"
 
 def _fingerprint(project_id, slug, category):
+    """Deterministic 16-char hex ID for deduplicating postmortems of the same failure."""
     return hashlib.sha256(f"{project_id}:{slug}:{category}".encode()).hexdigest()[:16]
 
 def _truncate(text, limit=MAX_CONTEXT_CHARS):
