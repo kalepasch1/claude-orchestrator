@@ -11,6 +11,7 @@ import db, claude_cli
 
 
 def capture(task_id, project, slug, kind, model, account, repo, base, prompt, confidence=None):
+    """Snapshot the exact run parameters into the `runs` table for deterministic replay."""
     try:
         commit = subprocess.check_output(["git", "rev-parse", base], cwd=repo, text=True).strip()
     except Exception:
