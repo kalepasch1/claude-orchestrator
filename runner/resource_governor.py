@@ -66,6 +66,11 @@ os.makedirs(HOME, exist_ok=True)
 
 
 def _event(kind, value=None, detail="", action=""):
+    """Log a resource event to the database for trending and alerting.
+
+    Fail-soft: swallows all exceptions so monitoring never disrupts the runner.
+    Detail is truncated to 500 chars to stay within column limits.
+    """
     try:
         db.insert("resource_events", {"kind": kind, "value": value, "detail": detail[:500], "action": action})
     except Exception:
@@ -73,6 +78,7 @@ def _event(kind, value=None, detail="", action=""):
 
 
 def disk_pct(path="/"):
+    """Return (used_percent, free_gb) for the given mount point."""
     u = shutil.disk_usage(path)
     return round(u.used / u.total * 100, 1), round(u.free / 1e9, 1)
 
