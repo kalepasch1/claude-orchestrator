@@ -100,6 +100,16 @@ def resume(scope="global", project=None, by="dashboard"):
     return f"RESUMED {scope}{'/' + project if project else ''}"
 
 
+def status(project=None) -> dict:
+    """Return a dict summarising current pause state for dashboards and diagnostics."""
+    return {
+        "global_paused": is_paused(),
+        "project_paused": is_paused(project) if project else None,
+        "host": HOST,
+        "checked_at": datetime.datetime.utcnow().isoformat(),
+    }
+
+
 if __name__ == "__main__":
     import sys
     a = sys.argv[1] if len(sys.argv) > 1 else "status"
