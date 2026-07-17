@@ -19,6 +19,7 @@ DETAIL: {why}"""
 
 
 def run(limit=30):
+    """Pre-brief pending legal cards by generating concise summaries for triage review."""
     rows = db.select("approvals", {"select": "id,title,why,prebrief", "status": "eq.pending",
                                    "kind": "eq.legal", "limit": str(limit)}) or []
     done = 0
