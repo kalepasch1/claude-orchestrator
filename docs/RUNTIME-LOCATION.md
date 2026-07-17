@@ -20,3 +20,11 @@ Project `repo_path` values (beethoven included) intentionally stay under `~/Docu
 second Mac (which checks out there) is unaffected; only THIS Mac's *runtime* was relocated.
 To harden the other Mac, repeat: clone to `~/claude-orchestrator`, copy `.env` to
 `~/.claude-orchestrator/.env`, repoint its launcher/plists/`.zprofile`.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `runner.py` crash-loops after macOS update | FDA revoked; runtime still under `~/Documents` | Move runtime to `~/claude-orchestrator` per above |
+| `.env` not found at startup | Symlink broken or `~/.claude-orchestrator/.env` missing | Re-create: `ln -sf ~/.claude-orchestrator/.env runner/.env` |
+| Double-start (two runners) | Lock file path mismatch between `keepalive.sh` and launchd | Ensure both use `.runtime/runner.lock` in the same clone |
