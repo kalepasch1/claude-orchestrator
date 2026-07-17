@@ -189,6 +189,9 @@ def pressure_should_block(free_gb=None, floor_gb=None):
 def can_claim(n_active=0):
     """Real-time gate the runner calls BEFORE starting each new task — protects the Mac in
     the gaps between the slower periodic govern() ticks. Returns (ok, reason)."""
+    ceiling = _ceiling()
+    if n_active >= ceiling:
+        return False, f"at concurrency ceiling {n_active}/{ceiling}"
     free = ram_free_gb()
     floor = effective_floor_gb()
     per_task = _per_task_gb()
