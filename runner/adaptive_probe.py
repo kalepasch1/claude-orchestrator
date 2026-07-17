@@ -21,7 +21,12 @@ def should_probe(task, prompt):
     if kind in ("mechanical", "chore", "docs", "cleanup", "canary"):
         return False
     text = str(prompt or "")
-    return len(text) > int(os.environ.get("ORCH_ADAPTIVE_PROBE_CHARS", "1200")) or (task or {}).get("material") or kind in ("build", "security", "legal")
+    char_threshold = int(os.environ.get("ORCH_ADAPTIVE_PROBE_CHARS", "1200"))
+    if len(text) > char_threshold:
+        return True
+    if (task or {}).get("material"):
+        return True
+    return kind in ("build", "security", "legal")
 
 
 def make_probe(task, prompt, project):
