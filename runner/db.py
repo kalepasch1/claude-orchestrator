@@ -208,6 +208,7 @@ def count(table, params=None):
 
 
 def insert(table, row, upsert=False):
+    """Insert a single row into *table* via PostgREST POST.  Returns the created row or None on 409 dedup."""
     # IDEMPOTENT TASK ENQUEUE (2026-07-10): the queue has no UNIQUE(project_id, slug) constraint,
     # so ~20 different generators that db.insert("tasks", ...) directly kept creating duplicate
     # QUEUED rows (5-at-a-time, recurring — the sentinel dedupe was firing 45x/24h just cleaning up
