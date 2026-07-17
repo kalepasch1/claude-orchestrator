@@ -34,13 +34,14 @@ MIN_AGE_MIN = int(os.environ.get("WORKTREE_GC_MIN_AGE_MIN", "180"))
 
 
 def _run_git(args, repo):
+    """Run a git command, returning CompletedProcess. Falls back to no-timeout
+    call if subprocess.run is monkeypatched in tests (TypeError on 'timeout')."""
     try:
         return subprocess.run(args, cwd=repo, capture_output=True, text=True, timeout=GIT_TIMEOUT)
     except subprocess.TimeoutExpired:
         # Return a failed-looking result so callers degrade gracefully instead of crashing.
         return subprocess.CompletedProcess(args, returncode=124, stdout="", stderr="git timeout")
     except TypeError:
-        # Unit tests monkeypatch subprocess.run with a minimal signature.
         return subprocess.run(args, cwd=repo, capture_output=True, text=True)
 
 
