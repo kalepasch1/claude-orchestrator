@@ -92,6 +92,23 @@ def _get_fleet_config():
         return {}
 
 
+MAX_VALUE_LENGTH = int(os.environ.get("ORCH_CONFIG_MAX_VALUE_LEN", "4096"))
+
+
+def validate_config_value(key, value):
+    """Validate a config value before sync. Returns (ok, reason)."""
+    s = str(value)
+    if len(s) > MAX_VALUE_LENGTH:
+        return False, f"value too long ({len(s)} > {MAX_VALUE_LENGTH})"
+    if "\x00" in s:
+        return False, "value contains null byte"
+    if not key or not key.strip():
+        return False, "empty key"
+    if len(key) > 128:
+        return False, f"key too long ({len(key)} > 128)"
+    return True, ""
+
+
 def compute_diff(local, remote):
     """Compute config keys that differ between local and remote.
 
@@ -100,6 +117,10 @@ def compute_diff(local, remote):
     changes = []
     for k, v in local.items():
         if not _is_safe_key(k):
+            continue
+        ok, reason = validate_config_value(k, v)
+        if not ok:
+            log.debug("skipping invalid config key %s: %s", k, reason)
             continue
         remote_val = remote.get(k)
         if remote_val != str(v):
