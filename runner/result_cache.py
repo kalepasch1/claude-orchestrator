@@ -23,6 +23,10 @@ def signature(project, prompt, repo, base="main"):
 
 
 def lookup(sig):
+    """Look up a cached result by signature hash.
+
+    Returns the cached row dict if found (and increments hit counter), or None on miss/error.
+    """
     try:
         rows = db.select("result_cache", {"select": "*", "signature": f"eq.{sig}"}) or []
         if rows:
