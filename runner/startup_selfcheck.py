@@ -18,6 +18,10 @@ import db
 
 
 def _claimable():
+    """Return the count of QUEUED tasks whose dependencies are all satisfied (DONE or MERGED).
+
+    Used by the selfcheck to verify the pipeline is not stalled — if zero tasks are claimable
+    but the queue is non-empty, deps may be stuck or a DAG cycle exists."""
     done = {t["slug"] for t in (db.select("tasks", {"select": "slug", "state": "in.(DONE,MERGED)"}) or [])}
     q = db.select("tasks", {"select": "deps", "state": "eq.QUEUED"}) or []
     return sum(1 for t in q if all(d in done for d in (t.get("deps") or [])))
