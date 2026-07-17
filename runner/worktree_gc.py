@@ -28,7 +28,13 @@ def _run_git(args, repo):
 
 
 def _protected_slugs():
-    """Branches in active execution or approved integration must not be garbage-collected."""
+    """Branches in active execution or approved integration must not be garbage-collected.
+
+    Returns a set of slug strings, or None if the DB is unreachable.  Callers MUST
+    treat None as "unknown" and skip GC entirely — an empty set means "nothing is
+    protected" which is a valid (but dangerous if wrong) answer, while None means
+    "we couldn't ask."
+    """
     slugs = set()
     for state in PROTECTED_STATES:
         try:
