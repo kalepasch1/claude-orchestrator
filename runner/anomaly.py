@@ -15,11 +15,12 @@ RECENT = int(os.environ.get("ANOMALY_RECENT", "30"))     # last N tasks
 SPIKE = float(os.environ.get("ANOMALY_SPIKE", "1.75"))   # x baseline to alert
 
 
-def _rate(rows, pred):
+def _rate(rows: list, pred) -> float:
+    """Return the fraction of *rows* for which *pred* returns truthy (0.0 if empty)."""
     return (sum(1 for r in rows if pred(r)) / len(rows)) if rows else 0.0
 
 
-def check():
+def check() -> dict:
     try:
         rows = db.select("outcomes", {"select": "*", "order": "created_at.desc", "limit": "300"}) or []
     except Exception as e:
