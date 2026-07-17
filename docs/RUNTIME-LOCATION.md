@@ -20,3 +20,14 @@ Project `repo_path` values (beethoven included) intentionally stay under `~/Docu
 second Mac (which checks out there) is unaffected; only THIS Mac's *runtime* was relocated.
 To harden the other Mac, repeat: clone to `~/claude-orchestrator`, copy `.env` to
 `~/.claude-orchestrator/.env`, repoint its launcher/plists/`.zprofile`.
+
+## Verification
+
+To confirm the runtime is correctly located outside TCC-protected paths:
+
+```bash
+# Should resolve to ~/claude-orchestrator, NOT ~/Documents/...
+launchctl print system/com.claudeorchestrator.runner 2>/dev/null | grep WorkingDirectory
+# .env symlink should point to ~/.claude-orchestrator/.env
+ls -la ~/claude-orchestrator/runner/.env
+```
