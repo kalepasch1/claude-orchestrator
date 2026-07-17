@@ -73,6 +73,7 @@ def _event(kind, value=None, detail="", action=""):
 
 
 def disk_pct(path="/"):
+    """Return (used_percent, free_gb) for the filesystem containing *path*."""
     u = shutil.disk_usage(path)
     return round(u.used / u.total * 100, 1), round(u.free / 1e9, 1)
 
