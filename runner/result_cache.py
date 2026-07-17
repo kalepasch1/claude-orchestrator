@@ -10,6 +10,13 @@ import db
 
 
 def _norm(prompt):
+    """Normalize a prompt string for cache-key comparison.
+
+    Strips leading/trailing whitespace, lowercases, and collapses all
+    internal whitespace runs to a single space so that cosmetically
+    different prompts that carry the same semantic intent produce the
+    same cache signature.
+    """
     return re.sub(r"\s+", " ", (prompt or "").strip().lower())
 
 
