@@ -433,9 +433,11 @@ def _global_pause_reason():
 
 
 def govern():
+    _t0 = time.monotonic()
     used, free_gb = disk_pct()
     ram = ram_pct()
     free_ram = ram_free_gb()
+    _t_sample = time.monotonic()
     _event("disk", used, f"{free_gb}GB free")
     action = "ok"
 
@@ -574,8 +576,12 @@ def govern():
             set_throttle(recovered_target)
             action += f"; mem-recover->{recovered_target}"
             g = dashboard_gauge()
+    _t_end = time.monotonic()
+    _elapsed_ms = (_t_end - _t0) * 1000
+    _sample_ms = (_t_sample - _t0) * 1000
     print(f"governor: disk {used}% ({free_gb}GB free) ram {ram} free_ram {free_ram}GB "
-          f"floor {eff_floor} -> {action}, limit={current_limit()}")
+          f"floor {eff_floor} -> {action}, limit={current_limit()} "
+          f"[{_elapsed_ms:.0f}ms total, {_sample_ms:.0f}ms sampling]")
     return g
 
 
