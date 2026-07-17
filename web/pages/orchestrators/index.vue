@@ -29,7 +29,7 @@ const DOMAINS = [
   { key: 'security', label: 'Security', icon: '🔒' },
   { key: 'platform', label: 'Platform', icon: '🏗' },
   { key: 'terminal', label: 'Command Terminal', icon: '▸' },
-  { key: 'bots', label: 'CADE Bots', icon: '🤖' },
+  { key: 'bots', label: 'Analysis Bots', icon: '🤖' },
 ]
 
 const MODELS = [
@@ -233,7 +233,7 @@ watch(user, u => { if (u) loadData() })
 
       <!-- CADE Bots -->
       <div v-else-if="activeDomain === 'bots'" class="p-6 max-w-4xl space-y-4">
-        <h2 class="text-lg font-semibold text-gray-900" style="font-family: 'Fraunces', serif;">CADE Bot Fleet</h2>
+        <h2 class="text-lg font-semibold text-gray-900" style="font-family: 'Fraunces', serif;">Analysis Bot Fleet</h2>
         <p class="text-xs text-gray-500">60 bots across 15 groups powering automated quality, analytics, and optimization.</p>
         <div class="space-y-2">
           <div v-for="b in CADE_BOTS" :key="b.name" class="bg-white border border-gray-200 rounded-xl p-4 flex items-center justify-between">

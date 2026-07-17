@@ -104,7 +104,7 @@ function timeAgo(ts: number) {
 
     <!-- Tournament Standings -->
     <div v-if="standings.length" class="mb-4">
-      <div class="text-sm font-semibold text-slate-300 mb-2">CADE Tournament Standings</div>
+      <div class="text-sm font-semibold text-slate-300 mb-2">Tournament Standings</div>
       <div class="bg-slate-800 rounded-lg overflow-hidden">
         <div v-for="s in standings" :key="s.model"
              class="flex items-center gap-2 px-3 py-1.5 border-b border-slate-700/50 last:border-0 text-sm">
