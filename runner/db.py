@@ -251,6 +251,7 @@ def upsert(table, row):
 
 
 def update(table, match, patch):
+    """PATCH rows in *table* matching *match* dict with *patch* fields.  Tolerates 409 (concurrent write)."""
     params = {k: f"eq.{v}" for k, v in match.items()}
     try:
         return _req("PATCH", f"/rest/v1/{table}", body=patch,
