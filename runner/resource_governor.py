@@ -112,6 +112,7 @@ def _vm_stat():
 
 
 def ram_pct():
+    """Return current RAM usage as a percentage (0-100), or None on failure."""
     # Prefer our macOS-accurate calc; psutil's macOS `available` also undercounts cache.
     v = _vm_stat()[0]
     if v is not None:
