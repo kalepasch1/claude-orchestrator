@@ -20,10 +20,11 @@ GIT_TIMEOUT = int(os.environ.get("WORKTREE_GC_GIT_TIMEOUT", "90"))
 
 
 def _run_git(args, repo):
+    """Run a git command, returning CompletedProcess. Falls back to no-timeout
+    call if subprocess.run is monkeypatched in tests (TypeError on 'timeout')."""
     try:
         return subprocess.run(args, cwd=repo, capture_output=True, text=True, timeout=GIT_TIMEOUT)
     except TypeError:
-        # Unit tests monkeypatch subprocess.run with a minimal signature.
         return subprocess.run(args, cwd=repo, capture_output=True, text=True)
 
 
