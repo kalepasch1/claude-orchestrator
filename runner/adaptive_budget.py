@@ -23,6 +23,8 @@ import db
 
 DEFAULT_BUDGET = int(os.environ.get("ORCH_DEFAULT_TOKEN_BUDGET", "8192"))
 MIN_BUDGET = int(os.environ.get("ORCH_MIN_TOKEN_BUDGET", "1024"))
+# Multiplier applied on top of the predicted output length so the model doesn't get
+# truncated when a task runs slightly longer than its historical average.
 BUDGET_HEADROOM = float(os.environ.get("ORCH_BUDGET_HEADROOM", "1.5"))  # 50% headroom over predicted
 
 
