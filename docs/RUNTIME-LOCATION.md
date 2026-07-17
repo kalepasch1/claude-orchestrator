@@ -20,3 +20,10 @@ Project `repo_path` values (beethoven included) intentionally stay under `~/Docu
 second Mac (which checks out there) is unaffected; only THIS Mac's *runtime* was relocated.
 To harden the other Mac, repeat: clone to `~/claude-orchestrator`, copy `.env` to
 `~/.claude-orchestrator/.env`, repoint its launcher/plists/`.zprofile`.
+
+## See Also
+
+- `DEPLOY.md` — deployment procedures and environment setup
+- `OPERATOR-GUIDE.md` — day-to-day fleet operation instructions
+- `docs/tdd-config.md` — TDD configuration for task execution
+- `docs/improvement_steering.md` — how background optimization works without blocking tasks
