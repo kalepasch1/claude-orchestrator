@@ -8,6 +8,8 @@ refused and left for you to run manually.
 
 NEVER runs: secrets/token/key writes, payments/transfers, deletes/drops, force pushes, revokes.
 The user must have clicked "Run for me" (which inserts the action_runs row) — nothing auto-executes.
+
+Respects the global kill switch: if the fleet is paused, no actions execute.
 """
 import os, sys, subprocess, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
