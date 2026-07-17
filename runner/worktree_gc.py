@@ -17,6 +17,9 @@ import db
 PROTECTED_STATES = ("RUNNING", "RETRY")
 MERGE_KINDS = ("verify", "material", "integrate")
 GIT_TIMEOUT = int(os.environ.get("WORKTREE_GC_GIT_TIMEOUT", "90"))
+# ORCH_SHARE_AGENT_BRANCHES (default "true"): push agent/* branches to origin before
+# removing the local worktree, so work survives on the remote even if the executor's own
+# push never landed. Disable only in CI/testing where origin is unavailable.
 
 
 def _run_git(args, repo):
