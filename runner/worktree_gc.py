@@ -28,13 +28,21 @@ def _run_git(args, repo):
 
 
 def _protected_slugs():
-    """Branches in active execution or approved integration must not be garbage-collected."""
+    """Branches in active execution or approved integration must not be garbage-collected.
+
+    FAIL CLOSED: returns None if the task/approval DB cannot be read. An empty protected set
+    caused mass deletion of in-use worktrees whenever Supabase errored or rate-limited (the
+    old code swallowed the exception and 'protected' nothing) — executors then lost RUNNING
+    work mid-task. Callers MUST skip GC entirely when this returns None."""
     slugs = set()
     for state in PROTECTED_STATES:
         try:
-            slugs.update(t["slug"] for t in (db.select("tasks", {"select": "slug", "state": f"eq.{state}"}) or []))
+            rows = db.select("tasks", {"select": "slug", "state": f"eq.{state}"})
         except Exception:
-            continue
+            return None
+        if rows is None:
+            return None
+        slugs.update(t["slug"] for t in rows)
     for a in db.select("approvals", {"select": "slug,title,kind,status,decided_by", "status": "in.(pending,approved)"}) or []:
         if a.get("kind") not in MERGE_KINDS:
             continue
@@ -56,6 +64,9 @@ def gc_repo(repo):
         return 0
     main_worktree = os.path.abspath(repo)
     protected = _protected_slugs()
+    if protected is None:
+        # DB unreachable — fail closed rather than GC everything.
+        return 0
     out = _run_git(["git", "worktree", "list", "--porcelain"], repo).stdout
     removed = 0
     path = branch = None
