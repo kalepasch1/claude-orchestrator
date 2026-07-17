@@ -270,6 +270,7 @@ def recommend_topology(target_tasks_hour=None):
 
 
 def optimal_task_allocation(tasks):
+    """Distribute *tasks* across fleet lanes (cli/cowork/api_cheap/api_heavy) by fitness."""
     try:
         return _get().optimal_task_allocation(tasks)
     except Exception:
