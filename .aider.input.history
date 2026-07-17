@@ -817,3 +817,45 @@
 +Parent task: recover-missing-branch-cade-contracts-slice-2
 +
 +[reuse-first: matched patch-template-recover-missing-branch-cade-contracts-slice-2]
+
+# 2026-07-17 17:55:58.182130
++PATCH TEMPLATE b375ccf34122
++Intent: 056af630dd5f 07041728 07062319 07130635 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 acceptance active adapt advice after agentic aider allowlist author barks batch beethoven
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt:
++- pareto-2080/rework-buildfail-qafix-pareto-2080-07062319-slice-1-slice-2-7f21d02 sim=0.319: PATCH TEMPLATE ce2e8dcd7954
++Intent: 056af630dd5f 07062319 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 active adapt advice after agentic aider allowlist author batch before behavior blocked blocker build
++Acceptance: preserve existing beh
++- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-5 sim=0.233: PATCH TEMPLATE 11d71349c477
++Intent: 0398eb6 056af630dd5f 07062319 07071626 08c555ef32c3f7b6e04b6ac596540427ae250a95 11c8886f5af3 148d45efebad 1565ms 170834ms 1ad7cbc 20251001 2105ms 234917ms 27d8ff8 2807983 310833ms 322125ms 441917ms 4a3feba 4pbjwpmj431__2jrjyb3bq7w0000gn 538167ms 56c27d036a06 5ab6a
++[patch-template:b375ccf34122]
++
++PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch pareto-2080/rework-buildfail-qafix-pareto-2080-07062319-slice-1-slice-2-7f21d02 (similarity 0.308).
++Prior intent: PATCH TEMPLATE ce2e8dcd7954
++Intent: 056af630dd5f 07062319 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 active adapt advice after agentic aider allowlist author batch before behavior blocked blocker build
++Acceptance: preserve existing beh
++Relevant prior diff excerpt:
++
++
++- 2.
++- pareto-2080/rework-buildfail-qafix-pareto-2080-07062319-slice-1-slice-2-7f21d02 sim=0.374: PATCH TEMPLATE ce2e8dcd7954
++Intent: 056af630dd5f 07062319 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 active adapt advice after agentic aider allowlist author batch before behavior blocked blocker build
++Acceptance: preserve existing beh
++- preflight triage: local:deepseek-coder-v2:16b (qpd leader q=7.7 $0.0 (n=1))
++- source: native-claim
++- agentic coder: claud
++SOURCE sustainable-barks/relfix-sustainable-barks-07041728-patch-template-adapt similarity=0.26: ## ORCHESTRATION PIPELINE CONTRACT
++- strategy planner: local:deepseek-coder-v2:16b (qpd leader q=7.47 $0.0 (n=107))
++- task class: plan (need 8, risk strategy)
++- Use this as the acceptance style and project context, but do not duplicate the exact feature.
++- project: beethoven
++- required executor capabilities: code_generation, text_completion
++- deploy-cost rule: never run `vercel --prod`, `vercel deploy --prod`, or an equivalent CLI production deploy; never push main/master directly.
++- learned route: pipeline_scout -> local:llama3.2:3b, q=4.7
++- [reuse-first: matched qafix-smarter-07130635]
++
++Parent task: canary-ollama-2-77
