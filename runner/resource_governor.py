@@ -40,6 +40,7 @@ def _disk_hard():
 
 
 def _ram_hard():
+    """RAM-usage percentage above which new task claims are blocked entirely."""
     return float(os.environ.get("RAM_HARD_PCT", "82"))
 
 
