@@ -4,6 +4,7 @@ db.py - tiny Supabase (PostgREST) client over urllib. No third-party deps.
 The runner uses the SERVICE ROLE key so it bypasses RLS. Set:
     SUPABASE_URL=https://<ref>.supabase.co
     SUPABASE_SERVICE_KEY=<service-role key>   (keep secret; never ship to the web app)
+The .env file in runner/ is auto-loaded at import time by the _load_env() helper below.
 """
 import os, re, json, socket, time, datetime, threading, urllib.request, urllib.parse, urllib.error
 
