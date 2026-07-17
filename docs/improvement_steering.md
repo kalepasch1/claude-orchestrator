@@ -95,3 +95,9 @@ published as a database row that the *next* task claim reads fresh. No runner re
 queue drains, no global pause, and no in-flight task is ever required to make an improvement
 live. The only thing "in the background" means here is "not on the critical path of a task
 that's already running" — it does not mean "invisible" or "unmeasured."
+
+## See also
+
+- `docs/tdd-config.md` — TDD-gating configuration (controls when test-first phases are injected)
+- `runner/anomaly.py` — self-monitoring anomaly detector (catches regressions from improvements)
+- `runner/resource_governor.py` — host resource protection during parallel execution
