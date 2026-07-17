@@ -22,6 +22,7 @@ STATES = ["QUEUED", "RUNNING", "DONE", "BLOCKED", "CONFLICT", "TESTFAIL", "RETRY
 
 
 def main():
+    """Print exact task-state counts fleet-wide and per project to stdout."""
     projects = db.select("projects", {"select": "id,name"}) or []
     pid_to_name = {p["id"]: p["name"] for p in projects}
 
