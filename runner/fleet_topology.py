@@ -256,6 +256,7 @@ def _get():
 
 
 def current_capacity():
+    """Return a dict summarising current fleet capacity (machines, runners, utilisation)."""
     try:
         return _get().current_capacity()
     except Exception:
