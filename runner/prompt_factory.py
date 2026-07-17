@@ -44,6 +44,7 @@ _PROOF_LINE_RX = re.compile(r"(?:proof|acceptance test|test)\s*:\s*(\S.+)", re.I
 
 
 def _slugify(text):
+    """Convert *text* to a URL-safe lowercase slug (max 60 chars), defaulting to 'objective'."""
     s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
     return s[:60] or "objective"
 
