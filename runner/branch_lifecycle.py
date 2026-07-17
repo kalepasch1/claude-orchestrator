@@ -42,7 +42,6 @@ def validate_branch_name(name):
     """Check whether *name* is a valid git branch name.
 
     Returns (True, "") on success or (False, reason) on failure.
-    Fail-soft: returns (True, "") for None/empty (caller decides policy).
     """
     if not name:
         return False, "empty branch name"
