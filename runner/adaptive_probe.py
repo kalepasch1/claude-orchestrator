@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 MARK = "ADAPTIVE PROBE-FIRST SLICE"
 
 
-def should_probe(task, prompt):
+def should_probe(task: dict | None, prompt: str | None) -> bool:
     if os.environ.get("ORCH_ADAPTIVE_PROBE", "true").lower() not in ("1", "true", "yes", "on"):
         return False
     if MARK in str(prompt or ""):
@@ -24,7 +24,7 @@ def should_probe(task, prompt):
     return len(text) > int(os.environ.get("ORCH_ADAPTIVE_PROBE_CHARS", "1200")) or (task or {}).get("material") or kind in ("build", "security", "legal")
 
 
-def make_probe(task, prompt, project):
+def make_probe(task: dict | None, prompt: str | None, project: str) -> str:
     try:
         import model_policy, model_gateway
         sensitivity = str((task or {}).get("sensitivity") or "standard")
@@ -49,7 +49,7 @@ def make_probe(task, prompt, project):
         return ""
 
 
-def inject(task, prompt, project="orchestrator"):
+def inject(task: dict | None, prompt: str | None, project: str = "orchestrator") -> str:
     if not should_probe(task, prompt):
         return prompt
     probe = make_probe(task, prompt, project)
