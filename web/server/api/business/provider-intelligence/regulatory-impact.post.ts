@@ -1,0 +1,5 @@
+import{organizationContext,requireOrgAdmin}from'../../../utils/adaptiveFabric'
+import{requireConnectorUser}from'../../../utils/connectorFabric'
+import{serviceClient}from'../../../utils/fleetSupabase'
+import{appendTransparencyEntry,runRegulatoryImpact}from'../../../utils/providerSovereigntyCompoundingStore'
+export default defineEventHandler(async event=>{const user=await requireConnectorUser(event),context=await organizationContext(user);requireOrgAdmin(context);const body=await readBody<any>(event),org=context.membership.organization_id,{data:snapshot}=await serviceClient().from('provider_authority_snapshots').select('*').eq('id',String(body.snapshot_id||'')).eq('organization_id',org).eq('verified',true).maybeSingle();if(!snapshot)throw createError({statusCode:404,message:'verified_authority_snapshot_not_found'});const impact=await runRegulatoryImpact(org,snapshot);await appendTransparencyEntry(org,'regulatory_impact_simulation',snapshot.content_digest,impact.simulation_digest);return{impact,activation:'professional_review_required'}})
