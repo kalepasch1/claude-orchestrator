@@ -36,6 +36,11 @@ def lookup(sig):
 
 
 def store(sig, project, slug, branch, summary):
+    """Persist a task result keyed by signature for future deduplication.
+
+    Summary is truncated to 1000 chars. Upserts so re-runs update rather than duplicate.
+    Fail-soft: silently swallows DB errors to avoid blocking the caller.
+    """
     try:
         db.insert("result_cache", {"signature": sig, "project": project, "slug": slug,
                                    "branch": branch, "summary": summary[:1000]}, upsert=True)
