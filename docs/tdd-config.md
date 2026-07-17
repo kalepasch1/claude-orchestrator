@@ -202,3 +202,13 @@ valid, error = tdd_gate.validate_acceptance_criteria(task_spec)
 print(valid, error)
 EOF
 ```
+
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| TDD gate never fires | `ORCH_TDD_ENABLED` is `false` or missing | Set to `true` in `fleet_config` |
+| Gate fires on canary/bugfix tasks | `ORCH_TDD_TASK_KINDS` includes too many kinds | Restrict to `feature,new-module` |
+| Config change not picked up | Runner cache TTL (~30s) hasn't expired | Call `tdd_gate.invalidate_cache()` or restart |
+| Tests pass locally but fail in gate | Gate runs in the worktree, not the main checkout | Ensure test fixtures use relative paths |
