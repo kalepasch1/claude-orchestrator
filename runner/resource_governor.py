@@ -475,6 +475,7 @@ def set_throttle(n):
 
 
 def current_limit():
+    """Read the persisted concurrency limit, falling back to ceiling if unset or corrupt."""
     try:
         with open(THROTTLE_FILE) as f:
             return max(1, min(int(f.read().strip()), _ceiling()))
