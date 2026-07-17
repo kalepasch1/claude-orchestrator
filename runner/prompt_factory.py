@@ -99,6 +99,7 @@ def _extract_proof(prompt_text, project_row):
 
 
 def _already_shipped(slug):
+    """Return True if a task for *slug* already exists in processed dir, intake dir, or DB."""
     if glob.glob(os.path.join(PROCESSED_DIR, f"*factory-{slug}*.md")):
         return True
     if os.path.isfile(os.path.join(INTAKE_DIR, f"factory-{slug}.md")):
