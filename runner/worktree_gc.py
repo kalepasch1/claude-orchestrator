@@ -9,7 +9,7 @@ branches are free to merge and disk stays clean.
 Runs ON THE RUNNER MACHINE only (paths must match — never from a sandbox with remapped paths). Safe:
 only removes worktrees whose task is in a terminal/queued state, never a RUNNING one.
 """
-import os, sys, subprocess
+import os, sys, time, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
@@ -17,6 +17,10 @@ import db
 PROTECTED_STATES = ("RUNNING", "RETRY")
 MERGE_KINDS = ("verify", "material", "integrate")
 GIT_TIMEOUT = int(os.environ.get("WORKTREE_GC_GIT_TIMEOUT", "90"))
+# Never GC a worktree that showed filesystem activity within this window. Cowork/manual
+# executors create worktrees that may sit briefly before their task row flips to RUNNING,
+# and a fresh checkout has zero commits ahead of base — recency is the only reliable signal.
+MIN_AGE_MIN = int(os.environ.get("WORKTREE_GC_MIN_AGE_MIN", "180"))
 
 
 def _run_git(args, repo):
@@ -69,6 +73,15 @@ def gc_repo(repo):
             if path and branch and branch.startswith("agent/"):
                 slug = branch[len("agent/"):]
                 if slug not in protected and os.path.abspath(path) != main_worktree:
+                    # Recency guard: skip worktrees touched recently — the task row may not
+                    # have flipped to RUNNING yet.
+                    try:
+                        mtime = os.path.getmtime(path)
+                        if (time.time() - mtime) < MIN_AGE_MIN * 60:
+                            path = branch = None
+                            continue
+                    except OSError:
+                        pass
                     # DURABILITY: push the branch to origin before reclaiming the worktree, so the
                     # work survives on the remote even if the runner's fail-soft share push never
                     # landed. This is what stops the recover-missing-branch churn at the source —
