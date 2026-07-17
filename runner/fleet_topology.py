@@ -290,6 +290,7 @@ def optimal_task_allocation(tasks):
 
 
 def invalidate():
+    """Drop the cached FleetTopology so the next call rebuilds from fresh DB state."""
     global _topo
     _topo = None
 
