@@ -13,6 +13,8 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
+# Percentage of traffic routed to the canary variant during A/B evaluation.
+# Tunable via AB_CANARY_PCT env var; keep low (5-15%) to limit blast radius.
 CANARY_PCT = int(os.environ.get("AB_CANARY_PCT", "10"))
 
 
