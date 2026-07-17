@@ -18,10 +18,10 @@ if os.path.isfile(env_path):
 
 import db  # noqa: E402
 
-STATES = ["QUEUED", "RUNNING", "DONE", "BLOCKED", "CONFLICT", "TESTFAIL", "RETRY", "QUARANTINED", "MERGED"]
+STATES: list[str] = ["QUEUED", "RUNNING", "DONE", "BLOCKED", "CONFLICT", "TESTFAIL", "RETRY", "QUARANTINED", "MERGED"]
 
 
-def main():
+def main() -> None:
     projects = db.select("projects", {"select": "id,name"}) or []
     pid_to_name = {p["id"]: p["name"] for p in projects}
 
