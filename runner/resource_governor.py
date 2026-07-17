@@ -238,6 +238,27 @@ def can_claim(n_active=0):
     return True, "ok"
 
 
+def stats():
+    """Return a snapshot of current resource state for diagnostics and fleet dashboards."""
+    free = ram_free_gb()
+    try:
+        used_pct, _ = disk_pct()
+    except Exception:
+        used_pct = None
+    ok, reason = can_claim()
+    return {
+        "ram_free_gb": free,
+        "ram_floor_gb": effective_floor_gb(),
+        "per_task_gb": _per_task_gb(),
+        "disk_used_pct": used_pct,
+        "disk_soft_pct": _disk_soft(),
+        "disk_hard_pct": _disk_hard(),
+        "ceiling": _ceiling(),
+        "can_claim": ok,
+        "claim_reason": reason,
+    }
+
+
 def _projects():
     try:
         return db.select("projects", {"select": "name,repo_path"}) or []
