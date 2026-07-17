@@ -387,6 +387,10 @@ def prune():
 
 
 def set_throttle(n):
+    """Clamp *n* to [1, ceiling] and persist it to the throttle file.
+
+    The runner reads this file each loop to decide how many concurrent tasks
+    to allow.  Returns the clamped value actually written."""
     n = max(1, min(n, _ceiling()))
     with open(THROTTLE_FILE, "w") as f:
         f.write(str(n))
@@ -394,6 +398,10 @@ def set_throttle(n):
 
 
 def current_limit():
+    """Read the persisted throttle limit, falling back to ceiling on any error.
+
+    Always returns a value in [1, ceiling] so the runner never stalls at zero
+    or overshoots the configured maximum."""
     try:
         with open(THROTTLE_FILE) as f:
             return max(1, min(int(f.read().strip()), _ceiling()))
