@@ -157,6 +157,7 @@ def ram_free_gb():
 
 
 def total_gb():
+    """Return total physical RAM in GB, or None if it cannot be determined."""
     try:
         import psutil
         return round(psutil.virtual_memory().total / 1e9, 1)
