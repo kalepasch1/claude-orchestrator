@@ -32,7 +32,7 @@ def _dependents(repo, files):
 def radius_after(repo, base="main"):
     try:
         changed = subprocess.check_output(["git", "diff", "--name-only", f"{base}...HEAD"],
-                                          cwd=repo, text=True).split()
+                                          cwd=repo, text=True, timeout=30).split()
     except Exception:
         changed = []
     return {"changed": changed, "dependents": _dependents(repo, changed)}
