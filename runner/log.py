@@ -46,3 +46,8 @@ def get(name: str) -> logging.Logger:
 def with_task(logger: logging.Logger, task_id) -> logging.LoggerAdapter:
     """Return a LoggerAdapter that prefixes messages with a task ID."""
     return logging.LoggerAdapter(logger, {"task_id": task_id})
+
+
+def with_project(logger: logging.Logger, project_name: str) -> logging.LoggerAdapter:
+    """Return a LoggerAdapter that prefixes messages with a project name."""
+    return logging.LoggerAdapter(logger, {"project": project_name})
