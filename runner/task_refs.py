@@ -30,6 +30,12 @@ def patch_id(repo, commit):
 
 
 def publish(repo, task_id, attempt, commit, *, push=True, namespace="tasks"):
+    """Create an immutable ref for a task artifact and optionally push it.
+
+    Returns a dict with keys: ok, ref, commit, patch_id, pushed, reason.
+    Possible reason values: commit-missing, remote-publish-failed,
+    immutable-ref-collision, exists, create-failed.
+    """
     resolved = _git(repo, "rev-parse", str(commit))
     if resolved.returncode:
         return {"ok": False, "reason": "commit-missing", "detail": resolved.stderr[-300:]}
