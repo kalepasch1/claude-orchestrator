@@ -41,7 +41,7 @@ def _history():
 
 
 def _save_history(history):
-    # Cap at 200 entries
+    """Persist output-length history to controls, capped at 200 entries."""
     if len(history) > 200:
         by_time = sorted(history.items(), key=lambda x: x[1].get("last_updated", 0))
         history = dict(by_time[-200:])
