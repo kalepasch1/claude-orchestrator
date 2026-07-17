@@ -50,6 +50,7 @@ def text_for(card=None, text=""):
 
 
 def requires_owner_approval(card=None, text="", kind="", radar_tag=""):
+    """Return True if the task requires owner or counsel approval based on regulatory keyword matching."""
     blob = text_for(card, text)
     if not blob.strip():
         return False
