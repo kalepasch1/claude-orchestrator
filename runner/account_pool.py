@@ -35,6 +35,9 @@ STATE = os.path.join(HOME, "accounts_state.json")
 # ORCH_-prefixed so it's tunable fleet-wide via fleet_config. Repeat hits back off (see mark_exhausted).
 COOLDOWN = int(os.environ.get("ORCH_ACCOUNT_COOLDOWN",
                               os.environ.get("ACCOUNT_COOLDOWN", str(20 * 60))))
+# Hard ceiling for exponential backoff (6 hours). Repeated mark_exhausted() calls double
+# the cooldown each time, but never exceed this cap — prevents a single flaky account
+# from being parked for days.
 COOLDOWN_MAX = int(os.environ.get("ORCH_ACCOUNT_COOLDOWN_MAX", str(6 * 3600)))
 # Cheap cross-module signal: written when EVERY Claude account is cooling down, self-expiring
 # at the earliest cooldown. agentic_coders.pick() reads claude_exhausted() to fail over to the
