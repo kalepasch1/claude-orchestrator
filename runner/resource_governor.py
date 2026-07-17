@@ -143,6 +143,7 @@ def ram_pct():
 
 
 def ram_free_gb():
+    """Return free RAM in GB (including reclaimable cache), or None on failure."""
     # Prefer our macOS-accurate calc (counts reclaimable cache as available).
     v = _vm_stat()[1]
     if v is not None:
