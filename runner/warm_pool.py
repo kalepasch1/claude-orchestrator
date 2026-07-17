@@ -45,6 +45,7 @@ class _Slot:
         self.hits           = 0
 
     def age(self):
+        """Seconds elapsed since this slot was loaded from disk."""
         return time.time() - self.loaded_at
 
     def is_stale(self):
