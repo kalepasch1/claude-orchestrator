@@ -13,6 +13,9 @@ import pipeline_contract
 
 MARKER = "AGENTIC-REPAIR DIRECTIVE"
 MAX_PROMPT_CHARS = int(os.environ.get("ORCH_AGENTIC_REPAIR_PROMPT_CHARS", "18000"))
+# Circuit breaker: stop requeueing after this many remediation attempts to prevent
+# infinite repair loops (operator feedback: remediation loop bottleneck).
+MAX_REMEDIATION_COUNT = int(os.environ.get("ORCH_MAX_REMEDIATION_COUNT", "5"))
 TECHNICAL_CATEGORIES = {
     "buildfail",
     "testfail",
@@ -174,8 +177,18 @@ def in_session_prompt(task, failure, category="rework", directive=None):
 
 def repair_patch(task, failure, category="rework", directive=None, prefer_non_claude=False):
     category = str(category or "rework")
-    coder = choose_coder(task, category=category, prefer_non_claude=prefer_non_claude)
     rc = int(task.get("remediation_count") or 0) + 1
+    # Circuit breaker: if we've already retried too many times, mark BLOCKED instead of
+    # requeueing — prevents infinite remediation loops that waste compute and stall the queue.
+    if rc > MAX_REMEDIATION_COUNT:
+        return {
+            "state": "BLOCKED",
+            "updated_at": "now()",
+            "remediation_count": rc,
+            "note": (f"agentic-repair:circuit-breaker; {category} after {rc} attempts — "
+                     "needs manual intervention or a different approach"),
+        }
+    coder = choose_coder(task, category=category, prefer_non_claude=prefer_non_claude)
     directive = directive or "Complete the implementation through the agentic coder and make the build/test path green."
     patch = {
         "state": "QUEUED",
@@ -184,7 +197,7 @@ def repair_patch(task, failure, category="rework", directive=None, prefer_non_cl
         "remediation_count": rc,
         "attempt": int(task.get("attempt") or 0) + 1,
         "prompt": repair_prompt(task, failure, directive, category=category),
-        "note": f"agentic-repair:{category}; same-task repair via {coder}",
+        "note": f"agentic-repair:{category}; same-task repair via {coder} ({rc}/{MAX_REMEDIATION_COUNT})",
     }
     if coder:
         patch["force_coder"] = coder
