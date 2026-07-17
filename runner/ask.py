@@ -11,7 +11,8 @@ import db, health, roi, claude_cli
 MODEL = os.environ.get("ASK_MODEL", "claude-sonnet-4-6")
 
 
-def snapshot():
+def snapshot() -> dict:
+    """Return a compact telemetry dict (health, inbox, ROI, open tasks) for LLM analysis."""
     return {
         "health": db.select("v_project_health", {"select": "*"}) or [],
         "inbox": (db.select("v_action_inbox", {"select": "*"}) or [])[:30],
@@ -21,7 +22,7 @@ def snapshot():
     }
 
 
-def answer(question):
+def answer(question: str) -> str:
     snap = json.dumps(snapshot())[:60000]
     prompt = (f"You are an analyst for a multi-project autonomous build system. Using ONLY "
               f"this telemetry JSON, answer the question concisely with specific projects/"
