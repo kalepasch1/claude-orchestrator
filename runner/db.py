@@ -117,6 +117,33 @@ _TASK_SENSITIVE_FIELDS = {"note", "log_tail"}
 HTTP_RETRIES = int(os.environ.get("ORCH_SUPABASE_RETRIES", "1") or 1)
 HTTP_RETRY_STATUSES = {429, 500, 502, 503, 504, 521, 522, 523}  # incl. Cloudflare origin-down codes so monitors ride through Supabase capacity blips instead of silently no-op'ing
 
+# DB Failover state: track consecutive DB failures to trigger offline mode
+DB_DOWN_THRESHOLD = int(os.environ.get("SENTINEL_DB_DOWN_THRESHOLD", "3"))
+_db_failure_count = 0
+_db_failure_lock = threading.Lock()
+
+
+def _reset_db_failure_count():
+    """Reset failure counter on successful DB operation."""
+    global _db_failure_count
+    with _db_failure_lock:
+        _db_failure_count = 0
+
+
+def _increment_db_failure_count():
+    """Increment failure counter on DB operation failure."""
+    global _db_failure_count
+    with _db_failure_lock:
+        _db_failure_count += 1
+        return _db_failure_count
+
+
+def is_db_down():
+    """Check if DB is considered down based on failure count."""
+    with _db_failure_lock:
+        return _db_failure_count >= DB_DOWN_THRESHOLD
+
+
 # Thread-safe per-slug dedup lock pool (prevents same-machine race conditions)
 _DEDUP_LOCKS = {}
 _DEDUP_LOCKS_LOCK = threading.Lock()
@@ -167,6 +194,14 @@ PROJECT_PRIORITY_ORDER = {
 
 
 def _project_rank_name(name):
+    """Map project name to priority rank (lower = higher priority).
+
+    Args:
+        name: Project name or None.
+
+    Returns:
+        int: Priority rank (1-9); unknown projects default to 9 (lowest).
+    """
     return PROJECT_PRIORITY_ORDER.get(str(name or "").strip().lower(), 9)
 
 
@@ -180,6 +215,12 @@ def localize_repo_path(repo_path):
     any Mac that has the repos at the same sub-path. No-op on the owning machine (stored path
     already exists) and no-op when there is no local clone (the claim guard then skips the task, so
     a runner never grabs work it cannot run). Opt out with ORCH_REPO_LOCALIZE=false.
+
+    Args:
+        repo_path (str | None): Stored repo path from projects table.
+
+    Returns:
+        str | None: Localized path for this machine, or original if no local clone exists.
     """
     if not repo_path or os.environ.get("ORCH_REPO_LOCALIZE", "true").lower() in ("false", "0", "no"):
         return repo_path
@@ -194,8 +235,18 @@ def localize_repo_path(repo_path):
 
 
 def repo_runnable_here(repo_path):
-    """True if a task's project can run on this machine: it has no repo (uses cwd) or a local clone
-    exists (possibly via localize_repo_path). Used by claim_task to enforce host affinity."""
+    """Check if a task's project repo can run on this machine (host affinity).
+
+    A task is runnable if it has no repo_path (uses cwd) or a local clone exists
+    (possibly via localize_repo_path). Used by claim_task to prevent cross-machine
+    task theft when the required repo is not locally available.
+
+    Args:
+        repo_path (str | None): Stored repo path from projects table.
+
+    Returns:
+        bool: True if runnable here; False if repo is required but not present.
+    """
     if not repo_path:
         return True
     loc = localize_repo_path(repo_path)
@@ -554,11 +605,29 @@ def invalidate_done_cache():
 
 
 def claim_task(runner_id):
-    """Atomically grab one QUEUED task whose deps are satisfied. ECONOMIC ORDERING: within a
-    project-priority band, prefer higher-ROI projects (projects.concurrency_weight, set from
-    cost-per-merge by roi.py) and then FIFO. This makes the highest expected-value work run first
-    under any capacity limit — and stays correct across MULTIPLE machines because the final claim
-    is an atomic optimistic PATCH (state=QUEUED -> RUNNING), so two runners never double-claim."""
+    """Atomically claim one QUEUED task whose dependencies are satisfied.
+
+    Implements ECONOMIC ORDERING: within project-priority bands, prefer higher-ROI
+    projects (via concurrency_weight) and then FIFO. Guarantees no double-claims across
+    multiple runners via atomic optimistic PATCH (state=QUEUED -> RUNNING). Also enforces
+    host affinity to prevent claiming tasks whose repo is not locally available.
+
+    Args:
+        runner_id (str): Unique identifier for this runner/executor.
+
+    Returns:
+        dict | None: Task dict (id, slug, project_id, deps, etc.) if claim succeeds,
+                     or None if queue is empty or all deps unsatisfied.
+    """
+    # FAILOVER: if DB has been unreachable for N consecutive cycles, try offline mirror
+    if is_db_down():
+        try:
+            import local_queue
+            task = local_queue.claim_task_offline(runner_id)
+            if task:
+                return task
+        except Exception:
+            pass
     prio, roi_w, project_names, paused_pids, local_repo_pids = {}, {}, {}, set(), None
     try:
         projs = select("projects", {"select": "id,name,priority,concurrency_weight,repo_path"}) or []
@@ -577,12 +646,25 @@ def claim_task(runner_id):
                         if c.get("project") and c.get("updated_by") != "remote-quarantine"}
         paused_pids = {name2id[n] for n in paused_names if n in name2id}
     except Exception:
+        _increment_db_failure_count()
         pass
     claim_fields = "id,slug,project_id,deps,confidence,created_at,updated_at,kind,note,priority"
-    queued = select("tasks", {"select": claim_fields,
-                              "state": "eq.QUEUED",
-                              "order": "created_at.asc",
-                              "limit": str(CLAIM_SCAN_LIMIT)}) or []
+    try:
+        queued = select("tasks", {"select": claim_fields,
+                                  "state": "eq.QUEUED",
+                                  "order": "created_at.asc",
+                                  "limit": str(CLAIM_SCAN_LIMIT)}) or []
+        # Sync to local mirror on successful fetch
+        try:
+            running = select("tasks", {"select": claim_fields, "state": "eq.RUNNING", "limit": "2000"}) or []
+            import local_queue
+            local_queue.sync_from_remote(queued, running)
+            _reset_db_failure_count()  # DB is healthy, reset failure counter
+        except Exception:
+            pass
+    except Exception:
+        _increment_db_failure_count()
+        queued = []
     # PostgREST/Supabase caps large result sets at 1,000 rows. Urgent new work
     # otherwise sits outside an oldest-first scan and cannot be prioritized at
     # all. Pull bounded escape hatches for deployment blockers and evidence
@@ -912,10 +994,14 @@ def claim_task(runner_id):
                 continue
         if all(d in done for d in (t.get("deps") or [])):
             # optimistic claim: flip to RUNNING only if still QUEUED
-            res = _req("PATCH", "/rest/v1/tasks",
-                       body={"state": "RUNNING", "account": runner_id, "updated_at": "now()"},
-                       headers={"Prefer": "return=representation"},
-                       params={"id": f"eq.{t['id']}", "state": "eq.QUEUED"})
+            try:
+                res = _req("PATCH", "/rest/v1/tasks",
+                           body={"state": "RUNNING", "account": runner_id, "updated_at": "now()"},
+                           headers={"Prefer": "return=representation"},
+                           params={"id": f"eq.{t['id']}", "state": "eq.QUEUED"})
+            except Exception:
+                _increment_db_failure_count()
+                res = None
             if res:
                 if pid:
                     active_by_project[pid] = active_by_project.get(pid, 0) + 1
