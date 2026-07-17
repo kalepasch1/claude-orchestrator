@@ -189,6 +189,29 @@ def adapter_directive(task, limit=3):
     return "\n".join(lines)
 
 
+def stats():
+    """Return library statistics for operator observability."""
+    try:
+        rows = db.select("merged_diffs", {"select": "*", "limit": "10000"}) or []
+    except Exception:
+        rows = []
+    projects = {}
+    kinds = {}
+    for r in rows:
+        p = r.get("project") or "unknown"
+        k = r.get("kind") or "unknown"
+        projects[p] = projects.get(p, 0) + 1
+        kinds[k] = kinds.get(k, 0) + 1
+    return {
+        "total_entries": len(rows),
+        "by_project": projects,
+        "by_kind": kinds,
+    }
+
+
 if __name__ == "__main__":
     import json
-    print(json.dumps(find({"prompt": " ".join(sys.argv[1:])}), indent=2))
+    if len(sys.argv) > 1 and sys.argv[1] == "--stats":
+        print(json.dumps(stats(), indent=2))
+    else:
+        print(json.dumps(find({"prompt": " ".join(sys.argv[1:])}), indent=2))
