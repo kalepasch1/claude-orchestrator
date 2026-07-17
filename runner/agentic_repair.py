@@ -36,6 +36,7 @@ REPLACEMENT_ONLY_CATEGORIES = {"legal", "secret", "security"}
 
 
 def is_technical(category):
+    """Return True if the failure category is a technical (retryable) repair."""
     return str(category or "rework") in TECHNICAL_CATEGORIES
 
 
