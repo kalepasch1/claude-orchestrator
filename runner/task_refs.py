@@ -16,7 +16,8 @@ _auth_applied: set[str] = set()   # repos whose origin URL already has the PAT
 
 def _git(repo, *args, input_text=None, timeout=180):
     return subprocess.run(["git", *args], cwd=repo, input=input_text,
-                          capture_output=True, text=True, timeout=timeout)
+                          capture_output=True, encoding="utf-8", errors="replace",
+                          timeout=timeout)
 
 
 def _ensure_auth(repo):

@@ -95,7 +95,8 @@ def _push_enabled_for_base(base):
     return _truthy("ORCH_PUSH_ON_MERGE", False)
 
 def _git(repo, *args, timeout=60):
-    return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(["git", *args], cwd=repo, capture_output=True,
+                          encoding="utf-8", errors="replace", timeout=timeout)
 
 
 def _branch_exists(repo, branch):
