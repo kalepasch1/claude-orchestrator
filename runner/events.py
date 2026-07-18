@@ -10,11 +10,14 @@ read_events(date=None)       Read all events from a specific date (default: toda
 read_recent(limit=100)       Read the last N events across all dates.
 _rotate_if_needed()          Internal; called by emit() to cap file size (~100MB per day).
 """
+from __future__ import annotations
+
 import datetime
 import json
 import os
 import sys
 import threading
+from typing import Any, Union
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RUNTIME = os.path.join(os.path.dirname(HERE), ".runtime")
@@ -25,7 +28,7 @@ MAX_BACKUPS_PER_DAY = int(os.environ.get("ORCH_EVENT_BACKUPS_PER_DAY", "3"))
 _lock = threading.Lock()
 
 
-def _event_path(date=None):
+def _event_path(date: Union[datetime.date, datetime.datetime, str, None] = None) -> str:
     """Return the JSONL file path for a given date (datetime.date or None for today)."""
     if date is None:
         date = datetime.date.today()
@@ -36,7 +39,7 @@ def _event_path(date=None):
     return os.path.join(EVENTS_DIR, f"{date.isoformat()}.jsonl")
 
 
-def _rotate_if_needed(path):
+def _rotate_if_needed(path: str) -> None:
     """If path exceeds MAX_FILE_SIZE, rotate to a numbered backup (.jsonl.0, .jsonl.1, ...)
     and truncate the current file. Maintains up to MAX_BACKUPS_PER_DAY backups per date."""
     if not os.path.exists(path):
@@ -63,7 +66,7 @@ def _rotate_if_needed(path):
         pass
 
 
-def emit(kind, **fields):
+def emit(kind: str, **fields: Any) -> bool:
     """Emit a structured event to the daily event stream.
 
     Args:
@@ -90,7 +93,7 @@ def emit(kind, **fields):
         return False
 
 
-def read_events(date=None):
+def read_events(date: Union[datetime.date, datetime.datetime, str, None] = None) -> list[dict[str, Any]]:
     """Read all events from a specific date. Returns list of dicts, or [] on error."""
     try:
         path = _event_path(date)
@@ -110,7 +113,7 @@ def read_events(date=None):
         return []
 
 
-def read_recent(limit=100):
+def read_recent(limit: int = 100) -> list[dict[str, Any]]:
     """Read the last N events across all dates (most recent first).
 
     Scans event files in reverse chronological order until we have enough events.
@@ -139,7 +142,7 @@ def read_recent(limit=100):
         return []
 
 
-def stats():
+def stats() -> tuple[int, int, int]:
     """Return (total_events_count, disk_size_bytes, file_count)."""
     try:
         os.makedirs(EVENTS_DIR, exist_ok=True)
@@ -158,7 +161,7 @@ def stats():
         return 0, 0, 0
 
 
-def invalidate():
+def invalidate() -> bool:
     """Clear all event files (for testing)."""
     try:
         import shutil
