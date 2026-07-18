@@ -2538,6 +2538,11 @@ def _fire_periodic(job: str) -> None:
                 return False
         except Exception as e:
             _log.debug("hook kill_switch failed: %s", e)
+    # Reap any stale previous instance of this job BEFORE the still-running check.
+    # Previously the reaper was after the check, so a stuck process would cause
+    # _is_still_running to return True → early return → reaper never reached → permanent block.
+    # Scaled to the job's own configured interval (5x).
+    _reap_stale_periodic(job, _JOB_INTERVAL.get(job, 3600))
     # Don't stack a new instance on top of one that's still running -- see _is_still_running
     # for why this was missing and what it caused (2026-07-10, train-60/merge_train.py pileup).
     if _is_still_running(job):
@@ -2565,10 +2570,6 @@ def _fire_periodic(job: str) -> None:
             break
         except Exception:
             continue
-    # Reap any stale previous instance of this job before launching. Scaled to the job's own
-    # configured interval (was hardcoded 3600s for every job regardless of cadence -- a 60s
-    # job wouldn't be reaped for 5 hours; see _is_still_running for the incident this caused).
-    _reap_stale_periodic(job, _JOB_INTERVAL.get(job, 3600))
     try:
         if _logpath:
             with open(_logpath + ".log", "a") as lf, open(_logpath + ".err", "a") as ef:
