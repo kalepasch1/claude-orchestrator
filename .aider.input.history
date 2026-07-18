@@ -817,3 +817,320 @@
 +Parent task: recover-missing-branch-cade-contracts-slice-2
 +
 +[reuse-first: matched patch-template-recover-missing-branch-cade-contracts-slice-2]
+
+# 2026-07-18 08:08:22.381481
++REUSABLE INTENT GRAPH: start from proven adapter shapes before drafting net-new code.
++Current intent signature: 6ef3d57a92d315a94949
++- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-5 similarity=0.463: shape=+0/-0 | PATCH TEMPLATE 11d71349c477
++Intent: 0398eb6 056af630dd5f 07062319 07071626 08c555ef32c3f7b6e04b6ac596540427ae250a95 11c8886f5af3 148d45efebad 1565ms 170834ms 1ad7cbc 20251001 2105ms 234917ms 27d8ff8 2807983 310833ms 322125ms 441917ms 4a3feba 4pbjwpmj431__2jrjyb3bq7w0000gn 538167ms 56c27d036a06 5ab6a
++- pareto-2080/qafix-pareto-2080-07062319-slice-5-add-bookingsaga-tests similarity=0.403: shape=+0/-0 | PATCH TEMPLATE a862edc20dad
++Intent: 0398eb6 056af630dd5f 07060650 07062319 07071626 08c555ef32c3f7b6e04b6ac596540427ae250a95 11c8886f5af3 11d71349c477917ms 4a3feba 4ff7ba380eac 4pbjwpmj431__2jrjyb3bq7
++- pareto-2080/rework-buildfail-qafix-pareto-2080-07062319-slice-1-slice-2-7f21d02 similarity=0.373: shape=+0/-0 | PATCH TEMPLATE ce2e8dcd7954
++Intent: 056af630dd5f 07062319 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 active adapt advice after agentic aider allowlist author batch before behavior blocked blocker build
++Acceptance: preserve existing beh
++
++## Merged-Diff Compiler: Proven Pattern Available
++Confidence: 50% match to prior merged work.
++ADAPT the pattern below instead of inventing from scratch. The template already passed tests and merged successfully.
++
++### Template 1: improve-automated-configuration-validation-slice-2 (match: 50%)
++Files touched: .aider.chat.history.md, .aider.input.history, .aider.tags.cache.v4/cache.db, .aider.tags.cache.v4/cache.db-shm
++Pattern:
++```
++  .aider.chat.history.md: +150/-0
++  .aider.input.history: +67/-0
++```
++
++### Template 2: relfix-contract-first-verifye.db, .aider.tags.cache.v4/cache.db-shm, .github/workflows/ci.yml, REPORT-backlog-blitz.md, REPORT-meta-optimizer.md, runner/agentic_coders.py, runner/agentic_repair.py, runner/approval_merge.py
++Pattern:
++```
++  .aider.chat.history.md: +492/-0
++```
++
++### Template 3: relfix-closed-loop-tuning (match: 4er.tags.cache.v4/cache.db-shm, .github/workflows/ci.yml, README.md, REPORT-backlog-blitz.md, REPORT-meta-optimizer.md, package.json, runner/agentic_coders.py
++Pattern:
++```
++  .aider.chat.history.md: +492/-0
++```
++
++---
++YOUR TASK (previous session received no instructions — do this now):
++
++PATCH TEMPLATE 3e12a02fc2c4
++Intent: 056af630dd5f 07041728 07062319 07130635 7f21d02 acceptance active adapt advice after agentic aider allowlist author barks batch beethoven
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt:
++- pareto-2080/rework-buildfail-qafix-pareto-2080-07062319-slice-1-slice-2-7f21d02 sim=0.321: PATCH TEMPLATE ce2e8dcd7954
++Intent: 056af630dd5f 07062319ker build
++Acceptance: preserve existing beh
++- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-5 sim=0.235:96540427ae250a95 11c8886f5af3917ms 4a3feba 4pbjwpmj431__2jrjyb3bq7w0000gn 538167ms 56c27d036a06 5ab6a
++[patch-template:3e12a02fc2c4]
++
++PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch pareto-2080/rework-buildfail-qafix-pareto-2080-07062319-slice-1-slice-2-7f21d02 (similarity 0.31).
++Prior intent: PATCH TEMPLATE ce2e8dcd7954
++Intent: 056af630dd5f 07062319ker build
++Acceptance: preserve existing beh
++Relevant prior diff excerpt:
++
++- 2.
++- pareto-2080/rework-buildfail-qafix-pareto-2080-07062319-slice-1-slice-2-7f21d02 sim=0.374: PATCH TEMPLATE ce2e8dcd7954
++Intent: 056af630dd5f 07062319ker build
++Acceptance: preserve existing beh
++- preflight triage: local:deepseek-coder-v2:16b (qpd leader q=7.7 $0.0 (n=1))
++- source: native-claim
++- agentic coder: claud
++SOURCE sustainable-barks/relfix-sustainable-barks-07041728-patch-template-adapt similarity=0.26: ## ORCHESTRATION PIPELINE CONTRACT
++- strategy planner: local:deepseek-coder-v2:16b (qpd leader q=7.47 $0.0 (n=107))
++- task class: plan (need 8, risk strategy)
++- Use this as the acceptance style and project context, but do not duplicate the exact feature.
++- project: beethoven
++- required executor capabilities: code_generation, text_completion
++- deploy-cost rule: never run `vercel --prod`, `vercel deploy --prod`, or an equivalent CLI production deploy; never push main/master directly.
++- learned route: pipeline_scout -> local:llama3.2:3b, q=4.7
++- [reuse-first: matched qafix-smarter-07130635]
++
++Parent task: canary-xai-96
++
++Work on branch agent/canary-xai-96-slice-4. Make the changes, run the tests, and commit your work. Do NOT ask what to work on — the task above is your full assignment.
++---
++REPO ORIENTATION (use it; don't re-discover):
++repo map (files per area):
++  intake/processed/  (237)
++  web/server/  (218)
++  runner/tests/  (205)
++  packages/darwin-kernel/  (146)
++  supabase/migrations/  (138)
++  supabase/legacy_shortform/  (45)
++  web/pages/  (39)
++  web/components/  (30)
++  scripts/launchd/  (18)
++  docs/hardening/  (7)
++  hisanta/hisanta/  (7)
++  web/config/  (7)
++  supabase/functions/  (6)
++  web/utils/  (6)
++  runner/bots/  (5)
++  triage/tests/  (5)
++  web/composables/  (5)
++  web/scripts/  (5)
++  hisanta/tests/  (4)
++  runner/launchd/  (4)
++  scripts/cloud-vm/  (4)
++  .github/workflows/  (3)
++  runner/hooks/  (3)
++  runner/logs/  (3)
++  runner/scripts/  (3)
++  growth-os/sdk/  (2)
++  runner/recipes/  (2)
++  web/layouts/  (2)
++  web/public/  (2)
++  web/types/  (2)
++  .aider.chat.history.md/  (1)
++  .aider.input.history/  (1)
++  .aider.tags.cache.v4/cache.db/  (1)
++  .aider.tags.cache.v4/cache.db-shm/  (1)
++  .aider.tags.cache.v4/cache.db-wal/  (1)
++  .deploy-canary/  (1)
++  .gitignore/  (1)
++  .vercelignore/  (1)
++  .vscode/settings.json/  (1)
++  ACTIVATE-DESIGN-INTEGRATION-SUITE.md/  (1)
++  ACTIVATION.md/  (1)
++  AUDIT-dead-on-arrival-2026-07-14.md/  (1)
++  BACKLOG-BATCH-122B728.md/  (1)
++  BACKLOG-BATCH-3384416.md/  (1)
++  BACKLOG-BATCH-63A8C76.md/  (1)
++  BACKLOG-BATCH-7D02252.md/  (1)
++  BACKLOG-BATCH-7EA9EF7.md/  (1)
++  BACKLOG-BATCH-A797E71.md/  (1)
++  BACKLOG-BATCH-C27A8F0.md/  (1)
++  BACKLOG-BATCH-D843E25.md/  (1)
++  BACKLOG-BATCH-E905EF8.md/  (1)
++  BACKLOG-BATCH-FA8FC60.md/  (1)
++  BLUEPRINT-swarm-executor.md/  (1)
++  CADE_IMPLEMENTATION_HANDOFF.md/  (1)
++  CANARY-DEEPSEEK-3.md/  (1)
++  CLAUDE-CODE-INTEGRATION.md/  (1)
++  CLAUDE-CODE-ROADMAP.md/  (1)
++  CLAUDE.md/  (1)
++  COWORK_STAGING.md/  (1)
++  DEPLOY.md/  (1)
++  EVOLVED-ORCHESTRATOR.md/  (1)
++  FEATURES.md/  (1)
++  FLEET_ADMIN_ACTIVATION.md/  (1)
++  FLEET_ADMIN_APP_MAP.md/  (1)
++  FLEET_ADMIN_CONTROL_PLANE.md/  (1)
++  HANDOFF-app-triage.md/  (1)
++  HANDOFF-autonomy.md/  (1)
++  HANDOFF-capabilities.md/  (1)
++  HANDOFF-costfix.md/  (1)
++  HANDOFF-cowork-master-build.md/  (1)
++  HANDOFF-feedback-loop.md/  (1)
++  HANDOFF-multimodel-automerge.md/  (1)
++  HANDOFF-smarter-approvals.md/  (1)
++  HANDOFF-v3.2.md/  (1)
++  HANDOFF-v3.3.md/  (1)
++  HANDOFF-v3.4.md/  (1)
++  HANDOFF-v3.5.md/  (1)
++  IP_PROTECTION_CONCEPT.md/  (1)
++  OPERATOR-GUIDE.md/  (1)
++  ORCHESTRATOR_IMPROVEMENT_PLAN.md/  (1)
++  ORCHESTRATOR_INTAKE_BACKLOG.md/  (1)
++  PORTFOLIO_OPERATOR_PUNCHLIST.md/  (1)
++  README.md/  (1)
++  REPORT-backlog-blitz.md/  (1)
++  REPORT-meta-optimizer.md/  (1)
++  REVIEW-portfolio-simplification-2026-07-09.md/  (1)
++  REVIEW-portfolio-simplification-v2-2026-07-09.md/  (1)
++  REVIEW-portfolio-simplification-v3-2026-07-09.md/  (1)
++  REVIEW-revisions-cade-warroom-r2-2026-07-09.md/  (1)
++  REVIEW-v4-global-readiness-2026-07-09.md/  (1)
++  REVIEW-v5-cade-reuse-foundry-testfleet-2026-07-09.md/  (1)
++  REVIEW-v5-cade-reuse-selfimproving-testbots-2026-07-09.md/  (1)
++  REVIEW-v5-final-pto-livereg-2026-07-09.md/  (1)
++  REVIEW-v5-reconciliation-enhance-not-rebuild-2026-07-09.md/  (1)
++  REVIEW-v5-sm3-pareto-bridge-ap6-provisioning-2026-07-09.md/  (1)
++  REVIEW-v6-frontier-and-loop-closure-2026-07-09.md/  (1)
++  REVIEW-w2a-expert-roster-2026-07-09.md/  (1)
++  SETUP-LIVE.md/  (1)
++  SETUP-MAC2.md/  (1)
++  SETUP-PROMPT.md/  (1)
++  SPEC.md/  (1)
++  TASKS.md/  (1)
++  TESTING-FRAMEWORK-END-T-SLICE-1.md/  (1)
++  anthropic-plugin-strategy.docx/  (1)
++  apply-wedgefix.sh/  (1)
++  cowork-backlog/backlog.json/  (1)
++  deploy/CLOUD_RUNNER.md/  (1)
++  deploy/runner.service/  (1)
++  deploy/vm-setup.sh/  (1)
++  docs/RUNTIME-LOCATION.md/  (1)
++  docs/backlog-batch-beethoven-b40e7b0.md/  (1)
++  docs/bot-state-gaming-licensing-analyst-stub.md/  (1)
++  docs/canary-deepseek-4.md/  (1)
++  docs/canary-fused-claude-11-ollama-12.md/  (1)
++  docs/canary-gpt-19.md/  (1)
++  docs/canary-ollama-2-19.md/  (1)
++  docs/cleanup-canary-claude-27-slices.md/  (1)
++  docs/improvement_steering.md/  (1)
++  docs/merge-legacy-agent-ce2-batch-1783860886-recovered.md/  (1)
++  docs/merge-legacy-feedback-supaba.md/  (1)
++key files: packages/darwin-kernel/package.json, packages/darwin-kernel/tsconfig.json, supabase/migrations/0040_growth_crm_routing.sql, supabase/migrations/0041_growth_crm_intake_coverage.sql, supabase/migrations/0042_growth_crm_autopilot.sql, supabase/migrations/0043_capability_evolution_fabric.sql, supabase/migrations/0044_execution_constitution.sql, supabase/migrations/0045_constitutional_autonomy.sql, supabase/migrations/0046_federation_assurance.sql, supabase/migrations/0047_referral_access.sql, supabase/migrations/0048_hivemind_economy.sql, supabase/migrations/0049_hivemind_advanced_network.sql, supabase/migrations/0050_hivemind_network_governance.sql, supabase/migrations/0051_hivemind_outcome_control_plane.sql, supabase/migrations/0052_regulatory_capability_network.sql, supabase/migrations/0053_regulatory_temporal_execution_system.sql, supabase/migrations/0054_regulatory_frontier_system.sql, supabase/migrations/0055_regulatory_opportunity_network.sql, supabase/migrations/20260624162815_init_orchestrator.sql, supabase/migrations/20260624162911_secure_accounts_rls.sql
++
++# project conventions (CLAUDE.md):
++
++## Operator workflow (manual, not auto-distilled)
++
++Routine strategic/objective prompts belong in the operator drop-box, not a manual serial
++session: drop a `PROMPT-<name>.md` file at repo root (or a canonical-format file in `intake/`)
++and `intake_watcher.py` auto-decomposes anything that isn't already canonical format through
++`planner.py`'s contract-first DAG and queues it for parallel, dependency-linked execution (see
++`prompt_factory.py` and the drop-box section of `intake_watcher.py`'s module docstring).
++
++A manual serial Claude Code session (an operator pasting a long prompt directly into a live
++session, working the phases by hand) is reserved for **fleet-down recovery only** — i.e. when
++the fleet itself can't queue or execute anything yet, so there's nothing for intake to route
++work to. Once the fleet is healthy, prefer the drop-box.
++
++## Learned from merged work (auto)
++
++**CONVENTIONS**
++
++*   Centralized configuration management: fleet-wide config changes go through a central `fleet_config` table and are applied to all machines via an in-process gateway (`fleet_control.py`).
++*   Safe config keys only: only config keys without secrets or credentials can be pushed fleet-wide.
++*   DB + git for synchronization: code updates are propagated between machines using git, and database operations are used for configuration management.
++*   Fail-soft error handling: errors during code execution or database queries do not wedge the runner; they are swallowed to prevent crashes.
++
++**DO/AVOID RULES**
++
++*   **DO** prefix config key changes with ORCH_ to make them fleet-wide applicable.
++*   **DO NOT** introduce hardcoded secrets or credentials in the configuration keys.
++*   **AVOID** using manual SSH or second-terminal steps for configuration management; use the centralized gateway (`fleet_control.py`) instead.
++*   **AVOID** introducing model-specific logic that can wedge the runner on errors; instead, use fail-soft error handling.
++
++## Learned from merged work (auto)
++
++**CONVENTIONS**
++
++- **Module-level singleton pattern**: Provide module-level functions that delegate to a thread-safe singleton instance (e.g., `acquire()` → `_pool.acquire()`); avoids passing state through call chains
++- **Fail-soft error handling**: Return empty string `""` or sensible defaults on any error; never raise on bad input (None, missing path, permission errors)
++- **Environment variable configuration**: All tunable parameters (pool size, TTL, limits) are env vars with sensible defaults, not hardcoded
++
++---
++PROVEN PRECEDENT — a similar change already shipped in this codebase ('improve-elastic-runner-fleet-autoscaling-and-spe-slice-2'). ADAPT this known-good pattern (files touched, structure, conventions) instead of inventing from scratch; do not copy blindly:
++```diff
++commit 7fbd0a01667d8bfb00a196a31e85bff64a680574
++Author: Kale Pasch <kalepasch@gmail.com>
++Date:   Wed Jul 15 23:14:26 2026 -0400
++
++    agent: improve-elastic-runner-fleet-autoscaling-and-spe-slice-2 — add autoscale tests
++---
++ runner/tests/test_autoscale_signal.py | 59 +++++++++++++++++++++++++++++++++++
++ 1 file changed, 59 insertions(+)
++
++diff --git a/runner/tests/test_autoscale_signal.py b/runner/tests/test_autoscale_signal.py
++new file mode 100644
++index 00000000..b1037d14
++--- /dev/null
+++++ b/runner/tests/test_autoscale_signal.py
++@@ -0,0 +1,59 @@
+++import os
+++import sys
+++import unittest
+++from unittest.mock import patch, MagicMock
+++
+++sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+++
+++import autoscale_signal as asc
+++
+++
+++class ThroughputSignalTest(unittest.TestCase):
+++    def test_returns_expected_keys(self):
+++        with patch.object(asc.db, "sql", return_value=[]):
+++            result = asc.throughput_signal()
+++        for key in ["tasks_completed", "tasks_per_hour", "bottleneck"]:
+++            self.assertIn(key, result)
+++
+++    def test_compute_bottleneck_when_queue_deep(self):
+++        tasks = [{"id": f"t{i}", "state": "DONE"} for i in range(5)]
+++        def fake_sql(q):
+++            if "DONE" in q: return tasks
+++            if "QUEUED" in q: return [{"cnt": 50}]
+++            if "RUNNING" in q: return [{"cnt": 3}]
+++            return []
+++        with patch.object(asc.db, "sql", side_effect=fake_sql):
+++            result = asc.throughput_signal()
+++        self.assertEqual(result["bottleneck"], "compute")
+++
+++    def test_queue_empty_bottleneck(self):
+++        def fake_sql(q):
+++            if "DONE" in q: return []
+++            if "QUEUED" in q: return [{"cnt": 1}]
+++            if "RUNNING" in q: return [{"cnt": 0    result = asc.throughput_signal()
+++        self.assertEqual(result["bottleneck"], "queue_empty")
+++
+++
+++class ElasticRecommendationTest(unittest.TestCase):
+++    def test_hold_when_balanced(self):
+++        with patch.object(asc, "run", return_value={"recommend": 0, "weighted_demand": 5}), \
+++             patch.object(asc, "throughput_signal", return_value={
+++                 "bottleneck": "balanced", "queue_depth": 5, "running": 2, "tasks_per_hour": 10
+++             }):
+++            result = asc.elastic_recommendation()
+++        self.assertEqual(result["action"], "hold")
+++
+++    def test_scale_down_when_empty(self):
+++        with patch.object(asc, "run", return_value={"recommend": 0, "weighted_demand": 1eck": "queue_empty", "queue_depth": 0, "running": 0, "tasks_per_hour": ult["action"], "scale_down")
+++
+++
+++if __name__ == "__main__":
+++    unittest.main()
++
++```
++
++---
++BEFORE YOU FINISH (required): run the project's production build and, if present, its tests (e.g. `npm run build` then the test command). If ANYTHING fails, fix it and re-run until the build is GREEN. Make the smallest correct change and reuse existing code. Do not finish with a red build, and do not finish by only describing changes — actually apply your edits to the files.
