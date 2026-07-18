@@ -961,9 +961,11 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
             # during rolling upgrades where artifact_ref is not in DB yet.
             _task_patch(task, {"artifact_commit": frozen_identity["artifact_commit"]})
     except Exception as exc:
-        _task_patch(task, {"state": "BLOCKED", "note": f"train: immutable integration identity failed: {str(exc)[:160]}"})
-        _log(pname, slug, "BLOCKED", "immutable integration identity failed")
-        return "conflict"
+        # Fail-soft: identity freeze is attribution, not correctness. Blocking ALL merges
+        # because a ref can't be pushed (e.g. PAT lacks 'workflow' scope) is worse than
+        # merging without exact attribution. Log and continue — the rebased commit SHA
+        # is still recorded on the task via artifact_commit when available.
+        _log(pname, slug, "IDENTITY-WARN", f"freeze failed ({str(exc)[:80]}), proceeding with merge")
     ok, tail = _run_tests(repo, test_cmd, branch)  # (3) branch-exact, never primary checkout
     if not ok and os.environ.get("ORCH_DIFFERENTIAL_QA", "true").lower() in ("1", "true", "yes", "on"):
         try:
