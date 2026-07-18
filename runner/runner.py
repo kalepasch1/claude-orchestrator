@@ -2618,8 +2618,12 @@ def _is_still_running(job):
         return False
 
 
+_REAP_MULTIPLIER = {
+    "merge_train.py": 15,   # npm install + tests can legitimately take 10+ min
+}
+
 def _reap_stale_periodic(job, expected_interval):
-    """Kill periodic children that have been running > 5x their expected interval."""
+    """Kill periodic children that have been running > Nx their expected interval."""
     info = _PERIODIC_PIDS.get(job)
     if not info:
         return
@@ -2629,7 +2633,8 @@ def _reap_stale_periodic(job, expected_interval):
     except OSError:
         del _PERIODIC_PIDS[job]
         return
-    if time.time() - launch_t > expected_interval * 5:
+    multiplier = _REAP_MULTIPLIER.get(job, 5)
+    if time.time() - launch_t > expected_interval * multiplier:
         try:
             os.kill(pid, 9)
             print(f"[reaper] killed stale periodic child {job} (pid {pid}, ran {int(time.time()-launch_t)}s)")
