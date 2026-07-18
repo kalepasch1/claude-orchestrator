@@ -2,6 +2,12 @@
 
 *From static dashboard → competitive marketing weapon*
 
+> **Security note:** metric pipelines must never expose API keys, PATs, or
+> account credentials in logs, SSE streams, or email digests. All external
+> data sources (competitor pricing, Supabase realtime) should use scoped
+> read-only tokens, and email reports should be sent through authenticated
+> channels only.
+
 ---
 
 ## Tier 1: Foundation (10X — weeks 1–3)
