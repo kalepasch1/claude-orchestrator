@@ -366,16 +366,28 @@ def loop_breaker(st):
 
 def main():
     st = load_state()
+    cycle_start = time.monotonic()
+    timings = {}
     for bot, fn in (("memory_guard", lambda: memory_guard(st)),
                     ("thrash_hunter", lambda: thrash_hunter(st)),
                     ("process_hygiene", process_hygiene),
                     ("loop_breaker", lambda: loop_breaker(st))):
+        t0 = time.monotonic()
         try:
             fn()
         except Exception as e:
             journal(bot, "error", str(e)[:120])
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        timings[bot] = elapsed_ms
+        if elapsed_ms > 5000:
+            journal(bot, "slow-bot", f"{elapsed_ms}ms (>5s threshold)")
+    cycle_ms = int((time.monotonic() - cycle_start) * 1000)
     st["last_run"] = _now().isoformat() + "Z"
+    st["last_cycle_ms"] = cycle_ms
+    st["last_timings"] = timings
     save_state(st)
+    if cycle_ms > 15000:
+        journal("main", "slow-cycle", f"total {cycle_ms}ms: {timings}")
 
 
 if __name__ == "__main__":
