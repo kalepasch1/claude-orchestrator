@@ -7,19 +7,24 @@ regressions early instead of after a big bill or a stalled fleet.
 
 Run on a schedule (e.g. hourly). Stateless; reads `outcomes` from Supabase.
 """
+from __future__ import annotations
 import os, sys
+from typing import Any, Callable
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+
+__all__ = ["check"]
 
 RECENT = int(os.environ.get("ANOMALY_RECENT", "30"))     # last N tasks
 SPIKE = float(os.environ.get("ANOMALY_SPIKE", "1.75"))   # x baseline to alert
 
 
-def _rate(rows, pred):
+def _rate(rows: list[dict[str, Any]], pred: Callable[[dict[str, Any]], bool]) -> float:
+    """Return fraction of rows matching pred (0.0 if empty)."""
     return (sum(1 for r in rows if pred(r)) / len(rows)) if rows else 0.0
 
 
-def check():
+def check() -> dict[str, Any]:
     try:
         rows = db.select("outcomes", {"select": "*", "order": "created_at.desc", "limit": "300"}) or []
     except Exception as e:
