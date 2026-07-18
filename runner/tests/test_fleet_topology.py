@@ -38,5 +38,45 @@ class TestFleetTopologyStats(unittest.TestCase):
         self.assertIn("enabled", result)
 
 
+class TestDetectCoworkTerminals(unittest.TestCase):
+    """Tests for _detect_cowork_terminals DB-based detection."""
+
+    def test_returns_count_from_db(self):
+        fake_db.query = MagicMock(return_value=[{"n": 3}])
+        result = fleet_topology._detect_cowork_terminals()
+        self.assertEqual(result, 3)
+        fake_db.query.assert_called_once()
+
+    def test_returns_zero_on_empty_result(self):
+        fake_db.query = MagicMock(return_value=[])
+        result = fleet_topology._detect_cowork_terminals()
+        self.assertEqual(result, 0)
+
+    def test_returns_zero_on_db_error(self):
+        fake_db.query = MagicMock(side_effect=Exception("connection lost"))
+        result = fleet_topology._detect_cowork_terminals()
+        self.assertEqual(result, 0)
+
+    def test_returns_zero_on_none_result(self):
+        fake_db.query = MagicMock(return_value=None)
+        result = fleet_topology._detect_cowork_terminals()
+        self.assertEqual(result, 0)
+
+
+class TestRecommendTopology(unittest.TestCase):
+    """Basic smoke test for recommend_topology output shape."""
+
+    def test_returns_list(self):
+        topo = fleet_topology.FleetTopology()
+        recs = topo.recommend_topology(target_tasks_hour=10)
+        self.assertIsInstance(recs, list)
+
+    def test_recommendations_have_action_key(self):
+        topo = fleet_topology.FleetTopology()
+        recs = topo.recommend_topology(target_tasks_hour=10)
+        for rec in recs:
+            self.assertIn("action", rec)
+
+
 if __name__ == "__main__":
     unittest.main()
