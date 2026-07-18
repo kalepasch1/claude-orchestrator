@@ -394,6 +394,11 @@ def set_throttle(n):
 
 
 def current_limit():
+    """Read the current effective MAX_PARALLEL from the throttle file.
+
+    Returns the ceiling if the file is missing or unreadable, clamped to
+    [1, MAX_PARALLEL_CEILING].
+    """
     try:
         with open(THROTTLE_FILE) as f:
             return max(1, min(int(f.read().strip()), _ceiling()))
@@ -433,6 +438,13 @@ def _global_pause_reason():
 
 
 def govern():
+    """Periodic resource sweep — the main loop calls this every tick.
+
+    Checks disk and RAM, prunes stale worktrees when disk exceeds DISK_SOFT,
+    auto-resumes cost-circuit pauses once the rolling hour clears, unloads
+    heavy Ollama models under memory pressure, and adjusts the throttle file
+    so concurrency scales with available headroom.
+    """
     used, free_gb = disk_pct()
     ram = ram_pct()
     free_ram = ram_free_gb()
