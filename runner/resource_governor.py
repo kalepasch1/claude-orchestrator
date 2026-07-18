@@ -73,6 +73,7 @@ def _event(kind, value=None, detail="", action=""):
 
 
 def disk_pct(path="/"):
+    """Return (used_percent, free_gb) for the filesystem at *path*."""
     u = shutil.disk_usage(path)
     return round(u.used / u.total * 100, 1), round(u.free / 1e9, 1)
 
@@ -136,6 +137,7 @@ def ram_free_gb():
 
 
 def total_gb():
+    """Return total physical RAM in GB, or None if unavailable."""
     try:
         import psutil
         return round(psutil.virtual_memory().total / 1e9, 1)
@@ -387,6 +389,7 @@ def prune():
 
 
 def set_throttle(n):
+    """Clamp *n* to [1, ceiling] and persist it to the throttle file."""
     n = max(1, min(n, _ceiling()))
     with open(THROTTLE_FILE, "w") as f:
         f.write(str(n))
@@ -394,6 +397,7 @@ def set_throttle(n):
 
 
 def current_limit():
+    """Read the persisted throttle limit, falling back to the ceiling."""
     try:
         with open(THROTTLE_FILE) as f:
             return max(1, min(int(f.read().strip()), _ceiling()))
