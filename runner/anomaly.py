@@ -31,6 +31,10 @@ def check():
     if len(rows) < RECENT * 2:
         return {"ok": True, "note": "not enough data yet"}
     recent, base = rows[:RECENT], rows[RECENT:]
+    def _avg_duration(rows):
+        durations = [float(r["duration_s"]) for r in rows if r.get("duration_s")]
+        return sum(durations) / max(1, len(durations)) if durations else 0.0
+
     metrics = {
         "fail_rate": (_rate(recent, lambda r: not r.get("tests_passed")),
                       _rate(base, lambda r: not r.get("tests_passed"))),
@@ -38,6 +42,7 @@ def check():
                             _rate(base, lambda r: r.get("rate_limited"))),
         "cost_per_task": (sum(float(r.get("usd") or 0) for r in recent) / len(recent),
                           sum(float(r.get("usd") or 0) for r in base) / max(1, len(base))),
+        "avg_duration_s": (_avg_duration(recent), _avg_duration(base)),
     }
     alerts = []
     for name, (now, baseline) in metrics.items():
