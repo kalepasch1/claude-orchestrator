@@ -35,7 +35,10 @@ import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock f
 import agentic_repair
 import repo_lock         # per-repo mutex: concurrent train_run() calls must not race git refs
 import repo_hygiene      # strip stray untracked .js shadowing .ts before every test run
-import semantic_merge    # AST-level auto-resolution for rebase conflicts
+try:
+    import semantic_merge    # AST-level auto-resolution for rebase conflicts
+except ImportError:
+    semantic_merge = None
 import integration_runtime
 
 
@@ -176,6 +179,8 @@ def _try_semantic_merge(repo, branch, base):
 
     Fail-soft: any exception returns False.
     """
+    if semantic_merge is None:
+        return False
     try:
         # find the merge-base commit
         mb = _git(repo, "merge-base", branch, base)
