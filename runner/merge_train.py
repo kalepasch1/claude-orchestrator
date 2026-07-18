@@ -65,9 +65,9 @@ def _test_timeout():
 
 TEST_TIMEOUT = _test_timeout()  # backward-compat module-level ref
 MERGING_STATE = os.environ.get("MERGE_TRAIN_STATE", "RUNNING")
-LOW_RISK_BATCH = int(os.environ.get("MERGE_TRAIN_LOW_RISK_BATCH", "8"))
-STANDARD_BATCH = int(os.environ.get("MERGE_TRAIN_STANDARD_BATCH", "3"))
-SENSITIVE_BATCH = int(os.environ.get("MERGE_TRAIN_SENSITIVE_BATCH", "1"))
+LOW_RISK_BATCH = int(os.environ.get("MERGE_TRAIN_LOW_RISK_BATCH", "8").strip('"'))
+STANDARD_BATCH = int(os.environ.get("MERGE_TRAIN_STANDARD_BATCH", "3").strip('"'))
+SENSITIVE_BATCH = int(os.environ.get("MERGE_TRAIN_SENSITIVE_BATCH", "1").strip('"'))
 PRESSURE_KEY = "merge_train_pressure"
 SENSITIVE_RE = re.compile(r"secret|token|oauth|auth|rls|security|pricing|legal|compliance|regulatory|privacy|payment|stripe", re.I)
 LOW_RISK_KINDS = {"docs", "chore", "lint", "format", "mechanical", "test", "tests"}
