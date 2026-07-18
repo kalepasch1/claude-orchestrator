@@ -53,6 +53,7 @@ SENSITIVE_PATHS = [
     "*/policy*", "*/permission*",
     "*/data_use*", "*/data_retention*", "*/gdpr*", "*/privacy*",
     "*/.env*", "*/secrets*",
+    "*/migration*", "*/schema*", "*/prisma/schema*",
 ]
 
 
