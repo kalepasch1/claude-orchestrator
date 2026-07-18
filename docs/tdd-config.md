@@ -202,3 +202,12 @@ valid, error = tdd_gate.validate_acceptance_criteria(task_spec)
 print(valid, error)
 EOF
 ```
+
+## Cache TTL
+
+The TDD gate caches `fleet_config` reads for 30 seconds (configurable via
+`ORCH_TDD_CACHE_TTL_S` env var). During that window, config changes propagated
+by `fleet_control.py` won't take effect until the cache expires. Call
+`tdd_gate.invalidate_cache()` to force an immediate reload. The runner's main
+loop calls `fleet_control.load_config()` every 90 seconds, which also refreshes
+the environment variables that `tdd_gate` reads on cache miss.
