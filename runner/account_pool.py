@@ -246,8 +246,34 @@ class AccountPool:
             self._write_exhausted_flag()   # a Claude account recovered -> clear the fail-over signal
 
 
+    def stats(self):
+        """Return a dict summarizing pool health for diagnostics and monitoring."""
+        self._maybe_reload()
+        now = time.time()
+        entries = []
+        for a in self.accts:
+            s = self.state.get(a["name"], {})
+            cd = float(s.get("cooldown_until", 0))
+            entries.append({
+                "name": a["name"],
+                "type": a.get("type", "login"),
+                "cooling": now < cd,
+                "cooldown_remaining_s": max(0, int(cd - now)) if now < cd else 0,
+                "use_count": s.get("use_count", 0),
+                "exh_hits": s.get("exh_hits", 0),
+            })
+        return {
+            "total": len(entries),
+            "healthy": sum(1 for e in entries if not e["cooling"]),
+            "cooling": sum(1 for e in entries if e["cooling"]),
+            "all_exhausted": self.all_exhausted(),
+            "accounts": entries,
+        }
+
+
 if __name__ == "__main__":
     p = AccountPool()
     cur = p.current()
     print("accounts:", [a["name"] for a in p.accts])
     print("current:", cur["name"] if cur else None, "env:", p.env_for(cur))
+    print("stats:", json.dumps(p.stats(), indent=2))
