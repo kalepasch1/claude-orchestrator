@@ -9,14 +9,25 @@ Configure per repo via env (or a .orchestrator-quality file):
   MUTATION_MIN_SCORE=60               # fail if mutation score below this
 Returns {"pass": bool, "notes": "..."}; skips gracefully if nothing configured.
 """
-import os, sys, subprocess, re
+import os, sys, subprocess, re, shlex
+
+
+def _run_cmd(cmd_str, cwd):
+    """Run a command string safely using shlex tokenisation instead of shell=True."""
+    try:
+        argv = shlex.split(cmd_str)
+    except ValueError:
+        # Malformed quoting — refuse to run rather than falling back to shell
+        return subprocess.CompletedProcess(args=cmd_str, returncode=1,
+                                           stdout="", stderr="shlex parse error")
+    return subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
 
 
 def run(repo):
     notes, ok = [], True
     mut = os.environ.get("MUTATION_CMD")
     if mut:
-        r = subprocess.run(mut, cwd=repo, shell=True, capture_output=True, text=True)
+        r = _run_cmd(mut, cwd=repo)
         m = re.search(r"(\d+(\.\d+)?)\s*%", r.stdout or "")
         score = float(m.group(1)) if m else None
         floor = float(os.environ.get("MUTATION_MIN_SCORE", "0"))
@@ -26,7 +37,7 @@ def run(repo):
             notes.append(f"mutation {score}%")
     prop = os.environ.get("PROPERTY_CMD")
     if prop:
-        r = subprocess.run(prop, cwd=repo, shell=True, capture_output=True, text=True)
+        r = _run_cmd(prop, cwd=repo)
         if r.returncode != 0:
             ok = False; notes.append("property tests failed")
         else:
