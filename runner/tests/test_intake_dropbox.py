@@ -40,6 +40,17 @@ class DropboxSlugifyTest(unittest.TestCase):
         self.assertEqual(iw._dropbox_slugify(""), "dropbox")
 
 
+    def test_special_chars_stripped(self):
+        self.assertEqual(iw._dropbox_slugify("# MISSION: Legal & Radar (v2)!"), "mission-legal-radar-v2")
+
+    def test_consecutive_hyphens_collapsed(self):
+        self.assertEqual(iw._dropbox_slugify("# Ship --- fast"), "ship-fast")
+
+    def test_trailing_hyphens_trimmed(self):
+        result = iw._dropbox_slugify("# trailing--- ")
+        self.assertFalse(result.endswith("-"), f"slug should not end with hyphen: {result}")
+
+
 class ExtractProofLineTest(unittest.TestCase):
     def test_extracts_proof(self):
         self.assertIn("pytest", iw._extract_proof_line("do x. Proof: `pytest` passes"))
