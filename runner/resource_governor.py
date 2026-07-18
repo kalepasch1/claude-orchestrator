@@ -579,5 +579,22 @@ def govern():
     return g
 
 
+def stats():
+    """Return a dict of governor state for operators and tests.
+
+    Combines the dashboard gauge with claim-gate status and tuning parameters
+    so callers can observe the full governor picture in one call.
+    """
+    gauge = dashboard_gauge()
+    ok, reason = can_claim()
+    gauge.update({
+        "can_claim": ok,
+        "claim_reason": reason,
+        "per_task_gb": _per_task_gb(),
+        "ram_floor_gb": _ram_floor_gb(),
+        "effective_floor_gb": effective_floor_gb(),
+    })
+    return gauge
+
 if __name__ == "__main__":
     print(json.dumps(govern()))
