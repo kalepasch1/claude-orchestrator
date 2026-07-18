@@ -905,6 +905,13 @@ def _run_for_unlocked(project, repo_override=None):
                     "n_changes": int(ahead), "changelog": changelog, "deploy_status": "pending"})
     pushed = None
     if push_on:
+        # Ensure auth before push — prevents "Not logged in" failures when
+        # task_refs.publish() hasn't run for this repo in this process yet.
+        try:
+            import task_refs
+            task_refs._ensure_auth(repo)
+        except Exception:
+            pass
         pr = _git(repo, "push", "origin", f"{staging_sha}:refs/heads/{prod}", timeout=300)
         pushed = pr.returncode == 0
         if pushed:

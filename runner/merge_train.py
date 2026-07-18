@@ -466,6 +466,14 @@ def _push_base(repo, base):
     MERGED (a failed push previously counted as a merge and desynced the DB from GitHub)."""
     if not _push_enabled_for_base(base):
         return ""
+    # Ensure auth before push — the PAT may not have been injected yet if
+    # task_refs.publish() hasn't run for this repo in this process.
+    # Root cause of "Not logged in · Please run /login" failures.
+    try:
+        import task_refs
+        task_refs._ensure_auth(repo)
+    except Exception:
+        pass  # best-effort; push will fail with a clear error if auth is missing
     r = _git(repo, "push", "origin", base, timeout=300)
     if r.returncode == 0:
         return ""
