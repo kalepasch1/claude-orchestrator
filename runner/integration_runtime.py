@@ -107,7 +107,16 @@ def isolated_repo(canonical_repo, owner):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     registered = _registered_worktrees(canonical_repo)
     if os.path.exists(path) and os.path.realpath(path) not in registered:
-        raise IntegrationRuntimeError(f"unregistered integration path exists: {path}")
+        # Stale worktree from a crashed previous run — clean up and recreate
+        # rather than permanently blocking all merges for this project.
+        import shutil
+        try:
+            _git(canonical_repo, "worktree", "remove", "--force", path)
+        except Exception:
+            pass
+        shutil.rmtree(path, ignore_errors=True)
+        if os.path.exists(path):
+            raise IntegrationRuntimeError(f"unregistered integration path exists and cannot be removed: {path}")
     if not os.path.exists(path):
         added = _git(canonical_repo, "worktree", "add", "--detach", path, before["head"])
         if added.returncode or not os.path.isdir(path):
