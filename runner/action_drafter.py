@@ -22,7 +22,7 @@ SAFE_CMD = re.compile(r"^\s*(npx prisma migrate deploy|npx prisma generate|supab
 # Never auto-run anything touching these keywords — force manual review regardless of
 # whether the command otherwise matches SAFE_CMD.
 UNSAFE = re.compile(r"(secret|token|api[_-]?key|password|delete|drop |rm -rf|payment|charge|"
-                    r"transfer|prod.*delete|revoke|force)", re.I)
+                    r"transfer|prod.*delete|revoke|force|sudo |chmod\s+777|curl.*\|.*sh)", re.I)
 
 PROMPT = """You are drafting a precise operator runbook item from a task card. Reply with ONE JSON:
 {"steps":"<=4 short imperative steps a developer can follow>","cmd":"<the single exact shell command
