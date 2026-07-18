@@ -20,3 +20,15 @@ Project `repo_path` values (beethoven included) intentionally stay under `~/Docu
 second Mac (which checks out there) is unaffected; only THIS Mac's *runtime* was relocated.
 To harden the other Mac, repeat: clone to `~/claude-orchestrator`, copy `.env` to
 `~/.claude-orchestrator/.env`, repoint its launcher/plists/`.zprofile`.
+
+## Zombie reaper and Cowork dispatch
+
+`runner.py`'s `_reap_zombie_tasks()` reclaims RUNNING tasks whose `updated_at` is
+older than 30 minutes, re-queuing them via `agentic_repair.repair_patch()`.
+
+Tasks claimed by Cowork executor sessions (accounts starting with `cowork-`) are
+**excluded** from the local zombie reaper. Cowork sessions run in a separate
+execution context (Claude desktop app / scheduled tasks) with their own 90-minute
+zombie timeout enforced at claim time. This prevents the local runner from
+prematurely reclaiming tasks that are still actively being worked by a Cowork
+session with a longer execution window.
