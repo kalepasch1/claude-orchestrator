@@ -187,8 +187,20 @@ def pressure_should_block(free_gb=None, floor_gb=None):
 
 
 def can_claim(n_active=0):
-    """Real-time gate the runner calls BEFORE starting each new task — protects the Mac in
-    the gaps between the slower periodic govern() ticks. Returns (ok, reason)."""
+    """Real-time gate the runner calls BEFORE starting each new task.
+
+    Protects the Mac in the gaps between the slower periodic govern() ticks.
+    Checks RAM headroom (free >= floor + per_task), kernel memory pressure,
+    and disk usage against DISK_HARD before allowing a new task to start.
+
+    Args:
+        n_active: Number of tasks currently running (used for logging context).
+
+    Returns:
+        Tuple of (ok: bool, reason: str). ``ok`` is True when it's safe to
+        start another task; ``reason`` is ``"ok"`` or a human-readable
+        explanation of the blocking condition.
+    """
     free = ram_free_gb()
     floor = effective_floor_gb()
     per_task = _per_task_gb()
