@@ -15,14 +15,14 @@ import db
 from action_drafter import SAFE_CMD, UNSAFE
 
 
-def _repo_for(approval_id):
+def _repo_for(approval_id: str) -> str:
     a = (db.select("approvals", {"select": "project", "id": f"eq.{approval_id}"}) or [{}])[0]
     name = a.get("project")
     p = (db.select("projects", {"select": "repo_path", "name": f"eq.{name}"}) or [{}])[0]
     return p.get("repo_path", "")
 
 
-def run():
+def run() -> int:
     # honor the global kill switch: no execution while paused
     try:
         import kill_switch
@@ -68,7 +68,7 @@ def run():
     return ran
 
 
-def auto_execute():
+def auto_execute() -> int:
     """Auto-run the SAFE majority: executable action items whose exact command has SUCCEEDED before
     (track record) get queued automatically — no click — with the same allowlist re-check + the runner's
     result capture (so a failure is visible and reversible). OFF unless ORCH_AUTO_EXEC_SAFE=true."""
