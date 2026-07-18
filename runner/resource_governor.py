@@ -66,6 +66,7 @@ os.makedirs(HOME, exist_ok=True)
 
 
 def _event(kind, value=None, detail="", action=""):
+    """Log a resource event to the DB (fail-soft — never raises)."""
     try:
         db.insert("resource_events", {"kind": kind, "value": value, "detail": detail[:500], "action": action})
     except Exception:
@@ -118,6 +119,7 @@ def _vm_stat():
 
 
 def ram_pct():
+    """Return RAM usage as a percentage, or None if unavailable."""
     # Prefer our macOS-accurate calc; psutil's macOS `available` also undercounts cache.
     v = _vm_stat()[0]
     if v is not None:
@@ -130,6 +132,7 @@ def ram_pct():
 
 
 def ram_free_gb():
+    """Return available RAM in GB, or None if unavailable."""
     # Prefer our macOS-accurate calc (counts reclaimable cache as available).
     v = _vm_stat()[1]
     if v is not None:
