@@ -155,6 +155,12 @@ def on_db_recovery():
             log("fleet-config-asserted", "baseline keys pushed")
     except Exception as e:
         log("fleet-config-failed", e)
+    try:
+        import sweep_reconciler
+        result = sweep_reconciler.reconcile()
+        log("sweep-reconciled", f"deployed={result['deployed']} annotated={result['annotated']}")
+    except Exception as e:
+        log("sweep-reconcile-failed", e)
 
 
 # ── 2. checkout drift guard ───────────────────────────────────────────────────
