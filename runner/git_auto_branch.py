@@ -170,15 +170,52 @@ def rebase_stale_branches(repo, base="master"):
     return rebased
 
 
+def cleanup_stale_worktrees(repo):
+    """Prune orphaned worktrees and remove worktree dirs for terminal tasks.
+
+    Worktrees left behind by crashed executor sessions waste disk and can block
+    branch creation. This prunes git's internal worktree bookkeeping and removes
+    worktree directories whose slug maps to a DONE/MERGED task.
+    """
+    if not repo or not os.path.isdir(repo):
+        return 0
+    # git worktree prune removes bookkeeping for deleted directories
+    _git(["worktree", "prune"], repo)
+    # list remaining worktrees and remove those for terminal tasks
+    out, ok = _git(["worktree", "list", "--porcelain"], repo)
+    if not ok:
+        return 0
+    active = _active_slugs()
+    terminal = {**_merged_slugs(), **_done_slugs()}
+    removed = 0
+    current_path = None
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            current_path = line.split(" ", 1)[1].strip()
+        elif line.startswith("branch ") and current_path:
+            branch = line.split(" ", 1)[1].strip()
+            # refs/heads/agent/some-slug → some-slug
+            slug = branch.replace("refs/heads/", "").removeprefix(BRANCH_PREFIX)
+            if slug in terminal and slug not in active:
+                _, ok = _git(["worktree", "remove", "--force", current_path], repo)
+                if ok:
+                    removed += 1
+            current_path = None
+        elif line == "":
+            current_path = None
+    return removed
+
+
 def run():
     """Periodic branch lifecycle management across all registered projects."""
     try:
         projects = db.select("projects", {"select": "id,name,repo_path,default_base"}) or []
     except Exception:
         print("git_auto_branch: could not load projects")
-        return {"cleaned": 0, "rebased": 0}
+        return {"cleaned": 0, "rebased": 0, "worktrees_pruned": 0}
     total_cleaned = 0
     total_rebased = 0
+    total_wt_pruned = 0
     for p in projects:
         repo = p.get("repo_path")
         if not repo or not os.path.isdir(repo):
@@ -186,8 +223,9 @@ def run():
         base = p.get("default_base") or "master"
         total_cleaned += cleanup_merged_branches(repo)
         total_rebased += rebase_stale_branches(repo, base)
-    print(f"git_auto_branch: cleaned {total_cleaned}, rebased {total_rebased}")
-    return {"cleaned": total_cleaned, "rebased": total_rebased}
+        total_wt_pruned += cleanup_stale_worktrees(repo)
+    print(f"git_auto_branch: cleaned {total_cleaned}, rebased {total_rebased}, worktrees_pruned {total_wt_pruned}")
+    return {"cleaned": total_cleaned, "rebased": total_rebased, "worktrees_pruned": total_wt_pruned}
 
 
 if __name__ == "__main__":
