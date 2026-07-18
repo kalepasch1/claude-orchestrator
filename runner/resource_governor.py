@@ -72,7 +72,8 @@ def _event(kind, value=None, detail="", action=""):
         pass
 
 
-def disk_pct(path="/"):
+def disk_pct(path: str = "/") -> tuple[float, float]:
+    """Return (used_percent, free_gb) for the given mount point."""
     u = shutil.disk_usage(path)
     return round(u.used / u.total * 100, 1), round(u.free / 1e9, 1)
 
@@ -111,8 +112,8 @@ def _vm_stat():
         return None, None
 
 
-def ram_pct():
-    # Prefer our macOS-accurate calc; psutil's macOS `available` also undercounts cache.
+def ram_pct() -> float | None:
+    """Return RAM usage percentage (macOS-accurate, counting reclaimable cache as free)."""
     v = _vm_stat()[0]
     if v is not None:
         return v
@@ -123,8 +124,8 @@ def ram_pct():
         return None
 
 
-def ram_free_gb():
-    # Prefer our macOS-accurate calc (counts reclaimable cache as available).
+def ram_free_gb() -> float | None:
+    """Return available RAM in GB (macOS-accurate, counts reclaimable cache as available)."""
     v = _vm_stat()[1]
     if v is not None:
         return v
@@ -135,7 +136,8 @@ def ram_free_gb():
         return None
 
 
-def total_gb():
+def total_gb() -> float | None:
+    """Return total physical RAM in GB."""
     try:
         import psutil
         return round(psutil.virtual_memory().total / 1e9, 1)
@@ -146,7 +148,7 @@ def total_gb():
             return None
 
 
-def effective_floor_gb():
+def effective_floor_gb() -> float:
     """Flat, env-tunable RAM reserve. (Earlier this scaled to 12% of total RAM, but macOS
     normally runs with most RAM committed to cache — on a large-RAM Mac that pushed the floor
     so high the runner never claimed. The kernel memory-pressure brake is the real anti-crash
@@ -154,7 +156,7 @@ def effective_floor_gb():
     return _ram_floor_gb()
 
 
-def mem_pressure_ok():
+def mem_pressure_ok() -> bool:
     """macOS authoritative brake. The free-GB heuristic (free+inactive+speculative) is
     optimistic; the kernel's own pressure level is the reliable signal.
     sysctl kern.memorystatus_vm_pressure_level -> 1=normal, 2=warn, 4=critical."""
@@ -167,7 +169,7 @@ def mem_pressure_ok():
         return True  # signal unavailable -> don't block on it alone
 
 
-def pressure_should_block(free_gb=None, floor_gb=None):
+def pressure_should_block(free_gb: float | None = None, floor_gb: float | None = None) -> bool:
     """Treat kernel memory pressure as decisive only when measured headroom is also tight.
 
     macOS can leave kern.memorystatus_vm_pressure_level at warn/critical after a burst even
@@ -186,7 +188,7 @@ def pressure_should_block(free_gb=None, floor_gb=None):
     return free_gb < floor_gb + (_per_task_gb() * extra_tasks)
 
 
-def can_claim(n_active=0):
+def can_claim(n_active: int = 0) -> tuple[bool, str]:
     """Real-time gate the runner calls BEFORE starting each new task — protects the Mac in
     the gaps between the slower periodic govern() ticks. Returns (ok, reason)."""
     free = ram_free_gb()
