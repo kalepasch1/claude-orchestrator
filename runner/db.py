@@ -360,12 +360,45 @@ def invalidate_done_cache():
         _done_cache["ts"] = 0.0
 
 
+def _claim_via_rpc(runner_id):
+    """Try the Postgres claim_next() RPC. Returns the claimed task row or None.
+    Feature-gated by ORCH_CLAIM_RPC (fleet_config or env), default false.
+    Passes runnable project IDs for host affinity."""
+    use_rpc = os.environ.get("ORCH_CLAIM_RPC", "false").lower() in ("true", "1", "yes")
+    if not use_rpc:
+        return None
+    try:
+        # Compute runnable projects for host affinity
+        projs = select("projects", {"select": "id,repo_path"}) or []
+        runnable = [p["id"] for p in projs if repo_runnable_here(p.get("repo_path"))]
+        args = {"p_runner_id": runner_id}
+        if runnable:
+            args["p_runnable_projects"] = runnable
+        result = rpc("claim_next", args)
+        if result and len(result) > 0:
+            return result[0]
+    except Exception as e:
+        print(f"[claim] RPC claim_next failed ({e}), falling back to scan path", flush=True)
+    return None
+
+
 def claim_task(runner_id):
     """Atomically grab one QUEUED task whose deps are satisfied. ECONOMIC ORDERING: within a
     project-priority band, prefer higher-ROI projects (projects.concurrency_weight, set from
     cost-per-merge by roi.py) and then FIFO. This makes the highest expected-value work run first
     under any capacity limit — and stays correct across MULTIPLE machines because the final claim
     is an atomic optimistic PATCH (state=QUEUED -> RUNNING), so two runners never double-claim."""
+    # RPC fast path: try the Postgres function first (feature flag ORCH_CLAIM_RPC, default false).
+    # Falls back to the full scan path on any error.
+    rpc_result = _claim_via_rpc(runner_id)
+    if rpc_result:
+        try:
+            import queue_preopt
+            queue_preopt.invalidate(rpc_result["id"])
+        except Exception:
+            pass
+        invalidate_done_cache()
+        return rpc_result
     prio, roi_w, project_names, paused_pids, local_repo_pids = {}, {}, {}, set(), None
     try:
         projs = select("projects", {"select": "id,name,priority,concurrency_weight,repo_path"}) or []
