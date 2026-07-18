@@ -1,0 +1,4 @@
+"""backlog_batch.py — Backlog batch processing. Env gate: ORCH_BACKLOG_BATCH_ENABLED (default OFF)."""
+import os
+ENABLED = os.environ.get('ORCH_BACKLOG_BATCH_ENABLED', '').lower() == 'true'
+def process_batch(tasks): return tasks if not ENABLED else [t for t in tasks if t.get('state') == 'QUEUED']
