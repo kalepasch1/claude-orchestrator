@@ -39,6 +39,7 @@ class FailureCluster:
 KNOWN_PATTERNS = [
     (r"capacity circuit.*call cap", "capacity-exhaustion"),
     (r"Not logged in.*Please run /login", "auth-not-logged-in"),
+    (r"remote.publish.failed.*push", "remote-publish-auth"),
     (r"HTTP Error 409.*Conflict", "git-conflict-409"),
     (r"no spec|no real specification|no actionable", "missing-spec"),
     (r"PATCH TEMPLATE.*[0-9a-f]{6,}", "patch-template-corrupt"),
