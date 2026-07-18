@@ -1,6 +1,7 @@
 # Specification: merged-diff-memory
 
 **Status:** Implemented (thread-safe singleton cache with TTL and size limits)
+**Eviction strategy:** LRU by access time; entries exceeding TTL are lazily pruned on next access.
 
 ## Overview
 Thread-safe in-process cache for diff results computed from merged branches/PRs. Stores diffs keyed by `(branch_a, branch_b, merge_commit)` and returns cached results within TTL. Fails soft on all errors and memory pressure—returns empty string rather than raising.
