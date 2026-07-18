@@ -244,7 +244,7 @@ const approvalRequired = ref<Record<string, boolean>>({})
 const rolloutMode = ref<Record<string, string>>({})
 function useCadePrompt(value: string) {
   terminalPrompt.value = value
-  routeInfo.value = 'CADE outcome loaded · routing will be revalidated at execution time'
+  routeInfo.value = 'Analysis complete · routing will be revalidated at execution time'
 }
 
 const INSIGHT_PLAYBOOK: Record<string, { recommendation: string; outcome: string }> = {
@@ -509,8 +509,8 @@ function refreshInsights() {
         id, key, timestamp: now, severity: item.severity, message: item.message, title,
         recommendation: playbook.recommendation, outcome: playbook.outcome,
         why: item.severity === 'high' || item.severity === 'warning'
-          ? 'CADE found a material gap between the observed experience and this capability’s configured quality threshold. The recommendation prioritizes the smallest change likely to move the outcome.'
-          : 'CADE found a measurable improvement opportunity supported by the current app context and specialist-bot consensus.',
+          ? 'We found a material gap between the observed experience and this capability’s configured quality threshold. The recommendation prioritizes the smallest change likely to move the outcome.'
+          : 'We found a measurable improvement opportunity supported by the current app context and specialist-bot consensus.',
         signals: (DOMAIN_BOTS[domain] || []).slice(0, 4),
         confidence: item.severity === 'high' ? 96 : item.severity === 'warning' ? 91 : 84,
         resolved: false,

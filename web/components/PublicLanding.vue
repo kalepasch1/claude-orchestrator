@@ -129,14 +129,14 @@ useHead({
       <div class="loop-copy">
         <p class="dark-kicker"><i /> Founder at the helm</p>
         <h2>You choose the destination.<br>The hivemind navigates.</h2>
-        <p>Madeus is the GPS, lane-departure warning, and creative route planner for your portfolio. You keep authority. The hivemind watches the whole terrain, warns before drift, and continually proposes faster, safer, higher-value routes.</p>
+        <p>This is the GPS, lane-departure warning, and creative route planner for your portfolio. You keep authority. The platform watches the whole terrain, warns before drift, and continually proposes faster, safer, higher-value routes.</p>
         <div class="loop-stats"><span><b>YOU</b> hold the wheel</span><span><b>CADE</b> predicts the road</span><span><b>∞</b> routes compared</span></div>
       </div>
       <div class="loop-console">
         <header><span>madeus / navigation-hivemind</span><b>FOUNDER CONTROLLED</b></header>
         <ol>
           <li><time>09:41:08</time><b>DESTINATION</b><span>Founder sets outcome, constraints, and authority</span><i>✓</i></li>
-          <li><time>09:41:10</time><b>TERRAIN</b><span>CADE maps portfolio effects and hidden dependencies</span><i>✓</i></li>
+          <li><time>09:41:10</time><b>TERRAIN</b><span>AI maps portfolio effects and hidden dependencies</span><i>✓</i></li>
           <li><time>09:41:13</time><b>ROUTES</b><span>Hivemind compares cost, quality, speed, and risk</span><i>✓</i></li>
           <li class="live"><time>09:41:16</time><b>GUIDANCE</b><span>Better route found · 31% faster · $4,820 less</span><i>●</i></li>
           <li><time>—</time><b>GUARDRAIL</b><span>Lane warning before customer-impacting change</span><i>○</i></li>
