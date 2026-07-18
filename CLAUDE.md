@@ -45,3 +45,10 @@ work to. Once the fleet is healthy, prefer the drop-box.
 - **DO** gate resource expansion (new pool entries) on memory checks via `resource_governor.can_claim()` to prevent wedging under pressure
 - **AVOID** blocking the caller on slow I/O—if a cache miss is likely, accept it and fall back rather than synchronous disk waits
 - **DO** provide `stats()` and `invalidate()` methods so operators and tests can observe/control pool state
+
+## Worktree convention (auto-distilled)
+
+All agent work happens in isolated git worktrees under `{repo}-wt/{slug}`, never via
+`git checkout` in the main repo checkout. `sentinel.py` monitors the main checkout and
+will stash+reset any non-base branch it finds there. Worktrees are removed after push;
+the `agent/{slug}` branch persists for merge-train pickup.
