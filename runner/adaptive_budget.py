@@ -38,8 +38,10 @@ def _history():
     return {}
 
 
-def _save_history(history):
-    # Cap at 200 entries
+def _save_history(history: dict) -> None:
+    """Persist output-length history to controls table, capping at 200 entries."""
+    if not history:
+        return
     if len(history) > 200:
         by_time = sorted(history.items(), key=lambda x: x[1].get("last_updated", 0))
         history = dict(by_time[-200:])
@@ -49,7 +51,8 @@ def _save_history(history):
         pass
 
 
-def _history_key(kind, domain):
+def _history_key(kind: str, domain: str) -> str:
+    """Build a composite lookup key for the budget history table."""
     return f"{kind}:{domain}"
 
 
