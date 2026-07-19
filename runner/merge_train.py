@@ -692,10 +692,10 @@ def _select_batch(group):
 
     Duplicate cards for one slug (240 were found for a single slug) used to flood
     every batch: keep the NEWEST card per slug and terminally mark the rest so
-    they are never picked again. Cap enforcement moved to train_run, which only
-    charges the cap for REAL integration attempts (merged/testfail/conflict) —
-    non-actionable outcomes (waiting/redo/branch-missing) no longer starve cards
-    whose branches actually exist (the 96%-pass / 2.75%-merge blockade)."""
+    they are never picked again. Cap enforcement lives in train_run and charges
+    every terminal or repair-producing result.  Otherwise an unlimited sequence
+    of already-integrated or redo cards can monopolize the global train lease and
+    prevent newly reconciled cards from ever reaching a bounded pass."""
     newest_by_slug = {}
     for card, slug, task in group:
         cur = newest_by_slug.get(slug)
@@ -1086,7 +1086,12 @@ def train_run():
                "risk": {"low": 0, "standard": 0, "sensitive": 0},
                "pressure": pressure}
     caps = {"low": LOW_RISK_BATCH, "standard": STANDARD_BATCH, "sensitive": SENSITIVE_BATCH}
-    ATTEMPT_OUTCOMES = ("merged", "testfail", "conflict", "push-pending")  # real attempts (tests ran) consume the cap
+    # Every result that touches a card consumes a risk-band slot.  In particular,
+    # redo and already-integrated used to be free; a legacy backlog containing
+    # hundreds of either could therefore hold the global lease for an unbounded
+    # scan and starve later reconciliation cards.
+    BUDGET_OUTCOMES = ("merged", "already-integrated", "redo", "testfail",
+                       "conflict", "push-pending", "waiting-branch")
     scan_cap = int(os.environ.get("MERGE_TRAIN_SCAN_PER_PROJECT", "200"))
     def process_project(item):
         pid, group = item
@@ -1122,7 +1127,7 @@ def train_run():
                         outcome = _integrate_card(
                             card, slug, task, proj, repo_override=integration_repo
                         )
-                        if outcome in ATTEMPT_OUTCOMES:
+                        if outcome in BUDGET_OUTCOMES:
                             used[risk] += 1
                         if outcome == "merged":
                             result["merged"] += 1

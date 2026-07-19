@@ -189,6 +189,26 @@ class TestCleanMerge(TrainCase):
         self.mocks["_ff_base"].assert_called_once()
 
 
+class TestBoundedHandoff(TrainCase):
+
+    def test_redo_consumes_batch_budget_and_releases_lease_for_next_pass(self):
+        """A large stale-branch backlog must not scan forever while holding the
+        global train lease.  A redo is work (delete/requeue/card update), so it
+        consumes the same risk budget as a normal integration attempt."""
+        self.cards = [_card("c1", "stale"), _card("c2", "fresh")]
+        self.tasks = [_task("t1", "stale"), _task("t2", "fresh")]
+        self.mocks["_rebase_onto_base"].side_effect = [False, True]
+
+        with patch.dict(os.environ, {"MERGE_CONFLICT_REDO_CAP": "2"}), \
+             patch.object(merge_train, "STANDARD_BATCH", 1):
+            summary = merge_train.train_run()
+
+        self.assertEqual(summary["redo"], 1)
+        self.assertEqual(summary["merged"], 0,
+                         "the second card belongs to the next bounded pass")
+        self.assertEqual(self.mocks["_rebase_onto_base"].call_count, 1)
+
+
 # ── B: idempotency + filtering ────────────────────────────────────────────────
 
 class TestSkipsHandledCards(TrainCase):
