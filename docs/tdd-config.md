@@ -142,6 +142,18 @@ INSERT INTO fleet_config (key, value) VALUES
 - Operators can still use TDD manually via explicit task kinds
 - Default for rapid iteration phases
 
+### ORCH_TDD_MAX_TEST_RUNTIME_S
+- **Type**: integer (seconds)
+- **Default**: `120`
+- **Description**: Maximum wall-clock time for the must-pass test suite before the gate
+  times out and marks the task BLOCKED. Prevents runaway or hanging tests from stalling
+  the pipeline. Set higher for integration-heavy tasks.
+- **How to set**:
+  ```sql
+  INSERT INTO fleet_config (key, value) VALUES ('ORCH_TDD_MAX_TEST_RUNTIME_S', '180')
+  ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+  ```
+
 ## Integration with Build Gate (tdd_gate.py)
 
 The `tdd_gate.py` module is called during CI build validation:
