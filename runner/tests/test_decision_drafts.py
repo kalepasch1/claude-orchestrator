@@ -237,11 +237,14 @@ class TestDecisionEngine(unittest.TestCase):
             "terms": "revenue sharing"
         }
 
-        decision_engine.store_decision(
-            project="test",
-            directive="negotiate",
-            context=context_dict
-        )
+        draft = {"draft": "Negotiation draft", "model": "test-model",
+                 "input_tokens": 1, "output_tokens": 1, "cost_usd": 0}
+        with patch.object(decision_engine, "generate_draft", return_value=draft):
+            decision_engine.store_decision(
+                project="test",
+                directive="negotiate",
+                context=context_dict
+            )
 
         call_args = mock_insert.call_args
         inserted_row = call_args[0][1]
@@ -287,7 +290,10 @@ class TestDecisionEngine(unittest.TestCase):
         mock_select.side_effect = select_side_effect
         mock_insert.return_value = [{"id": "dec-123"}]
 
-        result = decision_engine.poll_pending()
+        draft = {"draft": "Negotiation draft", "model": "test-model",
+                 "input_tokens": 1, "output_tokens": 1, "cost_usd": 0}
+        with patch.object(decision_engine, "generate_draft", return_value=draft):
+            result = decision_engine.poll_pending()
 
         self.assertEqual(len(result), 1)
         # Note: mock_insert is called multiple times (usage_meter, then decision_processes)
@@ -359,6 +365,269 @@ class TestDecisionEngineIntegration(unittest.TestCase):
         # In CI/test environments without ANTHROPIC_API_KEY, it will fail gracefully.
         # To run this: export ANTHROPIC_API_KEY=sk-... and run with --integration
         self.skipTest("Requires live Claude API (set ANTHROPIC_API_KEY to run)")
+
+
+class TestParallelProvider(unittest.TestCase):
+    """Unit tests for parallel_provider module."""
+
+    @patch('parallel_provider.mg.complete')
+    def test_parallel_complete_basic(self, mock_complete):
+        """Test parallel_complete with mocked provider calls."""
+        import parallel_provider
+
+        # Mock two providers returning results
+        mock_complete.side_effect = [
+            {"text": '{"verdict":"pass","score":8}', "cost_usd": 0.01, "provider": "claude", "model": "haiku"},
+            {"text": '{"verdict":"pass","score":7}', "cost_usd": 0.005, "provider": "google", "model": "gemini"},
+        ]
+
+        result = parallel_provider.parallel_complete(
+            ["claude", "google"],
+            ["claude-haiku-4-5-20251001", "gemini-2.0-flash"],
+            "Test prompt"
+        )
+
+        self.assertIn("text", result)
+        self.assertIn("provider", result)
+        self.assertIn("model", result)
+        self.assertIn("cost_usd", result)
+        self.assertIn("all_results", result)
+        self.assertIsNotNone(result["text"])
+
+    @patch('parallel_provider.mg.complete')
+    def test_parallel_complete_scoring(self, mock_complete):
+        """Test result scoring logic."""
+        import parallel_provider
+
+        # Provider 1: longer, detailed response
+        detailed = '{"verdict":"pass","score":8,"confidence":85,"notes":"very detailed analysis"}'
+        # Provider 2: shorter response
+        short = '{"verdict":"pass","score":6}'
+
+        mock_complete.side_effect = [
+            {"text": detailed, "cost_usd": 0.01, "provider": "claude", "model": "haiku"},
+            {"text": short, "cost_usd": 0.005, "provider": "google", "model": "gemini"},
+        ]
+
+        result = parallel_provider.parallel_complete(
+            ["claude", "google"],
+            ["claude-haiku-4-5-20251001", "gemini-2.0-flash"],
+            "Test prompt"
+        )
+
+        # More detailed result should win
+        self.assertEqual(result["provider"], "claude")
+        self.assertGreater(result["score"], 5)
+
+    @patch('parallel_provider.mg.complete')
+    def test_parallel_complete_provider_error(self, mock_complete):
+        """Test graceful handling when one provider fails."""
+        import parallel_provider
+
+        mock_complete.side_effect = [
+            {"text": '{"verdict":"pass","score":8}', "cost_usd": 0.01, "provider": "claude", "model": "haiku"},
+            {"text": "", "cost_usd": 0, "provider": "google", "model": "gemini", "error": "timeout"},
+        ]
+
+        result = parallel_provider.parallel_complete(
+            ["claude", "google"],
+            ["claude-haiku-4-5-20251001", "gemini-2.0-flash"],
+            "Test prompt"
+        )
+
+        # Should use the successful result
+        self.assertEqual(result["provider"], "claude")
+        self.assertIn("text", result)
+        self.assertEqual(len(result["all_results"]), 2)
+
+    def test_parallel_complete_empty_providers(self):
+        """Test parallel_complete with no providers."""
+        import parallel_provider
+
+        result = parallel_provider.parallel_complete([], [], "prompt")
+        self.assertEqual(result["provider"], "none")
+        self.assertIn("error", result)
+
+    def test_parallel_complete_mismatched_lengths(self):
+        """Test parallel_complete with mismatched provider/model lists."""
+        import parallel_provider
+
+        result = parallel_provider.parallel_complete(
+            ["claude"],
+            ["model1", "model2"],
+            "prompt"
+        )
+        self.assertEqual(result["provider"], "none")
+        self.assertIn("error", result)
+        self.assertIn("mismatch", result["error"])
+
+    @patch('parallel_provider.mg.complete')
+    def test_score_result_heuristics(self, mock_complete):
+        """Test scoring heuristics for result quality."""
+        import parallel_provider
+
+        # Test the internal _score_result function
+        result1 = {"text": '{"confidence": 85, "detailed": "very long analysis"}' + " " * 400}
+        score1 = parallel_provider._score_result(result1)
+
+        result2 = {"text": "short"}
+        score2 = parallel_provider._score_result(result2)
+
+        # Longer, more detailed result should score higher
+        self.assertGreater(score1, score2)
+
+    @patch('parallel_provider.mg.complete')
+    def test_parallel_complete_cost_aggregation(self, mock_complete):
+        """Test that costs are properly aggregated."""
+        import parallel_provider
+
+        mock_complete.side_effect = [
+            {"text": '{"verdict":"pass"}', "cost_usd": 0.01, "provider": "claude", "model": "haiku"},
+            {"text": '{"verdict":"pass"}', "cost_usd": 0.005, "provider": "google", "model": "gemini"},
+            {"text": '{"verdict":"pass"}', "cost_usd": 0.002, "provider": "deepseek", "model": "chat"},
+        ]
+
+        result = parallel_provider.parallel_complete(
+            ["claude", "google", "deepseek"],
+            ["haiku", "gemini", "deepseek-chat"],
+            "Test prompt"
+        )
+
+        # Total cost should be sum of all
+        self.assertAlmostEqual(result["cost_usd"], 0.017, places=3)
+
+
+class TestJudgeParallel(unittest.TestCase):
+    """Unit tests for judge.py parallel mode."""
+
+    @patch('parallel_provider.parallel_complete')
+    def test_review_parallel_basic(self, mock_parallel):
+        """Test review with parallel enabled."""
+        import judge
+
+        mock_parallel.return_value = {
+            "text": '{"verdict":"pass","score":8,"notes":"good","legal_counsel_required":false,"legal_risk":""}',
+            "provider": "claude",
+            "model": "haiku",
+            "score": 8.0,
+            "cost_usd": 0.01,
+            "all_results": [
+                {
+                    "provider": "claude",
+                    "model": "haiku",
+                    "text": '{"verdict":"pass","score":8,"notes":"good","legal_counsel_required":false,"legal_risk":""}',
+                    "cost_usd": 0.01,
+                    "score": 8.0,
+                    "winner": True
+                }
+            ]
+        }
+
+        result = judge.review("Test task", "diff content", use_parallel=True)
+
+        self.assertEqual(result["verdict"], "pass")
+        self.assertTrue(result.get("parallel"))
+        self.assertIn("synthesis_score", result)
+
+    @patch('model_gateway.complete')
+    def test_review_sequential_fallback(self, mock_complete):
+        """Test that sequential mode still works (default behavior)."""
+        import judge
+
+        mock_complete.return_value = {
+            "text": '{"verdict":"pass","score":8,"notes":"ok","legal_counsel_required":false,"legal_risk":""}',
+            "cost_usd": 0.01
+        }
+
+        result = judge.review("Test task", "diff content", use_parallel=False)
+
+        self.assertEqual(result["verdict"], "pass")
+        self.assertNotIn("parallel", result)  # sequential doesn't set this
+
+    @patch('parallel_provider.parallel_complete')
+    @patch('model_gateway.complete')
+    def test_review_parallel_fallback_on_error(self, mock_seq, mock_parallel):
+        """Test that review falls back to sequential if parallel fails."""
+        import judge
+
+        mock_parallel.side_effect = Exception("parallel failed")
+        mock_seq.return_value = {
+            "text": '{"verdict":"pass","score":7,"notes":"ok","legal_counsel_required":false,"legal_risk":""}',
+            "cost_usd": 0.01
+        }
+
+        result = judge.review("Test task", "diff content", use_parallel=True)
+
+        # Should fall back to sequential
+        self.assertEqual(result["verdict"], "pass")
+        # Verify sequential was called as fallback
+        mock_seq.assert_called()
+
+    @patch('parallel_provider.parallel_complete')
+    def test_review_parallel_with_legal_risk(self, mock_parallel):
+        """Test parallel review with legal risk assessment."""
+        import judge
+
+        mock_parallel.return_value = {
+            "text": '{"verdict":"fail","score":3,"notes":"legal risk","legal_counsel_required":true,"legal_risk":"money transmission"}',
+            "provider": "google",
+            "model": "gemini",
+            "score": 7.0,
+            "cost_usd": 0.015,
+            "all_results": [
+                {
+                    "provider": "google",
+                    "model": "gemini",
+                    "text": '{"verdict":"fail","score":3,"notes":"risk","legal_counsel_required":true,"legal_risk":"money transmission"}',
+                    "cost_usd": 0.015,
+                    "score": 7.0,
+                    "winner": True
+                }
+            ]
+        }
+
+        result = judge.review("Legal task", "diff", use_parallel=True)
+
+        self.assertEqual(result["verdict"], "fail")
+        self.assertTrue(result.get("legal_counsel_required"))
+        self.assertIn("money transmission", result.get("legal_risk", ""))
+
+    @patch('parallel_provider.parallel_complete')
+    def test_review_parallel_panel_aggregation(self, mock_parallel):
+        """Test that parallel results include all panel members."""
+        import judge
+
+        mock_parallel.return_value = {
+            "text": '{"verdict":"pass","score":8,"notes":"good","legal_counsel_required":false,"legal_risk":""}',
+            "provider": "claude",
+            "model": "haiku",
+            "score": 8.0,
+            "cost_usd": 0.02,
+            "all_results": [
+                {
+                    "provider": "claude",
+                    "model": "haiku",
+                    "text": '{"verdict":"pass","score":8,"notes":"good","legal_counsel_required":false,"legal_risk":""}',
+                    "cost_usd": 0.01,
+                    "score": 8.0,
+                    "winner": True
+                },
+                {
+                    "provider": "google",
+                    "model": "gemini",
+                    "text": '{"verdict":"pass","score":7,"notes":"ok","legal_counsel_required":false,"legal_risk":""}',
+                    "cost_usd": 0.01,
+                    "score": 6.5
+                }
+            ]
+        }
+
+        result = judge.review("Test task", "diff", use_parallel=True)
+
+        self.assertEqual(len(result["panel"]), 2)
+        # Verify winner is marked
+        winners = [p for p in result["panel"] if p.get("winner")]
+        self.assertEqual(len(winners), 1)
 
 
 if __name__ == "__main__":

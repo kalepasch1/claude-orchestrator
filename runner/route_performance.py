@@ -23,19 +23,35 @@ def summarize():
             pass
     since = (datetime.datetime.utcnow() - datetime.timedelta(hours=WINDOW_H)).isoformat()
     try:
-        rows = db.select("outcomes", {"select": "model,kind,slug,note,integrated,tests_passed,usd,wall_ms,attempts,deployed,deploy_status",
+        rows = db.select("outcomes", {"select": "model,project,kind,slug,note,integrated,tests_passed,usd,wall_ms,attempts,deployed,deploy_status,created_at",
                                       "created_at": f"gte.{since}", "order": "created_at.desc",
                                       "limit": "5000"}) or []
     except Exception:
-        rows = db.select("outcomes", {"select": "model,kind,slug,integrated,tests_passed,usd,wall_ms,attempts",
+        rows = db.select("outcomes", {"select": "model,project,kind,slug,integrated,tests_passed,usd,wall_ms,attempts,created_at",
                                       "created_at": f"gte.{since}", "order": "created_at.desc",
                                       "limit": "5000"}) or []
     try:
-        import route_evidence
-        rows = route_evidence.dedupe_attribution_rows(rows)
+        import route_value_optimizer
+        releases = db.select("releases", {"select": "project,deploy_status,deployed_at,created_at",
+                                           "order": "created_at.desc", "limit": "1000"}) or []
+        rows = route_value_optimizer.attach_release_evidence(rows, releases)
     except Exception:
         pass
-    agg = collections.defaultdict(lambda: {"n": 0, "tests": 0, "merged": 0.0, "usd": 0.0, "minutes": 0.0})
+    # Project/time-window inference is useful as a fallback, but exact immutable
+    # release links are authoritative. Apply them before terminalizing retries so
+    # the strongest deployed evidence wins the task/coder observation.
+    try:
+        import release_attribution
+        rows = release_attribution.apply(rows, authoritative=True)
+    except Exception:
+        pass
+    try:
+        import route_evidence
+        rows = route_evidence.terminal_task_rows(rows)
+    except Exception:
+        pass
+    agg = collections.defaultdict(lambda: {"n": 0, "tests": 0, "merged": 0.0,
+                                           "deployed": 0, "usd": 0.0, "minutes": 0.0})
     for r in rows:
         key = (router_stats._coder_of(r.get("model")), router_stats._stage_of(r))
         a = agg[key]
@@ -43,18 +59,26 @@ def summarize():
         a["tests"] += 1 if r.get("tests_passed") else 0
         merged = 1.0 if r.get("integrated") else 0.0
         if r.get("deployed") or str(r.get("deploy_status") or "").lower() in ("ready", "success", "deployed", "green"):
-            merged += 0.5
+            a["deployed"] += 1
         a["merged"] += merged
         a["usd"] += float(r.get("usd") or 0)
         a["minutes"] += max(0.01, float(r.get("wall_ms") or 0) / 60000.0)
     out = []
     for (coder, stage), a in agg.items():
+        try:
+            import route_value_optimizer
+            lower = route_value_optimizer.wilson_lower(a["deployed"], a["n"])
+        except Exception:
+            lower = 0.0
+        value = a["deployed"] + 0.15 * max(0.0, a["merged"] - a["deployed"])
         out.append({"coder": coder, "stage": stage, "n": a["n"],
                     "test_rate": round(a["tests"] / max(1, a["n"]), 3),
                     "merged_value": round(a["merged"], 2),
-                    "merged_value_per_min": round(a["merged"] / max(1.0, a["minutes"]), 4),
-                    "usd_per_merged_value": round(a["usd"] / max(0.5, a["merged"]), 4)})
-    out.sort(key=lambda r: (-r["merged_value_per_min"], r["usd_per_merged_value"], -r["n"]))
+                    "deployed": a["deployed"], "deployment_lower_bound": round(lower, 4),
+                    "deployed_value_per_min": round(value / max(1.0, a["minutes"]), 4),
+                    "usd_per_deployed_value": round(a["usd"] / max(0.25, value), 4)})
+    out.sort(key=lambda r: (-r["deployment_lower_bound"], -r["deployed_value_per_min"],
+                            r["usd_per_deployed_value"], -r["n"]))
     return out
 
 

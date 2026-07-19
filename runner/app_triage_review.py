@@ -19,7 +19,8 @@ import db, judge, model_gateway as mg
 SAMPLE = int(os.environ.get("APP_REVIEW_SAMPLE", "40"))
 QUALITY_BAR = float(os.environ.get("APP_QUALITY_BAR", "7.0"))   # min avg score to keep a route
 # rough ascending cost rank for tie-breaking when quality is comparable
-COST_RANK = {"local": 0, "deepseek": 1, "google": 2, "openai": 3, "claude": 4}
+COST_RANK = {"local": 0, "groq": 1, "deepseek": 2, "google": 3,
+             "xai": 4, "openai": 5, "claude": 6}
 
 
 def _heuristic_score(op):
@@ -35,7 +36,7 @@ def _heuristic_score(op):
         score -= 2.0
     if provider == "local":
         score += 0.7 if task_class in ("plan", "rating", "mechanical", "review", "qa") else 0.2
-    if provider in ("deepseek", "google", "openai") and task_class in ("plan", "review", "qa"):
+    if provider in ("groq", "deepseek", "google", "xai", "openai") and task_class in ("plan", "review", "qa"):
         score += 0.4
     if provider == "claude" and task_class in ("security", "legal", "hard"):
         score += 0.8

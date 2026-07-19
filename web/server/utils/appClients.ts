@@ -6,7 +6,7 @@
  */
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 
-export type AppId = 'apparently' | 'tomorrow' | 'smarter' | 'galop' | 'hisanta' | 'pareto' | 'orchestrator'
+export type AppId = 'apparently' | 'tomorrow' | 'smarter' | 'galop' | 'hisanta' | 'pareto' | 'sustainable_barks' | 'orchestrator'
 
 interface AppConfig {
   supabaseUrl: string
@@ -22,8 +22,9 @@ const APP_ENV_MAP: Record<AppId, { urlEnv: string; keyEnv: string; name: string;
   smarter:      { urlEnv: 'SUPABASE_URL_SMARTER',      keyEnv: 'SUPABASE_SERVICE_KEY_SMARTER',      name: 'Smarter',      baseUrlEnv: 'FLEET_URL_SMARTER' },
   galop:        { urlEnv: 'SUPABASE_URL_GALOP',        keyEnv: 'SUPABASE_SERVICE_KEY_GALOP',        name: 'Galop',        baseUrlEnv: 'FLEET_URL_GALOP' },
   hisanta:      { urlEnv: 'SUPABASE_URL_HISANTA',      keyEnv: 'SUPABASE_SERVICE_KEY_HISANTA',      name: 'HiSanta',      baseUrlEnv: 'FLEET_URL_HISANTA' },
-  pareto:       { urlEnv: 'SUPABASE_URL_PARETO',       keyEnv: 'SUPABASE_SERVICE_KEY_PARETO',       name: 'Pareto',       baseUrlEnv: 'FLEET_URL_PARETO' },
-  orchestrator: { urlEnv: 'SUPABASE_URL',              keyEnv: 'SUPABASE_SERVICE_KEY',              name: 'Orchestrator', baseUrlEnv: 'FLEET_URL_ORCHESTRATOR' },
+  pareto:           { urlEnv: 'SUPABASE_URL_PARETO',           keyEnv: 'SUPABASE_SERVICE_KEY_PARETO',           name: 'Pareto',           baseUrlEnv: 'FLEET_URL_PARETO' },
+  sustainable_barks:{ urlEnv: 'SUPABASE_URL_SUSTAINABLE_BARKS',keyEnv: 'SUPABASE_SERVICE_KEY_SUSTAINABLE_BARKS',name: 'Sustainable Barks',baseUrlEnv: 'FLEET_URL_SUSTAINABLE_BARKS' },
+  orchestrator:     { urlEnv: 'SUPABASE_URL',                  keyEnv: 'SUPABASE_SERVICE_KEY',                  name: 'Orchestrator',     baseUrlEnv: 'FLEET_URL_ORCHESTRATOR' },
 }
 
 const clients = new Map<AppId, SupabaseClient>()

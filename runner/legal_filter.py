@@ -37,12 +37,13 @@ POSTURE_CHANGE = re.compile(
 
 EXTREME_LEGAL = re.compile(
     r"\b(subpoena|lawsuit|litigation|cease and desist|enforcement action|consent order|"
-    r"criminal|fraud|sanction|ofac)\b",
+    r"criminal|fraud|sanction|ofac|general solicitation|solicitation)\b",
     re.I,
 )
 
 
 def text_for(card=None, text=""):
+    """Extract text content from a card dict or return the provided text fallback."""
     if isinstance(card, dict):
         parts = [card.get(k) for k in ("title", "why", "detail", "prebrief", "risk", "value")]
         text = " ".join(str(p or "") for p in parts) + " " + str(text or "")
@@ -50,6 +51,7 @@ def text_for(card=None, text=""):
 
 
 def requires_owner_approval(card=None, text="", kind="", radar_tag=""):
+    """Return True if the task requires owner or counsel approval based on regulatory keyword matching."""
     blob = text_for(card, text)
     if not blob.strip():
         return False

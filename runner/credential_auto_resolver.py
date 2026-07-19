@@ -31,6 +31,7 @@ PROVIDER_ENV_MAP = {
     "stripe":     ["STRIPE_SECRET_KEY"],
     "deepseek":   ["DEEPSEEK_API_KEY"],
     "grok":       ["GROK_API_KEY", "XAPI_KEY"],
+    "xai":        ["XAI_API_KEY", "GROK_API_KEY", "XAPI_KEY"],
     "voyage":     ["VOYAGE_API_KEY"],
 }
 
@@ -63,6 +64,14 @@ def _has_credential(provider):
     """Return (available, source_description)."""
     found, key = _env_has(provider)
     if found:
+        try:
+            import provider_failover_sla
+            canonical = "xai" if provider.lower() == "grok" else provider.lower()
+            demoted = (provider_failover_sla._load().get("demoted") or {}).get(canonical) or {}
+            if str(demoted.get("reason") or "").startswith("auth-"):
+                return False, ""
+        except Exception:
+            pass
         return True, "env:" + key
 
     # GitHub special: try gh CLI

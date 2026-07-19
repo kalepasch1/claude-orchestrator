@@ -15,12 +15,29 @@ import db
 
 
 def mark_shipped():
-    merged = {t["slug"] for t in (db.select("tasks", {"select": "slug", "state": "eq.MERGED"}) or [])}
+    """Distinguish merged engineering output from verified production deployment."""
+    tasks = {t["slug"]: t for t in (db.select("tasks", {
+        "select": "slug,state,project_id,updated_at", "state": "eq.MERGED"}) or [])}
+    projects = {p["id"]: p["name"] for p in (db.select("projects", {"select": "id,name"}) or [])}
+    releases = db.select("releases", {"select": "project,deploy_status,deployed_at,created_at",
+                                      "deploy_status": "eq.success", "order": "created_at.desc"}) or []
+    latest = {}
+    for release in releases:
+        latest.setdefault(release.get("project"), release)
     n = 0
-    for p in db.select("improvement_proposals", {"select": "id,task_slug,status", "status": "eq.queued"}) or []:
-        if p.get("task_slug") in merged:
+    for p in db.select("improvement_proposals", {"select": "id,task_slug,status",
+                                                  "status": "in.(queued,merged)"}) or []:
+        task = tasks.get(p.get("task_slug"))
+        if not task:
+            continue
+        project = projects.get(task.get("project_id"))
+        release = latest.get(project) or {}
+        deployed_at = str(release.get("deployed_at") or release.get("created_at") or "")
+        if release and deployed_at >= str(task.get("updated_at") or ""):
             db.update("improvement_proposals", {"id": p["id"]}, {"status": "shipped"})
             n += 1
+        elif p.get("status") != "merged":
+            db.update("improvement_proposals", {"id": p["id"]}, {"status": "merged"})
     return n
 
 

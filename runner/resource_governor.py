@@ -12,6 +12,12 @@ Docker images, and ~/Library/Caches behind opt-in flags.
 import os, sys, time, shutil, subprocess, glob, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import events
+
+
+def emit(kind, **fields):
+    """Public fail-soft event adapter used by integrations and diagnostics."""
+    return events.emit(kind, **fields)
 
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 THROTTLE_FILE = os.path.join(HOME, "throttle")
@@ -28,6 +34,7 @@ THROTTLE_FILE = os.path.join(HOME, "throttle")
 # PER_TASK_GB/RAM_FLOOR_GB pushed centrally after it last started. Read all of these live from
 # env on every call instead of freezing them at import.
 def _ceiling():
+    """Maximum number of parallel tasks allowed regardless of available resources."""
     return int(os.environ.get("MAX_PARALLEL_CEILING", "12"))
 
 
@@ -44,23 +51,32 @@ def _ram_hard():
 
 
 def _ram_floor_gb():
-    # Hard low-memory brake: if fewer than this many GB are available, PAUSE new task claims
-    # entirely (a single heavy task — e.g. an 8GB typecheck — could otherwise crash the Mac).
-    # 1.5GB was too low — macOS is already swapping/thrashing by then. Default 3GB, and the
-    # effective floor scales UP with machine size (see effective_floor_gb).
+    """Minimum free RAM (GB) before pausing new task claims entirely.
+
+    Hard low-memory brake: if fewer than this many GB are available, PAUSE new task claims
+    entirely (a single heavy task — e.g. an 8GB typecheck — could otherwise crash the Mac).
+    1.5GB was too low — macOS is already swapping/thrashing by then. Default 2GB, and the
+    effective floor scales UP with machine size (see effective_floor_gb).
+    """
     return float(os.environ.get("RAM_FLOOR_GB", "2.0"))
 
 
 def _per_task_gb():
-    # Headroom to reserve per concurrent task. A new task is only started if free RAM exceeds
-    # (floor + PER_TASK_GB), so concurrency is implicitly capped by available memory.
+    """RAM headroom (GB) reserved per concurrent task.
+
+    A new task is only started if free RAM exceeds (floor + PER_TASK_GB), so concurrency
+    is implicitly capped by available memory.
+    """
     return float(os.environ.get("PER_TASK_GB", "0.15"))
 
 
+# --- Pruning knobs (opt-in per category) ---
 LOG_KEEP_DAYS = int(os.environ.get("LOG_KEEP_DAYS", "7"))
 PRUNE_NODE_MODULES = os.environ.get("PRUNE_NODE_MODULES", "false").lower() == "true"
 PRUNE_DOCKER = os.environ.get("PRUNE_DOCKER", "false").lower() == "true"
 PRUNE_LIB_CACHES = os.environ.get("PRUNE_LIB_CACHES", "false").lower() == "true"
+# Predictive throttling: fit a trend line to recent disk_pct samples and throttle
+# preemptively if extrapolation breaches DISK_HARD within this many hours.
 PREDICT_WINDOW_H = float(os.environ.get("PREDICT_DISK_WINDOW_H", "2"))
 os.makedirs(HOME, exist_ok=True)
 
@@ -73,6 +89,7 @@ def _event(kind, value=None, detail="", action=""):
 
 
 def disk_pct(path="/"):
+    """Return (used_percent, free_gb) for the filesystem containing *path*."""
     u = shutil.disk_usage(path)
     return round(u.used / u.total * 100, 1), round(u.free / 1e9, 1)
 
@@ -267,13 +284,60 @@ def _has_uncommitted_changes(wt_path, repo):
 
 
 def _is_branch_unmerged(branch, repo):
-    """Return True if branch is NOT merged into main (safety guard)."""
+    """Return True if branch is NOT merged into main (safety guard). Exact-name match —
+    the old substring check could mis-classify a branch as merged when its name was a
+    substring of another merged branch."""
     try:
         merged = subprocess.check_output(["git", "branch", "--merged", "main"],
                                          cwd=repo, text=True, timeout=10)
-        return branch not in merged
+        names = {l.strip().lstrip("* ").strip() for l in merged.splitlines()}
+        return branch not in names
     except Exception:
         return True  # assume unmerged if we can't check
+
+
+def _is_fresh_checkout(branch, repo):
+    """True if the branch tip is exactly main's tip. `git branch --merged main` counts a freshly
+    created agent branch as 'merged', but a tip identical to main means an executor just created
+    it and hasn't committed yet — NOT that its work landed. Deleting such a worktree rips it out
+    from under a running executor. (A truly merged branch normally points at its own last commit,
+    which main contains but does not equal.) Fail closed (True → caller skips)."""
+    try:
+        tip = subprocess.run(["git", "rev-parse", "--verify", "--quiet", branch],
+                             cwd=repo, capture_output=True, text=True, timeout=10)
+        main_tip = subprocess.run(["git", "rev-parse", "--verify", "--quiet", "main"],
+                                  cwd=repo, capture_output=True, text=True, timeout=10)
+        if tip.returncode != 0 or main_tip.returncode != 0:
+            return True
+        return tip.stdout.strip() == main_tip.stdout.strip()
+    except Exception:
+        return True
+
+
+def _wt_recently_active(path, min_age_min=None):
+    """True if the worktree (or its git admin dir/index) was touched recently. Fail closed."""
+    if min_age_min is None:
+        min_age_min = int(os.environ.get("WORKTREE_GC_MIN_AGE_MIN", "180"))
+    if min_age_min <= 0:
+        return False
+    cands = [path, os.path.join(path, ".git")]
+    try:
+        with open(os.path.join(path, ".git")) as f:
+            g = f.read().strip()
+        if g.startswith("gitdir:"):
+            admin = g.split(":", 1)[1].strip()
+            cands += [admin, os.path.join(admin, "index")]
+    except Exception:
+        return True
+    newest = 0.0
+    for c in cands:
+        try:
+            newest = max(newest, os.path.getmtime(c))
+        except Exception:
+            pass
+    if newest == 0.0:
+        return True
+    return newest > time.time() - min_age_min * 60
 
 
 def _agent_branch_safe_on_origin(branch, repo):
@@ -308,6 +372,7 @@ def _agent_branch_safe_on_origin(branch, repo):
 
 
 def prune():
+    """Reclaim disk by removing merged worktrees, old logs, and stale caches.  Returns freed-item notes."""
     freed_notes = []
     # 1) merged agent worktrees + git worktree prune
     for p in _projects():
@@ -332,9 +397,20 @@ def prune():
                     if _is_branch_unmerged(b, repo):
                         freed_notes.append(f"SKIPPED (unmerged) {b}")
                         continue
+                    # SAFETY: a branch whose tip == main's tip looks 'merged' but is really a
+                    # FRESH checkout an executor just created and hasn't committed to — skip it.
+                    if _is_fresh_checkout(b, repo):
+                        freed_notes.append(f"SKIPPED (fresh checkout) {b}")
+                        continue
+                    # SAFETY: skip worktrees with recent filesystem/git activity (active executor)
+                    if _wt_recently_active(wt):
+                        freed_notes.append(f"SKIPPED (recently active) {b}")
+                        continue
                     # SAFETY: never delete a local agent branch whose work isn't durably on origin
                     # (fail-soft share push can leave it local-only → deleting loses work fleet-wide).
                     origin_safe = _agent_branch_safe_on_origin(b, repo)
+                    # All guards passed: clear any creation lock so the worktree can be reclaimed.
+                    subprocess.run(["git", "worktree", "unlock", wt], cwd=repo, capture_output=True)
                     subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=repo, capture_output=True)
                     if origin_safe:
                         subprocess.run(["git", "branch", "-D", b], cwd=repo, capture_output=True)
@@ -386,8 +462,12 @@ def prune():
     return freed_notes
 
 
+def _throttle_floor():
+    return int(os.environ.get("ORCH_THROTTLE_FLOOR", "1"))
+
+
 def set_throttle(n):
-    n = max(1, min(n, _ceiling()))
+    n = max(_throttle_floor(), min(n, _ceiling()))
     with open(THROTTLE_FILE, "w") as f:
         f.write(str(n))
     return n
@@ -433,9 +513,11 @@ def _global_pause_reason():
 
 
 def govern():
+    _t0 = time.monotonic()
     used, free_gb = disk_pct()
     ram = ram_pct()
     free_ram = ram_free_gb()
+    _t_sample = time.monotonic()
     _event("disk", used, f"{free_gb}GB free")
     action = "ok"
 
@@ -574,8 +656,12 @@ def govern():
             set_throttle(recovered_target)
             action += f"; mem-recover->{recovered_target}"
             g = dashboard_gauge()
+    _t_end = time.monotonic()
+    _elapsed_ms = (_t_end - _t0) * 1000
+    _sample_ms = (_t_sample - _t0) * 1000
     print(f"governor: disk {used}% ({free_gb}GB free) ram {ram} free_ram {free_ram}GB "
-          f"floor {eff_floor} -> {action}, limit={current_limit()}")
+          f"floor {eff_floor} -> {action}, limit={current_limit()} "
+          f"[{_elapsed_ms:.0f}ms total, {_sample_ms:.0f}ms sampling]")
     return g
 
 

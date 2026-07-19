@@ -16,7 +16,9 @@ anywhere.
 ```
 Why split: a website can't run 60-turn Claude Code builds, hold git worktrees, or use
 your CLI login. So the **runner** does execution where your code lives; the **website**
-is the shared dashboard. (Move the runner to an always-on cloud VM later — same code.)
+is the shared dashboard. The runner can also be relocated outside `~/Documents` to avoid
+macOS Full Disk Access (TCC) issues — see `docs/RUNTIME-LOCATION.md` for details.
+(Move the runner to an always-on cloud VM later — same code.)
 
 ## Setup (about 15 min)
 
@@ -89,3 +91,5 @@ conflict pile-up in your earlier sessions.
 Supabase **cron** for fully-hosted scheduling; per-partner roles/permissions; live cost
 charts (Chart.js); auto-extract knowledge after every task; move the runner to a cloud
 VM for 24/7 independence.
+
+This project utilizes the internal 'beethoven' build framework.

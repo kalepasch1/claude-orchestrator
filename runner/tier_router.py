@@ -17,6 +17,8 @@ Env vars (ORCH_-prefixed for fleet-wide tuning via fleet_config):
 import os, sys, time, threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import provider_credentials
+provider_credentials.activate_aliases()
 
 # ---------------------------------------------------------------------------
 # Env config (read at call time for live fleet_config reloads)
@@ -41,13 +43,37 @@ _DIFF_MODEL = {"easy": "fast", "hard": "mid", "critical": "heavy"}
 
 # Provider cost ranking (lower = cheaper) for API tier selection
 _API_PROVIDERS = [
-    {"provider": "deepseek", "model": "deepseek-chat",    "coder": "aider", "cost_rank": 1},
-    {"provider": "gemini",   "model": "gemini-2.0-flash", "coder": "aider", "cost_rank": 2},
-    {"provider": "openai",   "model": "gpt-4o-mini",      "coder": "aider", "cost_rank": 3},
-    {"provider": "anthropic","model": "claude-sonnet-4-6", "coder": "aider", "cost_rank": 4},
+    {"provider": "groq",     "model": "llama-3.1-8b-instant",  "coder": "swarm", "cost_rank": 0},
+    {"provider": "deepseek", "model": "deepseek-v4-flash",     "coder": "aider", "cost_rank": 1},
+    {"provider": "gemini",   "model": "gemini-3-flash",        "coder": "aider", "cost_rank": 2},
+    {"provider": "xai",      "model": "grok-build-0.1",        "coder": "swarm", "cost_rank": 3},
+    {"provider": "openai",   "model": "gpt-5.4-nano",          "coder": "aider", "cost_rank": 4},
+    {"provider": "anthropic","model": "claude-sonnet-5",      "coder": "aider", "cost_rank": 5},
 ]
 
-# Subscription providers and their model tiers — calibrated per task difficulty.
+# API key env var map for availability checks
+_KEY_ENV_MAP = {
+    "groq": "GROQ_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "xai": "XAI_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+}
+
+
+def _registry_provider(provider):
+    """Normalize execution-provider aliases to vendor registry names."""
+    return {
+        "google": "gemini", "gemini": "gemini",
+        "anthropic": "claude", "claude": "claude",
+        "chatgpt": "openai",
+    }.get(str(provider or "").lower(), str(provider or "").lower())
+
+# Subscription providers: drain $0/flat-fee tokens BEFORE API billing.
+# Includes: Claude Max, Groq free (30 RPM), Google AI Studio free (1500 RPD),
+# ChatGPT Plus/Pro, Gemini Advanced.
+# Original comment: Subscription providers and their model tiers — calibrated per task difficulty.
 # With 3 Claude Max plans, we have abundant subscription credits across all Claude
 # models. Route easy/mechanical → Haiku ($0, fast), standard → Sonnet ($0, balanced),
 # hard/critical → Opus ($0, max capability). All subscription = $0 marginal cost.
@@ -56,14 +82,20 @@ _SUB_PROVIDERS = [
     {"provider": "claude",  "model": "claude-haiku-4-5-20251001", "coder": "claude-cli",
      "tiers": {"fast"}},
     # Claude Sonnet: balanced, good for standard build/mid-complexity
-    {"provider": "claude",  "model": "claude-sonnet-4-6", "coder": "claude-cli",
+    {"provider": "claude",  "model": "claude-sonnet-5", "coder": "claude-cli",
      "tiers": {"mid"}},
     # Claude Opus: maximum capability for hard/critical/security/architecture tasks
     {"provider": "claude",  "model": "claude-opus-4-8", "coder": "claude-cli",
      "tiers": {"heavy"}},
-    {"provider": "chatgpt", "model": "gpt-4o",            "coder": "aider",
+    # -- Groq free tier (30 RPM, $0, 500+ tok/s) --
+    {"provider": "groq",    "model": "llama-3.3-70b-versatile", "coder": "swarm",
      "tiers": {"fast", "mid"}},
-    {"provider": "gemini",  "model": "gemini-2.5-pro",    "coder": "aider",
+    # -- Google AI Studio free tier (1500 RPD, $0) --
+    {"provider": "gemini",  "model": "gemini-3-flash",    "coder": "aider",
+     "tiers": {"fast"}},
+    {"provider": "chatgpt", "model": "gpt-5.4-mini",      "coder": "aider",
+     "tiers": {"fast", "mid"}},
+    {"provider": "gemini",  "model": "gemini-3.5-flash",  "coder": "aider",
      "tiers": {"fast", "mid"}},
 ]
 
@@ -141,20 +173,47 @@ class TierRouter:
                   "coder": str, "reason": str}
         """
         if not task:
-            return {"tier": "sub", "provider": "claude", "model": "claude-sonnet-4-6",
+            return {"tier": "sub", "provider": "claude", "model": "claude-sonnet-5",
                     "coder": "claude-cli", "reason": "empty task fallback"}
 
         if self._kill_switch_paused():
-            return {"tier": "sub", "provider": "claude", "model": "claude-sonnet-4-6",
+            return {"tier": "sub", "provider": "claude", "model": "claude-sonnet-5",
                     "coder": "claude-cli", "reason": "kill_switch paused — default sub only"}
+
+        try:
+            import pathway_arbiter
+            _pathway = pathway_arbiter.decide(task)
+            pathway_arbiter.record(task, _pathway)
+            task["execution_lane"] = _pathway["lane"]
+            task["_paid_api_eligible"] = _pathway["paid_api_eligible"]
+        except Exception:
+            _pathway = {"lane": "cowork", "paid_api_eligible": False}
+        _force_native_lane = _pathway["lane"] == "orchestrator_native"
+
+        # Capabilities that genuinely require Cowork must be dispatched before
+        # generic Claude model calibration. Code/build tasks without these
+        # requirements continue through the fully native orchestrator path.
+        try:
+            import vendor_capabilities, cowork_skills
+            needs_cowork, cowork_caps = vendor_capabilities.requires_cowork_session(task)
+            if needs_cowork and cowork_skills.ENABLED and not _force_native_lane:
+                return {"tier": "sub", "provider": "claude",
+                        "model": os.environ.get("ORCH_COWORK_SKILL_MODEL", "claude-sonnet-5"),
+                        "coder": "cowork-skill", "skill_types": cowork_caps,
+                        "reason": "capability gate → Cowork-only " + ",".join(cowork_caps)}
+        except Exception:
+            pass
 
         mode = _tier_mode()
         diff = self._task_difficulty(task)
         model_tier = _DIFF_MODEL.get(diff, "fast")
         est = self._estimated_cost(task)
 
+        if _force_native_lane and _pathway.get("paid_api_eligible") and self._paid_allowed():
+            return self._pick_api(task, model_tier, "bundled Cowork exhausted → native overflow")
+
         # --- Cowork model calibration: right-size Claude model per task ---
-        if os.environ.get("ORCH_COWORK_MODEL_CALIBRATE", "true").lower() in ("true", "1"):
+        if not _force_native_lane and os.environ.get("ORCH_COWORK_MODEL_CALIBRATE", "true").lower() in ("true", "1"):
             kind = (task.get("kind") or "").lower()
             # Mechanical/docs/lint/test → Haiku (fast, $0)
             if kind in ("mechanical", "docs", "lint", "format", "bump", "test") or model_tier == "fast":
@@ -172,7 +231,7 @@ class TierRouter:
                             "reason": f"cowork-calibrate: {kind or diff} → Opus (heavy/$0)"}
             # Everything else (build, refactor, standard) → Sonnet (balanced, $0)
             elif self._sub_has_capacity("claude"):
-                _cal_model = os.environ.get("ORCH_COWORK_MID_MODEL", "claude-sonnet-4-6")
+                _cal_model = os.environ.get("ORCH_COWORK_MID_MODEL", "claude-sonnet-5")
                 return {"tier": "sub", "provider": "claude", "model": _cal_model,
                         "coder": "claude-cli",
                         "reason": f"cowork-calibrate: {kind or diff} → Sonnet (mid/$0)"}
@@ -234,7 +293,7 @@ class TierRouter:
             return self._pick_api(task, model_tier, "no sub capacity")
 
         # --- ultimate fallback: queue for sub (Claude) ---
-        return {"tier": "sub", "provider": "claude", "model": "claude-sonnet-4-6",
+        return {"tier": "sub", "provider": "claude", "model": "claude-sonnet-5",
                 "coder": "claude-cli",
                 "reason": "paid not allowed, no sub capacity — queued for Claude"}
 
@@ -248,13 +307,136 @@ class TierRouter:
         return None
 
     def _pick_api(self, task, model_tier, context):
-        """Pick cheapest API provider with needed capability."""
+        """Pick cheapest API provider with needed capability.
+
+        Enhanced to:
+        1. Check vendor_capabilities for task-specific capability matching
+        2. Consult qpd_bandit for learned quality-per-dollar routing
+        3. Skip providers demoted by SLA enforcement
+        4. Auto-dispatch to cowork_skills for browser/document tasks
+        """
+        # --- Cowork skill dispatch: tasks needing browser/document capabilities ---
+        try:
+            import cowork_skills
+            if cowork_skills.needs_skill(task):
+                skill_types = cowork_skills.detect_skill_type(task)
+                if skill_types:
+                    return {"tier": "sub", "provider": "claude", "model": "claude-sonnet-5",
+                            "coder": "cowork-skill",
+                            "skill_types": [s[0] for s in skill_types],
+                            "reason": f"{context} → cowork skill dispatch ({skill_types[0][0]})"}
+        except Exception:
+            pass
+
+        # --- QPD bandit: learned routing when enough signal exists ---
+        try:
+            import qpd_bandit
+            task_class = (task.get("kind") or task.get("type") or "unknown").lower()
+
+            # Capability-aware bandit routing
+            try:
+                import vendor_capabilities
+                required = vendor_capabilities.detect_required_capabilities(task)
+                prov, model, reason = qpd_bandit.best_for_capabilities(task_class, required)
+            except ImportError:
+                prov, model, reason = qpd_bandit.best_with_penalties(task_class)
+
+            if prov and model and model != "penalty":
+                # Map provider to API entry
+                for ap in _API_PROVIDERS:
+                    if _registry_provider(ap["provider"]) == _registry_provider(prov):
+                        registry_provider = _registry_provider(ap["provider"])
+                        if required and not all(vendor_capabilities.vendor_has_capability(
+                                registry_provider, cap) for cap in required):
+                            continue
+                        return {"tier": "api", "provider": ap["provider"], "model": model,
+                                "coder": ap["coder"],
+                                "reason": f"{context} → bandit: {reason}"}
+        except Exception:
+            pass
+
+        # --- Capability-filtered cheapest provider ---
+        try:
+            import vendor_capabilities
+            required = vendor_capabilities.detect_required_capabilities(task)
+            import provider_failover_sla
+            for ap in _API_PROVIDERS:
+                key_env = _KEY_ENV_MAP.get(ap["provider"], "")
+                if key_env and not provider_credentials.has(ap["provider"]):
+                    continue  # no API key
+                if provider_failover_sla.is_demoted(ap["provider"]):
+                    continue  # SLA-demoted
+                registry_provider = _registry_provider(ap["provider"])
+                if required and not all(vendor_capabilities.vendor_has_capability(
+                        registry_provider, cap) for cap in required):
+                    continue
+                if vendor_capabilities.vendor_has_capability(registry_provider, "code_generation"):
+                    suggested, why = vendor_capabilities.suggest_model(registry_provider, task)
+                    return {"tier": "api", "provider": ap["provider"], "model": suggested or ap["model"],
+                            "coder": ap["coder"],
+                            "reason": f"{context} → capability-complete {ap['provider']} ({why or 'cheapest capable'})"}
+        except Exception:
+            pass
+
+        # --- Fallback: cheapest available API provider ---
         for ap in _API_PROVIDERS:
+            key_env = _KEY_ENV_MAP.get(ap["provider"])
+            if key_env and not provider_credentials.has(ap["provider"]):
+                continue
+            try:
+                import provider_failover_sla
+                if provider_failover_sla.is_demoted(ap["provider"]):
+                    continue
+            except Exception:
+                pass
             return {"tier": "api", "provider": ap["provider"], "model": ap["model"],
                     "coder": ap["coder"],
-                    "reason": f"{context} → api {ap['provider']} (cheapest)"}
-        return {"tier": "api", "provider": "deepseek", "model": "deepseek-chat",
+                    "reason": f"{context} → api {ap['provider']} (cheapest available)"}
+        return {"tier": "api", "provider": "deepseek", "model": "deepseek-v4-flash",
                 "coder": "aider", "reason": f"{context} → deepseek fallback"}
+
+    # ---- failover routing ------------------------------------------------
+
+    def failover_route(self, task, exclude_providers=None):
+        """Route to a non-Claude provider for failover scenarios.
+
+        Called when Claude CLI hits CircuitOpen, rate limits, or auth failures.
+        Skips Claude entirely and picks the best alternative vendor.
+        """
+        exclude = set(exclude_providers or [])
+        exclude.add("claude")  # always exclude Claude in failover
+
+        diff = self._task_difficulty(task)
+        model_tier = _DIFF_MODEL.get(diff, "fast")
+
+        # Try subscription providers first (Groq free, Gemini free, ChatGPT)
+        for sp in _SUB_PROVIDERS:
+            if sp["provider"] in exclude:
+                continue
+            if model_tier in sp["tiers"] and self._sub_has_capacity(sp["provider"]):
+                return {"tier": "sub", "provider": sp["provider"], "model": sp["model"],
+                        "coder": sp["coder"],
+                        "reason": f"failover: sub {sp['provider']} (excluding {', '.join(sorted(exclude))})"}
+
+        # Try API providers
+        if self._paid_allowed():
+            for ap in _API_PROVIDERS:
+                if ap["provider"] in exclude:
+                    continue
+                key_env = _KEY_ENV_MAP.get(ap["provider"], "")
+                if key_env and not provider_credentials.has(ap["provider"]):
+                    continue
+                try:
+                    import provider_failover_sla
+                    if provider_failover_sla.is_demoted(ap["provider"]):
+                        continue
+                except Exception:
+                    pass
+                return {"tier": "api", "provider": ap["provider"], "model": ap["model"],
+                        "coder": ap["coder"],
+                        "reason": f"failover: api {ap['provider']} (excluding {', '.join(sorted(exclude))})"}
+
+        return None  # no failover available
 
     # ---- outcome feedback -------------------------------------------------
 
@@ -330,6 +512,10 @@ _router = TierRouter()
 def route(task):
     """Route task to cheapest execution tier with capacity."""
     return _router.route(task)
+
+
+def failover_route(task, exclude_providers=None):
+    return _router.failover_route(task, exclude_providers)
 
 
 def record_outcome(task_id, tier, provider, success, cost_usd=0.0, latency_s=0.0):

@@ -11,11 +11,38 @@ Returns {"pass": bool, "notes": "..."}; skips gracefully if nothing configured.
 """
 import os, sys, subprocess, re
 
+# Security: allowed command prefixes to prevent arbitrary execution via env vars
+_ALLOWED_CMD_PREFIXES = ("npx ", "npm ", "node ", "python ", "python3 ", "pytest ", "jest ")
+
+
+def _validate_repo_path(repo):
+    """Validate repo path to prevent path-traversal and injection."""
+    resolved = os.path.realpath(repo)
+    if not os.path.isdir(resolved):
+        raise ValueError(f"quality_gate: repo path does not exist: {resolved}")
+    # Block paths outside typical project directories
+    if "\x00" in repo or ".." in repo.split(os.sep):
+        raise ValueError(f"quality_gate: suspicious path component in: {repo}")
+    return resolved
+
+
+def _validate_cmd(cmd, label):
+    """Validate that a command from env matches allowed prefixes."""
+    stripped = cmd.strip()
+    if not any(stripped.startswith(p) for p in _ALLOWED_CMD_PREFIXES):
+        raise ValueError(
+            f"quality_gate: {label} command '{stripped[:40]}...' does not match "
+            f"allowed prefixes: {_ALLOWED_CMD_PREFIXES}"
+        )
+    return stripped
+
 
 def run(repo):
+    repo = _validate_repo_path(repo)
     notes, ok = [], True
     mut = os.environ.get("MUTATION_CMD")
     if mut:
+        mut = _validate_cmd(mut, "MUTATION_CMD")
         r = subprocess.run(mut, cwd=repo, shell=True, capture_output=True, text=True)
         m = re.search(r"(\d+(\.\d+)?)\s*%", r.stdout or "")
         score = float(m.group(1)) if m else None
@@ -26,6 +53,7 @@ def run(repo):
             notes.append(f"mutation {score}%")
     prop = os.environ.get("PROPERTY_CMD")
     if prop:
+        prop = _validate_cmd(prop, "PROPERTY_CMD")
         r = subprocess.run(prop, cwd=repo, shell=True, capture_output=True, text=True)
         if r.returncode != 0:
             ok = False; notes.append("property tests failed")

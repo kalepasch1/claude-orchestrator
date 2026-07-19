@@ -244,7 +244,7 @@ def drain_mechanical_tasks(tasks, max_batch=20):
         )
         if is_mechanical and len(mechanical) < max_batch:
             t["_drain_provider"] = "deepseek"
-            t["_drain_model"] = "deepseek-chat"
+            t["_drain_model"] = os.environ.get("DEEPSEEK_CHEAP_MODEL", "deepseek-v4-flash")
             mechanical.append(t)
         else:
             remaining.append(t)

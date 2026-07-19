@@ -73,8 +73,11 @@ class LiveTunableReadTest(unittest.TestCase):
                   "DISK_SOFT_PCT", "DISK_HARD_PCT", "RAM_HARD_PCT"):
             os.environ.pop(k, None)
         self.assertEqual(rg._ceiling(), 12)
-        self.assertEqual(rg._per_task_gb(), 1.5)
-        self.assertEqual(rg.effective_floor_gb(), 6.0)
+        # Cowork/provider-side execution is intentionally lightweight locally;
+        # these tuned defaults preserve full fleet throughput while the live
+        # memory-pressure brake remains the authoritative safety control.
+        self.assertEqual(rg._per_task_gb(), 0.15)
+        self.assertEqual(rg.effective_floor_gb(), 2.0)
         self.assertEqual(rg._disk_soft(), 80.0)
         self.assertEqual(rg._disk_hard(), 90.0)
         self.assertEqual(rg._ram_hard(), 82.0)

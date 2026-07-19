@@ -104,6 +104,67 @@ class BlockerQuarantineTest(unittest.TestCase):
 
         self.assertEqual(blocker_quarantine.classify(task), "testfail")
 
+    def test_slack_token_in_log_tail_classified_as_secret(self):
+        """A task whose log_tail contains a Slack bot token hint must be classified 'secret'."""
+        task = {
+            "id": "t-slack",
+            "slug": "cont-801b8665",
+            "state": "BLOCKED",
+            "kind": "build",
+            "prompt": "Configure Slack integration for approvals.",
+            "note": "groomed: duplicate queued slug",
+            "log_tail": "Await user-supplied Slack credentials (Bot Token xoxb-…, Signing Secret)",
+        }
+        self.assertEqual(blocker_quarantine.classify(task), "secret")
+
+    def test_slack_secret_replacement_uses_env_var_placeholders(self):
+        """Replacement prompt for a Slack-token blocker must direct to env-var config, not commit secrets."""
+        task = {
+            "id": "t-slack2",
+            "slug": "cont-801b8665",
+            "project_id": "p1",
+            "state": "BLOCKED",
+            "kind": "build",
+            "prompt": "Configure Slack integration for approvals.",
+            "note": "groomed: duplicate queued slug",
+            "log_tail": "Signing Secret token credential exposure",
+            "base_branch": "main",
+        }
+        fake_db = MagicMock()
+        fake_db.select.side_effect = [[], [], [task], []]
+
+        with patch.object(blocker_quarantine, "db", fake_db):
+            out = blocker_quarantine.run(limit=1)
+
+        self.assertEqual(out["categories"].get("secret"), 1)
+        inserted = fake_db.insert.call_args_list[0].args[1]
+        self.assertIn("environment-variable placeholders", inserted["prompt"])
+        self.assertNotIn("xoxb-", inserted["prompt"])
+
+    def test_slack_interactions_signing_secret_is_fail_secure(self):
+        """slack-interactions edge function must reject requests when SLACK_SIGNING_SECRET is unset."""
+        import os, pathlib
+        ts_path = pathlib.Path(__file__).parent.parent.parent / "supabase" / "functions" / "slack-interactions" / "index.ts"
+        src = ts_path.read_text()
+        self.assertNotIn("!SIGNING) return true", src,
+                         "fail-open fallback must not exist: configure SLACK_SIGNING_SECRET instead")
+        self.assertIn("!SIGNING) return false", src,
+                      "verify() must fail-secure when signing secret is unset")
+        self.assertIn("503", src,
+                      "handler must return 503 when SLACK_SIGNING_SECRET is not configured")
+
+    def test_slack_notify_bot_token_is_fail_secure(self):
+        """slack-notify edge function must return 503 when SLACK_BOT_TOKEN is unset."""
+        import pathlib
+        ts_path = pathlib.Path(__file__).parent.parent.parent / "supabase" / "functions" / "slack-notify" / "index.ts"
+        src = ts_path.read_text()
+        self.assertNotIn('Bearer ${Deno.env.get("SLACK_BOT_TOKEN")}', src,
+                         "must not read token inline — use a module-level constant with a guard")
+        self.assertIn("503", src,
+                      "handler must return 503 when SLACK_BOT_TOKEN is not configured")
+        self.assertNotIn("Bearer undefined", src,
+                         "must not silently send 'Bearer undefined' when token is missing")
+
     def test_quarantine_wrapper_does_not_bias_repair_classification(self):
         task = {
             "id": "t5",

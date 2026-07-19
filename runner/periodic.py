@@ -10,12 +10,18 @@ Jobs:
   scout   - opportunity scout: RICE-scored proposals (schedule: weekly)
   deploy  - canary-gated nightly deploy window (schedule: nightly)
   roi     - update project concurrency_weight from ROI (schedule: daily)
+  stuck_reaper - detect+recover RUNNING tasks stuck >2h (schedule: every 30 min)
+  priority_scorer - score QUEUED tasks with default priority (schedule: every 10 min)
+  quarantine_gc - GC non-recoverable quarantined tasks (schedule: every 6h)
 
 Usage:
   python3 periodic.py spec
   python3 periodic.py txn
 """
 import os, sys, subprocess, time
+# Inherited NODE_ENV=production makes npm omit devDependencies in every child job (staging QA,
+# prewarm, merge/release trains) → "Could not load <module>" failures. Strip it (see runner.py).
+os.environ.pop("NODE_ENV", None)
 try:
     import fcntl
 except Exception:
@@ -211,6 +217,60 @@ def run_dagfix():
     dag_optimizer.optimize()
 
 
+def run_dep_release():
+    """Release BLOCKED tasks whose dependencies have all resolved.
+
+    Tasks blocked on deps that complete (DONE/MERGED) should be re-queued, but the only
+    dep check runs at claim time (for QUEUED tasks). Once a task is BLOCKED, nothing
+    checks whether its deps have since resolved. This sweep fixes that gap — it caused
+    479 tasks to be permanently stuck.
+    """
+    import json
+    limit = int(os.environ.get("DEP_RELEASE_LIMIT", "50"))
+    blocked = db.select("tasks", {
+        "select": "id,slug,state,deps,note,project_id",
+        "state": "eq.BLOCKED",
+        "order": "updated_at.asc",
+        "limit": str(limit * 3),
+    }) or []
+
+    released = 0
+    for t in blocked:
+        deps = t.get("deps")
+        if not deps:
+            continue
+        if isinstance(deps, str):
+            try:
+                deps = json.loads(deps)
+            except Exception:
+                continue
+        if not isinstance(deps, list) or not deps:
+            continue
+
+        # Check if all deps are resolved
+        all_resolved = True
+        for dep_slug in deps:
+            dep_tasks = db.select("tasks", {
+                "select": "id,state",
+                "slug": f"eq.{dep_slug}",
+                "state": "in.(DONE,MERGED)",
+                "limit": "1",
+            }) or []
+            if not dep_tasks:
+                all_resolved = False
+                break
+
+        if all_resolved and released < limit:
+            db.update("tasks", {"id": t["id"]}, {
+                "state": "QUEUED",
+                "note": f"dep-release: all {len(deps)} deps resolved — re-queued for execution",
+            })
+            released += 1
+
+    print(f"dep-release: released {released} blocked tasks whose deps resolved")
+    return {"released": released}
+
+
 def run_selftune():
     """Outcome-driven autonomy tuning: nudge per-project confidence thresholds from real results."""
     import self_tune
@@ -224,11 +284,19 @@ def run_batchmech():
 
 
 def run_releasetrain():
-    """Accumulate agent work on staging, QA it, release to prod (main/master) as a batch."""
-    if os.environ.get("AUTOPILOT_RELEASE_TRAIN_ONLY_HOTLANE", "true").lower() in ("1", "true", "yes", "on"):
-        print("releasetrain: skipped; hot-lane release_blocker_agent owns release attempts")
-        return {"skipped": "hotlane_only"}
-    import release_train; release_train.run()
+    """Run the normal protected release train.
+
+    ``AUTOPILOT_RELEASE_TRAIN_ONLY_HOTLANE`` used to make this periodic job a
+    permanent no-op. The hot lane is conditional (it only runs when a release
+    blocker is present), so a healthy approved artifact could otherwise remain
+    integrated but never reach the normal batch/cadence gate. Calling the
+    canonical train here is safe: its per-repository single-flight locks,
+    isolated checkout, QA, batch threshold and cadence checks remain the only
+    route to a production push. An active hot-lane attempt simply observes the
+    same repo lock and is skipped for that repository.
+    """
+    import release_train
+    return release_train.run()
 
 
 def run_deployverify():
@@ -285,6 +353,11 @@ def run_credential_resolver():
     import credential_auto_resolver; credential_auto_resolver.resolve_pending()
 
 
+def run_stuck_reaper():
+    """Detect RUNNING tasks that haven't updated in hours (crashed/hung) and reset or quarantine them."""
+    import stuck_reaper; stuck_reaper.run()
+
+
 def run_remediate():
     """Drive BLOCKED to zero: requeue transient/conflict, escalate+sharpen review/no-op fails, human-card the rest."""
     import auto_remediate; auto_remediate.run()
@@ -308,6 +381,11 @@ def run_improve():
 def run_improvemeasure():
     """Learn which KINDS of improvements actually pay off; bias future mining toward them."""
     import improvement_measure; improvement_measure.run()
+
+
+def run_cadeextras():
+    """Auto-discover and run all cx_*.py extra modules."""
+    import cade_extras; cade_extras.run()
 
 
 def run_committees():
@@ -468,6 +546,43 @@ def run_dedup():
     """Collapse near-duplicate queued tasks so the swarm solves each thing once."""
     import task_dedup
     task_dedup.apply()
+    # Second pass: embedding-similarity dedupe catches paraphrased duplicates that
+    # slug/title matching misses. Capped per run; fail-soft.
+    try:
+        import db
+        import semantic_dedupe
+        import knowledge_embed
+
+        def _batch_embed(texts):
+            return [knowledge_embed.embed(t) for t in texts]
+
+        def _mark(keeper, dup, sim):
+            db.update("tasks", {"id": dup["id"]}, {
+                "state": "QUARANTINED",
+                "note": f"semantic-dedupe: {sim:.3f} duplicate of {keeper.get('slug','')[:60]}",
+            })
+
+        cap = int(os.environ.get("ORCH_SEMDEDUPE_BATCH", "200"))
+        tasks = db.select("tasks", {
+            "select": "id,slug,prompt,project_id",
+            "state": "eq.QUEUED",
+            "order": "created_at.asc",
+            "limit": str(cap),
+        }) or []
+        if len(tasks) >= 2:
+            n = semantic_dedupe.dedupe_queued(tasks, _batch_embed, mark_fn=_mark)
+            if n:
+                print(f"semantic-dedupe: quarantined {n} paraphrase duplicates")
+    except Exception as e:
+        print(f"semantic-dedupe skipped: {e}")
+
+
+def run_conflictresolve():
+    """Zero-token conflict/branch recovery: auto-rebase + serialize + branch rebuild."""
+    import conflict_auto_resolve
+    n = conflict_auto_resolve.run()
+    if n:
+        print(f"conflict_auto_resolve: recovered {n} blocked tasks")
 
 
 def run_contcompact():
@@ -560,6 +675,18 @@ def run_commonbrain():
     common_brain.run()
 
 
+def run_priority_scorer():
+    """Score QUEUED tasks with default priority=1000 based on kind, slug, deps, and age."""
+    import priority_scorer
+    priority_scorer.run()
+
+
+def run_quarantine_gc():
+    """GC non-recoverable quarantined tasks (PATCH TEMPLATE, dedup) to reduce scan noise."""
+    import quarantine_gc
+    quarantine_gc.run()
+
+
 def run_cluster():
     """Cluster pending approval cards so the human can bulk-approve siblings."""
     import approval_cluster
@@ -600,6 +727,12 @@ def run_roi():
         print(f"roi {r['project']}: cpm=${cpm} weight={weight}")
 
 
+def run_editorial():
+    """Stage due authority-content packets for human review; never publishes."""
+    import editorial_program
+    return editorial_program.run()
+
+
 JOBS = {
     "spec": run_spec,
     "chaos": run_chaos,
@@ -607,9 +740,11 @@ JOBS = {
     "scout": run_scout,
     "deploy": run_deploy,
     "roi": run_roi,
+    "editorial": run_editorial,
     "batch": run_batch,
     "unstick": run_unstick,
     "dagfix": run_dagfix,
+    "deprelease": run_dep_release,
     "selftune": run_selftune,
     "batchmech": run_batchmech,
     "appreview": run_appreview,
@@ -624,6 +759,7 @@ JOBS = {
     "promptfactory": run_promptfactory,
     "embedretry": run_embedretry,
     "dedup": run_dedup,
+    "conflictresolve": run_conflictresolve,
     "contcompact": run_contcompact,
     "backlogcompact": run_backlogcompact,
     "canaryecon": run_canaryecon,
@@ -639,6 +775,7 @@ JOBS = {
     "decisionbriefs": run_decisionbriefs,
     "improve": run_improve,
     "improvemeasure": run_improvemeasure,
+    "cadeextras": run_cadeextras,
     "committees": run_committees,
     "committeecal": run_committeecal,
     "committeedocket": run_committeedocket,
@@ -650,6 +787,7 @@ JOBS = {
     "committeekg": run_committeekg,
     "committeemeta": run_committeemeta,
     "credresolver": run_credential_resolver,
+    "stuck_reaper": run_stuck_reaper,
     "remediate": run_remediate,
     "quarantine": run_quarantine,
     "selfcheck": run_selfcheck,
@@ -674,6 +812,8 @@ JOBS = {
     "modelportfolios": run_modelportfolios,
     "modelslashing": run_modelslashing,
     "commonbrain": run_commonbrain,
+    "priority_scorer": run_priority_scorer,
+    "quarantine_gc": run_quarantine_gc,
 }
 
 if __name__ == "__main__":
@@ -696,11 +836,13 @@ if __name__ == "__main__":
         "resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn",
         "approval_policy.py", "queue_janitor.py", "unstick", "dagfix", "batchmech",
         "selftune", "cluster", "governor", "costslo", "promote", "prewarm",
-        "billingguard", "dedup", "canaryecon", "forecast", "arbitrage", "autoscale",
+        "billingguard", "dedup", "conflictresolve", "canaryecon", "forecast", "arbitrage", "autoscale",
         "contcompact", "backlogcompact",
         "bizradar", "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",
-        "stripe", "ownerreport", "worktreegc", "remediate", "selfcheck",
+        "stripe", "ownerreport", "worktreegc", "stuck_reaper", "remediate", "selfcheck",
         "quarantine", "credresolver", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain",
+        "priority_scorer", "quarantine_gc",
+        "editorial",
         "release_kpi.py", "integrate_kpi.py", "fleet_control.py",
     }
     if job not in _SAFE_WHEN_PAUSED:

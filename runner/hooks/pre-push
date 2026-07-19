@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+input="$(mktemp -t production-push-guard.XXXXXX)"
+trap 'rm -f "$input"' EXIT HUP INT TERM
+cat > "$input"
+
+# Preserve package-manager hooks that existed before the fleet guard was installed.
+git_dir="$(git rev-parse --git-common-dir)"
+case "$git_dir" in
+  /*) ;;
+  *) git_dir="$(pwd)/$git_dir" ;;
+esac
+legacy="$git_dir/hooks/pre-push"
+if [ -x "$legacy" ] && [ "$legacy" != "$0" ]; then
+  "$legacy" "$@" < "$input"
+fi
+if [ -x .husky/pre-push ]; then
+  .husky/pre-push "$@" < "$input"
+fi
+
+python3 /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/production_push_guard.py < "$input"

@@ -1,114 +1,77 @@
-#!/usr/bin/env python3
-"""Tests for runner/rootcause_cluster.py"""
-import sys, os, unittest
-from unittest.mock import patch
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-import rootcause_cluster
+"""Tests for rootcause_cluster.py"""
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-class TestClassify(unittest.TestCase):
-    def test_under_specified(self):
-        self.assertEqual(rootcause_cluster.classify("under-specified task")[0], "under-specified-task")
-    def test_repair_loop(self):
-        self.assertEqual(rootcause_cluster.classify("AGENTIC-REPAIR x AGENTIC-REPAIR y")[0], "agentic-repair-loop")
-    def test_missing_branch(self):
-        self.assertEqual(rootcause_cluster.classify("prior branch is missing")[0], "missing-branch")
-    def test_build_tool(self):
-        self.assertEqual(rootcause_cluster.classify("yarn: command not found")[0], "build-tool-missing")
-    def test_merge_conflict(self):
-        self.assertEqual(rootcause_cluster.classify("HTTP Error 409: Conflict")[0], "merge-conflict")
-    def test_timeout(self):
-        self.assertEqual(rootcause_cluster.classify("read operation timed out")[0], "timeout")
-    def test_budget(self):
-        self.assertEqual(rootcause_cluster.classify("budget cap exceeded")[0], "budget-blocked")
-    def test_build_failure(self):
-        self.assertEqual(rootcause_cluster.classify("BUILDFAIL on master")[0], "build-failure")
-    def test_test_failure(self):
-        self.assertEqual(rootcause_cluster.classify("pytest FAILED 3 tests")[0], "test-failure")
-    def test_unclassified(self):
-        n, d = rootcause_cluster.classify("random")
-        self.assertEqual(n, "unclassified")
-        self.assertEqual(d, "")
-    def test_empty(self):
-        self.assertEqual(rootcause_cluster.classify("")[0], "unclassified")
-    def test_none(self):
-        self.assertEqual(rootcause_cluster.classify(None)[0], "unclassified")
+from rootcause_cluster import (
+    extract_signature, cluster_failures, get_recurring_patterns,
+    generate_guard_rule, FailureRecord, FailureCluster,
+)
 
-class TestClusterFailures(unittest.TestCase):
-    @patch("rootcause_cluster.db")
-    def test_groups(self, mock_db):
-        mock_db.select.return_value = [
-            {"id":"1","slug":"a","note":"budget cap","state":"BLOCKED"},
-            {"id":"2","slug":"b","note":"budget cap","state":"BLOCKED"},
-            {"id":"3","slug":"c","note":"BUILDFAIL","state":"BLOCKED"},
-        ]
-        c = rootcause_cluster.cluster_failures("p")
-        self.assertEqual(len(c["budget-blocked"]), 2)
-        self.assertEqual(len(c["build-failure"]), 1)
-    @patch("rootcause_cluster.db")
-    def test_error(self, mock_db):
-        mock_db.select.side_effect = Exception("net")
-        self.assertEqual(rootcause_cluster.cluster_failures("p"), {})
 
-class TestCreateGuards(unittest.TestCase):
-    @patch("rootcause_cluster.db")
-    def test_creates_above_threshold(self, mock_db):
-        mock_db.select.return_value = [{"id":str(i),"slug":f"t{i}","note":"budget cap","state":"BLOCKED"} for i in range(5)]
-        mock_db.insert.return_value = {"id": "g1"}
-        self.assertEqual(len(rootcause_cluster.create_cluster_guards("p")), 1)
-        self.assertIn("budget-blocked", mock_db.insert.call_args[0][1]["slug"])
-    @patch("rootcause_cluster.db")
-    def test_skips_below(self, mock_db):
-        mock_db.select.return_value = [{"id":"1","slug":"t","note":"budget cap","state":"BLOCKED"}]
-        self.assertEqual(len(rootcause_cluster.create_cluster_guards("p")), 0)
-    @patch("rootcause_cluster.db")
-    def test_skips_unclassified(self, mock_db):
-        mock_db.select.return_value = [{"id":str(i),"slug":f"t{i}","note":"random","state":"BLOCKED"} for i in range(10)]
-        self.assertEqual(len(rootcause_cluster.create_cluster_guards("p")), 0)
+def test_extract_capacity_signature():
+    note = "capacity circuit: call cap: 510/500 per hour"
+    assert extract_signature(note) == "capacity-exhaustion"
 
-class TestGuardDedup(unittest.TestCase):
-    @patch("rootcause_cluster.db")
-    def test_dedup_skips_existing_guard(self, mock_db):
-        """Second run should skip guard creation if guard task already exists."""
-        blocked = [{"id":str(i),"slug":f"t{i}","note":"budget cap","state":"BLOCKED"} for i in range(5)]
-        guard_slug = rootcause_cluster._guard_slug("budget-blocked")
-        existing_guard = [{"id":"g1","state":"QUEUED"}]
-        def mock_select(table, params):
-            if params.get("slug") == f"eq.{guard_slug}":
-                return existing_guard
-            return blocked
-        mock_db.select.side_effect = mock_select
-        created = rootcause_cluster.create_cluster_guards("p")
-        self.assertEqual(len(created), 0)
 
-class TestPersistSnapshot(unittest.TestCase):
-    @patch("rootcause_cluster.db")
-    def test_persist_saves_to_fleet_config(self, mock_db):
-        mock_db.select.return_value = [
-            {"id":"1","slug":"a","note":"timed out","state":"BLOCKED"},
-            {"id":"2","slug":"b","note":"timed out","state":"BLOCKED"},
-            {"id":"3","slug":"c","note":"timed out","state":"BLOCKED"},
-        ]
-        rootcause_cluster.persist_cluster_snapshot("p")
-        mock_db.upsert.assert_called_once()
-        call_args = mock_db.upsert.call_args[0]
-        self.assertEqual(call_args[0], "fleet_config")
-        self.assertIn("CLUSTER_SNAPSHOT", call_args[1]["key"])
+def test_extract_auth_signature():
+    note = "Not logged in · Please run /login"
+    assert extract_signature(note) == "auth-not-logged-in"
 
-class TestSummary(unittest.TestCase):
-    @patch("rootcause_cluster.db")
-    def test_report(self, mock_db):
-        mock_db.select.return_value = [
-            {"id":"1","slug":"a","note":"timed out","state":"BLOCKED"},
-            {"id":"2","slug":"b","note":"timeout","state":"BLOCKED"},
-        ]
-        r = rootcause_cluster.summary("p")
-        self.assertEqual(r["timeout"]["count"], 2)
 
-class TestGuardSlug(unittest.TestCase):
-    def test_truncates(self):
-        self.assertLessEqual(len(rootcause_cluster._guard_slug("a"*100)), 80)
-    def test_format(self):
-        self.assertEqual(rootcause_cluster._guard_slug("timeout"), "guard-cluster-timeout")
+def test_extract_conflict_signature():
+    note = "runner exception: HTTP Error 409: Conflict"
+    assert extract_signature(note) == "git-conflict-409"
 
-if __name__ == "__main__":
-    unittest.main()
+
+def test_extract_missing_spec():
+    note = "Prompt contains only error messages with no real specification"
+    assert extract_signature(note) == "missing-spec"
+
+
+def test_extract_unknown_falls_back():
+    sig = extract_signature("some totally novel error xyz")
+    assert sig.startswith("unknown-")
+
+
+def test_cluster_groups_by_signature():
+    records = [
+        FailureRecord(task_id="1", slug="a", state="BLOCKED", note="capacity circuit: call cap: 510/500"),
+        FailureRecord(task_id="2", slug="b", state="BLOCKED", note="capacity circuit: call cap: 600/500"),
+        FailureRecord(task_id="3", slug="c", state="BLOCKED", note="Not logged in · Please run /login"),
+    ]
+    clusters = cluster_failures(records)
+    assert len(clusters) == 2
+    cap_cluster = next(c for c in clusters if c.pattern_name == "capacity-exhaustion")
+    assert cap_cluster.count == 2
+    assert cap_cluster.is_recurring
+
+
+def test_recurring_patterns_filters():
+    records = [
+        FailureRecord(task_id="1", slug="a", state="BLOCKED", note="capacity circuit: call cap"),
+        FailureRecord(task_id="2", slug="b", state="BLOCKED", note="capacity circuit: call cap"),
+        FailureRecord(task_id="3", slug="c", state="BLOCKED", note="Not logged in · Please run /login"),
+    ]
+    clusters = cluster_failures(records)
+    recurring = get_recurring_patterns(clusters)
+    assert len(recurring) == 1
+    assert recurring[0].pattern_name == "capacity-exhaustion"
+
+
+def test_guard_rule_generation():
+    rule = generate_guard_rule("git-index-lock")
+    assert "rm -f .git/index.lock" in rule
+
+    rule = generate_guard_rule("unknown-pattern")
+    assert "manual_review" in rule
+
+
+def test_failure_record_auto_signature():
+    rec = FailureRecord(task_id="1", slug="x", state="BLOCKED",
+                        note="shelved after 6 remediations without merge")
+    assert rec.error_signature == "remediation-cap"
+
+
+def test_extract_remote_publish_auth():
+    note = "remote-publish-failed: push to origin returned non-zero"
+    assert extract_signature(note) == "remote-publish-auth"

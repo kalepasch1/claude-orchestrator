@@ -21,6 +21,7 @@ complete(provider, model, prompt) -> {"text","cost_usd","provider","model"}
 """
 import os, sys, json, time, subprocess, urllib.request, urllib.error
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import provider_credentials
 
 
 def _load_env():
@@ -39,6 +40,7 @@ def _load_env():
 
 
 _load_env()
+provider_credentials.activate_aliases()
 
 # rough $/1M tokens (input,output) for routing decisions; edit to current pricing
 PRICES = {
@@ -46,21 +48,33 @@ PRICES = {
     ("claude", "claude-sonnet-5"): (3.0, 15.0),
     ("claude", "claude-opus-4-8"): (5.0, 25.0),
     ("claude", "claude-fable-5"): (10.0, 50.0),
-    ("openai", "gpt-4o-mini"): (0.15, 0.6),
-    ("openai", "gpt-4o"): (2.5, 10.0),
-    ("openai", "o4-mini"): (1.1, 4.4),
-    ("openai", "gpt-5.4-nano"): (0.20, 1.25),
-    ("openai", "gpt-5.4-mini"): (0.75, 4.50),
+    ("openai", "gpt-5.6-sol"): (5.0, 30.0),
+    ("openai", "gpt-5.6-terra"): (2.50, 15.0),
+    ("openai", "gpt-5.6-luna"): (1.0, 6.0),
     ("openai", "gpt-5.5"): (5.0, 30.0),
     ("openai", "gpt-5.5-pro"): (30.0, 180.0),
-    ("google", "gemini-2.5-flash-lite-preview-09-2025"): (0.075, 0.30),
-    ("google", "gemini-2.5-flash"): (0.30, 2.50),
+    ("openai", "gpt-5.4-mini"): (0.75, 4.50),
+    ("openai", "gpt-5.4-nano"): (0.20, 1.25),
+    ("openai", "o4-mini"): (1.1, 4.4),
+    ("openai", "gpt-4o-mini"): (0.15, 0.6),
+    ("openai", "gpt-4o"): (2.5, 10.0),
+    ("google", "gemini-3.5-flash"): (1.50, 9.0),
+    ("google", "gemini-3.1-pro"): (2.0, 12.0),
+    ("google", "gemini-3.1-flash-lite"): (0.25, 1.50),
+    ("google", "gemini-3-flash"): (0.50, 3.0),
     ("google", "gemini-2.5-pro"): (1.25, 10.0),
-    ("deepseek", "deepseek-chat"): (0.14, 0.28),
-    ("deepseek", "deepseek-reasoner"): (0.14, 0.28),
+    ("google", "gemini-2.5-flash"): (0.30, 2.50),
     ("deepseek", "deepseek-v4-flash"): (0.14, 0.28),
     ("deepseek", "deepseek-v4-pro"): (0.435, 0.87),
+    ("deepseek", "deepseek-chat"): (0.14, 0.28),
+    ("deepseek", "deepseek-reasoner"): (0.14, 0.28),
     ("local", "*"): (0.0, 0.0),
+    ("groq", "llama-3.1-8b-instant"): (0.05, 0.08),
+    ("groq", "llama-3.3-70b-versatile"): (0.59, 0.79),
+    ("xai", "grok-4.5"): (2.0, 6.0),
+    ("xai", "grok-4.3"): (1.25, 2.50),
+    ("xai", "grok-4.20"): (1.25, 2.50),
+    ("xai", "grok-build-0.1"): (1.00, 2.00),
 }
 
 
@@ -97,14 +111,27 @@ def _ollama_up():
         return False
 
 
-def available():
+def configured():
+    """Providers with local configuration present, regardless of health."""
     prov = ["claude"]
     # a key counts only if it's non-empty (blank .env lines don't enable a provider)
-    if os.environ.get("OPENAI_API_KEY", "").strip(): prov.append("openai")
-    if os.environ.get("GOOGLE_API_KEY", "").strip(): prov.append("google")
-    if os.environ.get("DEEPSEEK_API_KEY", "").strip(): prov.append("deepseek")
+    if provider_credentials.has("openai"): prov.append("openai")
+    if provider_credentials.has("google"): prov.append("google")
+    if provider_credentials.has("deepseek"): prov.append("deepseek")
+    if provider_credentials.has("groq"): prov.append("groq")
+    if provider_credentials.has("xai"): prov.append("xai")
     if _ollama_up(): prov.append("local")
     return prov
+
+
+def available():
+    """Configured providers currently eligible for traffic."""
+    providers = configured()
+    try:
+        import provider_failover_sla
+        return [p for p in providers if not provider_failover_sla.is_demoted(p)]
+    except Exception:
+        return providers
 
 
 def _post(url, headers, payload, timeout=90):
@@ -211,15 +238,17 @@ def _local(model, prompt, timeout=90):
 
 DEFAULT_MODELS = {
     "local": lambda: __import__("ollama_catalog").best("fallback", need=5).get("model"),
+    "groq": lambda: os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
     "deepseek": lambda: _configured("DEEPSEEK_CHEAP_MODEL", "deepseek-v4-flash",
                                     deprecated=("deepseek-chat", "deepseek-reasoner")),
-    "google": lambda: _configured("GEMINI_MODEL", "gemini-2.5-flash",
+    "google": lambda: _configured("GEMINI_MODEL", "gemini-3-flash",
                                   deprecated=("gemini-2.0-",)),
+    "xai": lambda: os.environ.get("XAI_MODEL", "grok-build-0.1"),
     "openai": lambda: os.environ.get("OPENAI_CHEAP_MODEL", "gpt-5.4-nano"),
     "claude": lambda: "claude-haiku-4-5-20251001",
 }
 
-FALLBACK_ORDER = ("local", "deepseek", "google", "openai", "claude")
+FALLBACK_ORDER = ("local", "groq", "deepseek", "google", "xai", "openai", "claude")
 
 
 def provider_for_model(model):
@@ -230,7 +259,14 @@ def provider_for_model(model):
         return "google"
     if "deepseek" in m:
         return "deepseek"
-    if m.startswith(("gpt-", "o1", "o3", "o4")):
+    if "grok" in m:
+        return "xai"
+    if "llama" in m or "qwen" in m or "mixtral" in m:
+        # Groq for cloud inference of open-source models; local for Ollama
+        if os.environ.get("GROQ_API_KEY"):
+            return "groq"
+        return "local"
+    if m.startswith(("gpt-", "o1", "o3", "o4", "o5")):
         return "openai"
     if m:
         return "local"
@@ -256,6 +292,30 @@ def _record_operation(project, operation, task_class, provider, model, prompt, c
         pass
 
 
+def _groq(model, prompt):
+    """Groq LPU inference — 10x speed, OpenAI-compatible API."""
+    d = _post("https://api.groq.com/openai/v1/chat/completions",
+              {"Authorization": f"Bearer {os.environ['GROQ_API_KEY']}"},
+              {"model": model, "messages": [{"role": "user", "content": prompt}],
+               "max_tokens": 8192})
+    u = d.get("usage", {})
+    pin, pout = PRICES.get(("groq", model), (0.59, 0.79))
+    cost = u.get("prompt_tokens", 0)/1e6*pin + u.get("completion_tokens", 0)/1e6*pout
+    return d["choices"][0]["message"]["content"], round(cost, 6)
+
+
+def _xai(model, prompt):
+    """xAI Grok — real-time data, OpenAI-compatible API."""
+    d = _post("https://api.x.ai/v1/chat/completions",
+              {"Authorization": f"Bearer {provider_credentials.get('xai')}"},
+              {"model": model, "messages": [{"role": "user", "content": prompt}],
+               "max_tokens": 8192})
+    u = d.get("usage", {})
+    pin, pout = PRICES.get(("xai", model), (1.25, 2.50))
+    cost = u.get("prompt_tokens", 0)/1e6*pin + u.get("completion_tokens", 0)/1e6*pout
+    return d["choices"][0]["message"]["content"], round(cost, 6)
+
+
 def _call_provider(provider, model, prompt, project=None, timeout=90):
     if provider == "claude":
         import claude_cli
@@ -264,7 +324,8 @@ def _call_provider(provider, model, prompt, project=None, timeout=90):
     if provider == "local":
         text, cost = _local(model, prompt, timeout=timeout)
     else:
-        fn = {"openai": _openai, "google": _google, "deepseek": _deepseek}[provider]
+        fn = {"openai": _openai, "google": _google, "deepseek": _deepseek,
+              "groq": _groq, "xai": _xai}[provider]
         text, cost = fn(model, prompt)
     try:
         import usage_meter
@@ -374,6 +435,11 @@ def complete(provider, model, prompt, project=None, timeout=90, operation="compl
         t0 = time.time()
         try:
             res = _call_provider(prov, mdl, prompt, project=project, timeout=timeout)
+            try:
+                import provider_failover_sla
+                provider_failover_sla.record_probe_success(prov)
+            except Exception:
+                pass
             latency = int((time.time() - t0) * 1000)
             if record_op:
                 _record_operation(project, operation, task_class, res["provider"], res["model"],
@@ -393,6 +459,12 @@ def complete(provider, model, prompt, project=None, timeout=90, operation="compl
         except Exception as e:
             latency = int((time.time() - t0) * 1000)
             last = {"provider": prov, "model": mdl, "error": str(e)}
+            if isinstance(e, urllib.error.HTTPError) and e.code in (401, 403):
+                try:
+                    import provider_failover_sla
+                    provider_failover_sla.demote(prov, f"auth-{e.code}")
+                except Exception:
+                    pass
             if record_op:
                 _record_operation(project, operation, task_class, prov, mdl, prompt, 0, latency,
                                   ok=False, error=str(e))
@@ -404,7 +476,13 @@ def complete(provider, model, prompt, project=None, timeout=90, operation="compl
 def complete_legacy(provider, model, prompt, project=None, timeout=90):
     """Backward-compatible no-fallback/no-telemetry path for old callers that need it."""
     try:
-        return _call_provider(provider, model, prompt, project=project, timeout=timeout)
+        result = _call_provider(provider, model, prompt, project=project, timeout=timeout)
+        try:
+            import provider_failover_sla
+            provider_failover_sla.record_probe_success(provider)
+        except Exception:
+            pass
+        return result
     except Exception as e:
         return {"text": "", "cost_usd": 0, "provider": provider, "model": model, "error": str(e)}
 

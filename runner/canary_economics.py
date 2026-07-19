@@ -19,6 +19,17 @@ QUALITY_MIN = float(os.environ.get("CANARY_QUALITY_MIN", "7.0"))
 WINDOW_MIN = int(os.environ.get("CANARY_WINDOW_MIN", "30"))
 
 
+def _median(vals):
+    """Return median of a list of floats; avoids numpy/statistics dependency."""
+    if not vals:
+        return None
+    s = sorted(vals)
+    n = len(s)
+    if n % 2 == 1:
+        return s[n // 2]
+    return (s[n // 2 - 1] + s[n // 2]) / 2.0
+
+
 def _canary_ops(app, minutes):
     cutoff = (datetime.datetime.utcnow() - datetime.timedelta(minutes=minutes)).isoformat()
     return db.select("app_operations", {"select": "quality_score,cost_usd,ok",
@@ -36,19 +47,25 @@ def decide(app):
         return {"app": app, "decision": "hold", "why": "no canary telemetry yet"}
     q = [float(o["quality_score"]) for o in ops if o.get("quality_score") is not None]
     quality = sum(q) / len(q) if q else None
+    median_q = _median(q)
     cost = sum(float(o.get("cost_usd") or 0) for o in ops)
     errors = sum(1 for o in ops if o.get("ok") is False)
     slo = _slo(app)
     ceiling = slo.get("hard_ceiling_usd_per_merge")
 
+    # Use median as a secondary check — outliers can inflate the mean
+    if median_q is not None and median_q < QUALITY_MIN:
+        return {"app": app, "decision": "rollback", "why": f"canary median quality {median_q:.1f} < {QUALITY_MIN}"}
     if quality is not None and quality < QUALITY_MIN:
         return {"app": app, "decision": "rollback", "why": f"canary quality {quality:.1f} < {QUALITY_MIN}"}
     if errors > max(1, len(ops) // 10):
         return {"app": app, "decision": "rollback", "why": f"error spike {errors}/{len(ops)} during canary"}
     if ceiling and cost > float(ceiling):
         return {"app": app, "decision": "rollback", "why": f"canary cost ${cost:.2f} > ceiling ${ceiling}"}
+    error_pct = round(100.0 * errors / len(ops), 1) if ops else 0.0
     return {"app": app, "decision": "promote",
-            "why": f"quality {quality if quality is None else round(quality,1)}, cost ${cost:.2f}, errors {errors}"}
+            "why": f"quality {quality if quality is None else round(quality,1)}, cost ${cost:.2f}, errors {errors}/{len(ops)} ({error_pct}%)",
+            "sample_size": len(ops), "error_pct": error_pct}
 
 
 def run():

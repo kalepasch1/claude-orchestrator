@@ -53,6 +53,24 @@ class PipelineContractTest(unittest.TestCase):
         self.assertEqual(cls["task_class"], "legal")
         self.assertEqual(cls["need"], 9)
 
+    def test_task_fields_persist_executor_route_for_direct_queue_claimers(self):
+        route = {
+            "coder": "swarm:openai", "provider": "openai", "model": "gpt-5.4-mini",
+            "required_capabilities": ["code_generation", "vision"],
+        }
+        with patch.object(pipeline_contract.agentic_coders, "route", return_value=route), \
+             patch.object(pipeline_contract.app_triage, "route", side_effect=self._route), \
+             patch.object(pipeline_contract, "_recent_context", return_value=[]), \
+             patch.object(pipeline_contract, "_qa_panel", return_value=["google:gemini"]):
+            fields = pipeline_contract.task_fields(
+                "Implement screenshot-aware UI tests.", project="beethoven",
+                kind="build", source="cowork-stage", slug="ui-tests")
+
+        self.assertEqual(fields["force_coder"], "swarm:openai")
+        self.assertEqual(fields["model"], "gpt-5.4-mini")
+        self.assertIn("required executor capabilities: code_generation, vision", fields["prompt"])
+        self.assertIn("pipeline:cowork-stage", fields["note"])
+
 
 if __name__ == "__main__":
     unittest.main()

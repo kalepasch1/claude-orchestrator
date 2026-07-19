@@ -27,14 +27,32 @@ MERGE_CONFLICT_REDO_CAP). Test failures mark the task TESTFAIL — the train NEV
 Idempotent: handled cards get decided_by='train:*'; cards already handled by this train or by
 the legacy merge-handler are skipped.
 """
-import datetime, json, os, re, sys, subprocess, time
+import concurrent.futures, datetime, json, os, re, sys, subprocess, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import events
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
 import agentic_repair
 import repo_lock         # per-repo mutex: concurrent train_run() calls must not race git refs
 import repo_hygiene      # strip stray untracked .js shadowing .ts before every test run
-import semantic_merge    # AST-level auto-resolution for rebase conflicts
+try:
+    import semantic_merge    # AST-level auto-resolution for rebase conflicts
+except ImportError:
+    semantic_merge = None
+import integration_runtime
+
+
+def emit(kind, **fields):
+    """Public fail-soft event adapter used by integrations and diagnostics."""
+    return events.emit(kind, **fields)
+
+try:
+    import verify as _verify_mod
+except ImportError:
+    _verify_mod = None
+
+# Release-fix slug prefixes — mirrored from db.RELEASE_FIX_PREFIXES for local use
+_RELFIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-", "copyfix-")
 
 MARK = "train"                                   # decided_by prefix => handled by the train
 SKIP_PREFIXES = ("merge-handler", "train")       # cards already handled by any integration path
@@ -50,9 +68,9 @@ def _test_timeout():
 
 TEST_TIMEOUT = _test_timeout()  # backward-compat module-level ref
 MERGING_STATE = os.environ.get("MERGE_TRAIN_STATE", "RUNNING")
-LOW_RISK_BATCH = int(os.environ.get("MERGE_TRAIN_LOW_RISK_BATCH", "8"))
-STANDARD_BATCH = int(os.environ.get("MERGE_TRAIN_STANDARD_BATCH", "3"))
-SENSITIVE_BATCH = int(os.environ.get("MERGE_TRAIN_SENSITIVE_BATCH", "1"))
+LOW_RISK_BATCH = int(os.environ.get("MERGE_TRAIN_LOW_RISK_BATCH", "8").strip('"'))
+STANDARD_BATCH = int(os.environ.get("MERGE_TRAIN_STANDARD_BATCH", "3").strip('"'))
+SENSITIVE_BATCH = int(os.environ.get("MERGE_TRAIN_SENSITIVE_BATCH", "1").strip('"'))
 PRESSURE_KEY = "merge_train_pressure"
 SENSITIVE_RE = re.compile(r"secret|token|oauth|auth|rls|security|pricing|legal|compliance|regulatory|privacy|payment|stripe", re.I)
 LOW_RISK_KINDS = {"docs", "chore", "lint", "format", "mechanical", "test", "tests"}
@@ -80,7 +98,8 @@ def _push_enabled_for_base(base):
     return _truthy("ORCH_PUSH_ON_MERGE", False)
 
 def _git(repo, *args, timeout=60):
-    return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, timeout=timeout)
+    return subprocess.run(["git", *args], cwd=repo, capture_output=True,
+                          encoding="utf-8", errors="replace", timeout=timeout)
 
 
 def _branch_exists(repo, branch):
@@ -110,6 +129,21 @@ def _task_patch(task, patch):
     db.update("tasks", {"id": task["id"]}, patch)
 
 
+def _freeze_integration_identity(repo, branch, task, slug):
+    """Freeze the post-rebase candidate before any QA or base mutation."""
+    import task_refs
+    rebased_result = _git(repo, "rev-parse", branch)
+    if rebased_result.returncode:
+        raise RuntimeError(rebased_result.stderr[-160:] or "rebased commit missing")
+    rebased = rebased_result.stdout.strip()
+    identity = task_refs.publish(repo, task.get("id") or slug,
+                                 task.get("attempt") or 1, rebased,
+                                 namespace="integrations")
+    if not identity.get("ok"):
+        raise RuntimeError(identity.get("reason") or "integration ref failed")
+    return {"artifact_commit": rebased, "artifact_ref": identity["ref"]}
+
+
 def _refresh_base(repo, base):
     """Step 1: make sure our view of the base is fresh (best-effort fetch from origin)."""
     try:
@@ -130,6 +164,10 @@ def _rebase_onto_base(repo, branch, base):
     return approval_merge._rebase_isolated(repo, base, branch)
 
 
+def _already_integrated(repo, branch, base):
+    return _git(repo, "merge-base", "--is-ancestor", branch, base).returncode == 0
+
+
 def _try_semantic_merge(repo, branch, base):
     """Attempt AST-level semantic merge when rebase fails.
 
@@ -141,6 +179,8 @@ def _try_semantic_merge(repo, branch, base):
 
     Fail-soft: any exception returns False.
     """
+    if semantic_merge is None:
+        return False
     try:
         # find the merge-base commit
         mb = _git(repo, "merge-base", branch, base)
@@ -240,7 +280,19 @@ def _try_semantic_merge(repo, branch, base):
         return False
 
 
-def _ensure_node_deps(repo):
+def _test_package_paths(repo, test_cmd):
+    roots = [repo]
+    for pattern in (r"(?:^|[;&])\s*cd\s+([^\s;&]+)", r"--prefix(?:=|\s+)([^\s;&]+)"):
+        for match in re.finditer(pattern, test_cmd or ""):
+            candidate = match.group(1).strip("'\"")
+            if not os.path.isabs(candidate):
+                candidate = os.path.join(repo, candidate)
+            if os.path.isdir(candidate):
+                roots.append(candidate)
+    return list(dict.fromkeys(os.path.realpath(root) for root in roots))
+
+
+def _ensure_node_deps(repo, test_cmd=""):
     """A node repo whose node_modules is missing makes every test/typecheck fail with
     'cannot find module' — an ENVIRONMENT failure, not a code failure, that was TESTFAIL-ing
     all JS/TS merges (2026-07-10: smarter 'cannot find module vue'). Lazily install deps once
@@ -256,14 +308,17 @@ def _ensure_node_deps(repo):
     (MERGE_TRAIN_NPM_TOTAL_TIMEOUT, default 900s) across all installs triggered by a single
     call, so a monorepo with many nested packages can't multiply timeouts into an effectively
     unbounded hold on the repo lock."""
-    total_budget = float(os.environ.get("MERGE_TRAIN_NPM_TOTAL_TIMEOUT", "900"))
+    total_budget = float(os.environ.get("MERGE_TRAIN_NPM_TOTAL_TIMEOUT", "180"))
     per_install_cap = int(os.environ.get("MERGE_TRAIN_NPM_TIMEOUT", "600"))
     deadline = time.monotonic() + total_budget
+    # The gate runs in repo unless the command explicitly changes directory or
+    # uses npm --prefix. Walking every package in a monorepo hydrated unrelated
+    # examples/services and turned one branch check into a 15-minute lock hold.
+    roots = _test_package_paths(repo, test_cmd)
     try:
-        for root, _dirs, files in os.walk(repo):
-            if ".git" in root or "/node_modules" in root:
-                _dirs[:] = [d for d in _dirs if d != "node_modules" and d != ".git"]
-            if "package.json" in files and not os.path.isdir(os.path.join(root, "node_modules")):
+        for root in roots:
+            if (os.path.isfile(os.path.join(root, "package.json"))
+                    and not os.path.isdir(os.path.join(root, "node_modules"))):
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break  # cumulative budget exhausted; leave any further packages uninstalled
@@ -280,10 +335,49 @@ def _ensure_node_deps(repo):
         pass
 
 
-def _run_tests(repo, test_cmd):
+def _prepare_generated_types(repo, test_cmd=""):
+    """Generate worktree-local Nuxt types for the package under test."""
+    for root in _test_package_paths(repo, test_cmd):
+        package = os.path.join(root, "package.json")
+        tsconfig = os.path.join(root, ".nuxt", "tsconfig.json")
+        if not os.path.isfile(package) or os.path.isfile(tsconfig):
+            continue
+        try:
+            with open(package, encoding="utf-8") as fh:
+                is_nuxt = '"nuxt"' in fh.read()
+            if is_nuxt:
+                subprocess.run(["npx", "nuxi", "prepare"], cwd=root,
+                               capture_output=True, text=True, timeout=180)
+        except Exception:
+            pass
+
+
+def _run_tests(repo, test_cmd, ref=None):
     """Step 3: run the gate. Returns (ok, tail-of-output)."""
     if not test_cmd:
         return True, "no test_cmd configured"
+    if ref:
+        import commit_overlay
+        with commit_overlay.checkout(repo, ref, prefix="merge-qa-overlay-") as overlay:
+            worktree = overlay["path"]
+            for shared in ("node_modules", ".env", ".env.local"):
+                src, dst = os.path.join(repo, shared), os.path.join(worktree, shared)
+                if os.path.exists(src) and not os.path.exists(dst):
+                    try: os.symlink(src, dst)
+                    except OSError: pass
+            # npm --prefix web / `cd web && ...` resolves dependencies below
+            # that package, not at the repository root. Reuse the primary
+            # package's content-addressed install instead of reinstalling it in
+            # every disposable QA worktree.
+            for source_root in _test_package_paths(repo, test_cmd)[1:]:
+                rel = os.path.relpath(source_root, repo)
+                src = os.path.join(source_root, "node_modules")
+                dst = os.path.join(worktree, rel, "node_modules")
+                if os.path.isdir(src) and not os.path.exists(dst):
+                    try: os.symlink(src, dst)
+                    except OSError: pass
+            ok, detail = _run_tests(worktree, test_cmd)
+            return ok, f"overlay:{overlay['commit'][:12]} {detail}"
     timeout = _test_timeout()
     if "npm" in test_cmd or "vitest" in test_cmd or "vue-tsc" in test_cmd or "tsc" in test_cmd or "jest" in test_cmd:
         # 2026-07-10: a leftover untracked compiled .js shadowing its .ts source (local build
@@ -297,14 +391,15 @@ def _run_tests(repo, test_cmd):
                 print(f"merge_train: cleaned {len(cleaned)} stray untracked .js file(s) shadowing .ts in {repo}")
         except Exception:
             pass
-        _ensure_node_deps(repo)
+        _ensure_node_deps(repo, test_cmd)
+        _prepare_generated_types(repo, test_cmd)
     try:
         r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
                            text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return False, f"tests timed out after {timeout}s"
     if r.returncode != 0:
-        tail = ((r.stdout or "")[-300:] + (r.stderr or "")[-300:]).strip()
+        tail = ((r.stdout or "")[-6000:] + (r.stderr or "")[-6000:]).strip()
         # One retry after a forced install if the failure looks like missing deps (env, not code).
         if any(s in tail.lower() for s in ("cannot find module", "module not found", "eresolve", "command not found")):
             _ensure_node_deps(repo)
@@ -313,7 +408,7 @@ def _run_tests(repo, test_cmd):
                                     text=True, timeout=timeout)
                 if r2.returncode == 0:
                     return True, "green (after dep install)"
-                return False, ((r2.stdout or "")[-300:] + (r2.stderr or "")[-300:]).strip()
+                return False, ((r2.stdout or "")[-6000:] + (r2.stderr or "")[-6000:]).strip()
             except subprocess.TimeoutExpired:
                 return False, f"tests timed out after {timeout}s"
         return False, tail
@@ -340,9 +435,32 @@ def _test_cmd_for(proj, repo):
 
 def _ff_base(repo, branch, base):
     """Step 4: fast-forward base to the rebased branch WITHOUT checking base out
-    (git fetch . branch:base — the approval_merge technique). No force, ever."""
+    (git fetch . branch:base — the approval_merge technique). No force, ever.
+
+    SELF-HEAL (2026-07-14): a leaked ephemeral staging worktree (tempfile 'stg-*', left locked
+    when a train process died) keeps `base` checked out forever, so git refuses the ff for
+    EVERY card ("refusing to fetch into branch ... checked out at /tmp/stg-*") — this zeroed
+    the merge rate. Detect that exact refusal, evict stale stg-* worktrees holding base, retry."""
     approval_merge._free_branch(repo, branch)
-    return _git(repo, "fetch", ".", f"{branch}:{base}").returncode == 0
+    r = _git(repo, "fetch", ".", f"{branch}:{base}")
+    if r.returncode == 0:
+        return True
+    err = (r.stderr or "") + (r.stdout or "")
+    if "refusing to fetch into branch" in err:
+        out = _git(repo, "worktree", "list", "--porcelain").stdout or ""
+        path = None
+        for line in out.splitlines() + [""]:
+            if line.startswith("worktree "):
+                path = line[len("worktree "):].strip()
+            elif line.startswith("branch ") and line.endswith(f"refs/heads/{base}"):
+                bn = os.path.basename(path or "")
+                if path and os.path.abspath(path) != os.path.abspath(repo) and bn.startswith("stg-"):
+                    _git(repo, "worktree", "unlock", path)
+                    _git(repo, "worktree", "remove", "--force", path)
+        _git(repo, "worktree", "prune")
+        r = _git(repo, "fetch", ".", f"{branch}:{base}")
+        return r.returncode == 0
+    return False
 
 
 def _push_base(repo, base):
@@ -354,6 +472,14 @@ def _push_base(repo, base):
     MERGED (a failed push previously counted as a merge and desynced the DB from GitHub)."""
     if not _push_enabled_for_base(base):
         return ""
+    # Ensure auth before push — the PAT may not have been injected yet if
+    # task_refs.publish() hasn't run for this repo in this process.
+    # Root cause of "Not logged in · Please run /login" failures.
+    try:
+        import task_refs
+        task_refs._ensure_auth(repo)
+    except Exception:
+        pass  # best-effort; push will fail with a clear error if auth is missing
     r = _git(repo, "push", "origin", base, timeout=300)
     if r.returncode == 0:
         return ""
@@ -411,9 +537,13 @@ def _log(project, slug, outcome, extra=""):
 
 
 def _risk_level(card, task):
+    # Prompts include a fleet-wide security/compliance boilerplate. Scanning the
+    # complete prompt made virtually every ordinary task "sensitive" and reduced
+    # the train to one attempt per project. Classify the task's identity and the
+    # human/QA merge card; material remains an explicit fail-closed override.
     blob = " ".join(str(x or "") for x in (
         card.get("kind"), card.get("title"), card.get("why"), task.get("kind"),
-        task.get("slug"), task.get("prompt"), task.get("note")))
+        task.get("slug")))
     if task.get("material") or card.get("kind") == "material" or SENSITIVE_RE.search(blob):
         return "sensitive"
     if str(task.get("kind") or "").lower() in LOW_RISK_KINDS or str(task.get("slug") or "").startswith(("batch-mech", "lint-", "docs-")):
@@ -501,6 +631,62 @@ def _attribute_train_outcome(slug, task, outcome, integrated=False):
     return False
 
 
+def _is_relfix(slug):
+    """True when the slug belongs to a release-fix family."""
+    return str(slug or "").startswith(_RELFIX_PREFIXES)
+
+
+def _verify_contract(repo, branch, base, slug, task, project_name):
+    """Contract-first verification gate: cheap-model diff review BEFORE test execution.
+
+    The runner applies verify.review_diff() before integration for tasks it executes
+    itself, but the merge train previously skipped this step entirely -- branches that
+    were approved and queued for the train landed without any diff-level safety review.
+    Release fixes (relfix-*, qafix-*, etc.) are especially risky because they are
+    high-priority, auto-approved, and target production-blocking issues, so an unsafe
+    diff can reach production faster than normal work.
+
+    This gate runs verify.review_diff() on the rebased branch BEFORE tests. A "fail"
+    verdict blocks the merge (same as a TESTFAIL) and routes the task for rework.
+
+    Gated by ORCH_TRAIN_CONTRACT_VERIFY (default "true"). When the env var
+    ORCH_TRAIN_CONTRACT_VERIFY_RELFIX_ONLY is "true" (default), only release-fix
+    slugs are verified; set to "false" to verify every branch in the train.
+
+    Fail-soft: any error during verification is logged and treated as a pass so
+    that verify infrastructure outages never block the merge train.
+    """
+    if not _truthy("ORCH_TRAIN_CONTRACT_VERIFY", default=True):
+        return True, ""
+    relfix_only = _truthy("ORCH_TRAIN_CONTRACT_VERIFY_RELFIX_ONLY", default=True)
+    if relfix_only and not _is_relfix(slug):
+        return True, ""
+    if _verify_mod is None:
+        return True, "verify module unavailable"
+    try:
+        # Collect blast-radius dependents for the verify prompt (same as runner.py)
+        dependents = None
+        try:
+            import blast_radius
+            dependents = blast_radius.dependents(repo, branch, base)
+        except Exception:
+            pass
+        result = _verify_mod.review_diff(
+            repo, base=base, dependents=dependents, project=project_name,
+        )
+        verdict = str(result.get("verdict", "pass")).lower()
+        notes = str(result.get("notes", ""))[:300]
+        reviewer = result.get("by", "unknown")
+        _log(project_name, slug, f"CONTRACT_VERIFY:{verdict.upper()}", f"by {reviewer}: {notes[:120]}")
+        if verdict.startswith("fail"):
+            return False, f"contract verify failed ({reviewer}): {notes}"
+        return True, f"contract verify passed ({reviewer})"
+    except Exception as e:
+        # Fail-soft: verification infra errors must not block the train
+        _log(project_name, slug, "CONTRACT_VERIFY:ERROR", str(e)[:120])
+        return True, f"verify error (fail-soft pass): {e}"
+
+
 def _select_batch(group):
     """Return the project's cards sorted (risk band, then age), DEDUPED by slug.
 
@@ -523,9 +709,15 @@ def _select_batch(group):
                           {"decided_by": f"{MARK}:dup-card", "status": "approved"})
             except Exception:
                 pass
+    try:
+        import blocker_portfolio
+        value_scores = blocker_portfolio.scores([task for _, _, task in newest_by_slug.values()])
+    except Exception:
+        value_scores = {}
     annotated = [(card, slug, task, _risk_level(card, task))
                  for card, slug, task in newest_by_slug.values()]
     annotated.sort(key=lambda e: ({"low": 0, "standard": 1, "sensitive": 2}[e[3]],
+                                  -value_scores.get(str(e[2].get("id") or e[2].get("slug") or ""), 0),
                                   str(e[0].get("created_at") or "")))
     return annotated
 
@@ -642,7 +834,7 @@ def _resolve_tasks_batch(cards):
     return tasks_by_slug
 
 
-def _integrate_card(card, slug, task, proj):
+def _integrate_card(card, slug, task, proj, repo_override=None):
     """Run one card through the train steps. Returns the outcome string for the summary."""
     # 2026-07-11: proj["repo_path"] is one shared absolute path stored fleet-wide
     # (e.g. /Users/kpasch/Documents/foo). On a second machine with a different home
@@ -652,7 +844,7 @@ def _integrate_card(card, slug, task, proj):
     # machine). localize_repo_path() rewrites the /Users/<user>/ prefix to THIS host's
     # home when a local clone exists there, so this works on any machine without a
     # manual per-host workaround.
-    repo = db.localize_repo_path(proj.get("repo_path", ""))
+    repo = repo_override or db.localize_repo_path(proj.get("repo_path", ""))
     pname = proj.get("name") or str(task.get("project_id"))
     task_base = _normalize_task_base(repo, proj, task.get("base_branch") or proj.get("default_base", "main"))
     branch = f"agent/{slug}"
@@ -690,6 +882,16 @@ def _integrate_card(card, slug, task, proj):
         return "branch-missing"
 
     _refresh_base(repo, base)                                     # (1)
+    if _already_integrated(repo, branch, base):
+        _task_patch(task, {"state": "MERGED",
+                           "note": f"train: already integrated in {base}"})
+        db.update("approvals", {"id": card["id"]},
+                  {"decided_by": f"{MARK}:ALREADY_INTEGRATED"})
+        _attribute_merge_outcome(slug, task)
+        _attribute_train_outcome(slug, task, "already-integrated", integrated=True)
+        approval_merge._free_branch(repo, branch)
+        _log(pname, slug, "ALREADY", f"present in {base}; no ref advance")
+        return "already-integrated"
     _task_patch(task, {"state": MERGING_STATE, "note": f"train: integrating {branch} into {base}"})
 
     if not _rebase_onto_base(repo, branch, base):                 # (2)
@@ -699,6 +901,17 @@ def _integrate_card(card, slug, task, proj):
             _semantic_ok = _try_semantic_merge(repo, branch, base)
         except Exception:
             pass  # fail-soft: any error → fall through to redo
+        if not _semantic_ok and os.environ.get("ORCH_MINIMAL_COMMIT_EXTRACTION", "true").lower() in ("1", "true", "yes", "on"):
+            try:
+                import minimal_commit
+                approval_merge._free_branch(repo, branch)
+                extracted = minimal_commit.extract(repo, branch, base, task)
+                _semantic_ok = bool(extracted.get("ok"))
+                if _semantic_ok:
+                    _log(pname, slug, "MINIMAL_EXTRACT",
+                         f"{len(extracted.get('files') or [])} task files onto fresh {base}")
+            except Exception:
+                _semantic_ok = False
         if _semantic_ok:
             _log(pname, slug, "SEMANTIC_MERGE", f"auto-resolved rebase conflict on {branch}")
             # branch now sits on base with merged content — fall through to step (3): tests
@@ -724,7 +937,51 @@ def _integrate_card(card, slug, task, proj):
             _log(pname, slug, "CONFLICT", f"redo cap {cap} exhausted")
             return "conflict"
 
-    ok, tail = _run_tests(repo, _test_cmd_for(proj, repo))  # (3)
+    # (2.5) CONTRACT-FIRST VERIFY: cheap-model diff review BEFORE expensive test execution.
+    # Catches unsafe diffs (security regressions, broken error handling) early, especially
+    # for release fixes that are auto-approved and fast-tracked to production.
+    v_ok, v_detail = _verify_contract(repo, branch, base, slug, task, pname)
+    if not v_ok:
+        _task_patch(task, {"state": "TESTFAIL",
+                           "note": f"train: contract verification blocked merge of {branch}: {v_detail[:200]}"})
+        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:VERIFY_FAIL"})
+        _attribute_train_outcome(slug, task, "verify-fail", integrated=False)
+        _log(pname, slug, "VERIFY_FAIL", v_detail[:120])
+        return "verify-fail"
+
+    test_cmd = _test_cmd_for(proj, repo)
+    # Rebase changes the commit SHA. Freeze the accepted integration candidate
+    # before QA so attribution follows the exact commit that can reach release.
+    try:
+        frozen_identity = _freeze_integration_identity(repo, branch, task, slug)
+        try:
+            _task_patch(task, frozen_identity)
+        except Exception:
+            # The Git ref is authoritative. Keep exact-commit attribution live
+            # during rolling upgrades where artifact_ref is not in DB yet.
+            _task_patch(task, {"artifact_commit": frozen_identity["artifact_commit"]})
+    except Exception as exc:
+        # Fail-soft: identity freeze is attribution, not correctness. Blocking ALL merges
+        # because a ref can't be pushed (e.g. PAT lacks 'workflow' scope) is worse than
+        # merging without exact attribution. Log and continue — the rebased commit SHA
+        # is still recorded on the task via artifact_commit when available.
+        _log(pname, slug, "IDENTITY-WARN", f"freeze failed ({str(exc)[:80]}), proceeding with merge")
+    ok, tail = _run_tests(repo, test_cmd, branch)  # (3) branch-exact, never primary checkout
+    if not ok and os.environ.get("ORCH_DIFFERENTIAL_QA", "true").lower() in ("1", "true", "yes", "on"):
+        try:
+            import differential_qa
+            baseline = differential_qa.cached(repo, base, test_cmd)
+            if baseline is None:
+                baseline_ok, baseline_log = _run_tests(repo, test_cmd, base)
+                differential_qa.store(repo, base, test_cmd, baseline_ok, baseline_log)
+            else:
+                baseline_ok, baseline_log = baseline.get("ok"), baseline.get("log", "")
+            comparison = differential_qa.compare(tail, baseline_log)
+            if not baseline_ok and comparison.get("allowed"):
+                ok = True
+                tail = "green by differential QA: " + comparison.get("reason", "")
+        except Exception:
+            pass
     if not ok:
         # NEVER force-merge red work.
         _task_patch(task, {"state": "TESTFAIL", "note": f"train: tests failed on rebased {branch}: {tail[:200]}"})
@@ -785,7 +1042,19 @@ def _paused():
 
 
 def train_run():
-    """Entry point: run the integration train across all projects (serialized per project)."""
+    """Entry point: run the integration train across all projects (serialized per project).
+
+    Returns a summary dict with keys:
+        projects  (int)  — number of projects processed
+        merged    (int)  — branches successfully fast-forwarded into base
+        redo      (int)  — branches re-queued due to stale-base rebase conflicts
+        testfail  (int)  — branches whose tests failed after rebase
+        conflict  (int)  — branches with unresolvable merge conflicts
+        skipped   (int)  — branches skipped (cap reached or repo locked)
+        risk      (dict) — counts by risk tier: low / standard / sensitive
+        pressure  (dict) — per-project queue pressure snapshot
+        paused    (bool) — present and True when the train is paused via fleet_config
+    """
     if _paused():
         print("merge_train: paused — skipping")
         return {"paused": True}
@@ -811,15 +1080,21 @@ def train_run():
         by_project.setdefault(t.get("project_id"), []).append((c, slug, t))
 
     pressure = _record_pressure(by_project, projects)
-    summary = {"projects": 0, "merged": 0, "redo": 0, "testfail": 0, "conflict": 0,
-               "skipped": 0, "risk": {"low": 0, "standard": 0, "sensitive": 0},
+    summary = {"projects": 0, "merged": 0, "already_integrated": 0,
+               "redo": 0, "testfail": 0, "conflict": 0,
+               "skipped": 0, "project_errors": 0,
+               "risk": {"low": 0, "standard": 0, "sensitive": 0},
                "pressure": pressure}
     caps = {"low": LOW_RISK_BATCH, "standard": STANDARD_BATCH, "sensitive": SENSITIVE_BATCH}
     ATTEMPT_OUTCOMES = ("merged", "testfail", "conflict", "push-pending")  # real attempts (tests ran) consume the cap
     scan_cap = int(os.environ.get("MERGE_TRAIN_SCAN_PER_PROJECT", "200"))
-    for pid, group in by_project.items():
+    def process_project(item):
+        pid, group = item
         proj = projects.get(pid, {})
-        summary["projects"] += 1
+        result = {"projects": 1, "merged": 0, "already_integrated": 0,
+                  "redo": 0, "testfail": 0,
+                  "conflict": 0, "skipped": 0,
+                  "risk": {"low": 0, "standard": 0, "sensitive": 0}}
         used = {"low": 0, "standard": 0, "sensitive": 0}
         scanned = 0
         # CONCURRENCY FIX (2026-07-08 merge-stall root cause): train_run() can be invoked
@@ -832,33 +1107,86 @@ def train_run():
         # thread is mid-train, skip this cycle rather than block indefinitely -- the next
         # scheduled pass (or the next task completion) will pick it back up.
         repo_path = db.localize_repo_path(proj.get("repo_path", ""))
-        with repo_lock.hold(repo_path, timeout=120) as got_lock:
+        with repo_lock.hold(repo_path, timeout=300, priority=True) as got_lock:
             if not got_lock:
-                summary["skipped"] += len(group)
+                result["skipped"] += len(group)
                 print(f"merge_train: {proj.get('name') or pid} busy (another train holds the repo lock) — skipping this cycle")
-                continue
-            for card, slug, task, risk in _select_batch(group):
-                if used[risk] >= caps[risk] or scanned >= scan_cap:
-                    continue
-                scanned += 1
-                summary["risk"][risk] += 1
-                outcome = _integrate_card(card, slug, task, proj)
-                if outcome in ATTEMPT_OUTCOMES:
-                    used[risk] += 1
-                if outcome == "merged":
-                    summary["merged"] += 1
-                elif outcome == "redo":
-                    summary["redo"] += 1
-                elif outcome == "testfail":
-                    summary["testfail"] += 1
-                elif outcome == "conflict":
-                    summary["conflict"] += 1
-                else:
-                    summary["skipped"] += 1
-    print(f"merge_train: {summary['merged']} merged, {summary['redo']} redo, "
+                return result
+            try:
+                with integration_runtime.isolated_repo(repo_path, "merge_train") as integration_repo:
+                    for card, slug, task, risk in _select_batch(group):
+                        if used[risk] >= caps[risk] or scanned >= scan_cap:
+                            continue
+                        scanned += 1
+                        result["risk"][risk] += 1
+                        outcome = _integrate_card(
+                            card, slug, task, proj, repo_override=integration_repo
+                        )
+                        if outcome in ATTEMPT_OUTCOMES:
+                            used[risk] += 1
+                        if outcome == "merged":
+                            result["merged"] += 1
+                        elif outcome == "already-integrated":
+                            result["already_integrated"] += 1
+                        elif outcome == "redo":
+                            result["redo"] += 1
+                        elif outcome == "testfail":
+                            result["testfail"] += 1
+                        elif outcome == "conflict":
+                            result["conflict"] += 1
+                        else:
+                            result["skipped"] += 1
+            except integration_runtime.IntegrationRuntimeError as exc:
+                result["skipped"] += len(group)
+                print(f"merge_train: {proj.get('name') or pid} isolation blocked: {exc}")
+        return result
+
+    def process_project_isolated(item):
+        """One broken repo/toolchain must not abort every other project's train."""
+        pid, group = item
+        try:
+            result = process_project(item)
+            result["project_errors"] = 0
+            return result
+        except Exception as exc:
+            pname = (projects.get(pid, {}) or {}).get("name") or str(pid)
+            print(f"merge_train [{pname}] PROJECT-ERROR: {type(exc).__name__}: {str(exc)[:500]}",
+                  flush=True)
+            return {"projects": 1, "merged": 0, "already_integrated": 0,
+                    "redo": 0, "testfail": 0, "conflict": 0,
+                    "skipped": len(group), "project_errors": 1,
+                    "risk": {"low": 0, "standard": 0, "sensitive": 0}}
+
+    items = list(by_project.items())
+    workers = min(len(items), max(1, int(os.environ.get("MERGE_TRAIN_PROJECT_WORKERS", "4"))))
+    if items:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers,
+                                                   thread_name_prefix="merge-project") as pool:
+            results = list(pool.map(process_project_isolated, items))
+        for result in results:
+            for key in ("projects", "merged", "already_integrated", "redo",
+                        "testfail", "conflict", "skipped", "project_errors"):
+                summary[key] += result[key]
+            for risk, count in result["risk"].items():
+                summary["risk"][risk] += count
+    print(f"merge_train: {summary['merged']} merged, {summary['already_integrated']} already, "
+          f"{summary['redo']} redo, "
           f"{summary['testfail']} testfail, {summary['conflict']} conflict, "
-          f"{summary['skipped']} skipped across {summary['projects']} project(s)")
+          f"{summary['skipped']} skipped, {summary['project_errors']} project errors "
+          f"across {summary['projects']} project(s)")
     return summary
+
+
+_train_run_unleased = train_run
+
+
+def train_run():
+    """Run the whole merge pass under the cross-train single-flight lease."""
+    timeout = float(os.environ.get("ORCH_INTEGRATION_LEASE_TIMEOUT_S", "0") or 0)
+    with integration_runtime.global_lease("merge_train", timeout=timeout) as acquired:
+        if not acquired:
+            return {"skipped": "another integration or release train owns the global lease"}
+        return _train_run_unleased()
 
 
 # scheduler-compat alias: the train IS the integration path now
@@ -867,4 +1195,19 @@ run = train_run
 
 if __name__ == "__main__":
     import json
+    # SINGLE-FLIGHT (2026-07-14): the 60s scheduler kept spawning new train processes while a
+    # long pass (staging tests take minutes) was still running — 3-4 stacked merge_train.py
+    # processes contended on the per-repo locks and burned RAM for zero extra merges. If another
+    # instance is already running, exit immediately; the running pass covers this cycle.
+    import fcntl
+    _lock_path = os.path.join(os.environ.get("CLAUDE_ORCH_HOME",
+                              os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".runtime")),
+                              "merge-train.single.lock")
+    os.makedirs(os.path.dirname(_lock_path), exist_ok=True)
+    _lock = open(_lock_path, "a+")
+    try:
+        fcntl.flock(_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        print(json.dumps({"skipped": "another merge_train instance is running"}))
+        sys.exit(0)
     print(json.dumps(train_run(), indent=2, default=str))

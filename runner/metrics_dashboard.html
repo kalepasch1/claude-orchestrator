@@ -232,6 +232,34 @@ body { font-family: var(--font-b); background: var(--bg); color: var(--text); li
   </div>
 </section>
 
+<!-- §5b ── D1 METRICS ──────────────────── -->
+<section class="section">
+  <div class="container">
+    <div class="s-head reveal">
+      <div class="tag" style="margin-bottom:12px;">D1 Operational Metrics</div>
+      <h2>Lead times, deploy rate,<br>knowledge reuse.</h2>
+      <p>Real-time scoreboard tracking how fast work ships, how often the fleet deploys, and how effectively prior patches are reused across projects.</p>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:#e5e5e5;border-radius:var(--r);overflow:hidden;max-width:760px;" class="reveal">
+      <div style="background:#fff;padding:36px 28px;text-align:center;">
+        <div style="font-family:var(--font-b);font-size:2.4rem;font-weight:700;line-height:1;margin-bottom:6px;" id="d1-lead-time">—</div>
+        <div style="font-family:var(--font-m);font-size:0.6rem;text-transform:uppercase;letter-spacing:0.1em;color:#737373;">Median Lead Time (hrs)</div>
+        <div style="font-size:0.78rem;color:#a3a3a3;margin-top:6px;" id="d1-lead-p90"></div>
+      </div>
+      <div style="background:#fff;padding:36px 28px;text-align:center;">
+        <div style="font-family:var(--font-b);font-size:2.4rem;font-weight:700;line-height:1;margin-bottom:6px;" id="d1-deploy-rate">—</div>
+        <div style="font-family:var(--font-m);font-size:0.6rem;text-transform:uppercase;letter-spacing:0.1em;color:#737373;">Merges / Hour</div>
+        <div style="font-size:0.78rem;color:#a3a3a3;margin-top:6px;">Rolling window</div>
+      </div>
+      <div style="background:#fff;padding:36px 28px;text-align:center;">
+        <div style="font-family:var(--font-b);font-size:2.4rem;font-weight:700;line-height:1;margin-bottom:6px;" id="d1-knowledge-reuse">—</div>
+        <div style="font-family:var(--font-m);font-size:0.6rem;text-transform:uppercase;letter-spacing:0.1em;color:#737373;">Knowledge Reuse Rate</div>
+        <div style="font-size:0.78rem;color:#a3a3a3;margin-top:6px;">Patch transplant ratio</div>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- §6 ── PRICING ──────────────────────── -->
 <section class="section">
   <div class="container">
@@ -421,7 +449,12 @@ const DATA = {
       "task_count": 3241
     }
   },
-  "generated_at": "2026-07-10T14:30:00Z"
+  "generated_at": "2026-07-10T14:30:00Z",
+  "d1_metrics": {
+    "lead_times": {"median_hours": 1.42, "p90_hours": 4.87},
+    "deploy_rate": 2.134,
+    "knowledge_reuse": 0.312
+  }
 };
 // __DASHBOARD_DATA_END__
 
@@ -609,6 +642,21 @@ countUp(document.getElementById('h-cap'), EXCL_CAPS, '', 1000);
     'Today: ' + Math.round(avgSav) + '% cheaper.<br>At scale: <em style="font-style:normal;">500×</em>.';
   document.getElementById('scale-note').textContent =
     'The hivemind is the key unlock. Cross-project reuse within your own portfolio gets you to ~50×. But when every user on the network contributes patterns — auth flows, API designs, testing strategies, deployment patterns — the combinatorial explosion of reusable knowledge pushes past 500×. More users = more patterns = lower cost for everyone.';
+})();
+
+/* §5b ── D1 Metrics ───────────── */
+(function(){
+  var d1 = DATA.d1_metrics || {};
+  var lt = d1.lead_times || {};
+  var el;
+  el = document.getElementById('d1-lead-time');
+  if (el && lt.median_hours != null) el.textContent = lt.median_hours.toFixed(1);
+  el = document.getElementById('d1-lead-p90');
+  if (el && lt.p90_hours != null) el.textContent = 'p90: ' + lt.p90_hours.toFixed(1) + 'h';
+  el = document.getElementById('d1-deploy-rate');
+  if (el && d1.deploy_rate != null) el.textContent = d1.deploy_rate.toFixed(1);
+  el = document.getElementById('d1-knowledge-reuse');
+  if (el && d1.knowledge_reuse != null) el.textContent = fmt.pctI(d1.knowledge_reuse);
 })();
 
 /* §6 ── Pricing ───────────────── */

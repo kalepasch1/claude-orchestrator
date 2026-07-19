@@ -27,6 +27,14 @@ MODELS = {
         {"model": _configured("DEEPSEEK_REASONER_MODEL", "deepseek-v4-pro",
                               deprecated=("deepseek-chat", "deepseek-reasoner")), "cap": 9, "tier": "cheap"},
     ],
+    "groq": [
+        {"model": os.environ.get("GROQ_FAST_MODEL", "llama-3.1-8b-instant"), "cap": 5, "tier": "cheap"},
+        {"model": os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"), "cap": 7, "tier": "cheap"},
+    ],
+    "xai": [
+        {"model": os.environ.get("XAI_CODING_MODEL", "grok-build-0.1"), "cap": 8, "tier": "mid"},
+        {"model": os.environ.get("XAI_MODEL", "grok-4.3"), "cap": 9, "tier": "mid"},
+    ],
     "google": [
         {"model": _configured("GEMINI_CHEAP_MODEL", "gemini-2.5-flash-lite-preview-09-2025",
                               deprecated=("gemini-2.0-",)), "cap": 6, "tier": "cheap"},
@@ -50,6 +58,24 @@ MODELS = {
 }
 
 TIER_COST = {"free": 0.0, "cheap": 0.15, "sub": 0.25, "mid": 1.0, "expensive": 3.0}
+
+
+def vendor_family(provider, model):
+    """Preserve underlying model-vendor diversity for local open-weight routes."""
+    provider = str(provider or "").lower()
+    model = str(model or "").lower()
+    if provider != "local":
+        return provider
+    for family, hints in {
+        "deepseek-local": ("deepseek",),
+        "mistral-local": ("mistral", "mixtral", "codestral"),
+        "qwen-local": ("qwen",),
+        "meta-local": ("llama",),
+        "google-local": ("gemma",),
+    }.items():
+        if any(hint in model for hint in hints):
+            return family
+    return "local-other"
 
 
 def _price_score(candidate):
@@ -98,16 +124,27 @@ def _empirical_score(task_class, provider, model):
                                             "limit": "80"}) or []
     except Exception:
         return 0.0
-    if len(rows) < 5:
+    try:
+        import route_value_optimizer
+        min_samples = route_value_optimizer.MIN_SAMPLES
+        lower = route_value_optimizer.wilson_lower(sum(1 for r in rows if r.get("ok")), len(rows))
+    except Exception:
+        min_samples, lower = 20, 0.0
+    if len(rows) < min_samples:
         return 0.0
-    ok = sum(1 for r in rows if r.get("ok")) / len(rows)
     cost = sum(float(r.get("cost_usd") or 0) for r in rows) / len(rows)
     latency = sum(float(r.get("latency_ms") or 0) for r in rows) / len(rows)
-    return ok * 2.0 - cost - min(2.0, latency / 60000.0)
+    return lower * 2.0 - cost - min(2.0, latency / 60000.0)
 
 
-def choose(task_class="review", need=6, sensitivity="standard", exclude_provider=None,
+def ranked(task_class="review", need=6, sensitivity="standard", exclude_provider=None,
            available_providers=None, use_empirical=True):
+    """Return every capable concrete model in optimizer order.
+
+    Exposing the ranked portfolio lets independent QA panels select diverse
+    vendors while retaining the same cost, capability, trust, and empirical
+    scoring used for the primary route.
+    """
     try:
         import provider_terms
     except Exception:
@@ -124,18 +161,38 @@ def choose(task_class="review", need=6, sensitivity="standard", exclude_provider
             continue
         if provider_terms and not provider_terms.allowed(c["provider"], sensitivity):
             continue
+        try:
+            import provider_failover_sla
+            if c["provider"] != "local" and provider_failover_sla.is_demoted(c["provider"]):
+                continue
+        except Exception:
+            pass
         price = _price_score(c)
         empirical = _empirical_score(task_class, c["provider"], c["model"]) if use_empirical else 0.0
+        deployed_value = 0.0
+        if use_empirical:
+            try:
+                import route_value_optimizer
+                deployed_value = route_value_optimizer.provider_score(c["provider"])
+            except Exception:
+                pass
         surplus = max(0, int(c.get("cap") or 0) - int(need or 0))
         surplus_penalty = surplus * (0.02 if c["provider"] == "local" else 0.05)
         local_bonus = 0.08 if c["provider"] == "local" else 0.0
         slash_penalty = model_slashing.score_adjustment(c["provider"], c["model"]) if model_slashing else 0.0
-        score = empirical - price - surplus_penalty - slash_penalty + (int(c.get("cap") or 0) / 100.0) + local_bonus
+        score = empirical + (2.0 * deployed_value) - price - surplus_penalty - slash_penalty + (int(c.get("cap") or 0) / 100.0) + local_bonus
         candidates.append((score, price, -c["cap"], c))
-    if not candidates:
-        return None
     candidates.sort(key=lambda x: (-x[0], x[1], x[2]))
-    return candidates[0][3]
+    return [{**item[3], "vendor_family": vendor_family(item[3]["provider"], item[3]["model"]),
+             "optimizer_score": round(item[0], 4),
+             "price_score": round(item[1], 4)} for item in candidates]
+
+
+def choose(task_class="review", need=6, sensitivity="standard", exclude_provider=None,
+           available_providers=None, use_empirical=True):
+    candidates = ranked(task_class, need, sensitivity, exclude_provider,
+                        available_providers, use_empirical)
+    return candidates[0] if candidates else None
 
 
 def available():

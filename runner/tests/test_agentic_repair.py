@@ -34,11 +34,30 @@ class AgenticRepairTest(unittest.TestCase):
         self.assertIn("missing import", patch_row["prompt"])
         self.assertIn("agentic-repair:buildfail", patch_row["note"])
 
-    def test_choose_coder_uses_fast_default_without_full_router_by_default(self):
+    def test_choose_coder_env_override_takes_priority(self):
         router = types.SimpleNamespace(pick=lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("router called")))
         with patch.dict(sys.modules, {"agentic_coders": router}), \
-             patch.dict(os.environ, {"ORCH_AGENTIC_REPAIR_DEFAULT_CODER": "ollama"}, clear=False):
-            self.assertEqual(agentic_repair.choose_coder({"slug": "repair-me"}), "ollama")
+             patch.dict(os.environ, {"ORCH_AGENTIC_REPAIR_DEFAULT_CODER": "deepseek"}, clear=False):
+            self.assertEqual(agentic_repair.choose_coder({"slug": "repair-me"}), "deepseek")
+
+    def test_choose_coder_falls_back_to_claude_not_ollama_when_router_unavailable(self):
+        """Closing the unsafe path: if the router is missing and no env var is set,
+        we must NOT fall back to 'ollama' (which can timeout and wedge the repair queue)."""
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("ORCH_AGENTIC_REPAIR_DEFAULT_CODER", "ORCH_REPAIR_CODER_FALLBACK")}
+        with patch.dict(sys.modules, {"agentic_coders": None}, clear=False), \
+             patch.dict(os.environ, env, clear=True):
+            result = agentic_repair.choose_coder({"slug": "repair-me"})
+        self.assertEqual(result, "claude", "fallback must be 'claude', not 'ollama'")
+
+    def test_choose_coder_fallback_configurable_via_env(self):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("ORCH_AGENTIC_REPAIR_DEFAULT_CODER", "ORCH_REPAIR_CODER_FALLBACK")}
+        env["ORCH_REPAIR_CODER_FALLBACK"] = "deepseek"
+        with patch.dict(sys.modules, {"agentic_coders": None}, clear=False), \
+             patch.dict(os.environ, env, clear=True):
+            result = agentic_repair.choose_coder({"slug": "repair-me"})
+        self.assertEqual(result, "deepseek")
 
     def test_repair_prompt_includes_agentic_artifacts_when_available(self):
         task = {

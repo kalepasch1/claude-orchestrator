@@ -33,11 +33,97 @@ branch refs/heads/agent/old-task
 
         with patch.object(worktree_gc, "db", db), \
              patch.object(worktree_gc.os.path, "isdir", return_value=True), \
+             patch.object(worktree_gc, "_recently_active", return_value=False), \
              patch.object(worktree_gc.subprocess, "run", side_effect=run):
             removed = worktree_gc.gc_repo(repo)
 
         self.assertEqual(removed, 1)
         self.assertIn(["git", "worktree", "remove", "--force", stale], calls)
+
+    def test_db_failure_fails_closed_and_removes_nothing(self):
+        """When the task DB is unreadable we must NOT treat 'protected' as empty — that
+        mass-deleted in-use worktrees whenever Supabase errored."""
+        repo = "/tmp/app"
+        stale = "/tmp/app-wt/old-task"
+        porcelain = f"""worktree {stale}
+HEAD def
+branch refs/heads/agent/old-task
+
+"""
+        db = MagicMock()
+        db.select.side_effect = RuntimeError("supabase down")
+        calls = []
+
+        def run(args, cwd=None, capture_output=False, text=False):
+            calls.append(args)
+            if args[:3] == ["git", "worktree", "list"]:
+                return MagicMock(stdout=porcelain, returncode=0)
+            return MagicMock(stdout="", returncode=0)
+
+        with patch.object(worktree_gc, "db", db), \
+             patch.object(worktree_gc.os.path, "isdir", return_value=True), \
+             patch.object(worktree_gc, "_recently_active", return_value=False), \
+             patch.object(worktree_gc.subprocess, "run", side_effect=run):
+            removed = worktree_gc.gc_repo(repo)
+
+        self.assertEqual(removed, 0)
+        self.assertNotIn(["git", "worktree", "remove", "--force", stale], calls)
+
+    def test_dirty_worktree_is_never_removed(self):
+        repo = "/tmp/app"
+        stale = "/tmp/app-wt/old-task"
+        porcelain = f"""worktree {stale}
+HEAD def
+branch refs/heads/agent/old-task
+
+"""
+        db = MagicMock()
+        db.select.side_effect = [[], [], []]
+        calls = []
+
+        def run(args, cwd=None, capture_output=False, text=False):
+            calls.append(args)
+            if args[:3] == ["git", "worktree", "list"]:
+                return MagicMock(stdout=porcelain, returncode=0)
+            if args[:2] == ["git", "status"]:
+                return MagicMock(stdout=" M some/file.ts\n", returncode=0)
+            return MagicMock(stdout="", returncode=0)
+
+        with patch.object(worktree_gc, "db", db), \
+             patch.object(worktree_gc.os.path, "isdir", return_value=True), \
+             patch.object(worktree_gc, "_recently_active", return_value=False), \
+             patch.object(worktree_gc.subprocess, "run", side_effect=run):
+            removed = worktree_gc.gc_repo(repo)
+
+        self.assertEqual(removed, 0)
+        self.assertNotIn(["git", "worktree", "remove", "--force", stale], calls)
+
+    def test_recently_active_worktree_is_never_removed(self):
+        repo = "/tmp/app"
+        stale = "/tmp/app-wt/old-task"
+        porcelain = f"""worktree {stale}
+HEAD def
+branch refs/heads/agent/old-task
+
+"""
+        db = MagicMock()
+        db.select.side_effect = [[], [], []]
+        calls = []
+
+        def run(args, cwd=None, capture_output=False, text=False):
+            calls.append(args)
+            if args[:3] == ["git", "worktree", "list"]:
+                return MagicMock(stdout=porcelain, returncode=0)
+            return MagicMock(stdout="", returncode=0)
+
+        with patch.object(worktree_gc, "db", db), \
+             patch.object(worktree_gc.os.path, "isdir", return_value=True), \
+             patch.object(worktree_gc, "_recently_active", return_value=True), \
+             patch.object(worktree_gc.subprocess, "run", side_effect=run):
+            removed = worktree_gc.gc_repo(repo)
+
+        self.assertEqual(removed, 0)
+        self.assertNotIn(["git", "worktree", "remove", "--force", stale], calls)
 
     def test_approved_merge_card_protects_worktree(self):
         repo = "/tmp/app"

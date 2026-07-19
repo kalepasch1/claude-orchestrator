@@ -49,11 +49,9 @@ def _save_state(state):
 
 
 def _queue_depth():
-    try:
-        rows = db.select("tasks", {"select": "id", "state": "eq.QUEUED", "limit": "5001"}) or []
-        return len(rows)
-    except Exception:
-        return 0
+    # Exact header count is O(1), avoids PostgREST's 1,000-row body cap, and raises
+    # on transport failure. An outage must never masquerade as a drained queue.
+    return db.count("tasks", {"state": "eq.QUEUED"})
 
 
 def _pause_generators(reason):
@@ -85,7 +83,7 @@ def _shelve_lowest_ev(count):
         for t in tasks:
             try:
                 db.update("tasks", {"id": t["id"]},
-                          {"state": "QUARANTINED",
+                          {"state": "SHELVED",
                            "note": f"shelved by queue-velocity PID (low EV, integral too high)"})
                 shelved += 1
             except Exception:
@@ -104,7 +102,11 @@ def run():
     integral = state.get("integral", 0)
 
     # Sample current queue depth
-    depth = _queue_depth()
+    try:
+        depth = _queue_depth()
+    except Exception as e:
+        print(f"[queue-velocity] measurement failed; preserving controller state: {e}")
+        return {"ok": False, "error": str(e), "measurement_valid": False}
     now = time.time()
     history.append({"t": now, "depth": depth})
     history = history[-MAX_HISTORY:]  # trim

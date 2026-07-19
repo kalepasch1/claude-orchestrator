@@ -72,6 +72,7 @@ class _PatternTransfer:
         self._transfers_attempted = 0
         self._transfers_successful = 0
         self._cross_project_savings = 0
+        self._compiled_patterns_available = None
 
     # -----------------------------------------------------------------------
     # public: find_transferable
@@ -306,13 +307,17 @@ class _PatternTransfer:
 
     def _compiled_patterns_for(self, project):
         """Fetch compiled patterns for a project from the DB."""
+        if self._compiled_patterns_available is False:
+            return self._patterns_from_outcomes(project)
         try:
             rows = db.select("compiled_patterns", {
                 "project": "eq.%s" % project,
                 "limit": "200",
             })
+            self._compiled_patterns_available = True
             return rows if rows else []
         except Exception:
+            self._compiled_patterns_available = False
             _log.debug("compiled_patterns table query failed, trying outcomes")
             return self._patterns_from_outcomes(project)
 
@@ -358,7 +363,6 @@ class _PatternTransfer:
                 groups[prefix]["total"] += 1
                 if r.get("integrated"):
                     groups[prefix]["success"] += 1
-                groups[prefix]["files"].extend(files_by_slug.get(slug, []))
 
             patterns = []
             for prefix, g in groups.items():
@@ -410,14 +414,8 @@ class _PatternTransfer:
     def _project_profile(self, project_id):
         """Build a feature profile for a project from its outcomes."""
         try:
-            # merged_diffs is the only table carrying diff text + changed-file paths, and it
-            # holds merged work only (so no state filter is needed). Its `project` column is
-            # the project NAME, not the id, so resolve the id first.
-            prow = db.select("projects", {"id": "eq.%s" % project_id, "select": "name"}) or []
-            if not prow:
-                return {}
             rows = db.select("merged_diffs", {
-                "project": "eq.%s" % prow[0].get("name"),
+                "project": "eq.%s" % project_id,
                 "select": "slug,diff,files",
                 "limit": "200",
                 "order": "created_at.desc",
@@ -474,7 +472,7 @@ class _PatternTransfer:
     def _all_projects(self):
         """Return distinct project identifiers from outcomes."""
         try:
-            rows = db.select("outcomes", {
+            rows = db.select("merged_diffs", {
                 "select": "project",
                 "limit": "1000",
             })

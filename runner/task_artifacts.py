@@ -53,11 +53,34 @@ def capture(repo, slug, branch, base, wt, test_log="", cost=None):
     if cost:
         artifacts["cost_usd"] = cost.get("usd", 0)
 
+    # A branch can move; this ref cannot.  Publishing here covers the Cowork
+    # terminal executor as well as the classic runner path.
+    try:
+        import task_refs
+        task_rows = db.select("tasks", {"select": "id,attempt", "slug": f"eq.{slug}",
+                                         "order": "created_at.desc", "limit": "1"}) or []
+        task = task_rows[0] if task_rows else {}
+        identity = task_refs.publish(repo, task.get("id") or slug, task.get("attempt") or 1,
+                                     artifacts["commit_sha"])
+        if not identity.get("ok"):
+            raise RuntimeError(identity.get("reason") or "immutable ref publish failed")
+        artifacts["artifact_ref"] = identity["ref"]
+        artifacts["patch_id"] = identity["patch_id"]
+    except Exception as exc:
+        print(f"[artifacts] immutable ref failed for {slug}: {str(exc)[:300]}")
+
     # Store in Supabase
     row = {"slug": slug, **artifacts}
     try:
         db.insert(ARTIFACTS_TABLE, row, upsert=True)
     except Exception as e:
+        # Preserve the shared replay payload on old schemas; the immutable ref
+        # itself is already published to the Git remote.
+        try:
+            compatible = {k: v for k, v in row.items() if k not in ("artifact_ref", "patch_id")}
+            db.insert(ARTIFACTS_TABLE, compatible, upsert=True)
+        except Exception:
+            pass
         # Fallback: store as JSON file locally
         try:
             art_dir = os.path.join(os.environ.get("CLAUDE_ORCH_HOME",

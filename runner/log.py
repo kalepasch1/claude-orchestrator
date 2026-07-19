@@ -13,12 +13,20 @@ import os
 import socket
 import threading
 
+__all__ = ["get", "with_task"]
+
 _hostname = socket.gethostname()
 _lock = threading.Lock()
 _configured = False
 
 
 def _ensure_configured():
+    """Configure the root logger on first call; thread-safe and idempotent.
+
+    Uses double-checked locking: the fast path reads _configured without
+    the lock so concurrent callers after the first configuration pay no
+    synchronisation cost.
+    """
     global _configured
     if _configured:
         return
@@ -43,6 +51,10 @@ def get(name: str) -> logging.Logger:
     return logging.getLogger(name)
 
 
-def with_task(logger: logging.Logger, task_id) -> logging.LoggerAdapter:
-    """Return a LoggerAdapter that prefixes messages with a task ID."""
-    return logging.LoggerAdapter(logger, {"task_id": task_id})
+def with_task(logger: logging.Logger, task_id: str = "") -> logging.LoggerAdapter:
+    """Return a LoggerAdapter that prefixes messages with a task ID.
+
+    Accepts None or empty string gracefully — returns an adapter with
+    an empty task_id so callers never need a guard.
+    """
+    return logging.LoggerAdapter(logger, {"task_id": task_id or ""})

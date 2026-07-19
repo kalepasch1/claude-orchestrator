@@ -10,13 +10,14 @@ const SB_URL = Deno.env.get("SUPABASE_URL")!;
 const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 function verify(ts: string, sig: string, raw: string): boolean {
-  if (!SIGNING) return true; // allow if unset (dev); set it in prod
+  if (!SIGNING) return false; // fail-secure: SLACK_SIGNING_SECRET must be set via supabase secrets
   if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false;
   const mac = "v0=" + createHmac("sha256", SIGNING).update(`v0:${ts}:${raw}`).digest("hex");
   return mac === sig;
 }
 
 serve(async (req) => {
+  if (!SIGNING) return new Response("SLACK_SIGNING_SECRET not configured", { status: 503 });
   const raw = await req.text();
   const ts = req.headers.get("x-slack-request-timestamp") ?? "";
   const sig = req.headers.get("x-slack-signature") ?? "";

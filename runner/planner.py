@@ -19,6 +19,7 @@ import os, sys, json, subprocess, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import claude_cli
 import tdd_gate
+import tests_first_gate
 
 PLAN_MODEL = os.environ.get("PLAN_MODEL", "claude-opus-4-8")
 
@@ -53,12 +54,12 @@ def _apply_tdd_gating(tasks):
     - The original task then depends on write_tests completing
     - Acceptance criteria (metrics, edge_cases, must_pass_tests) are extracted from task prompt
 
-    This is a no-op if ORCH_TDD_ENABLED is false or ORCH_TDD_TASK_KINDS is empty.
+    This is a no-op if ORCH_TDD_REQUIRED_KINDS is empty.
     """
-    if not tdd_gate.is_tdd_enabled():
+    try:
+        gated_kinds = tdd_gate.get_required_kinds()
+    except Exception:
         return tasks
-
-    gated_kinds = tdd_gate.get_task_kinds()
     if not gated_kinds:
         return tasks
 
@@ -146,6 +147,9 @@ def plan(master: str, repo: str = None) -> list:
 
     # Apply TDD-first enforcement if configured
     tasks = _apply_tdd_gating(tasks)
+
+    # Apply tests-first gate: split tasks whose proof references a missing test file
+    tasks = tests_first_gate.apply_gate(tasks, repo_path=repo)
 
     return tasks
 

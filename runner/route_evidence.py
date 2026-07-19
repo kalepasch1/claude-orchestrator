@@ -100,6 +100,45 @@ def dedupe_attribution_rows(rows):
     return out
 
 
+def terminal_task_rows(rows):
+    """One routing observation per task/coder, not one row per retry/log write.
+
+    Retries are execution detail. Counting each retry as an independent failed
+    delivery depressed routes with honest instrumentation and rewarded routes
+    that emitted fewer rows. Preserve the strongest terminal evidence while
+    aggregating the real cost, wall time, and attempt count.
+    """
+    grouped = collections.OrderedDict()
+    for row in dedupe_attribution_rows(rows):
+        key = (row.get("task_id") or row.get("slug") or row.get("id"), _coder(row.get("model")))
+        current = grouped.get(key)
+        rank = (bool(row.get("deployed")) or str(row.get("deploy_status") or "").lower() in
+                ("success", "ready", "deployed", "green"), bool(row.get("integrated")),
+                bool(row.get("tests_passed")), str(row.get("created_at") or ""))
+        if current is None:
+            chosen = dict(row)
+            chosen["_rank"] = rank
+            chosen["_trial_rows"] = 1
+            grouped[key] = chosen
+            continue
+        current["_trial_rows"] = int(current.get("_trial_rows") or 1) + 1
+        current["usd"] = _float(current.get("usd")) + _float(row.get("usd"))
+        current["wall_ms"] = _float(current.get("wall_ms")) + _float(row.get("wall_ms"))
+        current["attempts"] = max(_float(current.get("attempts")), _float(row.get("attempts")),
+                                  float(current["_trial_rows"]))
+        if rank > current.get("_rank", (False, False, False, "")):
+            totals = {k: current.get(k) for k in ("usd", "wall_ms", "attempts", "_trial_rows")}
+            current = dict(row)
+            current.update(totals)
+            current["_rank"] = rank
+            grouped[key] = current
+    result = []
+    for row in grouped.values():
+        row.pop("_rank", None)
+        result.append(row)
+    return result
+
+
 def _select_existing_outcomes(extra=None, limit="5000"):
     params = {"select": "id,task_id,slug,integrated,model,kind,tests_passed,usd,wall_ms,note,created_at",
               "order": "created_at.desc", "limit": str(limit)}
@@ -142,23 +181,44 @@ def provider_status():
         import agentic_coders
         import model_gateway
         providers = set(model_gateway.available())
+        configured = set(model_gateway.configured())
         coders = agentic_coders.available()
     except Exception as e:
-        return {"available_providers": [], "agentic_coders": [], "error": str(e)[:300]}
+        return {"available_providers": [], "configured_providers": [], "agentic_coders": [], "error": str(e)[:300]}
     required = {
         "openai": "OPENAI_API_KEY",
         "google": "GOOGLE_API_KEY",
         "deepseek": "DEEPSEEK_API_KEY",
+        "groq": "GROQ_API_KEY",
+        "xai": "XAI_API_KEY or GROK_API_KEY or XAPI_KEY",
         "local": "OLLAMA_HOST or running Ollama",
     }
     disabled = []
     for provider, requirement in required.items():
         if provider not in providers:
             disabled.append({"provider": provider, "reason": f"not available ({requirement})"})
+    local_models = []
+    try:
+        import ollama_catalog
+        local_models = [c.get("model") for c in ollama_catalog.candidates() if c.get("model")]
+    except Exception:
+        pass
+    demoted = {}
+    try:
+        import provider_failover_sla
+        demoted = (provider_failover_sla._load().get("demoted") or {})
+    except Exception:
+        pass
     return {
         "available_providers": sorted(providers),
+        "configured_providers": sorted(configured),
         "agentic_coders": coders,
         "disabled_providers": disabled,
+        "demoted_providers": demoted,
+        "local_vendor_models": {
+            "deepseek": [m for m in local_models if "deepseek" in str(m).lower()],
+            "mistral_codestral": [m for m in local_models if any(x in str(m).lower() for x in ("mistral", "codestral"))],
+        },
     }
 
 

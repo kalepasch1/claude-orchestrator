@@ -1,0 +1,68 @@
+#!/bin/sh
+# Fleet pre-commit hook (core.hooksPath = claude-orchestrator/runner/hooks).
+#
+# WHY THIS EXISTS
+#   Enforces the "landed but not wired" gate. Engine code that compiles, commits, and is
+#   imported by NOTHING has repeatedly shipped, because merges/consolidations pick up
+#   server/utils/** but drop the sibling API routes, page, nav line, cron registration, or
+#   barrel exports. The gate lives in each repo as scripts/check-wiring.mjs +
+#   wiring.config.json. Repos without those files are a silent no-op.
+#
+#   It also restores the repo's own sanctioned hook set (scripts/git-hooks/pre-commit,
+#   installed by `npm run hooks:install`), which core.hooksPath would otherwise mask —
+#   that is how tomorrow's migration-name lint got silently disabled.
+#
+# DELIBERATELY NOT DELEGATED TO
+#   $GIT_DIR/hooks/pre-commit  — stale simple-git-hooks artifact running `npx lint-staged`
+#                                against an invalid lint-staged config. It has been inert
+#                                since core.hooksPath was set; running it would break every
+#                                commit. Delete it or fix the config to re-enable.
+#   .husky/pre-commit          — husky is not a dependency here (repo is deliberately
+#                                dependency-free); no such hook exists.
+#
+# ESCAPE HATCHES
+#   git commit --no-verify        → skip all hooks
+#   SKIP_WIRING_GATE=1 git commit → skip only the wiring gate
+#
+# Safe by design: every step is optional and skipped when absent.
+set -eu
+
+# ── 1. The repo's own sanctioned hook set (masked by core.hooksPath otherwise) ────
+if [ -x scripts/git-hooks/pre-commit ]; then
+  self="$0"
+  case "$self" in
+    */scripts/git-hooks/pre-commit) ;;   # don't recurse into ourselves
+    *) scripts/git-hooks/pre-commit "$@" ;;
+  esac
+fi
+
+# ── 2. Wiring gate — only for repos that opted in ────────────────────────────────
+if [ "${SKIP_WIRING_GATE:-0}" = "1" ]; then
+  exit 0
+fi
+
+if [ -f scripts/check-wiring.mjs ] && [ -f wiring.config.json ]; then
+  if ! command -v node > /dev/null 2>&1; then
+    echo "[pre-commit] node not found — skipping wiring gate" >&2
+    exit 0
+  fi
+  echo "[pre-commit] running wiring gate (landed-but-not-wired)…"
+  if ! node scripts/check-wiring.mjs; then
+    cat >&2 <<'MSG'
+[pre-commit] ✗ WIRING GATE FAILED — refusing the commit.
+
+Something landed but is not reachable: a dead engine, a barrel missing exports, an
+unwired capability, a registry entry with no backing file, or a tracked file missing
+from the worktree. The gate printed the exact fix above.
+
+Common repairs:
+  npm run gen:barrels          # regenerate a drifted barrel
+  git checkout HEAD -- <path>  # restore a tracked file missing from the worktree
+
+Override (use sparingly): SKIP_WIRING_GATE=1 git commit …   or   git commit --no-verify
+MSG
+    exit 1
+  fi
+fi
+
+exit 0

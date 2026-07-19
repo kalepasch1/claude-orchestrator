@@ -5,7 +5,7 @@ Slice-3: when a provider's error rate or latency spikes, the qpd bandit demotes 
 automatically; on recovery (sustained good metrics past cooldown), it re-promotes.
 This makes failover self-healing rather than requiring manual intervention.
 """
-import datetime, json, os, sys
+import datetime, json, os, sys, threading, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
@@ -14,6 +14,14 @@ P95_LIMIT = int(os.environ.get("ORCH_PROVIDER_SLA_P95_MS", "30000"))
 WINDOW_H = int(os.environ.get("ORCH_PROVIDER_SLA_WINDOW_H", "2"))
 COOLDOWN = int(os.environ.get("ORCH_PROVIDER_SLA_COOLDOWN_MIN", "30"))
 CK = "provider_sla_state"
+_LOAD_CACHE = {"at": 0.0, "path": "", "state": None}
+_LOAD_LOCK = threading.Lock()
+
+
+def _local_path():
+    home = os.environ.get("CLAUDE_ORCH_HOME",
+                          os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".runtime"))
+    return os.path.join(home, "provider_sla_state.json")
 
 
 def _recent_ops():
@@ -44,20 +52,53 @@ def _compute_sla(ops):
 
 
 def _load():
+    path = _local_path()
+    ttl = float(os.environ.get("ORCH_PROVIDER_SLA_CACHE_SEC", "10"))
+    with _LOAD_LOCK:
+        if (_LOAD_CACHE["state"] is not None and _LOAD_CACHE["path"] == path
+                and time.time() - _LOAD_CACHE["at"] < ttl):
+            return json.loads(json.dumps(_LOAD_CACHE["state"]))
+    local = {"demoted": {}, "history": []}
+    try:
+        with open(_local_path()) as f:
+            local = json.load(f)
+    except Exception:
+        pass
     try:
         r = db.select("controls", {"select": "value", "key": f"eq.{CK}", "limit": "1"})
         if r and r[0].get("value"):
-            return json.loads(r[0]["value"])
+            remote = json.loads(r[0]["value"])
+            # Local auth failures take precedence when the control-plane write
+            # was unavailable; remote state adds fleet-wide demotions.
+            remote["demoted"] = {**(remote.get("demoted") or {}),
+                                 **(local.get("demoted") or {})}
+            result = remote
+            with _LOAD_LOCK:
+                _LOAD_CACHE.update({"at": time.time(), "path": path, "state": result})
+            return json.loads(json.dumps(result))
     except Exception:
         pass
-    return {"demoted": {}, "history": []}
+    with _LOAD_LOCK:
+        _LOAD_CACHE.update({"at": time.time(), "path": path, "state": local})
+    return json.loads(json.dumps(local))
 
 
 def _save(s):
     try:
+        os.makedirs(os.path.dirname(_local_path()), exist_ok=True)
+        tmp = _local_path() + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(s, f, default=str)
+        os.replace(tmp, _local_path())
+    except Exception:
+        pass
+    try:
         db.upsert("controls", {"key": CK, "value": json.dumps(s, default=str), "updated_at": "now()"})
     except Exception:
         pass
+    with _LOAD_LOCK:
+        _LOAD_CACHE.update({"at": time.time(), "path": _local_path(),
+                            "state": json.loads(json.dumps(s, default=str))})
 
 
 # ── Slice-3: qpd_bandit integration for self-healing ────────────────────────
@@ -78,6 +119,30 @@ def _notify_bandit_promote(provider):
         qpd_bandit.restore(provider)
     except (ImportError, AttributeError):
         pass
+
+
+def demote(provider, reason="manual", immediate=True):
+    """Immediately quarantine an auth-invalid provider from optimization routes."""
+    state = _load()
+    dem = state.get("demoted") or {}
+    try:
+        import provider_credentials
+        credential_fp = provider_credentials.fingerprint(provider)
+    except Exception:
+        credential_fp = ""
+    dem[provider] = {"since": datetime.datetime.utcnow().isoformat(),
+                     "reason": reason, "avail": 0.0, "p95": 0,
+                     "immediate": bool(immediate), "credential_fp": credential_fp}
+    state["demoted"] = dem
+    _save(state)
+    try:
+        db.upsert("fleet_config", {
+            "key": f"ORCH_PROVIDER_DEMOTED_{provider.upper()}", "value": "true"
+        })
+    except Exception:
+        pass
+    _notify_bandit_demote(provider, reason)
+    return dem[provider]
 
 
 def check_and_enforce():
@@ -129,7 +194,42 @@ def check_and_enforce():
 
 
 def is_demoted(provider):
-    return provider in (_load().get("demoted") or {})
+    state = _load()
+    demoted = state.get("demoted") or {}
+    record = demoted.get(provider)
+    if not record:
+        return False
+    # A replacement credential deserves a fresh bounded canary. The hash only
+    # detects change; no key material is persisted or logged.
+    if str(record.get("reason") or "").startswith("auth-") and record.get("credential_fp"):
+        try:
+            import provider_credentials
+            current = provider_credentials.fingerprint(provider)
+            if current and current != record.get("credential_fp"):
+                del demoted[provider]
+                state["demoted"] = demoted
+                _save(state)
+                _notify_bandit_promote(provider)
+                return False
+        except Exception:
+            pass
+    return True
+
+
+def record_probe_success(provider):
+    """Re-admit a provider after a real successful inference, even if credits changed under the same key."""
+    state = _load(); demoted = state.get("demoted") or {}
+    if provider not in demoted:
+        return False
+    del demoted[provider]
+    state["demoted"] = demoted
+    _save(state)
+    _notify_bandit_promote(provider)
+    try:
+        db.upsert("fleet_config", {"key": f"ORCH_PROVIDER_DEMOTED_{provider.upper()}", "value": "false"})
+    except Exception:
+        pass
+    return True
 
 
 def run():

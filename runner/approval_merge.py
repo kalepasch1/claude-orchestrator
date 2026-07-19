@@ -28,6 +28,22 @@ TEST_CMD = os.environ.get("TEST_CMD", "npm test")
 AUTOAPPROVE_ENABLED = os.environ.get("ORCH_AUTOAPPROVE_LOWRISK", "true").lower() in ("true", "1", "yes")
 AUTO_MERGE_APPROVALS = os.environ.get("ORCH_AUTO_MERGE_APPROVALS", "true").lower() in ("true", "1", "yes")
 
+# Bounded config: prevent misconfiguration from causing runaway scans or infinite retries
+_MAX_SCAN_LIMIT = 5000
+_MAX_REDO_CAP = 5
+
+
+def _bounded_int(env_key, default, floor=0, ceiling=None):
+    """Read an integer from env with floor/ceiling guards."""
+    try:
+        v = int(os.environ.get(env_key, str(default)))
+    except (ValueError, TypeError):
+        v = default
+    v = max(floor, v)
+    if ceiling is not None:
+        v = min(ceiling, v)
+    return v
+
 # Deny-list of sensitive path globs that should NOT be auto-approved
 SENSITIVE_PATHS = [
     "*/pricing*", "*/price*", "*/cost*",
@@ -62,8 +78,31 @@ def _touches_sensitive_paths(repo, branch, base):
         return True  # Err on side of caution
 
 
+def _last_outcome_tests_passed(task_id):
+    """True if the task's most recent outcome has tests_passed=True.
+
+    Fail-open: if there is no outcome yet (task hasn't run or outcomes are unavailable),
+    return True so the auto-approve path is not blocked on missing history.
+    """
+    if not task_id:
+        return True
+    try:
+        rows = db.select("outcomes", {"select": "tests_passed",
+                                       "task_id": f"eq.{task_id}",
+                                       "order": "created_at.desc", "limit": "1"}) or []
+        if rows:
+            return bool(rows[0].get("tests_passed"))
+    except Exception:
+        pass
+    return True  # no outcome row yet → don't block
+
+
 def _should_autoapprove(card, task):
-    """Check if a card should be auto-approved (low-risk criteria)."""
+    """Check if a card should be auto-approved (low-risk criteria).
+
+    Gates: kind must be integrate/material, task kind must be build/bugfix, and the
+    agent's most recent outcome must have tests_passed=True (automated code review).
+    """
     if not AUTOAPPROVE_ENABLED:
         return False
     # Low-risk: card kind in (integrate, material)
@@ -72,6 +111,9 @@ def _should_autoapprove(card, task):
     # Task kind must be build or bugfix (not research, efficiency, self)
     task_kind = task.get("kind", "").lower()
     if task_kind not in ("build", "bugfix"):
+        return False
+    # Automated code review: only auto-approve if the agent's last run passed tests.
+    if not _last_outcome_tests_passed(task.get("id")):
         return False
     return True
 
@@ -128,14 +170,28 @@ def _worktree_for(repo, branch):
     return None
 
 
+def _primary_worktree(repo):
+    """Git lists the repository's main worktree first, even from a linked one."""
+    out = subprocess.run(["git", "worktree", "list", "--porcelain"], cwd=repo,
+                         capture_output=True, text=True).stdout
+    for line in out.splitlines():
+        if line.startswith("worktree "):
+            return line[len("worktree "):].strip()
+    return None
+
+
 def _free_branch(repo, branch):
     """Unlock a branch that's still checked out in a leftover agent worktree. THIS was the root cause
     of the phantom CONFLICTs: git refuses to rebase/merge a branch that's checked out elsewhere, and the
     handler mislabeled that error as CONFLICT. Removing the stale worktree frees the branch."""
     wt = _worktree_for(repo, branch)
     if wt:
+        primary = _primary_worktree(repo)
+        if primary and os.path.realpath(wt) == os.path.realpath(primary):
+            return False
         subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=repo, capture_output=True)
     subprocess.run(["git", "worktree", "prune"], cwd=repo, capture_output=True)
+    return True
 
 
 def _rebase_isolated(repo, base, branch):
@@ -235,7 +291,7 @@ def run():
     # Process both approved cards and pending code-merge cards. Legal/operator cards should not
     # reach this handler; material "Legal review needed" cards intentionally lack a merge slug.
     common = {"select": "*", "kind": "in.(verify,material,integrate)",
-              "order": "created_at.asc", "limit": os.environ.get("MERGE_APPROVAL_SCAN_LIMIT", "2000")}
+              "order": "created_at.asc", "limit": str(_bounded_int("MERGE_APPROVAL_SCAN_LIMIT", 2000, ceiling=_MAX_SCAN_LIMIT))}
     approved_cards = db.select("approvals", {**common, "status": "eq.approved"}) or []
     pending_cards = db.select("approvals", {**common, "status": "eq.pending"}) or [] if (AUTOAPPROVE_ENABLED or AUTO_MERGE_APPROVALS) else []
     cards = approved_cards + pending_cards
@@ -324,7 +380,7 @@ def run():
             # sit CONFLICT forever (that's what stalled 93 tasks at 0 merged). Requeue to rebuild on
             # the up-to-date base, up to a cap; delete the stale branch so the worktree is recreated.
             tr = int(t.get("transient_retries") or 0)
-            cap = int(os.environ.get("MERGE_CONFLICT_REDO_CAP", "2"))
+            cap = _bounded_int("MERGE_CONFLICT_REDO_CAP", 2, ceiling=_MAX_REDO_CAP)
             if tr < cap:
                 subprocess.run(["git", "branch", "-D", branch], cwd=repo, capture_output=True)
                 patch = agentic_repair.repair_patch(
@@ -357,3 +413,41 @@ def run():
 
 if __name__ == "__main__":
     run()
+
+
+def _rebase_conflict_details(repo, base, branch):
+    """Return a summary of conflicting files when a rebase of `branch` onto `base` would fail.
+
+    Uses `git diff --name-only` to identify files changed on both sides, then checks
+    which ones have overlapping hunks. Runs read-only — never modifies the repo.
+    Returns: dict with 'conflicting_files' (list) and 'base_only'/'branch_only' counts.
+    """
+    result = {"conflicting_files": [], "base_only": 0, "branch_only": 0}
+    try:
+        merge_base = subprocess.run(
+            ["git", "merge-base", base, branch],
+            cwd=repo, capture_output=True, text=True, timeout=10,
+        )
+        if merge_base.returncode != 0:
+            return result
+        mb = merge_base.stdout.strip()
+
+        base_files = subprocess.run(
+            ["git", "diff", "--name-only", mb, base],
+            cwd=repo, capture_output=True, text=True, timeout=10,
+        )
+        branch_files = subprocess.run(
+            ["git", "diff", "--name-only", mb, branch],
+            cwd=repo, capture_output=True, text=True, timeout=10,
+        )
+
+        base_set = set(f for f in (base_files.stdout or "").strip().split("\n") if f)
+        branch_set = set(f for f in (branch_files.stdout or "").strip().split("\n") if f)
+
+        overlap = sorted(base_set & branch_set)
+        result["conflicting_files"] = overlap[:20]  # cap to avoid huge lists
+        result["base_only"] = len(base_set - branch_set)
+        result["branch_only"] = len(branch_set - base_set)
+    except Exception:
+        pass
+    return result

@@ -9,6 +9,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # Stub kill_switch
+_real_modules = {name: sys.modules.get(name) for name in ("kill_switch", "db", "subscription_guard")}
 _paused = {"v": False}
 _ks = types.ModuleType("kill_switch")
 _ks.pause = lambda **kw: None
@@ -29,14 +30,32 @@ _sg.audit = lambda: {"api_keys_present": False}
 sys.modules["subscription_guard"] = _sg
 
 import pause_arbiter
+# Bind the test doubles explicitly as well as through import injection. This
+# keeps the suite hermetic when another test imported pause_arbiter first.
+pause_arbiter.kill_switch = _ks
+pause_arbiter.db = _db
+pause_arbiter.subscription_guard = _sg
+for _name, _module in _real_modules.items():
+    if _module is not None:
+        sys.modules[_name] = _module
+    else:
+        sys.modules.pop(_name, None)
 
 
 class TestPauseArbiterBasic(unittest.TestCase):
     def setUp(self):
+        sys.modules.update({"kill_switch": _ks, "db": _db, "subscription_guard": _sg})
         self._tmpdir = tempfile.mkdtemp()
         pause_arbiter.STATE_FILE = os.path.join(self._tmpdir, "state.json")
         _paused["v"] = False
         _approvals.clear()
+
+    def tearDown(self):
+        for name, module in _real_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
 
     def test_pause_writes_state(self):
         pause_arbiter.pause("test_cause", "something broke", by="test")
@@ -67,10 +86,18 @@ class TestEscalationAfterConsecutiveTrips(unittest.TestCase):
     pause_arbiter stops auto-lifting and files a material approval."""
 
     def setUp(self):
+        sys.modules.update({"kill_switch": _ks, "db": _db, "subscription_guard": _sg})
         self._tmpdir = tempfile.mkdtemp()
         pause_arbiter.STATE_FILE = os.path.join(self._tmpdir, "state.json")
         _paused["v"] = False
         _approvals.clear()
+
+    def tearDown(self):
+        for name, module in _real_modules.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
 
     def test_escalation_at_threshold(self):
         """After 3 consecutive identical trips, the pause is marked escalated."""

@@ -25,6 +25,15 @@ def _claimable():
 
 def run(runner_id="startup"):
     detail = []
+    contract_ok = False
+    try:
+        import runtime_contract
+        proof = runtime_contract.check()
+        contract_ok = bool(proof["ok"])
+        if not contract_ok:
+            detail.append("runtime contract: " + proof["detail"])
+    except Exception as e:
+        detail.append(f"runtime contract err: {e}")
     # 1) firewall
     firewall_ok = False
     try:
@@ -81,7 +90,7 @@ def run(runner_id="startup"):
     except Exception:
         pass
 
-    status = "ok" if (firewall_ok and claimable > 0 and (ram is None or ram > 2)) else "degraded"
+    status = "ok" if (contract_ok and firewall_ok and claimable > 0 and (ram is None or ram > 2)) else "degraded"
     try:
         db.insert("runner_health", {"runner_id": runner_id, "hostname": socket.gethostname(),
                   "firewall_ok": firewall_ok, "locked_worktrees": locked, "claimable": claimable,
@@ -91,7 +100,8 @@ def run(runner_id="startup"):
         pass
     print(f"[self-check] firewall={firewall_ok} freed_worktrees={locked} zombies={cleared} "
           f"claimable={claimable} ram={ram} -> {status}. {'; '.join(detail)}")
-    return {"status": status, "claimable": claimable, "firewall_ok": firewall_ok}
+    return {"status": status, "claimable": claimable, "firewall_ok": firewall_ok,
+            "runtime_contract_ok": contract_ok}
 
 
 if __name__ == "__main__":

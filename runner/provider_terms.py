@@ -20,6 +20,9 @@ DEFAULTS = {
     "google": {"trust": "api", "training": "configure_account", "confidential_ok": False, "crown_jewel_ok": False},
     "gemini": {"trust": "api", "training": "configure_account", "confidential_ok": False, "crown_jewel_ok": False},
     "deepseek": {"trust": "api", "training": "configure_account", "confidential_ok": False, "crown_jewel_ok": False},
+    "groq": {"trust": "api", "training": "configure_account", "confidential_ok": False, "crown_jewel_ok": False},
+    "xai": {"trust": "api", "training": "configure_account", "confidential_ok": False, "crown_jewel_ok": False},
+    "grok": {"trust": "api", "training": "configure_account", "confidential_ok": False, "crown_jewel_ok": False},
 }
 
 

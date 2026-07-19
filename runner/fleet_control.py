@@ -19,7 +19,7 @@ WHOLE fleet from one place (Mission Control / the DB) and never touch a second m
 
 Pure DB + git; no model spend. Fail-soft: any error is swallowed so it can never wedge the runner.
 """
-import os, sys, time, socket, subprocess, datetime
+import os, sys, time, socket, subprocess, datetime, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import kill_switch
@@ -27,13 +27,35 @@ import kill_switch
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOST = socket.gethostname()
 _last_pull = {"t": 0.0}
+_ACK_FILE = os.path.join(os.environ.get("CLAUDE_ORCH_HOME", os.path.join(REPO, ".runtime")),
+                         "fleet-control-local-acks.json")
+
+
+def _local_acks():
+    try:
+        with open(_ACK_FILE, encoding="utf-8") as source:
+            return set(json.load(source) or [])
+    except Exception:
+        return set()
+
+
+def _mark_local_ack(control_id):
+    acks = _local_acks()
+    acks.add(str(control_id))
+    os.makedirs(os.path.dirname(_ACK_FILE), exist_ok=True)
+    tmp = _ACK_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as target:
+        json.dump(sorted(acks)[-500:], target)
+    os.replace(tmp, _ACK_FILE)
 
 # only these config keys may be pushed fleet-wide (never secrets). Anything containing a credential
-# marker is rejected outright.
+# marker is rejected outright. Note: ORCH_GIT_PAT is *not* stored in fleet_config (PAT value comes
+# from local env). Use ORCH_GIT_AUTH_REQUIRED to signal that auth is needed; the actual PAT is
+# managed per-machine via environment.
 _SAFE_PREFIXES = ("ORCH_", "MAX_PARALLEL", "PER_TASK_GB", "RAM_FLOOR_GB", "RAM_", "RELEASE_", "QUEUE_",
                   "CONT_", "JANITOR_", "REMEDIATION_", "DEFAULT_TEST_CMD", "TASK_TIMEOUT", "ENABLE_",
                   "SESSION_", "ACCOUNT_COOLDOWN", "MERGE_", "DEPLOY_", "INTEGRATE_", "COST_")
-_DENY_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "PWD", "CREDENTIAL")
+_DENY_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "PWD", "CREDENTIAL", "PAT")
 
 
 def _safe_key(k):
@@ -169,7 +191,8 @@ def process_controls():
         target = str(r.get("target") or "all")
         handled = r.get("handled_by") or []
         aliases = _host_aliases()
-        if not _target_matches(target) or any(h in handled for h in aliases):
+        if (not _target_matches(target) or any(h in handled for h in aliases)
+                or str(r.get("id")) in _local_acks()):
             continue
         action = str(r.get("action") or "").lower()
         try:
@@ -206,8 +229,10 @@ def process_controls():
                       })
             done += 1
             if action == "git_pull" and params.get("restart", True):
+                _mark_local_ack(r["id"])
                 _restart()
             if action == "restart":
+                _mark_local_ack(r["id"])
                 _restart()
         except Exception as e:
             print(f"fleet_control: action '{action}' failed on {HOST}: {e}")

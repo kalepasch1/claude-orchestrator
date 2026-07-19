@@ -15,6 +15,7 @@ import os, sys, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import pipeline_contract
+import tests_first_gate
 
 
 def project_by_name(name):
@@ -48,13 +49,36 @@ def main(path):
         sys.exit(f"[enqueue] project '{spec['project']}' not found in projects table. "
                  f"Register it first (name + repo_path).")
     pid = proj["id"]
+
+    # Apply tests-first gate: if proof references a missing test file, split into two tasks
+    repo_path = proj.get("repo_path")
+    task_for_gate = {"slug": spec["slug"], "prompt": spec.get("prompt", ""),
+                     "kind": spec.get("kind", "build"), "deps": spec.get("deps", []),
+                     "proof": spec.get("proof", "")}
+    expanded = tests_first_gate.split_if_needed(task_for_gate, repo_path=repo_path)
+    if len(expanded) > 1:
+        # Enqueue the test-authoring task first, then the original with updated deps
+        for sub in expanded:
+            if already_present(pid, sub["slug"]):
+                print(f"[enqueue] task '{sub['slug']}' already exists for project — skipping.")
+                continue
+            sub_spec = dict(spec)
+            sub_spec.update(sub)
+            _enqueue_one(sub_spec, proj, pid)
+        return
+
     if already_present(pid, spec["slug"]):
         print(f"[enqueue] task '{spec['slug']}' already exists for project — skipping.")
         return
+    _enqueue_one(spec, proj, pid)
+
+
+def _enqueue_one(spec, proj, pid):
+    """Insert a single task row into the DB."""
     row = {
         "project_id": pid,
         "slug": spec["slug"],
-        "prompt": pipeline_contract.wrap_prompt(spec["prompt"], project=proj.get("name") or spec["project"],
+        "prompt": pipeline_contract.wrap_prompt(spec.get("prompt", ""), project=proj.get("name") or spec["project"],
                                                 kind=spec.get("kind", "build"),
                                                 source=spec.get("source", "json-enqueue"),
                                                 slug=spec["slug"],
@@ -63,10 +87,12 @@ def main(path):
         "state": spec.get("state", "QUEUED"),
         "note": pipeline_contract.note(spec.get("note", ""), source=spec.get("source", "json-enqueue")),
     }
+    if spec.get("deps"):
+        row["deps"] = spec["deps"]
     if spec.get("model"):
         row["model"] = spec["model"]
     res = db.insert("tasks", row)
-    print(f"[enqueue] queued '{spec['slug']}' for project '{spec['project']}' -> {res}")
+    print(f"[enqueue] queued '{spec['slug']}' for project '{spec.get('project', '')}' -> {res}")
 
 
 if __name__ == "__main__":

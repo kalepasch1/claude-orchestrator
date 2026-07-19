@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Tests for release_train.py — dependency-aware release orchestration."""
-import os, sys, unittest
+import json, os, sys, tempfile, unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from release_train import sequence_releases, CyclicDependencyError
+from release_train import _prepare_generated_types, sequence_releases, CyclicDependencyError
 
 
 class TestLinearChain(unittest.TestCase):
@@ -105,5 +106,66 @@ class TestImplicitDependencies(unittest.TestCase):
         self.assertLess(order.index("lib"), order.index("app"))
 
 
+class TestReleaseSnapshotOrdering(unittest.TestCase):
+    def test_refresh_precedes_gates_and_snapshot_guard_precedes_push(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "release_train.py")
+        with open(path, encoding="utf-8") as source:
+            text = source.read()
+
+        refresh = text.index("refreshed, refresh_note = _refresh_staging_with_prod")
+        qa_gate = text.index("# QA staging tests")
+        snapshot_guard = text.index("current_staging_sha != staging_sha")
+        exact_push = text.index('f"{staging_sha}:refs/heads/{prod}"')
+        self.assertLess(refresh, qa_gate)
+        self.assertLess(snapshot_guard, exact_push)
+
+    def test_verified_sha_is_the_release_sha(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "release_train.py")
+        with open(path, encoding="utf-8") as source:
+            text = source.read()
+        self.assertIn("to_sha = staging_sha", text)
+        self.assertIn('"snapshot": "CHANGED"', text)
+
+
+class TestGeneratedTypePreparation(unittest.TestCase):
+    def test_prepares_nested_nuxt_package_root(self):
+        with tempfile.TemporaryDirectory() as repo:
+            web = os.path.join(repo, "web")
+            os.makedirs(web)
+            with open(os.path.join(web, "package.json"), "w", encoding="utf-8") as f:
+                json.dump({"dependencies": {"nuxt": "3.0.0"}}, f)
+            with open(os.path.join(web, "tsconfig.json"), "w", encoding="utf-8") as f:
+                json.dump({"extends": "./.nuxt/tsconfig.json"}, f)
+
+            def prepare(_cmd, cwd, **_kwargs):
+                generated = os.path.join(cwd, ".nuxt")
+                os.makedirs(generated)
+                with open(os.path.join(generated, "tsconfig.json"), "w", encoding="utf-8") as f:
+                    f.write("{}")
+                return type("Result", (), {"returncode": 0, "stdout": "prepared", "stderr": ""})()
+
+            with mock.patch("dependency_prewarm.package_roots", return_value=[web]), \
+                    mock.patch("release_train.subprocess.run", side_effect=prepare) as run:
+                ok, log = _prepare_generated_types(repo)
+
+            self.assertTrue(ok, log)
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_args.kwargs["cwd"], web)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDeepChain(unittest.TestCase):
+    """Deep linear chain — verifies ordering is stable for longer chains."""
+
+    def test_five_node_chain(self):
+        graph = {"E": ["D"], "D": ["C"], "C": ["B"], "B": ["A"], "A": []}
+        order = sequence_releases(graph, {"A", "B", "C", "D", "E"})
+        self.assertEqual(order, ["A", "B", "C", "D", "E"])
+
+    def test_deep_chain_leaf_only(self):
+        graph = {"E": ["D"], "D": ["C"], "C": ["B"], "B": ["A"], "A": []}
+        order = sequence_releases(graph, {"E"})
+        self.assertEqual(order, ["E"])

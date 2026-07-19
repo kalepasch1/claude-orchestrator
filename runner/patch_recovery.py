@@ -20,6 +20,12 @@ def recover(repo, slug, base, project=None):
     """
     branch = f"agent/{slug}"
 
+    # Method 0: recover the exact, immutable artifact. This is deterministic,
+    # cross-host and does not spend model tokens.
+    result = _immutable_ref_recovery(repo, slug, branch, base)
+    if result["ok"]:
+        return result
+
     # Method 1: Stored patch replay
     result = _replay_stored_patch(repo, slug, branch, base)
     if result["ok"]:
@@ -37,6 +43,39 @@ def recover(repo, slug, base, project=None):
 
     return {"ok": False, "method": "none", "branch": branch,
             "reason": "all mechanical recovery methods exhausted"}
+
+
+def _immutable_ref_recovery(repo, slug, branch, base):
+    try:
+        rows = db.select("tasks", {"select": "artifact_ref,artifact_commit", "slug": f"eq.{slug}",
+                                   "order": "updated_at.desc", "limit": "1"}) or []
+        task = rows[0] if rows else {}
+        ref = task.get("artifact_ref")
+        if ref:
+            _git(repo, "fetch", "origin", f"{ref}:{ref}", timeout=120)
+        sha = ""
+        if ref:
+            resolved = _git(repo, "rev-parse", "--verify", ref)
+            sha = resolved.stdout.strip() if resolved.returncode == 0 else ""
+        if not sha and task.get("artifact_commit"):
+            resolved = _git(repo, "rev-parse", "--verify", str(task["artifact_commit"]))
+            sha = resolved.stdout.strip() if resolved.returncode == 0 else ""
+        if not sha:
+            return {"ok": False, "method": "immutable_ref", "branch": branch,
+                    "reason": "immutable artifact unavailable"}
+        if _git(repo, "merge-base", "--is-ancestor", base, sha).returncode != 0:
+            return {"ok": False, "method": "immutable_ref", "branch": branch,
+                    "reason": "artifact requires rebase"}
+        _free_branch(repo, branch)
+        created = _git(repo, "branch", branch, sha)
+        if created.returncode != 0:
+            return {"ok": False, "method": "immutable_ref", "branch": branch,
+                    "reason": created.stderr[:200]}
+        return {"ok": True, "method": "immutable_ref", "branch": branch,
+                "artifact_ref": ref, "commit": sha}
+    except Exception as exc:
+        return {"ok": False, "method": "immutable_ref", "branch": branch,
+                "reason": str(exc)[:200]}
 
 
 def _replay_stored_patch(repo, slug, branch, base):

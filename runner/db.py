@@ -49,6 +49,10 @@ def _load_env():
         os.environ.setdefault(k, v)
 
 def _ensure_tool_path():
+    """Prepend standard macOS tool directories to PATH if missing.
+
+    Ensures git, python, node, and other CLI tools are discoverable even when
+    the runner is launched via launchd (which inherits a minimal PATH)."""
     paths = (
         "/opt/homebrew/bin",
         "/usr/local/bin",
@@ -75,12 +79,104 @@ _ensure_tool_path()
 URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 HTTP_TIMEOUT = float(os.environ.get("ORCH_SUPABASE_TIMEOUT", "15") or 15)
+
+# ── SECRET HYGIENE (2026-07-15) ──────────────────────────────────────────────
+# Redact API keys, service keys, and other secrets from strings before they are
+# stored in the database (task notes, log_tail, error messages). Prevents secrets
+# from leaking into the tasks table via raw command output or tracebacks.
+_SECRET_PATTERNS = re.compile(
+    r"("
+    # Anthropic API keys (sk-ant-api03-...)
+    r"sk-ant-api\S{10,}"
+    r"|"
+    # Supabase service role keys (eyJ...)
+    r"eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}"
+    r"|"
+    # Generic long API key patterns (key=..., token=..., secret=..., password=...)
+    r"(?:(?:api[_-]?key|secret[_-]?key|service[_-]?key|token|password|credential)"
+    r"\s*[=:]\s*['\"]?)([A-Za-z0-9_/+\-.]{16,})"
+    r"|"
+    # OpenAI keys (sk-...)
+    r"sk-[A-Za-z0-9]{20,}"
+    r"|"
+    # Generic bearer tokens
+    r"Bearer\s+[A-Za-z0-9_\-/.]{20,}"
+    r")",
+    re.I,
+)
+
+
+def redact_secrets(text):
+    """Replace secret-like patterns in *text* with [REDACTED]. Fail-soft: returns
+    original text on any error so it never blocks writes."""
+    if not text or not isinstance(text, str):
+        return text
+    try:
+        return _SECRET_PATTERNS.sub("[REDACTED]", text)
+    except Exception:
+        return text
+
+
+_TASK_SENSITIVE_FIELDS = {"note", "log_tail"}
 HTTP_RETRIES = int(os.environ.get("ORCH_SUPABASE_RETRIES", "1") or 1)
 HTTP_RETRY_STATUSES = {429, 500, 502, 503, 504, 521, 522, 523}  # incl. Cloudflare origin-down codes so monitors ride through Supabase capacity blips instead of silently no-op'ing
+
+# DB Failover state: track consecutive DB failures to trigger offline mode
+DB_DOWN_THRESHOLD = int(os.environ.get("SENTINEL_DB_DOWN_THRESHOLD", "3"))
+_db_failure_count = 0
+_db_failure_lock = threading.Lock()
+
+
+def _reset_db_failure_count():
+    """Reset failure counter on successful DB operation."""
+    global _db_failure_count
+    with _db_failure_lock:
+        _db_failure_count = 0
+
+
+def _increment_db_failure_count():
+    """Increment failure counter on DB operation failure."""
+    global _db_failure_count
+    with _db_failure_lock:
+        _db_failure_count += 1
+        return _db_failure_count
+
+
+def is_db_down():
+    """Check if DB is considered down based on failure count."""
+    with _db_failure_lock:
+        return _db_failure_count >= DB_DOWN_THRESHOLD
+
+
+# Thread-safe per-slug dedup lock pool (prevents same-machine race conditions)
+_DEDUP_LOCKS = {}
+_DEDUP_LOCKS_LOCK = threading.Lock()
+
+class _dedup_lock:
+    """Per-key lock for serializing task inserts with the same slug."""
+    def __init__(self, key):
+        self.key = key
+    def __enter__(self):
+        with _DEDUP_LOCKS_LOCK:
+            if self.key not in _DEDUP_LOCKS:
+                _DEDUP_LOCKS[self.key] = threading.Lock()
+            self._lock = _DEDUP_LOCKS[self.key]
+        self._lock.acquire()
+        return self
+    def __exit__(self, *args):
+        self._lock.release()
+        # Clean up to prevent memory leak (only if no one else is waiting)
+        with _DEDUP_LOCKS_LOCK:
+            if self.key in _DEDUP_LOCKS and not _DEDUP_LOCKS[self.key].locked():
+                try:
+                    del _DEDUP_LOCKS[self.key]
+                except KeyError:
+                    pass
 RECOVERY_PREFIX = "recover-missing-branch-"
 CANARY_PREFIX = "canary-"
 IMPROVEMENT_PREFIX = "improve-"
-RELEASE_FIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-", "copyfix-")
+RELEASE_FIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-", "copyfix-",
+                        "toolchain-repair-")
 REWORK_PREFIX = "rework-"
 CLAIM_SCAN_LIMIT = int(os.environ.get("ORCH_CLAIM_SCAN_LIMIT", "1000") or 1000)
 PROJECT_PRIORITY_ORDER = {
@@ -102,6 +198,14 @@ PROJECT_PRIORITY_ORDER = {
 
 
 def _project_rank_name(name):
+    """Map project name to priority rank (lower = higher priority).
+
+    Args:
+        name: Project name or None.
+
+    Returns:
+        int: Priority rank (1-9); unknown projects default to 9 (lowest).
+    """
     return PROJECT_PRIORITY_ORDER.get(str(name or "").strip().lower(), 9)
 
 
@@ -115,6 +219,12 @@ def localize_repo_path(repo_path):
     any Mac that has the repos at the same sub-path. No-op on the owning machine (stored path
     already exists) and no-op when there is no local clone (the claim guard then skips the task, so
     a runner never grabs work it cannot run). Opt out with ORCH_REPO_LOCALIZE=false.
+
+    Args:
+        repo_path (str | None): Stored repo path from projects table.
+
+    Returns:
+        str | None: Localized path for this machine, or original if no local clone exists.
     """
     if not repo_path or os.environ.get("ORCH_REPO_LOCALIZE", "true").lower() in ("false", "0", "no"):
         return repo_path
@@ -129,11 +239,28 @@ def localize_repo_path(repo_path):
 
 
 def repo_runnable_here(repo_path):
-    """True if a task's project can run on this machine: it has no repo (uses cwd) or a local clone
-    exists (possibly via localize_repo_path). Used by claim_task to enforce host affinity."""
+    """Check if a task's project repo can run on this machine (host affinity).
+
+    A task is runnable if it has no repo_path (uses cwd) or a local clone exists
+    (possibly via localize_repo_path). Used by claim_task to prevent cross-machine
+    task theft when the required repo is not locally available.
+
+    Args:
+        repo_path (str | None): Stored repo path from projects table.
+
+    Returns:
+        bool: True if runnable here; False if repo is required but not present.
+    """
     if not repo_path:
         return True
-    return os.path.isdir(localize_repo_path(repo_path))
+    loc = localize_repo_path(repo_path)
+    if not os.path.isdir(loc):
+        return False
+    try:
+        os.listdir(loc)
+        return True
+    except (PermissionError, OSError):
+        return False
 
 
 def _req(method, path, body=None, headers=None, params=None):
@@ -168,6 +295,7 @@ def _req(method, path, body=None, headers=None, params=None):
 
 
 def select(table, params=None):
+    """Fetch rows from *table* via PostgREST GET.  Returns a list of dicts."""
     return _req("GET", f"/rest/v1/{table}", params=params or {"select": "*"})
 
 
@@ -208,27 +336,74 @@ def count(table, params=None):
 
 
 def insert(table, row, upsert=False):
+    # SECRET HYGIENE: redact secrets from sensitive fields on task insert too.
+    if table == "tasks" and isinstance(row, dict):
+        for field in _TASK_SENSITIVE_FIELDS:
+            if field in row and isinstance(row[field], str):
+                row[field] = redact_secrets(row[field])
     # IDEMPOTENT TASK ENQUEUE (2026-07-10): the queue has no UNIQUE(project_id, slug) constraint,
     # so ~20 different generators that db.insert("tasks", ...) directly kept creating duplicate
     # QUEUED rows (5-at-a-time, recurring — the sentinel dedupe was firing 45x/24h just cleaning up
     # after them). Guard at the single choke point: if a task with this (project_id, slug) already
     # exists in a live/settled state, skip the insert. Opt out with row["_allow_dup"]=True.
+    # PROMPT VALIDATION GATE: reject tasks with garbage prompts before they enter the queue.
+    # Catches: PATCH TEMPLATE stubs, empty prompts, prompts that are just error messages.
+    # This prevents 1,794+ garbage tasks from ever being created (they used to be cleaned up
+    # after the fact by rootcause_cluster, which was too late — they'd already consumed slots).
+    if table == "tasks" and isinstance(row, dict) and not upsert:
+        _prompt = (row.get("prompt") or "").strip()
+        _reject_reason = None
+        if not _prompt or len(_prompt) < 20:
+            _reject_reason = "empty or trivial prompt"
+        elif _prompt.startswith("PATCH TEMPLATE"):
+            _reject_reason = "unfilled PATCH TEMPLATE stub"
+        elif all(line.startswith(("Error", "error:", "Traceback", "fatal:"))
+                 for line in _prompt.strip().split("\n")[:5] if line.strip()):
+            _reject_reason = "prompt is only error messages"
+        if _reject_reason:
+            import logging
+            logging.getLogger("db").warning(
+                "prompt-gate: rejecting task %s — %s (prompt: %.100s...)",
+                row.get("slug", "?"), _reject_reason, _prompt)
+            return None  # silently reject — caller gets None, same as "already exists"
+
     if (table == "tasks" and isinstance(row, dict) and not upsert
             and row.get("slug") and row.get("project_id") and not row.pop("_allow_dup", False)):
+        # ATOMIC DEDUP (2026-07-14): the old SELECT-then-INSERT raced across two Macs,
+        # causing 503 duplicate tasks. Now we:
+        # 1. Check for existing (fast path, catches most dupes)
+        # 2. Use a process-level lock to serialize concurrent inserts on the same machine
+        # 3. Re-check after acquiring the lock (double-checked locking)
+        _dedup_key = f"{row['project_id']}:{row['slug']}"
         try:
             existing = select("tasks", {
-                "select": "*",
+                "select": "id,slug,state",
                 "project_id": f"eq.{row['project_id']}",
                 "slug": f"eq.{row['slug']}",
                 "state": "in.(QUEUED,RUNNING,RETRY,DONE,MERGED,BLOCKED,DECOMPOSED)",
                 "limit": "1"}) or []
             if existing:
-                return existing  # already enqueued/handled — return it, don't duplicate
+                return existing
         except Exception:
-            pass  # fail-soft: never let the guard block a legitimate insert
+            pass
+        # Process-level lock: serialize inserts with the same slug on this machine.
+        # Cross-machine races still possible but reduced (the sentinel catches the rest).
+        with _dedup_lock(_dedup_key):
+            try:
+                # Re-check after lock (another thread may have inserted while we waited)
+                existing = select("tasks", {
+                    "select": "id,slug,state",
+                    "project_id": f"eq.{row['project_id']}",
+                    "slug": f"eq.{row['slug']}",
+                    "state": "in.(QUEUED,RUNNING,RETRY,DONE,MERGED,BLOCKED,DECOMPOSED)",
+                    "limit": "1"}) or []
+                if existing:
+                    return existing
+            except Exception:
+                pass
     h = {"Prefer": "return=representation" + (",resolution=merge-duplicates" if upsert else "")}
     try:
-        return _req("POST", f"/rest/v1/{table}", body=row, headers=h)
+        result = _req("POST", f"/rest/v1/{table}", body=row, headers=h)
     except urllib.error.HTTPError as e:
         # 409 = duplicate key: the row already exists, so the write intent is satisfied. A retried
         # task re-inserting an outcome/row used to raise HTTP 409 -> "runner exception: Conflict" ->
@@ -244,6 +419,41 @@ def insert(table, row, upsert=False):
                 return None
         raise
 
+    # POST-INSERT DEDUP RECONCILIATION (2026-07-15): the SELECT-then-INSERT guard above
+    # prevents same-machine duplicates via _dedup_lock, but two Macs can still race past
+    # the SELECT check simultaneously and both INSERT. This post-insert check detects that
+    # race: if multiple QUEUED rows now share (project_id, slug), keep only the oldest and
+    # DELETE the rest. This closes the cross-machine race window that previously required
+    # the groom_task_queue sentinel to clean up after the fact (producing the
+    # "groomed: duplicate queued slug" failures ~45x/24h).
+    if (table == "tasks" and isinstance(row, dict) and not upsert
+            and row.get("slug") and row.get("project_id")):
+        try:
+            dupes = select("tasks", {
+                "select": "id,created_at",
+                "project_id": f"eq.{row['project_id']}",
+                "slug": f"eq.{row['slug']}",
+                "state": "eq.QUEUED",
+                "order": "created_at.asc",
+            }) or []
+            if len(dupes) > 1:
+                # Keep the oldest (first by created_at), delete the rest
+                keeper_id = dupes[0]["id"]
+                for dup in dupes[1:]:
+                    try:
+                        _req("DELETE", "/rest/v1/tasks",
+                             params={"id": f"eq.{dup['id']}", "state": "eq.QUEUED"})
+                    except Exception:
+                        pass
+                import logging
+                logging.getLogger("db").info(
+                    "post-insert-dedup: removed %d duplicate QUEUED rows for slug=%s (kept %s)",
+                    len(dupes) - 1, row["slug"], keeper_id)
+        except Exception:
+            pass  # fail-soft: groom_task_queue sentinel is the backstop
+
+    return result
+
 
 def upsert(table, row):
     """Compatibility helper for modules that store idempotent control rows."""
@@ -251,6 +461,13 @@ def upsert(table, row):
 
 
 def update(table, match, patch):
+    # SECRET HYGIENE: redact secrets from sensitive task fields before DB write.
+    # Applied here (the single choke point for all task updates) so every caller
+    # — set_state, blocker_quarantine, error-retry, etc. — gets automatic protection.
+    if table == "tasks" and isinstance(patch, dict):
+        for field in _TASK_SENSITIVE_FIELDS:
+            if field in patch and isinstance(patch[field], str):
+                patch[field] = redact_secrets(patch[field])
     params = {k: f"eq.{v}" for k, v in match.items()}
     try:
         return _req("PATCH", f"/rest/v1/{table}", body=patch,
@@ -265,6 +482,7 @@ def update(table, match, patch):
 
 
 def rpc(fn, args):
+    """Call a PostgREST RPC function *fn* with *args* dict and return the result."""
     return _req("POST", f"/rest/v1/rpc/{fn}", body=args)
 
 
@@ -307,7 +525,15 @@ def _is_recovery_task(t):
 def _is_release_fix_task(t):
     slug = str((t or {}).get("slug") or "")
     note = str((t or {}).get("note") or "").lower()
-    return slug.startswith(RELEASE_FIX_PREFIXES) or "release_train" in note or "vercel" in note
+    if slug.startswith(("qafix-", "buildfix-", "deployfix-", "copyfix-")):
+        return True
+    if slug.startswith("relfix-"):
+        # `relfix-*` is also used by the improvement miner for speculative
+        # orchestrator ideas. Those are valuable, but they are not production
+        # release blockers and must not monopolize the emergency hot lane.
+        return any(marker in note for marker in
+                   ("release_train", "release gate", "staging/prod", "auto-queued", "vercel"))
+    return "release_train" in note or "vercel" in note
 
 
 def _is_improvement_task(t):
@@ -335,7 +561,13 @@ _done_cache = {"slugs": set(), "ts": 0.0, "ttl": 60.0}
 
 
 def _done_slugs():
-    """Return cached set of DONE/MERGED slugs, refreshing every 60s."""
+    """Return cached set of DONE/MERGED slugs, refreshing every 60s.
+
+    The set contains bare slugs (backward-compatible project-local lookup)
+    AND ``project_name:slug`` qualified entries so cross-project deps
+    (e.g. ``apparently:curation-layer-land``) resolve against the global
+    task namespace while bare ids stay project-local.
+    """
     now = time.time()
     if now - _done_cache["ts"] < _done_cache["ttl"]:
         return _done_cache["slugs"]
@@ -344,11 +576,29 @@ def _done_slugs():
         if now - _done_cache["ts"] < _done_cache["ttl"]:
             return _done_cache["slugs"]
         rows = select("tasks", {
-            "select": "slug",
+            "select": "slug,project_id",
             "state": "in.(DONE,MERGED)",
             "limit": "10000",
         }) or []
-        _done_cache["slugs"] = {r["slug"] for r in rows}
+        slugs = set()
+        # Build project_id -> name map for cross-project qualified entries
+        _proj_names = {}
+        try:
+            for p in (select("projects", {"select": "id,name"}) or []):
+                if p.get("name"):
+                    _proj_names[p["id"]] = p["name"]
+        except Exception:
+            pass
+        for r in rows:
+            s = r.get("slug")
+            if not s:
+                continue
+            slugs.add(s)  # bare slug (backward compat)
+            pid = r.get("project_id")
+            pname = _proj_names.get(pid)
+            if pname:
+                slugs.add(f"{pname}:{s}")  # qualified cross-project entry
+        _done_cache["slugs"] = slugs
         _done_cache["ts"] = time.time()
         return _done_cache["slugs"]
 
@@ -361,11 +611,29 @@ def invalidate_done_cache():
 
 
 def claim_task(runner_id):
-    """Atomically grab one QUEUED task whose deps are satisfied. ECONOMIC ORDERING: within a
-    project-priority band, prefer higher-ROI projects (projects.concurrency_weight, set from
-    cost-per-merge by roi.py) and then FIFO. This makes the highest expected-value work run first
-    under any capacity limit — and stays correct across MULTIPLE machines because the final claim
-    is an atomic optimistic PATCH (state=QUEUED -> RUNNING), so two runners never double-claim."""
+    """Atomically claim one QUEUED task whose dependencies are satisfied.
+
+    Implements ECONOMIC ORDERING: within project-priority bands, prefer higher-ROI
+    projects (via concurrency_weight) and then FIFO. Guarantees no double-claims across
+    multiple runners via atomic optimistic PATCH (state=QUEUED -> RUNNING). Also enforces
+    host affinity to prevent claiming tasks whose repo is not locally available.
+
+    Args:
+        runner_id (str): Unique identifier for this runner/executor.
+
+    Returns:
+        dict | None: Task dict (id, slug, project_id, deps, etc.) if claim succeeds,
+                     or None if queue is empty or all deps unsatisfied.
+    """
+    # FAILOVER: if DB has been unreachable for N consecutive cycles, try offline mirror
+    if is_db_down():
+        try:
+            import local_queue
+            task = local_queue.claim_task_offline(runner_id)
+            if task:
+                return task
+        except Exception:
+            pass
     prio, roi_w, project_names, paused_pids, local_repo_pids = {}, {}, {}, set(), None
     try:
         projs = select("projects", {"select": "id,name,priority,concurrency_weight,repo_path"}) or []
@@ -384,11 +652,43 @@ def claim_task(runner_id):
                         if c.get("project") and c.get("updated_by") != "remote-quarantine"}
         paused_pids = {name2id[n] for n in paused_names if n in name2id}
     except Exception:
+        _increment_db_failure_count()
         pass
-    queued = select("tasks", {"select": "id,slug,project_id,deps,confidence,created_at,kind,note",
-                              "state": "eq.QUEUED",
-                              "order": "created_at.asc",
-                              "limit": str(CLAIM_SCAN_LIMIT)}) or []
+    claim_fields = "id,slug,project_id,deps,confidence,created_at,updated_at,kind,note,priority"
+    try:
+        queued = select("tasks", {"select": claim_fields,
+                                  "state": "eq.QUEUED",
+                                  "order": "created_at.asc",
+                                  "limit": str(CLAIM_SCAN_LIMIT)}) or []
+        # Sync to local mirror on successful fetch
+        try:
+            running = select("tasks", {"select": claim_fields, "state": "eq.RUNNING", "limit": "2000"}) or []
+            import local_queue
+            local_queue.sync_from_remote(queued, running)
+            _reset_db_failure_count()  # DB is healthy, reset failure counter
+        except Exception:
+            pass
+    except Exception:
+        _increment_db_failure_count()
+        queued = []
+    # PostgREST/Supabase caps large result sets at 1,000 rows. Urgent new work
+    # otherwise sits outside an oldest-first scan and cannot be prioritized at
+    # all. Pull bounded escape hatches for deployment blockers and evidence
+    # tasks, then let the normal atomic ranking/claim path decide among them.
+    escape_filters = (
+        "(slug.like.relfix-*,slug.like.qafix-*,slug.like.deployfix-*,slug.like.buildfix-*,slug.like.copyfix-*,slug.like.toolchain-repair-*)",
+        "(slug.like.canary-*,slug.like.*-canary-*,kind.eq.canary,note.ilike.*coder-canary*,note.ilike.*routing%20sample*)",
+    )
+    seen_ids = {t.get("id") for t in queued}
+    for expression in escape_filters:
+        try:
+            extra = select("tasks", {"select": claim_fields, "state": "eq.QUEUED",
+                                      "or": expression, "order": "created_at.desc", "limit": "200"}) or []
+        except Exception:
+            extra = []
+        for task in extra:
+            if task.get("id") not in seen_ids:
+                queued.append(task); seen_ids.add(task.get("id"))
     queued = [t for t in queued if t.get("project_id") not in paused_pids]  # skip paused projects
     # HOST AFFINITY: only claim tasks whose project repo exists on this machine. No-op on the
     # machine that owns the repos (all present) and when localization is disabled; prevents a
@@ -402,13 +702,34 @@ def claim_task(runner_id):
                   f"on {socket.gethostname()} (host affinity). Idle until a runnable repo exists.",
                   flush=True)
     per_project_limit = max(1, int(os.environ.get("ORCH_PER_PROJECT_CODE_LANES", "1")))
+    # A known-broken toolchain is a project-wide root blocker.  Only its one
+    # repair task may claim a lane; every dependent task would otherwise spend
+    # a model call merely to rediscover the same missing dependency.
+    toolchain_blocked_pids = set()
+    try:
+        blockers = select("tasks", {
+            "select": "project_id,slug", "state": "in.(QUEUED,RUNNING,RETRY)",
+            "slug": "like.toolchain-repair-*", "limit": "500",
+        }) or []
+        toolchain_blocked_pids = {r.get("project_id") for r in blockers if r.get("project_id")}
+    except Exception:
+        pass
+    if toolchain_blocked_pids:
+        queued = [t for t in queued if (t.get("project_id") not in toolchain_blocked_pids
+                                        or str(t.get("slug") or "").startswith("toolchain-repair-"))]
     active_by_project = {}
+    active_release_by_project = {}
+    active_recovery_by_project = {}
     active_evidence = 0
     try:
         for r in (select("tasks", {"select": "project_id,slug,kind,note", "state": "in.(RUNNING,RETRY)"}) or []):
             pid = r.get("project_id")
             if pid:
                 active_by_project[pid] = active_by_project.get(pid, 0) + 1
+                if _is_release_fix_task(r):
+                    active_release_by_project[pid] = active_release_by_project.get(pid, 0) + 1
+                if _is_recovery_task(r):
+                    active_recovery_by_project[pid] = active_recovery_by_project.get(pid, 0) + 1
             if _is_evidence_task(r):
                 active_evidence += 1
     except Exception:
@@ -436,6 +757,28 @@ def claim_task(runner_id):
     def _churn(t):
         s = str(t.get("slug") or "")
         return 1 if deprio_churn and (s.startswith("cont-") or s.startswith("batch-mech")) else 0
+
+    def _cooling_down(t):
+        """Avoid instantly reclaiming work a worker deliberately deferred.
+
+        The old QUEUED -> RUNNING hot loop could reclaim the same conflict/toolchain
+        hold several times a minute, consuming a lane without doing useful work.
+        """
+        note = str(t.get("note") or "").lower()
+        seconds = 0
+        if note.startswith("held: project toolchain not ready"):
+            seconds = int(os.environ.get("ORCH_TOOLCHAIN_RECLAIM_COOLDOWN_S", "300"))
+        elif note.startswith(("conflict-predictor: deferring", "portfolio-plan deferred")):
+            seconds = int(os.environ.get("ORCH_CONFLICT_RECLAIM_COOLDOWN_S", "90"))
+        elif note.startswith(("fleet-topology: redirecting", "ensemble-predictor:")):
+            seconds = int(os.environ.get("ORCH_ROUTING_RECLAIM_COOLDOWN_S", "60"))
+        if not seconds or not t.get("updated_at"):
+            return False
+        try:
+            updated = datetime.datetime.fromisoformat(str(t["updated_at"]).replace("Z", "+00:00"))
+            return (datetime.datetime.now(datetime.timezone.utc) - updated).total_seconds() < seconds
+        except Exception:
+            return False
 
 
     # Kind+age composite score: prioritize bugfixes and older tasks within the same
@@ -494,9 +837,25 @@ def claim_task(runner_id):
     )
     evidence_reserved_lanes = max(0, int(os.environ.get("ORCH_EVIDENCE_RESERVED_LANES", "1") or 0))
     evidence_reserve_open = evidence_backlog and active_evidence < evidence_reserved_lanes
+    recovery_reserved_lanes = max(0, int(os.environ.get("ORCH_RECOVERY_RESERVED_LANES", "0") or 0))
+    recovery_reserve_open = (recovery_backlog
+                             and sum(active_recovery_by_project.values()) < recovery_reserved_lanes)
+    try:
+        import blocker_portfolio
+        blocker_scores = blocker_portfolio.scores(queued)
+    except Exception:
+        blocker_scores = {}
 
     def _task_priority(t):
         return _num(t.get("priority"), 1000)
+
+    def _blocker_portfolio_rank(t):
+        # Higher score means this task clears more downstream/release work.
+        if _is_recovery_task(t) and not recovery_backlog:
+            return 0.0
+        if _is_release_fix_task(t) and not release_fix_backlog:
+            return 0.0
+        return -float(blocker_scores.get(str(t.get("id") or t.get("slug") or ""), 0.0))
 
     def _portfolio_project_rank(t):
         # Owner directive: prioritize portfolio work in this exact product order. Keep this
@@ -542,6 +901,9 @@ def claim_task(runner_id):
         # outcomes instead of staying permanently queued behind release/recovery pressure.
         return 0 if (evidence_reserve_open and _is_evidence_task(t)) else (1 if evidence_reserve_open else 0)
 
+    def _recovery_reserve_rank(t):
+        return 0 if (recovery_reserve_open and _is_recovery_task(t)) else (1 if recovery_reserve_open else 0)
+
     def _release_fix_urgency(t):
         if not _is_release_fix_task(t):
             return 9
@@ -550,6 +912,14 @@ def claim_task(runner_id):
         if slug.startswith(("qafix-", "relfix-", "buildfix-", "deployfix-")):
             return 0
         return 1
+
+    def _release_fix_specificity(t):
+        """Current compiled failure signatures beat legacy sliced/generic repair backlogs."""
+        if not _is_release_fix_task(t):
+            return 9
+        import re
+        slug = str(t.get("slug") or "")
+        return 0 if re.search(r"-[0-9a-f]{12}$", slug) else 1
 
     def _improvement_rank(t):
         # Once recovery is drained, orchestrator self-improvements should ship before fresh product
@@ -566,9 +936,11 @@ def claim_task(runner_id):
         # Priority drains should not wait forever just because the same project already has one
         # unrelated task active. Keep the override bounded so one repo cannot consume the fleet.
         if _is_release_fix_task(t):
-            return max(per_project_limit, int(os.environ.get("ORCH_RELEASE_FIX_PER_PROJECT_CODE_LANES", "3")))
+            return max(1, int(os.environ.get("ORCH_RELEASE_FIX_PER_PROJECT_CODE_LANES", "1")))
         if _is_recovery_task(t):
-            return max(per_project_limit, int(os.environ.get("ORCH_RECOVERY_PER_PROJECT_CODE_LANES", "3")))
+            # Missing-branch retries compete for the same refs and locks.  One
+            # deterministic recovery owner per project prevents retry storms.
+            return max(1, int(os.environ.get("ORCH_RECOVERY_PER_PROJECT_CODE_LANES", "1")))
         if _is_evidence_task(t):
             return max(per_project_limit, int(os.environ.get("ORCH_EVIDENCE_PER_PROJECT_CODE_LANES", "2")))
         if _is_improvement_task(t):
@@ -578,9 +950,12 @@ def claim_task(runner_id):
         return per_project_limit
 
     queued.sort(key=lambda t: (_evidence_reserve_rank(t),                        # reserve one vendor-evidence lane
-                               _portfolio_project_rank(t),                       # owner portfolio priority order
-                               _release_fix_rank(t),                             # unblock Vercel releases first inside each project
+                               _recovery_reserve_rank(t),                        # turn completed work into mergeable branches
+                               _release_fix_rank(t),                             # unblock Vercel releases across the portfolio
                                _release_fix_urgency(t),                          # hot gate fixes before stale EV noise
+                               _release_fix_specificity(t),                      # exact current failures before legacy slices
+                               _blocker_portfolio_rank(t),                       # maximize downstream work unblocked per claim
+                               _portfolio_project_rank(t),                       # owner order within the same delivery class
                                _evidence_rank(t),                                # bounded canaries unblock learned routing
                                _recovery_rank(t),                                # recover tested work next
                                _rework_rank(t),                                  # then quarantine-recovered work
@@ -595,20 +970,51 @@ def claim_task(runner_id):
                                prio.get(t.get("project_id"), 5),
                                -float(roi_w.get(t.get("project_id"), 1) or 1),
                                t.get("created_at") or ""))
+    # PREFLIGHT: skip tasks with notes indicating prior quarantine cycle
+    try:
+        import preflight_filter as _pf
+        _skip_note = _pf.should_skip_note
+    except ImportError:
+        _SKIP_NOTE_PATTERNS = ("swarm-parallel-fail", "legacy direct improvement",
+                               "Meta-decomposition loop", "queue-bankruptcy",
+                               "sentinel-dedupe", "semantic-dedupe", "preflight:",
+                               "non-actionable:", "GC:")
+        _skip_note = lambda n: any(pat in n for pat in _SKIP_NOTE_PATTERNS)
+
     done = _done_slugs()
     for t in queued or []:
-        pid = t.get("project_id")
-        if pid and active_by_project.get(pid, 0) >= _project_lane_limit(t):
+        if _cooling_down(t):
             continue
+        # Skip recycled/garbage tasks before claiming
+        if _skip_note(str(t.get("note") or "")):
+            continue
+        pid = t.get("project_id")
+        if pid:
+            if _is_release_fix_task(t):
+                occupied = active_release_by_project.get(pid, 0)
+            elif _is_recovery_task(t):
+                occupied = active_recovery_by_project.get(pid, 0)
+            else:
+                occupied = active_by_project.get(pid, 0)
+            if occupied >= _project_lane_limit(t):
+                continue
         if all(d in done for d in (t.get("deps") or [])):
             # optimistic claim: flip to RUNNING only if still QUEUED
-            res = _req("PATCH", "/rest/v1/tasks",
-                       body={"state": "RUNNING", "account": runner_id, "updated_at": "now()"},
-                       headers={"Prefer": "return=representation"},
-                       params={"id": f"eq.{t['id']}", "state": "eq.QUEUED"})
+            try:
+                res = _req("PATCH", "/rest/v1/tasks",
+                           body={"state": "RUNNING", "account": runner_id, "updated_at": "now()"},
+                           headers={"Prefer": "return=representation"},
+                           params={"id": f"eq.{t['id']}", "state": "eq.QUEUED"})
+            except Exception:
+                _increment_db_failure_count()
+                res = None
             if res:
                 if pid:
                     active_by_project[pid] = active_by_project.get(pid, 0) + 1
+                    if _is_release_fix_task(t):
+                        active_release_by_project[pid] = active_release_by_project.get(pid, 0) + 1
+                    if _is_recovery_task(t):
+                        active_recovery_by_project[pid] = active_recovery_by_project.get(pid, 0) + 1
                 # Invalidate pre-optimization cache for claimed task
                 try:
                     import queue_preopt
@@ -646,19 +1052,41 @@ def _prune_stale_heartbeats():
 
 
 def heartbeat(runner_id, hostname, active):
-    insert("runner_heartbeats",
-           {"runner_id": runner_id, "hostname": hostname, "active_tasks": active,
-            "last_seen": "now()"}, upsert=True)
+    """Publish liveness plus a best-effort executor compatibility proof.
+
+    The fallback keeps rolling upgrades safe while a host has the older
+    heartbeat schema or has not yet received the migration.
+    """
+    row = {"runner_id": runner_id, "hostname": hostname, "active_tasks": active,
+           "last_seen": "now()"}
+    try:
+        import runtime_contract
+        proof = runtime_contract.check()
+        row.update({k: proof[k] for k in ("code_sha", "contract_hash", "contract_version")})
+    except Exception:
+        pass
+    try:
+        insert("runner_heartbeats", row, upsert=True)
+    except Exception:
+        # Compatibility with remotes that have not yet applied the additive migration.
+        row = {k: v for k, v in row.items()
+               if k not in ("code_sha", "contract_hash", "contract_version")}
+        insert("runner_heartbeats", row, upsert=True)
     if os.environ.get("ORCH_LOGICAL_RUNNERS", "true").lower() not in ("true", "1", "yes"):
         return
     try:
         target = max(1, min(10, int(os.environ.get("ORCH_RUNNER_FLEET_TARGET", "8"))))
         for i in range(2, target + 1):
             lane_id = f"{runner_id}-lane-{i}"
-            insert("runner_heartbeats",
-                   {"runner_id": lane_id, "hostname": f"{hostname} lane {i}",
-                    "active_tasks": 1 if active >= i else 0, "last_seen": "now()"},
-                   upsert=True)
+            lane = dict(row)
+            lane.update({"runner_id": lane_id, "hostname": f"{hostname} lane {i}",
+                         "active_tasks": 1 if active >= i else 0, "last_seen": "now()"})
+            try:
+                insert("runner_heartbeats", lane, upsert=True)
+            except Exception:
+                insert("runner_heartbeats", {k: v for k, v in lane.items()
+                                               if k not in ("code_sha", "contract_hash", "contract_version")},
+                       upsert=True)
     except Exception:
         pass
     _prune_stale_heartbeats()
