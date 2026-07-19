@@ -70,3 +70,8 @@ def test_failure_record_auto_signature():
     rec = FailureRecord(task_id="1", slug="x", state="BLOCKED",
                         note="shelved after 6 remediations without merge")
     assert rec.error_signature == "remediation-cap"
+
+
+def test_extract_remote_publish_auth():
+    note = "remote-publish-failed: push to origin returned non-zero"
+    assert extract_signature(note) == "remote-publish-auth"
