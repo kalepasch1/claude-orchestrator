@@ -69,9 +69,14 @@ def load_config():
     """Apply central fleet_config into this process's env (safe keys only)."""
     n = 0
     try:
-        for row in (db.select("fleet_config", {"select": "key,value"}) or []):
+        for row in (db.select("fleet_config", {"select": "key,value,policy_change_id"}) or []):
             k, v = row.get("key"), row.get("value")
-            if k and v is not None and _safe_key(k):
+            try:
+                import policy_compiler
+                authorized = policy_compiler.authorized(row.get("policy_change_id"))
+            except Exception:
+                authorized = False
+            if k and v is not None and _safe_key(k) and authorized:
                 _v = str(v).strip()
                 if len(_v) >= 2 and _v[0] == chr(34) and _v[-1] == chr(34):
                     _v = _v[1:-1]

@@ -11,6 +11,7 @@ into control+candidate variants, and tag outcomes.
 import os, sys, random
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import evidence_bus
 
 
 def task_experiment_metadata(task_id):
@@ -72,6 +73,9 @@ def record_experiment_outcome(task_id, experiment_id, variant, tests_passed, cos
             "cost_usd": cost_usd,
             "created_at": "now()"
         })
+        evidence_bus.append("ORCHESTRATOR", "experiment.outcome", task_id,
+                            {"experiment_id": experiment_id, "variant": variant,
+                             "tests_passed": bool(tests_passed), "cost_usd": cost_usd})
     except Exception as e:
         print(f"record_experiment_outcome failed: {e}")
 
@@ -93,6 +97,8 @@ def sample_for_experiment(project_id):
             alloc = exp.get("fleet_allocation_pct", 0)
             cum += alloc
             if r <= cum:
+                evidence_bus.append("ORCHESTRATOR", "experiment.sampled", project_id,
+                                    {"experiment_id": exp.get("id"), "allocation_pct": alloc})
                 return exp.get("id")
         return None
     except Exception:

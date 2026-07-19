@@ -2339,6 +2339,8 @@ _SCHEDULE = [
     ("selfcheck-600", "selfcheck",          "interval", 600),   # periodic invariant assert + auto-heal
     ("push-180",      "pushdecisions",      "interval", 180),   # push new decisions/actions to email + Smarter
     ("selfheal-120",  "selfheal",           "interval", 120),   # auto-file fixes for prod incidents
+    ("adversarial-300", "adversarial_fleet", "interval", 300),   # #26-#33: leading-risk + continuous-control evidence
+    ("fleet-audit-6h", "fleet_e2e_audit", "interval", 21600),     # detect apps with incomplete control adapters
     ("credresolver-300", "credresolver",     "interval", 300),   # auto-resolve credential_requests from env
     ("newapp-300",    "newapp",             "interval", 300),   # process one-command new-app requests
     ("autopilot-180", "autopilot",          "interval", 180),   # queue/improvement operating bot
@@ -2436,7 +2438,7 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      "unstick", "dagfix", "batchmech", "selftune", "cluster",
                      "governor", "costslo", "promote", "prewarm", "billingguard",
                      "dedup", "contcompact", "backlogcompact", "canaryecon", "forecast", "arbitrage", "autoscale", "bizradar",
-                     "credresolver", "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",
+                     "credresolver", "pushdecisions", "selfheal", "adversarial_fleet", "fleet_e2e_audit", "newapp", "autopilot", "abedge",
                      "stripe", "ownerreport", "worktreegc", "remediate", "quarantine", "selfcheck", "release_kpi.py",
                      "integrate_kpi.py", "fleet_control.py",
                      "thermal_queue.py", "model_score.py", "queue_materializer.py",

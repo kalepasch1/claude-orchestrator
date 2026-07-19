@@ -14,6 +14,7 @@ Usage:
     config_applier.apply_config(key, value, by="auto")  # direct apply w/ canary
 """
 import os
+import hashlib
 import sys
 import time
 import json
@@ -71,6 +72,18 @@ def _get_metric_snapshot():
         return {"ts": time.time()}
 
 
+def _adversarial_gate(key, value):
+    """Reject a config rollout whose deterministic failure simulation exceeds its SLO."""
+    try:
+        import adversarial_fleet
+        capacity = float(value) if key in ("MAX_PARALLEL", "ORCH_FLEET_CAPACITY") else float(os.environ.get("MAX_PARALLEL", 4))
+        return adversarial_fleet.calibrated_simulation(
+            key, value, runs=int(os.environ.get("ORCH_SIMULATION_RUNS", "500")))
+    except Exception as e:
+        # Fail closed: a missing simulator must not silently bypass the pre-deploy gate.
+        return {"passed": False, "reason": f"simulation_unavailable:{e}"}
+
+
 def apply_config(key, value, by="auto", canary=True):
     """Apply a config key with canary observation.
 
@@ -80,6 +93,19 @@ def apply_config(key, value, by="auto", canary=True):
     if not _is_safe_key(key):
         log.warning("config_applier: REJECTED unsafe key %s (by=%s)", key, by)
         return {"outcome": "rejected", "key": key, "reason": "unsafe key"}
+
+    simulation = _adversarial_gate(key, value)
+    if not simulation.get("passed"):
+        log.warning("config_applier: REJECTED %s; adversarial simulation=%s", key, simulation)
+        return {"outcome": "rejected", "key": key, "reason": "adversarial_simulation", "simulation": simulation}
+
+    try:
+        import policy_compiler
+        policy = policy_compiler.authorize_config(key, value, by, simulation)
+    except Exception as exc:
+        return {"outcome": "rejected", "key": key, "reason": f"policy_compiler:{exc}"}
+    if policy.get("status") != "authorized":
+        return {"outcome": "rejected", "key": key, "reason": "policy_not_authorized", "policy": policy}
 
     old_value = os.environ.get(key)
     before = _get_metric_snapshot()
@@ -108,12 +134,13 @@ def apply_config(key, value, by="auto", canary=True):
         state["rollbacks"].append({"key": key, "value": value, "by": by,
                                     "ts": time.time(), "reason": "resource_pressure"})
         _save_state(state)
+        policy_compiler.complete_config(policy["id"], "rolled_back", {"before": before, "after": after})
         return {"outcome": "rolled_back", "key": key, "reason": "resource_pressure"}
 
     # Promote: persist to fleet_config
     try:
         import db
-        db.insert("fleet_config", {"key": key, "value": str(value)}, upsert=True)
+        db.insert("fleet_config", {"key": key, "value": str(value), "policy_change_id": policy["id"]}, upsert=True)
         log.info("config_applier: PROMOTED %s=%s fleet-wide", key, value)
     except Exception as e:
         log.warning("config_applier: fleet_config write failed: %s", e)
@@ -122,6 +149,7 @@ def apply_config(key, value, by="auto", canary=True):
     state["applied"][key] = {"value": str(value), "by": by, "ts": time.time(),
                               "old_value": old_value}
     _save_state(state)
+    policy_compiler.complete_config(policy["id"], "applied", {"before": before, "after": after})
     return {"outcome": "applied", "key": key, "value": value}
 
 

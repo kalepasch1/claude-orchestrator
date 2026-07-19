@@ -733,6 +733,17 @@ def run_editorial():
     return editorial_program.run()
 
 
+def run_adversarial_fleet():
+    """Evaluate leading indicators and compliance receipts; never deploys or changes policy."""
+    import adversarial_fleet
+    return adversarial_fleet.run()
+
+
+def run_fleet_e2e_audit():
+    import fleet_e2e_audit
+    return fleet_e2e_audit.run()
+
+
 JOBS = {
     "spec": run_spec,
     "chaos": run_chaos,
@@ -741,6 +752,8 @@ JOBS = {
     "deploy": run_deploy,
     "roi": run_roi,
     "editorial": run_editorial,
+    "adversarial_fleet": run_adversarial_fleet,
+    "fleet_e2e_audit": run_fleet_e2e_audit,
     "batch": run_batch,
     "unstick": run_unstick,
     "dagfix": run_dagfix,
@@ -843,6 +856,8 @@ if __name__ == "__main__":
         "quarantine", "credresolver", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain",
         "priority_scorer", "quarantine_gc",
         "editorial",
+        "adversarial_fleet",
+        "fleet_e2e_audit",
         "release_kpi.py", "integrate_kpi.py", "fleet_control.py",
     }
     if job not in _SAFE_WHEN_PAUSED:

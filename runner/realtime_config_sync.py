@@ -59,7 +59,12 @@ def _apply_config(rows):
     for row in (rows or []):
         k = row.get("key", "")
         v = row.get("value", "")
-        if fleet_control._safe_key(k):
+        try:
+            import policy_compiler
+            authorized = policy_compiler.authorized(row.get("policy_change_id"))
+        except Exception:
+            authorized = False
+        if fleet_control._safe_key(k) and authorized:
             old = os.environ.get(k)
             if old != v:
                 os.environ[k] = v
@@ -75,7 +80,7 @@ def _poll_loop():
     interval = max(_MIN_INTERVAL, _POLL_INTERVAL)
     while _running:
         try:
-            rows = db.select("fleet_config", {"select": "key,value"}) or []
+            rows = db.select("fleet_config", {"select": "key,value,policy_change_id"}) or []
             h = _config_hash(rows)
             with _lock:
                 _stats_data["syncs"] += 1
@@ -228,7 +233,7 @@ def _parse_config_file(path):
 def _push_config_to_db(pairs):
     """Push config pairs to fleet_config table. Returns count pushed."""
     try:
-        import db
+        import config_applier
         import fleet_control
     except ImportError:
         return 0
@@ -239,8 +244,8 @@ def _push_config_to_db(pairs):
         if not k or not fleet_control._safe_key(k):
             continue
         try:
-            db.upsert("fleet_config", {"key": k, "value": v})
-            pushed += 1
+            if config_applier.apply_config(k, v, by="git-config").get("outcome") == "applied":
+                pushed += 1
         except Exception:
             pass
     return pushed

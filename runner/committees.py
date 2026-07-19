@@ -20,7 +20,7 @@ Learning transfers across freshly-assembled panels because calibration/scoreboar
 DOMAIN (a stable label), not by any fixed membership. Costless-first + cross-model: experts are spread
 across providers; consensus memos are stored (committee_opinions) as reusable cross-app PRECEDENT.
 """
-import os, sys, json, re
+import os, sys, json, re, hashlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
@@ -145,6 +145,33 @@ def _fallback_panels(title, body):
     elif any(k in text for k in ("security", "auth", "vuln", "secret")):
         name, seats = "Security & Trust", ["AppSec lead", "Identity architect", "Abuse specialist"]
     return [{"name": name, "mandate": "adaptive fallback", "chair": "Chair", "seats": seats, "weight": 1.0}]
+
+
+def _high_stakes_debate(subject_type, subject_id, title, body, blast_radius):
+    """Three independent proposals, cross-critique, then a judge; durable before action."""
+    proposals = []
+    for lens in ("operator", "risk adversary", "customer/economic advocate"):
+        proposals.append(_json("Independently propose the safest concrete decision. Return JSON with "
+                               "verdict(proceed|hold), rationale, conditions. Lens: %s\n%s\n%s" %
+                               (lens, title[:300], body[:1200])))
+    critiques = []
+    for i, proposal in enumerate(proposals):
+        critiques.append(_json("Critique proposal %d for hidden failure modes. Return JSON with verdict and rationale. "
+                               "Proposal: %s" % (i + 1, json.dumps(proposal))))
+    judge = _json("Synthesize these independent proposals and critiques. Return JSON {verdict:proceed|hold, "
+                  "rationale:string, dissent:[string]}. Proposals=%s Critiques=%s" %
+                  (json.dumps(proposals), json.dumps(critiques)))
+    debate_id = hashlib.sha256(f"{subject_type}:{subject_id}:{title}".encode()).hexdigest()[:32]
+    row = {"id": debate_id, "subject_type": subject_type, "subject_id": str(subject_id),
+           "blast_radius": blast_radius, "proposals": proposals, "critiques": critiques,
+           "judgment": judge, "dissent": judge.get("dissent", []) if isinstance(judge, dict) else []}
+    try:
+        db.insert("high_stakes_debates", row, upsert=True)
+        import evidence_bus
+        evidence_bus.append("ORCHESTRATOR", "debate.completed", debate_id, row)
+    except Exception:
+        pass
+    return {"id": debate_id, "judge": judge or {"verdict": "hold"}}
 
 
 def _seat_need(committee, seat):
@@ -578,6 +605,15 @@ def review(subject_type, subject_id, title, body, app=None):
     verds = {p["verdict"] for p in panel}
     contentious = ("support" in verds and "oppose" in verds and bool(high_conv_opp))
 
+    # Decisions with material cross-app, security, financial, or irreversible blast radius
+    # must complete the persisted three-proposer/critique/judge protocol before execution.
+    import adversarial_fleet
+    text = (title + " " + body).lower()
+    blast_radius = 100 if critical or any(k in text for k in ("production", "security", "billing", "migration", "all users")) else 0
+    structured_debate = None
+    if adversarial_fleet.debate_required(blast_radius):
+        structured_debate = _high_stakes_debate(subject_type, subject_id, title, body, blast_radius)
+
     # OWNER PREFERENCE: shift the GO bar toward the owner's revealed risk tolerance
     bar = 7.0 + _owner_bias()
     arbitration = None
@@ -620,6 +656,8 @@ def review(subject_type, subject_id, title, body, app=None):
                and (agg or 0) >= bar and budget > 0)
     # ONLY critical or highly-contentious matters reach a human.
     escalate = rec.startswith("ESCALATE") or legal_veto or critical
+    if structured_debate and structured_debate.get("judge", {}).get("verdict") != "proceed":
+        escalate = True; auto_ok = False; rec = "ESCALATE (high-stakes debate)"
     experiment = rec.startswith("EXPERIMENT")
 
     # NORTH-STAR ALIGNMENT GATE: before acting autonomously, check the decision doesn't drift from the
@@ -1333,6 +1371,12 @@ def rollout_advance():
             db.update("committee_rollouts", {"id": r["id"]},
                       {"stage": "rolled_back", "status": "done", "metric_last": cur,
                        "note": (r.get("note") or "") + " | auto-rolled-back on metric regression"})
+            try:
+                import evidence_bus
+                evidence_bus.append(r.get("app", "ORCHESTRATOR"), "incident.rollback", str(r["id"]),
+                                    {"metric_start": start, "metric_last": cur, "reason": "canary regression"})
+            except Exception:
+                pass
             rolled += 1
             continue
         # ADAPTIVE RAMP: strong, stable growth graduates faster; marginal health takes the cautious path.
@@ -1627,7 +1671,16 @@ def conclude_experiments():
             pass
         cur = rev.get(x.get("app"), 0.0); base = float(x.get("metric_start") or 0) or cur
         lift = round((cur - base) / base * 100, 2) if base else 0.0
-        decision = "ship-challenger" if lift >= 1 else "keep-champion"
+        # When a holdout cohort is instrumented, use DiD rather than crediting a
+        # fleet-wide trend to the challenger.  Legacy experiments retain lift.
+        if x.get("control_metric_start") is not None and x.get("control_metric_last") is not None:
+            import adversarial_fleet
+            lift = adversarial_fleet.difference_in_differences(
+                x["control_metric_start"], x["control_metric_last"], base, cur)
+        reversible = x.get("kind", "ab") in ("ab", "holdout")
+        import adversarial_fleet
+        decision = ("ship-challenger" if adversarial_fleet.experiment_verdict(lift, 1, reversible) == "graduate"
+                    else "keep-champion")
         db.update("committee_experiments", {"id": x["id"]},
                   {"status": "concluded", "metric_last": cur, "lift": lift, "decision": decision,
                    "concluded_at": "now()"})
