@@ -450,8 +450,12 @@ def prune():
     return freed_notes
 
 
+def _throttle_floor():
+    return int(os.environ.get("ORCH_THROTTLE_FLOOR", "1"))
+
+
 def set_throttle(n):
-    n = max(1, min(n, _ceiling()))
+    n = max(_throttle_floor(), min(n, _ceiling()))
     with open(THROTTLE_FILE, "w") as f:
         f.write(str(n))
     return n

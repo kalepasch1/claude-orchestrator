@@ -197,7 +197,9 @@ class _CoworkTracker:
             # Scale reduction linearly: at threshold → 0% reduction,
             # at 2x threshold → MAX_LANE_REDUCTION
             ratio = min(1.0, (tph - LANE_REDUCTION_THRESHOLD) / max(0.1, LANE_REDUCTION_THRESHOLD))
-            reduction = ratio * MAX_LANE_REDUCTION
+            # Re-read from env each call so hot_reload can change it without restart
+            max_red = float(os.environ.get("ORCH_COWORK_MAX_LANE_REDUCTION", "0.75") or 0.75)
+            reduction = ratio * max_red
             adjusted = int(current_limit * (1.0 - reduction))
             return max(1, adjusted)
         except Exception:

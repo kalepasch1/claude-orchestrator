@@ -187,7 +187,7 @@ def set_state(task_id: str, **kw) -> None:
     db.update("tasks", {"id": task_id}, kw)
     # Every non-running transition ends this executor's right to mutate the
     # branch. A crashed worker is covered by the server-side lease TTL.
-    if kw.get("state") in {"QUEUED", "DONE", "MERGED", "BLOCKED", "QUARANTINED"}:
+    if kw.get("state") in {"QUEUED", "DONE", "MERGED", "BLOCKED", "QUARANTINED", "RETRY"}:
         branch_lease.release(str(task_id))
 
 
@@ -850,70 +850,77 @@ def run_task(t):
                     set_state(t["id"], note=f"mesh-optimizer: {_mesh['note']}")
             except Exception as e:
                 _log.debug("hook mesh_optimizer failed: %s", e)
+            # EARLY TIMING GUARD: check elapsed time after the core hooks (plan, diff_compiler,
+            # mesh_optimizer) and skip remaining pre-hooks if already past budget. Without this,
+            # 20+ sequential hooks can block for minutes before the main guard at line ~1083 fires.
+            _fast = {}  # initialized early so all subsequent hooks can check skip_all
+            _early_elapsed = time.time() - t0
+            _early_max = float(os.environ.get("ORCH_PREHOOK_EARLY_MAX_S", "15"))
+            if _early_elapsed > _early_max:
+                _fast["skip_all"] = True
+                set_state(t["id"], note=f"prehook-early-guard: {_early_elapsed:.0f}s > {_early_max:.0f}s — skipping remaining hooks")
             # QUEUE PRE-OPTIMIZATION: check if background daemon already pre-computed
             # expensive hooks for this task while it was idle in the queue.
             _preopt_notes = []
             _extras = ""
-            try:
-                import queue_preopt
-                _preopt = queue_preopt.get(t["id"])
-                if _preopt and _preopt.get("stages"):
-                    draft_prompt, _extras, _preopt_notes = queue_preopt.apply_cached(
-                        t["id"], draft_prompt, t, repo, name, attempt)
-                    if _preopt_notes:
-                        set_state(t["id"], note=f"preopt: {', '.join(_preopt_notes)}")
-            except Exception as e:
-                _log.debug("hook queue_preopt failed: %s", e)
-            # CONTEXT + PRECEDENT: give the headless agent what an interactive session has — a repo map +
-            # this project's conventions, and the most-similar change that already MERGED (adapt a proven
-            # pattern instead of inventing). Both are pure retrieval (no tokens) and lift first-pass yield.
-            # Skip if pre-optimization already supplied these.
-            if "preopt:context_pack" not in _preopt_notes:
+            _preopt = None
+            if not _fast.get("skip_all"):
                 try:
-                    import context_pack, precedent
-                    _extras += context_pack.block(repo)
-                    _extras += precedent.hint(t, repo, project_id=t.get("project_id"))
-                except Exception:
-                    pass
-            # TASK MEMORY + HIVEMIND: inject fleet intelligence and dependency context
-            try:
-                import task_memory
-                _hive = task_memory.hivemind_query(t, name)
-                if _hive and _hive.get("insights"):
-                    draft_prompt = task_memory.inject_hivemind(draft_prompt, _hive)
-                    set_state(t["id"], note=f"hivemind: {len(_hive['insights'])} insights (conf={_hive.get('confidence', 0):.0%})")
-                _dep_ctx = task_memory.get_dependency_context(t)
-                if _dep_ctx:
-                    _extras += f"\n\n## Parent Task Context\n{_dep_ctx}\n"
-            except Exception as e:
-                _log.debug("hook task_memory failed: %s", e)
-            # MERGE VALIDATOR: check if speculative draft already passed tests
-            try:
-                import merge_validator
-                if merge_validator.fast_track_check(t["id"]):
-                    set_state(t["id"], note="merge-validator: pre-validated draft passed tests, fast-tracking")
-                    # Draft already validated — inject constraint to use it as-is
-                    _extras += "\n\n## Pre-Validated Draft Available\nA speculative draft has already passed all tests. Apply it directly unless you find issues.\n"
-            except Exception as e:
-                _log.debug("hook merge_validator failed: %s", e)
-            # PROMPT COMPRESSOR: deduplicate and compress before final assembly
-            try:
-                import prompt_compressor
-                _compressed = prompt_compressor.compress(draft_prompt, _extras)
-                if _compressed.get("savings", {}).get("reduction_pct", 0) > 5:
-                    draft_prompt = _compressed["prompt"]
-                    _extras = _compressed["extras"]
-                    set_state(t["id"], note=f"prompt-compressor: {_compressed['savings']['reduction_pct']:.0f}% reduction")
-            except Exception as e:
-                _log.debug("hook prompt_compressor failed: %s", e)
-            # PROMPT EVOLUTION: inject learned effective additions
-            try:
-                import prompt_evolution
-                _evolved = prompt_evolution.get_evolved_additions(t, name)
-                if _evolved:
-                    _extras += _evolved
-            except Exception as e:
-                _log.debug("hook prompt_evolution failed: %s", e)
+                    import queue_preopt
+                    _preopt = queue_preopt.get(t["id"])
+                    if _preopt and _preopt.get("stages"):
+                        draft_prompt, _extras, _preopt_notes = queue_preopt.apply_cached(
+                            t["id"], draft_prompt, t, repo, name, attempt)
+                        if _preopt_notes:
+                            set_state(t["id"], note=f"preopt: {', '.join(_preopt_notes)}")
+                except Exception as e:
+                    _log.debug("hook queue_preopt failed: %s", e)
+                # CONTEXT + PRECEDENT
+                if "preopt:context_pack" not in _preopt_notes:
+                    try:
+                        import context_pack, precedent
+                        _extras += context_pack.block(repo)
+                        _extras += precedent.hint(t, repo, project_id=t.get("project_id"))
+                    except Exception:
+                        pass
+                # TASK MEMORY + HIVEMIND
+                try:
+                    import task_memory
+                    _hive = task_memory.hivemind_query(t, name)
+                    if _hive and _hive.get("insights"):
+                        draft_prompt = task_memory.inject_hivemind(draft_prompt, _hive)
+                        set_state(t["id"], note=f"hivemind: {len(_hive['insights'])} insights (conf={_hive.get('confidence', 0):.0%})")
+                    _dep_ctx = task_memory.get_dependency_context(t)
+                    if _dep_ctx:
+                        _extras += f"\n\n## Parent Task Context\n{_dep_ctx}\n"
+                except Exception as e:
+                    _log.debug("hook task_memory failed: %s", e)
+                # MERGE VALIDATOR
+                try:
+                    import merge_validator
+                    if merge_validator.fast_track_check(t["id"]):
+                        set_state(t["id"], note="merge-validator: pre-validated draft passed tests, fast-tracking")
+                        _extras += "\n\n## Pre-Validated Draft Available\nA speculative draft has already passed all tests. Apply it directly unless you find issues.\n"
+                except Exception as e:
+                    _log.debug("hook merge_validator failed: %s", e)
+                # PROMPT COMPRESSOR
+                try:
+                    import prompt_compressor
+                    _compressed = prompt_compressor.compress(draft_prompt, _extras)
+                    if _compressed.get("savings", {}).get("reduction_pct", 0) > 5:
+                        draft_prompt = _compressed["prompt"]
+                        _extras = _compressed["extras"]
+                        set_state(t["id"], note=f"prompt-compressor: {_compressed['savings']['reduction_pct']:.0f}% reduction")
+                except Exception as e:
+                    _log.debug("hook prompt_compressor failed: %s", e)
+                # PROMPT EVOLUTION
+                try:
+                    import prompt_evolution
+                    _evolved = prompt_evolution.get_evolved_additions(t, name)
+                    if _evolved:
+                        _extras += _evolved
+                except Exception as e:
+                    _log.debug("hook prompt_evolution failed: %s", e)
             # BUILD-TO-GREEN MANDATE: make the agent iterate to a mergeable state ITSELF (edit -> build ->
             # fix -> re-build -> commit), the way an interactive VSCode session does — so it returns green,
             # mergeable work instead of a draft a downstream committee rejects and recycles. The build is
@@ -1022,20 +1029,26 @@ def run_task(t):
             except Exception as e:
                 _log.debug("hook fleet_topology failed: %s", e)
             # CONFLICT PREDICTOR: check for file-scope overlap with active tasks
-            try:
-                import conflict_predictor
-                _conflicts = conflict_predictor.check_conflicts(t)
-                if not _force_execute and _conflicts.get("action") == "defer":
-                    t["_requeue_count"] = _requeue_count + 1
-                    set_state(t["id"], state="QUEUED",
-                              note=f"conflict-predictor: deferring ({_conflicts['reason']}) [requeue {_requeue_count+1}/{_max_requeues}]")
-                    time.sleep(10); return
-                elif _conflicts.get("conflicts"):
-                    set_state(t["id"], note=f"conflict-predictor: {len(_conflicts['conflicts'])} overlapping files, proceeding")
-            except Exception as e:
-                _log.debug("hook conflict_predictor failed: %s", e)
+            # Disabled: conflict predictor creates requeue loops when multiple tasks share
+            # common files (e.g. database.types.ts), blocking real task execution entirely.
+            # Worktree isolation already prevents actual conflicts. Re-enable via env var.
+            if os.environ.get("ORCH_CONFLICT_PREDICTOR", "false").lower() in ("true", "1", "yes"):
+                try:
+                    import conflict_predictor
+                    _conflicts = conflict_predictor.check_conflicts(t)
+                    if not _force_execute and _conflicts.get("action") == "defer":
+                        t["_requeue_count"] = _requeue_count + 1
+                        set_state(t["id"], state="QUEUED",
+                                  note=f"conflict-predictor: deferring ({_conflicts['reason']}) [requeue {_requeue_count+1}/{_max_requeues}]")
+                        time.sleep(10); return
+                    elif _conflicts.get("conflicts"):
+                        set_state(t["id"], note=f"conflict-predictor: {len(_conflicts['conflicts'])} overlapping files, proceeding")
+                except Exception as e:
+                    _log.debug("hook conflict_predictor failed: %s", e)
             # FAST-PATH: graduated autonomy fast-path (L3/L4 skip hooks)
-            _fast = {}
+            # Preserve early guard's skip_all if already set
+            if not _fast.get("skip_all"):
+                _fast = {}
             try:
                 _fp_domain = model_portfolios.classify(t, (_plan or {}).get("files", [])) if _plan is not None else "backend"
                 _fp_agent = f"{coder}:{visible_model}" if coder != "claude" else f"claude:{visible_model}"

@@ -178,7 +178,9 @@ def run(limit=20):
             continue
         draft, state = _generated_draft(packet)
         db.insert("approvals", {
-            "project": "KALE PASCH EDITORIAL",
+            # This existing project mapping lets an approved guide turn into a
+            # traceable Kalepasch site-update task through the normal decision flow.
+            "project": "kalepasch-com",
             "slug": due_key,
             "kind": "material",
             "title": f"Review editorial draft — {_label(app)} — {entry.get('kind') or 'article'}",
