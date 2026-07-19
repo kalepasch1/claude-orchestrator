@@ -20,9 +20,35 @@ import db
 
 DEDUP_SIM = float(os.environ.get("DEDUP_SIM", "0.82"))
 DEDUP_FILE_PENDING_CARDS = os.environ.get("DEDUP_FILE_PENDING_CARDS", "false").lower() in ("true", "1", "yes")
+DEDUP_SCAN_LIMIT = int(os.environ.get("DEDUP_SCAN_LIMIT", "5000"))
+DEDUP_PAGE_SIZE = int(os.environ.get("DEDUP_PAGE_SIZE", "500"))
 PROTECTED_PREFIXES = ("recover-missing-branch-", "canary-", "rework-", "qafix-", "relfix-", "buildfix-", "deployfix-")
 _STOP = set("the a an to of and or for in on with build add fix update create make this that use "
             "implement task change set get run test file page component function".split())
+
+
+def _queued_tasks(columns):
+    """Read the queue in bounded pages.
+
+    An unbounded PostgREST request starts returning 500s/timeouts once the fleet
+    is large.  That previously disabled the dedup job exactly when it was most
+    needed, allowing parallel agents to keep creating overlapping branches.
+    """
+    rows = []
+    page_size = max(1, min(1000, DEDUP_PAGE_SIZE))
+    scan_limit = max(page_size, DEDUP_SCAN_LIMIT)
+    for offset in range(0, scan_limit, page_size):
+        page = db.select("tasks", {
+            "select": columns,
+            "state": "eq.QUEUED",
+            "order": "created_at.asc",
+            "limit": str(min(page_size, scan_limit - offset)),
+            "offset": str(offset),
+        }) or []
+        rows.extend(page)
+        if len(page) < page_size:
+            break
+    return rows
 
 
 def _toks(s):
@@ -94,8 +120,7 @@ def _clusters(tasks):
 
 
 def analyze():
-    tasks = db.select("tasks", {"select": "id,slug,prompt,deps,material,project_id",
-                                "state": "eq.QUEUED"}) or []
+    tasks = _queued_tasks("id,slug,prompt,deps,material,project_id,created_at")
     tasks = [t for t in tasks if not _protected(t) and not t.get("material") and not (t.get("deps") or [])]
     out = []
     for g in _clusters(tasks):
@@ -107,8 +132,7 @@ def analyze():
 
 def apply():
     released = release_protected()
-    tasks = db.select("tasks", {"select": "id,slug,prompt,deps,material,project_id,created_at",
-                                "state": "eq.QUEUED"}) or []
+    tasks = _queued_tasks("id,slug,prompt,deps,material,project_id,created_at")
     tasks = [t for t in tasks if not _protected(t) and not t.get("material") and not (t.get("deps") or [])]
     collapsed = flagged = 0
     for g in _clusters(tasks):
