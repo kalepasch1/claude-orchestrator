@@ -50,6 +50,7 @@ def _mock_upsert(table, row):
     return _mock_insert(table, row)
 
 # Inject mock db
+_real_db = sys.modules.get("db")
 mock_db = types.ModuleType("db")
 mock_db.insert = _mock_insert
 mock_db.select = _mock_select
@@ -58,6 +59,10 @@ mock_db.upsert = _mock_upsert
 sys.modules["db"] = mock_db
 
 import provenance
+if _real_db is not None:
+    sys.modules["db"] = _real_db
+else:
+    sys.modules.pop("db", None)
 
 
 class TestProvenance(unittest.TestCase):

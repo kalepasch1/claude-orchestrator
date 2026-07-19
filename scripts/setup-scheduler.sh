@@ -221,7 +221,6 @@ for label in "${ALL_PLISTS[@]}"; do
         -e "s|POLL_SECONDS_PLACEHOLDER|${POLL_SECONDS:-5}|g" \
         -e "s|TEST_CMD_PLACEHOLDER|${TEST_CMD:-npm test}|g" \
         -e "s|METRICS_URL_PLACEHOLDER|${METRICS_URL:-}|g" \
-        -e "s|ANTHROPIC_API_KEY_PLACEHOLDER|${ANTHROPIC_API_KEY:-}|g" \
         -e "s|CLAUDE_BIN_PLACEHOLDER|${CLAUDE_BIN:-claude}|g" \
         -e "s|REQUESTS_FILE_PLACEHOLDER|${REQUESTS_FILE:-}|g" \
         "$src" > "$dst"

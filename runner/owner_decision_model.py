@@ -115,33 +115,10 @@ def draft(card):
                           f"category '{cat}'; not consistent enough to auto-apply")}
 
 
-def _ensure_target_kpi(card, decision):
-    """Ensure auto-applied self-improvements declare a target KPI.
-
-    If brief_json lacks a target_kpi, infer one from the card category and
-    inject it so kpi_eval_harness can compare before/after.
-    """
-    bj = card.get("brief_json")
-    bj = dict(bj) if isinstance(bj, dict) else {}
-    if not bj.get("target_kpi"):
-        cat = classify(card)
-        kpi_map = {
-            "pricing": "usd_per_merge",
-            "marketing-claims": "merge_rate",
-            "solicitation": "merge_rate",
-            "financial-advice": "merge_rate",
-        }
-        bj["target_kpi"] = kpi_map.get(cat, "merge_rate")
-        bj["target_kpi_source"] = "auto-inferred"
-        db.update("approvals", {"id": card["id"]}, {"brief_json": bj})
-    return bj
-
-
 def apply(card):
     """Execute draft(card): auto-approve from precedent, or annotate the pending card."""
     d = draft(card)
     if d.get("auto_apply"):
-        _ensure_target_kpi(card, d)
         db.update("approvals", {"id": card["id"]},
                   {"status": "approved", "decided_by": MODEL_MARK,
                    "decision_type": d["decision_type"],

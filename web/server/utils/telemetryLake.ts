@@ -56,7 +56,7 @@ const BUCKET_SQL: Record<string, string> = {
  * Ingest a single fleet event as a telemetry point.
  * Called from the fleet ingest pipeline on every event.
  */
-export async function ingestEvent(event: any): Promise<void> {
+export async function ingestTelemetryEvent(event: any): Promise<void> {
   const sb = serviceClient()
   const point: Partial<TelemetryPoint> = {
     timestamp: event.at || event.timestamp || new Date().toISOString(),

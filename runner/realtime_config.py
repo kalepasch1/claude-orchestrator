@@ -12,6 +12,9 @@ def get(key, default=None):
 def _refresh():
     global _cache, _cache_ts
     with _lock:
-        rows = db.sql("SELECT key, value FROM fleet_config") or []
+        try:
+            rows = db.select("fleet_config", {"select": "key,value"}) or []
+        except Exception:
+            rows = []
         _cache = {r["key"]: r["value"] for r in rows}
         _cache_ts = time.time()

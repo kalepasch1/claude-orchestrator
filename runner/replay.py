@@ -6,7 +6,7 @@ bisectable. replay(run_id) re-runs that exact prompt in a fresh worktree.
 """
 import os, sys, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import db, claude_cli
+import db, claude_cli, branch_lease, worktree_isolation
 
 
 
@@ -28,12 +28,30 @@ def replay(run_id, repo):
     if not rows:
         print("run not found"); return
     r = rows[0]
-    wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", f"replay-{r['slug']}")
-    subprocess.run([os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"),
-                    f"replay-{r['slug']}", r.get("base_commit", "main")], cwd=repo, capture_output=True)
+    tasks = db.select("tasks", {"select": "id,project_id", "id": f"eq.{r['task_id']}"}) or []
+    if not tasks:
+        print("replay task not found"); return
+    task = tasks[0]
+    replay_slug = f"replay-{r['slug']}"
+    branch = f"agent/{replay_slug}"
+    lease = branch_lease.acquire(task, repo, branch, r.get("base_commit", "main"))
+    if not lease:
+        print("replay branch lease held"); return
+    try:
+        wt = worktree_isolation.ensure_task_worktree(
+            repo, replay_slug, r.get("base_commit", "main"),
+            os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"),
+            task_id=str(task["id"]), lease_token=lease["token"],
+        )
+    except worktree_isolation.WorktreeIsolationError:
+        branch_lease.release(task["id"], branch)
+        print("replay worktree owner guard rejected setup"); return
     print(f"replaying run {run_id} ({r['model']}) at {r.get('base_commit')} ...")
-    claude_cli.run(r["prompt"], r["model"], cwd=wt if os.path.isdir(wt) else repo,
-                   max_turns=60, permission="acceptEdits")
+    try:
+        claude_cli.run(r["prompt"], r["model"], cwd=wt if os.path.isdir(wt) else repo,
+                       max_turns=60, permission="acceptEdits")
+    finally:
+        branch_lease.release(task["id"], branch)
 
 
 if __name__ == "__main__":

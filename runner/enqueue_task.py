@@ -63,6 +63,8 @@ def main(path):
         "state": spec.get("state", "QUEUED"),
         "note": pipeline_contract.note(spec.get("note", ""), source=spec.get("source", "json-enqueue")),
     }
+    if spec.get("deps"):
+        row["deps"] = spec["deps"]  # list of slugs; supports cross-project "project:slug" refs
     if spec.get("model"):
         row["model"] = spec["model"]
     res = db.insert("tasks", row)

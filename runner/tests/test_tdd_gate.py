@@ -281,17 +281,23 @@ class TestFileStatusTest(unittest.TestCase):
 
     def test_handles_pytest_timeout(self):
         """Returns FAILING if pytest times out."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = subprocess.TimeoutExpired("pytest", 30)
-            result = tdd_gate.test_file_status("/fake/test.py")
-            self.assertEqual(result, "FAILING")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "test_timeout.py")
+            open(path, "w").close()
+            with patch("subprocess.run") as mock_run:
+                mock_run.side_effect = subprocess.TimeoutExpired("pytest", 30)
+                result = tdd_gate.test_file_status(path)
+                self.assertEqual(result, "FAILING")
 
     def test_handles_subprocess_exception(self):
         """Returns FAILING if subprocess raises other exceptions."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.side_effect = OSError("Failed to run pytest")
-            result = tdd_gate.test_file_status("/fake/test.py")
-            self.assertEqual(result, "FAILING")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "test_error.py")
+            open(path, "w").close()
+            with patch("subprocess.run") as mock_run:
+                mock_run.side_effect = OSError("Failed to run pytest")
+                result = tdd_gate.test_file_status(path)
+                self.assertEqual(result, "FAILING")
 
 
 class InvalidateCacheTest(unittest.TestCase):

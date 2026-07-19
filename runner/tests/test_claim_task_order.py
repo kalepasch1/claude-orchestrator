@@ -483,6 +483,126 @@ class TestClaimTaskOrder(unittest.TestCase):
             task = db.claim_task("runner-1")
         self.assertEqual(task["id"], "recover")
 
+    def test_release_fix_beats_higher_portfolio_project_net_new_work(self):
+        tasks = [
+            {"id": "new", "project_id": "p1", "slug": "net-new-tomorrow", "deps": [],
+             "created_at": "2026-01-01", "kind": "feature"},
+            {"id": "qafix", "project_id": "p2", "slug": "qafix-racefeed-a1b2c3d4e5f6", "deps": [],
+             "created_at": "2026-01-02", "kind": "bugfix"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [
+                    {"id": "p1", "name": "tomorrow", "priority": 1, "concurrency_weight": 1},
+                    {"id": "p2", "name": "racefeed", "priority": 9, "concurrency_weight": 1},
+                ]
+            if table == "controls":
+                return []
+            if table == "tasks":
+                state = params.get("state")
+                if state == "eq.QUEUED": return [dict(t) for t in tasks]
+                if state in ("in.(RUNNING,RETRY)", "in.(RUNNING,DONE,MERGED)", "in.(DONE,MERGED)"): return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        with patch.dict(os.environ, {"ORCH_RELEASE_FIX_JUMP_QUEUE": "true",
+                                     "ORCH_EVIDENCE_RESERVED_LANES": "0"}, clear=False):
+            task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "qafix")
+
+    def test_exact_signature_release_fix_beats_legacy_higher_portfolio_fix(self):
+        tasks = [
+            {"id": "legacy", "project_id": "p1", "slug": "qafix-tomorrow-old-slice-4", "deps": [],
+             "created_at": "2026-01-01", "kind": "bugfix"},
+            {"id": "exact", "project_id": "p2", "slug": "qafix-racefeed-a1b2c3d4e5f6", "deps": [],
+             "created_at": "2026-01-02", "kind": "bugfix"},
+        ]
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects":
+                return [{"id": "p1", "name": "tomorrow", "priority": 1, "concurrency_weight": 1},
+                        {"id": "p2", "name": "racefeed", "priority": 9, "concurrency_weight": 1}]
+            if table == "controls": return []
+            if table == "tasks":
+                if params.get("state") == "eq.QUEUED": return [dict(t) for t in tasks]
+                return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [next(t for t in tasks if t["id"] == task_id)]
+
+        db.select = select
+        db._req = req
+        with patch.dict(os.environ, {"ORCH_RELEASE_FIX_JUMP_QUEUE": "true",
+                                     "ORCH_EVIDENCE_RESERVED_LANES": "0"}, clear=False):
+            task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "exact")
+
+    def test_new_release_fix_escapes_oldest_first_scan_cap(self):
+        legacy = {"id": "old", "project_id": "p1", "slug": "old-feature", "deps": [],
+                  "created_at": "2025-01-01", "kind": "feature"}
+        exact = {"id": "exact", "project_id": "p1", "slug": "qafix-app-a1b2c3d4e5f6", "deps": [],
+                 "created_at": "2026-07-14", "kind": "bugfix"}
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects": return [{"id": "p1", "name": "app", "priority": 5, "concurrency_weight": 1}]
+            if table == "controls": return []
+            if table == "tasks":
+                if params.get("state") == "eq.QUEUED":
+                    return [dict(exact)] if "qafix" in params.get("or", "") else ([dict(legacy)] if not params.get("or") else [])
+                return []
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [exact if task_id == "exact" else legacy]
+
+        db.select = select
+        db._req = req
+        with patch.dict(os.environ, {"ORCH_RELEASE_FIX_JUMP_QUEUE": "true",
+                                     "ORCH_EVIDENCE_RESERVED_LANES": "0"}, clear=False):
+            task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "exact")
+
+    def test_toolchain_repair_escapes_oldest_first_scan_cap(self):
+        legacy = {"id": "old", "project_id": "p1", "slug": "old-feature", "deps": [],
+                  "created_at": "2025-01-01", "kind": "feature"}
+        repair = {"id": "repair", "project_id": "p1", "slug": "toolchain-repair-p1", "deps": [],
+                  "created_at": "2026-07-14", "kind": "bugfix"}
+
+        def select(table, params=None):
+            params = params or {}
+            if table == "projects": return [{"id": "p1", "name": "app", "priority": 5, "concurrency_weight": 1}]
+            if table == "controls": return []
+            if table == "tasks" and params.get("state") == "eq.QUEUED":
+                return [dict(repair)] if "toolchain-repair" in params.get("or", "") else ([dict(legacy)] if not params.get("or") else [])
+            return []
+
+        def req(method, path, body=None, headers=None, params=None):
+            task_id = params.get("id", "").replace("eq.", "")
+            self.claimed.append(task_id)
+            return [repair if task_id == "repair" else legacy]
+
+        db.select = select
+        db._req = req
+        with patch.dict(os.environ, {"ORCH_RELEASE_FIX_JUMP_QUEUE": "true",
+                                     "ORCH_EVIDENCE_RESERVED_LANES": "0"}, clear=False):
+            task = db.claim_task("runner-1")
+        self.assertEqual(task["id"], "repair")
+
     def test_ordinary_work_still_respects_project_cap(self):
         tasks = [
             {"id": "blocked-by-cap", "project_id": "p1", "slug": "net-new-p1",

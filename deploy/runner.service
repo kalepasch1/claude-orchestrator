@@ -14,7 +14,10 @@ Type=simple
 WorkingDirectory=/opt/claude-orchestrator/runner
 EnvironmentFile=/opt/claude-orchestrator/runner/.env
 Environment=ENABLE_PROACTIVE_LOOPS=true
-Environment=ORCH_PUSH_ON_MERGE=true
+Environment=ORCH_PUSH_ON_MERGE=false
+Environment=ORCH_BATCH_DEV_RELEASE=true
+Environment=RELEASE_MIN_BATCH=10
+Environment=RELEASE_INTERVAL_HOURS=6
 ExecStart=/usr/bin/python3 runner.py
 Restart=always
 RestartSec=5

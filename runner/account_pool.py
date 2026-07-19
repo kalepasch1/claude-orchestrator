@@ -33,9 +33,20 @@ STATE = os.path.join(HOME, "accounts_state.json")
 # rate), not the weekly cap, so we re-try Claude every 20 min and use cheap models in the gap — this
 # switches back to costless Claude fast the moment a short limit clears, instead of parking it for hours.
 # ORCH_-prefixed so it's tunable fleet-wide via fleet_config. Repeat hits back off (see mark_exhausted).
-COOLDOWN = int(os.environ.get("ORCH_ACCOUNT_COOLDOWN",
-                              os.environ.get("ACCOUNT_COOLDOWN", str(20 * 60))))
-COOLDOWN_MAX = int(os.environ.get("ORCH_ACCOUNT_COOLDOWN_MAX", str(6 * 3600)))
+_COOLDOWN_DEFAULT = 20 * 60
+_COOLDOWN_MAX_DEFAULT = 6 * 3600
+
+def _cooldown():
+    """Read cooldown from env at call time so hot_reload changes take effect."""
+    return int(os.environ.get("ORCH_ACCOUNT_COOLDOWN",
+               os.environ.get("ACCOUNT_COOLDOWN", str(_COOLDOWN_DEFAULT))))
+
+def _cooldown_max():
+    return int(os.environ.get("ORCH_ACCOUNT_COOLDOWN_MAX", str(_COOLDOWN_MAX_DEFAULT)))
+
+# Keep module-level names for any external readers (read-only; write path uses functions)
+COOLDOWN = _cooldown()
+COOLDOWN_MAX = _cooldown_max()
 # Cheap cross-module signal: written when EVERY Claude account is cooling down, self-expiring
 # at the earliest cooldown. agentic_coders.pick() reads claude_exhausted() to fail over to the
 # subscription second coder (Codex) instead of stalling. No DB call on the hot path.
@@ -43,6 +54,21 @@ EXHAUSTED_FLAG = os.path.join(HOME, "claude_exhausted.json")
 
 
 _EXH_CACHE = {"t": 0.0, "v": False}
+
+
+def _api_billing_allowed():
+    """Return whether an API-type Anthropic account is actually usable.
+
+    Configured API rows must not mask exhausted subscription capacity when the
+    purchased-credit guard is off.  In that state ``env_for`` intentionally
+    withholds the key, so treating the row as healthy only sends the CLI back
+    through the exhausted default login and prevents cross-vendor failover.
+    """
+    try:
+        import subscription_guard
+        return bool(subscription_guard.is_api_allowed())
+    except Exception:
+        return os.environ.get("ORCH_ALLOW_API_BILLING", "false").lower() == "true"
 
 
 def claude_exhausted():
@@ -139,13 +165,27 @@ class AccountPool:
         until = self.state.get(a["name"], {}).get("cooldown_until", 0)
         return time.time() >= until
 
+    def _usable_accounts(self):
+        """Accounts that can provide Claude capacity under the billing guard."""
+        api_allowed = _api_billing_allowed()
+        return [a for a in self.accts if a.get("type") != "api" or api_allowed]
+
+    def subscription_accounts(self):
+        self._maybe_reload()
+        return [a for a in self.accts if a.get("type") != "api"]
+
+    def subscriptions_exhausted(self):
+        accounts = self.subscription_accounts()
+        return bool(accounts) and not any(self._healthy(a) for a in accounts)
+
     def current(self):
         self._maybe_reload()
-        healthy = [a for a in self.accts if self._healthy(a)]
+        usable = self._usable_accounts()
+        healthy = [a for a in usable if self._healthy(a)]
         if not healthy:
             # all cooling down -> return the one that frees up soonest
-            return min(self.accts,
-                       key=lambda a: self.state.get(a["name"], {}).get("cooldown_until", 0)) if self.accts else None
+            return min(usable,
+                       key=lambda a: self.state.get(a["name"], {}).get("cooldown_until", 0)) if usable else None
         # Subscription (Max plan) accounts ALWAYS go before API accounts. Never touch
         # paid API credits while any subscription account still has free capacity.
         subs = [a for a in healthy if a.get("type") != "api"]
@@ -168,13 +208,18 @@ class AccountPool:
 
     def all_exhausted(self):
         """True iff no Claude account is currently healthy (every one is cooling down)."""
-        return bool(self.accts) and not any(self._healthy(a) for a in self.accts)
+        usable = self._usable_accounts()
+        return bool(usable) and not any(self._healthy(a) for a in usable)
 
     def _write_exhausted_flag(self):
         """Persist/clear the cheap cross-module 'all Claude exhausted' signal."""
         try:
             if self.all_exhausted():
-                soonest = min(self.state.get(a["name"], {}).get("cooldown_until", 0) for a in self.accts)
+                # Use the same billing-guard-filtered set as all_exhausted(). A
+                # disabled API row may have an old/expired cooldown and must not
+                # make this signal expire while subscriptions are still capped.
+                usable = self._usable_accounts()
+                soonest = min(self.state.get(a["name"], {}).get("cooldown_until", 0) for a in usable)
                 json.dump({"until": soonest}, open(EXHAUSTED_FLAG, "w"))
             elif os.path.exists(EXHAUSTED_FLAG):
                 os.remove(EXHAUSTED_FLAG)
@@ -212,7 +257,7 @@ class AccountPool:
         st = self.state.setdefault(a["name"], {})
         hits = int(st.get("exh_hits", 0)) + 1
         st["exh_hits"] = hits
-        st["cooldown_until"] = time.time() + min(COOLDOWN * (2 ** (hits - 1)), COOLDOWN_MAX)
+        st["cooldown_until"] = time.time() + min(_cooldown() * (2 ** (hits - 1)), _cooldown_max())
         self._save()
         self._write_exhausted_flag()   # flip the fail-over-to-Codex signal if this was the last one
         # best-effort: persist cooldown to Supabase so the dashboard shows the rotation

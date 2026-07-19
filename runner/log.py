@@ -19,6 +19,12 @@ _configured = False
 
 
 def _ensure_configured():
+    """Configure the root logger on first call; thread-safe and idempotent.
+
+    Uses double-checked locking: the fast path reads _configured without
+    the lock so concurrent callers after the first configuration pay no
+    synchronisation cost.
+    """
     global _configured
     if _configured:
         return

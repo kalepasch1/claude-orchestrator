@@ -1,0 +1,50 @@
+#!/bin/bash
+# Drift forensics — records WHO parks the PRIMARY checkout on a non-base branch.
+#
+# Why this exists: the primary checkout kept getting parked on agent branches
+# (1010 events by 2026-07-16). Drift is load-bearing — while parked on an agent
+# branch the repo runs THAT branch's code and honours THAT branch's .gitignore, so
+# fixes committed to master are silently inert exactly when they matter, and an
+# older sentinel living on that branch stashes with `-u` and destroys untracked
+# work (282 batches of queued intake lost that way).
+#
+# Two sources are fixed: conflict_auto_resolve.attempt_auto_rebase never returned
+# to the original branch, and sentinel's own restore path. A third — a plain
+# `git checkout` to agent/relfix-* observed at 19:12 on 2026-07-16 — is still
+# unidentified. git's reflog records THAT a checkout happened but never WHO. This
+# records the process ancestry so the next occurrence names its own culprit rather
+# than a human inferring it from timestamps.
+#
+# Constraints: never block, never fail a checkout, cost ~nothing. Only fires when
+# the PRIMARY checkout lands on a non-base branch — linked agent worktrees live on
+# agent branches by design and must not be logged. core.hooksPath applies to every
+# worktree, so that check is required, not optional.
+
+BASE="${ORCH_BASE_BRANCH:-master}"
+
+BR=$(git branch --show-current 2>/dev/null) || exit 0
+[ -z "$BR" ] && exit 0          # detached HEAD (rebase internals) — not drift
+[ "$BR" = "$BASE" ] && exit 0   # landed on base: normal
+
+TOP=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+COMMON=$(git rev-parse --git-common-dir 2>/dev/null) || exit 0
+case "$COMMON" in /*) ;; *) COMMON="$TOP/$COMMON" ;; esac
+MAIN=$(cd "$COMMON/.." 2>/dev/null && pwd -P) || exit 0
+THIS=$(cd "$TOP" 2>/dev/null && pwd -P) || exit 0
+[ "$MAIN" != "$THIS" ] && exit 0   # a linked worktree — agent branches expected here
+
+LOG="$MAIN/.runtime/drift_forensics.log"
+mkdir -p "$MAIN/.runtime" 2>/dev/null
+{
+  echo "=== $(date -u +%FT%TZ) PRIMARY checkout -> '$BR'"
+  P=$PPID
+  for _ in 1 2 3 4 5 6; do
+    [ -z "$P" ] && break
+    L=$(ps -o pid=,ppid=,command= -p "$P" 2>/dev/null | head -1)
+    [ -z "$L" ] && break
+    echo "    $L"
+    P=$(echo "$L" | awk '{print $2}')
+  done
+} >> "$LOG" 2>&1
+
+exit 0

@@ -22,14 +22,21 @@ case "${ORCH_CANONICAL_RUNTIME_HOME:-true}" in
     ;;
 esac
 export ORCH_LOG_DIR="${ORCH_LOG_DIR:-$CLAUDE_ORCH_HOME/logs}"
+MAINTENANCE_LOCK="${ORCH_MAINTENANCE_LOCK:-$CLAUDE_ORCH_HOME/maintenance.lock}"
+# A durable incident-maintenance fence. Scheduled tasks may invoke keepalive
+# while recovery is underway; they must not be able to resurrect a writer tree.
+if [[ -e "$MAINTENANCE_LOCK" ]]; then
+  echo "[keepalive] maintenance lock present at $MAINTENANCE_LOCK; runner start blocked" >&2
+  exit 75
+fi
 export ORCH_BATCH_DEV_RELEASE="${ORCH_BATCH_DEV_RELEASE:-true}"
 export ORCH_CODE_MERGE_TARGET="${ORCH_CODE_MERGE_TARGET:-dev}"
 export ORCH_STAGING_BRANCH="${ORCH_STAGING_BRANCH:-orchestrator/dev}"
 export ORCH_PUSH_ON_DEV_MERGE="${ORCH_PUSH_ON_DEV_MERGE:-true}"
 export ORCH_PUSH_ON_MERGE="${ORCH_PUSH_ON_MERGE:-false}"
 export ORCH_PUSH_ON_RELEASE="${ORCH_PUSH_ON_RELEASE:-true}"
-export RELEASE_MIN_BATCH="${RELEASE_MIN_BATCH:-5}"
-export RELEASE_INTERVAL_HOURS="${RELEASE_INTERVAL_HOURS:-2}"
+export RELEASE_MIN_BATCH="${RELEASE_MIN_BATCH:-10}"
+export RELEASE_INTERVAL_HOURS="${RELEASE_INTERVAL_HOURS:-6}"
 mkdir -p "$ORCH_LOG_DIR"
 RUNNER_LOG="$ORCH_LOG_DIR/runner.log"
 LOCK_FILE="$CLAUDE_ORCH_HOME/runner.lock"

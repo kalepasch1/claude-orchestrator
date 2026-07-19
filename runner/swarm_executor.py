@@ -20,6 +20,33 @@ import os, sys, re, json, time, asyncio, logging, threading, fnmatch
 from typing import Dict, List, Optional, Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import provider_credentials
+
+
+def _load_env():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    try:
+        with open(path, encoding="utf-8") as source:
+            for raw in source:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                # Standalone tournament workers need credentials, but importing
+                # this module must not overwrite routing/test policy from .env.
+                credential = (key.endswith(("_API_KEY", "_ACCESS_TOKEN", "_AUTH_TOKEN"))
+                              or key in {"XAI_API_KEY", "GROK_API_KEY", "GROQ_API_KEY",
+                                         "DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY",
+                                         "OPENAI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"})
+                if credential:
+                    os.environ.setdefault(key, value.split("#")[0].strip().strip('"').strip("'"))
+    except OSError:
+        pass
+
+
+_load_env()
+provider_credentials.activate_aliases()
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -29,44 +56,58 @@ PROVIDERS: Dict[str, dict] = {
     "claude": {
         "base_url": "https://api.anthropic.com/v1/messages",
         "key_env": "ANTHROPIC_API_KEY",
-        "models": {"fast": "claude-haiku-4-5-20251001", "mid": "claude-sonnet-4-6",
+        "models": {"fast": "claude-haiku-4-5-20251001", "mid": "claude-sonnet-5",
                    "heavy": "claude-opus-4-8"},
         "max_concurrent": 50,
     },
     "openai": {
         "base_url": "https://api.openai.com/v1/chat/completions",
         "key_env": "OPENAI_API_KEY",
-        "models": {"fast": "gpt-4o-mini", "mid": "gpt-4o", "heavy": "o3"},
+        "models": {"fast": "gpt-5.4-nano", "mid": "gpt-5.4-mini", "heavy": "gpt-5.5"},
         "max_concurrent": 50,
     },
     "deepseek": {
         "base_url": "https://api.deepseek.com/v1/chat/completions",
         "key_env": "DEEPSEEK_API_KEY",
-        "models": {"fast": "deepseek-chat", "mid": "deepseek-chat",
-                   "heavy": "deepseek-reasoner"},
+        "models": {"fast": "deepseek-v4-flash", "mid": "deepseek-v4-flash",
+                   "heavy": "deepseek-v4-pro"},
         "max_concurrent": 50,
     },
     "gemini": {
         "base_url": "https://generativelanguage.googleapis.com/v1beta",
         "key_env": "GEMINI_API_KEY",
-        "models": {"fast": "gemini-2.0-flash", "mid": "gemini-2.5-pro",
-                   "heavy": "gemini-2.5-pro"},
+        "models": {"fast": "gemini-3-flash", "mid": "gemini-3.5-flash",
+                   "heavy": "gemini-3.1-pro"},
+        "max_concurrent": 50,
+    },
+    "groq": {
+        "base_url": "https://api.groq.com/openai/v1/chat/completions",
+        "key_env": "GROQ_API_KEY",
+        "models": {"fast": "llama-3.1-8b-instant", "mid": "llama-3.3-70b-versatile",
+                   "heavy": "llama-3.3-70b-versatile"},
+        "max_concurrent": 30,
+    },
+    "xai": {
+        "base_url": "https://api.x.ai/v1/chat/completions",
+        "key_env": "XAI_API_KEY",
+        "models": {"fast": "grok-build-0.1", "mid": "grok-build-0.1",
+                   "heavy": "grok-4.3"},
         "max_concurrent": 50,
     },
 }
 
 # Pricing: (input $/Mtok, output $/Mtok)
 _PRICES: Dict[str, tuple] = {
-    "claude-haiku-4-5-20251001": (1.0, 5.0),
-    "claude-sonnet-4-6": (3.0, 15.0),
-    "claude-opus-4-8": (15.0, 75.0),
-    "gpt-4o-mini": (0.15, 0.60),
-    "gpt-4o": (2.50, 10.0),
-    "o3": (10.0, 40.0),
-    "deepseek-chat": (0.27, 1.10),
-    "deepseek-reasoner": (0.55, 2.19),
-    "gemini-2.0-flash": (0.10, 0.40),
-    "gemini-2.5-pro": (1.25, 10.0),
+    "claude-haiku-4-5-20251001": (1.0, 5.0), "claude-sonnet-5": (3.0, 15.0),
+    "claude-opus-4-8": (5.0, 25.0), "gpt-5.5": (5.0, 30.0),
+    "gpt-5.4-mini": (0.75, 4.50), "gpt-5.4-nano": (0.20, 1.25),
+    "o4-mini": (1.1, 4.4), "deepseek-v4-flash": (0.14, 0.28),
+    "deepseek-v4-pro": (0.435, 0.87), "deepseek-chat": (0.14, 0.28),
+    "gemini-3.5-flash": (1.50, 9.0), "gemini-3.1-pro": (2.0, 12.0),
+    "gemini-3-flash": (0.50, 3.0), "gemini-2.5-pro": (1.25, 10.0),
+    "llama-3.1-8b-instant": (0.05, 0.08), "llama-3.3-70b-versatile": (0.59, 0.79),
+    "grok-4.5": (2.0, 6.0), "grok-4.3": (1.25, 2.50),
+    "grok-4.20": (1.25, 2.50), "grok-build-0.1": (1.00, 2.00),
 }
 
 # Budget caps
@@ -365,7 +406,7 @@ async def _dispatch(session, provider: str, model: str,
     async with sem:
         if provider == "claude":
             return await _call_claude(session, model, messages, system)
-        elif provider in ("openai", "deepseek"):
+        elif provider in ("openai", "deepseek", "groq", "xai"):
             # Inject system as first message for OpenAI-compat
             if system:
                 messages = [{"role": "system", "content": system}] + messages
@@ -389,6 +430,10 @@ def _provider_for_model(model: str) -> str:
         return "deepseek"
     if "gemini" in model:
         return "gemini"
+    if "llama" in model or "qwen" in model:
+        return "groq"
+    if "grok" in model:
+        return "xai"
     return "claude"
 
 
@@ -452,7 +497,7 @@ async def _execute_agentic(session, provider: str, model: str, prompt: str,
 
 async def execute_one(prompt: str, model: str, provider: str = "",
                       cwd: str = "", mode: str = "diff",
-                      timeout: float = 300) -> dict:
+                      timeout: float = 300, apply_diff: bool = True) -> dict:
     """Execute a single task. Returns the standard result dict."""
     try:
         _check_budget()
@@ -483,7 +528,7 @@ async def execute_one(prompt: str, model: str, provider: str = "",
     _record_spend(result["cost_usd"])
 
     # Apply diff to files if in diff mode and we got output
-    if mode == "diff" and cwd and result["returncode"] == 0 and result["text"]:
+    if apply_diff and mode == "diff" and cwd and result["returncode"] == 0 and result["text"]:
         try:
             modified = _apply_diff(file_cache, result["text"])
             _write_repo_files(cwd, file_cache, modified)
@@ -575,8 +620,27 @@ async def speculative_execute(task: dict,
 # Sync wrappers (for threaded runner)
 # ---------------------------------------------------------------------------
 
+_SYNC_LOOP = None
+_SYNC_THREAD = None
+_SYNC_LOCK = threading.Lock()
+
+def _persistent_loop():
+    global _SYNC_LOOP, _SYNC_THREAD
+    with _SYNC_LOCK:
+        if _SYNC_LOOP and _SYNC_THREAD and _SYNC_THREAD.is_alive():
+            return _SYNC_LOOP
+        ready = threading.Event()
+        def serve():
+            global _SYNC_LOOP
+            loop = asyncio.new_event_loop(); asyncio.set_event_loop(loop)
+            _SYNC_LOOP = loop; ready.set(); loop.run_forever()
+        _SYNC_THREAD = threading.Thread(target=serve, name="swarm-async-loop", daemon=True)
+        _SYNC_THREAD.start(); ready.wait(5)
+        return _SYNC_LOOP
+
 def run_swarm(prompt: str, model: str, provider: str = "", cwd: str = "",
-              timeout: float = 300, mode: str = "diff") -> dict:
+              timeout: float = 300, mode: str = "diff", apply_diff: bool = True,
+              repo_cache: bool = True) -> dict:
     """Synchronous entrypoint matching claude_cli.run() return shape.
 
     Safe to call from threaded code — creates its own event loop.
@@ -584,11 +648,10 @@ def run_swarm(prompt: str, model: str, provider: str = "", cwd: str = "",
     if not prompt:
         return _empty_result("swarm")
     try:
-        loop = asyncio.new_event_loop()
-        result = loop.run_until_complete(
-            execute_one(prompt, model, provider, cwd, mode, timeout))
-        loop.close()
-        return result
+        loop = _persistent_loop()
+        future = asyncio.run_coroutine_threadsafe(
+            execute_one(prompt, model, provider, cwd, mode, timeout, apply_diff), loop)
+        return future.result(timeout=timeout + 30)
     except Exception as e:
         log.warning("run_swarm error: %s", e)
         r = _empty_result(provider or "swarm")

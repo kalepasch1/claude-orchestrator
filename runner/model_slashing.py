@@ -23,6 +23,15 @@ def agent_key(provider_or_agent, model=""):
     m = str(model or "").strip().lower()
     if m and m not in raw:
         raw = f"{raw}:{m}"
+    aliases = (
+        ("deepseek", "deepseek"), ("codestral", "codestral"),
+        ("ollama", "ollama"), ("gemini", "gemini"),
+        ("grok", "xai"), ("xai", "xai"),
+        ("gpt-mini", "gpt-mini"), ("openai", "gpt"),
+    )
+    for needle, canonical in aliases:
+        if needle in raw:
+            return canonical
     return raw or "unknown"
 
 
@@ -112,8 +121,70 @@ def record(provider_or_agent, model="", *, merged=False, tests_passed=False,
     return entry
 
 
+def rebuild_from_outcomes(hours=168, limit=5000):
+    """Deterministically rebuild penalties from terminal routing evidence.
+
+    This closes the old instrumentation gap where early test failures never
+    reached record(), leaving weak routes at a zero penalty forever.
+    """
+    import datetime
+    since = (datetime.datetime.utcnow() - datetime.timedelta(hours=hours)).isoformat()
+    rows = db.select("outcomes", {
+        "select": "id,task_id,model,kind,slug,integrated,tests_passed,usd,review_failures,created_at",
+        "created_at": f"gte.{since}", "order": "created_at.desc", "limit": str(limit),
+    }) or []
+    try:
+        import route_evidence
+        rows = route_evidence.terminal_task_rows(rows)
+    except Exception:
+        pass
+    ledger = {}
+    for row in reversed(rows):
+        key = agent_key(row.get("model"))
+        entry = ledger.setdefault(key, {"agent": key, "attempts": 0, "good": 0,
+                                        "bad": 0, "tests_passed": 0,
+                                        "penalty": 0.0, "domains": {}})
+        domain = str(row.get("kind") or "general")
+        d = entry["domains"].setdefault(domain, {"attempts": 0, "merged": 0, "bad": 0})
+        entry["attempts"] += 1
+        d["attempts"] += 1
+        merged, tested = bool(row.get("integrated")), bool(row.get("tests_passed"))
+        entry["tests_passed"] += int(tested)
+        if merged:
+            entry["good"] += 1
+            d["merged"] += 1
+            delta = -RECOVERY_CREDIT
+        else:
+            entry["bad"] += 1
+            d["bad"] += 1
+            delta = 0.45 + (0.2 if tested else 0.0)
+        if not tested:
+            delta += 0.55
+        delta += min(0.8, 0.2 * int(row.get("review_failures") or 0))
+        if float(row.get("usd") or 0) > float(os.environ.get("ORCH_MODEL_SLASH_COST_WARN", "2.0")) and not merged:
+            delta += 0.25
+        entry["last_outcome"] = {"merged": merged, "tests_passed": tested,
+                                  "domain": domain, "at": int(time.time())}
+    # Score current terminal quality, not failure-history path length. The old
+    # cumulative cap made a 67%-merge route indistinguishable from a 4%-merge
+    # route after enough samples. Beta smoothing prevents one canary deciding a
+    # route; test quality catches patches that never reach integration.
+    for entry in ledger.values():
+        n = int(entry.get("attempts") or 0)
+        nonmerge_rate = (int(entry.get("bad") or 0) + 2.0) / (n + 4.0)
+        testfail_rate = ((n - int(entry.get("tests_passed") or 0)) + 2.0) / (n + 4.0)
+        loss = 0.7 * nonmerge_rate + 0.3 * testfail_rate
+        entry["penalty"] = round(min(MAX_PENALTY, MAX_PENALTY * loss), 4)
+        entry["allocation_multiplier"] = max(0.1, round(1.0 / (1.0 + entry["penalty"]), 3))
+    _save(ledger)
+    return ledger
+
+
 def run():
-    ledger = _ledger()
+    try:
+        ledger = rebuild_from_outcomes()
+    except Exception:
+        ledger = _ledger()
     for key, entry in sorted(ledger.items(), key=lambda item: -float(item[1].get("penalty") or 0))[:20]:
         print(f"[slashing] {key}: penalty={entry.get('penalty')} multiplier={entry.get('allocation_multiplier')}")
     return ledger

@@ -95,7 +95,7 @@ class _RetryBudget:
             return
         try:
             rows = db.select("outcomes", {
-                "select": "slug,model,attempts,tests_passed,integrated,rate_limited",
+                "select": "slug,model,attempts,tests_passed,integrated",
                 "limit": "10000",
             }) or []
             agg = {}       # prefix -> {attempt_num -> {total, success}}
@@ -111,11 +111,6 @@ class _RetryBudget:
                     bucket["success"] += 1
 
                 # Track error recovery patterns
-                if r.get("rate_limited"):
-                    eb = err_agg.setdefault(prefix, {}).setdefault("rate_limit", {"total": 0, "retried_success": 0})
-                    eb["total"] += 1
-                    if success and attempt > 1:
-                        eb["retried_success"] += 1
 
             self._cache = agg
             self._error_cache = err_agg

@@ -122,6 +122,30 @@ def _coder(slug: str, prompt: str, material: bool) -> str:
         return "claude"
 
 
+def _executor_route(slug: str, prompt: str, kind: str, material: bool,
+                    need: int) -> Dict[str, Any]:
+    """Resolve the actual agentic executor, model, and capability requirements.
+
+    This is shared by Cowork admission and native runner admission so neither
+    path has to infer an executor from prose in the rendered contract.
+    """
+    task = {"slug": slug or "", "prompt": prompt or "", "kind": kind or "build",
+            "material": material, "deps": [], "_need": int(need or 6)}
+    try:
+        route = agentic_coders.route(task) or {}
+        return {
+            "coder": str(route.get("coder") or _coder(slug, prompt, material)),
+            "provider": str(route.get("provider") or ""),
+            "model": str(route.get("model") or _author_model(prompt, kind)),
+            "required_capabilities": list(route.get("required_capabilities") or []),
+            "cowork_skills_needed": list(route.get("cowork_skills_needed") or []),
+        }
+    except Exception:
+        return {"coder": _coder(slug, prompt, material), "provider": "",
+                "model": _author_model(prompt, kind),
+                "required_capabilities": [], "cowork_skills_needed": []}
+
+
 def _qa_panel(author_model: str) -> List[str]:
     try:
         if judge is not None and hasattr(judge, "_panel_providers"):
@@ -183,8 +207,9 @@ def _recent_context(project: str) -> List[str]:
 def build_plan(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
                slug: str = "", material: bool = False) -> Dict[str, Any]:
     cls = classify(prompt, kind=kind, material=material)
-    author = _author_model(prompt, kind)
-    coder = _coder(slug, prompt, material)
+    executor = _executor_route(slug, prompt, kind, material, int(cls["need"]))
+    author = executor["model"] or _author_model(prompt, kind)
+    coder = executor["coder"]
     preflight = _safe_route("orchestrator", "task_preflight", "rating", need=5, agentic=False)
     strategy = _safe_route("orchestrator", "task_strategy", "plan", need=max(7, int(cls["need"])), agentic=False)
     qa = _safe_route("orchestrator", "task_qa", "review", need=6 if cls["need"] < 8 else 8, agentic=False)
@@ -199,6 +224,10 @@ def build_plan(prompt: str, project: str = "", kind: str = "build", source: str 
         "preflight": preflight,
         "strategy": strategy,
         "coder": coder,
+        "executor_provider": executor.get("provider", ""),
+        "executor_model": executor.get("model", ""),
+        "required_capabilities": executor.get("required_capabilities", []),
+        "cowork_skills_needed": executor.get("cowork_skills_needed", []),
         "author_model": author,
         "qa": qa,
         "qa_panel": _qa_panel(author),
@@ -222,10 +251,12 @@ def render_plan(plan: Dict[str, Any]) -> str:
         route_line("preflight triage", plan.get("preflight") or {}),
         route_line("strategy planner", plan.get("strategy") or {}),
         f"- agentic coder: {plan.get('coder')} using author model {plan.get('author_model')}",
+        f"- required executor capabilities: {', '.join(plan.get('required_capabilities') or ['code_generation'])}",
         route_line("independent QA route", plan.get("qa") or {}),
         f"- QA panel: {', '.join(plan.get('qa_panel') or [])}",
         f"- legal gate: {plan.get('legal_gate')}",
         f"- merge/release: {plan.get('release')}",
+        "- deploy-cost rule: never run `vercel --prod`, `vercel deploy --prod`, or an equivalent CLI production deploy; never push main/master directly. Push only the task branch, then let the verified batch release train promote production.",
         "- coordination rule: reconcile with active loop-generated work, reuse prior solutions first, do not delete or overwrite unrelated queued improvements, and leave recovered work in the queue until shipped.",
     ]
     ctx = plan.get("collaboration") or []
@@ -244,6 +275,32 @@ def wrap_prompt(prompt: str, project: str = "", kind: str = "build", source: str
         return text
     plan = build_plan(text, project=project, kind=kind, source=source, slug=slug, material=material)
     return render_plan(plan) + "\n\n" + ORIGINAL_HEADER + "\n" + text
+
+
+def task_fields(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
+                slug: str = "", material: bool = False, existing_note: str = "",
+                model: Optional[str] = None, force_coder: Optional[str] = None) -> Dict[str, Any]:
+    """Return schema-safe admission fields shared by every task source.
+
+    Persisting the route is important for Cowork executors that claim directly
+    from Supabase and do not execute the native runner's prompt assembler.
+    Native execution still revalidates forced routes at claim time, so provider
+    exhaustion or capability drift safely falls through to a fresh choice.
+    """
+    text = prompt or ""
+    plan = build_plan(text, project=project, kind=kind, source=source,
+                      slug=slug, material=material)
+    wrapped = text if (already_wrapped(text) or is_control_prompt(text) or not text.strip()) else (
+        render_plan(plan) + "\n\n" + ORIGINAL_HEADER + "\n" + text
+    )
+    chosen_coder = force_coder or plan.get("coder") or None
+    chosen_model = model or plan.get("executor_model") or plan.get("author_model") or None
+    return {
+        "prompt": wrapped,
+        "note": note(existing_note, source=source),
+        "model": chosen_model,
+        "force_coder": chosen_coder,
+    }
 
 
 def note(existing: str = "", source: str = "unknown") -> str:

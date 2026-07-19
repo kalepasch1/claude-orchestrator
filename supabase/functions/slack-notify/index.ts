@@ -7,7 +7,10 @@
 // SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY are provided automatically.
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
+const BOT_TOKEN = Deno.env.get("SLACK_BOT_TOKEN") ?? "";
+
 serve(async (req) => {
+  if (!BOT_TOKEN) return new Response("SLACK_BOT_TOKEN not configured", { status: 503 });
   const body = await req.json().catch(() => ({}));
   const a = body.record ?? body; // Supabase webhook sends {type,record,...}; or pass an approval directly
   if (!a || a.status && a.status !== "pending") return new Response("skip", { status: 200 });
@@ -31,7 +34,7 @@ serve(async (req) => {
   const r = await fetch("https://slack.com/api/chat.postMessage", {
     method: "POST",
     headers: { "Content-Type": "application/json",
-               Authorization: `Bearer ${Deno.env.get("SLACK_BOT_TOKEN")}` },
+               Authorization: `Bearer ${BOT_TOKEN}` },
     body: JSON.stringify({ channel: Deno.env.get("SLACK_CHANNEL") ?? "#orchestrator", blocks }),
   });
   return new Response(await r.text(), { status: 200 });

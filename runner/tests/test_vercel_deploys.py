@@ -61,14 +61,16 @@ class TestDeployVerify(unittest.TestCase):
     def test_bad_deploy_queues_fix_and_rolls_back(self):
         fake = FakeDB()
         fake.rows["deploy_health"] = [{"app": "app", "vercel_project": "app-prod"}]
-        fake.rows["projects"] = [{"id": "p1", "name": "app", "repo_path": "", "default_base": "main"}]
+        fake.rows["projects"] = [{"id": "p1", "name": "app", "repo_path": "/repo", "default_base": "main"}]
         fake.rows["releases"] = [{
             "id": "r1", "project": "app", "deploy_status": "building", "from_sha": "aaa",
             "to_sha": "bbb", "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }]
         with patch.object(deploy_verify, "db", fake), \
              patch.object(deploy_verify, "_latest_deploy", return_value={"state": "ERROR", "uid": "d1"}), \
-             patch.object(deploy_verify, "_deployment_events", return_value="build failed"):
+             patch.object(deploy_verify, "_deployment_events", return_value="build failed"), \
+             patch.object(deploy_verify.os.path, "isdir", return_value=True), \
+             patch.object(deploy_verify, "_rollback", return_value=True):
             deploy_verify.run()
         self.assertTrue(any(t == "tasks" and r["slug"].startswith("deployfix-app-")
                             for t, r in fake.inserts))
@@ -95,6 +97,30 @@ class TestDeployVerify(unittest.TestCase):
                             for t, _, p in fake.updates))
         self.assertTrue(any(t == "approvals" and r["title"] == "Vercel auth blocked deploy verification"
                             for t, r in fake.inserts))
+
+    def test_ignored_build_cancel_is_success_not_rollback(self):
+        fake = FakeDB()
+        fake.rows["deploy_health"] = [{"app": "app", "vercel_project": "app-prod"}]
+        fake.rows["projects"] = [{"id": "p1", "name": "app", "repo_path": "/repo"}]
+        fake.rows["releases"] = [{
+            "id": "r1", "project": "app", "deploy_status": "building", "from_sha": "aaa",
+            "to_sha": "bbb", "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }]
+        ignored = {
+            "state": "CANCELED", "url": "ignored.vercel.app",
+            "errorMessage": "The Deployment has been canceled as a result of running the command "
+                            "defined in the Ignored Build Step setting.",
+        }
+        with patch.object(deploy_verify, "db", fake), \
+             patch.object(deploy_verify, "_latest_deploy", return_value=ignored), \
+             patch.object(deploy_verify, "_rollback") as rollback:
+            deploy_verify.run()
+        rollback.assert_not_called()
+        self.assertFalse(any(t == "tasks" and r["slug"].startswith("deployfix-app-")
+                             for t, r in fake.inserts))
+        self.assertTrue(any(t == "releases" and p.get("deploy_status") == "success"
+                            and "no deployable-root changes" in p.get("note", "")
+                            for t, _, p in fake.updates))
 
 
 class TestDeployWatch(unittest.TestCase):

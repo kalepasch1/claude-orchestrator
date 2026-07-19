@@ -12,6 +12,12 @@ Docker images, and ~/Library/Caches behind opt-in flags.
 import os, sys, time, shutil, subprocess, glob, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import events
+
+
+def emit(kind, **fields):
+    """Public fail-soft event adapter used by integrations and diagnostics."""
+    return events.emit(kind, **fields)
 
 HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
 THROTTLE_FILE = os.path.join(HOME, "throttle")
@@ -267,13 +273,60 @@ def _has_uncommitted_changes(wt_path, repo):
 
 
 def _is_branch_unmerged(branch, repo):
-    """Return True if branch is NOT merged into main (safety guard)."""
+    """Return True if branch is NOT merged into main (safety guard). Exact-name match —
+    the old substring check could mis-classify a branch as merged when its name was a
+    substring of another merged branch."""
     try:
         merged = subprocess.check_output(["git", "branch", "--merged", "main"],
                                          cwd=repo, text=True, timeout=10)
-        return branch not in merged
+        names = {l.strip().lstrip("* ").strip() for l in merged.splitlines()}
+        return branch not in names
     except Exception:
         return True  # assume unmerged if we can't check
+
+
+def _is_fresh_checkout(branch, repo):
+    """True if the branch tip is exactly main's tip. `git branch --merged main` counts a freshly
+    created agent branch as 'merged', but a tip identical to main means an executor just created
+    it and hasn't committed yet — NOT that its work landed. Deleting such a worktree rips it out
+    from under a running executor. (A truly merged branch normally points at its own last commit,
+    which main contains but does not equal.) Fail closed (True → caller skips)."""
+    try:
+        tip = subprocess.run(["git", "rev-parse", "--verify", "--quiet", branch],
+                             cwd=repo, capture_output=True, text=True, timeout=10)
+        main_tip = subprocess.run(["git", "rev-parse", "--verify", "--quiet", "main"],
+                                  cwd=repo, capture_output=True, text=True, timeout=10)
+        if tip.returncode != 0 or main_tip.returncode != 0:
+            return True
+        return tip.stdout.strip() == main_tip.stdout.strip()
+    except Exception:
+        return True
+
+
+def _wt_recently_active(path, min_age_min=None):
+    """True if the worktree (or its git admin dir/index) was touched recently. Fail closed."""
+    if min_age_min is None:
+        min_age_min = int(os.environ.get("WORKTREE_GC_MIN_AGE_MIN", "180"))
+    if min_age_min <= 0:
+        return False
+    cands = [path, os.path.join(path, ".git")]
+    try:
+        with open(os.path.join(path, ".git")) as f:
+            g = f.read().strip()
+        if g.startswith("gitdir:"):
+            admin = g.split(":", 1)[1].strip()
+            cands += [admin, os.path.join(admin, "index")]
+    except Exception:
+        return True
+    newest = 0.0
+    for c in cands:
+        try:
+            newest = max(newest, os.path.getmtime(c))
+        except Exception:
+            pass
+    if newest == 0.0:
+        return True
+    return newest > time.time() - min_age_min * 60
 
 
 def _agent_branch_safe_on_origin(branch, repo):
@@ -332,9 +385,20 @@ def prune():
                     if _is_branch_unmerged(b, repo):
                         freed_notes.append(f"SKIPPED (unmerged) {b}")
                         continue
+                    # SAFETY: a branch whose tip == main's tip looks 'merged' but is really a
+                    # FRESH checkout an executor just created and hasn't committed to — skip it.
+                    if _is_fresh_checkout(b, repo):
+                        freed_notes.append(f"SKIPPED (fresh checkout) {b}")
+                        continue
+                    # SAFETY: skip worktrees with recent filesystem/git activity (active executor)
+                    if _wt_recently_active(wt):
+                        freed_notes.append(f"SKIPPED (recently active) {b}")
+                        continue
                     # SAFETY: never delete a local agent branch whose work isn't durably on origin
                     # (fail-soft share push can leave it local-only → deleting loses work fleet-wide).
                     origin_safe = _agent_branch_safe_on_origin(b, repo)
+                    # All guards passed: clear any creation lock so the worktree can be reclaimed.
+                    subprocess.run(["git", "worktree", "unlock", wt], cwd=repo, capture_output=True)
                     subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=repo, capture_output=True)
                     if origin_safe:
                         subprocess.run(["git", "branch", "-D", b], cwd=repo, capture_output=True)
@@ -386,8 +450,12 @@ def prune():
     return freed_notes
 
 
+def _throttle_floor():
+    return int(os.environ.get("ORCH_THROTTLE_FLOOR", "1"))
+
+
 def set_throttle(n):
-    n = max(1, min(n, _ceiling()))
+    n = max(_throttle_floor(), min(n, _ceiling()))
     with open(THROTTLE_FILE, "w") as f:
         f.write(str(n))
     return n

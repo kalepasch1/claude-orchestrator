@@ -9,7 +9,7 @@ Schedule daily.
 """
 import os, sys, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import db, feedback, claude_cli
+import db, feedback
 
 MODEL = os.environ.get("METALOOP_MODEL", "claude-sonnet-4-6")
 
@@ -35,7 +35,12 @@ def _project_score(project):
     passed = sum(1 for r in rows if r.get("tests_passed")) / n
     merged = sum(1 for r in rows if r.get("integrated")) / n
     rl = sum(1 for r in rows if r.get("rate_limited")) / n
-    return round(100 * (0.5 * passed + 0.5 * merged) - 20 * rl, 1)
+    releases = db.select("releases", {"select": "deploy_status", "project": f"eq.{project}",
+                                      "order": "created_at.desc", "limit": "50"}) or []
+    if releases:
+        deployed = sum(1 for r in releases if r.get("deploy_status") == "success") / len(releases)
+        return round(100 * (0.3 * passed + 0.35 * merged + 0.35 * deployed) - 20 * rl, 1)
+    return round(100 * (0.45 * passed + 0.55 * merged) - 20 * rl, 1)
 
 
 def _tune_cadence(loop, score):
@@ -69,20 +74,25 @@ def _tune_cadence(loop, score):
 
 def _ask_improvement(project, loop_type):
     """
-    Ask a Claude Code agent how this app's loop or the app itself could be improved.
+    Ask a capability- and cost-optimized diverse vendor how this loop could be improved.
     Routes the answer through feedback.submit so feedback_review can cluster it.
     """
     prompt = (
         f"You are reviewing the orchestration loop for project '{project}' (loop type: {loop_type}). "
-        f"Based on general knowledge of software quality loops, suggest ONE concrete improvement "
+        f"Using deployed-value evidence rather than model self-confidence, suggest ONE concrete improvement "
         f"for either (a) the loop itself (cadence, scope, checks) or (b) the app. "
         f"Reply as a JSON object: "
-        f'{{\"category\":\"strategy\",\"severity\":\"med\",\"observation\":\"...\",\"suggestion\":\"...\"}}'
+        f'{{\"category\":\"strategy\",\"severity\":\"med\",\"observation\":\"measured bottleneck...\",'
+        f'\"suggestion\":\"reversible mechanism + acceptance metric + rollback...\"}}'
     )
     try:
-        resp = claude_cli.run(prompt, MODEL, permission=None, max_turns=1, timeout=90)
+        import model_policy, model_gateway
+        provider, model, _ = model_policy.choose_diverse("plan", need=8)
+        resp = model_gateway.complete(provider, model, prompt, timeout=90,
+                                      operation="meta_loop_improvement", task_class="plan",
+                                      project=project)
         import re, json
-        m = re.search(r"\{.*\}", resp["text"] or "", re.S)
+        m = re.search(r"\{.*\}", resp.get("text") or "", re.S)
         if m:
             it = json.loads(m.group(0))
             feedback.submit(

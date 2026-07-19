@@ -172,7 +172,8 @@ class RoutingIntelligenceTest(unittest.TestCase):
             out = patch_templates.pre_claim_hook(task)
         self.assertIn("PATCH TEMPLATE", out["prompt"])
         self.assertIn("[patch-template:", out["prompt"])
-        self.assertTrue(db.update.called)
+        db.update.assert_not_called()  # original retry prompt must stay clean
+        db.insert.assert_called_once()  # reusable template knowledge is persisted
 
     def test_prompt_result_cache_round_trip_by_intent(self):
         old = prompt_result_cache.CACHE

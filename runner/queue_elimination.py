@@ -126,6 +126,9 @@ def _worktree_path(repo, branch):
 def _cleanup_worktree(repo, wt, branch, keep_branch):
     """Best-effort cleanup — never raises, this runs on every exit path including exceptions."""
     try:
+        # Unlock first: we lock worktrees at creation so external GC can't delete them mid-run.
+        subprocess.run(["git", "worktree", "unlock", wt], cwd=repo,
+                       capture_output=True, timeout=15)
         subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=repo,
                        capture_output=True, timeout=30)
     except Exception:
@@ -164,6 +167,10 @@ def _apply_and_verify(repo, diff_text, task_id):
                                capture_output=True, text=True, timeout=60)
         if added.returncode != 0 or not os.path.isdir(wt):
             return {"success": False, "reason": f"worktree add failed: {(added.stderr or '')[:200]}"}
+        # Lock the worktree while in use so concurrent GC/prune loops can't rip it out mid-run
+        # (git worktree remove refuses locked worktrees unless doubly forced).
+        subprocess.run(["git", "worktree", "lock", wt, "--reason", f"in use: {branch}"],
+                       cwd=repo, capture_output=True, text=True, timeout=30)
 
         # Apply — inside the worktree, never repo
         apply_result = subprocess.run(

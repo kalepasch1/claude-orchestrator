@@ -17,9 +17,17 @@ Run on your Mac:
 
 It NEVER force-merges: verify-fail or test-fail creates an approval card and stops.
 """
-import os, sys, time, json, socket, subprocess, threading, datetime, hashlib, faulthandler, signal
+import os, sys, time, json, socket, subprocess, threading, datetime, hashlib, faulthandler, signal, re
 import log as _log_mod
 _log = _log_mod.get("runner")
+
+# ENV SANITY (2026-07-14): the runner (and everything it spawns — agents, npm installs, builds)
+# sometimes inherits NODE_ENV=production from its launcher. Under NODE_ENV=production, `npm
+# install` silently OMITS devDependencies, so builds fail with "Could not load <module>. Is it
+# installed?" (@nuxtjs/supabase, tailwind, vitest, tsc...) and node_modules trees end up
+# half-populated/corrupt. Build tools set their own production mode during `nuxt build` etc.;
+# an inherited global NODE_ENV only breaks installs. Strip it for this process tree.
+os.environ.pop("NODE_ENV", None)
 
 # Auto-load .env from the runner's own directory (works regardless of CWD)
 _RUNNER_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -61,6 +69,12 @@ def _acquire_singleton():
 
 
 if __name__ == "__main__":
+    _maintenance_lock = os.environ.get(
+        "ORCH_MAINTENANCE_LOCK", os.path.join(_CANONICAL_RUNTIME_HOME, "maintenance.lock")
+    )
+    if os.path.exists(_maintenance_lock):
+        print(f"maintenance lock present at {_maintenance_lock} — runner start blocked")
+        sys.exit(75)
     try:
         faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
     except Exception as e:
@@ -100,6 +114,7 @@ import graduated_autonomy, live_bidding, multi_agent_pipeline
 import speculative_diff, adaptive_budget, transfer_learning
 import pipeline_fusion, prompt_distillation, output_recycling
 import cade_tournaments
+import branch_lease
 import queue_elimination, adaptive_pipeline, unified_knowledge
 import fast_path, batch_fusion, proof_propagation
 import intent_compiler, ensemble_predictor, bankruptcy_decompose
@@ -108,6 +123,7 @@ import capacity_pacer, account_partition, generator_feedback
 import exhaustion_signal, surge_planner
 import agentic_repair
 import cowork_dispatch
+import worktree_isolation
 try:
     import warm_pool
 except ImportError:
@@ -161,9 +177,18 @@ def projects(project_id=None):
     return _projects
 
 
-def set_state(task_id, **kw):
+def set_state(task_id: str, **kw) -> None:
+    """Update a task row in Supabase, auto-setting updated_at to now().
+
+    Accepts arbitrary keyword args that map to columns on the tasks table
+    (e.g. state='DONE', note='...', cost=0.12).
+    """
     kw["updated_at"] = "now()"
     db.update("tasks", {"id": task_id}, kw)
+    # Every non-running transition ends this executor's right to mutate the
+    # branch. A crashed worker is covered by the server-side lease TTL.
+    if kw.get("state") in {"QUEUED", "DONE", "MERGED", "BLOCKED", "QUARANTINED", "RETRY"}:
+        branch_lease.release(str(task_id))
 
 
 def _next_non_claude_coder(task, exclude=()):
@@ -454,6 +479,20 @@ def _agentic_repair_continue(t, category, failure, attempt, directive=None):
 
 def run_task(t):
     with _sem:
+        # Do not turn an incompatible long-lived daemon into a stream of
+        # zero-diff model failures.  A fresh daemon publishes its contract in
+        # the heartbeat; an old in-memory module simply yields this claim.
+        try:
+            import runtime_contract
+            _contract = runtime_contract.check()
+            if not _contract["ok"]:
+                set_state(t["id"], state="QUEUED",
+                          note=f"runtime-contract blocked: {_contract['detail']}")
+                return
+        except Exception as _contract_error:
+            set_state(t["id"], state="QUEUED",
+                      note=f"runtime-contract unavailable: {str(_contract_error)[:160]}")
+            return
         try:
             import task_slicer
             if task_slicer.pre_agent_hook(t):
@@ -464,6 +503,11 @@ def run_task(t):
         proj = projects(t["project_id"]).get(t["project_id"], {})
         repo = proj.get("repo_path", os.getcwd())
         name = proj.get("name", "repo")
+        # data-locality guard: if this Mac doesn't hold the repo (race/removed after claim),
+        # re-queue rather than fail so another Mac that has it takes it.
+        if repo and repo != os.getcwd() and not os.path.isdir(repo):
+            set_state(t["id"], state="QUEUED", note=f"repo not on this host ({socket.gethostname()}): {repo}")
+            time.sleep(2); return
         # Fall back to the project's REAL default branch (master vs main), not a hardcoded
         # "main" — otherwise diff/rebase against a nonexistent branch returns empty.
         task_base = _normalize_task_base(repo, proj, t.get("base_branch") or proj.get("default_base") or "main")
@@ -479,6 +523,30 @@ def run_task(t):
         if kill_switch.is_paused(name):
             set_state(t["id"], state="QUEUED", note="paused by kill switch")
             time.sleep(5); return
+
+        try:
+            import pathway_arbiter
+            _pathway = pathway_arbiter.decide(t)
+            t["execution_lane"] = _pathway["lane"]
+            t["_paid_api_eligible"] = _pathway["paid_api_eligible"]
+            db.update("tasks", {"id": t["id"]}, {"execution_lane": _pathway["lane"]})
+            pathway_arbiter.record(t, _pathway)
+        except Exception as e:
+            _log.warning("pathway arbitration unavailable for %s: %s", slug, e)
+
+        # MAX REQUEUE GUARD: tasks bounced >N times by pre-hooks are forced through.
+        # The 72% silent-failure rate was caused by topology/conflict/ensemble hooks
+        # endlessly re-queuing tasks. Cap it and force execution.
+        # Reclaims return a fresh DB row, so the transient dict field alone used
+        # to reset this counter on every defer and made the escape hatch inert.
+        # Persisted notes are the source of truth across workers/restarts.
+        _note_requeue = re.search(r"\[requeue\s+(\d+)/\d+\]", str(t.get("note") or ""), re.I)
+        _requeue_count = max(int(t.get("_requeue_count") or 0),
+                             int(_note_requeue.group(1)) if _note_requeue else 0)
+        _max_requeues = int(os.environ.get("ORCH_MAX_REQUEUE", "3"))
+        _force_execute = _requeue_count >= _max_requeues
+        if _force_execute:
+            set_state(t["id"], note=f"requeue-guard: forced execution after {_requeue_count} requeues")
 
         # toolchain gate: refuse to spend a model run on a project whose build toolchain is
         # known broken (missing npm/tsc, or node_modules never installed) — hold the task
@@ -514,12 +582,44 @@ def run_task(t):
 
         task_body = pipeline_contract.original_request(t["prompt"])
 
+        # FINAL ADMISSION BARRIER: queue preflight normally persists the shared
+        # vendor/model/capability route before a task is claimed.  Auto-slicing can,
+        # however, create a leaf and have a free native lane claim it before the next
+        # preflight tick.  Re-run the same admission contract here so native execution
+        # and direct Cowork claiming cannot diverge, and so no agent starts with an
+        # unset executor route.  Existing repair/canary overrides are preserved.
+        try:
+            _admission = pipeline_contract.task_fields(
+                task_body,
+                project=name,
+                kind=kind,
+                source="native-claim",
+                slug=slug,
+                material=bool(t.get("material")),
+                existing_note=t.get("note") or "",
+                model=t.get("model") or None,
+                force_coder=t.get("force_coder") or None,
+            )
+            _admission_patch = {
+                key: _admission.get(key)
+                for key in ("prompt", "note", "model", "force_coder")
+                if _admission.get(key) is not None
+            }
+            db.update("tasks", {"id": t["id"]}, _admission_patch)
+            t.update(_admission_patch)
+            task_body = pipeline_contract.original_request(t["prompt"])
+        except Exception as e:
+            # Fail soft for control-plane availability, as the runner's executor
+            # picker still validates backend readiness immediately before launch.
+            _log.warning("native admission refresh failed for %s: %s", slug, e)
+
         # result cache: identical (repo+prompt+commit) work is reused, not re-run
         sig = result_cache.signature(name, task_body, repo, base) if USE_CACHE else None
         if sig:
             hit = result_cache.lookup(sig)
             if hit:
-                set_state(t["id"], state="DONE", note=f"cache hit: reused {hit.get('branch')}")
+                set_state(t["id"], state="DONE", note=f"cache hit: reused {hit.get('branch')}",
+                          artifact_branch=hit.get("branch") or f"agent/{slug}")
                 record(t, name, slug, kind, "cache", POOL.current(), 0, True, False, "", time.time())
                 return
 
@@ -549,6 +649,12 @@ def run_task(t):
         except Exception as e:
             _log.debug("hook brain_compiler failed: %s", e)
         t0 = time.time()
+        # EXECUTION TELEMETRY: instrument the entire pre-hook chain
+        try:
+            import exec_telemetry
+            _tel = exec_telemetry.start(t["id"], slug)
+        except Exception:
+            _tel = None
 
         # deterministic replay: re-run a captured run snapshot
         if kind == "replay" and t["prompt"].startswith("REPLAY:"):
@@ -556,7 +662,8 @@ def run_task(t):
             set_state(t["id"], state="RUNNING", note=f"replaying run {run_id}")
             try:
                 replay.replay(run_id, repo)
-                set_state(t["id"], state="DONE", note=f"replay complete: run {run_id}")
+                set_state(t["id"], state="DONE", note=f"replay complete: run {run_id}",
+                          artifact_branch=f"agent/{slug}")
             except Exception as e:
                 set_state(t["id"], state="BLOCKED", note=f"replay error: {e}")
             return
@@ -569,7 +676,8 @@ def run_task(t):
             set_state(t["id"], state="RUNNING", note=f"rotating {prov}/{kname}")
             result = rotate_keys.rotate(prov, kname, name)
             if result.get("ok"):
-                set_state(t["id"], state="DONE", note=result.get("note", "rotated"))
+                set_state(t["id"], state="DONE", note=result.get("note", "rotated"),
+                          artifact_branch=f"ops/{slug}")
             else:
                 set_state(t["id"], state="BLOCKED", note=result.get("note", "manual rotation needed"))
             return
@@ -586,7 +694,8 @@ def run_task(t):
                 for s in secrets:
                     rotate_keys.rotate(prov, s["name"], s.get("project"))
                 kill_switch.pause(scope="global", reason=f"security panic: {prov} keys revoked", by="runner")
-                set_state(t["id"], state="DONE", note=f"revoked {len(secrets)} {prov} key(s), runner paused")
+                set_state(t["id"], state="DONE", note=f"revoked {len(secrets)} {prov} key(s), runner paused",
+                          artifact_branch=f"ops/{slug}")
             except Exception as e:
                 set_state(t["id"], state="BLOCKED", note=f"panic revoke error: {e}")
             return
@@ -595,7 +704,7 @@ def run_task(t):
         if kind == "speculative":
             _spec_acct = POOL.current(); POOL.record_use(_spec_acct)
             env = dict(os.environ); env.update(POOL.env_for(_spec_acct))
-            res = speculative.run(repo, slug, base, prompt, test_cmd, env=env)
+            res = speculative.run(repo, slug, base, prompt, test_cmd, env=env, task=t)
             w = res["winner"]
             if not w:
                 set_state(t["id"], state="BLOCKED", note="no speculative variant passed")
@@ -605,6 +714,12 @@ def run_task(t):
             set_state(t["id"], state=result, model=w["model"], note=f"speculative winner {w['vslug']} ({w['model']})")
             record(t, name, slug, kind, w["model"], POOL.current(), 1, True, result == "MERGED", "", t0); return
         attempt = 0
+        branch_ref = f"agent/{slug}"
+        _branch_lease = branch_lease.acquire(t, repo, branch_ref, base)
+        if not _branch_lease:
+            set_state(t["id"], state="QUEUED",
+                      note=f"branch-lease-held: another executor owns {branch_ref}")
+            return
         # ADAPTIVE RETRY BUDGET: use historical success data to set max retries
         _max_attempts = 4
         try:
@@ -616,6 +731,10 @@ def run_task(t):
             _log.debug("hook retry_budget failed: %s", e)
         while attempt < _max_attempts:
             attempt += 1
+            if not branch_lease.heartbeat(str(t["id"])):
+                set_state(t["id"], state="QUEUED",
+                          note=f"branch-lease-lost: refusing to mutate {branch_ref}")
+                return
             # COST-FIRST model routing: cheapest model that can do the job, escalate one tier
             # per failed attempt. Opus is used ONLY for genuinely heavy work or after retries —
             # an intake "opus"/"sonnet" tag is treated as advisory, NOT a license to burn Opus.
@@ -658,14 +777,28 @@ def run_task(t):
                 visible_model = model if coder == "claude" else f"{coder}:{_coder_route.get('model') or model}"
             except Exception:
                 visible_model = model if coder == "claude" else f"{coder}:{model}"
-            acct = POOL.current()
-            POOL.record_use(acct)
+            # Non-Claude coders use their own provider/local environment. Do not
+            # lease or attribute a Claude subscription account for Aider work.
+            acct = POOL.current() if coder == "claude" else None
+            if acct:
+                POOL.record_use(acct)
             set_state(t["id"], state="RUNNING", model=visible_model, attempt=attempt,
-                      account=(acct or {}).get("name"), note=f"agentic coder: {coder}")
-            subprocess.run([os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"), slug, base],
-                           cwd=repo, capture_output=True)
-            wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", slug)
-            env = dict(os.environ); env.update(POOL.env_for(acct))
+                      account=(acct or {}).get("name") or f"agentic:{coder}",
+                      note=f"agentic coder: {coder}")
+            try:
+                wt = worktree_isolation.ensure_task_worktree(
+                    repo, slug, base,
+                    os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"),
+                    task_id=str(t["id"]), lease_token=_branch_lease["token"],
+                )
+            except worktree_isolation.WorktreeIsolationError as e:
+                set_state(t["id"], state="RETRY", note=f"git-isolation blocked execution: {e}")
+                record(t, name, slug, kind, visible_model, acct, attempt,
+                       False, False, f"worktree isolation: {e}", t0)
+                return
+            env = dict(os.environ)
+            if acct:
+                env.update(POOL.env_for(acct))
             # inject this project's external-provider secrets (values never logged)
             try:
                 env.update(secrets_manager.inject_env(name))
@@ -717,70 +850,77 @@ def run_task(t):
                     set_state(t["id"], note=f"mesh-optimizer: {_mesh['note']}")
             except Exception as e:
                 _log.debug("hook mesh_optimizer failed: %s", e)
+            # EARLY TIMING GUARD: check elapsed time after the core hooks (plan, diff_compiler,
+            # mesh_optimizer) and skip remaining pre-hooks if already past budget. Without this,
+            # 20+ sequential hooks can block for minutes before the main guard at line ~1083 fires.
+            _fast = {}  # initialized early so all subsequent hooks can check skip_all
+            _early_elapsed = time.time() - t0
+            _early_max = float(os.environ.get("ORCH_PREHOOK_EARLY_MAX_S", "15"))
+            if _early_elapsed > _early_max:
+                _fast["skip_all"] = True
+                set_state(t["id"], note=f"prehook-early-guard: {_early_elapsed:.0f}s > {_early_max:.0f}s — skipping remaining hooks")
             # QUEUE PRE-OPTIMIZATION: check if background daemon already pre-computed
             # expensive hooks for this task while it was idle in the queue.
             _preopt_notes = []
             _extras = ""
-            try:
-                import queue_preopt
-                _preopt = queue_preopt.get(t["id"])
-                if _preopt and _preopt.get("stages"):
-                    draft_prompt, _extras, _preopt_notes = queue_preopt.apply_cached(
-                        t["id"], draft_prompt, t, repo, name, attempt)
-                    if _preopt_notes:
-                        set_state(t["id"], note=f"preopt: {', '.join(_preopt_notes)}")
-            except Exception as e:
-                _log.debug("hook queue_preopt failed: %s", e)
-            # CONTEXT + PRECEDENT: give the headless agent what an interactive session has — a repo map +
-            # this project's conventions, and the most-similar change that already MERGED (adapt a proven
-            # pattern instead of inventing). Both are pure retrieval (no tokens) and lift first-pass yield.
-            # Skip if pre-optimization already supplied these.
-            if "preopt:context_pack" not in _preopt_notes:
+            _preopt = None
+            if not _fast.get("skip_all"):
                 try:
-                    import context_pack, precedent
-                    _extras += context_pack.block(repo)
-                    _extras += precedent.hint(t, repo, project_id=t.get("project_id"))
-                except Exception:
-                    pass
-            # TASK MEMORY + HIVEMIND: inject fleet intelligence and dependency context
-            try:
-                import task_memory
-                _hive = task_memory.hivemind_query(t, name)
-                if _hive and _hive.get("insights"):
-                    draft_prompt = task_memory.inject_hivemind(draft_prompt, _hive)
-                    set_state(t["id"], note=f"hivemind: {len(_hive['insights'])} insights (conf={_hive.get('confidence', 0):.0%})")
-                _dep_ctx = task_memory.get_dependency_context(t)
-                if _dep_ctx:
-                    _extras += f"\n\n## Parent Task Context\n{_dep_ctx}\n"
-            except Exception as e:
-                _log.debug("hook task_memory failed: %s", e)
-            # MERGE VALIDATOR: check if speculative draft already passed tests
-            try:
-                import merge_validator
-                if merge_validator.fast_track_check(t["id"]):
-                    set_state(t["id"], note="merge-validator: pre-validated draft passed tests, fast-tracking")
-                    # Draft already validated — inject constraint to use it as-is
-                    _extras += "\n\n## Pre-Validated Draft Available\nA speculative draft has already passed all tests. Apply it directly unless you find issues.\n"
-            except Exception as e:
-                _log.debug("hook merge_validator failed: %s", e)
-            # PROMPT COMPRESSOR: deduplicate and compress before final assembly
-            try:
-                import prompt_compressor
-                _compressed = prompt_compressor.compress(draft_prompt, _extras)
-                if _compressed.get("savings", {}).get("reduction_pct", 0) > 5:
-                    draft_prompt = _compressed["prompt"]
-                    _extras = _compressed["extras"]
-                    set_state(t["id"], note=f"prompt-compressor: {_compressed['savings']['reduction_pct']:.0f}% reduction")
-            except Exception as e:
-                _log.debug("hook prompt_compressor failed: %s", e)
-            # PROMPT EVOLUTION: inject learned effective additions
-            try:
-                import prompt_evolution
-                _evolved = prompt_evolution.get_evolved_additions(t, name)
-                if _evolved:
-                    _extras += _evolved
-            except Exception as e:
-                _log.debug("hook prompt_evolution failed: %s", e)
+                    import queue_preopt
+                    _preopt = queue_preopt.get(t["id"])
+                    if _preopt and _preopt.get("stages"):
+                        draft_prompt, _extras, _preopt_notes = queue_preopt.apply_cached(
+                            t["id"], draft_prompt, t, repo, name, attempt)
+                        if _preopt_notes:
+                            set_state(t["id"], note=f"preopt: {', '.join(_preopt_notes)}")
+                except Exception as e:
+                    _log.debug("hook queue_preopt failed: %s", e)
+                # CONTEXT + PRECEDENT
+                if "preopt:context_pack" not in _preopt_notes:
+                    try:
+                        import context_pack, precedent
+                        _extras += context_pack.block(repo)
+                        _extras += precedent.hint(t, repo, project_id=t.get("project_id"))
+                    except Exception:
+                        pass
+                # TASK MEMORY + HIVEMIND
+                try:
+                    import task_memory
+                    _hive = task_memory.hivemind_query(t, name)
+                    if _hive and _hive.get("insights"):
+                        draft_prompt = task_memory.inject_hivemind(draft_prompt, _hive)
+                        set_state(t["id"], note=f"hivemind: {len(_hive['insights'])} insights (conf={_hive.get('confidence', 0):.0%})")
+                    _dep_ctx = task_memory.get_dependency_context(t)
+                    if _dep_ctx:
+                        _extras += f"\n\n## Parent Task Context\n{_dep_ctx}\n"
+                except Exception as e:
+                    _log.debug("hook task_memory failed: %s", e)
+                # MERGE VALIDATOR
+                try:
+                    import merge_validator
+                    if merge_validator.fast_track_check(t["id"]):
+                        set_state(t["id"], note="merge-validator: pre-validated draft passed tests, fast-tracking")
+                        _extras += "\n\n## Pre-Validated Draft Available\nA speculative draft has already passed all tests. Apply it directly unless you find issues.\n"
+                except Exception as e:
+                    _log.debug("hook merge_validator failed: %s", e)
+                # PROMPT COMPRESSOR
+                try:
+                    import prompt_compressor
+                    _compressed = prompt_compressor.compress(draft_prompt, _extras)
+                    if _compressed.get("savings", {}).get("reduction_pct", 0) > 5:
+                        draft_prompt = _compressed["prompt"]
+                        _extras = _compressed["extras"]
+                        set_state(t["id"], note=f"prompt-compressor: {_compressed['savings']['reduction_pct']:.0f}% reduction")
+                except Exception as e:
+                    _log.debug("hook prompt_compressor failed: %s", e)
+                # PROMPT EVOLUTION
+                try:
+                    import prompt_evolution
+                    _evolved = prompt_evolution.get_evolved_additions(t, name)
+                    if _evolved:
+                        _extras += _evolved
+                except Exception as e:
+                    _log.debug("hook prompt_evolution failed: %s", e)
             # BUILD-TO-GREEN MANDATE: make the agent iterate to a mergeable state ITSELF (edit -> build ->
             # fix -> re-build -> commit), the way an interactive VSCode session does — so it returns green,
             # mergeable work instead of a draft a downstream committee rejects and recycles. The build is
@@ -801,7 +941,6 @@ def run_task(t):
             # that branch instead of spending another model call. Ensure the branch has a worktree,
             # because downstream verify/build steps operate on filesystem paths.
             _integrating_existing = False
-            branch_ref = f"agent/{slug}"
             if not _must_run_agent_for_evidence(t, slug):
                 try:
                     _av = subprocess.run(["git", "rev-list", "--count", f"{base}..{branch_ref}"],
@@ -814,14 +953,22 @@ def run_task(t):
                             except Exception as e:
                                 _log.debug("hook free_branch failed: %s", e)
                             os.makedirs(os.path.dirname(wt), exist_ok=True)
-                            subprocess.run(["git", "worktree", "add", "-f", wt, branch_ref],
-                                           cwd=repo, capture_output=True, timeout=180)
+                            # setup-worktrees owns creation; never force-adopt a branch
+                            # that another task may still have checked out.
+                            subprocess.run(
+                                [os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"), slug, base,
+                                 str(t["id"]), _branch_lease["token"]],
+                                cwd=repo, capture_output=True, timeout=180,
+                            )
+                            # Lock while in use — concurrent GC/prune must not delete it mid-task.
+                            subprocess.run(["git", "worktree", "lock", wt, "--reason", f"task {slug} in use"],
+                                           cwd=repo, capture_output=True, timeout=30)
                         _integrating_existing = os.path.isdir(wt)
                 except Exception:
                     _integrating_existing = False
             # ZERO-TOKEN FIRST PATCH: try applying known-good diff before any model call
             try:
-                _zt = cade_tournaments.zero_token_patch(t, wt if os.path.isdir(wt) else repo)
+                _zt = cade_tournaments.zero_token_patch(t, wt)
                 if _zt and _zt.get("applied"):
                     set_state(t["id"], note=f"zero-token patch applied ({_zt['method']})")
                     # Skip agent entirely — go straight to integration
@@ -835,9 +982,9 @@ def run_task(t):
                 _log.debug("hook zero_token_patch failed: %s", e)
             # INTENT COMPILER: check if task matches a compiled deterministic script
             try:
-                _compiled = intent_compiler.get_compiled(t, wt if os.path.isdir(wt) else repo)
+                _compiled = intent_compiler.get_compiled(t, wt)
                 if _compiled:
-                    _comp_result = intent_compiler.execute(_compiled, wt if os.path.isdir(wt) else repo, t["id"])
+                    _comp_result = intent_compiler.execute(_compiled, wt, t["id"])
                     if _comp_result.get("success"):
                         set_state(t["id"], note=f"compiled-intent: executed deterministic script (0 tokens)")
                         r = {"text": "compiled intent replay — deterministic script, zero model call",
@@ -858,7 +1005,7 @@ def run_task(t):
                 else:
                     _pm = pattern_compiler.match(t)
                 if _pm and _pm.get("confidence", 0) > 0.7:
-                    _pc_result = pattern_compiler.execute(_pm, wt if os.path.isdir(wt) else repo, t["id"])
+                    _pc_result = pattern_compiler.execute(_pm, wt, t["id"])
                     if _pc_result and _pc_result.get("success"):
                         set_state(t["id"], note=f"pattern-compiler: deterministic replay (conf={_pm['confidence']:.0%}, pattern={_pm.get('pattern_id', '?')})")
                         r = {"text": f"pattern-compiler replay — {_pc_result.get('files_changed', 0)} files, zero model call",
@@ -872,28 +1019,36 @@ def run_task(t):
             # FLEET TOPOLOGY: check if this runner can handle the task's complexity
             try:
                 import fleet_topology
-                if not fleet_topology.can_handle(t):
+                if not _force_execute and not fleet_topology.can_handle(t):
                     _better = fleet_topology.best_runner_for(t)
                     if _better:
+                        t["_requeue_count"] = _requeue_count + 1
                         set_state(t["id"], state="QUEUED",
-                                  note=f"fleet-topology: redirecting to {_better} (better fit)")
+                                  note=f"fleet-topology: redirecting to {_better} (better fit) [requeue {_requeue_count+1}/{_max_requeues}]")
                         time.sleep(5); return
             except Exception as e:
                 _log.debug("hook fleet_topology failed: %s", e)
             # CONFLICT PREDICTOR: check for file-scope overlap with active tasks
-            try:
-                import conflict_predictor
-                _conflicts = conflict_predictor.check_conflicts(t)
-                if _conflicts.get("action") == "defer":
-                    set_state(t["id"], state="QUEUED",
-                              note=f"conflict-predictor: deferring ({_conflicts['reason']})")
-                    time.sleep(10); return
-                elif _conflicts.get("conflicts"):
-                    set_state(t["id"], note=f"conflict-predictor: {len(_conflicts['conflicts'])} overlapping files, proceeding")
-            except Exception as e:
-                _log.debug("hook conflict_predictor failed: %s", e)
+            # Disabled: conflict predictor creates requeue loops when multiple tasks share
+            # common files (e.g. database.types.ts), blocking real task execution entirely.
+            # Worktree isolation already prevents actual conflicts. Re-enable via env var.
+            if os.environ.get("ORCH_CONFLICT_PREDICTOR", "false").lower() in ("true", "1", "yes"):
+                try:
+                    import conflict_predictor
+                    _conflicts = conflict_predictor.check_conflicts(t)
+                    if not _force_execute and _conflicts.get("action") == "defer":
+                        t["_requeue_count"] = _requeue_count + 1
+                        set_state(t["id"], state="QUEUED",
+                                  note=f"conflict-predictor: deferring ({_conflicts['reason']}) [requeue {_requeue_count+1}/{_max_requeues}]")
+                        time.sleep(10); return
+                    elif _conflicts.get("conflicts"):
+                        set_state(t["id"], note=f"conflict-predictor: {len(_conflicts['conflicts'])} overlapping files, proceeding")
+                except Exception as e:
+                    _log.debug("hook conflict_predictor failed: %s", e)
             # FAST-PATH: graduated autonomy fast-path (L3/L4 skip hooks)
-            _fast = {}
+            # Preserve early guard's skip_all if already set
+            if not _fast.get("skip_all"):
+                _fast = {}
             try:
                 _fp_domain = model_portfolios.classify(t, (_plan or {}).get("files", [])) if _plan is not None else "backend"
                 _fp_agent = f"{coder}:{visible_model}" if coder != "claude" else f"claude:{visible_model}"
@@ -909,9 +1064,10 @@ def run_task(t):
                     _ens_domain = model_portfolios.classify(t, (_plan or {}).get("files", [])) if _plan is not None else "backend"
                     _ensemble = ensemble_predictor.predict(t, _ens_agent, _ens_domain, visible_model,
                                                            diff_plan=_plan)
-                    if _ensemble.get("should_skip"):
+                    if not _force_execute and _ensemble.get("should_skip"):
+                        t["_requeue_count"] = _requeue_count + 1
                         set_state(t["id"], state="QUEUED",
-                                  note=f"ensemble-predictor: {_ensemble['recommended_action']} (conf={_ensemble['confidence']:.0%}, {_ensemble['signal_count']} signals)")
+                                  note=f"ensemble-predictor: {_ensemble['recommended_action']} (conf={_ensemble['confidence']:.0%}, {_ensemble['signal_count']} signals) [requeue {_requeue_count+1}/{_max_requeues}]")
                         time.sleep(5); return
                 except Exception as e:
                     _log.debug("hook ensemble_predictor failed: %s", e)
@@ -919,7 +1075,7 @@ def run_task(t):
             _uk = {}
             if not _fast.get("skip_all"):
                 try:
-                    _uk = unified_knowledge.query(t, name, wt if os.path.isdir(wt) else repo, attempt)
+                    _uk = unified_knowledge.query(t, name, wt, attempt)
                     if _uk.get("matches"):
                         draft_prompt = unified_knowledge._apply_match(draft_prompt, _uk["matches"][0])
                         set_state(t["id"], note=f"unified-knowledge: {len(_uk['matches'])} matches, best={_uk['matches'][0].get('source', '?')} (conf={_uk['matches'][0].get('confidence', 0):.0%})")
@@ -928,12 +1084,20 @@ def run_task(t):
             # ADAPTIVE PIPELINE: collapse stages when cached results found
             if not _fast.get("skip_all"):
                 try:
-                    _ap = adaptive_pipeline.plan(t, name, wt if os.path.isdir(wt) else repo)
+                    _ap = adaptive_pipeline.plan(t, name, wt)
                     if _ap.get("collapsed"):
                         draft_prompt = _ap.get("enriched_prompt", draft_prompt)
                         set_state(t["id"], note=f"adaptive-pipeline: collapsed {len(_ap['collapsed'])} stages, saving ~{_ap.get('estimated_savings_tokens', 0)} tokens")
                 except Exception as e:
                     _log.debug("hook adaptive_pipeline failed: %s", e)
+            # PRE-HOOK TIMING GUARD: if pre-hooks already consumed >60s, skip the
+            # remaining parallelized hooks and go straight to execution. This prevents
+            # the "death by a thousand hooks" pattern where 40+ hooks each take 2-3s.
+            _prehook_elapsed = time.time() - t0
+            _prehook_max = float(os.environ.get("ORCH_PREHOOK_MAX_S", "60"))
+            if _prehook_elapsed > _prehook_max:
+                _fast["skip_all"] = True
+                set_state(t["id"], note=f"prehook-timing: {_prehook_elapsed:.0f}s > {_prehook_max:.0f}s cap — skipping remaining hooks")
             # ── REMAINING PRE-HOOKS (parallelized, all skipped when fast-path L4 skip_all) ──
             _pipeline_cost = 0
             if not _fast.get("skip_all"):
@@ -1124,6 +1288,14 @@ def run_task(t):
             except Exception as _wave_err:
                 _log.debug("wave pre-exec hooks: %s", _wave_err)
 
+            # Record pre-hook telemetry before execution starts
+            if _tel:
+                try:
+                    _tel.finish(outcome="executing", note=_tel.summary())
+                    set_state(t["id"], note=f"telemetry: {_tel.summary()}")
+                except Exception:
+                    pass
+
             try:
                 if _integrating_existing:
                     print(f"[integrate-existing] {slug}: branch ahead of {base} -> skip agent, integrate directly", flush=True)
@@ -1150,7 +1322,7 @@ def run_task(t):
                             _swarm_mode = "diff" if kind in ("mechanical", "chore", "cleanup", "test", "docs") else "agentic"
                             r = swarm_executor.run_swarm(
                                 draft_prompt, _swarm_model, provider=_swarm_provider,
-                                cwd=wt if os.path.isdir(wt) else repo,
+                                cwd=wt,
                                 timeout=int(os.environ.get("TASK_TIMEOUT", "900")),
                                 mode=_swarm_mode,
                             )
@@ -1165,13 +1337,13 @@ def run_task(t):
                         except Exception as _sw_err:
                             _log.warning("swarm_executor failed (%s); falling back to agentic_coders", _sw_err)
                             r = agentic_coders.run(coder, draft_prompt, model,
-                                                   cwd=wt if os.path.isdir(wt) else repo, env=env,
+                                                   cwd=wt, env=env,
                                                    project=name, max_turns=60, permission="acceptEdits",
                                                    timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
                     else:
                         # --- DEFAULT PATH: subscription CLI/SDK via agentic_coders ---
                         r = agentic_coders.run(coder, draft_prompt, model,
-                                               cwd=wt if os.path.isdir(wt) else repo, env=env,
+                                               cwd=wt, env=env,
                                                project=name, max_turns=60, permission="acceptEdits",
                                                timeout=int(os.environ.get("TASK_TIMEOUT", "900")))
                 r.setdefault("coder", coder)
@@ -1185,15 +1357,33 @@ def run_task(t):
                 set_state(t["id"], state="BLOCKED", note="timed out (>15m) — killed to free the slot")
                 record(t, name, slug, kind, visible_model, acct, attempt, False, False, "timeout", t0); return
             except claude_cli.CircuitOpen as e:
-                # Capacity/cost circuit hit. Do not create a global pause by default: rotate/fail over
-                # when another coder route exists, otherwise leave the task queued for cooldown.
+                # MULTI-VENDOR FAILOVER: route through tier_router instead of just re-queuing.
+                # This gives instant failover to Groq/DeepSeek/Gemini instead of stalling.
                 try:
                     POOL.mark_exhausted(acct)
-                except Exception as e:
-                    _log.debug("hook mark_exhausted failed: %s", e)
+                except Exception:
+                    pass
+                # Try tier_router for cross-vendor failover first
+                try:
+                    import tier_router
+                    _failover = tier_router.route(t)
+                    if _failover and _failover.get("provider") != "claude":
+                        _fo_coder = _failover.get("coder", "swarm")
+                        _fo_model = _failover.get("model", "deepseek-v4-flash")
+                        _fo_provider = _failover["provider"]
+                        set_state(t["id"], state="RETRY",
+                                  note=f"circuit-open → tier_router failover: {_fo_provider}:{_fo_model} ({_failover.get('reason','')})")
+                        t["force_coder"] = f"swarm:{_fo_provider}" if _fo_coder == "swarm" else _fo_coder
+                        t["_force_model"] = _fo_model
+                        attempt -= 1
+                        time.sleep(2)
+                        continue
+                except Exception as _tr_err:
+                    _log.debug("tier_router failover failed: %s", _tr_err)
+                # Fallback: try agentic_coders pool
                 if len(agentic_coders.available()) > 1:
                     failover = _next_non_claude_coder(t, exclude=t.get("_failed_coders") or ())
-                    patch = {"state": "RETRY", "note": f"capacity circuit -> non-Claude failover route ({e})"}
+                    patch = {"state": "RETRY", "note": f"capacity circuit → non-Claude failover ({e})"}
                     if failover:
                         patch["force_coder"] = failover
                         patch["model"] = failover
@@ -1243,23 +1433,53 @@ def run_task(t):
 
             if any(s in low for s in EXHAUST):
                 nxt = POOL.mark_exhausted(acct)
-                # If ALL Claude accounts exhausted, immediately failover to non-Claude
-                # instead of burning another attempt cycling through exhausted accounts
+                # CROSS-VENDOR CASCADE: use tier_router for intelligent failover
+                try:
+                    import tier_router
+                    _exhaust_fo = tier_router.route(t)
+                    if _exhaust_fo and _exhaust_fo.get("provider") != "claude":
+                        _fo_coder = _exhaust_fo.get("coder", "swarm")
+                        _fo_provider = _exhaust_fo["provider"]
+                        _fo_model = _exhaust_fo.get("model", "deepseek-v4-flash")
+                        t["force_coder"] = f"swarm:{_fo_provider}" if _fo_coder == "swarm" else _fo_coder
+                        t["_force_model"] = _fo_model
+                        set_state(t["id"], state="RETRY",
+                                  note=f"exhausted → cross-vendor cascade: {_fo_provider}:{_fo_model}")
+                        attempt -= 1
+                        continue
+                except Exception as _tr_err:
+                    _log.debug("tier_router exhaust failover: %s", _tr_err)
+                # Fallback: try agentic_coders pool
                 try:
                     if account_pool.claude_exhausted():
                         failover = _next_non_claude_coder(t, exclude=t.get("_failed_coders") or ())
                         if failover:
-                            set_state(t["id"], state="RETRY", note=f"all Claude exhausted -> {failover}",
+                            set_state(t["id"], state="RETRY", note=f"all Claude exhausted → {failover}",
                                       force_coder=failover, model=failover)
                             attempt -= 1
                             continue
                 except Exception as e:
                     _log.debug("hook claude_exhausted_failover failed: %s", e)
-                set_state(t["id"], state="RETRY", note=f"account exhausted -> {nxt}")
+                set_state(t["id"], state="RETRY", note=f"account exhausted → {nxt}")
                 if nxt and nxt != (acct or {}).get("name"):
                     attempt -= 1
                 continue
             if any(s in low for s in RATE):
+                # RATE LIMIT FAILOVER: try a different vendor instead of just backing off
+                try:
+                    import tier_router
+                    _rate_fo = tier_router.route(t)
+                    if _rate_fo and _rate_fo.get("provider") != "claude":
+                        _fo_coder = _rate_fo.get("coder", "swarm")
+                        _fo_provider = _rate_fo["provider"]
+                        _fo_model = _rate_fo.get("model", "deepseek-v4-flash")
+                        t["force_coder"] = f"swarm:{_fo_provider}" if _fo_coder == "swarm" else _fo_coder
+                        t["_force_model"] = _fo_model
+                        set_state(t["id"], state="RETRY",
+                                  note=f"rate-limited → cross-vendor: {_fo_provider}:{_fo_model}")
+                        time.sleep(2); continue
+                except Exception:
+                    pass
                 back = min(300, 2 ** attempt * 5)
                 set_state(t["id"], state="RETRY", note=f"rate-limited, backoff {back}s")
                 time.sleep(min(back, 30)); continue
@@ -1269,7 +1489,10 @@ def run_task(t):
             if not tests_ok:
                 try:
                     if os.environ.get("ORCH_TEST_QUARANTINE", "true").lower() == "true":
-                        import test_quarantine, re
+                        # `re` is imported at module scope.  Importing it here makes
+                        # Python treat `re` as local throughout run_task(), causing
+                        # the earlier requeue guard to raise UnboundLocalError.
+                        import test_quarantine
                         # Extract failed test names from common runner patterns
                         _failed = []
                         for _pat in [
@@ -1402,7 +1625,7 @@ def run_task(t):
             if not _integrating_existing:
                 try:
                     import session_proof
-                    proof = session_proof.verify_session(t, out, wt if os.path.isdir(wt) else repo, f"agent/{slug}")
+                    proof = session_proof.verify_session(t, out, wt, f"agent/{slug}")
                     if not proof.get("ok") and not t.get("_proof_retry"):
                         t["_proof_retry"] = True
                         prompt = session_proof.reinjection_prompt(t)
@@ -1603,10 +1826,21 @@ def run_task(t):
             # enough data to reconstruct its work without re-running the agent.
             try:
                 task_artifacts.capture(repo, slug, f"agent/{slug}", base,
-                                       wt if os.path.isdir(wt) else repo,
+                                       wt,
                                        test_log=out[-5000:], cost=run_cost)
             except Exception as _ae:
                 print(f"[artifacts] capture failed for {slug}: {_ae}")
+
+            if t.get("shadow_only"):
+                try:
+                    import paired_trial_controller
+                    paired_trial_controller.record(t, {"verified": True, "wall_ms": int((time.time()-t0)*1000), "value": 1.0})
+                except Exception as _pte:
+                    _log.warning("paired trial recording failed for %s: %s", slug, _pte)
+                set_state(t["id"], state="DONE", note="paired-shadow verified; mutation intentionally discarded",
+                          artifact_branch=f"shadow/{slug}")
+                record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0, cost=run_cost)
+                return
 
             # FLEET BRANCH SHARE: push the verified agent branch to origin so the OTHER runner
             # Mac's sweeper/merge-train can see it. Local-only branches were the root cause of
@@ -1708,7 +1942,8 @@ def run_task(t):
                     f"Integration returned {result}. Keep the same task and branch, fix the root cause, rerun the failing build/test/merge path, and commit.",
                 ):
                     continue
-            set_state(t["id"], state=state_val, confidence=conf_score, note=_note)
+            set_state(t["id"], state=state_val, confidence=conf_score, note=_note,
+                      artifact_branch=branch_ref)
             if result in ("CONFLICT", "TESTFAIL", "BUILDFAIL"):
                 approval(name, "integrate", f"{slug} {result.lower()} on integrate",
                          why=f"could not auto-integrate ({result})", detail=out[-2000:])
@@ -1803,7 +2038,7 @@ def run_task(t):
             # OUTPUT RECYCLING: recycle partial work from failures
             try:
                 if not integrated:
-                    output_recycling.recycle(t["id"], wt if os.path.isdir(wt) else repo,
+                    output_recycling.recycle(t["id"], wt,
                                              out, error="integration failed")
             except Exception as e:
                 _log.debug("hook output_recycling_recycle failed: %s", e)
@@ -1868,7 +2103,7 @@ def run_task(t):
                 if not integrated:
                     import prompt_bankruptcy as _pb_check
                     if _pb_check.is_bankrupt(t):
-                        _bd_subs = bankruptcy_decompose.decompose(t, name, wt if os.path.isdir(wt) else repo)
+                        _bd_subs = bankruptcy_decompose.decompose(t, name, wt)
                         if _bd_subs:
                             set_state(t["id"], note=f"bankrupt → decomposed into {len(_bd_subs)} sub-tasks")
             except Exception as e:
@@ -2034,6 +2269,8 @@ _SCHEDULE = [
     ("ownermodel-300","owner_decision_model.py","interval",300),# draft/auto-apply gated decisions from owner precedent
     ("ev-900",        "ev_scheduler.py",    "interval", 900),   # EV-per-token queue ordering + zero-EV parking
     ("codercanary-1800","coder_canary.py",  "interval", 1800),  # force low-risk per-coder samples for learned routing
+    ("routereplay-1800","route_counterfactual.py","interval",1800), # evaluate 50 route policies on one captured trace
+    ("releaseattr-600","release_attribution.py","interval",600), # exact task/commit/release causal attribution backfill
     ("ollamacal-3600","ollama_calibrator.py","interval",3600),  # calibrate local model pass rate/latency for routing
     ("histmodel-night","model_historical_canary.py","daily",(1, 20)), # real merged-task canaries per local model
     ("selfdeploy-180","self_deploy.py",     "interval", 180),   # canary-gated exec-into-new-code (no human restarts)
@@ -2116,7 +2353,8 @@ _SCHEDULE = [
     ("governor-900",  "governor",           "interval", 900),   # EV-based capacity allocation
     ("costslo-1800",  "costslo",            "interval", 1800),  # hold per-app $/merge SLOs
     ("promote-daily", "promote",            "daily",    (6, 30)),# productize proven capabilities
-    ("dedup-600",     "dedup",              "interval", 600),   # collapse near-duplicate queued tasks
+    ("dedup-600",     "dedup",              "interval", 600),   # collapse near-duplicate queued tasks (+ semantic pass)
+    ("conflictres-300","conflictresolve",   "interval", 300),   # zero-token auto-rebase/branch recovery for BLOCKED
     ("contcompact-300","contcompact",       "interval", 300),   # collapse cont-* shard floods into few tasks
     ("backlogcompact-600","backlogcompact", "interval", 600),   # collapse stale broad queued backlog into batches
     ("canaryecon-600","canaryecon",         "interval", 600),   # promote/rollback canaries on cost+quality
@@ -2168,13 +2406,18 @@ _SCHEDULE = [
     ("pause-arbiter-300",     "pause_arbiter.py",       "interval", 300),  # lift self-clearing pauses (TTL + registered checks)
     ("fleet-stuck-300",       "fleet_stuck_alarm.py",   "interval", 300),  # queued>0 & running=0 for >15min -> notify + remediate
     ("queue-bankruptcy-3600", "queue_bankruptcy.py",    "interval", 3600), # close QUEUED tasks past ORCH_TASK_BANKRUPTCY_DAYS
-    ("scoreboard-3600",       "scoreboard.py",          "interval", 3600),  # merged/day, first-pass rate, paused-minutes, queue mix
+    ("scoreboard-600",        "scoreboard.py",          "interval", 600),  # merged/day, first-pass rate, paused-minutes, queue mix
+    ("workflow-compare-300",  "workflow_comparison.py", "interval", 300),  # Cowork vs native verified/integrated/deployed value
+    ("delivery-events-15",    "delivery_event_worker.py", "interval", 15),
+    ("native-verify-15",      "verification_worker.py", "interval", 15),
+    ("paired-trials-300",     "paired_trial_controller.py", "interval", 300),
     ("context-distill-3600",  "context_cache_distill.py","interval", 3600), # prune stale embedding-cache entries (unbounded growth fix)
     ("cost-intel-86400",      "cost_intelligence.py",   "interval", 86400), # daily: internal + external cost/value reports
     ("improve-roadmap-86400", "improvement_roadmap.py", "interval", 86400), # daily: 50x-500x claim, disclosed-assumption staged model
     ("tier-stats-300",     "tier_router_tick.py",      "interval", 300),   # tier routing stats + subscription capacity report
     ("fleet-topo-600",     "fleet_topology_tick.py",    "interval", 600),   # fleet topology optimization recommendations
     ("sub-recommend-3600", "sub_recommend_tick.py",     "interval", 3600),  # hourly subscription cost/value analysis
+    ("serviceagent-120",   "service_agent.py",          "interval", 120),   # proactive health fixer (throttle drift, merge starvation)
 ]
 _sched_last: dict = {}
 
@@ -2204,7 +2447,7 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      "portfolio_rebalancer.py", "batch_fusion.py",
                      "capacity_pacer.py", "account_partition.py",
                      "generator_feedback.py", "exhaustion_signal.py",
-                     "surge_planner.py",
+                     "surge_planner.py", "service_agent.py",
                      "pause_arbiter.py", "fleet_stuck_alarm.py", "queue_bankruptcy.py",
                      "scoreboard.py", "toolchain_gate.py", "context_cache_distill.py",
                      "cost_intelligence.py", "improvement_roadmap.py"}
@@ -2308,6 +2551,11 @@ def _fire_periodic(job: str) -> None:
                 return False
         except Exception as e:
             _log.debug("hook kill_switch failed: %s", e)
+    # Reap any stale previous instance of this job BEFORE the still-running check.
+    # Previously the reaper was after the check, so a stuck process would cause
+    # _is_still_running to return True → early return → reaper never reached → permanent block.
+    # Scaled to the job's own configured interval (5x).
+    _reap_stale_periodic(job, _JOB_INTERVAL.get(job, 3600))
     # Don't stack a new instance on top of one that's still running -- see _is_still_running
     # for why this was missing and what it caused (2026-07-10, train-60/merge_train.py pileup).
     if _is_still_running(job):
@@ -2323,7 +2571,7 @@ def _fire_periodic(job: str) -> None:
     # discarded. Previously an EPERM here silently skipped merge_train/release_train/intake/etc.,
     # stalling the entire deploy pipeline.
     _base = os.environ.get("ORCH_LOG_DIR") or os.path.join(_home, "logs")
-    _log = None
+    _logpath = None
     for cand in (_base, os.path.join(_dir, "logs"), "/tmp/claude-orchestrator-logs"):
         try:
             os.makedirs(cand, exist_ok=True)
@@ -2331,17 +2579,13 @@ def _fire_periodic(job: str) -> None:
             with open(_probe, "a"):
                 pass
             os.remove(_probe)
-            _log = os.path.join(cand, job.replace(".py", "").replace("_", "-"))
+            _logpath = os.path.join(cand, job.replace(".py", "").replace("_", "-"))
             break
         except Exception:
             continue
-    # Reap any stale previous instance of this job before launching. Scaled to the job's own
-    # configured interval (was hardcoded 3600s for every job regardless of cadence -- a 60s
-    # job wouldn't be reaped for 5 hours; see _is_still_running for the incident this caused).
-    _reap_stale_periodic(job, _JOB_INTERVAL.get(job, 3600))
     try:
-        if _log:
-            with open(_log + ".log", "a") as lf, open(_log + ".err", "a") as ef:
+        if _logpath:
+            with open(_logpath + ".log", "a") as lf, open(_logpath + ".err", "a") as ef:
                 p = subprocess.Popen(cmd, stdout=lf, stderr=ef, cwd=_dir, env=os.environ.copy())
         else:
             p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -2387,8 +2631,12 @@ def _is_still_running(job):
         return False
 
 
+_REAP_MULTIPLIER = {
+    "merge_train.py": 15,   # npm install + tests can legitimately take 10+ min
+}
+
 def _reap_stale_periodic(job, expected_interval):
-    """Kill periodic children that have been running > 5x their expected interval."""
+    """Kill periodic children that have been running > Nx their expected interval."""
     info = _PERIODIC_PIDS.get(job)
     if not info:
         return
@@ -2398,7 +2646,8 @@ def _reap_stale_periodic(job, expected_interval):
     except OSError:
         del _PERIODIC_PIDS[job]
         return
-    if time.time() - launch_t > expected_interval * 5:
+    multiplier = _REAP_MULTIPLIER.get(job, 5)
+    if time.time() - launch_t > expected_interval * multiplier:
         try:
             os.kill(pid, 9)
             print(f"[reaper] killed stale periodic child {job} (pid {pid}, ran {int(time.time()-launch_t)}s)")
@@ -2410,7 +2659,11 @@ def _reap_stale_periodic(job, expected_interval):
 _ZOMBIE_REAP_T = 0.0
 
 def _reap_zombie_tasks():
-    """Reclaim RUNNING tasks whose threads are dead (updated_at > 30min ago)."""
+    """Reclaim dead RUNNING tasks and promote elapsed RETRY work.
+
+    RETRY is intentionally not claimable. Previously nothing promoted it back
+    to QUEUED, so transient provider/capacity failures became permanent limbo.
+    """
     global _ZOMBIE_REAP_T
     if time.time() - _ZOMBIE_REAP_T < 300:
         return
@@ -2419,21 +2672,54 @@ def _reap_zombie_tasks():
         running = db.select("tasks", {"select": "id,slug,updated_at,account", "state": "eq.RUNNING",
                                        "limit": "100"}) or []
         cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=30)).isoformat()
+        dead_cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+            seconds=int(os.environ.get("ORCH_DEAD_RUNNER_RECLAIM_GRACE_S", "180")))).isoformat()
+        heartbeat_cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
+            seconds=int(os.environ.get("FLEET_TTL_S", "180")))).isoformat()
+        live_runner_ids = set()
+        try:
+            heartbeats = db.select("runner_heartbeats", {
+                "select": "runner_id,hostname,last_seen", "last_seen": f"gte.{heartbeat_cutoff}",
+                "order": "last_seen.desc", "limit": "500",
+            }) or []
+            live_runner_ids = {str(h.get("runner_id") or "") for h in heartbeats
+                               if " lane " not in str(h.get("hostname") or "")
+                               and not str(h.get("runner_id") or "").endswith("-scheduler")}
+        except Exception:
+            pass
         reclaimed = 0
         for t in running:
             # COWORK DISPATCH: skip tasks claimed by Cowork sessions — they run in a
             # separate execution context, not as a local subprocess.
             if (t.get("account") or "").startswith("cowork-"):
                 continue
-            if (t.get("updated_at") or "") < cutoff:
+            account = str(t.get("account") or "")
+            dead_runner_claim = (bool(live_runner_ids)
+                                 and bool(re.match(r"^(Mac[.]lan|Mandys-MacBook-Pro[.]local)-[0-9]+$", account))
+                                 and account not in live_runner_ids
+                                 and (t.get("updated_at") or "") < dead_cutoff)
+            if dead_runner_claim or (t.get("updated_at") or "") < cutoff:
                 patch = agentic_repair.repair_patch(
-                    t, "zombie-reaper: stale RUNNING >30min",
+                    t, ("zombie-reaper: expired runner heartbeat" if dead_runner_claim
+                        else "zombie-reaper: stale RUNNING >30min"),
                     category="orphaned-running",
                     directive="The worker died or stopped updating this RUNNING task. Resume the same task from existing branch/worktree/artifacts, finish the implementation, run checks, and commit.")
                 db.update("tasks", {"id": t["id"]}, patch)
                 reclaimed += 1
         if reclaimed:
             print(f"[zombie-reaper] reclaimed {reclaimed} stale RUNNING tasks")
+        retry_cutoff = (datetime.datetime.now(datetime.timezone.utc)
+                        - datetime.timedelta(seconds=int(os.environ.get("ORCH_RETRY_PROMOTE_AFTER_S", "120")))).isoformat()
+        retries = db.select("tasks", {"select": "id,note,updated_at", "state": "eq.RETRY",
+                                       "updated_at": f"lt.{retry_cutoff}", "limit": "250"}) or []
+        for task in retries:
+            note = str(task.get("note") or "")
+            db.update("tasks", {"id": task["id"]}, {
+                "state": "QUEUED", "updated_at": "now()",
+                "note": f"{note} | retry-promoter"[-1000:],
+            })
+        if retries:
+            print(f"[retry-promoter] returned {len(retries)} elapsed RETRY tasks to QUEUED")
     except Exception as e:
         print(f"[zombie-reaper] error: {e}")
 
@@ -2519,6 +2805,12 @@ def _run_task_safe(t):
         except Exception as e2:
             _log.debug("hook run_task_safe_log failed: %s", e2)
         _block_or_retry(t, f"runner exception: {e}"[:300])
+        try:
+            import exec_telemetry
+            _crash_tel = exec_telemetry.start(t["id"])
+            _crash_tel.finish(outcome="crash", note=f"runner exception: {e}"[:300])
+        except Exception:
+            pass
 
 
 _FLEET = {"t": 0.0}  # throttle for the in-loop fleet_control gateway tick
@@ -2585,6 +2877,8 @@ def main():
                   f"You will be charged API rates. Unset ORCH_ALLOW_API_BILLING to block.")
     except Exception as _e:
         print(f"[billing-firewall] guard failed to load: {_e}")
+    _touch_progress()  # WEDGEFIX-C: reset progress mtime at startup so keepalive doesn't
+                        # immediately kill a fresh runner due to stale mtime from prior run.
     print(f"runner {RUNNER_ID} online -> {os.environ.get('SUPABASE_URL','(set SUPABASE_URL)')}")
     # FLEET TOPOLOGY: register this runner's capability profile
     try:
@@ -2632,6 +2926,19 @@ def main():
     global _sched_bg_running
     _sched_bg_running = False
     active = []
+    # A model/build call can keep the main loop busy long enough for the fleet
+    # TTL to expire, falsely declaring this physical machine dead. Keep liveness
+    # independent from scheduling latency; the main-loop heartbeat still owns
+    # remote-control and fleet-control checks.
+    def _heartbeat_daemon():
+        interval = max(10, int(os.environ.get("ORCH_HEARTBEAT_INTERVAL_S", "30") or 30))
+        while True:
+            try:
+                db.heartbeat(RUNNER_ID, socket.gethostname(), len(active))
+            except Exception as exc:
+                _log.debug("background heartbeat failed: %s", exc)
+            time.sleep(interval)
+    threading.Thread(target=_heartbeat_daemon, daemon=True, name="heartbeat-daemon").start()
     # Delay first scheduler tick so tasks get claimed before 60+ periodic jobs run.
     # The scheduler will fire after 120s, giving the runner time to fill lanes first.
     _sched_t = time.time() + 60  # effectively 120s delay (checked at >= 60s elapsed)
@@ -2795,8 +3102,35 @@ def main():
                         t = None
                         pass  # skip claiming this cycle
                     else:
-                        t = db.claim_task(RUNNER_ID)
+                        # PARALLEL SWARM DISPATCH: batch-claim + concurrent API dispatch
+                        # when conditions are right (enough headroom, budget under cap).
+                        # Falls through to serial claim if swarm is disabled or not applicable.
+                        t = None
+                        _swarm_dispatched = False
+                        try:
+                            import parallel_dispatch
+                            if parallel_dispatch.should_use_swarm(eff_limit, len(active)):
+                                _pd_stats = parallel_dispatch.dispatch_swarm_batch(
+                                    RUNNER_ID, active, _run_task_safe)
+                                if _pd_stats.get("dispatched", 0):
+                                    print(f"[swarm-batch] dispatched={_pd_stats['dispatched']} "
+                                          f"api={_pd_stats['api_tasks']} cli={_pd_stats['cli_tasks']} "
+                                          f"cost=${_pd_stats['cost_usd']:.4f}", flush=True)
+                                    _swarm_dispatched = True
+                        except Exception as e:
+                            _log.debug("hook parallel_dispatch failed: %s", e)
+                        if not _swarm_dispatched:
+                            t = db.claim_task(RUNNER_ID)
                         _touch_progress()  # WEDGEFIX-B-PROGRESS
+                    if t:
+                        # PREDICTIVE-PREEMPTION: skip tasks with >=3 consecutive failures
+                        try:
+                            import failure_forecast
+                            if failure_forecast.should_skip(t.get("id", ""), db):
+                                print(f"SKIP forecasted-fail {t.get('id','')}", flush=True)
+                                t = None
+                        except Exception as e:
+                            _log.debug("hook failure_forecast failed: %s", e)
                     if t:
                         print(f"[claim] {t.get('slug','')} (project={t.get('project_id','?')[:8]}) active={len(active)+1}/{eff_limit}", flush=True)
                         # REUSE-FIRST: adapt an already-solved implementation instead of rebuilding
@@ -2827,7 +3161,8 @@ def main():
                                 _rec = patch_recovery.recover(_repo, slug.replace("recover-missing-branch-", ""), _base, project=_proj.get("name"))
                                 if _rec.get("ok"):
                                     set_state(t["id"], state="DONE",
-                                              note=f"patch-recovery: {_rec['method']} (zero-spend)")
+                                              note=f"patch-recovery: {_rec['method']} (zero-spend)",
+                                              artifact_branch=_rec.get("branch") or f"agent/{slug}")
                                     print(f"[patch-recovery] {slug}: recovered via {_rec['method']}")
                                     continue
                         except Exception as e:
@@ -2870,6 +3205,8 @@ def main():
                             _log.debug("hook pattern_adversary failed: %s", e)
         except Exception as e:
             print("poll error:", e)
+        _touch_progress()  # WEDGEFIX-C: unconditional — prevents wedge detection during
+                           # capacity-pacer holds, mem-gate holds, or any non-claiming cycle.
         time.sleep(POLL)
 
 

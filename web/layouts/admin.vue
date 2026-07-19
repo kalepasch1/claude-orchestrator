@@ -1,143 +1,36 @@
+<script setup lang="ts">
+const route = useRoute()
+const open = ref(false)
+const sections = [
+  { label: 'Command', items: [['Overview','/admin','◉'],['Events','/admin/events','⌁'],['Chat','/admin/chat','↗'],['Playbooks','/admin/playbooks','▷']] },
+  { label: 'Intelligence', items: [['Predictions','/admin/predictions','◌'],['Knowledge graph','/admin/knowledge-graph','⌘'],['Anomalies','/admin/anomalies','△'],['Shadow decisions','/admin/shadow','◐']] },
+  { label: 'Assurance', items: [['Capability passport','/admin/capability-passport','◇'],['Compliance','/admin/compliance','✓'],['Regulatory','/admin/regulatory','§'],['Policies','/admin/policies','≡'],['Gateway','/admin/gateway','↔']] },
+  { label: 'Operations', items: [['Deploys','/admin/deploys','↑'],['Telemetry','/admin/telemetry','∿'],['Costs','/admin/costs','$'],['Revenue','/admin/revenue','↗'],['Prompt ops','/admin/prompt-ops','✦'],['Temporal','/admin/temporal','↶'],['Replay','/admin/replay','▶'],['Sessions','/admin/session-replay','◎'],['Chaos lab','/admin/chaos','⚡']] },
+]
+function active(path: string) { return path === '/admin' ? route.path === path : route.path.startsWith(path) }
+</script>
+
 <template>
-  <div class="flex h-screen bg-white text-gray-900">
-    <!-- Sidebar -->
-    <aside class="w-56 bg-gray-50 border-r border-gray-200 flex flex-col">
-      <div class="p-4 border-b border-gray-200">
-        <h1 class="text-sm font-semibold text-blue-700 tracking-wide">SMRTER OPS</h1>
-        <p class="text-xs text-gray-500 mt-1">Unified Admin</p>
-      </div>
-
-      <nav class="flex-1 overflow-y-auto py-2">
-        <!-- Overview -->
-        <NuxtLink to="/admin" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#9673;</span> Overview
-        </NuxtLink>
-        <NuxtLink to="/admin/events" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#9889;</span> Event Feed
-        </NuxtLink>
-        <NuxtLink to="/admin/users" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#128100;</span> Cross-App Users
-        </NuxtLink>
-        <NuxtLink to="/admin/policies" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#128203;</span> Auto-Policies
-        </NuxtLink>
-        <NuxtLink to="/admin/chat" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#128172;</span> Chat
-        </NuxtLink>
-        <NuxtLink to="/admin/anomalies" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#9888;</span> Anomalies
-        </NuxtLink>
-        <NuxtLink to="/admin/revenue" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#128176;</span> Revenue
-        </NuxtLink>
-        <NuxtLink to="/admin/deploys" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#128640;</span> Deploys
-        </NuxtLink>
-        <NuxtLink to="/admin/prompt-ops" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#128221;</span> Prompt Ops
-        </NuxtLink>
-        <NuxtLink to="/admin/temporal" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#9203;</span> Temporal
-        </NuxtLink>
-        <NuxtLink to="/admin/shadow" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#128065;</span> Shadow
-        </NuxtLink>
-        <NuxtLink to="/admin/compliance" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#128279;</span> Compliance
-        </NuxtLink>
-        <NuxtLink to="/admin/chaos" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#128025;</span> Chaos
-        </NuxtLink>
-        <NuxtLink to="/admin/regulatory" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#128220;</span> Regulatory
-        </NuxtLink>
-        <NuxtLink to="/admin/playbooks" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#128214;</span> Playbooks
-        </NuxtLink>
-        <NuxtLink to="/admin/costs" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#128178;</span> Costs
-        </NuxtLink>
-        <NuxtLink to="/admin/telemetry" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#128200;</span> Telemetry
-        </NuxtLink>
-        <NuxtLink to="/admin/session-replay" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#128101;</span> Sessions
-        </NuxtLink>
-        <NuxtLink to="/admin/knowledge-graph" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#127760;</span> Knowledge Graph
-        </NuxtLink>
-        <NuxtLink to="/admin/predictions" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#128302;</span> Predictions
-        </NuxtLink>
-        <NuxtLink to="/admin/gateway" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#128268;</span> Gateway
-        </NuxtLink>
-        <NuxtLink to="/admin/replay" class="nav-link" active-class="nav-active">
-          <span class="nav-icon">&#127916;</span> Replay
-        </NuxtLink>
-
-        <!-- App sections -->
-        <div v-for="app in apps" :key="app.id" class="mt-2">
-          <div class="px-4 py-1 text-xs font-medium text-gray-600 uppercase tracking-wider">{{ app.name }}</div>
-          <NuxtLink :to="`/admin/${app.id}`" class="nav-link" active-class="nav-active">
-            <span class="nav-dot" :class="app.configured ? 'bg-green-500' : 'bg-gray-300'" />
-            Dashboard
-          </NuxtLink>
-          <NuxtLink :to="`/admin/${app.id}/users`" class="nav-link text-xs" active-class="nav-active">
-            Users
-          </NuxtLink>
-          <NuxtLink :to="`/admin/${app.id}/data`" class="nav-link text-xs" active-class="nav-active">
-            Data Explorer
-          </NuxtLink>
-        </div>
+  <div class="admin-shell">
+    <button v-if="open" class="admin-scrim" aria-label="Close navigation" @click="open=false" />
+    <aside :class="{ open }">
+      <header><NuxtLink to="/"><MadeusLogo /></NuxtLink><span>ADMIN CONTROL</span></header>
+      <div class="admin-health"><i /> All control systems nominal <b>LIVE</b></div>
+      <nav>
+        <section v-for="section in sections" :key="section.label">
+          <p>{{ section.label }}</p>
+          <NuxtLink v-for="item in section.items" :key="item[1]" :to="item[1]" :class="{ active: active(item[1]) }" @click="open=false"><i>{{ item[2] }}</i><span>{{ item[0] }}</span><b>→</b></NuxtLink>
+        </section>
       </nav>
-
-      <!-- Footer -->
-      <div class="p-3 border-t border-gray-200">
-        <NuxtLink to="/" class="text-xs text-gray-500 hover:text-gray-900">&larr; Fleet Ops</NuxtLink>
-      </div>
+      <footer><NuxtLink to="/">← Return to workspace</NuxtLink><small>Madeus assurance plane</small></footer>
     </aside>
-
-    <!-- Main content -->
-    <main class="flex-1 overflow-y-auto">
-      <slot />
-    </main>
+    <div class="admin-stage">
+      <header class="admin-mobile"><button @click="open=true">☰</button><MadeusLogo compact /><span>Admin</span></header>
+      <main><slot /></main>
+    </div>
   </div>
 </template>
 
-<script setup lang="ts">
-const apps = ref([
-  { id: 'apparently', name: 'Apparently', configured: true },
-  { id: 'tomorrow', name: 'Tomorrow', configured: true },
-  { id: 'smarter', name: 'Smarter', configured: true },
-  { id: 'galop', name: 'Galop', configured: true },
-  { id: 'hisanta', name: 'HiSanta', configured: true },
-  { id: 'pareto', name: 'Pareto', configured: true },
-  { id: 'orchestrator', name: 'Orchestrator', configured: true },
-])
-
-// Fetch actual config status
-onMounted(async () => {
-  try {
-    const { data } = await useFetch('/api/proxy/apps')
-    if (data.value?.apps) {
-      apps.value = data.value.apps
-    }
-  } catch {}
-})
-</script>
-
 <style scoped>
-.nav-link {
-  @apply flex items-center gap-2 px-4 py-1.5 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 transition-colors;
-}
-.nav-active {
-  @apply text-blue-700 bg-blue-50 border-r-2 border-blue-600;
-}
-.nav-icon {
-  @apply text-xs w-5 text-center;
-}
-.nav-dot {
-  @apply w-1.5 h-1.5 rounded-full inline-block;
-}
+.admin-shell{--admin-ink:#10110f;--admin-line:#e0e1dc;display:flex;height:100vh;overflow:hidden;background:#f6f7f4;color:var(--admin-ink)}aside{display:flex;width:248px;flex:0 0 auto;flex-direction:column;border-right:1px solid var(--admin-line);background:#fbfcf9}aside>header{display:flex;height:73px;align-items:center;justify-content:space-between;padding:0 18px;border-bottom:1px solid var(--admin-line)}aside>header a{color:#111;text-decoration:none}aside>header>span{color:#999;font:650 7px JetBrains Mono,monospace;letter-spacing:.12em}.admin-health{display:flex;align-items:center;gap:7px;margin:12px;padding:10px;border:1px solid #dce7df;border-radius:9px;background:#f1f8f3;color:#52705d;font-size:8px}.admin-health i{width:6px;height:6px;border-radius:50%;background:#38a569;box-shadow:0 0 0 4px #38a56914}.admin-health b{margin-left:auto;color:#38a569;font:650 6px JetBrains Mono,monospace}nav{flex:1;overflow:auto;padding:0 10px 18px}nav section{margin-top:14px}nav p{margin:0 10px 6px;color:#aaa;font:700 7px JetBrains Mono,monospace;letter-spacing:.13em;text-transform:uppercase}nav a{display:grid;grid-template-columns:20px 1fr auto;gap:7px;align-items:center;border-radius:8px;padding:8px 10px;color:#676862;text-decoration:none;font-size:10px;transition:.16s}nav a:hover{background:#f0f1ed;color:#111}nav a.active{background:#111;color:#fff;box-shadow:0 6px 15px #1112}nav a i{font-style:normal;text-align:center}nav a b{opacity:0;font-weight:400}nav a.active b{opacity:.7}aside footer{display:flex;flex-direction:column;gap:5px;padding:15px 18px;border-top:1px solid var(--admin-line)}aside footer a{color:#555;text-decoration:none;font-size:9px}aside footer small{color:#aaa;font-size:7px}.admin-stage{display:flex;min-width:0;flex:1;flex-direction:column}.admin-stage>main{flex:1;overflow:auto;background:radial-gradient(circle at 85% 0,#eeece4,transparent 24%),#f7f8f5}.admin-mobile{display:none}.admin-scrim{display:none}@media(max-width:820px){aside{position:fixed;z-index:80;inset:0 auto 0 0;transform:translateX(-100%);transition:transform .22s}aside.open{transform:translateX(0)}.admin-scrim{position:fixed;z-index:70;inset:0;display:block;border:0;background:#0006;backdrop-filter:blur(4px)}.admin-mobile{display:flex;height:54px;align-items:center;gap:11px;padding:0 15px;border-bottom:1px solid var(--admin-line);background:#fff}.admin-mobile button{border:0;background:transparent}.admin-mobile>span{margin-left:auto;color:#888;font-size:9px}}
 </style>

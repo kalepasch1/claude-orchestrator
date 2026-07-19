@@ -25,7 +25,7 @@ RECOVERY_COOLDOWN = 3600  # don't re-queue recovery within 1 hour
 # Build commands to probe per project type
 PROBES = [
     {"files": ["package.json"], "cmd": ["npm", "--version"], "name": "npm"},
-    {"files": ["package.json", "tsconfig.json"], "cmd": ["npx", "tsc", "--version"], "name": "tsc"},
+    {"files": ["tsconfig.json"], "cmd": ["npx", "tsc", "--version"], "name": "tsc"},
     {"files": ["requirements.txt", "setup.py", "pyproject.toml"], "cmd": ["python3", "--version"], "name": "python3"},
     {"files": ["Cargo.toml"], "cmd": ["cargo", "--version"], "name": "cargo"},
     # Additional build tool probes added for broader coverage
@@ -59,12 +59,20 @@ def check_project(project_id, repo_path):
         return {"ready": True, "failures": []}  # can't check, assume OK
 
     failures = []
+    probe_path = repo_path
+    deps_ready_at_start = None
+    try:
+        import dependency_prewarm
+        probe_path = dependency_prewarm.runtime_root(repo_path)
+        deps_ready_at_start = dependency_prewarm.deps_ready(repo_path)
+    except Exception:
+        pass
     for probe in PROBES:
         # Only check if the project has the relevant config files
         if not any(os.path.isfile(os.path.join(repo_path, f)) for f in probe["files"]):
             continue
         try:
-            r = subprocess.run(probe["cmd"], capture_output=True, timeout=30, cwd=repo_path)
+            r = subprocess.run(probe["cmd"], capture_output=True, timeout=30, cwd=probe_path)
             if r.returncode != 0:
                 failures.append({"tool": probe["name"],
                                  "error": (r.stderr.decode()[:200] if r.stderr else "exit code " + str(r.returncode))})
@@ -80,7 +88,16 @@ def check_project(project_id, repo_path):
     if os.path.isfile(os.path.join(repo_path, "package.json")):
         try:
             import dependency_prewarm
-            if not dependency_prewarm.deps_ready(repo_path):
+            # Shared immutable snapshots can be inspected concurrently by
+            # version probes/activation. Require repeated negatives before
+            # publishing a project-wide red verdict from a transient read.
+            deps_ok = bool(deps_ready_at_start)
+            for _ in range(3):
+                if dependency_prewarm.deps_ready(repo_path):
+                    deps_ok = True
+                    break
+                time.sleep(0.2)
+            if not deps_ok:
                 failures.append({"tool": "node_modules",
                                  "error": "dependencies not installed/warmed (dependency_prewarm.deps_ready=False)"})
         except Exception:
@@ -89,13 +106,13 @@ def check_project(project_id, repo_path):
     return {"ready": len(failures) == 0, "failures": failures}
 
 
-def is_ready(project_id, repo_path=None):
+def is_ready(project_id, repo_path=None, force=False):
     """Check if a project's toolchain is ready. Uses cached result within CHECK_INTERVAL."""
     state = _load_state()
     entry = state.get(project_id, {})
 
     # Use cached result if fresh enough
-    if time.time() - entry.get("checked_at", 0) < CHECK_INTERVAL:
+    if not force and time.time() - entry.get("checked_at", 0) < CHECK_INTERVAL:
         return entry.get("ready", True)
 
     # Need a fresh check
@@ -108,14 +125,18 @@ def is_ready(project_id, repo_path=None):
             return True  # can't determine, don't block
 
     result = check_project(project_id, repo_path)
+    failure_streak = (0 if result["ready"] else int(entry.get("failure_streak") or 0) + 1)
+    confirmations = max(1, int(os.environ.get("ORCH_TOOLCHAIN_FAILURE_CONFIRMATIONS", "2")))
+    ready = bool(result["ready"] or failure_streak < confirmations)
     state[project_id] = {
-        "ready": result["ready"],
+        "ready": ready,
         "failures": result["failures"],
+        "failure_streak": failure_streak,
         "checked_at": time.time(),
         "recovery_queued_at": entry.get("recovery_queued_at", 0)
     }
 
-    if not result["ready"]:
+    if not ready:
         # Queue a single recovery task if we haven't recently
         if time.time() - entry.get("recovery_queued_at", 0) > RECOVERY_COOLDOWN:
             _queue_recovery(project_id, result["failures"])
@@ -123,7 +144,7 @@ def is_ready(project_id, repo_path=None):
         print(f"[toolchain] project {project_id} NOT READY: {result['failures']}")
 
     _save_state(state)
-    return result["ready"]
+    return ready
 
 
 def is_ready_cached(project_id):
@@ -173,7 +194,7 @@ def run():
     except Exception:
         return
     for p in projects:
-        is_ready(p["id"], p.get("repo_path"))
+        is_ready(p["id"], p.get("repo_path"), force=True)
 
 
 if __name__ == "__main__":

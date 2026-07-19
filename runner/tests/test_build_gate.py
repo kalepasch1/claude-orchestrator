@@ -1,5 +1,7 @@
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -38,6 +40,33 @@ class TestBuildGate(unittest.TestCase):
         finally:
             build_gate.shutil.which = orig
 
+    def test_real_build_wins_over_typecheck(self):
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "package.json"), "w") as f:
+            json.dump({"scripts": {"typecheck": "vue-tsc --noEmit", "build": "nuxt build"}}, f)
+        self.assertEqual(build_gate.detect_build_cmd(d), "npm run build")
+
+    def test_vercel_build_command_wins(self):
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "package.json"), "w") as f:
+            json.dump({"scripts": {"build": "nuxt build", "build:vercel": "node scripts/preflight.mjs && nuxt build"}}, f)
+        with open(os.path.join(d, "vercel.json"), "w") as f:
+            json.dump({"buildCommand": "npm run build:vercel"}, f)
+        self.assertEqual(build_gate.detect_build_cmd(d), "npm run build:vercel")
+
+    def test_vercelignore_removes_tracked_build_dependency(self):
+        d = tempfile.mkdtemp()
+        subprocess.run(["git", "init", "-q", d], check=True)
+        os.makedirs(os.path.join(d, "scripts"))
+        with open(os.path.join(d, "scripts", "preflight.mjs"), "w") as f:
+            f.write("export {}\n")
+        with open(os.path.join(d, ".vercelignore"), "w") as f:
+            f.write("scripts/\n")
+        subprocess.run(["git", "add", "."], cwd=d, check=True)
+        removed = build_gate._apply_vercelignore(d)
+        self.assertEqual(removed, ["scripts/preflight.mjs"])
+        self.assertFalse(os.path.exists(os.path.join(d, "scripts", "preflight.mjs")))
+
     def test_dependency_prewarm_uses_npm_when_yarn_missing(self):
         d = tempfile.mkdtemp()
         with open(os.path.join(d, "package.json"), "w") as f:
@@ -59,6 +88,18 @@ class TestBuildGate(unittest.TestCase):
             json.dump({"scripts": {"build": "echo ok"}}, f)
         os.makedirs(os.path.join(d, "node_modules"))
         self.assertTrue(dependency_prewarm.deps_ready(d))
+
+    def test_dependency_prewarm_prefers_package_lock_when_multiple_locks_exist(self):
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "package.json"), "w") as f:
+            json.dump({}, f)
+        for name in ("package-lock.json", "pnpm-lock.yaml"):
+            with open(os.path.join(d, name), "w") as f:
+                f.write("{}")
+        with patch.object(dependency_prewarm.shutil, "which", return_value="/usr/bin/tool"):
+            manager, cmd = dependency_prewarm._manager(d)
+        self.assertEqual(manager, "npm")
+        self.assertEqual(cmd[1], "ci")
 
     def test_detects_nested_web_build_when_root_has_no_package(self):
         d = tempfile.mkdtemp()
@@ -125,8 +166,9 @@ class TestBuildGate(unittest.TestCase):
             p.stderr = "postinstall failed"
             p.returncode = 1
             if "--ignore-scripts" in cmd:
-                os.makedirs(os.path.join(d, "node_modules", ".bin"))
-                with open(os.path.join(d, "node_modules", ".bin", "nuxi"), "w") as f:
+                install_root = kwargs["cwd"]
+                os.makedirs(os.path.join(install_root, "node_modules", ".bin"))
+                with open(os.path.join(install_root, "node_modules", ".bin", "nuxi"), "w") as f:
                     f.write("#!/bin/sh\n")
                 p.returncode = 0
             return p
@@ -137,6 +179,44 @@ class TestBuildGate(unittest.TestCase):
         self.assertTrue(res["ok"])
         self.assertTrue(res["ignored_scripts"])
         self.assertIn("--ignore-scripts", calls[-1])
+        self.assertFalse(os.path.exists(os.path.join(d, "node_modules")))
+
+    def test_dependency_snapshot_is_atomically_activated_in_worktree(self):
+        d = tempfile.mkdtemp()
+        worktree = tempfile.mkdtemp()
+        with open(os.path.join(d, "package.json"), "w") as f:
+            json.dump({"scripts": {"build": "echo ok"}}, f)
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "cp":
+                shutil.copytree(cmd[-2], cmd[-1])
+                return MagicMock(returncode=0, stdout="", stderr="")
+            os.makedirs(os.path.join(kwargs["cwd"], "node_modules"))
+            p = MagicMock(returncode=0, stdout="", stderr="")
+            return p
+
+        with patch.object(dependency_prewarm, "_STAMP_DIR", tempfile.mkdtemp()), \
+             patch.object(dependency_prewarm.subprocess, "run", side_effect=fake_run):
+            res = dependency_prewarm.ensure(d, reason="test")
+            linked = dependency_prewarm.link_shared_runtime(d, worktree)
+        target = os.path.join(worktree, "node_modules")
+        self.assertTrue(res["ok"])
+        self.assertIn(target, linked)
+        self.assertTrue(os.path.isdir(target))
+        self.assertFalse(os.path.samefile(target, os.path.join(res["snapshot"], "node_modules")))
+
+    def test_snapshot_stages_local_file_dependencies(self):
+        d = tempfile.mkdtemp()
+        local = os.path.join(d, "stubs", "shim")
+        os.makedirs(local)
+        with open(os.path.join(local, "package.json"), "w") as f:
+            json.dump({"name": "shim", "version": "1.0.0"}, f)
+        with open(os.path.join(d, "package.json"), "w") as f:
+            json.dump({"dependencies": {"shim": "file:./stubs/shim"}}, f)
+        target = tempfile.mkdtemp()
+        copied = dependency_prewarm._copy_local_dependencies(d, target)
+        self.assertEqual(copied, ["./stubs/shim"])
+        self.assertTrue(os.path.isfile(os.path.join(target, "stubs", "shim", "package.json")))
 
 
 if __name__ == "__main__":

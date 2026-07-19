@@ -16,7 +16,7 @@ const appAlias = {
 
 // Nuxt config - hosted control plane (deploys to Vercel out of the box).
 export default defineNuxtConfig({
-  modules: ['@nuxtjs/supabase', '@nuxtjs/tailwindcss'],
+  modules: ['@nuxtjs/supabase', '@nuxtjs/tailwindcss', '@vercel/analytics/nuxt'],
   ssr: true,
   experimental: { appManifest: false },
   alias: appAlias,
@@ -34,10 +34,13 @@ export default defineNuxtConfig({
   },
   css: ['~/assets/main.css'],
   app: {
+    pageTransition: { name: 'page', mode: 'out-in' },
+    layoutTransition: { name: 'layout', mode: 'out-in' },
     head: {
-      title: 'Claude Orchestrator',
+      title: 'Madeus — Outcome Orchestration',
       meta: [{ name: 'viewport', content: 'width=device-width, initial-scale=1' }],
       link: [
+        { rel: 'icon', type: 'image/svg+xml', href: '/madeus-mark.svg' },
         { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
         { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' },
         {

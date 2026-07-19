@@ -30,6 +30,7 @@ Requires (only for --commit): SUPABASE_URL + SUPABASE_SERVICE_KEY in runner/.env
 """
 import os, sys, json, argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import pipeline_contract
 
 VALID_KINDS = {"build", "research", "efficiency", "self", "legal", "gtm", "bugfix", "refactor", "batch"}
 
@@ -143,11 +144,18 @@ def stage(backlog_path, only_project=None, commit=False):
                 print(line, "→ SKIP (already staged)")
                 skipped += 1
                 continue
+            admission = pipeline_contract.task_fields(
+                t["prompt"], project=t["project"], kind=kind, source="cowork-stage",
+                slug=t["slug"], material=bool(t.get("material")),
+                existing_note=t.get("note", "staged by cowork_stage"),
+                model=t.get("model"), force_coder=t.get("force_coder"),
+            )
             db.insert("tasks", {
-                "project_id": pid, "slug": t["slug"], "prompt": t["prompt"],
+                "project_id": pid, "slug": t["slug"],
                 "base_branch": base, "deps": t.get("deps", []), "kind": kind,
-                "model": t.get("model"), "state": "QUEUED",
-                "note": "staged by cowork_stage",
+                "model": admission["model"], "force_coder": admission["force_coder"],
+                "state": "QUEUED", "prompt": admission["prompt"],
+                "note": admission["note"],
             })
             print(line, "→ QUEUED")
             staged += 1

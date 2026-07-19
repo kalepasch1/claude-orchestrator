@@ -1,143 +1,109 @@
-#!/usr/bin/env python3
 """
-rootcause_cluster.py - cluster BLOCKED/regression failures into named patterns.
-For each recurring pattern, auto-write a permanent fix or guard rule.
+rootcause_cluster.py - Cluster BLOCKED/regression failures into named patterns.
+For each recurring pattern, auto-generate a guard rule so that class of failure
+is solved once, forever.
 """
-from __future__ import annotations
-import collections, os, re, sys
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import db
+import re
+import hashlib
+from dataclasses import dataclass, field
+from collections import defaultdict
 
-MIN_CLUSTER_SIZE = int(os.environ.get("ORCH_CLUSTER_MIN_SIZE", "3"))
-SWEEP_LIMIT = int(os.environ.get("ORCH_CLUSTER_SWEEP_LIMIT", "200"))
-GUARD_KIND = "bugfix"
 
-PATTERNS = [
-    ("under-specified-task",
-     re.compile(r"under-specified|no concrete implementation|PREFLIGHT DIRECTIVE.*NO:", re.I | re.S),
-     "Task prompt too vague. Re-scope with concrete file targets."),
-    ("agentic-repair-loop",
-     re.compile(r"AGENTIC-REPAIR.*AGENTIC-REPAIR|remediation cap \d+ reached", re.I | re.S),
-     "Task stuck in repair loop. Needs human re-scope or deletion."),
-    ("missing-branch",
-     re.compile(r"branch.*missing|no longer exists|prior branch is missing", re.I),
-     "Branch was lost. Reconstruct from artifacts or start fresh."),
-    ("build-tool-missing",
-     re.compile(r"(yarn|pnpm|nuxt|next|vite).*command not found|command not found.*(yarn|pnpm|nuxt|next|vite)|cannot find module", re.I),
-     "Build tool not installed in runner environment."),
-    ("merge-conflict",
-     re.compile(r"HTTP Error 409|merge.*conflict|rebase.*conflict", re.I),
-     "Persistent merge conflicts."),
-    ("timeout",
-     re.compile(r"timed? out|timeout|deadline exceeded", re.I),
-     "Network/API timeout."),
-    ("budget-blocked",
-     re.compile(r"budget cap|budget guard|cost circuit|capacity circuit", re.I),
-     "Blocked by budget/capacity limits."),
-    ("build-failure",
-     re.compile(r"BUILDFAIL|build error|build red|production build.*fail", re.I),
-     "Recurring build failures."),
-    ("test-failure",
-     re.compile(r"tests? failed|pytest.*FAILED|vitest.*fail", re.I),
-     "Recurring test failures."),
+@dataclass
+class FailureRecord:
+    task_id: str
+    slug: str
+    state: str
+    note: str
+    error_signature: str = ""
+    def __post_init__(self):
+        if not self.error_signature:
+            self.error_signature = extract_signature(self.note)
+
+
+@dataclass
+class FailureCluster:
+    pattern_id: str
+    pattern_name: str
+    signature: str
+    records: list = field(default_factory=list)
+    guard_rule: str = ""
+    @property
+    def count(self):
+        return len(self.records)
+    @property
+    def is_recurring(self):
+        return self.count >= 2
+
+
+KNOWN_PATTERNS = [
+    (r"capacity circuit.*call cap", "capacity-exhaustion"),
+    (r"Not logged in.*Please run /login", "auth-not-logged-in"),
+    (r"remote.publish.failed.*push", "remote-publish-auth"),
+    (r"HTTP Error 409.*Conflict", "git-conflict-409"),
+    (r"no spec|no real specification|no actionable", "missing-spec"),
+    (r"PATCH TEMPLATE.*[0-9a-f]{6,}", "patch-template-corrupt"),
+    (r"budget guard|spend limit", "budget-guard"),
+    (r"shelved after \d+ remediations", "remediation-cap"),
+    (r"FileNotFoundError.*No such file", "file-not-found"),
+    (r"ModuleNotFoundError", "module-not-found"),
+    (r"TypeError|AttributeError", "type-error"),
+    (r"test.*fail|tests fail", "test-failure"),
+    (r"build.*fail|production build red", "build-failure"),
+    (r"Prisma.*schema|migration", "prisma-schema"),
+    (r"index\.lock.*File exists", "git-index-lock"),
+    (r"orphaned-running|stuck RUNNING", "orphaned-task"),
 ]
 
-def classify(note):
+
+def extract_signature(note):
     if not note:
-        return ("unclassified", "")
-    for name, regex, desc in PATTERNS:
-        if regex.search(note):
-            return (name, desc)
-    return ("unclassified", "")
-
-def cluster_failures(project_id, limit=SWEEP_LIMIT):
-    try:
-        rows = db.select("tasks", {
-            "select": "id,slug,project_id,note,state,kind,base_branch,updated_at",
-            "project_id": f"eq.{project_id}",
-            "state": "in.(BLOCKED,SHELVED)",
-            "order": "updated_at.desc", "limit": str(limit),
-        }) or []
-    except Exception:
-        return {}
-    clusters = collections.defaultdict(list)
-    for row in rows:
-        pattern_name, _ = classify(row.get("note") or "")
-        clusters[pattern_name].append(row)
-    return dict(clusters)
+        return "unknown"
+    for pattern, name in KNOWN_PATTERNS:
+        if re.search(pattern, note, re.IGNORECASE):
+            return name
+    return "unknown-" + hashlib.sha256(note[:200].encode()).hexdigest()[:8]
 
 
-def _guard_slug(pattern_name):
-    return f"guard-cluster-{pattern_name}"[:80]
-
-def _guard_exists(project_id, slug):
-    """Check if a guard task already exists (any state) to prevent duplicates."""
-    try:
-        rows = db.select("tasks", {
-            "select": "id,state",
-            "project_id": f"eq.{project_id}",
-            "slug": f"eq.{slug}",
-            "limit": "1",
-        }) or []
-        return len(rows) > 0
-    except Exception:
-        return False
-
-
-def create_cluster_guards(project_id, base_branch="master"):
-    clusters = cluster_failures(project_id)
-    created = []
-    skipped = []
-    for pattern_name, tasks in clusters.items():
-        if pattern_name == "unclassified" or len(tasks) < MIN_CLUSTER_SIZE:
-            continue
-        slug = _guard_slug(pattern_name)
-        if _guard_exists(project_id, slug):
-            skipped.append(slug)
-            continue
-        _, desc = classify(tasks[0].get("note", ""))
-        slugs = [t.get("slug", "") for t in tasks[:5]]
-        guard = {
-            "project_id": project_id, "slug": slug,
-            "kind": GUARD_KIND, "state": "QUEUED",
-            "prompt": (f"Permanent fix for recurring '{pattern_name}' ({len(tasks)} hits). "
-                       f"{desc} Affected: {', '.join(slugs)}. Add a guard."),
-            "base_branch": base_branch, "deps": [],
-            "note": f"auto-cluster-guard: {pattern_name} ({len(tasks)} hits)",
-        }
-        try:
-            result = db.insert("tasks", guard)
-            if result:
-                created.append(result if isinstance(result, dict) else guard)
-        except Exception:
-            pass
-    return created
+GUARD_RULES = {
+    "capacity-exhaustion": "pre_check: verify API capacity before claiming task; back off 60s on 429/capacity errors",
+    "auth-not-logged-in": "pre_check: validate auth token before spawning agent; refresh token if expired",
+    "git-conflict-409": "pre_check: fetch + rebase before push; retry with fresh branch on 409",
+    "missing-spec": "pre_check: reject tasks where prompt contains only error messages and no specification",
+    "patch-template-corrupt": "pre_check: quarantine tasks whose prompt starts with PATCH TEMPLATE + hex hashes",
+    "budget-guard": "pre_check: check remaining budget before claiming; skip if < min_cost_estimate",
+    "remediation-cap": "post_check: after 3 failed remediations, shelve task and notify human",
+    "file-not-found": "pre_check: verify all referenced files exist before running agent",
+    "module-not-found": "pre_check: verify imports resolve; run pip install if requirements.txt present",
+    "type-error": "post_check: run type checker (mypy/pyright) before committing",
+    "test-failure": "post_check: run test suite before marking DONE; revert on failure",
+    "build-failure": "post_check: run production build before marking DONE; fix or revert",
+    "prisma-schema": "pre_check: validate prisma schema (npx prisma validate) before migration",
+    "git-index-lock": "pre_check: rm -f .git/index.lock before any git operation",
+    "orphaned-task": "janitor: detect tasks RUNNING > 2h with no recent commits; reset to QUEUED",
+}
 
 
-def persist_cluster_snapshot(project_id):
-    """Save the latest cluster analysis to fleet_config for observability."""
-    report = summary(project_id)
-    if not report:
-        return
-    import json, datetime
-    snapshot = {
-        "project_id": project_id,
-        "clusters": report,
-        "timestamp": datetime.datetime.utcnow().isoformat(),
-    }
-    try:
-        db.upsert("fleet_config", {
-            "key": f"CLUSTER_SNAPSHOT_{project_id[:8]}",
-            "value": json.dumps(snapshot, default=str),
-        })
-    except Exception:
-        pass
+def generate_guard_rule(signature):
+    return GUARD_RULES.get(signature, f"manual_review: unknown pattern '{signature}' -- needs human triage")
 
-def summary(project_id):
-    clusters = cluster_failures(project_id)
-    report = {}
-    for name, tasks in sorted(clusters.items(), key=lambda x: -len(x[1])):
-        _, desc = classify(tasks[0].get("note", "")) if tasks else ("", "")
-        report[name] = {"count": len(tasks), "description": desc,
-                        "sample_slugs": [t.get("slug", "") for t in tasks[:5]]}
-    return report
+
+def cluster_failures(records):
+    groups = defaultdict(list)
+    for rec in records:
+        groups[rec.error_signature].append(rec)
+    clusters = []
+    for sig, recs in sorted(groups.items(), key=lambda x: -len(x[1])):
+        cluster = FailureCluster(
+            pattern_id=hashlib.sha256(sig.encode()).hexdigest()[:12],
+            pattern_name=sig,
+            signature=sig,
+            records=recs,
+            guard_rule=generate_guard_rule(sig),
+        )
+        clusters.append(cluster)
+    return clusters
+
+
+def get_recurring_patterns(clusters):
+    return [c for c in clusters if c.is_recurring]

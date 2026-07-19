@@ -12,7 +12,7 @@ The train must:
   F) serialize per project, oldest approval first
   G) branch-missing approved cards remain live while the task is still being rebuilt
 """
-import os, sys, tempfile, unittest
+import contextlib, os, sys, tempfile, unittest
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -58,14 +58,21 @@ class TrainCase(unittest.TestCase):
             patch.object(merge_train, "db", self.mock_db),
             patch.object(merge_train, "_branch_exists", return_value=True),
             patch.object(merge_train, "_refresh_base", return_value=None),
+            patch.object(merge_train, "_already_integrated", return_value=False),
             patch.object(merge_train, "_rebase_onto_base", return_value=True),
             patch.object(merge_train, "_run_tests", return_value=(True, "green")),
             patch.object(merge_train, "_ff_base", return_value=True),
             patch.object(merge_train, "_push_base", return_value=""),
+            patch.object(merge_train, "_freeze_integration_identity",
+                         return_value={"artifact_commit": "rebased-sha", "artifact_ref": "refs/orchestrator/integrations/t1/0001/proof"}),
             patch.object(merge_train, "_delete_branch", return_value=None),
             patch.object(merge_train.approval_merge, "_free_branch", return_value=None),
             patch.object(merge_train, "_paused", return_value=False),
             patch.object(merge_train.os.path, "isdir", return_value=True),
+            patch.object(merge_train.integration_runtime, "global_lease",
+                         side_effect=lambda *_a, **_k: contextlib.nullcontext(True)),
+            patch.object(merge_train.integration_runtime, "isolated_repo",
+                         side_effect=lambda repo, *_a, **_k: contextlib.nullcontext(repo)),
         ]
         self.mocks = {}
         for p in patches:
@@ -159,6 +166,19 @@ class TestCleanMerge(TrainCase):
         self.assertEqual(cps[-1]["decided_by"], "train:MERGED")
         self.assertTrue(any(tbl == "outcomes" and m.get("slug") == "feat-x" and p.get("integrated") is True
                             for tbl, m, p in self.updates))
+
+    def test_already_integrated_card_does_not_count_as_new_merge(self):
+        self.cards = [_card("c1", "feat-x")]
+        self.tasks = [_task("t1", "feat-x")]
+        self.mocks["_already_integrated"].return_value = True
+        summary = merge_train.train_run()
+        self.assertEqual(summary["merged"], 0)
+        self.assertEqual(summary["already_integrated"], 1)
+        self.mocks["_run_tests"].assert_not_called()
+        self.mocks["_ff_base"].assert_not_called()
+        self.assertEqual(self.task_updates("t1")[-1]["state"], "MERGED")
+        self.assertEqual(self.card_updates("c1")[-1]["decided_by"],
+                         "train:ALREADY_INTEGRATED")
 
     def test_merge_never_forced_when_tests_green_but_ff_and_rebase_used(self):
         """The train's git surface is rebase + ff only — verify both were invoked."""
@@ -424,10 +444,7 @@ class TestEnsureIntegrationCard(unittest.TestCase):
 
 
 class TestEnsureNodeDepsCumulativeBudget(unittest.TestCase):
-    """2026-07-10: a single merge_train.py process sat idle for 74+ minutes holding a repo's
-    exclusive lock (blocking every other project's merges in that run) because
-    _ensure_node_deps gave EVERY nested package.json its own fresh MERGE_TRAIN_NPM_TIMEOUT
-    (default 600s) budget instead of one cumulative budget for the whole call."""
+    """Dependency hydration follows the test working directory, not every nested package."""
 
     def _make_repo(self, tmp, n_packages):
         repo = os.path.join(tmp, "repo")
@@ -438,36 +455,23 @@ class TestEnsureNodeDepsCumulativeBudget(unittest.TestCase):
                 f.write("{}")
         return repo
 
-    def test_stops_installing_once_cumulative_budget_exhausted(self):
+    def test_unrelated_nested_packages_are_not_installed(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._make_repo(tmp, n_packages=5)
+            with open(os.path.join(repo, "package.json"), "w") as f:
+                f.write("{}")
             calls = []
 
             def fake_run(*args, **kwargs):
                 calls.append(kwargs.get("cwd"))
                 return MagicMock(returncode=0)
 
-            # Simulate time passing: first call starts the clock, budget exhausts after 2 calls.
-            clock = {"t": 0.0}
-
-            def fake_monotonic():
-                clock["t"] += 250  # each check advances the clock by 250s
-                return clock["t"]
-
-            with patch.object(merge_train.subprocess, "run", side_effect=fake_run), \
-                 patch.object(merge_train.time, "monotonic", side_effect=fake_monotonic), \
-                 patch.dict(os.environ, {"MERGE_TRAIN_NPM_TOTAL_TIMEOUT": "900",
-                                          "MERGE_TRAIN_NPM_TIMEOUT": "600"}, clear=False):
+            with patch.object(merge_train.subprocess, "run", side_effect=fake_run):
                 merge_train._ensure_node_deps(repo)
 
-            # deadline = t0 + 900 where t0 is the first monotonic() call (250); budget runs out
-            # partway through the 5 packages, so not all 5 should have been installed.
-            self.assertLess(len(calls), 5)
-            self.assertGreater(len(calls), 0)
+            self.assertEqual(calls, [os.path.realpath(repo)])
 
-    def test_a_single_hung_install_does_not_block_remaining_packages_forever(self):
-        """One nested package's install can still individually time out; the loop must move
-        on to the next package rather than treating that as fatal."""
+    def test_explicit_cd_package_is_hydrated(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._make_repo(tmp, n_packages=2)
             calls = []
@@ -478,14 +482,12 @@ class TestEnsureNodeDepsCumulativeBudget(unittest.TestCase):
                     raise subprocess.TimeoutExpired(cmd="npm install", timeout=600)
                 return MagicMock(returncode=0)
 
-            with patch.object(merge_train.subprocess, "run", side_effect=fake_run), \
-                 patch.dict(os.environ, {"MERGE_TRAIN_NPM_TOTAL_TIMEOUT": "900",
-                                          "MERGE_TRAIN_NPM_TIMEOUT": "600"}, clear=False):
-                merge_train._ensure_node_deps(repo)
+            with patch.object(merge_train.subprocess, "run", side_effect=fake_run):
+                merge_train._ensure_node_deps(repo, "cd pkg1 && npm test")
 
-            self.assertEqual(len(calls), 2)
+            self.assertEqual(calls, [os.path.realpath(os.path.join(repo, "pkg1"))])
 
-    def test_single_package_repo_still_gets_installed(self):
+    def test_single_explicit_package_still_gets_installed(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = self._make_repo(tmp, n_packages=1)
             calls = []
@@ -495,9 +497,55 @@ class TestEnsureNodeDepsCumulativeBudget(unittest.TestCase):
                 return MagicMock(returncode=0)
 
             with patch.object(merge_train.subprocess, "run", side_effect=fake_run):
-                merge_train._ensure_node_deps(repo)
+                merge_train._ensure_node_deps(repo, "npm --prefix pkg0 test")
 
             self.assertEqual(len(calls), 1)
+
+    def test_prefix_package_path_is_scoped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp, n_packages=2)
+            roots = merge_train._test_package_paths(repo, "npm --prefix pkg1 run test")
+            self.assertEqual(roots, [os.path.realpath(repo),
+                                     os.path.realpath(os.path.join(repo, "pkg1"))])
+
+    def test_nuxt_package_prepares_worktree_local_types(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = self._make_repo(tmp, n_packages=1)
+            pkg = os.path.join(repo, "pkg0")
+            with open(os.path.join(pkg, "package.json"), "w") as f:
+                f.write('{"devDependencies":{"nuxt":"latest"}}')
+            calls = []
+
+            def fake_run(*args, **kwargs):
+                calls.append((args[0], kwargs.get("cwd")))
+                return MagicMock(returncode=0)
+
+            with patch.object(merge_train.subprocess, "run", side_effect=fake_run):
+                merge_train._prepare_generated_types(repo, "npm --prefix pkg0 test")
+
+            self.assertEqual(calls, [(["npx", "nuxi", "prepare"], os.path.realpath(pkg))])
+
+
+class TestMergeRiskClassification(unittest.TestCase):
+    def test_injected_security_boilerplate_does_not_make_normal_task_sensitive(self):
+        task = _task("t1", "ordinary-dashboard")
+        task["prompt"] = "Fleet rules: never commit secrets; auth must fail closed; comply with privacy rules. Build dashboard."
+        task["note"] = "tests mention oauth dependency"
+        self.assertEqual(merge_train._risk_level(_card("c1", task["slug"]), task), "standard")
+
+    def test_task_identity_and_material_flag_remain_fail_closed(self):
+        task = _task("t1", "stripe-payment-auth")
+        self.assertEqual(merge_train._risk_level(_card("c1", task["slug"]), task), "sensitive")
+        ordinary = _task("t2", "ordinary-dashboard")
+        ordinary["material"] = True
+        self.assertEqual(merge_train._risk_level(_card("c2", ordinary["slug"]), ordinary), "sensitive")
+
+
+class TestBranchExactQA(unittest.TestCase):
+    def test_integrate_tests_rebased_branch_not_primary_checkout(self):
+        source = open(merge_train.__file__, encoding="utf-8").read()
+        self.assertIn("_run_tests(repo, test_cmd, branch)", source)
+        self.assertIn("_run_tests(repo, test_cmd, base)", source)
 
 
 if __name__ == "__main__":

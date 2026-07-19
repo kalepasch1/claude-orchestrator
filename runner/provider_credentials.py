@@ -1,0 +1,95 @@
+"""Canonical, value-safe credential discovery for every model provider.
+
+Provider integrations historically checked one spelling while credential setup
+accepted another (notably XAI_API_KEY versus GROK_API_KEY/XAPI_KEY).  This module
+keeps aliases in one place and mirrors a discovered alias into the canonical env
+name in-process, without logging or persisting secret values.
+"""
+import hashlib
+import os
+
+
+ALIASES = {
+    "openai": ("OPENAI_API_KEY",),
+    "google": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+    "gemini": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+    "deepseek": ("DEEPSEEK_API_KEY",),
+    "groq": ("GROQ_API_KEY",),
+    "xai": ("XAI_API_KEY", "GROK_API_KEY", "XAPI_KEY"),
+    "grok": ("XAI_API_KEY", "GROK_API_KEY", "XAPI_KEY"),
+    "anthropic": ("ANTHROPIC_API_KEY",),
+    "claude": ("ANTHROPIC_API_KEY",),
+}
+
+CANONICAL_ENV = {
+    "google": "GOOGLE_API_KEY", "gemini": "GOOGLE_API_KEY",
+    "xai": "XAI_API_KEY", "grok": "XAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY", "claude": "ANTHROPIC_API_KEY",
+}
+
+
+def load_local_env(path=None):
+    """Load only provider credentials when invoked outside runner.py.
+
+    Standalone probes and workers must not depend on importing runner.py or
+    swarm_executor.py first; that import-order dependency previously produced
+    empty bearer tokens for valid funded accounts.
+    """
+    path = path or os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    allowed = {name for names in ALIASES.values() for name in names}
+    loaded = []
+    try:
+        with open(path, encoding="utf-8") as source:
+            for raw in source:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                if key not in allowed or os.environ.get(key, "").strip():
+                    continue
+                value = value.split("#", 1)[0].strip().strip('"').strip("'")
+                if value:
+                    os.environ[key] = value
+                    loaded.append(key)
+    except OSError:
+        pass
+    return loaded
+
+
+load_local_env()
+
+
+def env_names(provider):
+    return ALIASES.get(str(provider or "").lower(), ())
+
+
+def get(provider, default=""):
+    for name in env_names(provider):
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return default
+
+
+def has(provider):
+    return bool(get(provider))
+
+
+def fingerprint(provider):
+    """Non-reversible identifier used only to detect credential replacement."""
+    value = get(provider)
+    return hashlib.sha256(value.encode()).hexdigest()[:16] if value else ""
+
+
+def activate_aliases():
+    """Expose aliases under the canonical name expected by legacy integrations."""
+    activated = []
+    for provider, canonical in CANONICAL_ENV.items():
+        if os.environ.get(canonical, "").strip():
+            continue
+        value = get(provider)
+        if value:
+            os.environ[canonical] = value
+            activated.append(provider)
+    return sorted(set(activated))
