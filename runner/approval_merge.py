@@ -28,6 +28,22 @@ TEST_CMD = os.environ.get("TEST_CMD", "npm test")
 AUTOAPPROVE_ENABLED = os.environ.get("ORCH_AUTOAPPROVE_LOWRISK", "true").lower() in ("true", "1", "yes")
 AUTO_MERGE_APPROVALS = os.environ.get("ORCH_AUTO_MERGE_APPROVALS", "true").lower() in ("true", "1", "yes")
 
+# Bounded config: prevent misconfiguration from causing runaway scans or infinite retries
+_MAX_SCAN_LIMIT = 5000
+_MAX_REDO_CAP = 5
+
+
+def _bounded_int(env_key, default, floor=0, ceiling=None):
+    """Read an integer from env with floor/ceiling guards."""
+    try:
+        v = int(os.environ.get(env_key, str(default)))
+    except (ValueError, TypeError):
+        v = default
+    v = max(floor, v)
+    if ceiling is not None:
+        v = min(ceiling, v)
+    return v
+
 # Deny-list of sensitive path globs that should NOT be auto-approved
 SENSITIVE_PATHS = [
     "*/pricing*", "*/price*", "*/cost*",
@@ -249,7 +265,7 @@ def run():
     # Process both approved cards and pending code-merge cards. Legal/operator cards should not
     # reach this handler; material "Legal review needed" cards intentionally lack a merge slug.
     common = {"select": "*", "kind": "in.(verify,material,integrate)",
-              "order": "created_at.asc", "limit": os.environ.get("MERGE_APPROVAL_SCAN_LIMIT", "2000")}
+              "order": "created_at.asc", "limit": str(_bounded_int("MERGE_APPROVAL_SCAN_LIMIT", 2000, ceiling=_MAX_SCAN_LIMIT))}
     approved_cards = db.select("approvals", {**common, "status": "eq.approved"}) or []
     pending_cards = db.select("approvals", {**common, "status": "eq.pending"}) or [] if (AUTOAPPROVE_ENABLED or AUTO_MERGE_APPROVALS) else []
     cards = approved_cards + pending_cards
@@ -338,7 +354,7 @@ def run():
             # sit CONFLICT forever (that's what stalled 93 tasks at 0 merged). Requeue to rebuild on
             # the up-to-date base, up to a cap; delete the stale branch so the worktree is recreated.
             tr = int(t.get("transient_retries") or 0)
-            cap = int(os.environ.get("MERGE_CONFLICT_REDO_CAP", "2"))
+            cap = _bounded_int("MERGE_CONFLICT_REDO_CAP", 2, ceiling=_MAX_REDO_CAP)
             if tr < cap:
                 subprocess.run(["git", "branch", "-D", branch], cwd=repo, capture_output=True)
                 patch = agentic_repair.repair_patch(
