@@ -16,6 +16,7 @@ SPIKE = float(os.environ.get("ANOMALY_SPIKE", "1.75"))   # x baseline to alert
 
 
 def _rate(rows, pred):
+    """Return fraction of rows satisfying pred, or 0.0 if rows is empty."""
     return (sum(1 for r in rows if pred(r)) / len(rows)) if rows else 0.0
 
 

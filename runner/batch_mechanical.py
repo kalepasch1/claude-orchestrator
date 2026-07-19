@@ -19,8 +19,11 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db, model_router
 
+# Maximum number of mechanical tasks to combine into a single batch run.
 BATCH_MAX = int(os.environ.get("BATCH_MAX", "8"))
-MIN_GROUP = int(os.environ.get("BATCH_MIN", "3"))       # don't bother batching < this many
+# Minimum group size before batching kicks in — below this threshold the overhead
+# of constructing the combined prompt isn't worth the cold-start savings.
+MIN_GROUP = int(os.environ.get("BATCH_MIN", "3"))
 
 
 MECH_MAX_PROMPT = int(os.environ.get("BATCH_MECH_MAX_PROMPT", "600"))

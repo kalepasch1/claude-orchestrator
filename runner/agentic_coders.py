@@ -27,6 +27,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # capability a task needs by difficulty (see _task_difficulty)
 _NEED = {"easy": 5, "hard": 8}
+# default capability assumed when a coder entry omits the "cap" field
+_DEFAULT_CAP = 5
 
 # aider prints e.g. "Tokens: 1.2k sent, 500 received. Cost: $0.0021 message, $0.0021 session."
 _AIDER_MSG_COST = re.compile(r"cost:\s*\$([0-9.]+)\s*message", re.I)
@@ -531,7 +533,15 @@ def pick(task, slot_index=0):
         except Exception:
             return float(c["cost"])
 
-    by_cost = sorted([c for c in usable if c["name"] != "claude"], key=lambda c: (adjusted_cost(c), -c["cap"]))
+    try:
+        import provider_rate_tracker as _prt
+        def _throttle_penalty(c):
+            return 100 if _prt.is_throttled(c.get("name", "")) else 0
+    except Exception:
+        def _throttle_penalty(c):
+            return 0
+    by_cost = sorted([c for c in usable if c["name"] != "claude"],
+                     key=lambda c: (_throttle_penalty(c), adjusted_cost(c), -c["cap"]))
 
     forced = str(task.get("force_coder") or "").strip()
     if forced:

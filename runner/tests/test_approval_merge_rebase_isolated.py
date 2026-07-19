@@ -102,3 +102,35 @@ class IntegrateUsesIsolatedRebaseTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RebaseConflictDetailsTest(unittest.TestCase):
+    def test_returns_overlapping_files(self):
+        def fake_run(cmd, **kwargs):
+            if "merge-base" in cmd:
+                return _proc(0, stdout="abc123\n")
+            elif "diff" in cmd and cmd[-1] == "main":
+                return _proc(0, stdout="file1.py\nfile2.py\n")
+            elif "diff" in cmd:
+                return _proc(0, stdout="file2.py\nfile3.py\n")
+            return _proc(0)
+        with patch("subprocess.run", side_effect=fake_run):
+            result = approval_merge._rebase_conflict_details(REPO, "main", "agent/x")
+        self.assertEqual(result["conflicting_files"], ["file2.py"])
+        self.assertEqual(result["base_only"], 1)
+        self.assertEqual(result["branch_only"], 1)
+
+    def test_returns_empty_on_merge_base_failure(self):
+        with patch("subprocess.run", return_value=_proc(1)):
+            result = approval_merge._rebase_conflict_details(REPO, "main", "agent/x")
+        self.assertEqual(result["conflicting_files"], [])
+
+    def test_caps_conflicting_files_at_20(self):
+        files = "\n".join(f"f{i}.py" for i in range(30))
+        def fake_run(cmd, **kwargs):
+            if "merge-base" in cmd:
+                return _proc(0, stdout="abc\n")
+            return _proc(0, stdout=files + "\n")
+        with patch("subprocess.run", side_effect=fake_run):
+            result = approval_merge._rebase_conflict_details(REPO, "main", "agent/x")
+        self.assertLessEqual(len(result["conflicting_files"]), 20)

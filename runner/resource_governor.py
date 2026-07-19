@@ -34,6 +34,7 @@ THROTTLE_FILE = os.path.join(HOME, "throttle")
 # PER_TASK_GB/RAM_FLOOR_GB pushed centrally after it last started. Read all of these live from
 # env on every call instead of freezing them at import.
 def _ceiling():
+    """Maximum number of parallel tasks allowed regardless of available resources."""
     return int(os.environ.get("MAX_PARALLEL_CEILING", "12"))
 
 
@@ -79,6 +80,7 @@ def _event(kind, value=None, detail="", action=""):
 
 
 def disk_pct(path="/"):
+    """Return (used_percent, free_gb) for the filesystem containing *path*."""
     u = shutil.disk_usage(path)
     return round(u.used / u.total * 100, 1), round(u.free / 1e9, 1)
 
@@ -361,6 +363,7 @@ def _agent_branch_safe_on_origin(branch, repo):
 
 
 def prune():
+    """Reclaim disk by removing merged worktrees, old logs, and stale caches.  Returns freed-item notes."""
     freed_notes = []
     # 1) merged agent worktrees + git worktree prune
     for p in _projects():

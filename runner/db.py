@@ -49,6 +49,10 @@ def _load_env():
         os.environ.setdefault(k, v)
 
 def _ensure_tool_path():
+    """Prepend standard macOS tool directories to PATH if missing.
+
+    Ensures git, python, node, and other CLI tools are discoverable even when
+    the runner is launched via launchd (which inherits a minimal PATH)."""
     paths = (
         "/opt/homebrew/bin",
         "/usr/local/bin",
@@ -291,6 +295,7 @@ def _req(method, path, body=None, headers=None, params=None):
 
 
 def select(table, params=None):
+    """Fetch rows from *table* via PostgREST GET.  Returns a list of dicts."""
     return _req("GET", f"/rest/v1/{table}", params=params or {"select": "*"})
 
 

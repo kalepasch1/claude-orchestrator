@@ -1481,6 +1481,11 @@ def run_task(t):
                 except Exception:
                     pass
                 back = min(300, 2 ** attempt * 5)
+                try:
+                    import provider_rate_tracker
+                    provider_rate_tracker.record_rate_limit(coder, cooldown_s=back)
+                except Exception:
+                    pass
                 set_state(t["id"], state="RETRY", note=f"rate-limited, backoff {back}s")
                 time.sleep(min(back, 30)); continue
 
@@ -2318,6 +2323,7 @@ _SCHEDULE = [
     ("improve-3am",   "improve",            "daily",    (3, 15)),# deeper improvement sweep in the research window
     ("improvemeas-dy","improvemeasure",     "daily",    (5, 20)),# learn which improvement kinds pay off
     ("committees-900","committees",         "interval", 900),   # expert committees weigh in on proposals/decisions
+    ("cadeextras-dy", "cadeextras",           "daily",    (4, 30)),# run cx_* extras daily at 4:30am
     ("committeecal-dy","committeecal",       "daily",    (5, 40)),# reweight committees + seats by predictive accuracy
     ("committeedock-dy","committeedocket",   "daily",    (4, 10)),# continuous docket: re-review shipped features
     ("committeedig-wk","committeedigest",    "daily",    (6, 5)), # owner brief of sharpest dissents/reversals

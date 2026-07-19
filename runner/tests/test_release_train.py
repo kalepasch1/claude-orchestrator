@@ -155,3 +155,17 @@ class TestGeneratedTypePreparation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDeepChain(unittest.TestCase):
+    """Deep linear chain — verifies ordering is stable for longer chains."""
+
+    def test_five_node_chain(self):
+        graph = {"E": ["D"], "D": ["C"], "C": ["B"], "B": ["A"], "A": []}
+        order = sequence_releases(graph, {"A", "B", "C", "D", "E"})
+        self.assertEqual(order, ["A", "B", "C", "D", "E"])
+
+    def test_deep_chain_leaf_only(self):
+        graph = {"E": ["D"], "D": ["C"], "C": ["B"], "B": ["A"], "A": []}
+        order = sequence_releases(graph, {"E"})
+        self.assertEqual(order, ["E"])

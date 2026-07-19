@@ -202,3 +202,11 @@ valid, error = tdd_gate.validate_acceptance_criteria(task_spec)
 print(valid, error)
 EOF
 ```
+
+## Quick Reference
+
+| Key | Default | Purpose |
+|---|---|---|
+| `ORCH_TDD_ENABLED` | `false` | Master gate for TDD-gating |
+| `ORCH_TDD_TASK_KINDS` | `build,feature` | Task kinds that require TDD |
+| `ORCH_TDD_TIMEOUT_SEC` | `300` | Max seconds for test-write phase |

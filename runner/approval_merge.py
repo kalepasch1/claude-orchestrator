@@ -28,6 +28,22 @@ TEST_CMD = os.environ.get("TEST_CMD", "npm test")
 AUTOAPPROVE_ENABLED = os.environ.get("ORCH_AUTOAPPROVE_LOWRISK", "true").lower() in ("true", "1", "yes")
 AUTO_MERGE_APPROVALS = os.environ.get("ORCH_AUTO_MERGE_APPROVALS", "true").lower() in ("true", "1", "yes")
 
+# Bounded config: prevent misconfiguration from causing runaway scans or infinite retries
+_MAX_SCAN_LIMIT = 5000
+_MAX_REDO_CAP = 5
+
+
+def _bounded_int(env_key, default, floor=0, ceiling=None):
+    """Read an integer from env with floor/ceiling guards."""
+    try:
+        v = int(os.environ.get(env_key, str(default)))
+    except (ValueError, TypeError):
+        v = default
+    v = max(floor, v)
+    if ceiling is not None:
+        v = min(ceiling, v)
+    return v
+
 # Deny-list of sensitive path globs that should NOT be auto-approved
 SENSITIVE_PATHS = [
     "*/pricing*", "*/price*", "*/cost*",
@@ -249,7 +265,7 @@ def run():
     # Process both approved cards and pending code-merge cards. Legal/operator cards should not
     # reach this handler; material "Legal review needed" cards intentionally lack a merge slug.
     common = {"select": "*", "kind": "in.(verify,material,integrate)",
-              "order": "created_at.asc", "limit": os.environ.get("MERGE_APPROVAL_SCAN_LIMIT", "2000")}
+              "order": "created_at.asc", "limit": str(_bounded_int("MERGE_APPROVAL_SCAN_LIMIT", 2000, ceiling=_MAX_SCAN_LIMIT))}
     approved_cards = db.select("approvals", {**common, "status": "eq.approved"}) or []
     pending_cards = db.select("approvals", {**common, "status": "eq.pending"}) or [] if (AUTOAPPROVE_ENABLED or AUTO_MERGE_APPROVALS) else []
     cards = approved_cards + pending_cards
@@ -338,7 +354,7 @@ def run():
             # sit CONFLICT forever (that's what stalled 93 tasks at 0 merged). Requeue to rebuild on
             # the up-to-date base, up to a cap; delete the stale branch so the worktree is recreated.
             tr = int(t.get("transient_retries") or 0)
-            cap = int(os.environ.get("MERGE_CONFLICT_REDO_CAP", "2"))
+            cap = _bounded_int("MERGE_CONFLICT_REDO_CAP", 2, ceiling=_MAX_REDO_CAP)
             if tr < cap:
                 subprocess.run(["git", "branch", "-D", branch], cwd=repo, capture_output=True)
                 patch = agentic_repair.repair_patch(
@@ -371,3 +387,41 @@ def run():
 
 if __name__ == "__main__":
     run()
+
+
+def _rebase_conflict_details(repo, base, branch):
+    """Return a summary of conflicting files when a rebase of `branch` onto `base` would fail.
+
+    Uses `git diff --name-only` to identify files changed on both sides, then checks
+    which ones have overlapping hunks. Runs read-only — never modifies the repo.
+    Returns: dict with 'conflicting_files' (list) and 'base_only'/'branch_only' counts.
+    """
+    result = {"conflicting_files": [], "base_only": 0, "branch_only": 0}
+    try:
+        merge_base = subprocess.run(
+            ["git", "merge-base", base, branch],
+            cwd=repo, capture_output=True, text=True, timeout=10,
+        )
+        if merge_base.returncode != 0:
+            return result
+        mb = merge_base.stdout.strip()
+
+        base_files = subprocess.run(
+            ["git", "diff", "--name-only", mb, base],
+            cwd=repo, capture_output=True, text=True, timeout=10,
+        )
+        branch_files = subprocess.run(
+            ["git", "diff", "--name-only", mb, branch],
+            cwd=repo, capture_output=True, text=True, timeout=10,
+        )
+
+        base_set = set(f for f in (base_files.stdout or "").strip().split("\n") if f)
+        branch_set = set(f for f in (branch_files.stdout or "").strip().split("\n") if f)
+
+        overlap = sorted(base_set & branch_set)
+        result["conflicting_files"] = overlap[:20]  # cap to avoid huge lists
+        result["base_only"] = len(base_set - branch_set)
+        result["branch_only"] = len(branch_set - base_set)
+    except Exception:
+        pass
+    return result
