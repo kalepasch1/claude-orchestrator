@@ -62,8 +62,10 @@ def decide(app):
         return {"app": app, "decision": "rollback", "why": f"error spike {errors}/{len(ops)} during canary"}
     if ceiling and cost > float(ceiling):
         return {"app": app, "decision": "rollback", "why": f"canary cost ${cost:.2f} > ceiling ${ceiling}"}
+    error_pct = round(100.0 * errors / len(ops), 1) if ops else 0.0
     return {"app": app, "decision": "promote",
-            "why": f"quality {quality if quality is None else round(quality,1)}, cost ${cost:.2f}, errors {errors}"}
+            "why": f"quality {quality if quality is None else round(quality,1)}, cost ${cost:.2f}, errors {errors}/{len(ops)} ({error_pct}%)",
+            "sample_size": len(ops), "error_pct": error_pct}
 
 
 def run():
