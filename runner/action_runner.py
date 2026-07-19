@@ -80,7 +80,9 @@ def auto_execute() -> int:
             return 0
     except Exception:
         pass
-    # commands proven safe by a prior successful run
+    # Build set of commands that have previously completed successfully.
+    # Only commands with an exact match in the proven set AND passing the
+    # SAFE_CMD / UNSAFE re-check are eligible for auto-execution.
     proven = {r.get("cmd") for r in (db.select("action_runs", {"select": "cmd,status",
               "status": "eq.done"}) or []) if r.get("cmd")}
     cards = db.select("approvals", {"select": "id,draft_cmd", "status": "eq.pending",
