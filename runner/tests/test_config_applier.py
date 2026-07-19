@@ -25,3 +25,16 @@ def test_policy_compiler_failure_fails_closed():
          patch("policy_compiler.authorize_config", side_effect=RuntimeError("unavailable")):
         got = config_applier.apply_config("ORCH_ELIM_SCAN_LIMIT", "20")
     assert got["outcome"] == "rejected"
+
+
+def test_persistence_failure_rolls_back_local_canary(monkeypatch):
+    monkeypatch.setattr(config_applier, "_adversarial_gate", lambda *_: {"passed": True})
+    monkeypatch.setattr("policy_compiler.authorize_config", lambda *_: {"id": "p", "status": "authorized"})
+    monkeypatch.setattr("policy_compiler.observe_canary", lambda *_: (True, {"healthy": True}))
+    monkeypatch.setattr("policy_compiler.complete_config", lambda *_: None)
+    import db
+    monkeypatch.setattr(db, "insert", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("db down")))
+    monkeypatch.delenv("ORCH_TEST_PERSIST", raising=False)
+    got = config_applier.apply_config("ORCH_TEST_PERSIST", "1", canary=False)
+    assert got["reason"] == "fleet_config_persistence"
+    assert "ORCH_TEST_PERSIST" not in os.environ

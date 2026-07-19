@@ -37,3 +37,15 @@ def test_config_changes_are_simulation_gated(monkeypatch):
     import config_applier
     monkeypatch.setattr(config_applier, "_adversarial_gate", lambda *_: {"passed": False})
     assert config_applier.apply_config("ORCH_SAFE_TEST", "1")["reason"] == "adversarial_simulation"
+
+
+def test_evidence_bus_spools_and_replays(monkeypatch, tmp_path):
+    import evidence_bus
+    monkeypatch.setattr(evidence_bus, "_OUTBOX", str(tmp_path / "outbox.jsonl"))
+    monkeypatch.setattr(evidence_bus.db, "insert", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("offline")))
+    got = evidence_bus.append("app", "kind", "subject", {"x": 1})
+    assert not got["persisted"]
+    delivered = []
+    monkeypatch.setattr(evidence_bus.db, "insert", lambda _table, row, **_kwargs: delivered.append(row))
+    assert evidence_bus.flush() == 1
+    assert delivered[0]["idempotency_key"] == got["idempotency_key"]
