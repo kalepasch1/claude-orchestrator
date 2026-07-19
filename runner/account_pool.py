@@ -206,6 +206,31 @@ class AccountPool:
         st["use_count"] = int(st.get("use_count", 0)) + 1
         self._save()
 
+    def stats(self):
+        """Return a summary dict for observability: total accounts, healthy count,
+        exhausted count, per-account cooldown state, and use counts."""
+        self._maybe_reload()
+        now = time.time()
+        entries = []
+        for a in self.accts:
+            st = self.state.get(a["name"], {})
+            cd_until = st.get("cooldown_until", 0)
+            entries.append({
+                "name": a["name"],
+                "type": a.get("type", "login"),
+                "healthy": now >= cd_until,
+                "cooldown_remaining_s": max(0, int(cd_until - now)),
+                "use_count": int(st.get("use_count", 0)),
+                "exh_hits": int(st.get("exh_hits", 0)),
+            })
+        healthy_count = sum(1 for e in entries if e["healthy"])
+        return {
+            "total": len(entries),
+            "healthy": healthy_count,
+            "exhausted": len(entries) - healthy_count,
+            "accounts": entries,
+        }
+
     def all_exhausted(self):
         """True iff no Claude account is currently healthy (every one is cooling down)."""
         usable = self._usable_accounts()
@@ -296,3 +321,4 @@ if __name__ == "__main__":
     cur = p.current()
     print("accounts:", [a["name"] for a in p.accts])
     print("current:", cur["name"] if cur else None, "env:", p.env_for(cur))
+    print("stats:", json.dumps(p.stats(), indent=2))
