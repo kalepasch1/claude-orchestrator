@@ -43,6 +43,7 @@ EXTREME_LEGAL = re.compile(
 
 
 def text_for(card=None, text=""):
+    """Extract text content from a card dict or return the provided text fallback."""
     if isinstance(card, dict):
         parts = [card.get(k) for k in ("title", "why", "detail", "prebrief", "risk", "value")]
         text = " ".join(str(p or "") for p in parts) + " " + str(text or "")

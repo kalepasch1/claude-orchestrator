@@ -183,6 +183,24 @@ def extract_session_context(agent_output, error=""):
     }
 
 
+def stats():
+    """Return cache statistics for fleet dashboards and diagnostics."""
+    cache = _cache()
+    cutoff = time.time() - CACHE_TTL_H * 3600
+    live = {k: v for k, v in cache.items() if v.get("timestamp", 0) > cutoff}
+    total_cost = sum(v.get("cost_usd", 0) or 0 for v in live.values())
+    unique_tasks = len({v.get("task_id") for v in live.values() if v.get("task_id")})
+    return {
+        "total_entries": len(cache),
+        "live_entries": len(live),
+        "expired_entries": len(cache) - len(live),
+        "unique_tasks": unique_tasks,
+        "total_cached_cost_usd": round(total_cost, 4),
+        "ttl_hours": CACHE_TTL_H,
+        "max_size": MAX_CACHE_SIZE,
+    }
+
+
 def run():
     """Periodic: prune expired sessions and log stats."""
     cache = _cache()

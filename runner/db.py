@@ -482,6 +482,7 @@ def update(table, match, patch):
 
 
 def rpc(fn, args):
+    """Call a PostgREST RPC function *fn* with *args* dict and return the result."""
     return _req("POST", f"/rest/v1/rpc/{fn}", body=args)
 
 

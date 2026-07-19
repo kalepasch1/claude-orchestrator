@@ -58,14 +58,35 @@ def run(limit=120):
       attempt >=CAP or a repeat of the SAME failure signature -> reclaim with a full-implementation
                    prompt and keep it moving, except genuine legal/material gates.
     """
+    import time as _time
+    _t0 = _time.monotonic()
+    _phase_times = {}
+
+    _tp = _time.monotonic()
     recovered_cards = recover_pending_manual_reviews()
+    _phase_times["recover_cards"] = _time.monotonic() - _tp
+
+    _tp = _time.monotonic()
     restored_noops = recover_auto_closed_noops()
+    _phase_times["restore_noops"] = _time.monotonic() - _tp
+
+    _tp = _time.monotonic()
     shelf_dec, shelf_req = recover_shelved()   # auto-process the shelved pile — no manual requeue needed
+    _phase_times["recover_shelved"] = _time.monotonic() - _tp
+
+    _tp = _time.monotonic()
     offloaded_backlog = offload_budget_capacity_backlog()
+    _phase_times["offload_backlog"] = _time.monotonic() - _tp
+
+    _tp = _time.monotonic()
     blocked = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,base_branch,log_tail,state",
                                   "state": "in.(BLOCKED,CONFLICT,TESTFAIL)", "limit": str(limit)}) or []
+    _phase_times["fetch_blocked"] = _time.monotonic() - _tp
     requeued = escalated = revised = reclaimed = left = shelved = decomposed = agentic_repairs = 0
+    _task_times = []
+    _loop_start = _time.monotonic()
     for t in blocked:
+        _tt = _time.monotonic()
         note = t.get("note") or ""
         signal = f"{note}\n{t.get('log_tail') or ''}"
         rc = int(t.get("remediation_count") or 0)
@@ -188,16 +209,27 @@ def run(limit=120):
                     directive="Planner could not rewrite this. Implement the smallest useful fix directly and commit it.")
                 reclaimed += 1; agentic_repairs += 1
         db.update("tasks", {"id": t["id"]}, upd)
+        _task_times.append({"slug": t.get("slug", "?"), "elapsed": _time.monotonic() - _tt})
+    _total_elapsed = _time.monotonic() - _t0
+    _loop_elapsed = _time.monotonic() - _loop_start
+    _phase_times["task_loop"] = _loop_elapsed
+    _slowest = sorted(_task_times, key=lambda x: x["elapsed"], reverse=True)[:5]
+    _slow_str = ", ".join(f"{s['slug']}={s['elapsed']:.1f}s" for s in _slowest) if _slowest else "none"
+    _phase_str = " ".join(f"{k}={v:.1f}s" for k, v in sorted(_phase_times.items(), key=lambda x: -x[1]))
     print(f"auto_remediate: agentic-repair {agentic_repairs}, retry {requeued}, escalate {escalated}, re-plan {revised}, "
           f"reclaimed {reclaimed}, decomposed {decomposed}, shelved {shelved}, "
           f"shelf-recovered {shelf_dec}dec/{shelf_req}req, recovered-cards {recovered_cards}, "
           f"restored-noops {restored_noops}, offloaded-backlog {offloaded_backlog}, left {left}")
+    print(f"auto_remediate timing: total={_total_elapsed:.1f}s tasks={len(blocked)} phases=[{_phase_str}] slowest=[{_slow_str}]")
     return {"requeued": requeued, "escalated": escalated, "revised": revised,
             "reclaimed": reclaimed, "decomposed": decomposed, "shelved": shelved,
             "agentic_repairs": agentic_repairs,
             "shelf_decomposed": shelf_dec, "shelf_requeued": shelf_req,
             "recovered_cards": recovered_cards, "restored_noops": restored_noops,
-            "offloaded_backlog": offloaded_backlog, "left": left}
+            "offloaded_backlog": offloaded_backlog, "left": left,
+            "timing": {"total_s": round(_total_elapsed, 2),
+                       "phases": {k: round(v, 2) for k, v in _phase_times.items()},
+                       "slowest_tasks": _slowest[:5]}}
 
 
 _NON_CLAUDE_CACHE = {"t": 0.0, "coder": None}

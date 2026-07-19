@@ -11,6 +11,7 @@ import db
 
 
 def run():
+    """Scan unfixed incidents and file top-priority fix tasks for each."""
     inc = db.select("incidents", {"select": "*", "fixed": "eq.false", "limit": "50"}) or []
     projs = {p["name"]: p for p in (db.select("projects", {"select": "id,name"}) or [])}
     filed = 0

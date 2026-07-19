@@ -51,16 +51,22 @@ def _ram_hard():
 
 
 def _ram_floor_gb():
-    # Hard low-memory brake: if fewer than this many GB are available, PAUSE new task claims
-    # entirely (a single heavy task — e.g. an 8GB typecheck — could otherwise crash the Mac).
-    # 1.5GB was too low — macOS is already swapping/thrashing by then. Default 3GB, and the
-    # effective floor scales UP with machine size (see effective_floor_gb).
+    """Minimum free RAM (GB) before pausing new task claims entirely.
+
+    Hard low-memory brake: if fewer than this many GB are available, PAUSE new task claims
+    entirely (a single heavy task — e.g. an 8GB typecheck — could otherwise crash the Mac).
+    1.5GB was too low — macOS is already swapping/thrashing by then. Default 2GB, and the
+    effective floor scales UP with machine size (see effective_floor_gb).
+    """
     return float(os.environ.get("RAM_FLOOR_GB", "2.0"))
 
 
 def _per_task_gb():
-    # Headroom to reserve per concurrent task. A new task is only started if free RAM exceeds
-    # (floor + PER_TASK_GB), so concurrency is implicitly capped by available memory.
+    """RAM headroom (GB) reserved per concurrent task.
+
+    A new task is only started if free RAM exceeds (floor + PER_TASK_GB), so concurrency
+    is implicitly capped by available memory.
+    """
     return float(os.environ.get("PER_TASK_GB", "0.15"))
 
 
@@ -504,9 +510,11 @@ def _global_pause_reason():
 
 
 def govern():
+    _t0 = time.monotonic()
     used, free_gb = disk_pct()
     ram = ram_pct()
     free_ram = ram_free_gb()
+    _t_sample = time.monotonic()
     _event("disk", used, f"{free_gb}GB free")
     action = "ok"
 
@@ -645,8 +653,12 @@ def govern():
             set_throttle(recovered_target)
             action += f"; mem-recover->{recovered_target}"
             g = dashboard_gauge()
+    _t_end = time.monotonic()
+    _elapsed_ms = (_t_end - _t0) * 1000
+    _sample_ms = (_t_sample - _t0) * 1000
     print(f"governor: disk {used}% ({free_gb}GB free) ram {ram} free_ram {free_ram}GB "
-          f"floor {eff_floor} -> {action}, limit={current_limit()}")
+          f"floor {eff_floor} -> {action}, limit={current_limit()} "
+          f"[{_elapsed_ms:.0f}ms total, {_sample_ms:.0f}ms sampling]")
     return g
 
 

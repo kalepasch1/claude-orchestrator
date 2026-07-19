@@ -23,16 +23,20 @@ def register(provider, name, ref, store="env", project=None, scope="runner"):
 
 
 def _read(store, ref):
+    """Read a secret value from the backing store. stderr is suppressed to prevent
+    secret material from leaking into logs via error messages."""
     try:
         if store == "env":
             return os.environ.get(ref)
         if store == "keychain":
             return subprocess.check_output(["security", "find-generic-password", "-s", ref, "-w"],
-                                           text=True).strip()
+                                           text=True, stderr=subprocess.DEVNULL).strip()
         if store == "doppler":
-            return subprocess.check_output(["doppler", "secrets", "get", ref, "--plain"], text=True).strip()
+            return subprocess.check_output(["doppler", "secrets", "get", ref, "--plain"],
+                                           text=True, stderr=subprocess.DEVNULL).strip()
         if store == "onepassword":
-            return subprocess.check_output(["op", "read", ref], text=True).strip()
+            return subprocess.check_output(["op", "read", ref],
+                                           text=True, stderr=subprocess.DEVNULL).strip()
     except Exception:
         return None
     return None

@@ -45,6 +45,7 @@ class _Slot:
         self.hits           = 0
 
     def age(self):
+        """Seconds elapsed since this slot was loaded from disk."""
         return time.time() - self.loaded_at
 
     def is_stale(self):
@@ -57,6 +58,11 @@ class _Slot:
             return _checksum(cur) == self.checksum
         except Exception:
             return False
+
+    def __repr__(self):
+        return (f"_Slot(repo={os.path.basename(self.repo)!r}, "
+                f"age={self.age():.0f}s, hits={self.hits}, "
+                f"stale={self.is_stale()})")
 
 
 def _read_claude_md(repo):

@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+"""Tests for runner/agent_market.py — verifier independence and routing hygiene."""
 import os
 import sys
 import unittest
