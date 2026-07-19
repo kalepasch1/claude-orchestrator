@@ -95,6 +95,14 @@ def _remove_stale_worktree(repo: str, wt: str, slug: str) -> None:
     """Best-effort removal of a worktree whose owner marker is missing or stale."""
     import shutil, logging
     _log = logging.getLogger("worktree_isolation")
+    # Unlock first — locked worktrees survive prune and block re-add
+    try:
+        subprocess.run(
+            ["git", "worktree", "unlock", wt],
+            cwd=repo, capture_output=True, text=True, timeout=10,
+        )
+    except Exception:
+        pass
     # Try git worktree remove first (clean deregistration)
     try:
         subprocess.run(
@@ -148,6 +156,11 @@ def ensure_task_worktree(repo: str, slug: str, base: str, setup_script: str, *,
                 # The branch lease is the authoritative ownership; if this task
                 # holds the lease, it can safely reclaim the worktree slot.
                 _remove_stale_worktree(repo, wt, slug)
+        else:
+            # Directory is gone but git may still have a locked registration
+            # (e.g. from rm -rf without git worktree remove). Unlock+prune
+            # so the subsequent `git worktree add` can succeed.
+            _remove_stale_worktree(repo, wt, slug)
 
         created = subprocess.run(
             [setup_script, slug, base, task_id, lease_token],

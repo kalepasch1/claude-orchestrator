@@ -399,5 +399,57 @@ def _annotate_with_dedup(row):
     return row
 
 
+# ── intake proof validation (fail-open) ──
+def _validate_proofs(row):
+    """Check that the task prompt contains scoped proof commands (not just full-suite).
+    Fail-open: any error is swallowed and the row is inserted unmodified."""
+    try:
+        LIB = os.path.abspath(os.path.join(HERE, "..", "lib"))
+        if LIB not in sys.path:
+            sys.path.insert(0, LIB)
+        # intake-proof-validator.mjs is ESM — call via subprocess
+        import subprocess
+        result = subprocess.run(
+            ["node", "-e",
+             f"import('{os.path.join(LIB, 'intake-proof-validator.mjs')}').then(m => "
+             f"console.log(JSON.stringify(m.validateIntakeProofs({json.dumps(row.get('prompt', ''))}))))"],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            validation = json.loads(result.stdout.strip())
+            if not validation.get("pass"):
+                warnings = validation.get("warnings", [])
+                if warnings:
+                    row["note"] = (row.get("note") or "") + f" | proof-warnings: {'; '.join(warnings[:3])}"
+    except Exception:
+        pass  # fail-open
+    return row
+
+
+# ── blocker classification hook (fail-open) ──
+def _classify_blocker(error_output, rework_count=0, last_category=None):
+    """Classify a blocker error and determine routing (rework vs escalate).
+    Returns routing dict or None on failure. Fail-open."""
+    try:
+        LIB = os.path.abspath(os.path.join(HERE, "..", "lib"))
+        if LIB not in sys.path:
+            sys.path.insert(0, LIB)
+        import subprocess
+        script = (
+            f"import('{os.path.join(LIB, 'blocker-classifier.mjs')}').then(m => "
+            f"console.log(JSON.stringify(m.triageBlocker({json.dumps(error_output)}, "
+            f"{{reworkCount: {rework_count}, lastBlockerCategory: {json.dumps(last_category)}}}))))"
+        )
+        result = subprocess.run(
+            ["node", "-e", script],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return json.loads(result.stdout.strip())
+    except Exception:
+        pass  # fail-open
+    return None
+
+
 if __name__ == "__main__":
     run()
