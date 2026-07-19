@@ -14,11 +14,20 @@ def evaluate(metrics_url=None):
     metrics_url = metrics_url or os.environ.get("METRICS_URL")
     if not metrics_url:
         return {"verdict": "promote", "reason": "no metrics endpoint configured"}
-    try:
-        with urllib.request.urlopen(metrics_url, timeout=10) as r:
-            m = json.loads(r.read().decode())
-    except Exception as e:
-        return {"verdict": "rollback", "reason": f"metrics unreachable ({e})"}
+    retries = int(os.environ.get("CANARY_FETCH_RETRIES", "2"))
+    last_err = None
+    for attempt in range(1 + retries):
+        try:
+            with urllib.request.urlopen(metrics_url, timeout=10) as r:
+                m = json.loads(r.read().decode())
+            break
+        except Exception as e:
+            last_err = e
+            if attempt < retries:
+                import time
+                time.sleep(min(2 ** attempt, 8))
+    else:
+        return {"verdict": "rollback", "reason": f"metrics unreachable after {1 + retries} attempts ({last_err})"}
     fails = []
     def bad(key, val, limit, cmp):
         if limit is None or val is None:
