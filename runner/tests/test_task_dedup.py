@@ -57,6 +57,27 @@ class TaskDedupTest(unittest.TestCase):
 
         self.assertEqual(clusters, [])
 
+    def test_queued_tasks_uses_bounded_pages(self):
+        db = MagicMock()
+        db.select.side_effect = [
+            [{"id": "1"}, {"id": "2"}],
+            [{"id": "3"}],
+        ]
+        old_db, old_page, old_limit = task_dedup.db, task_dedup.DEDUP_PAGE_SIZE, task_dedup.DEDUP_SCAN_LIMIT
+        try:
+            task_dedup.db = db
+            task_dedup.DEDUP_PAGE_SIZE = 2
+            task_dedup.DEDUP_SCAN_LIMIT = 10
+            rows = task_dedup._queued_tasks("id")
+        finally:
+            task_dedup.db = old_db
+            task_dedup.DEDUP_PAGE_SIZE = old_page
+            task_dedup.DEDUP_SCAN_LIMIT = old_limit
+
+        self.assertEqual([row["id"] for row in rows], ["1", "2", "3"])
+        self.assertEqual(db.select.call_args_list[0].args[1]["limit"], "2")
+        self.assertEqual(db.select.call_args_list[1].args[1]["offset"], "2")
+
 
 if __name__ == "__main__":
     unittest.main()
