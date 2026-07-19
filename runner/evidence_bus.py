@@ -4,8 +4,11 @@ import hashlib
 import json
 import time
 import datetime
+import os
 
 import db
+
+_OUTBOX = os.path.join(os.environ.get("CLAUDE_ORCH_HOME", "/private/tmp"), "evidence-outbox.jsonl")
 
 
 def _canonical(value):
@@ -27,10 +30,43 @@ def append(app, kind, subject, payload=None, parent_key=None, key=None):
     try:
         db.insert("fleet_evidence_events", row)
     except Exception as exc:
-        # Evidence must never make a safety control unavailable; callers retain a stable key
-        # and reconciliation can replay it later.
+        _spool(row)
         return {"idempotency_key": key, "persisted": False, "error": str(exc)}
     return {"idempotency_key": key, "persisted": True}
+
+
+def _spool(row):
+    """Durable local outbox: a transient DB failure cannot silently discard evidence."""
+    try:
+        os.makedirs(os.path.dirname(_OUTBOX), exist_ok=True)
+        with open(_OUTBOX, "a", encoding="utf-8") as outbox:
+            outbox.write(_canonical(row) + "\n")
+    except OSError:
+        pass
+
+
+def flush(limit=500):
+    """Replay the local outbox; DB uniqueness makes retry idempotent."""
+    try:
+        with open(_OUTBOX, encoding="utf-8") as outbox:
+            rows = [json.loads(line) for line in outbox if line.strip()][:limit]
+    except OSError:
+        return 0
+    delivered = 0
+    remaining = []
+    for row in rows:
+        try:
+            db.insert("fleet_evidence_events", row)
+            delivered += 1
+        except Exception:
+            remaining.append(row)
+    try:
+        with open(_OUTBOX, "w", encoding="utf-8") as outbox:
+            for row in remaining:
+                outbox.write(_canonical(row) + "\n")
+    except OSError:
+        pass
+    return delivered
 
 
 def events(kind=None, app=None, limit=1000):

@@ -48,6 +48,14 @@ def complete_config(change_id, outcome, metrics=None):
                                {"outcome": outcome, "metrics": metrics or {}})
 
 
+def observe_canary(change_id, before, after):
+    """Persist the observation that determines graduation or rollback."""
+    healthy = not (before.get("can_claim") is True and after.get("can_claim") is False)
+    payload = {"before": before, "after": after, "healthy": healthy}
+    evidence_bus.append("ORCHESTRATOR", "config.canary_observed", change_id, payload)
+    return healthy, payload
+
+
 def authorized(change_id):
     try:
         rows = db.select("policy_config_changes", {"select": "status", "id": f"eq.{change_id}", "limit": "1"}) or []
