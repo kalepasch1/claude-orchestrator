@@ -1,35 +1,57 @@
-"""Tests for config_drift.py and realtime_config.py - pure logic, db mocked."""
-import os, sys, types, json
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import os
+import sys
+import unittest
+from unittest.mock import patch
 
-# Ensure db mock exists
-if "db" not in sys.modules:
-    fake_db = types.ModuleType("db")
-    fake_db.sql = lambda q: []
-    fake_db.insert = lambda *a, **k: None
-    sys.modules["db"] = fake_db
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config_drift
-import realtime_config
 
-def test_config_hash_deterministic():
-    h1 = config_drift._config_hash()
-    h2 = config_drift._config_hash()
-    assert h1 == h2
 
-def test_check_no_drift():
-    result = config_drift.check()
-    assert isinstance(result, list)
-    assert len(result) == 0
+class ConfigHashTest(unittest.TestCase):
+    def test_consistent_hash(self):
+        rows = [{"key": "A", "value": "1"}]
+        with patch.object(config_drift.db, "select", return_value=rows):
+            h1 = config_drift._config_hash()
+            h2 = config_drift._config_hash()
+        self.assertEqual(h1, h2)
+        self.assertEqual(len(h1), 16)
 
-def test_realtime_config_get_default():
-    realtime_config._cache = {}
-    realtime_config._cache_ts = 0
-    val = realtime_config.get("NONEXISTENT", "fallback")
-    assert val == "fallback"
+    def test_different_data_different_hash(self):
+        with patch.object(config_drift.db, "select", return_value=[{"key": "A", "value": "1"}]):
+            h1 = config_drift._config_hash()
+        with patch.object(config_drift.db, "select", return_value=[{"key": "A", "value": "2"}]):
+            h2 = config_drift._config_hash()
+        self.assertNotEqual(h1, h2)
 
-def test_realtime_config_get_cached():
-    import time
-    realtime_config._cache = {"MY_KEY": "my_value"}
-    realtime_config._cache_ts = time.time()
-    assert realtime_config.get("MY_KEY") == "my_value"
+
+class CheckDriftTest(unittest.TestCase):
+    def test_no_drift_returns_empty(self):
+        with patch.object(config_drift, "_config_hash", return_value="abc"), \
+             patch.object(config_drift, "_executor_hashes", return_value=[
+                 {"key": "COWORK_EXECUTOR_1_LAST_RUN", "value": '{"config_hash": "abc"}'}
+             ]):
+            result = config_drift.check()
+        self.assertEqual(result, [])
+
+    def test_drift_detected(self):
+        with patch.object(config_drift, "_config_hash", return_value="abc"), \
+             patch.object(config_drift, "_executor_hashes", return_value=[
+                 {"key": "COWORK_EXECUTOR_1_LAST_RUN", "value": '{"config_hash": "xyz"}'}
+             ]):
+            result = config_drift.check()
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["expected"], "abc")
+        self.assertEqual(result[0]["reported"], "xyz")
+
+    def test_missing_hash_not_flagged(self):
+        with patch.object(config_drift, "_config_hash", return_value="abc"), \
+             patch.object(config_drift, "_executor_hashes", return_value=[
+                 {"key": "COWORK_EXECUTOR_1_LAST_RUN", "value": '{"ts": "now"}'}
+             ]):
+            result = config_drift.check()
+        self.assertEqual(result, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

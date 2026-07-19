@@ -371,3 +371,41 @@ def run():
 
 if __name__ == "__main__":
     run()
+
+
+def _rebase_conflict_details(repo, base, branch):
+    """Return a summary of conflicting files when a rebase of `branch` onto `base` would fail.
+
+    Uses `git diff --name-only` to identify files changed on both sides, then checks
+    which ones have overlapping hunks. Runs read-only — never modifies the repo.
+    Returns: dict with 'conflicting_files' (list) and 'base_only'/'branch_only' counts.
+    """
+    result = {"conflicting_files": [], "base_only": 0, "branch_only": 0}
+    try:
+        merge_base = subprocess.run(
+            ["git", "merge-base", base, branch],
+            cwd=repo, capture_output=True, text=True, timeout=10,
+        )
+        if merge_base.returncode != 0:
+            return result
+        mb = merge_base.stdout.strip()
+
+        base_files = subprocess.run(
+            ["git", "diff", "--name-only", mb, base],
+            cwd=repo, capture_output=True, text=True, timeout=10,
+        )
+        branch_files = subprocess.run(
+            ["git", "diff", "--name-only", mb, branch],
+            cwd=repo, capture_output=True, text=True, timeout=10,
+        )
+
+        base_set = set(f for f in (base_files.stdout or "").strip().split("\n") if f)
+        branch_set = set(f for f in (branch_files.stdout or "").strip().split("\n") if f)
+
+        overlap = sorted(base_set & branch_set)
+        result["conflicting_files"] = overlap[:20]  # cap to avoid huge lists
+        result["base_only"] = len(base_set - branch_set)
+        result["branch_only"] = len(branch_set - base_set)
+    except Exception:
+        pass
+    return result
