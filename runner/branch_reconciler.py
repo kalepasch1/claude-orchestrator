@@ -108,7 +108,6 @@ def reconcile_project(project, capacity):
     for branch in sorted(chosen, key=lambda b: b["stamp"], reverse=True):
         if processed >= capacity:
             break
-        processed += 1
         if branch["slug"] in existing:
             if existing[branch["slug"]] != "BLOCKED" and not branch["sensitive"]:
                 merge_train.ensure_integration_card(
@@ -120,6 +119,7 @@ def reconcile_project(project, capacity):
                 )
             skipped += 1
             continue
+        processed += 1
         state = "BLOCKED" if branch["sensitive"] else "DONE"
         note = ("branch_reconciler: raw remote branch mapped; "
                 f"ref={branch['ref']} sha={branch['sha'][:12]} base={base} "
