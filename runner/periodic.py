@@ -722,6 +722,12 @@ def run_roi():
         print(f"roi {r['project']}: cpm=${cpm} weight={weight}")
 
 
+def run_editorial():
+    """Stage due authority-content packets for human review; never publishes."""
+    import editorial_program
+    return editorial_program.run()
+
+
 JOBS = {
     "spec": run_spec,
     "chaos": run_chaos,
@@ -729,6 +735,7 @@ JOBS = {
     "scout": run_scout,
     "deploy": run_deploy,
     "roi": run_roi,
+    "editorial": run_editorial,
     "batch": run_batch,
     "unstick": run_unstick,
     "dagfix": run_dagfix,
@@ -829,6 +836,7 @@ if __name__ == "__main__":
         "stripe", "ownerreport", "worktreegc", "stuck_reaper", "remediate", "selfcheck",
         "quarantine", "credresolver", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain",
         "priority_scorer", "quarantine_gc",
+        "editorial",
         "release_kpi.py", "integrate_kpi.py", "fleet_control.py",
     }
     if job not in _SAFE_WHEN_PAUSED:
