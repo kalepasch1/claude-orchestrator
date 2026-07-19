@@ -815,7 +815,12 @@ def train_run():
                "skipped": 0, "risk": {"low": 0, "standard": 0, "sensitive": 0},
                "pressure": pressure}
     caps = {"low": LOW_RISK_BATCH, "standard": STANDARD_BATCH, "sensitive": SENSITIVE_BATCH}
-    ATTEMPT_OUTCOMES = ("merged", "testfail", "conflict", "push-pending")  # real attempts (tests ran) consume the cap
+    # Every result that touches a card consumes a risk-band slot.  In particular,
+    # redo and already-integrated used to be free; a legacy backlog containing
+    # hundreds of either could hold this pass indefinitely and starve later
+    # reconciliation cards.
+    BUDGET_OUTCOMES = ("merged", "already-integrated", "redo", "testfail",
+                       "conflict", "push-pending", "waiting-branch")
     scan_cap = int(os.environ.get("MERGE_TRAIN_SCAN_PER_PROJECT", "200"))
     for pid, group in by_project.items():
         proj = projects.get(pid, {})
@@ -843,7 +848,7 @@ def train_run():
                 scanned += 1
                 summary["risk"][risk] += 1
                 outcome = _integrate_card(card, slug, task, proj)
-                if outcome in ATTEMPT_OUTCOMES:
+                if outcome in BUDGET_OUTCOMES:
                     used[risk] += 1
                 if outcome == "merged":
                     summary["merged"] += 1
