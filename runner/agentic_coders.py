@@ -27,6 +27,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # capability a task needs by difficulty (see _task_difficulty)
 _NEED = {"easy": 5, "hard": 8}
+# default capability assumed when a coder entry omits the "cap" field
+_DEFAULT_CAP = 5
 
 # aider prints e.g. "Tokens: 1.2k sent, 500 received. Cost: $0.0021 message, $0.0021 session."
 _AIDER_MSG_COST = re.compile(r"cost:\s*\$([0-9.]+)\s*message", re.I)
