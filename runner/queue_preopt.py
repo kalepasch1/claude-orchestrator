@@ -541,6 +541,55 @@ def _preopt_task(t, projects):
     except Exception as e:
         _log.debug("preopt pattern_transfer failed for %s: %s", tid, e)
 
+    # Stage 18: Output distiller recipe lookup
+    try:
+        import output_distiller
+        _recipe = output_distiller.find_recipe(t, t.get("project_id", ""))
+        if _recipe:
+            result["recipe"] = _recipe
+            result["stages"].append("output_distiller")
+    except Exception as e:
+        _log.debug("preopt output_distiller failed for %s: %s", tid, e)
+
+    # Stage 19: Conversation memory pre-load
+    try:
+        import conversation_memory
+        _mem = conversation_memory.recall(t.get("id") or tid)
+        if _mem:
+            result["conversation_memory"] = _mem
+            result["stages"].append("conversation_memory")
+    except Exception as e:
+        _log.debug("preopt conversation_memory failed for %s: %s", tid, e)
+
+    # Stage 20: Test oracle index build
+    try:
+        import test_oracle
+        if repo:
+            test_oracle.build_index(repo)
+            result["stages"].append("test_oracle_index")
+    except Exception as e:
+        _log.debug("preopt test_oracle failed for %s: %s", tid, e)
+
+    # Stage 21: Fleet rebalancer assessment
+    try:
+        import fleet_rebalancer
+        _balance = fleet_rebalancer.assess_balance()
+        if _balance:
+            result["fleet_balance"] = _balance
+            result["stages"].append("fleet_balance")
+    except Exception as e:
+        _log.debug("preopt fleet_rebalancer failed for %s: %s", tid, e)
+
+    # Stage 22: Model cascade strategy pre-computation
+    try:
+        import model_cascade
+        _cascade = model_cascade.cascade_strategy(t, 1)
+        if _cascade:
+            result["cascade_strategy"] = _cascade
+            result["stages"].append("model_cascade")
+    except Exception as e:
+        _log.debug("preopt model_cascade failed for %s: %s", tid, e)
+
     return result
 
 

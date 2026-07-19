@@ -133,11 +133,11 @@ useHead({
         <div class="loop-stats"><span><b>YOU</b> hold the wheel</span><span><b>CADE</b> predicts the road</span><span><b>∞</b> routes compared</span></div>
       </div>
       <div class="loop-console">
-        <header><span>madeus / navigation-hivemind</span><b>FOUNDER CONTROLLED</b></header>
+        <header><span>AI-powered portfolio navigation</span><b>FOUNDER CONTROLLED</b></header>
         <ol>
           <li><time>09:41:08</time><b>DESTINATION</b><span>Founder sets outcome, constraints, and authority</span><i>✓</i></li>
           <li><time>09:41:10</time><b>TERRAIN</b><span>CADE maps portfolio effects and hidden dependencies</span><i>✓</i></li>
-          <li><time>09:41:13</time><b>ROUTES</b><span>Hivemind compares cost, quality, speed, and risk</span><i>✓</i></li>
+          <li><time>09:41:13</time><b>ROUTES</b><span>AI compares cost, quality, speed, and risk</span><i>✓</i></li>
           <li class="live"><time>09:41:16</time><b>GUIDANCE</b><span>Better route found · 31% faster · $4,820 less</span><i>●</i></li>
           <li><time>—</time><b>GUARDRAIL</b><span>Lane warning before customer-impacting change</span><i>○</i></li>
           <li><time>—</time><b>ARRIVAL</b><span>Independent proof confirms the destination</span><i>○</i></li>
@@ -218,7 +218,7 @@ useHead({
             <path class="map-route cross" d="M135 88C310 20 425 35 552 88M120 328C275 382 435 380 565 328"/>
             <circle class="pulse-dot d1" cx="225" cy="133" r="5"/><circle class="pulse-dot d2" cx="454" cy="125" r="5"/><circle class="pulse-dot d3" cx="238" cy="278" r="5"/><circle class="pulse-dot d4" cx="455" cy="275" r="5"/>
           </svg>
-          <div class="map-core"><MadeusMark /><b>Portfolio<br>hivemind</b><small>26 objectives routing</small></div>
+          <div class="map-core"><MadeusMark /><b>Portfolio<br>intelligence</b><small>26 objectives · smart routing</small></div>
           <div class="company-node tomorrow"><span>TOMORROW</span><b>Risk &amp; markets</b><small><i /> pricing hedge simulated</small></div>
           <div class="company-node smarter"><span>SMARTER</span><b>Legal operating system</b><small><i /> 4 matters advanced</small></div>
           <div class="company-node studio"><span>STUDIO</span><b>Design &amp; venture</b><small><i /> brand system verified</small></div>

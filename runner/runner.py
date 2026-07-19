@@ -771,6 +771,15 @@ def run_task(t):
                 model = model_router.HAIKU
             elif bias >= 1 and model == model_router.OPUS:
                 model = model_router.SONNET
+            # MODEL CASCADE: cost-aware model selection — start cheap, escalate on failure signals
+            try:
+                import model_cascade
+                _cascade = model_cascade.cascade_strategy(t, attempt)
+                if _cascade and _cascade.get("model"):
+                    model = _cascade["model"]
+                    set_state(t["id"], note=f"model-cascade: {_cascade.get('strategy', 'default')} → {model}")
+            except Exception as e:
+                _log.debug("hook model_cascade failed: %s", e)
             coder = "claude" if t.get("_force_claude") else agentic_coders.pick(t, slot_index=attempt - 1)
             try:
                 _coder_route = agentic_coders.route({**t, "force_coder": coder})
@@ -785,6 +794,14 @@ def run_task(t):
             set_state(t["id"], state="RUNNING", model=visible_model, attempt=attempt,
                       account=(acct or {}).get("name") or f"agentic:{coder}",
                       note=f"agentic coder: {coder}")
+            # FLEET REBALANCER: register task start
+            try:
+                import fleet_rebalancer
+                fleet_rebalancer.register_activity(
+                    os.environ.get("ORCH_RUNNER_ID", "default"),
+                    t.get("project_id", ""), t["id"], "RUNNING")
+            except Exception as e:
+                _log.debug("hook fleet_rebalancer.register failed: %s", e)
             try:
                 wt = worktree_isolation.ensure_task_worktree(
                     repo, slug, base,
@@ -896,6 +913,27 @@ def run_task(t):
                     _extras += "\n\n## Pre-Validated Draft Available\nA speculative draft has already passed all tests. Apply it directly unless you find issues.\n"
             except Exception as e:
                 _log.debug("hook merge_validator failed: %s", e)
+            # CONVERSATION MEMORY: inject prior attempt transcripts so agent doesn't repeat mistakes
+            try:
+                import conversation_memory
+                draft_prompt = conversation_memory.inject_memory(draft_prompt, t["id"])
+            except Exception as e:
+                _log.debug("hook conversation_memory failed: %s", e)
+            # OUTPUT DISTILLER: inject proven recipe from prior successful runs
+            try:
+                import output_distiller
+                _recipe = output_distiller.find_recipe(t, t.get("project_id", ""))
+                if _recipe:
+                    draft_prompt = output_distiller.inject_recipe(draft_prompt, _recipe)
+                    set_state(t["id"], note=f"recipe: injected (success_count={_recipe.get('success_count', 0)})")
+            except Exception as e:
+                _log.debug("hook output_distiller failed: %s", e)
+            # PROMPT A/B TEST: apply experimental variant
+            try:
+                import prompt_ab_test
+                draft_prompt = prompt_ab_test.apply_variant(draft_prompt, t["id"])
+            except Exception as e:
+                _log.debug("hook prompt_ab_test failed: %s", e)
             # PROMPT COMPRESSOR: deduplicate and compress before final assembly
             try:
                 import prompt_compressor
@@ -1025,6 +1063,19 @@ def run_task(t):
             try:
                 import conflict_predictor
                 _conflicts = conflict_predictor.check_conflicts(t)
+                if not _force_execute and _conflicts.get("action") == "defer":
+                    # SEMANTIC MERGE: before deferring, check if AST-level merge is possible
+                    try:
+                        import semantic_merge
+                        _sm = semantic_merge.can_semantic_merge(
+                            _conflicts.get("conflicts", []), repo)
+                        if _sm and _sm.get("mergeable"):
+                            set_state(t["id"], note=f"semantic-merge: AST merge possible ({_sm.get('confidence', 0):.0%}), proceeding despite overlap")
+                            _conflicts["action"] = "proceed"  # override defer
+                        else:
+                            pass  # fall through to defer
+                    except Exception as _sm_err:
+                        _log.debug("hook semantic_merge failed: %s", _sm_err)
                 if not _force_execute and _conflicts.get("action") == "defer":
                     t["_requeue_count"] = _requeue_count + 1
                     set_state(t["id"], state="QUEUED",
@@ -1472,6 +1523,21 @@ def run_task(t):
                 time.sleep(min(back, 30)); continue
 
             tests_ok = rc == 0
+            # FLAKY TEST HEALER: record suite result for flake tracking
+            try:
+                import flaky_test_healer
+                flaky_test_healer.record_suite_result(out, tests_ok)
+                if not tests_ok and not flaky_test_healer.should_block_merge(out):
+                    tests_ok = True
+                    set_state(t["id"], note="flaky-test-healer: all failures are quarantined flaky tests — unblocking")
+            except Exception as e:
+                _log.debug("hook flaky_test_healer failed: %s", e)
+            # CONVERSATION MEMORY: store attempt transcript for cross-retry learning
+            try:
+                import conversation_memory
+                conversation_memory.store(t["id"], attempt, out, visible_model, tests_ok)
+            except Exception as e:
+                _log.debug("hook conversation_memory.store failed: %s", e)
             # TEST QUARANTINE: separate flaky failures from real blockers
             if not tests_ok:
                 try:
@@ -2140,6 +2206,46 @@ def run_task(t):
                     integrated)
             except Exception as e:
                 _log.debug("hook error_taxonomy.record failed: %s", e)
+            # OUTPUT DISTILLER: on success, distill agent output into reusable recipe
+            if integrated:
+                try:
+                    import output_distiller
+                    _diff_text = ""
+                    try:
+                        _diff_text = subprocess.check_output(
+                            ["git", "diff", f"{base}..HEAD", "--stat"], cwd=wt,
+                            text=True, timeout=10)
+                    except Exception:
+                        pass
+                    _od_cost = run_cost.get("usd", 0) if isinstance(run_cost, dict) else 0
+                    _recipe = output_distiller.distill(t, out, _diff_text, visible_model, _od_cost)
+                    if _recipe:
+                        output_distiller.store_recipe(
+                            output_distiller._slug_prefix(slug), t.get("project_id", ""), _recipe)
+                except Exception as e:
+                    _log.debug("hook output_distiller.record failed: %s", e)
+            # PROMPT A/B TEST: record outcome for the variant this task used
+            try:
+                import prompt_ab_test
+                prompt_ab_test.record_outcome(t["id"], integrated)
+            except Exception as e:
+                _log.debug("hook prompt_ab_test.record failed: %s", e)
+            # MODEL CASCADE: record cascade outcome for future strategy decisions
+            try:
+                import model_cascade
+                model_cascade.record_cascade(slug, visible_model, integrated,
+                                              run_cost.get("usd", 0) if isinstance(run_cost, dict) else 0)
+            except Exception as e:
+                _log.debug("hook model_cascade.record failed: %s", e)
+            # FLEET REBALANCER: register task completion
+            try:
+                import fleet_rebalancer
+                fleet_rebalancer.register_activity(
+                    os.environ.get("ORCH_RUNNER_ID", "default"),
+                    t.get("project_id", ""), t["id"],
+                    "DONE" if integrated else "FAILED")
+            except Exception as e:
+                _log.debug("hook fleet_rebalancer.record failed: %s", e)
             record(t, name, slug, kind, visible_model, acct, attempt, True, integrated, out, t0, cost=run_cost)
             return
         set_state(t["id"], state="BLOCKED", note="exhausted retries")
@@ -3190,6 +3296,42 @@ def main():
                             pattern_adversary.audit_all_patterns()
                         except Exception as e:
                             _log.debug("hook pattern_adversary failed: %s", e)
+                        # FLEET REBALANCER: check if this runner should switch projects
+                        try:
+                            import fleet_rebalancer
+                            _runner_id = os.environ.get("ORCH_RUNNER_ID", "default")
+                            _current_projects = list(projects().keys())[:5]
+                            _rb_decision = fleet_rebalancer.rebalance(_runner_id, _current_projects)
+                            if _rb_decision and _rb_decision.get("action") == "redirect":
+                                _log.info("fleet-rebalancer: redirecting to project %s", _rb_decision.get("target_project"))
+                        except Exception as e:
+                            _log.debug("hook fleet_rebalancer failed: %s", e)
+                        # ROLLBACK CHAIN: check for regressions in active projects
+                        try:
+                            import rollback_chain
+                            for _pid, _pname in list(projects().items())[:2]:
+                                _rrepo = _project_repo(_pid)
+                                if _rrepo:
+                                    _proj = db.select("projects", {"id": f"eq.{_pid}", "select": "test_cmd"})
+                                    _tcmd = (_proj[0].get("test_cmd") if _proj else None) or "npm test"
+                                    _reg = rollback_chain.detect_regression(_pid, _rrepo, _tcmd)
+                                    if _reg.get("regression"):
+                                        _cause = rollback_chain.bisect_cause(_rrepo, _reg["since_commit"], "HEAD", _tcmd)
+                                        if _cause:
+                                            rollback_chain.auto_revert(_rrepo, _cause["cause_commit"])
+                                            rollback_chain.requeue_with_context(
+                                                _cause.get("cause_slug", "unknown"), _cause["cause_commit"],
+                                                _reg["failing_tests"], _pid)
+                        except Exception as e:
+                            _log.debug("hook rollback_chain failed: %s", e)
+                        # PROMPT A/B TEST: analyze results when idle
+                        try:
+                            import prompt_ab_test
+                            _ab_results = prompt_ab_test.analyze()
+                            if _ab_results.get("winners"):
+                                _log.info("prompt-ab-test: winners found: %s", _ab_results["winners"])
+                        except Exception as e:
+                            _log.debug("hook prompt_ab_test.analyze failed: %s", e)
         except Exception as e:
             print("poll error:", e)
         _touch_progress()  # WEDGEFIX-C: unconditional — prevents wedge detection during
