@@ -13,6 +13,8 @@ import os
 import socket
 import threading
 
+__all__ = ["get", "with_task"]
+
 _hostname = socket.gethostname()
 _lock = threading.Lock()
 _configured = False
