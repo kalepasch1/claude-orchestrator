@@ -11,7 +11,8 @@ import db, health, roi, claude_cli
 MODEL = os.environ.get("ASK_MODEL", "claude-sonnet-4-6")
 
 
-def snapshot():
+def snapshot() -> dict:
+    """Collect a compact telemetry snapshot for the analytics model."""
     return {
         "health": db.select("v_project_health", {"select": "*"}) or [],
         "inbox": (db.select("v_action_inbox", {"select": "*"}) or [])[:30],
