@@ -362,6 +362,7 @@ def _agent_branch_safe_on_origin(branch, repo):
 
 
 def prune():
+    """Reclaim disk by removing merged worktrees, old logs, and stale caches.  Returns freed-item notes."""
     freed_notes = []
     # 1) merged agent worktrees + git worktree prune
     for p in _projects():
