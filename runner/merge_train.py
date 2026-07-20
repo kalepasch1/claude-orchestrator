@@ -639,6 +639,40 @@ def _is_relfix(slug):
     return str(slug or "").startswith(_RELFIX_PREFIXES)
 
 
+def _bounded_contract_review(repo, base, dependents, project):
+    """Run advisory model review outside the train process with a hard deadline.
+
+    Local inference can occasionally ignore a socket-level timeout while loading
+    or evaluating a model.  Keeping it in-process then strands the global merge
+    lease.  A separate client process can be terminated safely; rebase and test
+    gates remain in the parent and are never bypassed.
+    """
+    try:
+        timeout = max(1, int(os.environ.get("ORCH_TRAIN_CONTRACT_VERIFY_TIMEOUT", "120")))
+    except ValueError:
+        timeout = 120
+    runner_dir = os.path.dirname(os.path.abspath(__file__))
+    payload = json.dumps({"repo": repo, "base": base,
+                          "dependents": dependents, "project": project})
+    script = (
+        "import json,sys; sys.path.insert(0,sys.argv[1]); import verify; "
+        "p=json.loads(sys.argv[2]); "
+        "print(json.dumps(verify.review_diff(p['repo'], base=p['base'], "
+        "dependents=p.get('dependents'), project=p.get('project'))))"
+    )
+    try:
+        run = subprocess.run([sys.executable, "-c", script, runner_dir, payload],
+                             capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None, f"contract review timed out after {timeout}s"
+    if run.returncode:
+        return None, (run.stderr or run.stdout or "contract review worker failed")[-300:]
+    try:
+        return json.loads(run.stdout.strip()), ""
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None, "contract review worker returned invalid JSON"
+
+
 def _verify_contract(repo, branch, base, slug, task, project_name):
     """Contract-first verification gate: cheap-model diff review BEFORE test execution.
 
@@ -674,9 +708,12 @@ def _verify_contract(repo, branch, base, slug, task, project_name):
             dependents = blast_radius.dependents(repo, branch, base)
         except Exception:
             pass
-        result = _verify_mod.review_diff(
-            repo, base=base, dependents=dependents, project=project_name,
+        result, worker_error = _bounded_contract_review(
+            repo, base, dependents, project_name,
         )
+        if result is None:
+            _log(project_name, slug, "CONTRACT_VERIFY:ERROR", worker_error[:120])
+            return True, f"verify error (fail-soft pass): {worker_error}"
         verdict = str(result.get("verdict", "pass")).lower()
         notes = str(result.get("notes", ""))[:300]
         reviewer = result.get("by", "unknown")
