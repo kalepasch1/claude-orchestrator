@@ -137,13 +137,13 @@ Pages occupied by compressor: 5.
              patch.object(resource_governor, "_predicted_disk_pct", return_value=(None, None)), \
              patch.object(resource_governor, "set_throttle", side_effect=lambda n: throttle.append(n) or n), \
              patch.object(resource_governor, "current_limit", return_value=1), \
-             patch.object(resource_governor, "effective_floor_gb", return_value=6.0), \
-             patch.object(resource_governor, "_per_task_gb", return_value=3.0), \
+             patch.object(resource_governor, "RAM_FLOOR_GB", 6.0), \
+             patch.object(resource_governor, "PER_TASK_GB", 3.0), \
              patch.dict(sys.modules, {"local_model_slots": fake_slots}):
             gauge = resource_governor.govern()
 
         self.assertNotIn(1, throttle)
-        self.assertIn(resource_governor._ceiling(), throttle)
+        self.assertIn(resource_governor.CEILING, throttle)
         self.assertEqual(gauge["ram_free_gb"], 15.0)
 
     def test_govern_lifts_throttle_when_final_ram_gauge_recovers(self):
@@ -160,8 +160,9 @@ Pages occupied by compressor: 5.
              patch.object(resource_governor, "_global_pause_reason", return_value=None), \
              patch.object(resource_governor, "_predicted_disk_pct", return_value=(None, None)), \
              patch.object(resource_governor, "set_throttle", side_effect=lambda n: throttle.append(n) or n), \
-             patch.object(resource_governor, "effective_floor_gb", return_value=6.0), \
-             patch.object(resource_governor, "_per_task_gb", return_value=3.0), \
+             patch.object(resource_governor, "RAM_FLOOR_GB", 6.0), \
+             patch.object(resource_governor, "PER_TASK_GB", 3.0), \
+             patch.object(resource_governor, "RAM_HARD", 82.0), \
              patch.object(resource_governor, "current_limit", side_effect=[8, 2, 10]):
             gauge = resource_governor.govern()
 

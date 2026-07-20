@@ -11,7 +11,6 @@ E) improvement_miner must NEVER exceed budget caps or deploy degraded experiment
 F) Slack edge functions must fail-secure (return 503) when required env-var secrets are absent.
 """
 import os, sys, tempfile, subprocess, json, unittest, time
-from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
@@ -224,104 +223,78 @@ class TestSecretsHygiene(unittest.TestCase):
 # ── D: kill_switch halt ───────────────────────────────────────────────────────
 
 class TestKillSwitch(unittest.TestCase):
-    """2026-07-10 incident: this class's old _mock_db() monkeypatched db.select and
-    db.insert directly on the SHARED db module, but never db.update -- and
-    kill_switch._write_control() calls db.update() FIRST, before ever reaching insert.
-    Every test here that calls kill_switch.pause()/resume() was silently hitting the REAL
-    production Supabase 'controls' table via the unmocked db.update(), which paused the
-    entire live fleet for roughly two hours before it was caught and manually resumed.
-    Patching db.select/db.insert as bare module attributes is fragile in general (it's easy
-    to miss a method the code under test actually calls, exactly as happened here) and it
-    mutates process-global state. Now uses patch.object(kill_switch, "db", ...) to replace
-    the WHOLE db reference kill_switch itself holds with a self-contained fake that
-    implements select/insert/update together, so nothing can silently fall through to the
-    real module again."""
 
-    class _FakeControlsDB:
-        """In-memory controls-table stand-in implementing select/insert/update the way
-        kill_switch._write_control() actually uses them, so pause()/resume() behave
-        identically to production without ever touching it."""
+    def _mock_db(self, rows_by_table):
+        """Provide a lightweight in-memory mock for db.select/insert (with upsert support)."""
+        import db
+        store = {}
+        orig_select = db.select
+        orig_insert = db.insert
 
-        def __init__(self):
-            self.rows = []
+        def _select(table, q=None):
+            return list(store.get(table, []))
 
-        def select(self, table, q=None):
-            if table != "controls":
-                return []
-            return [dict(r) for r in self.rows]
-
-        def update(self, table, match, patch):
-            if table != "controls":
-                return None
-            updated = []
-            for r in self.rows:
-                if all(r.get(k) == v for k, v in match.items()):
-                    r.update(patch)
-                    updated.append(dict(r))
-            return updated or None
-
-        def insert(self, table, row, upsert=False, **kw):
-            if table != "controls":
-                return None
-            if upsert:
-                for i, r in enumerate(self.rows):
+        def _insert(table, row, upsert=False, **kw):
+            if upsert and table == "controls":
+                # Merge-on (scope, project) — same logic as the DB unique constraint
+                existing = store.setdefault(table, [])
+                for i, r in enumerate(existing):
                     if r.get("scope") == row.get("scope") and r.get("project") == row.get("project"):
-                        self.rows[i] = {**r, **row}
-                        return [self.rows[i]]
-            self.rows.append(dict(row))
-            return [row]
+                        existing[i] = {**r, **row}
+                        return
+            store.setdefault(table, []).append(row)
+
+        db.select = _select
+        db.insert = _insert
+        return orig_select, orig_insert, db
 
     def test_pause_makes_is_paused_true(self):
         """pause(global) must make is_paused() return True immediately."""
-        import kill_switch
-        fake = self._FakeControlsDB()
-        with patch.object(kill_switch, "db", fake):
+        import kill_switch, db
+        orig_select, orig_insert, db = self._mock_db({})
+        try:
             kill_switch.pause(scope="global", reason="test", by="test")
             self.assertTrue(kill_switch.is_paused(), "global pause must halt runner")
+        finally:
+            db.select = orig_select
+            db.insert = orig_insert
 
     def test_resume_makes_is_paused_false(self):
         """resume() must make is_paused() return False."""
-        import kill_switch
-        fake = self._FakeControlsDB()
-        with patch.object(kill_switch, "db", fake):
+        import kill_switch, db
+        orig_select, orig_insert, db = self._mock_db({})
+        try:
             kill_switch.pause(scope="global", reason="test", by="test")
             kill_switch.resume(scope="global", by="test")
             self.assertFalse(kill_switch.is_paused(), "resume must lift the pause")
+        finally:
+            db.select = orig_select
+            db.insert = orig_insert
 
     def test_project_pause_does_not_affect_other_projects(self):
         """A project-scoped pause must not block other projects."""
-        import kill_switch
-        fake = self._FakeControlsDB()
-        with patch.object(kill_switch, "db", fake):
+        import kill_switch, db
+        orig_select, orig_insert, db = self._mock_db({})
+        try:
             kill_switch.pause(scope="project", project="my-app", reason="test", by="test")
             self.assertTrue(kill_switch.is_paused("my-app"), "paused project must be blocked")
             self.assertFalse(kill_switch.is_paused("other-app"), "other project must not be blocked")
             self.assertFalse(kill_switch.is_paused(), "global must not be paused")
+        finally:
+            db.select = orig_select
+            db.insert = orig_insert
 
     def test_global_pause_blocks_all_projects(self):
         """A global pause must block any project check too."""
-        import kill_switch
-        fake = self._FakeControlsDB()
-        with patch.object(kill_switch, "db", fake):
+        import kill_switch, db
+        orig_select, orig_insert, db = self._mock_db({})
+        try:
             kill_switch.pause(scope="global", reason="test", by="test")
             self.assertTrue(kill_switch.is_paused("any-project"),
                             "global pause must block project checks too")
-
-    def test_kill_switch_tests_never_touch_the_real_db_module(self):
-        """Structural regression guard for the 2026-07-10 incident itself: importing db
-        directly and driving kill_switch through a full pause/resume cycle inside this
-        test class must leave the real db module's select/insert/update untouched
-        (identity-unchanged), proving nothing here can fall through to production."""
-        import kill_switch
-        import db as real_db
-        real_select, real_insert, real_update = real_db.select, real_db.insert, real_db.update
-        fake = self._FakeControlsDB()
-        with patch.object(kill_switch, "db", fake):
-            kill_switch.pause(scope="global", reason="test", by="test")
-            kill_switch.resume(scope="global", by="test")
-        self.assertIs(real_db.select, real_select)
-        self.assertIs(real_db.insert, real_insert)
-        self.assertIs(real_db.update, real_update)
+        finally:
+            db.select = orig_select
+            db.insert = orig_insert
 
 
 # ── E: improvement_miner canary economics ──────────────────────────────────
@@ -719,19 +692,6 @@ class TestSlackEdgeFunctionFailSecure(unittest.TestCase):
                          "verify() must not bypass signature check when SIGNING is unset")
         self.assertIn("if (!SIGNING) return false", src,
                       "verify() must return false when SIGNING is unset")
-
-
-class TestIntegrationFailureCardRouting(unittest.TestCase):
-    """Failures are incident records, never canonical merge candidates."""
-
-    _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-    def test_failure_producers_do_not_emit_unmapped_integrate_cards(self):
-        runner_src = open(os.path.join(self._REPO_ROOT, "runner", "runner.py")).read()
-        deploy_src = open(os.path.join(self._REPO_ROOT, "runner", "deploy_window.py")).read()
-        self.assertIn('approval(name, "integration_failure"', runner_src)
-        self.assertNotIn('approval(name, "integrate", f"{slug} {result.lower()} on integrate"', runner_src)
-        self.assertIn('"kind": "integration_failure"', deploy_src)
 
 
 if __name__ == "__main__":

@@ -17,7 +17,6 @@ Canonical format (the drop-in prompt emits exactly this):
       model: haiku|sonnet|opus
       depends: [other-slug, ...]
       proof: `npx vue-tsc --noEmit` exits 0
-      bundle: outputs/my-bundle  # optional: pre-verified file tree
       prompt: |
         multi-line scope + steps for ONE deliverable.
 
@@ -42,10 +41,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import pipeline_contract
 import autoclear as _autoclear
-
-# ── intake retry cap (T9 hardening) ──
-_retry_counts = {}  # path -> int
-_MAX_INTAKE_RETRIES = int(os.environ.get("ORCH_MAX_INTAKE_RETRIES", "3"))
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 INTAKE = os.path.abspath(os.path.join(HERE, "..", "intake"))
@@ -81,13 +76,13 @@ def parse(text):
         if mid:
             flush()
             cur = {"project": project, "slug": mid.group(1).strip(), "material": False,
-                   "model": None, "depends": [], "proof": "", "bundle": "", "prompt": ""}
+                   "model": None, "depends": [], "proof": "", "prompt": ""}
             in_prompt = False; continue
         if cur is None:
             continue
         if in_prompt:
             plines.append(raw); continue
-        kv = re.match(r"^(title|material|model|depends|proof|bundle|prompt):\s*(.*)$", s)
+        kv = re.match(r"^(title|material|model|depends|proof|prompt):\s*(.*)$", s)
         if kv:
             k, v = kv.group(1), kv.group(2).strip()
             if k == "prompt":
@@ -100,8 +95,6 @@ def parse(text):
                 cur["material"] = v.lower().startswith("y")
             elif k == "model":
                 cur["model"] = (v or None)
-            elif k == "bundle":
-                cur["bundle"] = v
             else:
                 cur[k] = v
     flush()
@@ -150,21 +143,6 @@ def emit_operator_cards(proj_name, operator, src):
 
 def ingest_file(path, projects_by_name):
     text = open(path, encoding="utf-8", errors="replace").read()
-    # FREEFORM IN intake/: a non-canonical drop (no PROJECT: header) is a plain-English intent —
-    # decompose it through the same planner path as repo-root PROMPT-*.md instead of parsing it
-    # as canonical (which yields 0 tasks and silently archives it — the operator-workflow trap).
-    if text.strip() and not is_canonical(text):
-        default_project = _default_project_for_dropbox(text, projects_by_name)
-        try:
-            rendered = decompose_freeform(text, REPO_ROOT, default_project)
-            created, skipped = _queue_dropbox_tasks(rendered, projects_by_name)
-            print(f"intake: freeform '{os.path.basename(path)}' -> {created} queued via planner "
-                  f"(project={default_project})")
-            return created, skipped
-        except Exception as e:
-            # Do NOT archive an intent we failed to decompose — re-raise so run() leaves the file
-            # in place to retry (planner may just need CLAUDE_BIN or a transient DB read).
-            raise RuntimeError(f"freeform decompose failed: {e}")
     tasks, operator = parse(text)
     existing = {t["slug"] for t in (db.select("tasks", {"select": "slug"}) or [])}
     created, skipped = 0, 0
@@ -185,7 +163,6 @@ def ingest_file(path, projects_by_name):
                "note": pipeline_contract.note(source="intake-file")}
         if t.get("model"):
             row["model"] = t["model"]
-        _annotate_with_dedup(row)
         db.insert("tasks", row)
         existing.add(t["slug"]); created += 1
     # surface each operator-only item as its OWN approval card (per-item, not a lump)
@@ -265,7 +242,6 @@ def _queue_dropbox_tasks(rendered, projects_by_name):
                "note": pipeline_contract.note(source="intake-dropbox")}
         if t.get("model"):
             row["model"] = t["model"]
-        _annotate_with_dedup(row)
         db.insert("tasks", row)
         existing.add(t["slug"]); created += 1
     return created, skipped
@@ -364,39 +340,11 @@ def run():
             c, s = ingest_file(f, projects_by_name)
             stamp = datetime.datetime.utcnow().strftime("%Y%m%d-%H%M%S")
             shutil.move(f, os.path.join(PROCESSED, f"{stamp}-{os.path.basename(f)}"))
-            _retry_counts.pop(f, None)
             print(f"intake: {os.path.basename(f)} -> {c} queued, {s} skipped")
             total += c
         except Exception as e:
-            _retry_counts[f] = _retry_counts.get(f, 0) + 1
-            if _retry_counts[f] > _MAX_INTAKE_RETRIES:
-                failed_dir = os.path.join(os.path.dirname(f), "failed")
-                os.makedirs(failed_dir, exist_ok=True)
-                dest = os.path.join(failed_dir, os.path.basename(f))
-                shutil.move(f, dest)
-                print(f"intake: moved {os.path.basename(f)} to failed/ after {_MAX_INTAKE_RETRIES} retries")
-                _retry_counts.pop(f, None)
-            else:
-                print(f"intake: failed on {f}: {e}")  # leave the file in place to retry
+            print(f"intake: failed on {f}: {e}")  # leave the file in place to retry
     return total + dropbox_total
-
-
-# ── intake dedup annotation (fail-open) ──
-def _annotate_with_dedup(row):
-    """Annotate a task row with possible-duplicate info before insert. Fail-open: any error
-    is swallowed and the row is inserted unmodified."""
-    try:
-        import intake_dedup
-        threshold = float(os.environ.get("INTAKE_DEDUP_THRESHOLD", "0.70"))
-        matches = intake_dedup.candidate_matches(row.get("prompt") or "")
-        if matches and matches[0][1] >= threshold:
-            ref, score = matches[0]
-            annotation = f"\n\n[POSSIBLE-DUP: {ref} ({score:.2f})]"
-            row["prompt"] = (row.get("prompt") or "") + annotation
-            row["note"] = (row.get("note") or "") + f" | dedup-match: {ref} ({score:.2f})"
-    except Exception:
-        pass  # fail-open: never block intake on dedup errors
-    return row
 
 
 if __name__ == "__main__":

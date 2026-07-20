@@ -28,7 +28,6 @@ _PROD_PATTERN = re.compile(r"\bprod(?:uction)?\b", re.I)
 
 
 def _load_rules_from_db() -> list[dict]:
-    """Fetch active autoclear rules from the operator_autoclear_rules table."""
     try:
         import db
         rows = db.select("operator_autoclear_rules", {"select": "*", "enabled": "eq.true"})
@@ -48,10 +47,7 @@ def _load_rules_from_yaml() -> list[dict]:
 
 
 def load_rules() -> list[dict]:
-    """Return active auto-clear rules from DB; fall back to YAML if DB returns nothing.
-
-    Each rule dict may contain: project, kind, max_usd, enabled, id.
-    """
+    """Return active rules from DB; fall back to YAML if DB returns nothing."""
     rules = _load_rules_from_db()
     if not rules:
         rules = _load_rules_from_yaml()
