@@ -48,6 +48,27 @@ def test_canonical_mutation_is_detected(repo, tmp_path, monkeypatch):
             (repo / "tracked.txt").write_text("changed\n")
 
 
+def test_dirty_persistent_slot_is_preserved_and_bypassed(repo, tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_ORCH_HOME", str(tmp_path / "runtime"))
+    with integration_runtime.isolated_repo(str(repo), "first") as persistent:
+        pass
+    (Path(persistent) / "tracked.txt").write_text("interrupted integration\n")
+    git(persistent, "add", "tracked.txt")
+
+    with integration_runtime.isolated_repo(str(repo), "second") as replacement:
+        assert os.path.realpath(replacement) != os.path.realpath(persistent)
+        assert subprocess.run(
+            ["git", "status", "--porcelain=v1"], cwd=replacement,
+            capture_output=True, text=True, check=True,
+        ).stdout == ""
+        replacement_path = replacement
+
+    # The evidence remains available for recovery, while the temporary bypass
+    # is cleaned after the successful pass.
+    assert (Path(persistent) / "tracked.txt").read_text() == "interrupted integration\n"
+    assert not Path(replacement_path).exists()
+
+
 def test_merge_and_release_share_one_global_lease(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_ORCH_HOME", str(tmp_path / "runtime"))
     entered = threading.Event()

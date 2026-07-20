@@ -50,6 +50,16 @@ def _worktree_path(repo):
     return os.path.join(_home(), "integration-worktrees", key)
 
 
+def _temporary_worktree_path(repo):
+    """A one-run worktree used when the persistent slot contains evidence.
+
+    The persistent slot is deliberately retained for forensic recovery rather
+    than force-cleaned.  A unique sibling lets the next train pass continue
+    safely instead of repeatedly blocking an entire project's queue.
+    """
+    return f"{_worktree_path(repo)}-run-{os.getpid()}-{time.time_ns()}"
+
+
 def _registered_worktrees(repo):
     result = _git(repo, "worktree", "list", "--porcelain")
     if result.returncode:
@@ -104,8 +114,20 @@ def isolated_repo(canonical_repo, owner):
     canonical_repo = os.path.realpath(canonical_repo)
     before = canonical_snapshot(canonical_repo)
     path = _worktree_path(canonical_repo)
+    temporary = False
     os.makedirs(os.path.dirname(path), exist_ok=True)
     registered = _registered_worktrees(canonical_repo)
+    # Never delete uncommitted integration work automatically.  It may contain
+    # a partially completed merge that needs review.  Instead preserve that
+    # evidence in the persistent slot and run this pass in a fresh, disposable
+    # detached worktree.  Previously the refusal below retried forever and
+    # starved every approved card for the affected project.
+    if os.path.exists(path) and os.path.realpath(path) in registered:
+        existing_dirty = _git(path, "status", "--porcelain=v1", "--untracked-files=all")
+        if existing_dirty.returncode or existing_dirty.stdout:
+            print(f"integration_runtime: preserving dirty worktree {path}; using a fresh temporary slot")
+            path = _temporary_worktree_path(canonical_repo)
+            temporary = True
     if os.path.exists(path) and os.path.realpath(path) not in registered:
         # Stale worktree from a crashed previous run — clean up and recreate
         # rather than permanently blocking all merges for this project.
@@ -141,3 +163,10 @@ def isolated_repo(canonical_repo, owner):
             raise CanonicalCheckoutMutationError(
                 f"{owner} changed canonical checkout {canonical_repo}: {before} -> {after}"
             )
+        # This path was created solely to bypass a preserved dirty slot.  Remove
+        # it only after confirming it is clean; never force-clean a worktree
+        # that has acquired new integration evidence.
+        if temporary:
+            clean = _git(path, "status", "--porcelain=v1", "--untracked-files=all")
+            if clean.returncode == 0 and not clean.stdout:
+                _git(canonical_repo, "worktree", "remove", "--force", path)
