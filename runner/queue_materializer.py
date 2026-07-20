@@ -10,7 +10,7 @@ Periodic job that:
 
 This prevents thousands of parked parent tasks from distorting priority and queue health.
 """
-import os, sys, json, datetime, signal, time
+import os, sys, json, datetime, signal, time, argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
@@ -25,6 +25,8 @@ MAX_DEPTH = int(os.environ.get("ORCH_DECOMPOSE_MAX_DEPTH", "2"))
 # every page is disjoint and nothing is missed.
 CHILD_SCAN_PAGE_SIZE = int(os.environ.get("ORCH_MATERIALIZER_CHILD_SCAN_PAGE_SIZE", "1000"))
 CHILD_SCAN_MAX_PAGES = int(os.environ.get("ORCH_MATERIALIZER_CHILD_SCAN_MAX_PAGES", "50"))
+PARENT_SCAN_PAGE_SIZE = int(os.environ.get("ORCH_MATERIALIZER_PARENT_SCAN_PAGE_SIZE", "500"))
+PARENT_SCAN_MAX_PAGES = int(os.environ.get("ORCH_MATERIALIZER_PARENT_SCAN_MAX_PAGES", "20"))
 MAX_UPDATES = int(os.environ.get("ORCH_MATERIALIZER_MAX_UPDATES", "200"))
 RUN_BUDGET_S = int(os.environ.get("ORCH_MATERIALIZER_RUN_BUDGET_S", "240"))
 UPDATE_TIMEOUT_S = int(os.environ.get("ORCH_MATERIALIZER_UPDATE_TIMEOUT_S", "15"))
@@ -32,6 +34,40 @@ UPDATE_TIMEOUT_S = int(os.environ.get("ORCH_MATERIALIZER_UPDATE_TIMEOUT_S", "15"
 
 class MaterializerTimeout(RuntimeError):
     pass
+
+
+def _decomposed_parents(batch_slug=None):
+    """Read every eligible DECOMPOSED parent within a bounded, stable scan.
+
+    A single oldest-first 500-row request stranded newer batches indefinitely
+    behind historical parent records. Pagination makes recovery fair without an
+    unbounded table read.
+    """
+    parents = []
+    batch_id = None
+    if batch_slug:
+        rows = db.select("task_batches", {"select": "id", "slug": f"eq.{batch_slug}", "limit": "1"}) or []
+        if not rows:
+            raise ValueError(f"unknown batch: {batch_slug}")
+        batch_id = rows[0]["id"]
+    offset = 0
+    for _ in range(PARENT_SCAN_MAX_PAGES):
+        params = {
+            "select": "id,slug,project_id,state,deps,created_at,note,batch_id,parent_task_id",
+            "state": "eq.DECOMPOSED",
+            "order": "created_at.asc",
+            "limit": str(PARENT_SCAN_PAGE_SIZE),
+            "offset": str(offset),
+        }
+        if batch_id:
+            params["batch_id"] = f"eq.{batch_id}"
+        rows = db.select("tasks", params) or []
+        parents.extend(rows)
+        if len(rows) < PARENT_SCAN_PAGE_SIZE:
+            return parents
+        offset += PARENT_SCAN_PAGE_SIZE
+    print(f"[materializer] parent scan hit {PARENT_SCAN_MAX_PAGES}-page ceiling; processing visible parents")
+    return parents
 
 
 def _with_timeout(seconds, fn):
@@ -72,7 +108,7 @@ def _parse_deps(value):
     return []
 
 
-def _children_by_parent(parent_slugs):
+def _children_by_parent(parents):
     """Build parent->children using paginated reads instead of deps containment queries.
 
     Some task tables store deps in a shape that PostgREST rejects for `cs.[...]`, which made this
@@ -83,15 +119,16 @@ def _children_by_parent(parent_slugs):
     found", since the orphan-detection logic downstream cannot tell the difference between a
     parent with genuinely zero children and one whose children just fell outside a partial scan.
     """
-    wanted = {str(s) for s in parent_slugs if s}
-    out = {s: [] for s in wanted}
-    if not wanted:
+    parent_ids = {str(parent["id"]): str(parent.get("slug") or "") for parent in parents if parent.get("id")}
+    wanted_slugs = {slug for slug in parent_ids.values() if slug}
+    out = {parent_id: [] for parent_id in parent_ids}
+    if not parent_ids:
         return out, True
     offset = 0
     for _ in range(CHILD_SCAN_MAX_PAGES):
         try:
             rows = db.select("tasks", {
-                "select": "id,slug,state,deps",
+                "select": "id,slug,state,deps,parent_task_id",
                 "order": "id.asc",
                 "limit": str(CHILD_SCAN_PAGE_SIZE),
                 "offset": str(offset),
@@ -100,10 +137,18 @@ def _children_by_parent(parent_slugs):
             print(f"[materializer] child scan failed at offset {offset}: {e}")
             return out, False
         for row in rows:
+            explicit_parent = str(row.get("parent_task_id") or "")
+            if explicit_parent in out:
+                out[explicit_parent].append(row)
+                continue
+            # Compatibility fallback for pre-lineage rows. New task creation
+            # uses parent_task_id, eliminating slug ambiguity going forward.
             for dep in _parse_deps(row.get("deps")):
                 dep = str(dep)
-                if dep in out:
-                    out[dep].append(row)
+                if dep in wanted_slugs:
+                    for parent_id, slug in parent_ids.items():
+                        if slug == dep:
+                            out[parent_id].append(row)
         if len(rows) < CHILD_SCAN_PAGE_SIZE:
             return out, True
         offset += CHILD_SCAN_PAGE_SIZE
@@ -128,8 +173,7 @@ def recover_false_orphans():
     if not quarantined:
         return {"recovered": 0, "truly_orphaned": 0}
 
-    parent_slugs = [q.get("slug") for q in quarantined]
-    child_map, scan_complete = _children_by_parent(parent_slugs)
+    child_map, scan_complete = _children_by_parent(quarantined)
     if not scan_complete:
         print("[materializer] recovery scan incomplete — skipping to avoid false positives")
         return {"recovered": 0, "truly_orphaned": 0, "skipped": "incomplete_scan"}
@@ -137,8 +181,7 @@ def recover_false_orphans():
     recovered = 0
     truly_orphaned = 0
     for q in quarantined:
-        slug = q.get("slug", "")
-        children = child_map.get(slug, [])
+        children = child_map.get(str(q["id"]), [])
         if children:
             # Has children — was falsely quarantined. Restore to DECOMPOSED.
             _update_task(q["id"], {
@@ -154,7 +197,7 @@ def recover_false_orphans():
     return {"recovered": recovered, "truly_orphaned": truly_orphaned}
 
 
-def run():
+def run(batch_slug=None):
     """Main periodic entry point."""
     closed = 0
     released = 0
@@ -166,13 +209,8 @@ def run():
         return attempted_updates < MAX_UPDATES and (time.time() - started) < RUN_BUDGET_S
 
     # Find all DECOMPOSED tasks
-    parents = db.select("tasks", {
-        "select": "id,slug,project_id,state,deps,created_at,note",
-        "state": "eq.DECOMPOSED",
-        "order": "created_at.asc",
-        "limit": "500"
-    }) or []
-    child_map, scan_complete = _children_by_parent([p.get("slug") for p in parents])
+    parents = _decomposed_parents(batch_slug)
+    child_map, scan_complete = _children_by_parent(parents)
     if not scan_complete:
         # 2026-07-11: an incomplete child scan cannot be trusted to say a parent has "no
         # children" -- it may simply not have reached them yet. Orphan-quarantining on a
@@ -187,16 +225,31 @@ def run():
         pid = parent["id"]
         slug = parent.get("slug", "")
 
-        # Find children (tasks whose deps include this parent's slug)
-        children = child_map.get(slug, [])
+        # First-class parent_task_id is authoritative; deps are read only as a
+        # compatibility fallback inside _children_by_parent.
+        children = child_map.get(str(pid), [])
 
         if not children:
             if not scan_complete:
                 continue
-            # No children found — this decomposed task is orphaned
-            # Check if it's been sitting for > 24h with no children
+            # No children found — recover promptly by returning the original
+            # work item to the runnable queue. The older quarantine-only path
+            # left a decomposer failure invisible for up to 72 hours.
             try:
                 created = parent.get("created_at", "")
+                dispatch_sla_m = float(os.environ.get("ORCH_DECOMPOSED_RUN_SLA_MIN", "10"))
+                if created and _age_hours(created) * 60 >= dispatch_sla_m:
+                    attempted_updates += 1
+                    if not can_update():
+                        break
+                    if _update_task(pid, {
+                        "state": "QUEUED",
+                        "note": "materializer: no children after decomposed-to-run SLA; requeued original task"
+                    }):
+                        released += 1
+                    continue
+                # A long-lived item that somehow cannot be requeued is still
+                # quarantined as a final safety backstop.
                 # Raised from 24h to 72h: children can be slow to appear when the queue is
                 # deep or decomposition cascades through multiple levels. 24h was too aggressive
                 # and caused 2,886 false-positive quarantines before the scan was fixed.
@@ -353,4 +406,7 @@ def _age_hours(ts_str):
 
 
 if __name__ == "__main__":
-    run()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--batch", default="")
+    args = parser.parse_args()
+    print(run(args.batch or None))

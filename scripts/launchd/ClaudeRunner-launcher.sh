@@ -3,13 +3,20 @@
 # start this app wrapper, not scripts under Documents directly.
 
 REPO="${CLAUDE_ORCH_REPO:-__REPO_PATH__}"
-if [[ "$REPO" == "__REPO_PATH__" || ! -d "$REPO/runner" ]]; then
-    for cand in "$HOME/claude-orchestrator" "$HOME/Documents/beethoven/claude-orchestrator"; do
+if [[ ! -d "$REPO/runner" ]]; then
+    for cand in "$HOME/Documents/beethoven/claude-orchestrator" "$HOME/claude-orchestrator"; do
         if [[ -d "$cand/runner" ]]; then
             REPO="$cand"
             break
         fi
     done
+fi
+
+# Resolve the legacy ~/claude-orchestrator alias once, at startup.  Keep all
+# subsequent file checks on the real repository path so macOS privacy grants
+# and launchd do not see two separate workspace identities.
+if [[ -d "$REPO" ]]; then
+    REPO="$(cd "$REPO" && /bin/pwd -P)"
 fi
 
 LOG_DIR="${ORCH_LAUNCHD_LOG_DIR:-__LOG_DIR__}"

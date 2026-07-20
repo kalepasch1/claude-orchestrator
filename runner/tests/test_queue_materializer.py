@@ -42,23 +42,23 @@ class ChildrenByParentPaginationTest(unittest.TestCase):
 
         with patch.object(qm, "db", fake_db), \
              patch.object(qm, "CHILD_SCAN_PAGE_SIZE", page_size):
-            child_map, complete = qm._children_by_parent(["parent-a"])
+            child_map, complete = qm._children_by_parent([_task("parent-a-id", "parent-a")])
 
         self.assertTrue(complete)
-        self.assertEqual(len(child_map["parent-a"]), 1)
-        self.assertEqual(child_map["parent-a"][0]["slug"], "child-of-a")
+        self.assertEqual(len(child_map["parent-a-id"]), 1)
+        self.assertEqual(child_map["parent-a-id"][0]["slug"], "child-of-a")
 
     def test_scan_error_reports_incomplete_not_empty(self):
         fake_db = MagicMock()
         fake_db.select.side_effect = Exception("connection reset")
 
         with patch.object(qm, "db", fake_db):
-            child_map, complete = qm._children_by_parent(["parent-a"])
+            child_map, complete = qm._children_by_parent([_task("parent-a-id", "parent-a")])
 
         self.assertFalse(complete)
         # An error must not be indistinguishable from "genuinely zero children" -- the map
         # can be empty, but the completeness flag must say so explicitly.
-        self.assertEqual(child_map["parent-a"], [])
+        self.assertEqual(child_map["parent-a-id"], [])
 
     def test_hitting_page_ceiling_reports_incomplete(self):
         page_size = 2
@@ -72,7 +72,7 @@ class ChildrenByParentPaginationTest(unittest.TestCase):
         with patch.object(qm, "db", fake_db), \
              patch.object(qm, "CHILD_SCAN_PAGE_SIZE", page_size), \
              patch.object(qm, "CHILD_SCAN_MAX_PAGES", max_pages):
-            child_map, complete = qm._children_by_parent(["parent-a"])
+            child_map, complete = qm._children_by_parent([_task("parent-a-id", "parent-a")])
 
         self.assertFalse(complete)
         self.assertEqual(fake_db.select.call_count, max_pages)
@@ -84,6 +84,26 @@ class ChildrenByParentPaginationTest(unittest.TestCase):
         self.assertTrue(complete)
         self.assertEqual(child_map, {})
         fake_db.select.assert_not_called()
+
+    def test_prefers_explicit_parent_id_over_slug_dependency_fallback(self):
+        parent = _task("parent-id", "parent")
+        child = _task("child-id", "child", deps=["stale-parent-slug"])
+        child["parent_task_id"] = "parent-id"
+        fake_db = MagicMock()
+        fake_db.select.return_value = [child]
+        with patch.object(qm, "db", fake_db):
+            child_map, complete = qm._children_by_parent([parent])
+        self.assertTrue(complete)
+        self.assertEqual([row["id"] for row in child_map["parent-id"]], ["child-id"])
+
+    def test_parent_scan_pages_past_initial_window(self):
+        first_page = [_task(f"p{i}", f"p{i}", state="DECOMPOSED") for i in range(2)]
+        second_page = [_task("target", "target", state="DECOMPOSED")]
+        fake_db = MagicMock()
+        fake_db.select.side_effect = [first_page, second_page]
+        with patch.object(qm, "db", fake_db), patch.object(qm, "PARENT_SCAN_PAGE_SIZE", 2):
+            rows = qm._decomposed_parents()
+        self.assertEqual([row["id"] for row in rows], ["p0", "p1", "target"])
 
 
 class RunOrphanDetectionTest(unittest.TestCase):
@@ -111,16 +131,15 @@ class RunOrphanDetectionTest(unittest.TestCase):
         fake_db = self._mock_db([old_parent], None)
 
         with patch.object(qm, "db", fake_db), \
-             patch.object(qm, "_children_by_parent", return_value=({"old-parent": []}, False)):
+             patch.object(qm, "_children_by_parent", return_value=({"p1": []}, False)):
             result = qm.run()
 
         self.assertEqual(result["parked"], 0)
         fake_db.update.assert_not_called()
 
-    def test_complete_scan_still_quarantines_genuine_orphan(self):
-        """Guard against overcorrecting: a parent that's genuinely childless after a COMPLETE
-        scan and old enough must still be quarantined, preserving the original intended cleanup
-        behavior for real orphans."""
+    def test_complete_scan_requeues_genuine_orphan_after_dispatch_sla(self):
+        """A childless parent should recover into a runnable task after the SLA,
+        rather than remaining DECOMPOSED until the long quarantine timeout."""
         old_parent = {
             "id": "p1", "slug": "old-parent", "state": "DECOMPOSED",
             "created_at": "2020-01-01T00:00:00", "note": "",
@@ -128,14 +147,14 @@ class RunOrphanDetectionTest(unittest.TestCase):
         fake_db = self._mock_db([old_parent], None)
 
         with patch.object(qm, "db", fake_db), \
-             patch.object(qm, "_children_by_parent", return_value=({"old-parent": []}, True)):
+             patch.object(qm, "_children_by_parent", return_value=({"p1": []}, True)):
             result = qm.run()
 
-        self.assertEqual(result["parked"], 1)
+        self.assertEqual(result["released"], 1)
         fake_db.update.assert_called_once()
         _table, match, patch_body = fake_db.update.call_args.args
         self.assertEqual(match, {"id": "p1"})
-        self.assertEqual(patch_body["state"], "QUARANTINED")
+        self.assertEqual(patch_body["state"], "QUEUED")
 
     def test_complete_scan_does_not_quarantine_recent_orphan(self):
         """A childless parent younger than 24h must not be quarantined yet -- children may
@@ -148,7 +167,7 @@ class RunOrphanDetectionTest(unittest.TestCase):
         fake_db = self._mock_db([recent_parent], None)
 
         with patch.object(qm, "db", fake_db), \
-             patch.object(qm, "_children_by_parent", return_value=({"recent-parent": []}, True)):
+             patch.object(qm, "_children_by_parent", return_value=({"p2": []}, True)):
             result = qm.run()
 
         self.assertEqual(result["parked"], 0)
@@ -163,7 +182,7 @@ class RunOrphanDetectionTest(unittest.TestCase):
         fake_db = self._mock_db([parent], None)
 
         with patch.object(qm, "db", fake_db), \
-             patch.object(qm, "_children_by_parent", return_value=({"has-kids": [child]}, True)):
+             patch.object(qm, "_children_by_parent", return_value=({"p3": [child]}, True)):
             result = qm.run()
 
         # all children DONE/MERGED -> parent should close, not be quarantined as orphaned

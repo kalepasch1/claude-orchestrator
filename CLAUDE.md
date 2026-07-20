@@ -63,3 +63,29 @@ Here are the extracted conventions:
 * Use type hints for function parameters and return types to improve code readability
 * Use consistent indentation and spacing throughout the codebase
 * Avoid using magic numbers and instead define named constants or functions to compute them
+
+
+## Learned from merged work (auto)
+**CONVENTIONS (Followed)**
+
+*   Use a consistent naming convention for variables and functions
+*   Use comments to explain complex logic, making it easier to understand
+*   Use environment variables to configure the application
+*   Centralized configuration management: fleet-wide config changes go through a central `fleet_config` table
+
+**DO/AVOID RULES (Followed)**
+
+*   **DO** prefix config key changes with ORCH_ to make them fleet-wide applicable
+*   **DO NOT** introduce hardcoded secrets or credentials in the configuration keys
+*   Use type hints for function parameters and return types
+
+**CONVENTIONS (To Avoid on First Try)**
+
+*   Avoid overusing nested if-else statements and instead opt for a more modular approach
+*   Use consistent indentation and spacing throughout the codebase
+*   Avoid using magic numbers and instead define named constants or functions to compute them
+
+**DO/AVOID RULES (To Avoid on First Try)**
+
+*   **DO NOT** force callers to handle unavailability by design
+*   Gate resource expansion (new pool entries) on memory checks via `resource_governor.can_claim()`

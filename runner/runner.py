@@ -145,7 +145,9 @@ RATE = ("temporarily limiting", "rate limit", "429", "overloaded", "too many req
 EXHAUST = ("usage limit", "out of credits", "insufficient_quota", "quota",
            "weekly limit", "hit your weekly", "limit · resets", "limit - resets",
            "reached your usage", "usage limit reached", "upgrade to increase",
-           "5-hour limit", "hour limit reached", "session limit", "limit reached ∙ resets")
+           "5-hour limit", "hour limit reached", "session limit", "limit reached ∙ resets",
+           "spend limit", "monthly spend", "monthly limit", "hit your monthly",
+           "limit · raise it", "raise it at claude.ai")
 # Cross-project reuse directive injected into every task: economize by reusing, not re-drafting.
 REUSE_FIRST = ("\n\n## Reuse before you draft (cost discipline)\n"
     "Before writing net-new code: (1) search THIS repo for an existing helper/component/pattern "

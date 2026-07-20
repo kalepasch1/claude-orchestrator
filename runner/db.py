@@ -338,6 +338,11 @@ def count(table, params=None):
 def insert(table, row, upsert=False):
     # SECRET HYGIENE: redact secrets from sensitive fields on task insert too.
     if table == "tasks" and isinstance(row, dict):
+        # The database contract is a non-null array. Normalizing at the sole
+        # enqueue choke point preserves the semantic meaning of SQL NULL
+        # (independent work) without relying on callers to know storage details.
+        from execution_assurance import normalize_deps
+        row["deps"] = normalize_deps(row.get("deps"))
         for field in _TASK_SENSITIVE_FIELDS:
             if field in row and isinstance(row[field], str):
                 row[field] = redact_secrets(row[field])
@@ -654,7 +659,7 @@ def claim_task(runner_id):
     except Exception:
         _increment_db_failure_count()
         pass
-    claim_fields = "id,slug,project_id,deps,confidence,created_at,updated_at,kind,note,priority"
+    claim_fields = "id,slug,project_id,deps,confidence,created_at,updated_at,kind,note,priority,prompt,batch_id,parent_task_id,operator_approved_at,operator_approved_by,counsel_approved_at,counsel_approved_by"
     try:
         queued = select("tasks", {"select": claim_fields,
                                   "state": "eq.QUEUED",
@@ -690,6 +695,24 @@ def claim_task(runner_id):
             if task.get("id") not in seen_ids:
                 queued.append(task); seen_ids.add(task.get("id"))
     queued = [t for t in queued if t.get("project_id") not in paused_pids]  # skip paused projects
+    # Counsel-gated design specs are queue-visible but cannot enter an execution
+    # lane until both approvals are explicitly stored on the task. Fail closed.
+    try:
+        from execution_assurance import counsel_gate_satisfied, is_counsel_gated
+        allowed = []
+        for task in queued:
+            if not is_counsel_gated(task):
+                allowed.append(task)
+                continue
+            if counsel_gate_satisfied(task):
+                allowed.append(task)
+            else:
+                print(f"[counsel-gate] holding {task.get('slug')} pending operator + counsel approval", flush=True)
+        queued = allowed
+    except Exception as exc:
+        # Do not silently bypass a design-spec gate on a database/API problem.
+        queued = [task for task in queued if not is_counsel_gated(task)]
+        print(f"[counsel-gate] approval lookup failed; holding gated work: {exc}", flush=True)
     # HOST AFFINITY: only claim tasks whose project repo exists on this machine. No-op on the
     # machine that owns the repos (all present) and when localization is disabled; prevents a
     # second Mac from grabbing-and-failing work it has no checkout for. Gated + fail-open.
