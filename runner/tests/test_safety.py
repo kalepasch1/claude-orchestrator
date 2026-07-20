@@ -721,5 +721,18 @@ class TestSlackEdgeFunctionFailSecure(unittest.TestCase):
                       "verify() must return false when SIGNING is unset")
 
 
+class TestIntegrationFailureCardRouting(unittest.TestCase):
+    """Failures are incident records, never canonical merge candidates."""
+
+    _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    def test_failure_producers_do_not_emit_unmapped_integrate_cards(self):
+        runner_src = open(os.path.join(self._REPO_ROOT, "runner", "runner.py")).read()
+        deploy_src = open(os.path.join(self._REPO_ROOT, "runner", "deploy_window.py")).read()
+        self.assertIn('approval(name, "integration_failure"', runner_src)
+        self.assertNotIn('approval(name, "integrate", f"{slug} {result.lower()} on integrate"', runner_src)
+        self.assertIn('"kind": "integration_failure"', deploy_src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

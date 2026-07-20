@@ -1950,7 +1950,11 @@ def run_task(t):
             set_state(t["id"], state=state_val, confidence=conf_score, note=_note,
                       artifact_branch=branch_ref)
             if result in ("CONFLICT", "TESTFAIL", "BUILDFAIL"):
-                approval(name, "integrate", f"{slug} {result.lower()} on integrate",
+                # This is an incident record, not a merge candidate.  Sending it
+                # through kind=integrate without a canonical "merge of <slug>"
+                # identity made the merge train correctly ignore it but left it
+                # permanently counted as an approved merge card.
+                approval(name, "integration_failure", f"{slug} {result.lower()} on integrate",
                          why=f"could not auto-integrate ({result})", detail=out[-2000:])
                 regression.record(name, slug, kind, t["prompt"][:500], f"integrate {result}",
                                   "run the prod build locally and fix all type/build errors before finishing")
@@ -2413,6 +2417,7 @@ _SCHEDULE = [
     ("toolchain-1800",        "toolchain_gate.py",      "interval", 1800), # verify build toolchain per project, auto-repair
     ("pause-arbiter-300",     "pause_arbiter.py",       "interval", 300),  # lift self-clearing pauses (TTL + registered checks)
     ("fleet-stuck-300",       "fleet_stuck_alarm.py",   "interval", 300),  # queued>0 & running=0 for >15min -> notify + remediate
+    ("batch-completion-300",  "batch_completion.py",     "interval", 300),  # state/run SLA + batch progress snapshot
     ("queue-bankruptcy-3600", "queue_bankruptcy.py",    "interval", 3600), # close QUEUED tasks past ORCH_TASK_BANKRUPTCY_DAYS
     ("scoreboard-600",        "scoreboard.py",          "interval", 600),  # merged/day, first-pass rate, paused-minutes, queue mix
     ("workflow-compare-300",  "workflow_comparison.py", "interval", 300),  # Cowork vs native verified/integrated/deployed value
@@ -2456,7 +2461,7 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      "capacity_pacer.py", "account_partition.py",
                      "generator_feedback.py", "exhaustion_signal.py",
                      "surge_planner.py", "service_agent.py",
-                     "pause_arbiter.py", "fleet_stuck_alarm.py", "queue_bankruptcy.py",
+                     "pause_arbiter.py", "fleet_stuck_alarm.py", "batch_completion.py", "queue_bankruptcy.py",
                      "scoreboard.py", "toolchain_gate.py", "context_cache_distill.py",
                      "cost_intelligence.py", "improvement_roadmap.py"}
 

@@ -99,7 +99,9 @@ def _evaluate_project(repo, name, metrics_url):
             print(f"{name}: promoted {STAGING} -> {MAIN}")
         else:
             db.insert("approvals", {
-                "project": name, "kind": "integrate",
+                # A failed canary is an operational incident, not an approved
+                # code-merge card.  Merge cards must carry a canonical slug.
+                "project": name, "kind": "integration_failure",
                 "title": f"Canary promote FAILED for {name} (merge conflict)",
                 "why": f"canary passed ({reason}) but ff-merge failed",
                 "risk": "manual merge or rebase required"
