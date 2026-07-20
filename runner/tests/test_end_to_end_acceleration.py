@@ -1,4 +1,5 @@
 import hashlib,json,os,subprocess,sys,tempfile,unittest
+from unittest.mock import patch as mock_patch
 sys.path.insert(0,os.path.dirname(os.path.dirname(__file__)))
 import ast_rewrite_ir,delivery_fabric,patch_protocol,pathway_arbiter,symbol_manifest
 def git(repo,*args):return subprocess.run(['git',*args],cwd=repo,check=True,capture_output=True,text=True).stdout.strip()
@@ -9,7 +10,8 @@ class TestAcceleration(unittest.TestCase):
   git(self.repo,'add','.');git(self.repo,'commit','-m','base')
  def tearDown(self):self.t.cleanup()
  def test_billing_fail_closed(self):
-  self.assertEqual(pathway_arbiter.decide({},capacity={'configured':2,'healthy':1,'exhausted':False})['lane'],'cowork');d=pathway_arbiter.decide({},capacity={'configured':2,'healthy':0,'exhausted':True});self.assertEqual(d['lane'],'orchestrator_native');self.assertTrue(d['paid_api_eligible']);self.assertFalse(pathway_arbiter.decide({},capacity={'configured':0,'healthy':0,'exhausted':False})['paid_api_eligible'])
+  with mock_patch.dict(os.environ,{'ORCH_PREFER_COWORK_PATH':'true'}):
+   self.assertEqual(pathway_arbiter.decide({},capacity={'configured':2,'healthy':1,'exhausted':False})['lane'],'cowork');d=pathway_arbiter.decide({},capacity={'configured':2,'healthy':0,'exhausted':True});self.assertEqual(d['lane'],'orchestrator_native');self.assertTrue(d['paid_api_eligible']);self.assertFalse(pathway_arbiter.decide({},capacity={'configured':0,'healthy':0,'exhausted':False})['paid_api_eligible'])
  def test_typed_rewrite_preserves_string(self):
   with open(os.path.join(self.repo,'app.py')) as h:before=h.read()
   ir={'schema':ast_rewrite_ir.SCHEMA,'operations':[{'file':'app.py','language':'python','op':'rename_symbol','old':'old_name','new':'new_name','before_sha256':hashlib.sha256(before.encode()).hexdigest(),'expected_occurrences':1}]};patch,_,_=patch_protocol.normalize(json.dumps(ir),self.repo);self.assertIn('def new_name',patch);self.assertNotIn("return 'new_name'",patch)

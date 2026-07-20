@@ -43,3 +43,4 @@ intake/processed/*.md
 # gitlink here dangles as soon as the worktree is pruned, which breaks
 # `git status` repo-wide (fatal: not a git repository).
 claude-orchestrator-wt/
+.runner_boot_commit
