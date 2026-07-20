@@ -55,7 +55,10 @@ except ImportError:
 _RELFIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-", "copyfix-")
 
 MARK = "train"                                   # decided_by prefix => handled by the train
-SKIP_PREFIXES = ("merge-handler", "train")       # cards already handled by any integration path
+# Non-code policy decisions are terminal approval artifacts, not merge work.  If
+# they are re-read here, the no-slug fallback needlessly churns the queue and can
+# make legacy policy cards look like active integrations.
+SKIP_PREFIXES = ("merge-handler", "train", "auto-policy")
 MERGE_KINDS = ("verify", "material", "integrate")
 TEST_CMD = os.environ.get("TEST_CMD", "npm test")
 
