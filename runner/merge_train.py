@@ -1128,8 +1128,13 @@ def train_run():
     caps = {"low": LOW_RISK_BATCH, "standard": STANDARD_BATCH, "sensitive": SENSITIVE_BATCH}
     # Every result that touches a card consumes a risk-band slot.  In particular,
     # redo and already-integrated used to be free; a legacy backlog containing
+<<<<<<< HEAD
     # hundreds of either could therefore hold the global lease for an unbounded
     # scan and starve later reconciliation cards.
+=======
+    # hundreds of either could hold this pass indefinitely and starve later
+    # reconciliation cards.
+>>>>>>> origin/master
     BUDGET_OUTCOMES = ("merged", "already-integrated", "redo", "testfail",
                        "conflict", "push-pending", "waiting-branch")
     scan_cap = int(os.environ.get("MERGE_TRAIN_SCAN_PER_PROJECT", "200"))
@@ -1156,6 +1161,7 @@ def train_run():
             if not got_lock:
                 result["skipped"] += len(group)
                 print(f"merge_train: {proj.get('name') or pid} busy (another train holds the repo lock) — skipping this cycle")
+<<<<<<< HEAD
                 return result
             try:
                 with integration_runtime.isolated_repo(repo_path, "merge_train") as integration_repo:
@@ -1216,6 +1222,28 @@ def train_run():
                 summary["risk"][risk] += count
     print(f"merge_train: {summary['merged']} merged, {summary['already_integrated']} already, "
           f"{summary['redo']} redo, "
+=======
+                continue
+            for card, slug, task, risk in _select_batch(group):
+                if used[risk] >= caps[risk] or scanned >= scan_cap:
+                    continue
+                scanned += 1
+                summary["risk"][risk] += 1
+                outcome = _integrate_card(card, slug, task, proj)
+                if outcome in BUDGET_OUTCOMES:
+                    used[risk] += 1
+                if outcome == "merged":
+                    summary["merged"] += 1
+                elif outcome == "redo":
+                    summary["redo"] += 1
+                elif outcome == "testfail":
+                    summary["testfail"] += 1
+                elif outcome == "conflict":
+                    summary["conflict"] += 1
+                else:
+                    summary["skipped"] += 1
+    print(f"merge_train: {summary['merged']} merged, {summary['redo']} redo, "
+>>>>>>> origin/master
           f"{summary['testfail']} testfail, {summary['conflict']} conflict, "
           f"{summary['skipped']} skipped, {summary['project_errors']} project errors "
           f"across {summary['projects']} project(s)")
