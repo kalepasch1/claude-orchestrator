@@ -20,9 +20,9 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 ENABLED = os.environ.get("ORCH_BRANCH_GC_ENABLED", "true").lower() in ("1", "true", "yes")
-DRY_RUN = os.environ.get("ORCH_BRANCH_GC_DRY_RUN", "true").lower() in ("1", "true", "yes")
+DRY_RUN = os.environ.get("ORCH_BRANCH_GC_DRY_RUN", "false").lower() in ("1", "true", "yes")
 MIN_AGE_DAYS = int(os.environ.get("ORCH_BRANCH_GC_MIN_AGE", "3"))
-BATCH_SIZE = int(os.environ.get("ORCH_BRANCH_GC_BATCH", "20"))
+BATCH_SIZE = int(os.environ.get("ORCH_BRANCH_GC_BATCH", "100"))
 TIMEOUT = 15
 
 

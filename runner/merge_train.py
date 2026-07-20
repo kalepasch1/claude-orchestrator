@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 merge_train.py - the serialized integration train. This REPLACES direct/parallel merging as THE
 integration path for approved work.
@@ -530,6 +531,11 @@ def _integration_base(repo, proj, task_base):
 
 def _delete_branch(repo, branch):
     _git(repo, "branch", "-D", branch)
+    # Also clean up the remote tracking branch to prevent accumulation
+    try:
+        _git(repo, "push", "origin", "--delete", branch)
+    except Exception:
+        pass  # Remote branch may already be gone
 
 
 def _log(project, slug, outcome, extra=""):
