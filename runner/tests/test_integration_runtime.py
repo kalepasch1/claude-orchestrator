@@ -90,6 +90,18 @@ def test_merge_and_release_share_one_global_lease(tmp_path, monkeypatch):
     assert not thread.is_alive()
 
 
+def test_global_lease_does_not_mask_body_oserror(tmp_path, monkeypatch):
+    """A transient DB error must escape normally and release the train lease."""
+    monkeypatch.setenv("CLAUDE_ORCH_HOME", str(tmp_path / "runtime"))
+    with pytest.raises(OSError, match="temporary database outage"):
+        with integration_runtime.global_lease("merge_train") as acquired:
+            assert acquired
+            raise OSError("temporary database outage")
+
+    with integration_runtime.global_lease("next_train") as acquired:
+        assert acquired
+
+
 def test_merge_is_global_but_release_is_project_isolated():
     runner = Path(__file__).parents[1]
     merge = (runner / "merge_train.py").read_text()

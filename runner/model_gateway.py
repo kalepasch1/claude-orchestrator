@@ -217,22 +217,27 @@ def _local(model, prompt, timeout=90):
             model = os.environ.get("OLLAMA_MODEL", "llama3.1")
     # Cap the context window: without an explicit num_ctx Ollama uses the Modelfile default,
     # which for large coders (qwen3-coder:30b) balloons KV cache to ~2x model size (observed
-    # 44GB resident on 2026-07-10) and drives the sentinel ram-clamp thrash. Gateway prompts
-    # are short, so a modest window loses nothing. ORCH_OLLAMA_NUM_CTX=0 disables the cap.
+    # 44GB resident on 2026-07-10) and drives the sentinel ram-clamp thrash.  Eight thousand
+    # tokens covers bounded review prompts while avoiding the 16k default that exhausted RAM
+    # during merge-train verification. ORCH_OLLAMA_NUM_CTX=0 disables the cap.
     try:
-        num_ctx = int(os.environ.get("ORCH_OLLAMA_NUM_CTX", "16384"))
+        num_ctx = int(os.environ.get("ORCH_OLLAMA_NUM_CTX", "8192"))
     except ValueError:
-        num_ctx = 16384
+        num_ctx = 8192
     body = {"model": model, "prompt": prompt, "stream": False,
             "keep_alive": os.environ.get("ORCH_OLLAMA_KEEP_ALIVE", "0")}
     if num_ctx > 0:
         body["options"] = {"num_ctx": num_ctx}
     try:
         import local_model_slots
+    except ImportError:
+        d = _post(f"{host}/api/generate", {}, body, timeout=timeout)
+    else:
+        # Do not reissue a timed-out or failed local request outside the slot.
+        # The old broad except retried every failure, turning one bounded review
+        # into two full model runs and repeatedly pinning the merge train.
         with local_model_slots.slot(model, operation="local_completion"):
             d = _post(f"{host}/api/generate", {}, body, timeout=timeout)
-    except Exception:
-        d = _post(f"{host}/api/generate", {}, body, timeout=timeout)
     return d.get("response", ""), 0.0
 
 

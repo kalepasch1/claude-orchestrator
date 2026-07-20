@@ -95,9 +95,18 @@ def global_lease(owner, timeout=0):
             handle.truncate()
             handle.write(json.dumps({"pid": os.getpid(), "owner": owner, "at": time.time()}))
             handle.flush()
-        yield acquired
     except OSError:
+        # Only acquisition failures are fail-closed.  Do not catch exceptions
+        # raised *inside* the with-body: contextlib would otherwise attempt a
+        # second yield and mask the real database/network failure with
+        # "generator didn't stop after throw()".
+        if handle:
+            handle.close()
+            handle = None
         yield False
+        return
+    try:
+        yield acquired
     finally:
         if acquired and handle:
             try:

@@ -26,7 +26,16 @@ Dependent files:
 """
 
 
-def review_diff(worktree, base="main", max_chars=60000, dependents=None, project=None):
+def review_diff(worktree, base="main", max_chars=None, dependents=None, project=None):
+    # A 60k-character diff can exceed the useful review window of a cheap local
+    # model and trigger a very large KV-cache allocation.  Keep the advisory
+    # reviewer bounded; the full project test gate still runs separately.
+    if max_chars is None:
+        try:
+            max_chars = int(os.environ.get("VERIFY_MAX_DIFF_CHARS", "24000"))
+        except ValueError:
+            max_chars = 24000
+    max_chars = max(1, max_chars)
     try:
         diff = subprocess.check_output(["git", "diff", f"{base}...HEAD"],
                                        cwd=worktree, text=True, errors="replace")[:max_chars]
@@ -49,7 +58,7 @@ def review_diff(worktree, base="main", max_chars=60000, dependents=None, project
             except Exception:
                 prov, model, _ = model_policy.choose("review", agentic=False, need=6)
         res = model_gateway.complete(prov, model, prompt + diff, project=project,
-                                     timeout=int(os.environ.get("VERIFY_TIMEOUT", "180")),
+                                     timeout=int(os.environ.get("VERIFY_TIMEOUT", "90")),
                                      operation="verify_diff", task_class="review")
         out = res["text"]
         m = re.search(r"\{.*\}", out, re.S)
