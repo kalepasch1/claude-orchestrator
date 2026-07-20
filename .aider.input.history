@@ -1533,3 +1533,337 @@
 +
 +
 +[reuse-first: matched qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi]
+
+# 2026-07-18 23:17:57.783016
++REUSABLE INTENT GRAPH: start from proven adapter shapes before drafting net-new code.
++Current intent signature: ebb9614483eda74ea949
++- sustainable-barks/relfix-sustainable-barks-07041728-patch-template-adapt similarity=0.312: dirs=. exts=.ts:1 shape=+1/-0 | ## ORCHESTRATION PIPELINE CONTRACT
++- source: native-claim
++- project: sustainable-barks
++- task class: plan (need 8, risk strategy)
++- preflight triage: local:deepseek-coder-v2:16b (qpd leader q=7.7 $0.0 (n=1))
++- strategy planner: local:deepseek-coder-v2:16b (qpd leader q=7.47 $0.0 (n=107))
++- agentic c
++- pareto-2080/rework-buildfail-qafix-pareto-2080-07062319-slice-1-slice-2-7f21d02 similarity=0.287: shape=+0/-0 | PATCH TEMPLATE ce2e8dcd7954
++Intent: 056af630dd5f 07062319 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 active adapt advice after agentic aider allowlist author batch before behavior blocked blocker build
++Acceptance: preserve existing beh
++- smarter/qafix-smarter-07130635 similarity=0.287: dirs=. exts=.md:1 shape=+9/-0 | ## ORCHESTRATION PIPELINE CONTRACT
++- source: native-claim
++- project: smarter
++- task class: plan (need 8, risk strategy)
++- preflight triage: local:deepseek-coder-v2:16b (qpd leader q=7.7 $0.0 (n=1))
++- strategy planner: local:deepseek-coder-v2:16b (qpd leader q=7.42 $0.0 (n=87))
++- agentic coder: claud
++
++
++
++## Merged-Diff Compiler: Proven Pattern Available
++Confidence: 50% match to prior merged work.
++ADAPT the pattern below instead of inventing from scratch. The template already passed tests and merged successfully.
++
++### Template 1: relfix-plist-secret-hygiene (match: 50%)
++Files touched: .aider.chat.history.md, .aider.input.history, .aider.tags.cache.v4/cache.db, .aider.tags.cache.v4/cache.db-shm, .github/workflows/ci.yml, .gitignore, BLUEPRINT-swarm-executor.md, FLEET_ADMIN_ACTIVATION.md, OPERATOR-GUIDE.md, ORCHESTRATOR_IMPROVEMENT_PLAN.md
++Pattern:
++```
++  .aider.chat.history.md: +113/-0
++  .aider.input.history: +51/-0
++  workflows/ci.yml b/.github/workflows/ci.yml: +43/-0
++  .gitignore: +6/-0
++  BLUEPRINT-swarm-executor.md: +245/-0
++```
++
++### Template 2: improve-automated-configuration-validation-slice-2 (match: 50%)
++Files touched: .aider.chat.history.md, .aider.input.history, .aider.tags.cache.v4/cache.db, .aider.tags.cache.v4/cache.db-shm
++Pattern:
++```
++  .aider.chat.history.md: +150/-0
++  .aider.input.history: +67/-0
++```
++
++### Template 3: relfix-contract-first-verify (match: 50%)
++Files touched: .aider.chat.history.md, .aider.input.history, .aider.tags.cache.v4/cache.db, .aider.tags.cache.v4/cache.db-shm, .github/workflows/ci.yml, REPORT-backlog-blitz.md, REPORT-meta-optimizer.md, runner/agentic_coders.py, runner/agentic_repair.py, runner/approval_merge.py
++Pattern:
++```
++  .aider.chat.history.md: +492/-0
++```
++
++---
++
++
++ADAPTIVE PROBE-FIRST SLICE (local:llama3.2:3b):
++PROMISING: yes
++
++MINIMAL_SLICE: intake/processed/PROMPT-<name>.md
++
++REUSE: existing helpers, prior pattern keywords "fleet_config", "planner.py", and "intake_watcher.py"
++
++RISKS:
++
++1. Inadequate testing of manual serial Claude Code sessions for fleet-down recovery.
++2. Potential for hardcoded secrets or credentials in configuration keys.
++
++# Implementation plan (from strategy model local:llama3.2:3b — follow it; adapt only if it's clearly wrong):
++Based on the provided STRATEGY model, here is a concrete implementation plan for the task:
++
++**Files to create/edit:**
++
++* Create a new file `intake/processed/PROMPT-<name>.md` (replace `<name>` with the actual prompt name)
++* Edit `intake_watcher.py` to include the new prompt and update the DAG accordingly
++* Update `deploy/CLOUD_RUNNER.md` to include the new build configuration
++
++**Approach:**
++
++1. Create a new file `intake/processed/PROMPT-<name>.md` with the actual prompt content.
++2. Edit `intake_watcher.py` to include the new prompt in its processing pipeline.
++3. Update `planner.py` to incorporate the new prompt into its DAG.
++4. Run `prompt_factory.py` to generate a new prompt factory instance with the updated configuration.
++5. Deploy the new build using Vercel.
++
++**Key edge cases:**
++
++* Ensure that the new prompt is properly formatted and included in the `intake/processed/` directory.
++* Verify that the `intake_watcher.py` file correctly processes the new prompt and updates the DAG accordingly.
++* Test that the new build configuration works as expected using Vercel.
++
++**Verification:**
++
++1. Run `vercel --prod` to deploy the new build.
++2. Verify that the deployment was successful by checking the Vercel logs.
++3. Test the new build configuration using a test client or API.
++4. Check that the new prompt is properly processed and included in the output.
++
++**Orchestrator feedback:**
++
++* Provide an updated `orchestrator_feedback` block with any relevant observations, suggestions, or improvements for future task setup.
++* Include any necessary context files or model information to support the feedback.
++
++This implementation plan assumes a basic understanding of the STRATEGY model and the project's requirements. Please note that this is just a high-level outline, and additional details may be required depending on the specific implementation.
++
++# Task:
++# Project context (pre-loaded)
++
++## Operator workflow (manual, not auto-distilled)
++
++Routine strategic/objective prompts belong in the operator drop-box, not a manual serial
++session: drop a `PROMPT-<name>.md` file at repo root (or a canonical-format file in `intake/`)
++and `intake_watcher.py` auto-decomposes anything that isn't already canonical format through
++`planner.py`'s contract-first DAG and queues it for parallel, dependency-linked execution (see
++`prompt_factory.py` and the drop-box section of `intake_watcher.py`'s module docstring).
++
++A manual serial Claude Code session (an operator pasting a long prompt directly into a live
++session, working the phases by hand) is reserved for **fleet-down recovery only** — i.e. when
++the fleet itself can't queue or execute anything yet, so there's nothing for intake to route
++work to. Once the fleet is healthy, prefer the drop-box.
++
++## Learned from merged work (auto)
++
++**CONVENTIONS**
++
++*   Centralized configuration management: fleet-wide config changes go through a central `fleet_config` table and are applied to all machines via an in-process gateway (`fleet_control.py`).
++*   Safe config keys only: only config keys without secrets or credentials can be pushed fleet-wide.
++*   DB + git for synchronization: code updates are propagated between machines using git, and database operations are used for configuration management.
++*   Fail-soft error handling: errors during code execution or database queries do not wedge the runner; they are swallowed to prevent crashes.
++
++**DO/AVOID RULES**
++
++*   **DO** prefix config key changes with ORCH_ to make them fleet-wide applicable.
++*   **DO NOT** introduce hardcoded secrets or credentials in the configuration keys.
++*   **AVOID** using manual SSH or second-terminal steps for configuration management; use the centralized gateway (`fleet_control.py`) instead.
++*   **AVOID** introducing model-specific logic that can wedge the runner on errors; instead, use fail-soft error handling.
++
++## Learned from merged work (auto)
++
++**CONVENTIONS**
++
++- **Module-level singleton pattern**: Provide module-level functions that delegate to a thread-safe singleton instance (e.g., `acquire()` → `_pool.acquire()`); avoids passing state through call chains
++- **Fail-soft error handling**: Return empty string `""` or sensible defaults on any error; never raise on bad input (None, missing path, permission errors)
++- **Environment variable configuration**: All tunable parameters (pool size, TTL, limits) are env vars with sensible defaults, not hardcoded
++- **Thread-safe with explicit locks**: Protect shared state with `threading.Lock()`; minimize critical section, do disk I/O outside the lock
++- **Defensive file I/O**: Check multiple file locations, use `errors="replace"`, catch `FileNotFoundError` separately, truncate at a byte limit
++
++**DO/AVOID RULES**
++
++- **DO** include 20+ test cases covering normal paths, edge cases (None, empty string, bad paths), eviction, staleness, and memory pressure before merging
++- **AVOID** forcing callers to handle unavailability—design for graceful degradation (missing file → return `""` instead of raising)
++- **DO** gate resource expansion (new pool entries) on memory checks via `resource_governor.can_claim()` to prevent wedging under pressure
++- **AVOID** blocking the caller on slow I/O—if a cache miss is likely, accept it and fall back rather than synchronous disk waits
++- **DO** provide `stats()` and `invalidate()` methods so operators and tests can observe/control pool state
++
++
++## Learned from merged work (auto)
++Here are the extracted conventions:
++
++**Followed Conventions:**
++
++* The code uses a consistent naming convention for variables and functions (e.g., `lc` instead of `local_coder`, `cd_until` instead of `cooldown_until_time`)
++* The code uses comments to explain complex logic, making it easier to understand
++* The use of Python's built-in logging module for logging purposes
++* The use of environment variables to configure the application
++
++**To Avoid on First Try:**
++
++* Avoid overusing nested if-else statements and instead opt for a more modular approach
++* Use type hints for function parameters and return types to improve code readability
++* Use consistent indentation and spacing throughout the codebase
++* Avoid using magic numbers and instead define named constants or functions to compute them
++
++---
++
++# Project context (cached - do not restate, just apply):
++
++
++## Operator workflow (manual, not auto-distilled)
++
++Routine strategic/objective prompts belong in the operator drop-box, not a manual serial
++session: drop a `PROMPT-<name>.md` file at repo root (or a canonical-format file in `intake/`)
++and `intake_watcher.py` auto-decomposes anything that isn't already canonical format through
++`planner.py`'s contract-first DAG and queues it for parallel, dependency-linked execution (see
++`prompt_factory.py` and the drop-box section of `intake_watcher.py`'s module docstring).
++
++A manual serial Claude Code session (an operator pasting a long prompt directly into a live
++session, working the phases by hand) is reserved for **fleet-down recovery only** — i.e. when
++the fleet itself can't queue or execute anything yet, so there's nothing for intake to route
++work to. Once the fleet is healthy, prefer the drop-box.
++
++## Learned from merged work (auto)
++
++**CONVENTIONS**
++
++*   Centralized configuration management: fleet-wide config changes go through a central `fleet_config` table and are applied to all machines via an in-process gateway (`fleet_control.py`).
++*   Safe config keys only: only config keys without secrets or credentials can be pushed fleet-wide.
++*   DB + git for synchronization: code updates are propagated between machines using git, and database operations are used for configuration management.
++*   Fail-soft error handling: errors during code execution or database queries do not wedge the runner; they are swallowed to prevent crashes.
++
++**DO/AVOID RULES**
++
++*   **DO** prefix config key changes with ORCH_ to make them fleet-wide applicable.
++*   **DO NOT** introduce hardcoded secrets or credentials in the configuration keys.
++*   **AVOID** using manual SSH or second-terminal steps for configuration management; use the centralized gateway (`fleet_control.py`) instead.
++*   **AVOID** introducing model-specific logic that can wedge the runner on errors; instead, use fail-soft error handling.
++
++## Learned from merged work (auto)
++
++**CONVENTIONS**
++
++- **Module-level singleton pattern**: Provide module-level functions that delegate to a thread-safe singleton instance (e.g., `acquire()` → `_pool.acquire()`); avoids passing state through call chains
++- **Fail-soft error handling**: Return empty string `""` or sensible defaults on any error; never raise on bad input (None, missing path, permission errors)
++- **Environment variable configuration**: All tunable parameters (pool size, TTL, limits) are env vars with sensible defaults, not hardcoded
++- **Thread-safe with explicit locks**: Protect shared state with `threading.Lock()`; minimize critical section, do disk I/O outside the lock
++- **Defensive file I/O**: Check multiple file locations, use `errors="replace"`, catch `FileNotFoundError` separately, truncate at a byte limit
++
++**DO/AVOID RULES**
++
++- **DO** include 20+ test cases covering normal paths, edge cases (None, empty string, bad paths), eviction, staleness, and memory pressure before merging
++- **AVOID** forcing callers to handle unavailability—design for graceful degradation (missing file → return `""` instead of raising)
++- **DO** gate resource expansion (new pool entries) on memory checks via `resource_governor.can_claim()` to prevent wedging under pressure
++- **AVOID** blocking the caller on slow I/O—if a cache miss is likely, accept it and fall back rather than synchronous disk waits
++- **DO** provide `stats()` and `invalidate()` methods so operators and tests can observe/control pool state
++
++
++## Learned from merged work (auto)
++Here are the extracted conventions:
++
++**Followed Conventions:**
++
++* The code uses a consistent naming convention for variables and functions (e.g., `lc` instead of `local_coder`, `cd_until` instead of `cooldown_until_time`)
++* The code uses comments to explain complex logic, making it easier to understand
++* The use of Python's built-in logging module for logging purposes
++* The use of environment variables to configure the application
++
++**To Avoid on First Try:**
++
++* Avoid overusing nested if-else statements and instead opt for a more modular approach
++* Use type hints for function parameters and return types to improve code readability
++* Use consistent indentation and spacing throughout the codebase
++* Avoid using magic numbers and instead define named constants or functions to compute them
++
++
++# ---- task ----
++# beethoven — project brief (auto)
++## Key conventions
++* The code uses a consistent naming convention for variables and functions (e.g., `lc` instead of `local_coder`, `cd_until` instead of `cooldown_until_time`)
++* The code uses comments to explain complex logic, making it easier to understand
++* The use of Python's built-in logging module for logging purposes
++* The use of environment variables to configure the application
++* Avoid overusing nested if-else statements and instead opt for a more modular approach
++* Use type hints for function parameters and return types to improve code readability
++* Use consistent indentation and spacing throughout the codebase
++* Avoid using magic numbers and instead define named constants or functions to compute them
++## recent signal: 4/10 merged, 6/10 tests passed
++
++# Focus: this task most likely involves these files - read THESE first and avoid loading the whole repo (saves tokens):
++- intake/processed/20260629-211236-Sustainable_Barks-0629.md
++- intake/processed/20260629-212506-sustainable-barks-0629.md
++- runner/reuse_first.py
++- runner/sustainable_barks_blocker.py
++- runner/tests/test_reuse_first.py
++- runner/tests/test_sustainable_barks_blocker.py
++- DEPLOY.md
++- FEATURES.md
++- HANDOFF-cowork-master-build.md
++- REVIEW-v5-cade-reuse-foundry-testfleet-2026-07-09.md
++- REVIEW-v5-cade-reuse-selfimproving-testbots-2026-07-09.md
++- deploy/CLOUD_RUNNER.md
++
++# Avoid these known failure modes (learned from past runs):
++- Default-DENY on allowlists. A fail-OPEN allowlist (permit on lookup miss) is a security bug - close it fail-closed, like the novel-instrument minting fix.
++- Two agents editing the same files corrupt each other. Stay within your task's file scope; shared interfaces belong in the 'contracts' task.
++- Never commit secrets. If gitleaks flags one: rotate it, purge history, gitignore, re-run.
++- agent run failed after 3 error-retries; re-scope or escalate model
++- Added secrets to node_modules without proper security configuration and removed tests.
++- run the prod build locally and fix all type/build errors before finishing
++
++# Relevant prior solutions from other projects - REUSE/adapt instead of writing from scratch:
++
++### Use a canary deployment to monitor the effects of a deployment before it is rolled out to all users. (from santas-secret-workshop)
++why: This approach provides a safety net to detect any issues with the deployment, allowing for prompt rollback if necessary.
++proof: [grep -q '2026-07-13T20:15:00Z' .deploy-canary]
++files: .deploy-canary
++
++# ---- your task ----
++## ORCHESTRATION PIPELINE CONTRACT
++- source: runner-claim
++- project: beethoven
++- task class: build (need 6, risk standard)
++- preflight triage: google:gemini-2.5-flash (qpd leader q=6.2 $0.0 (n=1))
++- strategy planner: google:gemini-2.5-flash (qpd leader q=6.6 $0.0 (n=1))
++- agentic coder: ollama using author model ollama/deepseek-coder-v2:16b
++- required executor capabilities: code_generation, text_completion
++- independent QA route: local:llama3.1 (qpd leader q=7.7 $0.0 (n=1))
++- QA panel: local:llama3.2:3b, deepseek:deepseek-v4-flash
++- legal gate: owner-only when the change would force licensing/registration/custody/transmission/advice or needs a secret
++- merge/release: auto-merge to orchestrator/dev after tests, verify, judge; production release via batch train
++- deploy-cost rule: never run `vercel --prod`, `vercel deploy --prod`, or an equivalent CLI production deploy; never push main/master directly. Push only the task branch, then let the verified batch release train promote production.
++- coordination rule: reconcile with active loop-generated work, reuse prior solutions first, do not delete or overwrite unrelated queued improvements, and leave recovered work in the queue until shipped.
++- cross-learning context:
++  - recent outcome signal: 5/12 merged, 7/12 test-pass, $0.00, models claude-haiku-4-5-20251001, cowork-skill:claude-sonnet-5, swarm:openai:openai, xai:xai/grok-3-mini-fast
++  - learned route: pipeline_scout -> local:llama3.2:3b, q=4.7
++  - learned route: adaptive_probe -> local:llama3.2:3b, q=7.7
++  - learned route: plan -> local:llama3.2:3b, q=7.7
++  - learned route: debate_compress -> local:llama3.2:3b, q=7.7
++  - operator feedback: med/strategy - The current orchestration loop for project 'beethoven' seems to have a measured bottleneck at the remediation phase. This is evident from th
++  - operator feedback: med/strategy - measured bottleneck in the deployment process due to reliance on manual checks and lack of automated feedback loops.
++  - operator feedback: med/strategy - Measured bottleneck in loop response time during application remediation process.
++## END ORCHESTRATION PIPELINE CONTRACT
++
++# Original improvement request
++The Vercel production deploy for this app failed or could not be confirmed. Fix the smallest build/deploy issue and make the production build pass. Do not add product features. Preserve existing behavior.
++
++Vercel project: web
++Release status: ERROR
++Release commit: bc8928a7c8400a5cc4c56789dea8b23acf12bdc1
++
++# Vercel/build log tail:
++
++
++[reuse-first: matched relfix-sustainable-barks-07041728-patch-template-adapt]
++
++# Orchestrator feedback (optional, encouraged): if anything about HOW this task was set up could be improved — context/files provided, model chosen, prompt clarity, available tooling, an over-strict guardrail, an avoidable rate-limit, or a better orchestration strategy — END your run with a block:
++<orchestrator_feedback>[{"category":"context|model|prompt|tooling|guardrail|strategy|rate_limit|other","severity":"low|med|high","observation":"...","suggestion":"..."}]</orchestrator_feedback>
++Keep it specific and free of any private/customer data.
++
++## Reuse before you draft (cost discipline)
++Before writing net-new code: (1) search THIS repo for an existing helper/component/pattern and extend it; (2) check the injected prior-solution notes above and the shared kernel (packages/darwin-kernel / vendor/darwin-kernel) for something to import or adapt; (3) if the same need clearly exists in sibling apps, write it as a small reusable module and note 'CANDIDATE-SHARED: <what>' in your final message so it can be promoted to a shared capability instead of re-drafted per app. Prefer the smallest diff that reuses existing code.
++
++---
++BEFORE YOU FINISH (required): run the project's production build and, if present, its tests (e.g. `npm run build` then the test command). If ANYTHING fails, fix it and re-run until the build is GREEN. Make the smallest correct change and reuse existing code. Do not finish with a red build, and do not finish by only describing changes — actually apply your edits to the files.
