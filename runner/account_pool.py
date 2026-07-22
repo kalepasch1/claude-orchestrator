@@ -35,20 +35,12 @@ STATE = os.path.join(HOME, "accounts_state.json")
 # rate), not the weekly cap, so we re-try Claude every 20 min and use cheap models in the gap — this
 # switches back to costless Claude fast the moment a short limit clears, instead of parking it for hours.
 # ORCH_-prefixed so it's tunable fleet-wide via fleet_config. Repeat hits back off (see mark_exhausted).
-_COOLDOWN_DEFAULT = 20 * 60
-_COOLDOWN_MAX_DEFAULT = 6 * 3600
-
-def _cooldown():
-    """Read cooldown from env at call time so hot_reload changes take effect."""
-    return int(os.environ.get("ORCH_ACCOUNT_COOLDOWN",
-               os.environ.get("ACCOUNT_COOLDOWN", str(_COOLDOWN_DEFAULT))))
-
-def _cooldown_max():
-    return int(os.environ.get("ORCH_ACCOUNT_COOLDOWN_MAX", str(_COOLDOWN_MAX_DEFAULT)))
-
-# Keep module-level names for any external readers (read-only; write path uses functions)
-COOLDOWN = _cooldown()
-COOLDOWN_MAX = _cooldown_max()
+COOLDOWN = int(os.environ.get("ORCH_ACCOUNT_COOLDOWN",
+                              os.environ.get("ACCOUNT_COOLDOWN", str(20 * 60))))
+# Hard ceiling for exponential backoff (6 hours). Repeated mark_exhausted() calls double
+# the cooldown each time, but never exceed this cap — prevents a single flaky account
+# from being parked for days.
+COOLDOWN_MAX = int(os.environ.get("ORCH_ACCOUNT_COOLDOWN_MAX", str(6 * 3600)))
 # Cheap cross-module signal: written when EVERY Claude account is cooling down, self-expiring
 # at the earliest cooldown. agentic_coders.pick() reads claude_exhausted() to fail over to the
 # subscription second coder (Codex) instead of stalling. No DB call on the hot path.
