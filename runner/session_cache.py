@@ -93,6 +93,17 @@ def save_session(task_id, attempt, context):
     return key
 
 
+def invalidate(task_id=None):
+    """Remove cached sessions for a task, or clear the entire cache if task_id is None.
+    Useful after schema changes or when a task's strategy should start completely fresh."""
+    cache = _cache()
+    if task_id is None:
+        cache = {}
+    else:
+        cache = {k: v for k, v in cache.items() if v.get("task_id") != task_id}
+    _save_cache(cache)
+
+
 def get_prior_session(task_id, current_attempt):
     """Get the most recent prior session for this task."""
     cache = _cache()
