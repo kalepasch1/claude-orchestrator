@@ -4,6 +4,21 @@ import path from 'path';
 
 export default defineConfig({
   plugins: [vue()],
+  esbuild: {
+    // Prevent Vite from resolving web/tsconfig.json which extends
+    // .nuxt/tsconfig.json — that file only exists after `nuxt prepare`.
+    tsconfigRaw: JSON.stringify({
+      compilerOptions: {
+        target: 'es2022',
+        module: 'esnext',
+        moduleResolution: 'bundler',
+        strict: true,
+        esModuleInterop: true,
+        jsx: 'preserve',
+        types: ['node'],
+      },
+    }),
+  },
   test: {
     globals: true,
     environment: 'node',
