@@ -45,9 +45,16 @@ def run():
     project_weights = _project_revenue_weights()
     done_slugs = _done_slugs()
 
+    # Bottleneck map: how many queued tasks each slug would unblock on completion.
+    # Tasks with many dependents are bottlenecks — completing them multiplies throughput.
+    dep_fans = {}
+    for t in queued:
+        for dep_slug in (t.get("deps") or []):
+            dep_fans[dep_slug] = dep_fans.get(dep_slug, 0) + 1
+
     scored = []
     for t in queued:
-        score = _thermal_score(t, merge_rates, wall_times, costs, project_weights, done_slugs)
+        score = _thermal_score(t, merge_rates, wall_times, costs, project_weights, done_slugs, dep_fans)
         scored.append((score, t["id"]))
 
     # Sort descending by score (highest value per minute first)
@@ -72,7 +79,7 @@ def run():
     return {"ranked": len(scored)}
 
 
-def _thermal_score(task, merge_rates, wall_times, costs, project_weights, done_slugs):
+def _thermal_score(task, merge_rates, wall_times, costs, project_weights, done_slugs, dep_fans=None):
     """Compute the thermal score for a single task."""
     pid = task.get("project_id", "")
     kind = (task.get("kind") or "build").lower()
@@ -97,7 +104,12 @@ def _thermal_score(task, merge_rates, wall_times, costs, project_weights, done_s
     else:
         dep_readiness = 1.0
 
-    value = priority_val * project_weight * (0.5 + 0.5 * dep_readiness)
+    # Bottleneck multiplier: tasks that unblock many others are critical-path work.
+    # log1p scale keeps the boost meaningful but bounded (1 dep → ×1.69, 10 → ×2.40).
+    unblock_count = (dep_fans or {}).get(task.get("slug") or "", 0)
+    unblock_mult = 1.0 + math.log1p(unblock_count)
+
+    value = priority_val * project_weight * (0.5 + 0.5 * dep_readiness) * unblock_mult
 
     # Estimated cost and time
     est_cost = max(0.001, costs.get(key, costs.get(pid, DEFAULT_COST_USD)))
