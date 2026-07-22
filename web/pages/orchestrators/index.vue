@@ -212,7 +212,7 @@ onMounted(async () => {
 
     <section v-if="recentTasks.length" class="content-section recent-section">
       <div class="section-heading"><div><span>Portfolio activity</span><h2>Recently routed</h2></div></div>
-      <div class="recent-list"><article v-for="task in recentTasks" :key="task.id"><i :class="stateClass(task.state)" /><strong>{{ task.slug }}</strong><span>{{ task.kind || 'work' }}</span><small>{{ task.state }}</small></article></div>
+      <div class="recent-list"><article v-for="task in recentTasks" :key="task.id"><i :class="stateClass(task.state)"></i><strong>{{ task.slug }}</strong><span>{{ task.kind || 'work' }}</span><small>{{ task.state }}</small></article></div>
     </section>
   </main>
 </template>
