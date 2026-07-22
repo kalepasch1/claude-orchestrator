@@ -231,9 +231,14 @@ EOF
 
 ## Troubleshooting
 
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| TDD gate never fires | `ORCH_TDD_ENABLED` is `false` or missing | Set to `true` in `fleet_config` |
-| Gate fires on canary/bugfix tasks | `ORCH_TDD_TASK_KINDS` includes too many kinds | Restrict to `feature,new-module` |
-| Config change not picked up | Runner cache TTL (~30s) hasn't expired | Call `tdd_gate.invalidate_cache()` or restart |
-| Tests pass locally but fail in gate | Gate runs in the worktree, not the main checkout | Ensure test fixtures use relative paths |
+### TDD gate reports "no tests collected" but tests exist
+
+Ensure `must_pass_tests` entries match the actual test function names (without the `test_` prefix duplication). pytest collects functions named `test_*` in files named `test_*.py` — if the file is named differently, pass the full path in the task spec.
+
+### Config changes not taking effect
+
+Fleet config has a ~30s cache TTL in `tdd_gate.py`. If changes seem stuck: call `tdd_gate.invalidate_cache()` in the runner, or restart the runner process. Verify the key was written correctly with `SELECT * FROM fleet_config WHERE key LIKE 'ORCH_TDD%';`.
+
+### Task blocked but tests pass locally
+
+The build gate runs in the CI environment, which may differ from local. Check that the pytest invocation in `tdd_gate.run_must_pass_tests()` uses the same Python version and dependencies as your local run. Also confirm the task's `must_pass_tests` list matches the exact function names (case-sensitive).
