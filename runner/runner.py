@@ -192,6 +192,29 @@ def set_state(task_id: str, **kw) -> None:
     # branch. A crashed worker is covered by the server-side lease TTL.
     if kw.get("state") in {"QUEUED", "DONE", "MERGED", "BLOCKED", "QUARANTINED", "RETRY"}:
         branch_lease.release(str(task_id))
+    # AUTO-INTEGRATE: whenever a task lands in DONE with an artifact_branch, ensure
+    # the merge train has a card for it.  Without this, tasks completed via cache-hit,
+    # replay, rotation, or any non-standard path silently stall in DONE forever —
+    # the root cause of 1,200+ orphaned DONE tasks discovered 2026-07-20.
+    if kw.get("state") == "DONE" and kw.get("artifact_branch"):
+        try:
+            task_row = db.select("tasks", {"select": "slug,project_id",
+                                           "id": f"eq.{task_id}", "limit": "1"})
+            if task_row:
+                _slug = task_row[0].get("slug", "")
+                _pid = task_row[0].get("project_id", "")
+                if _slug and _pid:
+                    _proj = projects(_pid)
+                    _pname = _proj.get("name", "") if _proj else ""
+                    if _pname:
+                        import merge_train as _mt
+                        _mt.ensure_integration_card(
+                            _pname, _slug,
+                            title=f"merge of {_slug}",
+                            decided_by="canonical-train:auto-set-state",
+                        )
+        except Exception as _e:
+            _log.debug("set_state auto-integrate failed for %s: %s", task_id, _e)
 
 
 def _next_non_claude_coder(task, exclude=()):
