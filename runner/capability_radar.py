@@ -8,6 +8,7 @@ Respects preference suppression so only likely-valuable ideas surface. Schedule 
 import os, sys, json, subprocess, re, math
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db, preference, claude_cli
+import resolution_intelligence
 
 try:
     import knowledge_embed as _ke
@@ -27,8 +28,11 @@ MODEL = os.environ.get("RADAR_MODEL", "claude-sonnet-4-6")
 
 
 def _mature_caps():
-    return db.select("capabilities", {"select": "name,slug,domain,summary,status",
+    caps = db.select("capabilities", {"select": "name,slug,domain,summary,status",
                                       "status": "in.(trusted,productizable)"}) or []
+    if not any(c.get("slug") == resolution_intelligence.CAPABILITY["slug"] for c in caps):
+        caps.append(dict(resolution_intelligence.CAPABILITY))
+    return caps
 
 
 def _projects():
