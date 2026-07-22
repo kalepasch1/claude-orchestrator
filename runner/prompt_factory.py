@@ -92,6 +92,7 @@ def _project_repo_map():
 
 
 def _extract_proof(prompt_text, project_row):
+    """Return the acceptance-test command from *prompt_text*, falling back to project or env default."""
     m = _PROOF_LINE_RX.search(prompt_text or "")
     if m:
         return m.group(1).strip().rstrip(".")
