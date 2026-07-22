@@ -791,28 +791,6 @@ def claim_task(runner_id):
         s = str(t.get("slug") or "")
         return 1 if deprio_churn and (s.startswith("cont-") or s.startswith("batch-mech")) else 0
 
-    def _cooling_down(t):
-        """Avoid instantly reclaiming work a worker deliberately deferred.
-
-        The old QUEUED -> RUNNING hot loop could reclaim the same conflict/toolchain
-        hold several times a minute, consuming a lane without doing useful work.
-        """
-        note = str(t.get("note") or "").lower()
-        seconds = 0
-        if note.startswith("held: project toolchain not ready"):
-            seconds = int(os.environ.get("ORCH_TOOLCHAIN_RECLAIM_COOLDOWN_S", "300"))
-        elif note.startswith(("conflict-predictor: deferring", "portfolio-plan deferred")):
-            seconds = int(os.environ.get("ORCH_CONFLICT_RECLAIM_COOLDOWN_S", "90"))
-        elif note.startswith(("fleet-topology: redirecting", "ensemble-predictor:")):
-            seconds = int(os.environ.get("ORCH_ROUTING_RECLAIM_COOLDOWN_S", "60"))
-        if not seconds or not t.get("updated_at"):
-            return False
-        try:
-            updated = datetime.datetime.fromisoformat(str(t["updated_at"]).replace("Z", "+00:00"))
-            return (datetime.datetime.now(datetime.timezone.utc) - updated).total_seconds() < seconds
-        except Exception:
-            return False
-
 
     # Kind+age composite score: prioritize bugfixes and older tasks within the same
     # jump-queue tier. Lower score = claimed sooner. Age gives a small boost (up to -10
