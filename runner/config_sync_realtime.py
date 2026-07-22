@@ -2,23 +2,23 @@
 """
 config_sync_realtime.py — real-time configuration synchronization.
 
-Subscribes to Supabase Realtime changes on the fleet_config table so config
-updates propagate instantly instead of waiting for the next poll interval.
-Falls back to direct DB queries when realtime is unavailable.
+Improves on config_sync.py's polling model by adding mtime-based file
+watching and DB change detection so config updates propagate within seconds
+instead of waiting for the 300s polling interval.
 
-Usage:
-    from config_sync_realtime import get_config, start, stop
+Architecture:
+  - Watches ~/.claude-orchestrator/config.local.json mtime every 2s
+  - On change, immediately triggers sync_config() from config_sync
+  - Watches fleet_config table for remote changes (via last-known hash)
+  - Applies remote changes locally so all machines converge faster
 
-    start()                       # begin listening (non-blocking)
-    val = get_config("MAX_PARALLEL")  # read from cache or DB
-    stop()                        # tear down
-
-Thread-safe. Fail-soft: errors are logged, never raised to callers.
+Fail-soft: all errors logged, never raised. Thread-safe via _lock.
 """
 import os
 import sys
 import json
 import time
+import hashlib
 import logging
 import threading
 
@@ -26,370 +26,180 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 log = logging.getLogger("config_sync_realtime")
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-CACHE_TTL_S = float(os.environ.get("ORCH_CONFIG_CACHE_TTL_S", "60"))
-RECONNECT_DELAY_S = float(os.environ.get("ORCH_RT_RECONNECT_DELAY_S", "5"))
-MAX_RECONNECT_DELAY_S = float(os.environ.get("ORCH_RT_MAX_RECONNECT_DELAY_S", "120"))
+HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
+LOCAL_CONFIG = os.path.join(HOME, "config.local.json")
+WATCH_INTERVAL_S = float(os.environ.get("ORCH_CONFIG_WATCH_INTERVAL_S", "2"))
+REMOTE_POLL_INTERVAL_S = float(os.environ.get("ORCH_CONFIG_REMOTE_POLL_S", "10"))
+ENABLED = os.environ.get("ORCH_CONFIG_REALTIME", "true").lower() == "true"
 
-# ---------------------------------------------------------------------------
-# In-memory cache with TTL
-# ---------------------------------------------------------------------------
 _lock = threading.Lock()
-_cache = {}  # key -> (value, timestamp)
-_realtime_connected = False
-_listener_thread = None
 _stop_event = threading.Event()
-
-# Stats for observability
-_stats = {"cache_hits": 0, "cache_misses": 0, "rt_events": 0,
-          "db_fallbacks": 0, "errors": 0}
+_watcher_thread = None
+_stats = {
+    "local_changes_detected": 0,
+    "remote_changes_detected": 0,
+    "syncs_triggered": 0,
+    "errors": 0,
+}
 
 
 def stats():
-    """Return a snapshot of operational counters."""
     with _lock:
         return dict(_stats)
 
 
-# ---------------------------------------------------------------------------
-# Cache operations
-# ---------------------------------------------------------------------------
-def _cache_get(key):
-    """Read from cache. Returns (value_or_None, hit: bool)."""
-    with _lock:
-        entry = _cache.get(key)
-        if entry is None:
-            return None, False
-        value, ts = entry
-        if _realtime_connected or (time.time() - ts < CACHE_TTL_S):
-            _stats["cache_hits"] += 1
-            return value, True
-        # Expired and no realtime keeping it fresh
-        del _cache[key]
-        return None, False
+def _file_mtime(path):
+    """Get file mtime or 0 if missing."""
+    try:
+        return os.path.getmtime(path)
+    except (OSError, FileNotFoundError):
+        return 0
 
 
-def _cache_set(key, value):
-    with _lock:
-        _cache[key] = (value, time.time())
+def _file_hash(path):
+    """Get SHA-256 of file contents, or empty string if missing."""
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except Exception:
+        return ""
 
 
-def _cache_delete(key):
-    with _lock:
-        _cache.pop(key, None)
-
-
-def _cache_bulk_load(rows):
-    """Populate cache from a full table fetch."""
-    now = time.time()
-    with _lock:
-        for row in rows:
-            k = row.get("key")
-            v = row.get("value")
-            if k is not None and v is not None:
-                _cache[k] = (str(v), now)
-
-
-# ---------------------------------------------------------------------------
-# DB fallback
-# ---------------------------------------------------------------------------
-def _db_get(key):
-    """Fetch a single key from fleet_config via the existing db module."""
+def _remote_config_hash():
+    """Hash current fleet_config state for change detection."""
     try:
         import db
-        rows = db.select("fleet_config", {"key": "eq." + key, "select": "value", "limit": "1"})
-        if rows and len(rows) > 0:
-            return str(rows[0].get("value", ""))
-    except Exception as exc:
-        log.debug("db fallback failed for %s: %s", key, exc)
-        with _lock:
-            _stats["errors"] += 1
-    return None
+        rows = db.select("fleet_config", {"select": "key,value", "order": "key"}) or []
+        blob = json.dumps([(r.get("key", ""), str(r.get("value", ""))) for r in rows],
+                          sort_keys=True)
+        return hashlib.sha256(blob.encode()).hexdigest()
+    except Exception:
+        return ""
 
 
-def _db_get_all():
-    """Fetch all fleet_config rows."""
+def _apply_remote_to_local(remote_config):
+    """Write remote fleet_config values into local config file for convergence.
+
+    Only writes keys that pass the safety filter from config_sync.
+    """
     try:
-        import db
-        return db.select("fleet_config", {"select": "key,value"}) or []
-    except Exception as exc:
-        log.debug("db full fetch failed: %s", exc)
-        with _lock:
-            _stats["errors"] += 1
-        return []
+        from config_sync import _is_safe_key, _load_local_config
+        local = _load_local_config()
+        changed = False
+        for k, v in remote_config.items():
+            if not _is_safe_key(k):
+                continue
+            local_val = local.get(k)
+            if local_val != str(v):
+                local[k] = str(v)
+                changed = True
+        if changed:
+            os.makedirs(HOME, exist_ok=True)
+            with open(LOCAL_CONFIG, "w") as f:
+                json.dump(local, f, indent=2)
+        return changed
+    except Exception as e:
+        log.debug("apply_remote_to_local error: %s", e)
+        return False
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-def get_config(key, default=None):
-    """Get a config value. Reads from cache first, falls back to DB.
+def _watch_loop():
+    """Main watcher loop — runs in a background thread.
 
-    When realtime is connected, cache entries are kept fresh by incoming
-    events and never expire. When realtime is down, entries expire after
-    CACHE_TTL_S seconds and are re-fetched from the database.
+    Monitors local file mtime and remote config hash for changes.
+    Triggers immediate sync when either changes.
     """
-    value, hit = _cache_get(key)
-    if hit:
-        return value
-
-    with _lock:
-        _stats["cache_misses"] += 1
-
-    # Cache miss — query DB
-    value = _db_get(key)
-    if value is not None:
-        _cache_set(key, value)
-        with _lock:
-            _stats["db_fallbacks"] += 1
-        return value
-
-    return default
-
-
-def get_all_config():
-    """Return a dict of all cached config key-value pairs.
-
-    If the cache is empty, performs a full DB fetch first.
-    """
-    with _lock:
-        if _cache:
-            return {k: v for k, (v, _ts) in _cache.items()}
-
-    rows = _db_get_all()
-    if rows:
-        _cache_bulk_load(rows)
-        return {r["key"]: str(r.get("value", "")) for r in rows if r.get("key")}
-    return {}
-
-
-def invalidate(key=None):
-    """Drop one key or the entire cache, forcing the next read to hit DB."""
-    with _lock:
-        if key is None:
-            _cache.clear()
-        else:
-            _cache.pop(key, None)
-
-
-# ---------------------------------------------------------------------------
-# Realtime listener
-# ---------------------------------------------------------------------------
-def _handle_realtime_event(event_type, record):
-    """Process a single realtime change event."""
-    with _lock:
-        _stats["rt_events"] += 1
-
-    key = record.get("key")
-    if not key:
-        return
-
-    if event_type in ("INSERT", "UPDATE"):
-        value = record.get("value")
-        if value is not None:
-            _cache_set(key, str(value))
-            log.debug("rt %s: %s", event_type.lower(), key)
-    elif event_type == "DELETE":
-        _cache_delete(key)
-        log.debug("rt delete: %s", key)
-
-
-def _realtime_listen():
-    """Background thread: subscribe to fleet_config changes via Supabase Realtime.
-
-    Uses the Supabase Realtime HTTP/WebSocket protocol. Falls back gracefully
-    if the websocket library is not available or the connection fails.
-    """
-    global _realtime_connected
-    delay = RECONNECT_DELAY_S
-
-    # Pre-populate cache on startup
-    rows = _db_get_all()
-    if rows:
-        _cache_bulk_load(rows)
+    last_mtime = _file_mtime(LOCAL_CONFIG)
+    last_hash = _file_hash(LOCAL_CONFIG)
+    last_remote_hash = ""
+    last_remote_check = 0
 
     while not _stop_event.is_set():
         try:
-            _connect_and_listen()
-            delay = RECONNECT_DELAY_S  # reset on clean disconnect
-        except Exception as exc:
-            log.debug("realtime connection error: %s", exc)
-            with _lock:
-                _realtime_connected = False
-                _stats["errors"] += 1
-        finally:
-            with _lock:
-                _realtime_connected = False
+            # Check local file for changes (fast — mtime + hash)
+            current_mtime = _file_mtime(LOCAL_CONFIG)
+            if current_mtime != last_mtime:
+                current_hash = _file_hash(LOCAL_CONFIG)
+                if current_hash != last_hash:
+                    log.info("config_sync_realtime: local config changed, triggering sync")
+                    with _lock:
+                        _stats["local_changes_detected"] += 1
+                    try:
+                        from config_sync import sync_config
+                        result = sync_config()
+                        with _lock:
+                            _stats["syncs_triggered"] += 1
+                        if result.get("applied", 0) > 0:
+                            log.info("realtime sync applied %d keys", result["applied"])
+                    except Exception as e:
+                        log.debug("realtime local sync error: %s", e)
+                        with _lock:
+                            _stats["errors"] += 1
+                    last_hash = current_hash
+                last_mtime = current_mtime
 
-        if _stop_event.is_set():
-            break
 
-        # Exponential backoff with cap
-        log.debug("realtime reconnecting in %.0fs", delay)
-        _stop_event.wait(timeout=delay)
-        delay = min(delay * 2, MAX_RECONNECT_DELAY_S)
-
-
-def _connect_and_listen():
-    """Establish a Supabase Realtime websocket connection and listen for changes.
-
-    Protocol: Supabase Realtime uses Phoenix channels over WebSocket.
-    Endpoint: wss://<project>.supabase.co/realtime/v1/websocket?apikey=<key>
-    """
-    global _realtime_connected
-
-    url = os.environ.get("SUPABASE_URL", "").rstrip("/")
-    key = os.environ.get("SUPABASE_SERVICE_KEY", "")
-    if not url or not key:
-        log.debug("realtime: SUPABASE_URL or SUPABASE_SERVICE_KEY not set, sleeping")
-        _stop_event.wait(timeout=MAX_RECONNECT_DELAY_S)
-        return
-
-    try:
-        import websocket  # websocket-client
-    except ImportError:
-        log.debug("realtime: websocket-client not installed, using poll-only mode")
-        _poll_fallback()
-        return
-
-    # Build the realtime websocket URL
-    ws_url = url.replace("https://", "wss://").replace("http://", "ws://")
-    ws_url = ws_url + "/realtime/v1/websocket?apikey=" + key + "&vsn=1.0.0"
-
-    ws = websocket.WebSocket()
-    ws.settimeout(30)
-
-    try:
-        ws.connect(ws_url)
-
-        # Join the realtime channel for fleet_config
-        join_msg = json.dumps({
-            "topic": "realtime:public:fleet_config",
-            "event": "phx_join",
-            "payload": {"config": {
-                "broadcast": {"self": False},
-                "presence": {"key": ""},
-                "postgres_changes": [{
-                    "event": "*",
-                    "schema": "public",
-                    "table": "fleet_config",
-                }],
-            }},
-            "ref": "1",
-        })
-        ws.send(join_msg)
-
-        with _lock:
-            _realtime_connected = True
-        log.info("realtime: connected to fleet_config channel")
-
-        # Heartbeat tracking
-        last_heartbeat = time.time()
-        heartbeat_interval = 30
-
-        while not _stop_event.is_set():
-            # Send heartbeat
+            # Check remote config periodically (slower — DB query)
             now = time.time()
-            if now - last_heartbeat >= heartbeat_interval:
-                hb = json.dumps({
-                    "topic": "phoenix",
-                    "event": "heartbeat",
-                    "payload": {},
-                    "ref": str(int(now)),
-                })
+            if now - last_remote_check >= REMOTE_POLL_INTERVAL_S:
+                last_remote_check = now
                 try:
-                    ws.send(hb)
-                except Exception:
-                    break
-                last_heartbeat = now
-
-            # Receive with timeout so we can check _stop_event
-            try:
-                ws.settimeout(5)
-                raw = ws.recv()
-            except Exception:
-                # Timeout or connection error
-                try:
-                    # Check if it was just a timeout
-                    if ws.connected:
-                        continue
+                    current_remote_hash = _remote_config_hash()
+                    if last_remote_hash and current_remote_hash != last_remote_hash:
+                        log.info("config_sync_realtime: remote config changed, applying locally")
+                        with _lock:
+                            _stats["remote_changes_detected"] += 1
+                        try:
+                            import db
+                            rows = db.select("fleet_config", {"select": "key,value"}) or []
+                            remote = {r["key"]: r["value"] for r in rows if r.get("key")}
+                            _apply_remote_to_local(remote)
+                            with _lock:
+                                _stats["syncs_triggered"] += 1
+                        except Exception as e:
+                            log.debug("realtime remote sync error: %s", e)
+                            with _lock:
+                                _stats["errors"] += 1
+                    last_remote_hash = current_remote_hash
                 except Exception:
                     pass
-                break
 
-            if not raw:
-                continue
+        except Exception as e:
+            log.debug("watch_loop iteration error: %s", e)
+            with _lock:
+                _stats["errors"] += 1
 
-            try:
-                msg = json.loads(raw)
-            except (json.JSONDecodeError, TypeError):
-                continue
-
-            event = msg.get("event", "")
-            payload = msg.get("payload", {})
-
-            if event == "postgres_changes":
-                data = payload.get("data", payload)
-                event_type = data.get("type", "").upper()
-                record = data.get("record", {})
-                if event_type and record:
-                    _handle_realtime_event(event_type, record)
-            elif event == "phx_reply":
-                status = payload.get("status")
-                if status == "error":
-                    log.warning("realtime: channel join error: %s", payload)
-                    break
-    finally:
-        try:
-            ws.close()
-        except Exception:
-            pass
+        _stop_event.wait(WATCH_INTERVAL_S)
 
 
-def _poll_fallback():
-    """When websocket is unavailable, poll the DB periodically."""
-    log.info("realtime: using poll fallback (interval=%ds)", int(CACHE_TTL_S))
-    while not _stop_event.is_set():
-        _stop_event.wait(timeout=CACHE_TTL_S)
-        if _stop_event.is_set():
-            break
-        rows = _db_get_all()
-        if rows:
-            _cache_bulk_load(rows)
-
-
-# ---------------------------------------------------------------------------
-# Lifecycle
-# ---------------------------------------------------------------------------
 def start():
-    """Start the realtime listener in a background daemon thread."""
-    global _listener_thread
+    """Start the real-time config watcher in a daemon thread."""
+    global _watcher_thread
+    if not ENABLED:
+        log.debug("config_sync_realtime disabled via ORCH_CONFIG_REALTIME")
+        return False
     with _lock:
-        if _listener_thread is not None and _listener_thread.is_alive():
-            return
-    _stop_event.clear()
-    _listener_thread = threading.Thread(
-        target=_realtime_listen, name="config-sync-rt", daemon=True
-    )
-    _listener_thread.start()
-    log.debug("realtime listener started")
+        if _watcher_thread and _watcher_thread.is_alive():
+            return False
+        _stop_event.clear()
+        _watcher_thread = threading.Thread(target=_watch_loop, daemon=True,
+                                           name="config-sync-realtime")
+        _watcher_thread.start()
+        log.info("config_sync_realtime watcher started (interval=%.1fs)", WATCH_INTERVAL_S)
+    return True
 
 
 def stop():
-    """Stop the realtime listener and clear connection state."""
-    global _listener_thread, _realtime_connected
+    """Stop the watcher thread gracefully."""
+    global _watcher_thread
     _stop_event.set()
     with _lock:
-        _realtime_connected = False
-    if _listener_thread is not None:
-        _listener_thread.join(timeout=10)
-        _listener_thread = None
-    log.debug("realtime listener stopped")
+        if _watcher_thread:
+            _watcher_thread.join(timeout=5)
+            _watcher_thread = None
+    log.info("config_sync_realtime watcher stopped")
 
 
-def is_connected():
-    """Check whether the realtime subscription is active."""
+def is_running():
     with _lock:
-        return _realtime_connected
+        return _watcher_thread is not None and _watcher_thread.is_alive()
