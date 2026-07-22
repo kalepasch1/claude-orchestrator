@@ -40,8 +40,8 @@ def _time_weight(age_days):
 
 
 def _stats(project):
-    """Compute recent test-pass and integration rates for a project."""
-    rows = db.select("outcomes", {"select": "tests_passed,integrated",
+    """Compute time-weighted test-pass and integrate rates for a project."""
+    rows = db.select("outcomes", {"select": "tests_passed,integrated,created_at",
                                   "project": f"eq.{project}",
                                   "order": "created_at.desc", "limit": str(WINDOW)}) or []
     if not rows:
