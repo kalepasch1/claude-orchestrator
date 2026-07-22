@@ -2337,7 +2337,6 @@ _SCHEDULE = [
     ("resmesh-60",    "resilience_mesh.py", "interval", 60),    # keep local/vendor/deploy prep moving during Supabase/vendor outages
     ("train-60",      "merge_train.py",     "interval", 60),    # canonical approved-card cleanup train
     ("mergestall-900","merge_stall_monitor.py","interval",900), # alert if merges stop landing despite a real backlog (2026-07-08 incident safeguard)
-    ("mergecycle-300","merge_cycle.py",       "interval",300), # snapshot branch-blocked queue pressure by project/branch
     ("sweep-90",      "integration_sweeper.py","interval",90),  # passed-tests-but-not-integrated -> canonical train
     ("sentinel-300",  "sentinel.py",        "interval", 300),   # self-healing: DB-outage offline sweeps, checkout drift, runner singleton, RAM clamp, stale code
     ("medic-90",      "resource_medic.py",  "interval", 90),    # autonomous resource bots: predictive OOM guard, thrash-hunter (durable model exclusion / lane lowering), process hygiene, loop breaker
