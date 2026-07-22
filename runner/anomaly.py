@@ -16,12 +16,14 @@ SPIKE: float = float(os.environ.get("ANOMALY_SPIKE", "1.75"))   # x baseline to 
 
 
 def _rate(rows, pred):
-    """Return the fraction of *rows* satisfying *pred*, or 0.0 if empty."""
-    return (sum(1 for r in rows if pred(r)) / len(rows)) if rows else 0.0
+    """Return the fraction of *rows* satisfying *pred* (0.0 when empty)."""
+    if not rows:
+        return 0.0
+    return sum(1 for r in rows if pred(r)) / len(rows)
 
 
 def check():
-    """Compare recent task outcomes against a baseline window and return alerts for metric spikes."""
+    """Compare recent outcome window against trailing baseline; file alerts on spikes."""
     try:
         rows = db.select("outcomes", {"select": "*", "order": "created_at.desc", "limit": "300"}) or []
     except Exception as e:
