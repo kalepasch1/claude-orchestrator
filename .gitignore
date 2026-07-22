@@ -17,4 +17,13 @@ runner/.env.bak*
 
 # runner log (huge, machine-local — never commit)
 runner/runner.log
+
+# ── Agent noise files (orchestrator/aider/bot artifacts) ──────────────
 .aider*
+.aider.chat.history.md
+.aider.input.history
+.aider.tags.cache*
+.orch-context-cache.json
+.deploy-canary
+.ssw-bot-log.md
+.claude/settings.json
