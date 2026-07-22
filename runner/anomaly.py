@@ -20,7 +20,10 @@ def _rate(rows, pred):
     return (sum(1 for r in rows if pred(r)) / len(rows)) if rows else 0.0
 
 
-def check():
+def check() -> dict:
+    """Compare recent outcome metrics against trailing baseline.
+
+    Returns ``{"ok": bool, "alerts": list[str], "metrics": dict}``."""
     try:
         rows = db.select("outcomes", {"select": "*", "order": "created_at.desc", "limit": "300"}) or []
     except Exception as e:
