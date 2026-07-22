@@ -1,0 +1,20 @@
+node_modules/
+.nuxt/
+.output/
+.runtime/
+.env
+.env.local
+runner/.env
+__pycache__/
+*.pyc
+.DS_Store
+supabase/.temp/
+.env.growth
+
+runner/.env.bak*
+.env.*.bak
+*.env.bak*
+
+# runner log (huge, machine-local — never commit)
+runner/runner.log
+.aider*
