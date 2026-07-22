@@ -626,7 +626,7 @@ watch(slug, () => { refreshInsights() })
           <span class="text-[9px] text-gray-400">{{ autoSaveStatus === 'saved' ? 'Saved' : autoSaveStatus === 'saving' ? 'Saving...' : autoSaveStatus === 'unsaved' ? 'Unsaved' : 'Error' }}</span>
         </div>
       </div>
-    </aside>
+    </div>
     <!-- CENTER: Main workspace -->
     <main class="flex-1 flex flex-col overflow-hidden min-w-0">
       <!-- ===== WORKSPACE TAB ===== -->
@@ -838,6 +838,7 @@ watch(slug, () => { refreshInsights() })
           </div>
         </div>
         </div>
+      </Teleport>
         <!-- TERMINAL — always visible at bottom of workspace -->
         <div class="flex-shrink-0 border-t border-gray-200 bg-gray-900" style="font-family: 'JetBrains Mono', monospace;">
           <div class="px-4 py-2 flex items-center justify-between border-b border-gray-700">
