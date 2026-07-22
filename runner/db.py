@@ -865,7 +865,7 @@ def claim_task(runner_id):
     )
     evidence_reserved_lanes = max(0, int(os.environ.get("ORCH_EVIDENCE_RESERVED_LANES", "1") or 0))
     evidence_reserve_open = evidence_backlog and active_evidence < evidence_reserved_lanes
-    recovery_reserved_lanes = max(0, int(os.environ.get("ORCH_RECOVERY_RESERVED_LANES", "0") or 0))
+    recovery_reserved_lanes = max(0, int(os.environ.get("ORCH_RECOVERY_RESERVED_LANES", "1") or 0))
     recovery_reserve_open = (recovery_backlog
                              and sum(active_recovery_by_project.values()) < recovery_reserved_lanes)
     try:
@@ -954,6 +954,14 @@ def claim_task(runner_id):
         # expansion because every merge compounds throughput/cost/quality across the whole fleet.
         return 0 if (improvement_backlog and _is_improvement_task(t)) else (1 if improvement_backlog else 0)
 
+    def _train_approved_rank(t):
+        # Tasks that passed the release train but bounced back (rebase conflict, build-fix needed)
+        # are nearly-merged work. Prioritize them ahead of net-new to convert sunk cost into value.
+        note = str(t.get("note") or "").lower()
+        if any(marker in note for marker in ("train: passed", "train: approved", "train: ready")):
+            return 0
+        return 1
+
     def _evidence_rank(t):
         # Canary/evidence tasks are tiny, bounded, and produce the non-Claude merge samples the router
         # needs. Let them jump ahead of recovery too: otherwise a deep recovery backlog can hide every
@@ -986,6 +994,7 @@ def claim_task(runner_id):
                                _portfolio_project_rank(t),                       # owner order within the same delivery class
                                _evidence_rank(t),                                # bounded canaries unblock learned routing
                                _recovery_rank(t),                                # recover tested work next
+                               _train_approved_rank(t),                           # nearly-merged train-approved work next
                                _rework_rank(t),                                  # then quarantine-recovered work
                                _improvement_rank(t),                             # then drain improve-* work
                                _churn(t),                                        # real work before churn
