@@ -22,31 +22,6 @@ def _run_cmd(cmd_str, cwd):
                                            stdout="", stderr="shlex parse error")
     return subprocess.run(argv, cwd=cwd, capture_output=True, text=True)
 
-# Security: allowed command prefixes to prevent arbitrary execution via env vars
-_ALLOWED_CMD_PREFIXES = ("npx ", "npm ", "node ", "python ", "python3 ", "pytest ", "jest ")
-
-
-def _validate_repo_path(repo):
-    """Validate repo path to prevent path-traversal and injection."""
-    resolved = os.path.realpath(repo)
-    if not os.path.isdir(resolved):
-        raise ValueError(f"quality_gate: repo path does not exist: {resolved}")
-    # Block paths outside typical project directories
-    if "\x00" in repo or ".." in repo.split(os.sep):
-        raise ValueError(f"quality_gate: suspicious path component in: {repo}")
-    return resolved
-
-
-def _validate_cmd(cmd, label):
-    """Validate that a command from env matches allowed prefixes."""
-    stripped = cmd.strip()
-    if not any(stripped.startswith(p) for p in _ALLOWED_CMD_PREFIXES):
-        raise ValueError(
-            f"quality_gate: {label} command '{stripped[:40]}...' does not match "
-            f"allowed prefixes: {_ALLOWED_CMD_PREFIXES}"
-        )
-    return stripped
-
 
 def run(repo):
     repo = _validate_repo_path(repo)
