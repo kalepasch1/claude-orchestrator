@@ -1,13 +1,19 @@
 # Zombie Release Protocol
 
-When an executor session crashes, is rate-limited, or times out, its claimed
-tasks remain in `RUNNING` state with a stale `updated_at` timestamp. These
-"zombie" tasks block queue throughput until released.
+Tasks stuck in `RUNNING` state due to crashed or rate-limited executor sessions
+are called "zombies." The fleet automatically detects and releases them.
 
-## Detection
+## Detection Criteria
 
-Every executor loop iteration runs a zombie-release query before claiming
-new work:
+A task is considered a zombie when all of the following are true:
+
+1. `state = 'RUNNING'`
+2. `updated_at` is older than 90 minutes
+3. `account` matches a known executor prefix (e.g., `cowork-executor%`)
+
+## Release Mechanism
+
+The executor's Step 0b runs this SQL at the start of every session:
 
 ```sql
 UPDATE tasks SET state='QUEUED', note='zombie released — heartbeat stale >90min'
@@ -16,21 +22,14 @@ WHERE state='RUNNING'
   AND account LIKE 'cowork-executor%';
 ```
 
-## Why 90 minutes?
+## Prevention
 
-- Typical task implementation takes 2–15 minutes.
-- The longest observed legitimate task run is ~60 minutes (large build tasks).
-- 90 minutes provides a safety margin above the longest legitimate run while
-  still recovering zombies within a reasonable window.
+Active executors heartbeat their claimed tasks in Step 3g by updating
+`updated_at=now()` on all their RUNNING tasks after each task completion.
+This keeps the 90-minute window from expiring mid-batch.
 
-## Heartbeat mechanism
+## Edge Cases
 
-While processing a batch, executors update `updated_at=now()` on all their
-remaining claimed tasks after each task completion. This keeps alive tasks
-from being mistakenly released while the executor is still active.
-
-## Related
-
-- `fleet_control.py` — fleet-wide config propagation
-- `runner.py` — primary task loop with periodic heartbeat
-- `scoreboard.py` — tracks zombie-release events in merge-rate metrics
+- If an executor crashes mid-commit, the worktree may contain partial work.
+  The next executor should inspect existing branch artifacts before re-implementing.
+- Zombies from non-executor accounts (e.g., manual runs) are not auto-released.
