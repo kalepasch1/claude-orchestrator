@@ -21,10 +21,14 @@ second Mac (which checks out there) is unaffected; only THIS Mac's *runtime* was
 To harden the other Mac, repeat: clone to `~/claude-orchestrator`, copy `.env` to
 `~/.claude-orchestrator/.env`, repoint its launcher/plists/`.zprofile`.
 
-## Troubleshooting
+## Zombie reaper and Cowork dispatch
 
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `keepalive.sh` crash-loops on login | FDA was reset; runtime still under `~/Documents` | Re-clone to `~/claude-orchestrator` and repoint launcher |
-| `.env` not found at startup | Symlink broken after clone refresh | `ln -sf ~/.claude-orchestrator/.env runner/.env` |
-| Double runner instances | Lock file path mismatch between launcher and zprofile | Ensure both use `~/claude-orchestrator/.runtime/runner.lock` |
+`runner.py`'s `_reap_zombie_tasks()` reclaims RUNNING tasks whose `updated_at` is
+older than 30 minutes, re-queuing them via `agentic_repair.repair_patch()`.
+
+Tasks claimed by Cowork executor sessions (accounts starting with `cowork-`) are
+**excluded** from the local zombie reaper. Cowork sessions run in a separate
+execution context (Claude desktop app / scheduled tasks) with their own 90-minute
+zombie timeout enforced at claim time. This prevents the local runner from
+prematurely reclaiming tasks that are still actively being worked by a Cowork
+session with a longer execution window.
