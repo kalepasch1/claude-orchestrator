@@ -92,7 +92,13 @@ def _enqueue_one(spec, proj, pid):
     if spec.get("model"):
         row["model"] = spec["model"]
     res = db.insert("tasks", row)
-    print(f"[enqueue] queued '{spec['slug']}' for project '{spec.get('project', '')}' -> {res}")
+    print(f"[enqueue] queued '{spec['slug']}' for project '{spec['project']}' -> {res}")
+    if res:
+        task_id = res[0].get("id") if isinstance(res, list) else (res or {}).get("id")
+        if task_id:
+            triggered = db.test_trigger(task_id)
+            if triggered:
+                print(f"[enqueue] test trigger fired for '{spec['slug']}' -> state=TESTING")
 
 
 if __name__ == "__main__":
