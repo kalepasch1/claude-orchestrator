@@ -15,13 +15,13 @@ RECENT = int(os.environ.get("ANOMALY_RECENT", "30"))     # last N tasks
 SPIKE = float(os.environ.get("ANOMALY_SPIKE", "1.75"))   # x baseline to alert
 
 
-def _rate(rows: list[dict], pred) -> float:
+def _rate(rows: list, pred) -> float:
     """Return the fraction of *rows* satisfying *pred*, or 0.0 if empty."""
     return (sum(1 for r in rows if pred(r)) / len(rows)) if rows else 0.0
 
 
-def check():
-    """Compare recent outcome window against trailing baseline; file alerts on spikes."""
+def check() -> dict:
+    """Compare recent outcome window against trailing baseline and surface anomalies."""
     try:
         rows = db.select("outcomes", {"select": "*", "order": "created_at.desc", "limit": "300"}) or []
     except Exception as e:
