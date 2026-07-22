@@ -30,6 +30,20 @@ except Exception:
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
+# Lazy-load optional modules for periodic jobs
+try:
+    import editorial_program
+except ImportError:
+    editorial_program = None
+try:
+    import adversarial_fleet
+except ImportError:
+    adversarial_fleet = None
+try:
+    import fleet_e2e_audit
+except ImportError:
+    fleet_e2e_audit = None
+
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _RUNTIME = os.path.join(_ROOT, ".runtime")
 _PERIODIC_LOCK_DIR = os.path.join(_RUNTIME, "periodic-locks")
@@ -252,6 +266,16 @@ def run_deployverify():
 def run_worktreegc():
     """Remove leftover agent worktrees so branches are free to merge (fixes phantom CONFLICTs)."""
     import worktree_gc; worktree_gc.run()
+
+
+def run_remotegc():
+    """GC stale remote agent/* branches (fills gap branch_gc.py doesn't cover)."""
+    import workflow_guardrails
+    repo_paths = [p.get("repo_path") for p in (db.select("projects", {"select": "repo_path"}) or [])
+                  if p.get("repo_path") and os.path.isdir(p["repo_path"])]
+    result = workflow_guardrails.periodic_maintenance(repo_paths)
+    for repo, r in result.items():
+        print(f"  remote_gc {repo}: {r.get('deleted',0)} deleted, dry_run={r.get('dry_run')}", flush=True)
 
 
 def run_stripe():
@@ -693,6 +717,27 @@ def run_nightsweep():
     nightly_cheap_sweep.run()
 
 
+def run_editorial():
+    """Execute editorial program: generate drafts, schedule briefings, and manage editorial calendar."""
+    if editorial_program is None:
+        raise ImportError("editorial_program module not available")
+    editorial_program.run()
+
+
+def run_adversarial_fleet():
+    """Run adversarial fleet stress tests and resilience checks across all orchestrator agents."""
+    if adversarial_fleet is None:
+        raise ImportError("adversarial_fleet module not available")
+    adversarial_fleet.run()
+
+
+def run_fleet_e2e_audit():
+    """End-to-end audit of fleet health: deployment, integration, and correctness verification."""
+    if fleet_e2e_audit is None:
+        raise ImportError("fleet_e2e_audit module not available")
+    fleet_e2e_audit.run()
+
+
 JOBS = {
     "spec": run_spec,
     "chaos": run_chaos,
@@ -767,6 +812,7 @@ JOBS = {
     "stripe": run_stripe,
     "ownerreport": run_ownerreport,
     "worktreegc": run_worktreegc,
+    "remotegc": run_remotegc,
     "releasetrain": run_releasetrain,
     "deployverify": run_deployverify,
     "preflight": run_preflight,
@@ -805,7 +851,7 @@ if __name__ == "__main__":
         "contcompact", "backlogcompact",
         "bizradar", "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",
         "stripe", "ownerreport", "worktreegc", "stuck_reaper", "remediate", "selfcheck",
-        "quarantine", "credresolver", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain",
+        "quarantine", "credresolver", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain", "remotegc",
         "priority_scorer", "quarantine_gc",
         "relationshipcrm",
         "release_kpi.py", "integrate_kpi.py", "fleet_control.py",

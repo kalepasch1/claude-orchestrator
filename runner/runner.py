@@ -648,6 +648,19 @@ def run_task(t):
         except Exception as e:
             _log.debug("hook toolchain_gate failed: %s", e)  # never block claiming on a broken check
 
+        # workflow guardrails: branch sprawl, rate limits, merge backlog, worktree caps
+        try:
+            import workflow_guardrails
+            _pf = workflow_guardrails.preflight(repo, project_slug=name,
+                                                commit_sha=t.get("commit_sha", ""),
+                                                is_deploy=(kind == "deploy"))
+            if not _pf["passed"]:
+                set_state(t["id"], state="QUEUED",
+                          note=f"guardrail blocked: {_pf['violations'][0]['detail'][:200]}")
+                time.sleep(2); return
+        except Exception as e:
+            _log.debug("workflow_guardrails preflight: %s", e)
+
         # budget guardrail: telemetry by default; hard-stops only when explicitly enabled
         if not budget.allow(name):
             set_state(t["id"], state="BLOCKED", note="budget cap reached")
@@ -908,6 +921,10 @@ def run_task(t):
                     os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"),
                     task_id=str(t["id"]), lease_token=_branch_lease["token"],
                 )
+                try:
+                    workflow_guardrails.record_branch_create()
+                except Exception:
+                    pass
             except worktree_isolation.WorktreeIsolationError as e:
                 set_state(t["id"], state="RETRY", note=f"git-isolation blocked execution: {e}")
                 record(t, name, slug, kind, visible_model, acct, attempt,
