@@ -54,6 +54,24 @@ def test_root_npm_cmd_without_package():
         assert build_gate._root_npm_cmd_without_package(d, "npm run build") is False
 
 
+def test_package_runner_defaults_to_npm():
+    """_package_runner falls back to 'npm run' when no lockfile is present."""
+    with tempfile.TemporaryDirectory() as d:
+        result = build_gate._package_runner(d)
+        assert result == "npm run", f"Expected 'npm run', got {result!r}"
+
+def test_npx_cmd_root():
+    """_npx_cmd at repo root should not include cd."""
+    cmd = build_gate._npx_cmd("/repo", "/repo", "nuxi typecheck")
+    assert cmd == "npx --no-install nuxi typecheck"
+
+def test_npx_cmd_subdir():
+    """_npx_cmd in a subdirectory should cd into it."""
+    cmd = build_gate._npx_cmd("/repo", "/repo/packages/web", "next build")
+    assert "packages/web" in cmd
+    assert "next build" in cmd
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
