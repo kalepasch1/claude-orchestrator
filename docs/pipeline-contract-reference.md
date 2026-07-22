@@ -18,7 +18,9 @@ contract fields for reference.
 - **deploy-cost rule**: never push main/master directly; branch only
 
 ## Safety Invariants
-1. Never run `vercel --prod` or equivalent from a task
+1. Never run `vercel --prod` or equivalent from a task.  An owner-approved
+   manual CLI deploy must use `runner/vercel_project_guard.py --project <known-project>`
+   first; unlinked worktrees fail closed rather than creating a Vercel project.
 2. Never push main/master/dev directly
 3. Never delete or overwrite unrelated queued improvements
 4. Reconcile with active loop-generated work

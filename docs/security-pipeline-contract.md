@@ -20,6 +20,11 @@ All other changes proceed through the standard QA panel.
 - Never push to `main`/`master` directly
 - Push only the task branch (`agent/<slug>`)
 - The verified batch release train promotes to production
+- An unlinked directory is never a deploy target.  It can cause Vercel to
+  create an unintended project.  Manual, owner-approved Vercel CLI deploys
+  must first pass `runner/vercel_project_guard.py` with the exact expected
+  Vercel project name or ID; the guard refuses absent, malformed, or
+  mismatched `.vercel/project.json` links and never runs `vercel link`.
 
 ## Coordination Rule
 
