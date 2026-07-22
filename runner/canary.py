@@ -42,6 +42,7 @@ def evaluate(metrics_url=None):
 
 
 def _f(k):
+    # parse optional float threshold from env; returns None if unset so the check is skipped
     v = os.environ.get(k)
     return float(v) if v not in (None, "") else None
 
