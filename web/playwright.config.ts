@@ -1,17 +1,17 @@
-import { defineConfig } from '@playwright/test'
-
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000'
+import { defineConfig, devices } from '@playwright/test'
 
 export default defineConfig({
   testDir: './e2e',
   timeout: 30_000,
-  retries: 1,
+  retries: process.env.CI ? 2 : 0,
+  workers: process.env.CI ? 1 : undefined,
+  reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }]],
   use: {
-    baseURL: BASE_URL,
-    headless: true,
+    baseURL: process.env.BASE_URL ?? 'http://localhost:3000',
+    trace: 'on-first-retry',
     screenshot: 'only-on-failure',
   },
   projects: [
-    { name: 'chromium', use: { browserName: 'chromium' } },
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
   ],
 })
