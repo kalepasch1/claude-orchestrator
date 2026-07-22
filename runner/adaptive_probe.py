@@ -13,7 +13,7 @@ MARK = "ADAPTIVE PROBE-FIRST SLICE"
 
 
 def should_probe(task: dict | None, prompt: str | None) -> bool:
-    """Return True if the task warrants a cheap preflight probe before agentic work."""
+    """Decide whether a task warrants a cheap preflight probe before the full coder run."""
     if os.environ.get("ORCH_ADAPTIVE_PROBE", "true").lower() not in ("1", "true", "yes", "on"):
         return False
     if MARK in str(prompt or ""):
@@ -56,7 +56,8 @@ def make_probe(task: dict | None, prompt: str, project: str) -> str:
         return ""
 
 
-def inject(task, prompt, project="orchestrator"):
+def inject(task: dict | None, prompt: str, project: str = "orchestrator") -> str:
+    """Optionally prepend a probe brief to *prompt* if the task qualifies."""
     if not should_probe(task, prompt):
         return prompt
     probe = make_probe(task, prompt, project)
