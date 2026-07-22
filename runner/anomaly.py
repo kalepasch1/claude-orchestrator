@@ -15,8 +15,8 @@ RECENT = int(os.environ.get("ANOMALY_RECENT", "30"))     # last N tasks
 SPIKE = float(os.environ.get("ANOMALY_SPIKE", "1.75"))   # x baseline to alert
 
 
-def _rate(rows: list, pred) -> float:
-    """Return the fraction of *rows* for which *pred* returns truthy (0.0 if empty)."""
+def _rate(rows, pred):
+    """Return the fraction of *rows* for which *pred(row)* is truthy (0.0 if empty)."""
     return (sum(1 for r in rows if pred(r)) / len(rows)) if rows else 0.0
 
 
