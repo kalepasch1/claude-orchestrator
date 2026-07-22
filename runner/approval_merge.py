@@ -16,12 +16,14 @@ Safety:
     are auto-approved + merged without human gates (ORCH_AUTOAPPROVE_LOWRISK=true by default)
   - no model spend (pure git + tests), so it doesn't touch the $/day budget
 """
-import os, sys, re, subprocess, fnmatch
+import os, sys, re, subprocess, fnmatch, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import agentic_repair
 
 MARK = "merge-handler"          # decided_by sentinel => already processed
+MAX_FETCH_RETRIES = 3
+FETCH_BACKOFF_SECONDS = 1.5
 MARK_AUTO = "auto-policy"       # decided_by for auto-approved cards
 MERGE_KINDS = ("verify", "material", "integrate")
 TEST_CMD = os.environ.get("TEST_CMD", "npm test")
@@ -134,6 +136,21 @@ def _is_code_merge_card(card):
 def _branch_exists(repo, branch):
     return subprocess.run(["git", "rev-parse", "--verify", branch], cwd=repo,
                           capture_output=True).returncode == 0
+
+
+def _fetch_and_check_branch(repo, branch, remote="origin"):
+    """Attempt git fetch <remote> up to MAX_FETCH_RETRIES times with backoff, then re-verify branch."""
+    for attempt in range(MAX_FETCH_RETRIES):
+        try:
+            result = subprocess.run(["git", "fetch", remote], cwd=repo,
+                                    capture_output=True, timeout=60)
+            if result.returncode == 0:
+                return _branch_exists(repo, branch)
+        except Exception:
+            pass
+        if attempt < MAX_FETCH_RETRIES - 1:
+            time.sleep(FETCH_BACKOFF_SECONDS)
+    return False
 
 
 def _detect_prod_branch(repo, proj):
@@ -350,7 +367,7 @@ def run():
             db.update("approvals", {"id": c["id"]}, {"decided_by": f"{MARK}:no-repo"})
             continue
 
-        if not _branch_exists(repo, branch):
+        if not _branch_exists(repo, branch) and not _fetch_and_check_branch(repo, branch):
             patch = agentic_repair.repair_patch(
                 t, f"approved, but {branch} no longer exists",
                 category="missing-branch",
