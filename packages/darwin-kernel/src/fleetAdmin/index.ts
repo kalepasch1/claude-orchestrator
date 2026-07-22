@@ -80,7 +80,5 @@ export * from './regulatorLens.ts';
 export * from './shared.ts';
 export * from './executorRuntime.ts';
 export * from './evalHarness.ts';
-// Pre-action decision support: CADE signals + governance + blast + outcome value.
-export * from './guidance.ts';
 // Committee owner map — reconciles Python committees.py domain labels with the TS deliberation module.
 export * from './committeeOwner.ts';
