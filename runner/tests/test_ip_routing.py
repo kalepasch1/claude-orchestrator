@@ -46,6 +46,7 @@ class TestConfidentialRouting(EnvCase):
 
     def test_non_confidential_mode_can_fallback(self):
         os.environ.pop("ORCH_CONFIDENTIAL_MODE", None)
+        os.environ["ORCH_USE_LEARNED_APP_ROUTES"] = "false"
         calls = []
         orig_call = model_gateway._call_provider
         orig_avail = model_gateway.available

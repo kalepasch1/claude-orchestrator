@@ -15,7 +15,7 @@ MARK = "auto-sliced-before-agent"
 AI_SLICE_MODEL = os.environ.get("ORCH_AI_SLICE_MODEL", "claude-haiku-4-5-20251001")
 PROTECTED_PREFIXES = (
     "qafix-", "relfix-", "buildfix-", "deployfix-",
-    "recover-missing-branch-", "rework-",
+    "recover-missing-branch-", "rework-", "canary-",
 )
 
 
