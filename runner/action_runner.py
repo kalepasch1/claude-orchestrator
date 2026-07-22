@@ -11,10 +11,29 @@ The user must have clicked "Run for me" (which inserts the action_runs row) — 
 
 Respects the global kill switch: if the fleet is paused, no actions execute.
 """
-import os, sys, subprocess, datetime
+import os, sys, subprocess, datetime, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 from action_drafter import SAFE_CMD, UNSAFE
+
+
+def _audit_refused(job, cmd, reason):
+    """Log refused command execution attempts for security audit trail."""
+    try:
+        db.insert("fleet_log", {
+            "level": "warn",
+            "source": "action_runner",
+            "message": f"refused command execution: {reason}",
+            "meta": json.dumps({
+                "action_run_id": job.get("id"),
+                "approval_id": job.get("approval_id"),
+                "cmd_preview": cmd[:200] if cmd else "",
+                "reason": reason,
+                "ts": datetime.datetime.utcnow().isoformat(),
+            }),
+        })
+    except Exception:
+        pass  # fail-soft: audit failure must not block the runner
 
 
 def _repo_for(approval_id):
@@ -43,9 +62,14 @@ def run() -> int:
         cmd = (j.get("cmd") or "").strip()
         # hard re-validation right before executing
         if not cmd or not SAFE_CMD.match(cmd) or UNSAFE.search(cmd):
+            reason = "empty command" if not cmd else (
+                "matched UNSAFE denylist" if UNSAFE.search(cmd) else "not on SAFE allowlist"
+            )
             db.update("action_runs", {"id": j["id"]},
-                      {"status": "failed", "result": "refused: not on safe allowlist — run manually",
+                      {"status": "failed", "result": f"refused: {reason} — run manually",
                        "finished_at": datetime.datetime.utcnow().isoformat()})
+            # Audit log: record every refused execution attempt for security review
+            _audit_refused(j, cmd, reason)
             continue
         repo = _repo_for(j.get("approval_id"))
         if not repo or not os.path.isdir(repo):
