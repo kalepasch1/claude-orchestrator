@@ -144,6 +144,25 @@ def _restart():
     os._exit(0)
 
 
+def _pull_safe():
+    """Check if it's safe to git pull. Returns (ok, reason)."""
+    try:
+        status = _git("status", "--porcelain")
+        if status.returncode != 0:
+            return False, "git status failed"
+        dirty = [l for l in (status.stdout or "").strip().splitlines() if l.strip()]
+        if dirty:
+            return False, f"{len(dirty)} dirty files"
+        branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+        current = (branch.stdout or "").strip()
+        default = os.environ.get("ORCH_DEFAULT_BRANCH", "master")
+        if current != default:
+            return False, f"on branch {current}, not {default}"
+        return True, "ok"
+    except Exception as e:
+        return False, str(e)
+
+
 def self_update():
     """Periodic git pull so every machine tracks the pushed code without manual per-Mac steps."""
     if os.environ.get("ORCH_AUTO_PULL", "false").lower() not in ("true", "1", "yes"):

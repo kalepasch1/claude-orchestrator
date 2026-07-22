@@ -9,6 +9,27 @@ The .env file in runner/ is auto-loaded at import time by the _load_env() helper
 import os, re, json, socket, time, datetime, threading, urllib.request, urllib.parse, urllib.error
 
 
+# ── DB failover detection ────────────────────────────────────────────────────
+DB_DOWN_THRESHOLD = int(os.environ.get("SENTINEL_DB_DOWN_THRESHOLD", "3"))
+_db_failure_count = 0
+_db_failure_lock = threading.Lock()
+
+def is_db_down():
+    """Return True if consecutive DB failures >= threshold."""
+    return _db_failure_count >= DB_DOWN_THRESHOLD
+
+def _increment_db_failure_count():
+    global _db_failure_count
+    with _db_failure_lock:
+        _db_failure_count += 1
+        return _db_failure_count
+
+def _reset_db_failure_count():
+    global _db_failure_count
+    with _db_failure_lock:
+        _db_failure_count = 0
+
+
 class TransientDBError(Exception):
     """Raised when a Supabase/PostgREST request fails with a retryable HTTP status (e.g. 409 Conflict).
 
