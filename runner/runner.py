@@ -129,6 +129,10 @@ try:
     import warm_pool
 except ImportError:
     warm_pool = None
+try:
+    import error_remediation
+except ImportError:
+    error_remediation = None
 
 INTEGRATION_MODE = os.environ.get("INTEGRATION_MODE", "local")  # local | pr
 USE_CACHE = os.environ.get("RESULT_CACHE", "true").lower() == "true"
@@ -2402,6 +2406,7 @@ _SCHEDULE = [
     ("committeemeta-wk","committeemeta",     "daily",    (2, 55)),# meta-review of the expert-assembly system
     ("cadeextras-dy","cadeextras",           "daily",    (3, 15)),# auto-run all cx_* CADE extras modules
     ("remediate-180", "remediate",          "interval", 180),   # drive BLOCKED to zero (auto self-remedy)
+    ("errrem-30",     "error_remediation_periodic", "interval", 30),  # AI-powered error detection + config rollback
     ("quarantine-180","quarantine",         "interval", 180),   # rewrite terminal blockers into safe claimable work
     ("objective-3600","objective",          "interval", 3600),  # meta-controller: tune knobs toward north-star
     ("selfcheck-600", "selfcheck",          "interval", 600),   # periodic invariant assert + auto-heal

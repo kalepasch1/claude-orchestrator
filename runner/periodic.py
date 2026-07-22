@@ -734,21 +734,16 @@ def run_roi():
         print(f"roi {r['project']}: cpm=${cpm} weight={weight}")
 
 
-def run_editorial():
-    """Stage due authority-content packets for human review; never publishes."""
-    import editorial_program
-    return editorial_program.run()
-
-
-def run_adversarial_fleet():
-    """Evaluate leading indicators and compliance receipts; never deploys or changes policy."""
-    import adversarial_fleet
-    return adversarial_fleet.run()
-
-
-def run_fleet_e2e_audit():
-    import fleet_e2e_audit
-    return fleet_e2e_audit.run()
+def run_error_remediation_periodic():
+    """Periodic AI-powered error detection and config rollback."""
+    try:
+        import error_remediation
+        error_remediation.periodic_check()
+        s = error_remediation.stats()
+        if s.get("rollback_count", 0) > 0 or s.get("errors_in_window", 0) > 0:
+            print(f"[error-remediation] stats: {s}")
+    except Exception as e:
+        print(f"[error-remediation] periodic run failed (fail-soft): {e}")
 
 
 JOBS = {
@@ -835,7 +830,7 @@ JOBS = {
     "commonbrain": run_commonbrain,
     "priority_scorer": run_priority_scorer,
     "quarantine_gc": run_quarantine_gc,
-    "rtmon": run_rtmon,
+    "error_remediation_periodic": run_error_remediation_periodic,
 }
 
 if __name__ == "__main__":
