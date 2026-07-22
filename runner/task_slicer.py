@@ -117,7 +117,6 @@ def ai_slice_task(task):
     for idx, item in enumerate(items[:MAX_PARTS]):
         if not isinstance(item, dict):
             continue
-        title_suffix = re.sub(r"[^a-z0-9-]", "-", str(item.get("title") or f"part-{idx+1}").lower())[:20].strip("-")
         slice_slug = f"{base}-slice-{idx + 1}"
         body = str(item.get("prompt") or "").strip()
         if not body:
@@ -127,21 +126,6 @@ def ai_slice_task(task):
         prev = slice_slug
 
     return parts if len(parts) >= 2 else None
-
-
-def _slice_exists(task, slug):
-    """True if a slice row with this slug already exists for the task's project (any state)."""
-    try:
-        rows = db.select("tasks", {"select": "id",
-                                   "project_id": f"eq.{task.get('project_id')}",
-                                   "slug": f"eq.{slug}",
-                                   "limit": "1"}) or []
-        # The DB contract is a list. Treat mock/sentinel/invalid return values
-        # as no match instead of silently retiring a parent without children.
-        return isinstance(rows, list) and bool(rows)
-    except Exception:
-        # DB unreachable: report absent so the normal path (which is also fail-soft) proceeds.
-        return False
 
 
 def pre_agent_hook(task):
