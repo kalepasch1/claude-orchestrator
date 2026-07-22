@@ -23,7 +23,7 @@ Env vars (all optional, sane defaults):
     ORCH_REMOTE_BRANCH_GC_ENABLED   "true" to enable remote branch GC (default "true")
     ORCH_REMOTE_BRANCH_GC_DRY_RUN   "true" for dry-run (default "true" — flip after review)
 """
-import os, sys, time, subprocess, json, logging
+import os, sys, time, subprocess, json, logging, glob, re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 _log = logging.getLogger("guardrails")
@@ -39,6 +39,7 @@ REMOTE_GC_DAYS = int(os.environ.get("ORCH_REMOTE_BRANCH_GC_DAYS", "7"))
 REMOTE_GC_ENABLED = os.environ.get("ORCH_REMOTE_BRANCH_GC_ENABLED", "true").lower() in ("1", "true", "yes")
 REMOTE_GC_DRY_RUN = os.environ.get("ORCH_REMOTE_BRANCH_GC_DRY_RUN", "true").lower() in ("1", "true", "yes")
 GIT_TIMEOUT = 30
+SCHEMA_SYNC_REQUIRED = os.environ.get("ORCH_SCHEMA_SYNC_REQUIRED", "true").lower() in ("1", "true", "yes")
 
 # ── Internal state ─────────────────────────────────────────────────────────
 _branch_creates = []   # timestamps of recent branch creations
@@ -147,10 +148,66 @@ def check_worktree_count(repo_path):
         return {"passed": MODE != "block", "count": count, "violation": v}
     return {"passed": True, "count": count}
 
-# ── Guardrail 6: Remote branch GC (the missing piece) ─────────────────────
+# ── Guardrail 6: Repository and migration consistency ─────────────────────
+def check_repository_sync(repo_path):
+    """Fail closed in block mode on merge conflicts, broken worktrees, or duplicate migrations.
+
+    This is intentionally credential-free: every improvement agent can run it
+    before it receives database credentials or creates a branch. Projects can
+    additionally set ORCH_SCHEMA_SYNC_COMMAND to their read-only schema check.
+    """
+    issues = []
+    rc, conflicted, _ = _git(repo_path, "diff", "--name-only", "--diff-filter=U")
+    if rc == 0 and conflicted:
+        issues.append("unresolved_merge_conflicts")
+    rc, worktrees, _ = _git(repo_path, "worktree", "list", "--porcelain")
+    if rc != 0 or not worktrees:
+        issues.append("unreadable_worktree_state")
+
+    versions = {}
+    patterns = ("supabase/migrations/*.sql", "prisma/migrations/*/migration.sql")
+    for pattern in patterns:
+        for path in glob.glob(os.path.join(repo_path, pattern)):
+            name = os.path.basename(os.path.dirname(path)) if path.endswith("migration.sql") else os.path.basename(path)
+            match = re.match(r"(\\d+)", name)
+            if match:
+                versions.setdefault(match.group(1), []).append(os.path.relpath(path, repo_path))
+    duplicates = {v: paths for v, paths in versions.items() if len(paths) > 1}
+    if duplicates:
+        issues.append("duplicate_migration_versions")
+
+    command = os.environ.get("ORCH_SCHEMA_SYNC_COMMAND", "").strip()
+    if command:
+        try:
+            result = subprocess.run(command, shell=True, cwd=repo_path, capture_output=True,
+                                    text=True, timeout=GIT_TIMEOUT)
+            if result.returncode != 0:
+                issues.append("schema_sync_check_failed")
+        except Exception:
+            issues.append("schema_sync_check_unavailable")
+    elif SCHEMA_SYNC_REQUIRED:
+        command = "not_configured"
+        # Database repositories must declare a project-specific, read-only
+        # schema check; repositories without migrations remain unaffected.
+        if versions:
+            issues.append("schema_sync_check_not_configured")
+
+    if issues:
+        v = _violation("repository_sync", ", ".join(issues),
+                       {"repo": repo_path, "issues": issues, "duplicates": duplicates,
+                        "schema_sync_command": command})
+        return {"passed": MODE != "block", "issues": issues, "duplicates": duplicates, "violation": v}
+    return {"passed": True, "issues": [], "duplicates": {}, "schema_sync_command": command}
+
+# ── Guardrail 7: Remote branch GC (the missing piece) ─────────────────────
 def gc_remote_branches(repo_path):
-    """Delete remote agent branches older than REMOTE_GC_DAYS.
-    branch_gc.py only handles local; this handles origin/agent/*."""
+    """Delete *merged* remote agent branches older than REMOTE_GC_DAYS.
+
+    Age alone is not a safe lifecycle signal: an inactive branch can still hold
+    unfinished work.  Only branches whose tip is already reachable from the
+    remote default branch are eligible.  branch_gc.py handles the analogous
+    local cleanup for terminal tasks.
+    """
     if not REMOTE_GC_ENABLED:
         return {"deleted": 0, "reason": "disabled"}
     _git(repo_path, "fetch", "--prune", "origin")
@@ -158,7 +215,17 @@ def gc_remote_branches(repo_path):
     if rc != 0:
         return {"deleted": 0, "errors": 1, "reason": "git branch -r failed"}
     branches = [b.strip() for b in out.splitlines() if b.strip()]
-    deleted, skipped, errors = [], 0, 0
+    rc, default_ref, _ = _git(repo_path, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+    if rc != 0 or not default_ref:
+        for candidate in ("origin/main", "origin/master"):
+            if _git(repo_path, "show-ref", "--verify", "--quiet", f"refs/remotes/{candidate}")[0] == 0:
+                default_ref = candidate
+                break
+        else:
+            return {"deleted": 0, "skipped": len(branches), "errors": 1,
+                    "reason": "could not determine origin default branch"}
+
+    eligible, skipped, errors, unmerged = [], 0, 0, 0
     for branch in branches:
         rc, log_out, _ = _git(repo_path, "log", "-1", "--format=%ct", branch)
         if rc != 0 or not log_out.strip():
@@ -169,16 +236,29 @@ def gc_remote_branches(repo_path):
             skipped += 1; continue
         if age_days < REMOTE_GC_DAYS:
             skipped += 1; continue
+        # A stale branch is not necessarily abandoned.  Removing only commits
+        # that are already on the default branch makes remote GC recoverable
+        # from normal repository history rather than from a special backup.
+        if _git(repo_path, "merge-base", "--is-ancestor", branch, default_ref)[0] != 0:
+            skipped += 1; unmerged += 1; continue
         remote_branch = branch.replace("origin/", "", 1)
-        if REMOTE_GC_DRY_RUN:
-            deleted.append({"branch": remote_branch, "age_days": round(age_days, 1), "dry_run": True})
+        eligible.append({"branch": remote_branch, "age_days": round(age_days, 1)})
+
+    if REMOTE_GC_DRY_RUN:
+        deleted = [{**item, "dry_run": True} for item in eligible]
+    elif eligible:
+        # One atomic push avoids a long sequence of remote round trips, which
+        # used to leave partially-cleaned batches when a maintenance run ended.
+        rc2, _, _ = _git(repo_path, "push", "origin", "--delete",
+                         *(item["branch"] for item in eligible))
+        if rc2 == 0:
+            deleted = eligible
         else:
-            rc2, _, err = _git(repo_path, "push", "origin", "--delete", remote_branch)
-            if rc2 == 0:
-                deleted.append({"branch": remote_branch, "age_days": round(age_days, 1)})
-            else:
-                errors += 1
-    result = {"deleted": len(deleted), "skipped": skipped, "errors": errors,
+            deleted = []
+            errors = len(eligible)
+    else:
+        deleted = []
+    result = {"deleted": len(deleted), "skipped": skipped, "unmerged": unmerged, "errors": errors,
               "dry_run": REMOTE_GC_DRY_RUN, "branches": deleted[:20]}
     _log.info("remote_branch_gc: %d deleted, %d skipped, %d errors (dry_run=%s)",
               result["deleted"], skipped, errors, REMOTE_GC_DRY_RUN)
@@ -193,6 +273,7 @@ def preflight(repo_path, project_slug="", commit_sha="", is_deploy=False):
         ("branch_rate", check_branch_rate),
         ("merge_backlog", lambda: check_merge_backlog(project_slug)),
         ("worktree_count", lambda: check_worktree_count(repo_path)),
+        ("repository_sync", lambda: check_repository_sync(repo_path)),
     ]:
         r = fn(); checks[name] = r
         if not r.get("passed", True):

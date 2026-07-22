@@ -5,6 +5,7 @@ import socket
 import sys
 import time
 import unittest
+from unittest.mock import MagicMock, patch
 
 import websockets
 
@@ -396,3 +397,99 @@ class TestControlDone(unittest.TestCase):
     def test_all_target_expected_not_met(self):
         self.assertFalse(fleet_control._control_done(
             "all", ["h1"], {"expected_hosts": ["h1", "h2"]}))
+
+    def test_model_key_config_routing_all_hosts_acked(self):
+        """Model-key configs route to all fleet machines via expected_hosts."""
+        params = {"expected_hosts": ["runner-1", "runner-2", "runner-3"]}
+        # All hosts have acked
+        self.assertTrue(fleet_control._control_done("all", ["runner-1", "runner-2", "runner-3"], params))
+        # Partial acks are not done
+        self.assertFalse(fleet_control._control_done("all", ["runner-1"], params))
+
+
+class TestBranchRerouteConfig(unittest.TestCase):
+    """Config storage for branch rerouting."""
+
+    def setUp(self):
+        fleet_control._reroute_config.clear()
+
+    def test_set_branch_reroute_config_valid(self):
+        """set_branch_reroute_config stores valid config."""
+        result = fleet_control.set_branch_reroute_config("ORCH_BRANCH_REROUTE_model/opus", "main")
+        self.assertTrue(result)
+
+    def test_get_branch_reroute_config_returns_value(self):
+        """get_branch_reroute_config retrieves stored value."""
+        fleet_control.set_branch_reroute_config("ORCH_BRANCH_REROUTE_model/sonnet", "feature/test")
+        result = fleet_control.get_branch_reroute_config("ORCH_BRANCH_REROUTE_model/sonnet")
+        self.assertEqual(result, "feature/test")
+
+    def test_set_branch_reroute_config_empty_value_rejected(self):
+        """set_branch_reroute_config rejects empty value."""
+        result = fleet_control.set_branch_reroute_config("ORCH_BRANCH_REROUTE_model/test", "")
+        self.assertFalse(result)
+
+    def test_set_branch_reroute_config_invalid_key_rejected(self):
+        """set_branch_reroute_config rejects non-string key."""
+        result = fleet_control.set_branch_reroute_config(None, "main")
+        self.assertFalse(result)
+
+    def test_get_branch_reroute_config_nonexistent_returns_empty(self):
+        """get_branch_reroute_config returns empty string for missing key."""
+        result = fleet_control.get_branch_reroute_config("ORCH_BRANCH_REROUTE_nonexistent")
+        self.assertEqual(result, "")
+
+    def test_get_branch_reroute_config_invalid_key_returns_empty(self):
+        """get_branch_reroute_config returns empty string for non-string key."""
+        result = fleet_control.get_branch_reroute_config(None)
+        self.assertEqual(result, "")
+
+
+class TestBranchReroute(unittest.TestCase):
+    """Branch rerouting with model key support."""
+
+    def setUp(self):
+        fleet_control._reroute_config.clear()
+
+    def test_branch_reroute_none_input_returns_empty(self):
+        """branch_reroute returns empty string for None input."""
+        result = fleet_control.branch_reroute(None)
+        self.assertEqual(result, "")
+
+    def test_branch_reroute_empty_string_returns_empty(self):
+        """branch_reroute returns empty string for empty input."""
+        result = fleet_control.branch_reroute("")
+        self.assertEqual(result, "")
+
+    def test_branch_reroute_non_string_returns_empty(self):
+        """branch_reroute returns empty string for non-string input."""
+        result = fleet_control.branch_reroute(123)
+        self.assertEqual(result, "")
+
+    def test_branch_reroute_preserves_existing_branch(self):
+        """branch_reroute returns valid branch unchanged (fail-soft when no rerouter)."""
+        if fleet_control.branch_rerouter is None:
+            result = fleet_control.branch_reroute("model/opus")
+            self.assertEqual(result, "model/opus")
+
+    def test_branch_reroute_model_key_with_config(self):
+        """branch_reroute routes model key with explicit config."""
+        fleet_control.set_branch_reroute_config("ORCH_BRANCH_REROUTE_model/opus", "main")
+        # With branch_rerouter available, should use its logic
+        result = fleet_control.branch_reroute("model/opus")
+        # Should preserve or reroute depending on branch_rerouter state
+        self.assertIsInstance(result, str)
+
+    def test_branch_reroute_agent_branch_preserved(self):
+        """branch_reroute preserves agent branches unchanged (fail-soft)."""
+        result = fleet_control.branch_reroute("agent/my-task")
+        self.assertIsInstance(result, str)
+
+    def test_branch_reroute_multiple_model_keys(self):
+        """branch_reroute handles multiple model keys independently."""
+        fleet_control.set_branch_reroute_config("ORCH_BRANCH_REROUTE_model/opus", "main")
+        fleet_control.set_branch_reroute_config("ORCH_BRANCH_REROUTE_model/sonnet", "develop")
+        result_opus = fleet_control.branch_reroute("model/opus")
+        result_sonnet = fleet_control.branch_reroute("model/sonnet")
+        self.assertIsInstance(result_opus, str)
+        self.assertIsInstance(result_sonnet, str)

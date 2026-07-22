@@ -21,6 +21,7 @@ required a human session, so the orchestrator never sits broken:
                         request cooperative restart; request ignored >45 min: cycle the runner
                         process (keepalive respawns it on current code).
   6. Train silence   -> DB up but no merge_train output for 30+ min: fire one train run.
+  7. Branch missing  -> detect unavailable branches and reroute to fallback to prevent crashes.
 
 Every action is journaled to .runtime/sentinel.log + .runtime/sentinel_state.json.
 Fail-soft everywhere: a sentinel bug must never take the fleet down with it.
@@ -37,6 +38,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 REPO = os.path.dirname(HERE)
 import events
+import branch_rerouter
 RUNTIME = os.path.join(REPO, ".runtime")
 STATE_PATH = os.path.join(RUNTIME, "sentinel_state.json")
 LOG_PATH = os.path.join(RUNTIME, "sentinel.log")
@@ -204,6 +206,9 @@ def checkout_guard(st=None):
     a drop and a sentinel tick was swept into a stash and silently lost. Untracked files
     are also not what blocks a branch switch, so -u bought nothing. If a genuine untracked
     collision ever does block the checkout, we now alert instead of destroying the file.
+
+    Branch availability: before attempting checkout, verifies that BASE_BRANCH is available.
+    If BASE_BRANCH is missing/deleted, reroutes to the configured fallback (default: master).
     """
     st = {} if st is None else st
     gitdir = os.path.join(REPO, ".git")
@@ -215,10 +220,17 @@ def checkout_guard(st=None):
         st.pop("drift_branch", None)
         git("pull", "--ff-only", "origin", BASE_BRANCH, timeout=180)
         return
-    log("checkout-drift", f"main checkout on '{branch}' — restoring {BASE_BRANCH}")
+
+    # Check if BASE_BRANCH is available; reroute if missing
+    target_branch = branch_rerouter.reroute_if_missing(BASE_BRANCH, REPO)
+    if target_branch != BASE_BRANCH:
+        log("branch-rerouted", f"BASE_BRANCH '{BASE_BRANCH}' unavailable; rerouting to '{target_branch}'")
+        emit("branch-unavailable", base_branch=BASE_BRANCH, rerouted_to=target_branch)
+
+    log("checkout-drift", f"main checkout on '{branch}' — restoring {target_branch}")
 
     # Try the switch first: a clean-enough tree needs no stash at all.
-    r = git("checkout", BASE_BRANCH)
+    r = git("checkout", target_branch)
 
     if r.returncode != 0 and _base_held_by_worktree(r.stderr):
         # git refuses: "fatal: 'master' is already used by worktree at <path>".
@@ -227,12 +239,12 @@ def checkout_guard(st=None):
         # every restore for ~10min while drift kept re-parking the tree.
         # A stale admin entry is safely reclaimable; a live one is not ours to yank.
         git("worktree", "prune")
-        r = git("checkout", BASE_BRANCH)
+        r = git("checkout", target_branch)
         if r.returncode != 0:
-            holder = _worktree_holding(BASE_BRANCH)
-            emit("base-branch-held", branch=BASE_BRANCH, holder=holder)
+            holder = _worktree_holding(target_branch)
+            emit("base-branch-held", branch=target_branch, holder=holder)
             log("base-branch-held",
-                f"cannot restore {BASE_BRANCH}: held by worktree at {holder or 'unknown'} — "
+                f"cannot restore {target_branch}: held by worktree at {holder or 'unknown'} — "
                 f"remove it (git worktree remove) or the primary checkout stays drifted")
             return
 
@@ -240,7 +252,7 @@ def checkout_guard(st=None):
         # Stash TRACKED modifications only, so a dirty tree can't wedge us forever.
         if git("status", "--porcelain", "--untracked-files=no").stdout.strip():
             git("stash", "push", "-m", f"sentinel-drift-{branch}-{int(time.time())}")
-            r = git("checkout", BASE_BRANCH)
+            r = git("checkout", target_branch)
 
     if r.returncode != 0:
         # Still stuck. Count consecutive failures and escalate rather than spin silently:
@@ -257,8 +269,8 @@ def checkout_guard(st=None):
 
     st.pop("drift_fail_count", None)
     st.pop("drift_branch", None)
-    git("pull", "--ff-only", "origin", BASE_BRANCH, timeout=180)
-    log("checkout-restored", BASE_BRANCH)
+    git("pull", "--ff-only", "origin", target_branch, timeout=180)
+    log("checkout-restored", target_branch)
 
 
 # ── 2b. nested-worktree hygiene ───────────────────────────────────────────────

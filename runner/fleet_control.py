@@ -19,11 +19,16 @@ WHOLE fleet from one place (Mission Control / the DB) and never touch a second m
 
 Pure DB + git; no model spend. Fail-soft: any error is swallowed so it can never wedge the runner.
 """
-import os, sys, time, socket, subprocess, datetime, asyncio, json
+import os, sys, time, socket, subprocess, datetime, asyncio, json, threading
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import kill_switch
 import config_approval
+
+try:
+    import branch_rerouter
+except ImportError:
+    branch_rerouter = None
 
 try:
     import websockets
@@ -42,6 +47,71 @@ def set_websocket_server(ws):
     """Inject a WebSocket server so update_fleet_config can publish ConfigChanged events."""
     global _ws_server
     _ws_server = ws
+
+
+_reroute_lock = threading.Lock()
+_reroute_config = {}
+
+
+def set_branch_reroute_config(key, value):
+    """Store branch reroute config key (thread-safe, fail-soft)."""
+    if not isinstance(key, str) or not value:
+        return False
+    try:
+        with _reroute_lock:
+            _reroute_config[key] = str(value)
+        return True
+    except Exception:
+        return False
+
+
+def get_branch_reroute_config(key):
+    """Retrieve branch reroute config key (thread-safe, fail-soft)."""
+    if not isinstance(key, str):
+        return ""
+    try:
+        with _reroute_lock:
+            return _reroute_config.get(key, "")
+    except Exception:
+        return ""
+
+
+def branch_reroute(branch_name):
+    """
+    Reroute a branch name to its canonical version if missing or stale.
+
+    Routes model configuration keys (model/opus, model/sonnet, etc.) and other
+    branches through explicit mappings or fallback. Fail-soft: returns input
+    unchanged on any error. Thread-safe with explicit locking.
+
+    Args:
+        branch_name (str): The branch to reroute (e.g., "model/opus", "agent/task")
+
+    Returns:
+        str: The canonical branch if input is missing/stale, unchanged otherwise.
+             Returns empty string on non-string input or error.
+
+    Side effects:
+        - Updates branch_rerouter's in-memory config with fleet_config keys
+        - Logs rerouting decisions via branch_rerouter
+    """
+    if not isinstance(branch_name, str):
+        return ""
+    if not branch_name:
+        return ""
+
+    if branch_rerouter is None:
+        return branch_name
+
+    try:
+        with _reroute_lock:
+            for k, v in _reroute_config.items():
+                if k.startswith("ORCH_BRANCH_REROUTE_"):
+                    branch_rerouter.set_branch_config(k, v)
+
+        return branch_rerouter.reroute(branch_name)
+    except Exception:
+        return branch_name
 
 # only these config keys may be pushed fleet-wide (never secrets). Anything containing a credential
 # marker is rejected outright. Note: ORCH_GIT_PAT is *not* stored in fleet_config (PAT value comes
@@ -133,6 +203,24 @@ def _target_matches(target):
     return target == "all" or target in _host_aliases()
 
 
+def _control_done(target, handled_by, params):
+    """Determine if a fleet control action is complete.
+
+    Args:
+        target: "all" or a specific hostname
+        handled_by: list of hosts that have already acknowledged
+        params: params dict which may contain expected_hosts
+
+    Returns: True if action is complete, False if more acks needed
+    """
+    if target != "all":
+        return True
+    expected_hosts = params.get("expected_hosts") or []
+    if not expected_hosts:
+        return False
+    return all(h in handled_by for h in expected_hosts)
+
+
 def _restart():
     """Exit; keepalive.sh respawns a fresh runner with new code/config.
 
@@ -214,7 +302,7 @@ def process_controls():
             new_handled = list(dict.fromkeys(handled + [HOST]))
             params = r.get("params") or {}
             db.update("fleet_control", {"id": r["id"]},
-                      {"handled_by": handled + [HOST], "done": (target != "all")})
+                      {"handled_by": new_handled, "done": _control_done(target, new_handled, params)})
             done += 1
             if action == "git_pull" and params.get("restart", True):
                 _mark_local_ack(r["id"])

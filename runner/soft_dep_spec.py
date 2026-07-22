@@ -29,6 +29,8 @@ import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import db as _db
+
 ENABLED = os.environ.get("ORCH_SOFT_DEP_SPEC_ENABLED", "true").lower() in (
     "true", "1", "yes", "on"
 )
@@ -47,19 +49,41 @@ def _file_scope(task: dict) -> set:
     scope_str = task.get("file_scope", "") or ""
     if not scope_str:
         return set()
-    return {f.strip() for f in scope_str.split(",") if f.strip()}
+    # Split on commas, but respect balanced braces (for glob patterns like {a,b})
+    parts = []
+    current = []
+    brace_depth = 0
+    for char in scope_str:
+        if char == "{":
+            brace_depth += 1
+            current.append(char)
+        elif char == "}":
+            brace_depth -= 1
+            current.append(char)
+        elif char == "," and brace_depth == 0:
+            part = "".join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+        else:
+            current.append(char)
+    if current:
+        part = "".join(current).strip()
+        if part:
+            parts.append(part)
+    return set(parts)
 
 
 def _is_sensitive(task: dict) -> bool:
     """Check if a task is too sensitive for speculation."""
-    slug = task.get("slug", "")
+    slug = task.get("slug", "").lower()
     for s in _SENSITIVE_SLUGS:
         if s in slug:
             return True
     return False
 
 
-def can_speculate(task: dict, done_slugs: set | list) -> tuple[bool, str]:
+def can_speculate(task: dict, done_slugs) -> tuple:
     """Check if a task can run speculatively despite unfinished deps.
 
     Returns:
@@ -89,7 +113,6 @@ def can_speculate(task: dict, done_slugs: set | list) -> tuple[bool, str]:
 
     # Look up pending dep scopes from registry or DB
     try:
-        import db as _db
         for dep_slug in pending:
             dep_rows = _db.select("tasks", {"slug": f"eq.{dep_slug}"})
             if dep_rows:
@@ -154,7 +177,6 @@ def on_dep_done(completed_task: dict) -> list:
 
     invalidated = []
     with _lock:
-        to_remove = []
         for task_id, reg in _registry.items():
             # Is this completed task one of the pending deps?
             if completed_slug not in reg["pending_deps"]:
@@ -166,13 +188,9 @@ def on_dep_done(completed_task: dict) -> list:
             # Check if completed task modified files in our scope
             if modified_files and reg["file_scope"] and modified_files & reg["file_scope"]:
                 invalidated.append(task_id)
-                to_remove.append(task_id)
 
-            # If no more pending deps, speculation confirmed — remove from registry
-            if not reg["pending_deps"]:
-                to_remove.append(task_id)
-
-        for tid in set(to_remove):
+        # Remove only the invalidated tasks from registry
+        for tid in invalidated:
             _registry.pop(tid, None)
 
     return invalidated
