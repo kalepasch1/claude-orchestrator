@@ -2844,7 +2844,9 @@ def _touch_progress():
 def _run_task_safe(t):
     """Wrapper so an unhandled exception in run_task can NEVER leave a task stuck in RUNNING
     (which would leak a zombie, drain the queue, and defeat priority ordering). On any failure
-    the task is auto-requeued if transient, else marked BLOCKED with the error captured."""
+    the task is auto-requeued if transient, else marked BLOCKED with the error captured.
+    Double-fault safe: even if _block_or_retry itself fails, we fall back to a raw BLOCKED
+    set_state so no task is ever orphaned in RUNNING."""
     try:
         run_task(t)
         _touch_progress()  # WEDGEFIX-B-PROGRESS
@@ -2854,13 +2856,14 @@ def _run_task_safe(t):
             set_state(t["id"], log_tail=traceback.format_exc()[-2000:])
         except Exception as e2:
             _log.debug("hook run_task_safe_log failed: %s", e2)
-        _block_or_retry(t, f"runner exception: {e}"[:300])
         try:
-            import exec_telemetry
-            _crash_tel = exec_telemetry.start(t["id"])
-            _crash_tel.finish(outcome="crash", note=f"runner exception: {e}"[:300])
-        except Exception:
-            pass
+            _block_or_retry(t, f"runner exception: {e}"[:300])
+        except Exception as e3:
+            _log.debug("hook block_or_retry in run_task_safe failed: %s", e3)
+            try:
+                set_state(t["id"], state="BLOCKED", note=f"double-fault: {e}"[:300])
+            except Exception:
+                pass
 
 
 _FLEET = {"t": 0.0}  # throttle for the in-loop fleet_control gateway tick
