@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """
-branch_lifecycle.py — advanced branch management with zero-spend recovery.
+branch_lifecycle.py — Supabase-backed branch lifecycle tracking.
 
-Provides lifecycle tracking for agent branches: validation, staleness detection,
-cleanup eligibility, and zero-spend recovery (re-queuing tasks whose branches
-were lost or never created without burning additional API spend).
+Logs branch events (creation, cleanup, staleness, recovery) to Supabase
+for observability and dashboards. All logging is fire-and-forget —
+branch operations never block on telemetry writes.
 
 Env vars:
-    ORCH_BRANCH_STALE_DAYS       days before a branch is considered stale (default 7)
-    ORCH_BRANCH_MAX_RETRIES      max recovery attempts before giving up (default 3)
-    ORCH_BRANCH_LIFECYCLE        "true" to enable (default "true")
+    ORCH_BRANCH_LIFECYCLE         "true" to enable (default "true")
+    ORCH_BRANCH_STALE_DAYS        days before a branch is considered stale (default 7)
+    ORCH_BRANCH_MAX_RETRIES       max recovery attempts before giving up (default 3)
 """
 import os
 import re
@@ -23,58 +23,62 @@ import log as _log_mod
 
 _log = _log_mod.get("branch_lifecycle")
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
 ENABLED = os.environ.get("ORCH_BRANCH_LIFECYCLE", "true").lower() in ("1", "true", "yes")
 STALE_DAYS = int(os.environ.get("ORCH_BRANCH_STALE_DAYS", "7"))
 MAX_RETRIES = int(os.environ.get("ORCH_BRANCH_MAX_RETRIES", "3"))
 
-# Valid branch name pattern (git rules, simplified)
-_VALID_BRANCH_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._/-]{0,240}[a-zA-Z0-9]$")
-_FORBIDDEN_SEQUENCES = ("..", "~", "^", ":", "\\", " ", "[", "@{")
-
 
 # ---------------------------------------------------------------------------
-# Validation
+# Supabase event logging
 # ---------------------------------------------------------------------------
-def validate_branch_name(name):
-    """Check whether *name* is a valid git branch name.
+def log_branch_event(event_type, slug, project_id=None, details=None):
+    """Record a branch lifecycle event to Supabase for observability.
 
-    Returns (True, "") on success or (False, reason) on failure.
-    Fail-soft: returns (True, "") for None/empty (caller decides policy).
+    Events: 'created', 'cleaned', 'recovered', 'stale_detected', 'recovery_failed'.
+    Fails silently — branch operations must never block on logging.
     """
-    if not name:
-        return False, "empty branch name"
-    if len(name) > 250:
-        return False, f"branch name too long ({len(name)} chars, max 250)"
-    for seq in _FORBIDDEN_SEQUENCES:
-        if seq in name:
-            return False, f"contains forbidden sequence '{seq}'"
-    if name.endswith(".lock") or name.endswith("/"):
-        return False, "ends with .lock or /"
-    if name.startswith("-") or name.startswith("."):
-        return False, "starts with - or ."
-    if "//" in name:
-        return False, "contains consecutive slashes"
-    return True, ""
+    if not ENABLED:
+        return
+    try:
+        import db as _db
+        row = {
+            "event_type": event_type,
+            "slug": slug or "",
+            "project_id": project_id,
+            "details": details or {},
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        _db.insert("branch_events", row)
+    except Exception as exc:
+        _log.warning("branch event log failed (%s/%s): %s", event_type, slug, exc)
 
 
-def is_agent_branch(name):
-    """Return True if *name* follows the agent/<slug> convention."""
-    return bool(name and name.startswith("agent/") and len(name) > 6)
+def get_branch_health_summary(project_id=None):
+    """Query Supabase for branch health metrics.
 
-
-def is_feature_branch(name):
-    """Return True if *name* follows the feature/<id> convention."""
-    return bool(name and name.startswith("feature/") and len(name) > 8)
+    Returns dict of event_type -> count for the most recent 1000 events.
+    Used by dashboards and alerting. Fails gracefully.
+    """
+    try:
+        import db as _db
+        params = {"select": "event_type", "limit": "1000", "order": "ts.desc"}
+        if project_id:
+            params["project_id"] = f"eq.{project_id}"
+        rows = _db.select("branch_events", params) or []
+        counts = {}
+        for r in rows:
+            et = r.get("event_type", "unknown")
+            counts[et] = counts.get(et, 0) + 1
+        return counts
+    except Exception:
+        return {}
 
 
 # ---------------------------------------------------------------------------
-# Branch existence & staleness (requires repo access)
+# Branch existence & staleness
 # ---------------------------------------------------------------------------
 def branch_exists(repo_path, branch_name):
-    """Check if a branch exists in *repo_path*. Returns True/False/None (can't check)."""
+    """Check if a branch exists in *repo_path*. Returns True/False/None."""
     if not repo_path or not os.path.isdir(repo_path):
         return None
     try:
@@ -108,187 +112,52 @@ def is_stale(repo_path, branch_name, stale_days=None):
     stale_days = stale_days if stale_days is not None else STALE_DAYS
     epoch = branch_last_commit_epoch(repo_path, branch_name)
     if epoch is None:
-        return None  # can't determine
+        return None
     age_days = (time.time() - epoch) / 86400
     return age_days > stale_days
 
 
 # ---------------------------------------------------------------------------
-# Cleanup eligibility
-# ---------------------------------------------------------------------------
-def list_cleanup_candidates(repo_path, merged_slugs, stale_days=None):
-    """Return list of agent branches eligible for cleanup.
-
-    A branch is eligible if:
-      - Its task slug is in *merged_slugs* (task state MERGED/DONE), OR
-      - It's stale (no commits for *stale_days*).
-    """
-    stale_days = stale_days if stale_days is not None else STALE_DAYS
-    if not repo_path or not os.path.isdir(repo_path):
-        return []
-
-    try:
-        r = subprocess.run(
-            ["git", "branch", "--list", "agent/*"],
-            cwd=repo_path, capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode != 0:
-            return []
-        branches = [b.strip().lstrip("* ") for b in r.stdout.splitlines() if b.strip()]
-    except Exception:
-        return []
-
-    candidates = []
-    for branch in branches:
-        slug = branch.replace("agent/", "", 1) if branch.startswith("agent/") else branch
-        # Already merged → safe to clean
-        if slug in merged_slugs:
-            candidates.append({"branch": branch, "reason": "merged", "slug": slug})
-            continue
-        # Stale check
-        stale = is_stale(repo_path, branch, stale_days)
-        if stale:
-            candidates.append({"branch": branch, "reason": "stale", "slug": slug})
-
-    return candidates
-
-
-# ---------------------------------------------------------------------------
-# Zero-spend recovery
+# Zero-spend recovery eligibility
 # ---------------------------------------------------------------------------
 def zero_spend_recovery_eligible(task, repo_path):
     """Determine if a failed task can be recovered without additional API spend.
 
-    Returns a dict with 'eligible' bool and 'strategy' string, or None on error.
-    Recovery strategies:
-      - 'requeue': branch exists with commits; task can be re-queued to pick up existing work
-      - 'recreate_from_base': no branch exists; task can start fresh (zero prior spend)
-      - 'adopt_orphan': branch exists but task state is wrong; fix state only
+    Returns dict with 'eligible' bool and 'strategy' string.
+    Strategies: 'requeue', 'recreate_from_base', 'adopt_orphan'.
     """
     if not task:
-        return {"eligible": False, "strategy": "none", "reason": "no task provided"}
-
+        return {"eligible": False, "strategy": "none", "reason": "no task"}
     slug = task.get("slug", "")
-    state = task.get("state", "")
     attempt = int(task.get("attempt") or 0)
-
     if attempt >= MAX_RETRIES:
         return {"eligible": False, "strategy": "none",
-                "reason": f"max retries exceeded ({attempt}/{MAX_RETRIES})"}
-
+                "reason": f"max retries ({attempt}/{MAX_RETRIES})"}
     branch = f"agent/{slug}"
     exists = branch_exists(repo_path, branch)
-
     if exists is None:
         return {"eligible": False, "strategy": "none", "reason": "cannot access repo"}
-
+    state = task.get("state", "")
     if exists:
         if state in ("FAILED", "ERROR", "BLOCKED"):
             return {"eligible": True, "strategy": "requeue",
-                    "reason": "branch exists with prior work; requeue to continue"}
+                    "reason": "branch exists; requeue to continue"}
         if state == "RUNNING":
             return {"eligible": True, "strategy": "adopt_orphan",
-                    "reason": "branch exists but task stalled; adopt and continue"}
-        return {"eligible": False, "strategy": "none",
-                "reason": f"branch exists but state '{state}' not recoverable"}
+                    "reason": "branch exists but task stalled"}
     else:
         if state in ("FAILED", "ERROR", "BLOCKED"):
             return {"eligible": True, "strategy": "recreate_from_base",
-                    "reason": "no branch; start fresh from base (zero prior spend)"}
-        return {"eligible": False, "strategy": "none",
-                "reason": f"no branch and state '{state}' not recoverable"}
-
-
-# ---------------------------------------------------------------------------
-# Smart branch prioritization
-# ---------------------------------------------------------------------------
-def prioritize_branches(repo_path, task_states, stale_days=None):
-    """Rank agent branches by cleanup urgency and recovery value.
-
-    *task_states* maps slug -> {'state': str, 'attempt': int, 'kind': str}.
-    Returns sorted list of dicts with branch, action, priority, reason.
-
-    Actions: 'cleanup' (safe to delete), 'recover' (worth re-queuing),
-             'keep' (active work), 'investigate' (ambiguous).
-    Priority: 1 = most urgent.
-    """
-    stale_days = stale_days if stale_days is not None else STALE_DAYS
-    if not repo_path or not os.path.isdir(repo_path):
-        return []
-
-    try:
-        r = subprocess.run(
-            ["git", "branch", "--list", "agent/*"],
-            cwd=repo_path, capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode != 0:
-            return []
-        branches = [b.strip().lstrip("* ") for b in r.stdout.splitlines() if b.strip()]
-    except Exception:
-        return []
-
-    results = []
-    for branch in branches:
-        slug = branch.replace("agent/", "", 1) if branch.startswith("agent/") else branch
-        task = task_states.get(slug, {})
-        state = task.get("state", "")
-        attempt = int(task.get("attempt") or 0)
-        kind = task.get("kind", "")
-        stale = is_stale(repo_path, branch, stale_days)
-        epoch = branch_last_commit_epoch(repo_path, branch)
-        age_days = (time.time() - epoch) / 86400 if epoch else 999
-
-        if state in ("MERGED", "DONE"):
-            results.append({"branch": branch, "slug": slug, "action": "cleanup",
-                            "priority": 1, "reason": f"task {state}", "age_days": round(age_days, 1)})
-        elif state == "QUARANTINED":
-            results.append({"branch": branch, "slug": slug, "action": "cleanup",
-                            "priority": 2, "reason": "quarantined", "age_days": round(age_days, 1)})
-        elif state in ("FAILED", "ERROR", "BLOCKED") and attempt < MAX_RETRIES:
-            # Recovery candidates — prioritize bugfixes and recoveries
-            pri = 3 if kind in ("recovery", "bugfix", "toolchain-repair") else 4
-            results.append({"branch": branch, "slug": slug, "action": "recover",
-                            "priority": pri, "reason": f"{state} attempt {attempt}",
-                            "age_days": round(age_days, 1)})
-        elif state == "RUNNING":
-            results.append({"branch": branch, "slug": slug, "action": "keep",
-                            "priority": 10, "reason": "active", "age_days": round(age_days, 1)})
-        elif stale:
-            results.append({"branch": branch, "slug": slug, "action": "investigate",
-                            "priority": 5, "reason": f"stale ({age_days:.0f}d), no task match",
-                            "age_days": round(age_days, 1)})
-        elif not state:
-            # Orphan branch — no task found
-            results.append({"branch": branch, "slug": slug, "action": "investigate",
-                            "priority": 6, "reason": "orphan (no matching task)",
-                            "age_days": round(age_days, 1)})
-
-    results.sort(key=lambda x: (x["priority"], -x.get("age_days", 0)))
-    return results
-
-
-def cleanup_report(repo_path, task_states, stale_days=None):
-    """Generate a summary report of branch management actions needed."""
-    ranked = prioritize_branches(repo_path, task_states, stale_days)
-    actions = {"cleanup": [], "recover": [], "keep": [], "investigate": []}
-    for r in ranked:
-        actions.get(r["action"], []).append(r)
-    return {
-        "total_branches": len(ranked),
-        "cleanup": len(actions["cleanup"]),
-        "recoverable": len(actions["recover"]),
-        "active": len(actions["keep"]),
-        "investigate": len(actions["investigate"]),
-        "top_actions": ranked[:15],
-    }
+                    "reason": "no branch; start fresh (zero prior spend)"}
+    return {"eligible": False, "strategy": "none",
+            "reason": f"state '{state}' not recoverable"}
 
 
 # ---------------------------------------------------------------------------
 # Stats
 # ---------------------------------------------------------------------------
 _stats_lock = threading.Lock()
-_stats = {"validations": 0, "stale_checks": 0, "recovery_checks": 0, "cleanups_found": 0,
-          "prioritizations": 0}
+_stats = {"validations": 0, "stale_checks": 0, "recovery_checks": 0, "cleanups_found": 0}
 
 
 def stats():
