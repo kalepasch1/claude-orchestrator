@@ -22,6 +22,7 @@ _cache = {"t": 0, "rows": []}
 
 
 def _outcomes(db):
+    """Fetch recent outcomes from Supabase, cached for 60s to avoid per-task DB round-trips."""
     if time.time() - _cache["t"] < 60:
         return _cache["rows"]
     try:
@@ -34,6 +35,10 @@ def _outcomes(db):
 
 
 def _reward(r):
+    """Compute success-per-dollar reward for a single outcome row.
+
+    Full credit (1.0) for test-passed + integrated, partial (0.2) for test-passed only,
+    zero otherwise. Divided by cost (+0.01 floor) so cheaper wins score higher."""
     base = 1.0 if (r.get("tests_passed") and r.get("integrated")) else (0.2 if r.get("tests_passed") else 0.0)
     return base / (float(r.get("usd") or 0) + 0.01)
 
