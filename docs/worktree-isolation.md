@@ -1,18 +1,31 @@
-# Worktree Isolation Pattern
+# Worktree Isolation Convention
 
-## Why Worktrees
-The executor never checks out branches in the main repo clone.
-All task work happens in a temporary git worktree so that:
-- Multiple tasks can run concurrently without branch conflicts.
-- The main repo stays on its default branch at all times.
-- A crashed task cannot leave the main repo in a dirty state.
+All executor task work happens in isolated git worktrees, never in the main repo checkout.
+
+## Why
+
+The main checkout (`{repo_path}`) is shared by multiple executors, the runner, and sentinel.py. Checking out branches in the main repo causes conflicts, stash collisions, and sentinel resets.
+
+## Convention
+
+```
+{repo_path}-wt/{slug}/    ← isolated worktree per task
+```
+
+Example:
+```
+/Users/dev/beethoven/claude-orchestrator-wt/canary-gpt-51/
+```
 
 ## Lifecycle
-1. `git worktree add --force <path> -B agent/<slug> origin/<base>` — create isolated copy.
-2. Implement, commit inside the worktree.
-3. `git push origin HEAD:agent/<slug> --force` — publish the branch.
-4. `git worktree remove --force <path>` — clean up; the branch survives on the remote.
 
-## Lock File Recovery
-If a prior crash left `.lock` files, `git worktree prune` plus manual
-lock-file removal is required before creating new worktrees.
+1. **Create**: `git worktree add --force "$WT" -B agent/{slug} origin/{base}`
+2. **Work**: All file edits, commits happen inside `$WT`
+3. **Push**: `git push origin HEAD:agent/{slug} --force`
+4. **Cleanup**: `git worktree remove --force "$WT"` — the branch survives on the remote
+
+## Rules
+
+- Never run `git checkout` or `git stash` in `{repo_path}`
+- Always `git worktree prune` before creating new worktrees
+- If creation fails due to stale lock, prune and retry
