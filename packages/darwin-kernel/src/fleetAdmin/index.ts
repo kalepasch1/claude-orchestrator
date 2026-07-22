@@ -82,3 +82,4 @@ export * from './executorRuntime.ts';
 export * from './evalHarness.ts';
 // Committee owner map — reconciles Python committees.py domain labels with the TS deliberation module.
 export * from './committeeOwner.ts';
+export * from './guidance.ts';
