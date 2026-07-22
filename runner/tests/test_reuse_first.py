@@ -117,6 +117,8 @@ class TestRewritePrompt(unittest.TestCase):
 
 
 class TestPreClaimHook(unittest.TestCase):
+    """The pre-claim hook is best-effort and must not block task claiming."""
+
     def test_hit_rewrites_db_and_returns_updated_task(self):
         with patch.object(rf, "knowledge_embed", None), patch.object(rf, "db") as mdb:
             mdb.select.side_effect = _select_returning(knowledge=[KNOWLEDGE_ROW])

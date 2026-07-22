@@ -282,6 +282,7 @@ class TestSkipsHandledCards(TrainCase):
 # ── G: branch-missing recovery ───────────────────────────────────────────────
 
 class TestBranchMissing(TrainCase):
+    """Missing branches stay recoverable; the approved card remains live."""
 
     def test_running_task_waits_without_consuming_approved_card(self):
         self.cards = [_card("c1", "feat-x")]

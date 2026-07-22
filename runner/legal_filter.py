@@ -19,6 +19,7 @@ POSITIONING_SAFE = re.compile(
 
 REGULATED_ACTIVITY = re.compile(
     r"\b(money transmission|money transmitter|msb|kyc|aml|securities offering|"
+    r"general solicitation|solicit investors|solicitation|"
     r"broker.?dealer|investment adviser|investment advisor|registered adviser|"
     r"insurance producer|insurance broker|reinsurance|lending license|loan origination|"
     r"underwriting (loan|credit|insurance)|take deposits|deposit taking|custodial|custody of"
@@ -59,7 +60,8 @@ def requires_owner_approval(card=None, text="", kind="", radar_tag=""):
         return True
     has_activity = bool(REGULATED_ACTIVITY.search(blob))
     has_posture_change = bool(POSTURE_CHANGE.search(blob))
-    if not (has_activity and has_posture_change):
+    tagged_regulatory = str(radar_tag or "").lower() == "regulatory"
+    if not (has_activity and (has_posture_change or tagged_regulatory)):
         return False
     # Safe-positioning language means the task is preserving the legal strategy, not changing it.
     if POSITIONING_SAFE.search(blob):

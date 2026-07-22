@@ -380,7 +380,7 @@ class TestImprovementMinerBudget(unittest.TestCase):
 class TestCostCapture(unittest.TestCase):
 
     def test_claude_cli_extracts_cost_from_json(self):
-        """claude_cli.run must return cost_usd > 0 when the CLI returns a cost in JSON."""
+        """claude_cli.run must expose CLI cost while subscription-mode real spend stays zero."""
         from unittest.mock import patch, MagicMock
         import claude_cli
 
@@ -398,9 +398,8 @@ class TestCostCapture(unittest.TestCase):
              patch.object(claude_cli, "_paused", return_value=False):
             r = claude_cli.run("ping", "claude-haiku-4-5-20251001")
 
-        self.assertGreater(r["cost_usd"], 0,
-                           "claude_cli must extract cost_usd from JSON envelope")
-        self.assertAlmostEqual(r["cost_usd"], 0.0042)
+        self.assertEqual(r["cost_usd"], 0.0)
+        self.assertAlmostEqual(r["notional_usd"], 0.0042)
         self.assertEqual(r["input_tokens"], 100)
         self.assertEqual(r["output_tokens"], 50)
         self.assertEqual(r["text"], "pong")
