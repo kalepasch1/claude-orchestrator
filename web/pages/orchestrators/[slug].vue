@@ -22,6 +22,7 @@ const user = useSupabaseUser()
 const CAPS: Record<string, { name: string; domain: string; status: string; maturity: number; regulated: boolean; summary: string }> = {
   'engineering-orchestrator': { name: 'Engineering Command Center', domain: 'engineering', status: 'trusted', maturity: 91, regulated: false, summary: 'Build, repair, optimize, verify, and release software through one outcome-driven workspace.' },
   'research-orchestrator': { name: 'Research + Strategy Command Center', domain: 'platform', status: 'trusted', maturity: 86, regulated: false, summary: 'Evidence-backed market, user, competitive, technical, and strategic research.' },
+  'business-orchestrator': { name: 'Business Operations Command Center', domain: 'business', status: 'trusted', maturity: 89, regulated: false, summary: 'Run priorities, people, finance, vendors, legal obligations, and cross-company execution from one governed workspace.' },
   'deploy-orchestrator': { name: 'Deployment Orchestrator', domain: 'devops', status: 'trusted', maturity: 86, regulated: false, summary: 'Manages canary deployments, watches, rollbacks, and release gates.' },
   'review-orchestrator': { name: 'Code Review Orchestrator', domain: 'engineering', status: 'trusted', maturity: 91, regulated: false, summary: 'Automated multi-model code review, security scanning, and quality gating.' },
   'optimize-orchestrator': { name: 'Optimization Orchestrator', domain: 'engineering', status: 'trusted', maturity: 80, regulated: false, summary: 'Performance, cost, prompt caching, and resource optimization.' },
@@ -90,6 +91,12 @@ const DOMAIN_INSIGHTS: Record<string, { key: string; label: string; icon: string
     { key: 'access', label: 'Access', icon: '🛡' },
     { key: 'vulns', label: 'Vulnerabilities', icon: '🔍' },
   ],
+  business: [
+    { key: 'operations', label: 'Operating Priorities', icon: '◇' },
+    { key: 'finance', label: 'Finance + Spend', icon: '$' },
+    { key: 'people', label: 'People + Owners', icon: '◎' },
+    { key: 'risk', label: 'Risk + Obligations', icon: '§' },
+  ],
   platform: [
     { key: 'colosseum', label: 'Model Arena', icon: '🏟' },
     { key: 'queue', label: 'Task Queue', icon: '📋' },
@@ -105,6 +112,7 @@ const DOMAIN_BOTS: Record<string, string[]> = {
   platform: ['Pattern Recognizer', 'Insight Generator', 'Context Mapper', 'Intent Predictor'],
   'product-design': ['Cognitive Load Sensor', 'Attention Flow Mapper', 'User Flow Simulator', 'Learning Curve Optimizer', 'Animation Controller', 'Typography Manager'],
   security: ['Anomaly Detector', 'Cross-Platform Sync', 'Edge Case Generator', 'Threat Modeler'],
+  business: ['Portfolio Context Mapper', 'Priority Optimizer', 'Owner Coordinator', 'Operating Risk Monitor', 'Decision Recorder'],
 }
 
 const DOMAIN_SLIDERS: Record<string, { label: string; min: number; max: number; default: number; unit: string }[]> = {
@@ -115,6 +123,7 @@ const DOMAIN_SLIDERS: Record<string, { label: string; min: number; max: number; 
   platform: [{ label: 'Concurrency Limit', min: 1, max: 20, default: 5, unit: '' }, { label: 'Queue Priority Weight', min: 1, max: 10, default: 5, unit: '' }, { label: 'Auto-Retry Count', min: 0, max: 5, default: 2, unit: '' }],
   'product-design': [{ label: 'Cognitive Load Threshold', min: 1, max: 10, default: 6, unit: '' }, { label: 'Animation Budget', min: 0, max: 500, default: 200, unit: 'ms' }, { label: 'Archetype Count', min: 10, max: 200, default: 50, unit: '' }],
   security: [{ label: 'Scan Frequency', min: 1, max: 24, default: 4, unit: 'hrs' }, { label: 'Severity Threshold', min: 1, max: 5, default: 3, unit: '' }, { label: 'Key Rotation Period', min: 7, max: 90, default: 30, unit: 'days' }],
+  business: [{ label: 'Planning Horizon', min: 1, max: 12, default: 3, unit: 'months' }, { label: 'Approval Materiality', min: 1, max: 10, default: 7, unit: '' }, { label: 'Cross-company Priority', min: 1, max: 10, default: 8, unit: '' }],
 }
 
 const LEGAL_DOCS: Record<string, { name: string; type: string; status: string }[]> = {
@@ -277,6 +286,10 @@ const INSIGHT_PLAYBOOK: Record<string, { recommendation: string; outcome: string
   queue: { recommendation: 'Deduplicate and reprioritize blocked work using impact, urgency, and dependency readiness.', outcome: 'Higher throughput with less queue noise.' },
   patterns: { recommendation: 'Convert repeated successful behavior into a reusable orchestration pattern.', outcome: 'Compounding quality across future tasks.' },
   routing: { recommendation: 'Evaluate routing misses and update the policy using observed task outcomes.', outcome: 'More accurate autonomous routing.' },
+  operations: { recommendation: 'Reconcile current objectives, dependencies, owners, and deadlines into one executable operating plan.', outcome: 'Fewer coordination gaps and a clear next action for every priority.' },
+  finance: { recommendation: 'Compare spend, obligations, runway impact, and expected value before committing resources.', outcome: 'Capital moves toward the highest-value work with explicit tradeoffs.' },
+  people: { recommendation: 'Assign a single accountable owner, define the handoffs, and surface decisions that require operator input.', outcome: 'Faster execution with less ownership ambiguity.' },
+  risk: { recommendation: 'Unify legal, compliance, operational, and delivery risks into a ranked mitigation plan.', outcome: 'Material obligations are handled before they become blockers.' },
 }
 
 // Deploy state — inline in workspace
@@ -492,6 +505,12 @@ function refreshInsights() {
       access: [{ severity: 'info', message: 'No unauthorized access attempts detected' }],
       vulns: [{ severity: 'warning', message: '2 medium-severity vulnerabilities in dependencies' }],
     },
+    business: {
+      operations: [{ severity: 'info', message: 'Portfolio priorities are ready to reconcile into one operating plan' }],
+      finance: [{ severity: 'info', message: 'Spend and expected-value signals can be compared before the next commitment' }],
+      people: [{ severity: 'info', message: 'Cross-company work benefits from one owner and explicit handoffs' }],
+      risk: [{ severity: 'warning', message: 'Open legal, compliance, and delivery obligations should be reviewed together' }],
+    },
     platform: {
       colosseum: [{ severity: 'info', message: 'Sonnet 4.6 winning 67% of head-to-head evaluations' }],
       queue: [{ severity: 'info', message: recentTasks.value.filter(t => t.state === 'QUEUED').length + ' tasks queued' }],
@@ -634,14 +653,14 @@ watch(selectedBranch, resolvePreview)
 watch(slug, () => { refreshInsights() })
 </script>
 <template>
-  <div class="flex flex-col h-full">
+  <div class="flex min-h-full flex-col bg-slate-50">
     <!-- Top header bar: replaces left sidebar -->
-    <div class="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-gray-50/50 flex-shrink-0">
+    <div class="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 bg-white px-4 py-3 flex-shrink-0">
       <div class="flex items-center gap-3">
         <NuxtLink to="/orchestrators" class="text-[10px] text-gray-400 hover:text-gray-600 uppercase tracking-wider">← Back</NuxtLink>
-        <div><h2 class="text-sm font-bold text-gray-900" style="font-family: 'Fraunces', serif;">{{ cap.name }}</h2><p class="mt-0.5 text-[9px] text-gray-400">{{ cap.summary }}</p></div>
+        <div><h2 class="text-sm font-bold text-gray-900">{{ cap.name }}</h2><p class="mt-0.5 hidden max-w-2xl text-[10px] text-gray-500 sm:block">{{ cap.summary }}</p></div>
       </div>
-      <div class="flex items-center gap-3">
+      <div class="flex flex-wrap items-center gap-3">
         <!-- App selector (was in sidebar) -->
         <div class="flex items-center gap-1.5">
           <span class="text-[10px] text-gray-400">App:</span>
@@ -662,10 +681,9 @@ watch(slug, () => { refreshInsights() })
     </div>
 
     <!-- Main content area: flex row for content + CADE insights panel -->
-    <div class="flex flex-1 overflow-hidden min-h-0">
+    <div class="flex min-h-0 flex-1">
       <!-- CENTER: Main workspace -->
-      <div class="flex-1 flex flex-col overflow-hidden min-w-0">
-        <template>
+      <div class="flex min-w-0 flex-1 flex-col">
           <!-- Workspace top bar -->
           <div class="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-white flex-shrink-0">
             <div class="flex items-center gap-3">
@@ -685,8 +703,22 @@ watch(slug, () => { refreshInsights() })
               <button @click="toggleAdvanced" class="px-2 py-1 text-[10px] border rounded" :class="advancedOpen ? 'bg-gray-900 text-white border-gray-900' : 'text-gray-500 border-gray-200'">{{ advancedOpen ? 'Basic view' : 'Advanced' }}</button>
             </div>
           </div>
+          <section class="border-b border-blue-100 bg-[radial-gradient(circle_at_top_left,_rgba(37,99,235,.14),_transparent_34%),linear-gradient(135deg,#f8fbff,#eef5ff)] px-4 py-6 sm:px-7 sm:py-8">
+            <div class="mx-auto grid max-w-6xl gap-6 xl:grid-cols-[minmax(260px,.72fr)_minmax(520px,1.28fr)] xl:items-center">
+              <div>
+                <div class="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[.16em] text-blue-700"><span class="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_0_5px_rgba(16,185,129,.12)]"></span> {{ cap.name }}</div>
+                <h1 class="mt-4 text-3xl font-semibold tracking-[-.04em] text-slate-950 sm:text-4xl">Describe the outcome.<br><span class="text-blue-600">Madeus runs the work.</span></h1>
+                <p class="mt-3 max-w-xl text-sm leading-6 text-slate-600">{{ cap.summary }} Context, specialists, tools, verification, and safe release routing are handled automatically.</p>
+                <div class="mt-5 flex flex-wrap gap-2 text-[10px] font-semibold text-slate-600"><span class="rounded-full border border-blue-100 bg-white/80 px-3 py-1.5">Portfolio context loaded</span><span class="rounded-full border border-blue-100 bg-white/80 px-3 py-1.5">Independent QA</span><span class="rounded-full border border-blue-100 bg-white/80 px-3 py-1.5">Proof retained</span></div>
+              </div>
+              <div class="overflow-hidden rounded-2xl border border-blue-100 bg-white shadow-[0_20px_55px_rgba(15,56,120,.12)]">
+                <OutcomeCanvas v-model="terminalPrompt" v-model:successCriteria="successCriteria" v-model:constraints="outcomeConstraints" v-model:advanced="advancedOpen" :app-name="APPS.find(a => a.id === selectedApp)?.name || selectedApp" :capability="cap.name" :busy="terminalLoading" @submit="runCommand" />
+                <div v-if="terminalOutput" class="m-3 mt-0 max-h-28 overflow-y-auto whitespace-pre-wrap rounded-lg bg-emerald-50 px-3 py-2 text-[10px] leading-4 text-emerald-800">{{ terminalOutput }}</div>
+              </div>
+            </div>
+          </section>
           <!-- VISUAL CONTEXT + TOOLS AREA (scrollable) -->
-          <div class="flex-1 overflow-y-auto min-h-0">
+          <div class="min-h-0 flex-1">
             <div class="grid grid-cols-1 border-b border-gray-200 bg-white" :class="showInsights ? 'xl:grid-cols-[minmax(0,1fr)_360px]' : 'grid-cols-1'">
             <!-- LIVE APP PREVIEW -->
             <div class="bg-gray-100 xl:border-r border-gray-200 min-w-0">
@@ -699,7 +731,7 @@ watch(slug, () => { refreshInsights() })
                 <a v-if="previewTarget?.external_url" :href="previewTarget.external_url" target="_blank" rel="noopener" class="text-gray-400 hover:text-gray-600 px-1">↗</a>
               </div>
               <PreviewProofRibbon :proof="previewTarget?.proof" :gateway="usingPreviewGateway" :loading="previewLoading" />
-              <div class="relative" style="height: 45vh; min-height: 280px;">
+              <div class="relative" :class="previewUrl ? 'h-[45vh] min-h-[320px]' : 'h-48'">
                 <div v-if="previewLoading || (previewUrl && !iframeLoaded)" class="absolute inset-0 bg-white flex items-center justify-center z-10">
                   <div class="text-center space-y-2">
                     <div class="w-6 h-6 border-2 border-emerald-700 border-t-transparent rounded-full animate-spin mx-auto"></div>
@@ -731,7 +763,7 @@ watch(slug, () => { refreshInsights() })
             </div>
 
             <!-- CADE ACTION RAIL + TERMINAL -->
-            <aside v-if="showInsights" class="bg-gray-50 flex flex-col min-h-[520px] max-h-[65vh] overflow-hidden">
+            <aside v-if="showInsights" class="flex min-h-[420px] flex-col overflow-hidden bg-gray-50">
               <div class="px-4 py-3 border-b border-gray-200 bg-white">
                 <div class="flex items-center justify-between">
                   <div>
@@ -790,8 +822,6 @@ watch(slug, () => { refreshInsights() })
                 <div v-if="!insightsForActive.length" class="rounded-xl border border-dashed border-gray-200 bg-white p-6 text-center text-[11px] text-gray-400">No actionable guidance in this category yet.</div>
               </div>
 
-              <div v-if="terminalOutput" class="mx-3 mb-2 max-h-20 overflow-y-auto whitespace-pre-wrap rounded-lg bg-emerald-50 px-2.5 py-2 text-[10px] leading-4 text-emerald-800">{{ terminalOutput }}</div>
-              <OutcomeCanvas v-model="terminalPrompt" v-model:successCriteria="successCriteria" v-model:constraints="outcomeConstraints" v-model:advanced="advancedOpen" :app-name="APPS.find(a => a.id === selectedApp)?.name || selectedApp" :capability="cap.name" :busy="terminalLoading" @submit="runCommand" />
             </aside>
             </div>
 
@@ -1029,7 +1059,6 @@ watch(slug, () => { refreshInsights() })
               </div>
             </div>
           </div>
-        </template>
       </div>
 
     </div>
