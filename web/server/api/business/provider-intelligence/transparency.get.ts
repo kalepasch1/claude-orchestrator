@@ -1,0 +1,5 @@
+import{organizationContext}from'../../../utils/adaptiveFabric'
+import{requireConnectorUser}from'../../../utils/connectorFabric'
+import{serviceClient}from'../../../utils/fleetSupabase'
+import{createHash}from'node:crypto'
+export default defineEventHandler(async event=>{const user=await requireConnectorUser(event),context=await organizationContext(user),org=context.membership.organization_id,{data,error}=await serviceClient().from('provider_transparency_entries').select('*').or(`organization_id.eq.${org},organization_id.is.null`).order('sequence',{ascending:true}).limit(2000);if(error)throw createError({statusCode:500,message:'transparency_log_unavailable'});let previous:string|null=null,valid=true;for(const row of data||[]){const expected=createHash('sha256').update(`${previous||'genesis'}:${row.entry_type}:${row.subject_digest}:${row.payload_digest}`).digest('hex');if(row.previous_entry_hash!==previous||row.entry_hash!==expected){valid=false;break}previous=row.entry_hash}return{entries:(data||[]).slice(-250).reverse(),verification:{valid,count:data?.length||0,head:previous}}})
