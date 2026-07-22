@@ -11,6 +11,19 @@ TDD-gating structurally enforces test-driven development in the agent task pipel
 
 TDD-gating applies to new code tasks only (configurable by task kind).
 
+## Quick Start
+
+Enable TDD-gating for feature tasks fleet-wide with a single SQL insert:
+
+```sql
+INSERT INTO fleet_config (key, value)
+VALUES ('ORCH_TDD_ENABLED', 'true')
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
+```
+
+The default `ORCH_TDD_TASK_KINDS` (`feature,new-module`) applies automatically.
+No runner restart is needed — the next loop iteration picks up the change.
+
 ## Configuration Keys
 
 All configuration keys live in the `fleet_config` table in Supabase and are loaded into environment variables on every orchestrator loop.
