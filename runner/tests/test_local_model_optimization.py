@@ -60,20 +60,17 @@ class TestLocalModelSlots(unittest.TestCase):
                 entered.append("exit")
 
         proc = MagicMock(returncode=0, stdout="done", stderr="")
-        fake = FakeDB()
         with patch.object(agentic_coders, "_spec", return_value={
                 "name": "ollama", "cmd": "aider --model ollama/llama3.1:latest --message {prompt}",
                 "est_usd": 0.0,
              }), \
              patch.object(local_model_slots, "slot", return_value=Slot()) as slot, \
-             patch.object(agentic_coders.subprocess, "run", return_value=proc), \
-             patch.dict(sys.modules, {"db": fake}):
+             patch.object(agentic_coders.subprocess, "run", return_value=proc):
             out = agentic_coders.run("ollama", "make a tiny edit", "ollama/llama3.1:latest")
 
         self.assertEqual(out["returncode"], 0)
         slot.assert_called_once_with("llama3.1:latest", operation="agentic:ollama")
         self.assertEqual(entered, ["enter", "exit"])
-        self.assertEqual([r[1]["kind"] for r in fake.inserts[:2]], ["agentic_coder_start", "agentic_coder_finish"])
 
     def test_unload_force_kills_stuck_ollama_server(self):
         killed = []
@@ -137,8 +134,6 @@ Pages occupied by compressor: 5.
              patch.object(resource_governor, "_predicted_disk_pct", return_value=(None, None)), \
              patch.object(resource_governor, "set_throttle", side_effect=lambda n: throttle.append(n) or n), \
              patch.object(resource_governor, "current_limit", return_value=1), \
-             patch.object(resource_governor, "RAM_FLOOR_GB", 6.0), \
-             patch.object(resource_governor, "PER_TASK_GB", 3.0), \
              patch.dict(sys.modules, {"local_model_slots": fake_slots}):
             gauge = resource_governor.govern()
 
@@ -160,9 +155,6 @@ Pages occupied by compressor: 5.
              patch.object(resource_governor, "_global_pause_reason", return_value=None), \
              patch.object(resource_governor, "_predicted_disk_pct", return_value=(None, None)), \
              patch.object(resource_governor, "set_throttle", side_effect=lambda n: throttle.append(n) or n), \
-             patch.object(resource_governor, "RAM_FLOOR_GB", 6.0), \
-             patch.object(resource_governor, "PER_TASK_GB", 3.0), \
-             patch.object(resource_governor, "RAM_HARD", 82.0), \
              patch.object(resource_governor, "current_limit", side_effect=[8, 2, 10]):
             gauge = resource_governor.govern()
 

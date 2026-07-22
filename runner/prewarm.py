@@ -19,7 +19,7 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 RECOVERY_PREFIX = "recover-missing-branch-"
 CANARY_PREFIX = "canary-"
 IMPROVEMENT_PREFIX = "improve-"
-RELEASE_FIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-", "copyfix-")
+RELEASE_FIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-")
 
 
 def _git(repo, *args, timeout=30):
@@ -77,15 +77,7 @@ def _claimable_next(limit):
             return 1
         return 9
 
-    def project_rank(t):
-        proj = projs.get(t.get("project_id"), {}) or {}
-        try:
-            return db._project_rank_name(proj.get("name"))
-        except Exception:
-            return proj.get("priority") or 9
-
     q.sort(key=lambda t: (
-                          project_rank(t),
                           0 if (release_fix_backlog and (
                               str(t.get("slug") or "").startswith(RELEASE_FIX_PREFIXES)
                               or "release_train" in str(t.get("note") or "").lower()
@@ -100,6 +92,7 @@ def _claimable_next(limit):
                           else (1 if evidence_backlog else 0),
                           0 if (improvement_backlog and str(t.get("slug") or "").startswith(IMPROVEMENT_PREFIX))
                           else (1 if improvement_backlog else 0),
+                          (projs.get(t.get("project_id"), {}) or {}).get("priority") or 5,
                           -float((projs.get(t.get("project_id"), {}) or {}).get("concurrency_weight") or 1),
                           t.get("created_at") or ""))
     return q[:limit], projs
@@ -116,9 +109,8 @@ def run():
         slug = t["slug"]
         base = _normalize_base(repo, proj, t.get("base_branch") or proj.get("default_base"))
         try:
-            # Prewarming is read-only. Creating the mutable task branch here made
-            # the warmer an untracked second writer; the real executor now owns
-            # branch/worktree creation under a server-side lease.
+            subprocess.run([os.path.join(_DIR, "setup-worktrees.sh"), slug, base],
+                           cwd=repo, capture_output=True, timeout=60)
             deps = dependency_prewarm.ensure_all(repo, reason="idle_prewarm")
             if not deps.get("ok"):
                 print(f"prewarm: {slug} dependency warm skipped ({(deps.get('error') or deps)})")

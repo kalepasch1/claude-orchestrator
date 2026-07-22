@@ -526,7 +526,7 @@ def dashboard_gauge():
         pass
     return {
         "disk_pct": used, "free_gb": free_gb,
-        "ram_pct": ram, "throttle": current_limit(), "ceiling": _ceiling(),
+        "ram_pct": ram, "throttle": current_limit(), "ceiling": CEILING,
         "ram_free_gb": ram_free_gb(), "ollama_loaded": ollama_loaded,
         "predicted_disk_pct_2h": pred_pct, "hours_to_hard": hours_to_hard,
         "disk_soft": _disk_soft(), "disk_hard": _disk_hard(),
@@ -599,8 +599,6 @@ def govern():
                 for m in local_model_slots.loaded_models():
                     if local_model_slots.is_heavy(m) and local_model_slots.unload(m):
                         unloaded.append(m)
-                if not unloaded and local_model_slots._kill_llama_servers():
-                    unloaded.append("orphaned-llama-server")
                 if unloaded:
                     _event("ollama_unload", free_ram, f"low memory unloaded {', '.join(unloaded)}", "unload heavy local models")
             except Exception:
@@ -611,7 +609,7 @@ def govern():
             free_ram = ram_free_gb()
             ram = ram_pct()
             pressure_bad = pressure_should_block(free_ram, eff_floor)
-            if free_ram is not None and free_ram >= eff_floor + per_task and not pressure_bad:
+            if free_ram is not None and free_ram >= eff_floor + PER_TASK_GB and not pressure_bad:
                 cur_reason = _global_pause_reason()
                 if cur_reason == "auto:low-memory":
                     try:
@@ -621,19 +619,18 @@ def govern():
                     except Exception:
                         pass
             else:
-                # CLAMP, don't global-PAUSE. A global memory pause proved to be a sticky,
-                # oscillating fleet-killer (2026-07-10): it latched on a transient load spike and
-                # the resume never caught the recovery window, freezing everything for hours even
-                # at 30GB free. Clamping throttle to 1 is self-correcting, and the per-task
-                # can_claim() gate already blocks new claims when RAM is genuinely low — so a hard
-                # global pause is redundant AND dangerous. Never global-pause for memory again;
-                # lift any stale auto:low-memory pause instead.
                 set_throttle(1)
-                if cur_reason == "auto:low-memory":
+                if cur_reason is None:  # not already paused by anyone
+                    why = ("kernel memory pressure warn/critical" if pressure_bad
+                           else f"available RAM {free_ram}GB below floor {eff_floor}GB")
                     try:
                         import kill_switch
-                        kill_switch.resume(scope="global", by="governor")
-                        print("governor: lifting stale auto:low-memory pause — clamping instead")
+                        kill_switch.pause(scope="global", reason="auto:low-memory", by="governor")
+                        db.insert("approvals", {"project": "ORCHESTRATOR", "kind": "self",
+                            "title": f"Low memory: {free_ram}GB free — orchestrator paused",
+                            "why": why + "; paused new work to avoid a Mac crash.",
+                            "value": "Prevents an out-of-memory restart.",
+                            "risk": "Orchestrator auto-resumes when memory recovers."})
                     except Exception:
                         pass
                 print(f"governor: LOW MEMORY {free_ram}GB free (floor {eff_floor}, "
@@ -685,18 +682,15 @@ def govern():
     latest_free = g.get("ram_free_gb")
     latest_ram = g.get("ram_pct")
     if (latest_free is not None
-            and used < disk_soft - 10
-            and (latest_ram is None or latest_ram < ram_hard - 5)
+            and used < DISK_SOFT - 10
+            and (latest_ram is None or latest_ram < RAM_HARD - 12)
             and not pressure_should_block(latest_free, eff_floor)):
-        recovered_budget = max(1, int((latest_free - eff_floor) / per_task))
-        recovered_target = min(ceiling, recovered_budget)
+        recovered_budget = max(1, int((latest_free - eff_floor) / PER_TASK_GB))
+        recovered_target = min(CEILING, recovered_budget)
         if recovered_target > current_limit():
             set_throttle(recovered_target)
             action += f"; mem-recover->{recovered_target}"
             g = dashboard_gauge()
-    _t_end = time.monotonic()
-    _elapsed_ms = (_t_end - _t0) * 1000
-    _sample_ms = (_t_sample - _t0) * 1000
     print(f"governor: disk {used}% ({free_gb}GB free) ram {ram} free_ram {free_ram}GB "
           f"floor {eff_floor} -> {action}, limit={current_limit()} "
           f"[{_elapsed_ms:.0f}ms total, {_sample_ms:.0f}ms sampling]")

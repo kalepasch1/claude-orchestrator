@@ -37,7 +37,6 @@ RELEASE_INTERVAL_HOURS = max(6.0, float(os.environ.get("RELEASE_INTERVAL_HOURS",
 STAGING = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
 RELEASE_FIX_PREFIXES = ("relfix-", "buildfix-", "deployfix-")
 QA_FIX_PREFIXES = ("qafix-",)
-COPY_FIX_PREFIXES = ("copyfix-",)
 RED_GATE_COOLDOWN_MIN = float(os.environ.get("ORCH_RELEASE_RED_GATE_COOLDOWN_MIN", "180"))
 
 # release_kpi writes this: the set of apps whose recent prod deploys keep failing, so we promote their
@@ -175,17 +174,14 @@ def _self_heal_build(p, project, repo, branch, blog):
 def _self_heal_qa(p, project, repo, branch, qlog):
     """Queue one targeted QA-fix task when a required staging test gate is red."""
     try:
-        import failure_compiler
-        compiled = failure_compiler.record(project, "release-qa", qlog)
-        uslug = failure_compiler.task_slug("qafix", project, "release-qa", qlog)
         existing = db.select("tasks", {"select": "slug", "project_id": f"eq.{p['id']}",
                                        "state": "in.(QUEUED,RUNNING,RETRY,BLOCKED)"}) or []
-        if any(str(e.get("slug", "")) == uslug for e in existing):
+        if any(str(e.get("slug", "")).startswith("qafix-") for e in existing):
             return
         diff = _git(repo, "log", "-1", "--stat", branch).stdout[:3000]
+        uslug = f"qafix-{project}-{datetime.datetime.utcnow().strftime('%m%d%H%M')}"
         prompt = ("The required staging QA/test gate is RED and is BLOCKING Vercel release. "
                   "Fix the smallest test/build issue. Do NOT add features.\n\n"
-                  f"Failure signature: {compiled['signature']} (observed {compiled['count']} time(s)).\n"
                   "# QA error tail:\n" + (qlog or "")[-3000:] + "\n\n# Latest staged diff summary:\n" + diff)
         try:
             import pipeline_contract
@@ -233,43 +229,6 @@ def _self_heal_release_conflict(p, project, repo, prod, log):
         print(f"release_train: release-conflict self-heal failed for {project}: {e}")
 
 
-def _self_heal_public_copy(p, project, repo, branch, findings):
-    """Queue one targeted copy-fix task when public UI text exposes IP/legal strategy."""
-    try:
-        existing = db.select("tasks", {"select": "slug", "project_id": f"eq.{p['id']}",
-                                       "state": "in.(QUEUED,RUNNING,RETRY,BLOCKED)"}) or []
-        if any(str(e.get("slug", "")).startswith(COPY_FIX_PREFIXES) for e in existing):
-            return
-        import public_copy_guard
-        uslug = f"copyfix-{project}-{datetime.datetime.utcnow().strftime('%m%d%H%M')}"
-        diff = _git(repo, "log", "-1", "--stat", branch).stdout[:3000]
-        prompt = (
-            "The public-copy disclosure QA gate is RED and is BLOCKING release. "
-            "Rewrite only public-facing page/component/content text so it communicates value "
-            "at a general marketing abstraction level without revealing proprietary mechanisms, "
-            "vendor/model routing, IP-protection tactics, or specific legal/regulatory strategy. "
-            "Do NOT remove product functionality.\n\n"
-            "# Public-copy findings:\n"
-            + public_copy_guard.format_findings(findings)[:5000]
-            + "\n\n# Latest staged diff summary:\n"
-            + diff
-        )
-        try:
-            import pipeline_contract
-            prompt = pipeline_contract.wrap_prompt(prompt, project=project, kind="bugfix",
-                                                   source="release-copy-self-heal",
-                                                   slug=uslug, material=False)
-        except Exception:
-            pass
-        db.insert("tasks", {"project_id": p["id"], "slug": uslug, "prompt": prompt,
-                  "base_branch": p.get("default_base", "main"), "kind": "bugfix", "state": "QUEUED",
-                  "deps": [], "material": False,
-                  "note": "auto-queued by release_train public-copy disclosure self-heal"})
-        print(f"release_train: queued public-copy fix task {uslug} for RED {project}")
-    except Exception as e:
-        print(f"release_train: public-copy self-heal failed for {project}: {e}")
-
-
 def _deploy_health_for(project):
     try:
         rows = db.select("deploy_health", {"select": "app,vercel_project,git_branch",
@@ -306,40 +265,16 @@ def _open_release_fix_tasks(p, gate=None):
         return []
     if gate == "qa":
         prefixes = QA_FIX_PREFIXES
-    elif gate == "copy":
-        prefixes = COPY_FIX_PREFIXES
     elif gate in ("build", "refresh", "push"):
         prefixes = RELEASE_FIX_PREFIXES
     else:
-        prefixes = QA_FIX_PREFIXES + RELEASE_FIX_PREFIXES + COPY_FIX_PREFIXES
-    hold_minutes = float(os.environ.get("ORCH_RELEASE_FIX_HOLD_MIN", "180"))
-    hold_states = {x.strip().upper() for x in
-                   os.environ.get("ORCH_RELEASE_FIX_HOLD_STATES", "RUNNING,RETRY").split(",") if x.strip()}
-    now = datetime.datetime.now(datetime.timezone.utc)
+        prefixes = QA_FIX_PREFIXES + RELEASE_FIX_PREFIXES
     out = []
     for row in rows:
         slug = str(row.get("slug") or "")
         note = str(row.get("note") or "").lower()
-        # Notes such as "auto-queued by release_train" describe provenance,
-        # not the gate. Using them for every gate caused QA tasks to block copy
-        # and deploy tasks to block build indefinitely.
-        matches_gate = slug.startswith(prefixes)
-        if gate is None:
-            matches_gate = matches_gate or "release_train" in note or "vercel" in note
-        if not matches_gate:
-            continue
-        # A queued historical fix is not a mutex. The exact current candidate
-        # must be allowed to prove itself; only a fix consuming an executor lane
-        # gets a short exclusivity window to avoid racing its own release.
-        if str(row.get("state") or "").upper() not in hold_states:
-            continue
-        touched = _parse_time(row.get("updated_at") or row.get("created_at"))
-        if touched:
-            if touched.tzinfo is None:
-                touched = touched.replace(tzinfo=datetime.timezone.utc)
-            if (now - touched).total_seconds() > hold_minutes * 60:
-                continue
-        out.append(row)
+        if slug.startswith(prefixes) or "release_train" in note or "vercel" in note:
+            out.append(row)
     return out
 
 
@@ -406,59 +341,6 @@ def _link_shared_runtime(repo, worktree):
                     pass
 
 
-def _prepare_generated_types(worktree):
-    """Generate checkout-local framework types for every typed Nuxt package root."""
-    roots = [worktree]
-    try:
-        import dependency_prewarm
-        roots.extend(dependency_prewarm.package_roots(worktree))
-    except Exception:
-        pass
-    logs = []
-    prepared = 0
-    for root in dict.fromkeys(os.path.abspath(path) for path in roots):
-        package = os.path.join(root, "package.json")
-        tsconfig = os.path.join(root, "tsconfig.json")
-        if not os.path.isfile(package) or not os.path.isfile(tsconfig):
-            continue
-        try:
-            with open(package, encoding="utf-8") as package_file:
-                package_text = package_file.read()
-            with open(tsconfig, encoding="utf-8") as tsconfig_file:
-                tsconfig_text = tsconfig_file.read()
-        except OSError as e:
-            return False, str(e)
-        if '"nuxt"' not in package_text or ".nuxt/tsconfig" not in tsconfig_text:
-            continue
-        proc = subprocess.run(["bash", "-lc", "npx nuxi prepare"], cwd=root,
-                              capture_output=True, text=True, timeout=180)
-        log = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-4000:]
-        logs.append(f"[{os.path.relpath(root, worktree)}]\n{log}")
-        generated = os.path.join(root, ".nuxt", "tsconfig.json")
-        if proc.returncode != 0 or not os.path.exists(generated):
-            return False, "\n".join(logs)
-        prepared += 1
-    return True, "\n".join(logs) if prepared else "framework generation not required"
-
-
-def _qa_ref(repo, ref, command, timeout=1800):
-    """Run QA against an exact Git tree; used for production-baseline comparison."""
-    import commit_overlay
-    try:
-        with commit_overlay.checkout(repo, ref, prefix="baseline-qa-overlay-") as overlay:
-            worktree = overlay["path"]
-            _link_shared_runtime(repo, worktree)
-            prepared, prepare_log = _prepare_generated_types(worktree)
-            if not prepared:
-                return False, "Nuxt type preparation failed:\n" + prepare_log
-            result = subprocess.run(["bash", "-lc", command], cwd=worktree, capture_output=True,
-                                    text=True, timeout=timeout)
-            log = ((result.stdout or "")[-6000:] + "\n" + (result.stderr or "")[-6000:]).strip()
-            return result.returncode == 0, f"overlay:{overlay['commit'][:12]} {log}"
-    except subprocess.TimeoutExpired:
-        return False, f"tests timed out after {timeout}s"
-
-
 def prod_branch(repo):
     """Auto-detect the production branch: origin/HEAD target, else main, else master."""
     r = _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD")
@@ -518,13 +400,8 @@ def _refresh_staging_with_prod(repo, prod):
                             f"release-train: refresh {STAGING} from {prod}", prod],
                            cwd=tmp, capture_output=True, text=True, timeout=300)
         if r.returncode != 0:
-            repaired, repair_note = _repair_lockfile_only_merge(tmp)
-            if repaired:
-                return True, repair_note
             subprocess.run(["git", "merge", "--abort"], cwd=tmp, capture_output=True)
             log = ((r.stdout or "")[-1500:] + "\n" + (r.stderr or "")[-1500:]).strip()
-            if repair_note:
-                log += f"\nlockfile auto-repair: {repair_note}"
             return False, log or "staging/prod merge conflict"
         return True, "staging refreshed from prod"
     except subprocess.TimeoutExpired:
@@ -532,59 +409,8 @@ def _refresh_staging_with_prod(repo, prod):
     except Exception as e:
         return False, f"staging refresh error: {e}"
     finally:
-        # unlock first: a locked worktree survives `remove --force` and then PERMANENTLY blocks
-        # every fast-forward into the staging branch ("refusing to fetch into branch ... checked
-        # out at /tmp/stg-*") — this exact leak zeroed the merge rate on 2026-07-14.
-        _git(repo, "worktree", "unlock", tmp)
         _git(repo, "worktree", "remove", "--force", tmp)
         shutil.rmtree(tmp, ignore_errors=True)
-        _git(repo, "worktree", "prune")
-
-
-def _repair_lockfile_only_merge(worktree):
-    """Regenerate lockfiles when they are the only production-refresh conflict.
-
-    Lockfiles are generated artifacts; routing these conflicts through an LLM repair
-    lane created days of duplicate relfix tasks. Regenerate from the already-merged
-    manifest with lifecycle scripts disabled, then finish the existing merge commit.
-    Source conflicts remain fail-closed for normal scrutiny.
-    """
-    unresolved = subprocess.run(
-        ["git", "diff", "--name-only", "--diff-filter=U"], cwd=worktree,
-        capture_output=True, text=True, timeout=30)
-    files = [x.strip() for x in (unresolved.stdout or "").splitlines() if x.strip()]
-    lockfiles = {"package-lock.json", "pnpm-lock.yaml", "yarn.lock"}
-    if unresolved.returncode != 0 or not files or any(x not in lockfiles for x in files):
-        return False, "not a lockfile-only conflict"
-    for name in files:
-        take = subprocess.run(["git", "checkout", "--theirs", "--", name],
-                              cwd=worktree, capture_output=True, text=True, timeout=30)
-        if take.returncode != 0:
-            return False, f"could not seed {name} for regeneration"
-        if name == "package-lock.json":
-            cmd = ["npm", "install", "--package-lock-only", "--ignore-scripts",
-                   "--prefer-offline", "--no-audit", "--fund=false"]
-        elif name == "pnpm-lock.yaml":
-            cmd = ["pnpm", "install", "--lockfile-only", "--no-frozen-lockfile",
-                   "--ignore-scripts", "--prefer-offline"]
-        else:
-            cmd = ["yarn", "install", "--mode=update-lockfile", "--ignore-scripts"]
-        generated = subprocess.run(cmd, cwd=worktree, capture_output=True, text=True, timeout=300)
-        if generated.returncode != 0:
-            return False, f"{name} regeneration failed: {((generated.stderr or generated.stdout or '')[-300:])}"
-    added = subprocess.run(["git", "add", "--", *files], cwd=worktree,
-                           capture_output=True, text=True, timeout=30)
-    if added.returncode != 0:
-        return False, "could not stage regenerated lockfile"
-    remaining = subprocess.run(["git", "diff", "--name-only", "--diff-filter=U"],
-                               cwd=worktree, capture_output=True, text=True, timeout=30)
-    if (remaining.stdout or "").strip():
-        return False, "unresolved files remain after lockfile regeneration"
-    committed = subprocess.run(["git", "commit", "--no-edit"], cwd=worktree,
-                               capture_output=True, text=True, timeout=60)
-    if committed.returncode != 0:
-        return False, f"regenerated lockfile commit failed: {((committed.stderr or '')[-300:])}"
-    return True, "staging refreshed; lockfile-only conflict regenerated deterministically"
 
 
 def _merge_into_staging(repo, branch):
@@ -639,29 +465,11 @@ def _run_for_unlocked(project, repo_override=None):
             merged += 1
     release_base = _release_base_ref(repo, prod)
     release_base_sha = _git(repo, "rev-parse", release_base).stdout.strip()
-    # Reconcile production into staging *before* any gate runs.  The previous
-    # order verified the old staging tree and merged production afterwards,
-    # allowing an untested merge result to be promoted (or repeatedly held).
-    initial_staging_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
-    held = _hold_for_open_fix(p, project, "refresh")
-    if held:
-        return held
-    if _recent_failed_gate(project, initial_staging_sha, "refresh"):
-        return {"project": project, "note": "unchanged staging SHA already failed staging/prod refresh recently"}
-    refreshed, refresh_note = _refresh_staging_with_prod(repo, release_base)
-    if not refreshed:
-        _self_heal_release_conflict(p, project, repo, prod, refresh_note)
-        _insert_failed_release(project, "refresh", 0, release_base_sha, initial_staging_sha,
-                               f"staging/prod refresh failed — self-heal queued: {refresh_note[-160:]}")
-        _record_release_flow(project, "staging-red-refresh", prod=prod, ahead=0,
-                             note=refresh_note[-300:])
-        return {"project": project, "note": "staging/prod refresh failed; relfix queued"}
     staging_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
     # count staging changes vs the deployable prod tip, not necessarily a stale checked-out local branch
     ahead = _git(repo, "rev-list", "--count", f"{release_base}..{STAGING}").stdout.strip() or "0"
-    if _release_decision(ahead, False) == "up-to-date":
-        _record_release_flow(project, "up-to-date", prod=prod, staged=merged, ahead=0)
-        return {"project": project, "prod": prod, "staged": merged, "ahead": "0", "note": "up to date"}
+    if int(ahead) < MIN_BATCH:
+        return {"project": project, "prod": prod, "staged": merged, "ahead": ahead, "note": "below batch size"}
     due, due_note = _release_due(project)
     # Amortize normal traffic into batches, but never strand low-volume projects
     # forever below MIN_BATCH: cadence expiry flushes whatever is ready.
@@ -735,29 +543,22 @@ def _run_for_unlocked(project, repo_override=None):
     # forces it (ORCH_RELEASE_REQUIRE_TESTS=true), or when release_kpi flagged this app as chronically
     # failing its prod deploy. Otherwise tests are advisory — so a missing/placeholder `npm test` never
     # hard-blocks a deploy (the bug that stalled tomorrow/pareto/smarter) while real suites still gate.
-    qa_cmd = test_cmd
-    qa_plan = {"mode": "full", "command": test_cmd, "reason": "selective QA disabled"}
-    if test_cmd and _truthy("ORCH_SELECTIVE_QA", True):
-        try:
-            import selective_qa
-            qa_plan = selective_qa.plan(repo, release_base_sha, staging_sha, test_cmd)
-            qa_cmd = qa_plan.get("command") or test_cmd
-        except Exception:
-            qa_cmd = test_cmd
-    qa_reused = False
+    det_cmd, has_real_tests = _detect_test_cmd(repo)
+    test_cmd = p.get("test_cmd") or det_cmd or os.environ.get("DEFAULT_TEST_CMD", "")
+    if p.get("test_cmd") and not os.path.isfile(os.path.join(repo, "package.json")) and det_cmd:
+        test_cmd = det_cmd
+        db.update("projects", {"name": project}, {"test_cmd": det_cmd})
+    require_tests = (has_real_tests
+                     or os.environ.get("ORCH_RELEASE_REQUIRE_TESTS", "false").lower() == "true"
+                     or _kpi_requires_tests(project))
     if test_cmd and require_tests:
-        try:
-            import proof_graph
-            qa_reused = bool(proof_graph.reusable_verification(repo, staging_sha, qa_cmd, "qa"))
-        except Exception:
-            qa_reused = False
-    if test_cmd and require_tests and not qa_reused:
         held = _hold_for_open_fix(p, project, "qa")
         if held:
             return held
         if _recent_failed_gate(project, staging_sha, "qa"):
             return {"project": project, "qa": "HELD", "note": "unchanged staging SHA already failed QA recently"}
-        import commit_overlay
+        import tempfile, shutil
+        tmp = tempfile.mkdtemp(prefix="qa-")
         try:
             try:
                 import dependency_prewarm
@@ -767,48 +568,20 @@ def _run_for_unlocked(project, repo_override=None):
                     _self_heal_qa(p, project, repo, STAGING, qlog)
                     _insert_failed_release(project, "qa", ahead, release_base_sha, staging_sha,
                                            f"staging QA dependency prewarm failed — self-heal queued: {qlog[-160:]}")
-                    _record_release_flow(project, "staging-red-qa", prod=prod, ahead=int(ahead),
-                                         note="dependency prewarm failed")
                     return {"project": project, "qa": "FAILED", "note": "dependency prewarm failed; held"}
             except Exception:
                 pass
-            with commit_overlay.checkout(repo, staging_sha, prefix="release-qa-overlay-") as overlay:
-                tmp = overlay["path"]
-                _link_shared_runtime(repo, tmp)
-                prepared, prepare_log = _prepare_generated_types(tmp)
-                if prepared:
-                    qa = subprocess.run(["bash", "-lc", qa_cmd], cwd=tmp, capture_output=True, text=True, timeout=1800)
-                    ok = qa.returncode == 0
-                else:
-                    qa = subprocess.CompletedProcess(qa_cmd, 1, "", "Nuxt type preparation failed:\n" + prepare_log)
-                    ok = False
-        except Exception as exc:
-            qa = subprocess.CompletedProcess(qa_cmd, 1, "", f"QA overlay failed: {exc}")
-            ok = False
-        if not ok:
-            qlog = ((qa.stdout or "")[-5000:] + "\n" + (qa.stderr or "")[-5000:]).strip()
-            if _truthy("ORCH_DIFFERENTIAL_QA", True):
-                try:
-                    import differential_qa
-                    baseline = differential_qa.cached(repo, release_base_sha, qa_cmd)
-                    if baseline is None:
-                        baseline_ok, baseline_log = _qa_ref(repo, release_base_sha, qa_cmd)
-                        differential_qa.store(repo, release_base_sha, qa_cmd, baseline_ok, baseline_log)
-                    else:
-                        baseline_ok, baseline_log = baseline.get("ok"), baseline.get("log", "")
-                    comparison = differential_qa.compare(qlog, baseline_log)
-                    if not baseline_ok and comparison.get("allowed"):
-                        ok = True
-                        qa_plan["reason"] = "differential QA: unchanged production-baseline failures"
-                except Exception:
-                    pass
+            _git(repo, "worktree", "add", "-f", tmp, STAGING)
+            _link_shared_runtime(repo, tmp)
+            qa = subprocess.run(["bash", "-lc", test_cmd], cwd=tmp, capture_output=True, text=True, timeout=1800)
+            ok = qa.returncode == 0
+        finally:
+            _git(repo, "worktree", "remove", "--force", tmp); shutil.rmtree(tmp, ignore_errors=True)
         if not ok:
             qlog = ((qa.stdout or "")[-5000:] + "\n" + (qa.stderr or "")[-5000:]).strip()
             _self_heal_qa(p, project, repo, STAGING, qlog)
             _insert_failed_release(project, "qa", ahead, release_base_sha, staging_sha,
                                    f"staging QA failed (tests required) — self-heal queued: {qlog[-160:]}")
-            _record_release_flow(project, "staging-red-qa", prod=prod, ahead=int(ahead),
-                                 note="staging tests failed")
             return {"project": project, "qa": "FAILED", "note": "staging not green; held"}
         if manifest:
             release_manifest.record_gate(manifest["id"], "qa", True, command=qa_cmd,
@@ -828,66 +601,30 @@ def _run_for_unlocked(project, repo_override=None):
                 return held
             if _recent_failed_gate(project, staging_sha, "build"):
                 return {"project": project, "build": "HELD", "note": "unchanged staging SHA already failed build recently"}
-            try:
-                import proof_graph
-                build_reused = bool(proof_graph.reusable_verification(repo, staging_sha, bcmd, "build"))
-            except Exception:
-                build_reused = False
-            if build_reused:
-                bok, blog = True, "reused exact commit/dependency verification proof"
-            else:
-                bok, blog = build_gate.run_build(repo, STAGING, bcmd)
+            bok, blog = build_gate.run_build(repo, STAGING, bcmd)
             if not bok:
                 _self_heal_build(p, project, repo, STAGING, blog)  # queue a targeted build-fix task
                 _insert_failed_release(project, "build", ahead, release_base_sha, staging_sha,
                                        f"staging BUILD red — self-heal queued: {blog[-120:]}")
-                _record_release_flow(project, "staging-red-build", prod=prod, ahead=int(ahead),
-                                     note="staging build failed")
                 return {"project": project, "build": "RED", "note": "staging build not green; build-fix task queued"}
-            if not build_reused:
-                try:
-                    import proof_graph
-                    proof_graph.record_verification(repo, staging_sha, bcmd, "build", True)
-                except Exception:
-                    pass
-            if manifest:
-                release_manifest.record_gate(manifest["id"], "build", True, command=bcmd,
-                                             detail="production build green")
-    except Exception as e:
-        # A broken/misconfigured build gate is itself a red gate. Failing open
-        # here allowed unverified production commits to reach Vercel.
-        note = f"build gate failed closed: {type(e).__name__}: {e}"
-        _insert_failed_release(project, "build", ahead, release_base_sha, staging_sha, note)
-        _record_release_flow(project, "staging-build-gate-error", prod=prod, ahead=int(ahead), note=note[:300])
-        return {"project": project, "build": "RED", "note": note}
-    # Promote only the exact tree that passed copy, QA, and build. Background
-    # integration workers may advance staging while expensive gates run; that
-    # newer tree belongs in the next release and must never borrow this proof.
-    current_staging_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
-    if manifest:
-        try:
-            valid, manifest_note = release_manifest.validate(repo, manifest)
-        except Exception as e:
-            valid, manifest_note = False, str(e)
-        if not valid:
-            _record_release_flow(project, "release-manifest-invalid", prod=prod, ahead=int(ahead),
-                                 from_sha=staging_sha, to_sha=current_staging_sha, note=manifest_note[:300])
-            return {"project": project, "manifest": "INVALID", "note": manifest_note}
-    if current_staging_sha != staging_sha:
-        _insert_failed_release(project, "snapshot", ahead, release_base_sha, current_staging_sha,
-                               f"staging changed after verification: {staging_sha[:12]} -> {current_staging_sha[:12]}")
-        _record_release_flow(project, "staging-changed-after-verify", prod=prod, ahead=int(ahead),
-                             from_sha=staging_sha, to_sha=current_staging_sha)
-        return {"project": project, "snapshot": "CHANGED",
-                "note": "staging advanced during verification; next release will verify the new snapshot"}
-    # release: record last-good, ff prod to the verified snapshot, push
-    # (deploy_verify confirms/rolls back)
+    except Exception:
+        pass
+    # release: record last-good, ff prod to staging, push (deploy_verify confirms/rolls back)
+    held = _hold_for_open_fix(p, project, "refresh")
+    if held:
+        return held
+    if _recent_failed_gate(project, staging_sha, "refresh"):
+        return {"project": project, "note": "unchanged staging SHA already failed staging/prod refresh recently"}
+    refreshed, refresh_note = _refresh_staging_with_prod(repo, release_base)
+    if not refreshed:
+        _self_heal_release_conflict(p, project, repo, prod, refresh_note)
+        _insert_failed_release(project, "refresh", ahead, release_base_sha, staging_sha,
+                               f"staging/prod refresh failed — self-heal queued: {refresh_note[-160:]}")
+        return {"project": project, "note": "staging/prod refresh failed; relfix queued"}
     last_good = release_base_sha
     db.update("projects", {"name": project}, {"last_good_sha": last_good})
-    push_on = _truthy("ORCH_PUSH_ON_RELEASE", True)
-    to_sha = staging_sha
-    _record_release_flow(project, "prod-promoting" if push_on else "prod-ready-local",
-                         prod=prod, ahead=int(ahead), from_sha=last_good, to_sha=to_sha)
+    push_on = os.environ.get("ORCH_PUSH_ON_RELEASE", os.environ.get("ORCH_PUSH_ON_MERGE", "false")).lower() == "true"
+    to_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
     if not push_on:
         ff = _git(repo, "fetch", ".", f"{STAGING}:{prod}")
         if ff.returncode != 0:
@@ -895,8 +632,6 @@ def _run_for_unlocked(project, repo_override=None):
             _self_heal_release_conflict(p, project, repo, prod, flog or "prod could not fast-forward from staging")
             _insert_failed_release(project, "push", ahead, release_base_sha, staging_sha,
                                    "prod could not fast-forward from staging — self-heal queued")
-            _record_release_flow(project, "prod-local-ff-failed", prod=prod, ahead=int(ahead),
-                                 note=(flog or "prod could not fast-forward from staging")[-300:])
             return {"project": project, "note": "prod could not fast-forward from staging; relfix queued"}
         to_sha = _git(repo, "rev-parse", prod).stdout.strip()
     ver = _next_version()
@@ -905,14 +640,7 @@ def _run_for_unlocked(project, repo_override=None):
                     "n_changes": int(ahead), "changelog": changelog, "deploy_status": "pending"})
     pushed = None
     if push_on:
-        # Ensure auth before push — prevents "Not logged in" failures when
-        # task_refs.publish() hasn't run for this repo in this process yet.
-        try:
-            import task_refs
-            task_refs._ensure_auth(repo)
-        except Exception:
-            pass
-        pr = _git(repo, "push", "origin", f"{staging_sha}:refs/heads/{prod}", timeout=300)
+        pr = _git(repo, "push", "origin", f"{STAGING}:{prod}", timeout=300)
         pushed = pr.returncode == 0
         if pushed:
             # Keep local prod fresh when possible, but do not fail a good remote
@@ -922,9 +650,6 @@ def _run_for_unlocked(project, repo_override=None):
         else:
             plog = ((pr.stdout or "")[-1000:] + "\n" + (pr.stderr or "")[-1000:]).strip()
             _self_heal_release_conflict(p, project, repo, prod, plog or "push staging to prod failed")
-        _record_release_flow(project, "prod-pushed" if pushed else "prod-push-failed",
-                             prod=prod, ahead=int(ahead), from_sha=last_good, to_sha=to_sha,
-                             note="" if pushed else ((pr.stderr or pr.stdout)[-300:] if (pr.stderr or pr.stdout) else "push failed"))
         db.update("releases", {"project": project, "to_sha": to_sha},
                   {"deploy_status": "building" if pushed else "failed",
                    "note": "" if pushed else ((pr.stderr or pr.stdout)[-160:] if (pr.stderr or pr.stdout) else "push failed")})

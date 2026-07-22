@@ -285,19 +285,11 @@ def run_batchmech():
 
 
 def run_releasetrain():
-    """Run the normal protected release train.
-
-    ``AUTOPILOT_RELEASE_TRAIN_ONLY_HOTLANE`` used to make this periodic job a
-    permanent no-op. The hot lane is conditional (it only runs when a release
-    blocker is present), so a healthy approved artifact could otherwise remain
-    integrated but never reach the normal batch/cadence gate. Calling the
-    canonical train here is safe: its per-repository single-flight locks,
-    isolated checkout, QA, batch threshold and cadence checks remain the only
-    route to a production push. An active hot-lane attempt simply observes the
-    same repo lock and is skipped for that repository.
-    """
-    import release_train
-    return release_train.run()
+    """Accumulate agent work on staging, QA it, release to prod (main/master) as a batch."""
+    if os.environ.get("AUTOPILOT_RELEASE_TRAIN_ONLY_HOTLANE", "true").lower() in ("1", "true", "yes", "on"):
+        print("releasetrain: skipped; hot-lane release_blocker_agent owns release attempts")
+        return {"skipped": "hotlane_only"}
+    import release_train; release_train.run()
 
 
 def run_deployverify():
@@ -845,11 +837,9 @@ if __name__ == "__main__":
         "resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn",
         "approval_policy.py", "queue_janitor.py", "unstick", "dagfix", "batchmech",
         "selftune", "cluster", "governor", "costslo", "promote", "prewarm",
-        "billingguard", "dedup", "conflictresolve", "canaryecon", "forecast", "arbitrage", "autoscale",
-        "contcompact", "backlogcompact",
+        "billingguard", "dedup", "canaryecon", "forecast", "arbitrage", "autoscale",
         "bizradar", "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",
         "stripe", "ownerreport", "worktreegc", "remediate", "selfcheck",
-        "quarantine", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain", "nightsweep",
         "release_kpi.py", "integrate_kpi.py", "fleet_control.py",
     }
     if job not in _SAFE_WHEN_PAUSED:

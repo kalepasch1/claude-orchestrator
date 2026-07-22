@@ -19,6 +19,16 @@ FLEET_TTL = int(os.environ.get("FLEET_TTL_S", "180"))
 PER_MACHINE_MAX = int(os.environ.get("MAX_PARALLEL", "4"))
 
 
+def _physical_host(name):
+    raw = str(name or "")
+    marker = " lane "
+    return raw.split(marker, 1)[0] if marker in raw else raw
+
+
+def _is_lane(name):
+    return " lane " in str(name or "")
+
+
 def _live(rows):
     now = datetime.datetime.now(datetime.timezone.utc)
     live = []
@@ -39,61 +49,26 @@ STATUS_SCAN_LIMIT = int(os.environ.get("ORCH_FLEET_STATUS_SCAN_LIMIT", "500"))
 
 
 def status():
-    # 2026-07-11: runner_heartbeats accumulates one row PER RUNNER RESTART (each restart gets a
-    # new PID-based runner_id, and heartbeat() upserts on runner_id -- so restarts, not lane
-    # churn, are what grow this table over time). An unordered, unbounded select() could return
-    # an arbitrary slice dominated by long-dead rows, making _live() find almost nothing even
-    # when the fleet has dozens of genuinely live lanes -- this made fleet.capacity() report
-    # near-empty utilization while the real fleet was near-saturated. Order by last_seen DESC so
-    # the freshest rows are always the ones fetched, regardless of total table size/history.
-    rows = db.select("runner_heartbeats", {
-        "select": "*", "order": "last_seen.desc", "limit": str(STATUS_SCAN_LIMIT),
-    }) or []
-    # Logical lane heartbeats are visibility records, not extra physical machines.
-    # Counting each lane as a machine multiplied both active work and ceiling (one
-    # 60-slot runner appeared as six machines / 360 slots). Prefer the base runner's
-    # authoritative active_tasks value and collapse restarts by physical hostname.
-    live_rows = _live(rows)
+    rows = _live(db.select("runner_heartbeats", {"select": "*"}) or [])
+    # Collapse logical lane heartbeats back to physical machines. db.heartbeat() emits synthetic
+    # "<host> lane N" rows for dashboard lane visibility; counting those as machines made the fleet
+    # ceiling look 8-10x larger than the real hardware and hid memory pressure. Use the canonical
+    # non-lane heartbeat for active_tasks when present; lane rows are just per-lane visibility.
     groups = {}
-    for r in live_rows:
-        raw_host = r.get("hostname") or r.get("runner_id") or "unknown"
-        host = re.sub(r" lane \d+$", "", raw_host)
-        groups.setdefault(host, []).append(r)
+    for r in rows:
+        h = _physical_host(r.get("hostname") or r.get("runner_id"))
+        groups.setdefault(h, []).append(r)
     live = []
-    for host, members in groups.items():
-        base = [r for r in members if (r.get("hostname") or "") == host]
-        candidates = base or members
-        # The scheduler heartbeat is the aggregate process-level record. If a
-        # restart briefly leaves several fresh base rows, prefer it; otherwise
-        # use the highest active count rather than whichever PID wrote last.
-        schedulers = [r for r in candidates if str(r.get("runner_id") or "").endswith("-scheduler")]
-        freshest = max(candidates, key=lambda r: r.get("last_seen") or "")
-        chosen = freshest
-        if schedulers:
-            scheduler = max(schedulers, key=lambda r: r.get("last_seen") or "")
-            try:
-                sched_at = datetime.datetime.fromisoformat(str(scheduler.get("last_seen")).replace("Z", "+00:00"))
-                fresh_at = datetime.datetime.fromisoformat(str(freshest.get("last_seen")).replace("Z", "+00:00"))
-                if (fresh_at - sched_at).total_seconds() <= int(os.environ.get("ORCH_SCHEDULER_HEARTBEAT_GRACE_S", "60")):
-                    chosen = scheduler
-            except Exception:
-                pass
-        row = dict(chosen)
-        row["hostname"] = host
-        # A host can briefly have an old scheduler and a fresh runner process.
-        # Surface that version skew instead of silently treating their combined
-        # task counts as one healthy machine.
-        contracts = {}
-        for member in members:
-            key = (member.get("code_sha") or "unknown", member.get("contract_hash") or "unknown")
-            contracts[key] = contracts.get(key, 0) + 1
-        dominant, count = max(contracts.items(), key=lambda item: item[1])
-        row["code_sha"], row["contract_hash"] = dominant
-        row["contract_variants"] = len(contracts)
-        row["contract_compatible"] = len(contracts) == 1 and dominant[1] != "unknown"
-        if not base:
-            row["active_tasks"] = sum(int(r.get("active_tasks") or 0) for r in members)
-        live.append(row)
+    for h, items in groups.items():
+        real = [r for r in items if not _is_lane(r.get("hostname") or r.get("runner_id"))]
+        source = max(real or items, key=lambda r: r.get("last_seen") or "")
+        nr = dict(source)
+        nr["hostname"] = h
+        if real:
+            nr["active_tasks"] = max(int(r.get("active_tasks") or 0) for r in real)
+        else:
+            nr["active_tasks"] = sum(int(r.get("active_tasks") or 0) for r in items)
+        live.append(nr)
     return {
         "machines_live": len(live),
         "machines": [{"host": r.get("hostname"), "runner": r.get("runner_id"),

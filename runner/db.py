@@ -70,34 +70,10 @@ _ensure_tool_path()
 
 URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
-HTTP_TIMEOUT = float(os.environ.get("ORCH_SUPABASE_TIMEOUT", "90") or 90)
-HTTP_RETRIES = int(os.environ.get("ORCH_SUPABASE_RETRIES", "2") or 2)
-HTTP_RETRY_STATUSES = {500, 502, 503, 504}
 RECOVERY_PREFIX = "recover-missing-branch-"
 CANARY_PREFIX = "canary-"
 IMPROVEMENT_PREFIX = "improve-"
-RELEASE_FIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-", "copyfix-")
-CLAIM_SCAN_LIMIT = int(os.environ.get("ORCH_CLAIM_SCAN_LIMIT", "1000") or 1000)
-PROJECT_PRIORITY_ORDER = {
-    "orchestrator": 1,
-    "beethoven": 1,
-    "tomorrow": 2,
-    "apparently": 3,
-    "smarter": 4,
-    "pareto-2080": 5,
-    "pareto": 5,
-    "2080": 5,
-    "hisanta": 6,
-    "santas-secret-workshop": 6,
-    "galop": 7,
-    "racefeed": 7,
-    "sustainable-barks": 8,
-    "sustainablebarks": 8,
-}
-
-
-def _project_rank_name(name):
-    return PROJECT_PRIORITY_ORDER.get(str(name or "").strip().lower(), 9)
+RELEASE_FIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-")
 
 
 def _req(method, path, body=None, headers=None, params=None):
@@ -243,6 +219,26 @@ def _ev_rank_map():
         return None
 
 
+def _is_recovery_task(t):
+    return str((t or {}).get("slug") or "").startswith(RECOVERY_PREFIX)
+
+
+def _is_release_fix_task(t):
+    slug = str((t or {}).get("slug") or "")
+    note = str((t or {}).get("note") or "").lower()
+    return slug.startswith(RELEASE_FIX_PREFIXES) or "release_train" in note or "vercel" in note
+
+
+def _is_improvement_task(t):
+    return str((t or {}).get("slug") or "").startswith(IMPROVEMENT_PREFIX)
+
+
+def _is_evidence_task(t):
+    slug = str((t or {}).get("slug") or "")
+    note = str((t or {}).get("note") or "").lower()
+    return slug.startswith(CANARY_PREFIX) or "coder-canary" in note or "routing sample" in note
+
+
 def claim_task(runner_id):
     """Atomically grab one QUEUED or TESTING task whose deps are satisfied. ECONOMIC ORDERING:
     within a project-priority band, prefer higher-ROI projects (projects.concurrency_weight, set
@@ -292,8 +288,6 @@ def claim_task(runner_id):
         os.environ.get("ORCH_EVIDENCE_JUMP_QUEUE", "true").lower() in ("true", "1", "yes", "on")
         and any(_is_evidence_task(t) for t in queued)
     )
-    evidence_reserved_lanes = max(0, int(os.environ.get("ORCH_EVIDENCE_RESERVED_LANES", "1") or 0))
-    evidence_reserve_open = evidence_backlog and active_evidence < evidence_reserved_lanes
 
     def _task_priority(t):
         return _num(t.get("priority"), 1000)
@@ -330,11 +324,6 @@ def claim_task(runner_id):
         # before recovery so green staged batches can ship overnight.
         return 0 if (release_fix_backlog and _is_release_fix_task(t)) else (1 if release_fix_backlog else 0)
 
-    def _evidence_reserve_rank(t):
-        # Keep at least one tiny evidence lane alive so GPT/Gemini/DeepSeek/Ollama samples become real
-        # outcomes instead of staying permanently queued behind release/recovery pressure.
-        return 0 if (evidence_reserve_open and _is_evidence_task(t)) else (1 if evidence_reserve_open else 0)
-
     def _release_fix_urgency(t):
         if not _is_release_fix_task(t):
             return 9
@@ -351,8 +340,7 @@ def claim_task(runner_id):
 
     def _evidence_rank(t):
         # Canary/evidence tasks are tiny, bounded, and produce the non-Claude merge samples the router
-        # needs. Let them jump ahead of recovery too: otherwise a deep recovery backlog can hide every
-        # API-provider sample and leave routing in permanent "learning" mode. Release fixes still win.
+        # needs; run them before ordinary new work, but never ahead of missing-branch recovery.
         return 0 if (evidence_backlog and _is_evidence_task(t)) else (1 if evidence_backlog else 0)
 
     def _project_lane_limit(t):
@@ -368,12 +356,10 @@ def claim_task(runner_id):
             return max(per_project_limit, int(os.environ.get("ORCH_IMPROVEMENT_PER_PROJECT_CODE_LANES", "2")))
         return per_project_limit
 
-    queued.sort(key=lambda t: (_evidence_reserve_rank(t),                        # reserve one vendor-evidence lane
-                               _portfolio_project_rank(t),                       # owner portfolio priority order
-                               _release_fix_rank(t),                             # unblock Vercel releases first inside each project
+    queued.sort(key=lambda t: (_release_fix_rank(t),                             # unblock Vercel releases first
                                _release_fix_urgency(t),                          # hot gate fixes before stale EV noise
-                               _evidence_rank(t),                                # bounded canaries unblock learned routing
                                _recovery_rank(t),                                # recover tested work next
+                               _evidence_rank(t),                                # then collect routing evidence
                                _improvement_rank(t),                             # then drain improve-* work
                                _churn(t),                                        # real work before churn
                                _thermal_rank(t),                                 # EV/min thermal map

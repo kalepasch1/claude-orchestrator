@@ -120,37 +120,6 @@ def _git(*args, timeout=120):
     return subprocess.run(["git", *args], cwd=REPO, capture_output=True, text=True, timeout=timeout)
 
 
-def _current_branch():
-    return _git("branch", "--show-current").stdout.strip()
-
-
-def _has_upstream():
-    return _git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}").returncode == 0
-
-
-def _dirty_worktree():
-    # Only TRACKED modifications should block auto-pull. Untracked files (stray build caches,
-    # logs, generated test artifacts) do NOT prevent a --ff-only pull — git itself refuses only
-    # if an incoming file would overwrite an untracked one. Counting untracked files here (plain
-    # `status --porcelain` lists them as `??`) permanently disabled auto-pull on any clone that
-    # had a single leftover file, which is what kept machines chronically stale despite
-    # ORCH_AUTO_PULL=true. Exclude untracked so a --ff-only pull can proceed.
-    return bool(_git("status", "--porcelain", "--untracked-files=no").stdout.strip())
-
-
-def _pull_safe():
-    branch = _current_branch()
-    if not branch:
-        return False, "detached HEAD"
-    if branch.startswith("agent/"):
-        return False, f"agent branch {branch}"
-    if not _has_upstream():
-        return False, f"branch {branch} has no upstream"
-    if _dirty_worktree():
-        return False, "dirty worktree"
-    return True, branch
-
-
 def _host_aliases():
     aliases = {HOST}
     if HOST.endswith(".local"):
@@ -162,15 +131,6 @@ def _host_aliases():
 
 def _target_matches(target):
     return target == "all" or target in _host_aliases()
-
-
-def _control_done(target, handled, params):
-    if target != "all":
-        return True
-    expected = set((params or {}).get("expected_hosts") or [])
-    if not expected:
-        return False
-    return expected.issubset(set(handled or []))
 
 
 def _restart():
@@ -225,8 +185,7 @@ def process_controls():
         target = str(r.get("target") or "all")
         handled = r.get("handled_by") or []
         aliases = _host_aliases()
-        if (not _target_matches(target) or any(h in handled for h in aliases)
-                or str(r.get("id")) in _local_acks()):
+        if not _target_matches(target) or any(h in handled for h in aliases):
             continue
         action = str(r.get("action") or "").lower()
         try:
@@ -255,12 +214,7 @@ def process_controls():
             new_handled = list(dict.fromkeys(handled + [HOST]))
             params = r.get("params") or {}
             db.update("fleet_control", {"id": r["id"]},
-                      {
-                          "handled_by": new_handled,
-                          "done": _control_done(target, new_handled, params),
-                          "last_error": None,
-                          "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                      })
+                      {"handled_by": handled + [HOST], "done": (target != "all")})
             done += 1
             if action == "git_pull" and params.get("restart", True):
                 _mark_local_ack(r["id"])
