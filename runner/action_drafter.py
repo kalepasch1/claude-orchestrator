@@ -13,11 +13,14 @@ import os, sys, re, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
-# Safe, reversible operator commands we allow one-click execution for. Everything else is manual.
+# Safe, reversible operator commands we allow one-click execution for.
+# Criteria: idempotent, no data loss, no secret exposure, no billing side-effects.
+# Everything not matching this allowlist stays manual-only in the cockpit.
 SAFE_CMD = re.compile(r"^\s*(npx prisma migrate deploy|npx prisma generate|supabase db push|"
                       r"supabase migration up|vercel env pull|npm run (migrate|seed|build)|"
                       r"git pull --ff-only)\s*$", re.I)
-# Never auto-run anything touching these — force manual.
+# Never auto-run anything touching these keywords — force manual review regardless of
+# whether the command otherwise matches SAFE_CMD.
 UNSAFE = re.compile(r"(secret|token|api[_-]?key|password|delete|drop |rm -rf|payment|charge|"
                     r"transfer|prod.*delete|revoke|force)", re.I)
 
