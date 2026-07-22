@@ -208,6 +208,33 @@ def _age_minutes(row):
         return 0
 
 
+def _attribute_deploy_to_outcomes(project):
+    """Mark integrated outcomes for this project as deployed after a confirmed prod deploy.
+
+    Fail-soft: if the columns don't exist yet (migration pending) the update
+    will raise and we silently skip — the columns being NULL is the pre-migration state.
+    """
+    try:
+        rows = db.select("outcomes", {
+            "select": "slug",
+            "project": f"eq.{project}",
+            "integrated": "eq.true",
+            "deployed": "is.false",
+            "limit": "500",
+        }) or []
+        for r in rows:
+            slug = r.get("slug")
+            if not slug:
+                continue
+            try:
+                db.update("outcomes", {"slug": slug, "project": project},
+                          {"deployed": True, "deploy_status": "success"})
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 def run():
     pend = db.select("releases", {"select": "*", "deploy_status": "in.(building,pending,verification_blocked)",
                                   "order": "created_at.desc", "limit": "20"}) or []
@@ -237,13 +264,8 @@ def run():
                        "deployed_at": "now()", "note": note})
             db.update("projects", {"name": project}, {"last_good_sha": release["to_sha"],
                       "vercel_project": vproj})
-            try:
-                import release_attribution
-                release_attribution.attribute_release(project, p.get("repo_path") or "", release, db)
-            except Exception as e:
-                print(f"deploy_verify: release attribution skipped for {project}: {str(e)[:160]}")
-            suffix = "ignored non-deployable changes" if ignored_build else url
-            print(f"deploy_verify: {project} deploy OK ({suffix})")
+            _attribute_deploy_to_outcomes(project)
+            print(f"deploy_verify: {project} deploy OK ({url})")
             continue
 
         age_min = _age_minutes(release)
