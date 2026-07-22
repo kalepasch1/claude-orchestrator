@@ -50,6 +50,48 @@ APP_MESHES = {
         "default_sensitivity": "crown_jewel",
         "north_star": "accepted legal output with low edit distance, no missed obligations, no privilege mistakes",
     },
+    "vigil": {
+        "aliases": ("publius",),
+        "domain": "civic discourse analysis and truth verification",
+        "settlement": "verified_civic_insight_or_debunked_claim_per_dollar",
+        "default_sensitivity": "standard",
+        "north_star": "verified claims, debunked misinformation, civic pulse accuracy, source reliability",
+    },
+    "hisanta": {
+        "aliases": ("santas-secret-workshop",),
+        "domain": "Christmas-themed gamified experience with advent and economy",
+        "settlement": "safe_child_appropriate_engagement_event_per_dollar",
+        "default_sensitivity": "standard",
+        "north_star": "safe engaging child experience with balanced economy and zero inappropriate content",
+    },
+    "galop": {
+        "aliases": ("racefeed",),
+        "domain": "horse racing data aggregation and intelligence feed",
+        "settlement": "accurate_race_insight_or_prediction_per_dollar",
+        "default_sensitivity": "standard",
+        "north_star": "accurate race data, reliable form analysis, verified results, timely odds",
+    },
+    "pareto": {
+        "aliases": ("2080", "pareto-2080"),
+        "domain": "Pareto-optimal portfolio analysis and resource allocation",
+        "settlement": "actionable_optimization_insight_per_dollar",
+        "default_sensitivity": "confidential",
+        "north_star": "efficient resource allocation on the Pareto frontier with validated trade-offs",
+    },
+    "darwn": {
+        "aliases": (),
+        "domain": "evolutionary and adaptive learning system",
+        "settlement": "validated_adaptive_improvement_per_dollar",
+        "default_sensitivity": "standard",
+        "north_star": "converging adaptive improvements with maintained diversity and generalization",
+    },
+    "sustainable-barks": {
+        "aliases": ("sustainable_barks",),
+        "domain": "B2B hotel-shelter partnership and sustainable pet toy commerce",
+        "settlement": "completed_shelter_partnership_order_per_dollar",
+        "default_sensitivity": "standard",
+        "north_star": "partner retention, shelter impact, fulfilled orders, sustainable growth",
+    },
 }
 
 ROLE_SPECS = {
@@ -166,6 +208,78 @@ Acceptance:
 - all learning passes through distillation/dataPosture and never persists client identifiers;
 - settlement uses partner edit distance, principal-fit, missed-obligation count, privilege flags, trust receipts, and assignment-won signals;
 - email remains only a rail: bots ingest/resolve work into Now/Ask/Approve rather than creating another inbox.""",
+    },
+    "vigil": {
+        "slug": "improve-mesh-vigil-civic-intelligence-market",
+        "title": "Implement civic intelligence verification mesh",
+        "prompt": """Implement Vigil's civic intelligence mesh using the shared Agent Market Kernel pattern.
+
+Acceptance:
+- fact-checker, source verifier, bias auditor, civic analyst, and historical context bots compete by verified civic insight per dollar;
+- claims require multi-source triangulation before verification status changes;
+- misinformation flags require independent verifier confirmation from a different provider;
+- publius hive integration feeds civic pulse data back into the mesh for continuous learning;
+- all learning respects editorial independence and avoids partisan bias in verification.""",
+    },
+    "hisanta": {
+        "slug": "improve-mesh-hisanta-gamified-experience-market",
+        "title": "Implement gamified experience safety and balance mesh",
+        "prompt": """Implement HiSanta's gamified experience mesh using the shared Agent Market Kernel pattern.
+
+Acceptance:
+- content safety reviewer, economy balancer, UX tester, age-gate enforcer, and fun factor scout bots compete by safe child-appropriate engagement per dollar;
+- all AI-generated content passes through checkContent() safety filter before display;
+- economy changes require balancer verification to prevent exploit or inflation;
+- purchase flows enforce childCanPurchasePass() guard with age < 18 blocks;
+- advent progression and loot fairness verified by independent auditor bot.""",
+    },
+    "galop": {
+        "slug": "improve-mesh-galop-racing-intelligence-market",
+        "title": "Implement racing data intelligence mesh",
+        "prompt": """Implement Galop's racing intelligence mesh using the shared Agent Market Kernel pattern.
+
+Acceptance:
+- data scout, form analyst, odds compiler, track specialist, and result verifier bots compete by accurate race insight per dollar;
+- race data accuracy verified against official sources before publication;
+- odds analysis includes confidence intervals and historical calibration;
+- stale data detection flags outdated form or track conditions automatically;
+- result verification cross-references multiple official racing authorities.""",
+    },
+    "pareto": {
+        "slug": "improve-mesh-pareto-optimization-market",
+        "title": "Implement portfolio optimization mesh",
+        "prompt": """Implement Pareto's optimization mesh using the shared Agent Market Kernel pattern.
+
+Acceptance:
+- optimization analyst, constraint modeler, trade-off evaluator, efficiency auditor, and projection verifier bots compete by actionable optimization insight per dollar;
+- Pareto frontier calculations verified by independent constraint checker;
+- resource allocation recommendations include sensitivity analysis;
+- false optimum detection flags local optima that miss global efficiency;
+- all projections include uncertainty bounds and assumption documentation.""",
+    },
+    "darwn": {
+        "slug": "improve-mesh-darwn-evolutionary-learning-market",
+        "title": "Implement evolutionary learning mesh",
+        "prompt": """Implement Darwn's evolutionary learning mesh using the shared Agent Market Kernel pattern.
+
+Acceptance:
+- fitness evaluator, mutation designer, selection analyst, convergence auditor, and diversity guardian bots compete by validated adaptive improvement per dollar;
+- premature convergence detection halts optimization and diversifies population;
+- overfitting detection compares training vs holdout fitness metrics;
+- diversity collapse alerts trigger automatic population expansion;
+- all evolutionary runs maintain genealogy for reproducibility audit.""",
+    },
+    "sustainable-barks": {
+        "slug": "improve-mesh-sustainable-barks-commerce-market",
+        "title": "Implement shelter partnership commerce mesh",
+        "prompt": """Implement Sustainable Barks' commerce mesh using the shared Agent Market Kernel pattern.
+
+Acceptance:
+- partnership scout, fulfillment coordinator, impact tracker, renewal manager, and pricing analyst bots compete by completed shelter partnership order per dollar;
+- order fulfillment tracked end-to-end with shelter impact metrics;
+- renewal predictions flag at-risk partnerships before churn;
+- bundle pricing validated against margin targets and shelter donation commitments;
+- partner onboarding quality verified by satisfaction survey integration.""",
     },
 }
 

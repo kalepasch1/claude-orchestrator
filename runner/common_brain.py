@@ -84,6 +84,84 @@ APP_RECIPES = {
             "proof": "defensible-work receipt",
         },
     },
+    "vigil": {
+        "aliases": ("publius",),
+        "surface": "civic-intelligence-truth-verification",
+        "domain": "civic discourse analysis and truth verification",
+        "settlement": "verified civic insight or debunked claim per dollar",
+        "cade": {
+            "target": "claim verification, source triangulation, bias detection, civic pulse, misinformation flag",
+            "roster": "fact-checker, source verifier, bias auditor, civic analyst, historical context expert",
+            "adversary": "misinformation advocate, selective framing critic, source reliability challenger",
+            "reviewer": "editorial board, fact-check consortium, and public interest audit",
+            "proof": "civic-truth proof pack",
+        },
+    },
+    "hisanta": {
+        "aliases": ("santas-secret-workshop",),
+        "surface": "gamified-advent-experience-engine",
+        "domain": "Christmas-themed gamified experience with advent calendar and economy",
+        "settlement": "safe child-appropriate engagement event per dollar",
+        "cade": {
+            "target": "content safety, economy balance, advent progression, loot fairness, purchase guard",
+            "roster": "content safety reviewer, economy balancer, UX tester, age-gate enforcer, fun factor scout",
+            "adversary": "inappropriate content injector, economy exploiter, purchase bypass attacker",
+            "reviewer": "child safety board, parent perspective, and engagement quality audit",
+            "proof": "child-safe experience receipt",
+        },
+    },
+    "galop": {
+        "aliases": ("racefeed",),
+        "surface": "racing-data-intelligence-feed",
+        "domain": "horse racing data aggregation and intelligence",
+        "settlement": "accurate race insight or prediction per dollar",
+        "cade": {
+            "target": "race data accuracy, odds analysis, form assessment, track condition integration, result verification",
+            "roster": "data scout, form analyst, odds compiler, track specialist, result verifier",
+            "adversary": "stale data injector, odds manipulation detector, false form critic",
+            "reviewer": "racing authority, data integrity audit, and historical accuracy check",
+            "proof": "racing-intelligence proof pack",
+        },
+    },
+    "pareto": {
+        "aliases": ("2080", "pareto-2080"),
+        "surface": "portfolio-optimization-engine",
+        "domain": "Pareto-optimal portfolio analysis and resource allocation",
+        "settlement": "actionable optimization insight per dollar",
+        "cade": {
+            "target": "resource allocation, efficiency frontier, trade-off analysis, constraint satisfaction, outcome projection",
+            "roster": "optimization analyst, constraint modeler, trade-off evaluator, efficiency auditor, projection verifier",
+            "adversary": "overfitting critic, constraint violation detector, false optimum challenger",
+            "reviewer": "portfolio committee, efficiency audit, and outcome tracking",
+            "proof": "optimization-proof pack",
+        },
+    },
+    "darwn": {
+        "aliases": (),
+        "surface": "evolutionary-learning-platform",
+        "domain": "evolutionary and adaptive learning system",
+        "settlement": "validated adaptive improvement per dollar",
+        "cade": {
+            "target": "fitness evaluation, mutation strategy, selection pressure, adaptation tracking, convergence verification",
+            "roster": "fitness evaluator, mutation designer, selection analyst, convergence auditor, diversity guardian",
+            "adversary": "premature convergence critic, overfitting detector, diversity collapse challenger",
+            "reviewer": "evolution committee, adaptation audit, and generalization check",
+            "proof": "evolutionary-fitness proof pack",
+        },
+    },
+    "sustainable-barks": {
+        "aliases": ("sustainable_barks",),
+        "surface": "shelter-partnership-commerce-engine",
+        "domain": "B2B hotel-shelter partnership and sustainable pet toy commerce",
+        "settlement": "completed shelter partnership order per dollar",
+        "cade": {
+            "target": "order fulfillment, shelter impact tracking, partner onboarding, renewal management, bundle pricing",
+            "roster": "partnership scout, fulfillment coordinator, impact tracker, renewal manager, pricing analyst",
+            "adversary": "supply chain disruptor, churn predictor, margin erosion critic",
+            "reviewer": "partner satisfaction, shelter impact audit, and revenue sustainability check",
+            "proof": "shelter-impact proof pack",
+        },
+    },
 }
 
 
@@ -316,6 +394,12 @@ def cade_review():
         "orchestrator_use": "Use CADE for high-stakes self-improvement, model-routing, merge/release, and queue-priority decisions with deployed-diff proof packs.",
         "tomorrow_use": "Use CADE for trade/no-trade, execution route, negotiation stance, and compliance-risk determinations with execution optimality receipts.",
         "smarter_use": "Use CADE for legal work product, principal-fit, citation, privilege, and obligation decisions with defensible-work receipts.",
+        "vigil_use": "Use CADE for claim verification, source triangulation, bias detection, and civic pulse determinations with civic-truth proof packs.",
+        "hisanta_use": "Use CADE for content safety, economy balance, purchase guards, and advent progression with child-safe experience receipts.",
+        "galop_use": "Use CADE for race data accuracy, form assessment, odds analysis, and result verification with racing-intelligence proof packs.",
+        "pareto_use": "Use CADE for resource allocation, efficiency frontier, constraint satisfaction, and outcome projection with optimization-proof packs.",
+        "darwn_use": "Use CADE for fitness evaluation, mutation strategy, selection pressure, and convergence verification with evolutionary-fitness proof packs.",
+        "sustainable_barks_use": "Use CADE for order fulfillment, shelter impact, partner onboarding, and renewal management with shelter-impact proof packs.",
         "common_brain_use": "CADE becomes the deliberate/prove stage inside the reusable brain, surrounded by retrieval, agent market routing, verification, outcome learning, and reuse publication.",
     }
 
