@@ -146,13 +146,13 @@ onMounted(async () => {
 <template>
   <main class="command-page">
     <section class="command-hero">
-      <div class="hero-kicker"><span class="pulse-dot" /> Madeus command centers</div>
+      <div class="hero-kicker"><span class="pulse-dot"></span> Madeus command centers</div>
       <h1>One outcome in.<br><span>Every specialist coordinated.</span></h1>
       <p>Choose a focused workspace when you want controls and tools, or simply describe the outcome. Madeus handles routing, models, vendors, branches, research, QA, and release.</p>
 
       <form class="outcome-box" @submit.prevent="submit()">
         <div class="outcome-label">What should we accomplish?</div>
-        <textarea v-model="prompt" rows="3" placeholder="Build, fix, research, design, review, or improve anything…" />
+        <textarea v-model="prompt" rows="3" placeholder="Build, fix, research, design, review, or improve anything…"></textarea>
         <div class="outcome-footer">
           <label class="project-select">
             <span>Project</span>
