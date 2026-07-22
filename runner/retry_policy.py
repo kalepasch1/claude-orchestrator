@@ -90,6 +90,11 @@ def record_outcome(note: str, succeeded: bool) -> None:
 
 
 def backoff_seconds(transient_retries: int) -> float:
+    """Exponential backoff with +/-25% jitter, capped at BACKOFF_CAP_S.
+
+    Formula: min(BACKOFF_CAP_S, BACKOFF_BASE_S * 2^n) * uniform(0.75, 1.25).
+    With defaults (base=5s, cap=120s): retry 0 → ~5s, retry 4 → ~80s, retry 5+ → ~120s.
+    """
     import random
     n = max(0, int(transient_retries or 0))
     base = min(BACKOFF_CAP_S, BACKOFF_BASE_S * (2 ** n))
