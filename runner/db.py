@@ -909,6 +909,25 @@ def claim_task(runner_id):
             return max(per_project_limit, int(os.environ.get("ORCH_QUARANTINE_REWORK_PER_PROJECT_CODE_LANES", "2")))
         return per_project_limit
 
+    def _cooling_down(t):
+        """Skip tasks that failed recently — exponential backoff based on retry_count."""
+        rc = int(t.get("retry_count") or 0)
+        if rc == 0:
+            return False
+        last = t.get("updated_at") or t.get("created_at") or ""
+        if not last:
+            return False
+        try:
+            from datetime import datetime, timezone
+            if last.endswith("Z"):
+                last = last[:-1] + "+00:00"
+            updated = datetime.fromisoformat(last)
+            cooldown_s = min(3600, 30 * (2 ** min(rc - 1, 6)))  # 30s, 60s, 120s, ... up to 1h
+            elapsed = (datetime.now(timezone.utc) - updated).total_seconds()
+            return elapsed < cooldown_s
+        except Exception:
+            return False
+
     queued.sort(key=lambda t: (_evidence_reserve_rank(t),                        # reserve one vendor-evidence lane
                                _recovery_reserve_rank(t),                        # turn completed work into mergeable branches
                                _release_fix_rank(t),                             # unblock Vercel releases across the portfolio
