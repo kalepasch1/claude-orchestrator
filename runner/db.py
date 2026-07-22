@@ -130,59 +130,10 @@ def redact_secrets(text):
     except Exception:
         return text
 HTTP_RETRIES = int(os.environ.get("ORCH_SUPABASE_RETRIES", "1") or 1)
-HTTP_RETRY_STATUSES = {429, 500, 502, 503, 504, 521, 522, 523}  # incl. Cloudflare origin-down codes so monitors ride through Supabase capacity blips instead of silently no-op'ing
-
-# DB Failover state: track consecutive DB failures to trigger offline mode
-DB_DOWN_THRESHOLD = int(os.environ.get("SENTINEL_DB_DOWN_THRESHOLD", "3"))
-_db_failure_count = 0
-_db_failure_lock = threading.Lock()
-
-
-def _reset_db_failure_count():
-    """Reset failure counter on successful DB operation."""
-    global _db_failure_count
-    with _db_failure_lock:
-        _db_failure_count = 0
-
-
-def _increment_db_failure_count():
-    """Increment failure counter on DB operation failure."""
-    global _db_failure_count
-    with _db_failure_lock:
-        _db_failure_count += 1
-        return _db_failure_count
-
-
-def is_db_down():
-    """Check if DB is considered down based on failure count."""
-    with _db_failure_lock:
-        return _db_failure_count >= DB_DOWN_THRESHOLD
-
-
-# Thread-safe per-slug dedup lock pool (prevents same-machine race conditions)
-_DEDUP_LOCKS = {}
-_DEDUP_LOCKS_LOCK = threading.Lock()
-
-class _dedup_lock:
-    """Per-key lock for serializing task inserts with the same slug."""
-    def __init__(self, key):
-        self.key = key
-    def __enter__(self):
-        with _DEDUP_LOCKS_LOCK:
-            if self.key not in _DEDUP_LOCKS:
-                _DEDUP_LOCKS[self.key] = threading.Lock()
-            self._lock = _DEDUP_LOCKS[self.key]
-        self._lock.acquire()
-        return self
-    def __exit__(self, *args):
-        self._lock.release()
-        # Clean up to prevent memory leak (only if no one else is waiting)
-        with _DEDUP_LOCKS_LOCK:
-            if self.key in _DEDUP_LOCKS and not _DEDUP_LOCKS[self.key].locked():
-                try:
-                    del _DEDUP_LOCKS[self.key]
-                except KeyError:
-                    pass
+# Retry on transient HTTP errors: 429 (rate-limited), 5xx (server errors),
+# plus Cloudflare origin-down codes (521-523) so monitors ride through
+# Supabase capacity blips instead of silently no-op'ing.
+HTTP_RETRY_STATUSES = {429, 500, 502, 503, 504, 521, 522, 523}
 RECOVERY_PREFIX = "recover-missing-branch-"
 CANARY_PREFIX = "canary-"
 IMPROVEMENT_PREFIX = "improve-"
