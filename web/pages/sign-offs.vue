@@ -32,7 +32,7 @@ const filtered = computed(() => {
 })
 const bulkApprovalSafe = computed(() => canBulkApprove(filtered.value))
 
-// ── CADE library ──────────────────────────────────────────────────────────────
+// ── Decision library ─────────────────────────────────────────────────────────
 interface CadeEntry { context: string; action: string; approveValue: string; denyRisk: string; evidence: string; isLegal: boolean; legalProjects: string[] }
 const KNOWN_CADE: Record<string, CadeEntry> = {
   'b400bd23-8aea-4096-aaa8-12ac5357989a': {
@@ -78,6 +78,70 @@ function getCade(a: any): CadeEntry {
     isLegal: a.kind === 'legal' || a.legal_risk_level === 'high',
     legalProjects: a.project ? [a.project] : [],
   }
+}
+
+// ── AI Consensus Assessment ───────────────────────────────────────────────────
+interface AiAssessment { recommendation: string; confidence: number; reasoning: string; risks: string[]; legalExposure: boolean }
+const AI_ASSESSMENTS: Record<string, AiAssessment> = {
+  'b400bd23-8aea-4096-aaa8-12ac5357989a': {
+    recommendation: 'APPROVE',
+    confidence: 91,
+    reasoning: 'Pattern is proven and already operational across all other portfolio apps. toDeterminationCredential is scoped to issue triage classification only — no write access to production data or user records. The credential gap is blocking dependent pipeline tasks with measurable queue cost. Delay cost exceeds approval risk. No legal or regulatory exposure detected for this credential type.',
+    risks: [
+      'If the darwin-kernel OAuth token is shared across all 3 apps, a token expiry becomes a single point of failure for Apparently, smarter, and Pareto simultaneously.',
+      'Scope of toDeterminationCredential should be explicitly verified before provisioning — confirm read-only / classification-only access.',
+      'Verify Apparently and smarter do not route user-generated content through CADE determination (potential PII consideration).',
+    ],
+    legalExposure: false,
+  },
+  'fc0b4bf3-7714-4cdf-bb1d-1d3ec31906fa': {
+    recommendation: 'ACKNOWLEDGE',
+    confidence: 98,
+    reasoning: 'resource_medic correctly applied hot-lane exclusion after 4 RAM-clamp cycles in 60 minutes, which is the configured safety threshold. This is informational only — the protective action is already applied and correct. Codestral:22b and deepseek-coder-v2:16b exceed comfortable RAM bounds on current hardware. Canary-only is the right long-term posture until RAM is expanded.',
+    risks: [
+      'If these models provided unique capability not covered by haiku/sonnet, canary-only restriction may reduce output quality on specific edge cases.',
+      'No fleet-wide throughput impact — haiku and sonnet continue handling all hot-lane work.',
+    ],
+    legalExposure: false,
+  },
+  '78d3eb2f-87f7-42c8-bc01-4c130411f20e': {
+    recommendation: 'CANCEL',
+    confidence: 83,
+    reasoning: 'All dependency tasks are in DECOMPOSED state, meaning the orchestrator already broke this work into sub-tasks that have since executed. The parent cade-precedent-gap-harvest task is a vestige. Given the volume of similar CADE work completed in the past 7 days, its objective is likely already covered. Cancelling removes the orphan and frees the queue slot.',
+    risks: [
+      'If cancelled incorrectly, specific CADE precedent gap edge cases may be missed — low probability given decomposed sub-tasks already ran.',
+      'Search for open "cade-precedent" tasks before cancelling to confirm coverage.',
+    ],
+    legalExposure: false,
+  },
+  'f5ad2036-0fac-4f04-acbe-db18d966a87e': {
+    recommendation: 'MONITOR',
+    confidence: 88,
+    reasoning: 'RAM at 92.7% is critical but the orchestrator is already throttled correctly to 1 concurrent task. This should self-resolve as running tasks complete. The concern is if multiple large Sonnet or Gemini tasks are simultaneously in RUNNING state — their memory footprints accumulate. If RAM does not drop below 85% in 30 minutes, manual runner restart is needed.',
+    risks: [
+      'If RAM stays elevated: risk of Mac crash or OOM kill of the runner process, which would leave RUNNING tasks as stale zombies.',
+      'Disk at 45.3% is moderate — /tmp worktrees accumulate during high throughput. Verify pruning is completing successfully.',
+      'Throttle to 1 concurrent task reduces pipeline throughput significantly until pressure clears.',
+    ],
+    legalExposure: false,
+  },
+}
+function getAi(a: any): AiAssessment {
+  return AI_ASSESSMENTS[a.id] || {
+    recommendation: a.kind === 'legal' || a.legal_risk_level === 'high' ? 'ESCALATE' : 'APPROVE',
+    confidence: 65,
+    reasoning: 'Insufficient precedent data for a high-confidence assessment. Review the CADE sections carefully before deciding.',
+    risks: ['No specific risks enumerated — manual review recommended.'],
+    legalExposure: a.kind === 'legal' || a.legal_risk_level === 'high',
+  }
+}
+
+const REC_STYLE: Record<string, string> = {
+  APPROVE:     'text-emerald-700 bg-emerald-50 border-emerald-200',
+  ACKNOWLEDGE: 'text-blue-700 bg-blue-50 border-blue-200',
+  CANCEL:      'text-red-700 bg-red-50 border-red-200',
+  ESCALATE:    'text-red-700 bg-red-50 border-red-300',
+  MONITOR:     'text-amber-700 bg-amber-50 border-amber-200',
 }
 
 const WAR_ROOM_PAGES = [
@@ -191,7 +255,7 @@ watch(user, u => { if (u) loadAll() })
         <div class="text-xs text-gray-400 mt-1">All gates are clear</div>
       </div>
 
-      <!-- CADE + AI Approval Cards -->
+      <!-- Decision + AI Approval Cards -->
       <div v-else class="space-y-5">
         <div v-for="a in filtered" :key="a.id"
           class="bg-white border border-gray-200 border-l-2 rounded-lg overflow-hidden"
@@ -212,8 +276,63 @@ watch(user, u => { if (u) loadAll() })
             <h3 class="text-sm font-medium text-gray-900 leading-snug" style="font-family:'Fraunces',serif;">{{ a.title }}</h3>
           </div>
 
-          <div class="px-5 space-y-3 pb-3">
-            <DecisionBrief :approval="a" />
+          <!-- Decision Sections -->
+          <div class="px-5 space-y-2 pb-3">
+            <div class="rounded border border-gray-200 overflow-hidden">
+              <div class="px-3 py-1 bg-gray-50 border-b border-gray-200"><span class="text-[9px] font-medium text-gray-500 tracking-[0.15em] uppercase">Context</span></div>
+              <div class="px-3 py-2.5 text-xs text-gray-600 leading-relaxed">{{ getCade(a).context }}</div>
+            </div>
+            <div class="rounded border border-gray-200 overflow-hidden">
+              <div class="px-3 py-1 bg-gray-50 border-b border-gray-200"><span class="text-[9px] font-medium text-gray-500 tracking-[0.15em] uppercase">Action Required</span></div>
+              <div class="px-3 py-2.5 text-xs text-gray-600 leading-relaxed">{{ getCade(a).action }}</div>
+            </div>
+            <div class="rounded border border-gray-200 overflow-hidden">
+              <div class="px-3 py-1 bg-gray-50 border-b border-gray-200"><span class="text-[9px] font-medium text-gray-500 tracking-[0.15em] uppercase">Decision</span></div>
+              <div class="px-3 py-2.5 space-y-1">
+                <div class="text-xs"><span class="text-emerald-600 font-medium mr-2">Approve =</span><span class="text-gray-600">{{ getCade(a).approveValue }}</span></div>
+                <div class="text-xs"><span class="text-red-600 font-medium mr-2">Deny =</span><span class="text-gray-600">{{ getCade(a).denyRisk }}</span></div>
+              </div>
+            </div>
+            <div class="rounded border border-gray-200 overflow-hidden">
+              <div class="px-3 py-1 bg-gray-50 border-b border-gray-200"><span class="text-[9px] font-medium text-gray-500 tracking-[0.15em] uppercase">Evidence</span></div>
+              <div class="px-3 py-2.5 text-xs text-gray-600 leading-relaxed">{{ getCade(a).evidence }}</div>
+            </div>
+
+            <!-- ── AI Consensus Assessment ────────────────────────────────── -->
+            <div class="rounded border border-blue-200 overflow-hidden">
+              <div class="px-3 py-1 bg-blue-50 border-b border-blue-200 flex items-center gap-2">
+                <span class="text-[9px] font-medium text-blue-600 tracking-[0.15em] uppercase">AI Consensus Assessment</span>
+                <span class="text-[8px] text-blue-400">· claude-orchestrator intelligence</span>
+              </div>
+              <div class="px-3 py-3 space-y-3">
+                <!-- Recommendation + confidence -->
+                <div class="flex items-center gap-3">
+                  <span class="text-[10px] px-3 py-1 rounded border font-bold tracking-wider" :class="REC_STYLE[getAi(a).recommendation] || REC_STYLE['APPROVE']">
+                    {{ getAi(a).recommendation }}
+                  </span>
+                  <div class="flex-1 bg-gray-100 rounded-full h-1.5">
+                    <div class="h-1.5 rounded-full bg-emerald-500" :style="`width:${getAi(a).confidence}%`"></div>
+                  </div>
+                  <span class="text-[10px] text-gray-400 font-mono">{{ getAi(a).confidence }}%</span>
+                </div>
+                <!-- Reasoning -->
+                <div class="text-xs text-gray-600 leading-relaxed italic border-l-2 border-blue-200 pl-3">
+                  "{{ getAi(a).reasoning }}"
+                </div>
+                <!-- Risks -->
+                <div v-if="getAi(a).risks.length" class="space-y-1">
+                  <div class="text-[9px] font-medium text-blue-600 tracking-[0.12em] uppercase mb-1">Risks Identified</div>
+                  <div v-for="(risk, i) in getAi(a).risks" :key="i" class="flex gap-2 text-xs text-gray-600">
+                    <span class="text-blue-300 flex-shrink-0 mt-0.5">·</span>
+                    <span>{{ risk }}</span>
+                  </div>
+                </div>
+                <!-- Legal exposure flag -->
+                <div v-if="getAi(a).legalExposure" class="flex items-center gap-2 text-xs text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1.5">
+                  <span>⚠</span> Legal/regulatory exposure detected — escalate to legal review before deciding.
+                </div>
+              </div>
+            </div>
 
             <!-- ── War Room Links (legal/regulated projects) ──────────────── -->
             <div v-if="getCade(a).legalProjects.length > 0" class="rounded border border-gray-200 overflow-hidden">

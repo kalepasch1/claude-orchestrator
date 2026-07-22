@@ -3,6 +3,72 @@ definePageMeta({ layout: 'default' })
 import { ORCHESTRATOR_CAPABILITIES } from '~/config/orchestratorCapabilities'
 
 const supabase = useSupabaseClient<any>()
+const user = useSupabaseUser()
+
+const CAPS = [
+  { slug: 'deploy-orchestrator', name: 'Deployment', domain: 'devops', icon: '🚀', status: 'trusted', maturity: 86, summary: 'Canary deployments, rollbacks, release gates' },
+  { slug: 'review-orchestrator', name: 'Code Review', domain: 'engineering', icon: '👁', status: 'trusted', maturity: 91, summary: 'Multi-model code review, security scanning' },
+  { slug: 'optimize-orchestrator', name: 'Optimization', domain: 'engineering', icon: '⚡', status: 'trusted', maturity: 80, summary: 'Performance, cost, and prompt optimization' },
+  { slug: 'preflight-inspector', name: 'Pre-flight', domain: 'engineering', icon: '✈', status: 'trusted', maturity: 88, summary: 'Pre-execution validation of state and deps' },
+  { slug: 'remediation-orchestrator', name: 'Remediation', domain: 'engineering', icon: '🔧', status: 'trusted', maturity: 93, summary: 'Auto-diagnose and repair failing builds' },
+  { slug: 'growth-orchestrator', name: 'Growth', domain: 'growth', icon: '📈', status: 'trusted', maturity: 79, summary: 'Growth experiments, A/B tests, conversions' },
+  { slug: 'entity-formation', name: 'Entity Formation', domain: 'legal-ops', icon: '🏢', status: 'productizable', maturity: 95, summary: 'Jurisdiction-aware entity formation filings' },
+  { slug: 'legal-orchestrator', name: 'Legal', domain: 'legal-ops', icon: '⚖', status: 'trusted', maturity: 87, summary: 'Legal review, compliance, contracts' },
+  { slug: 'design-orchestrator', name: 'Chief Design', domain: 'product-design', icon: '🎨', status: 'trusted', maturity: 82, summary: 'UI/UX improvements, brand consistency' },
+  { slug: 'security-orchestrator', name: 'Security', domain: 'security', icon: '🔒', status: 'trusted', maturity: 89, summary: 'RLS, access controls, key rotation' },
+  { slug: 'colosseum-evaluator', name: 'Model Arena', domain: 'platform', icon: '🏟', status: 'experimental', maturity: 72, summary: 'Embedded model evaluation powering all routing' },
+  { slug: 'learn-orchestrator', name: 'Learning', domain: 'platform', icon: '📚', status: 'trusted', maturity: 81, summary: 'Pattern capture and shared knowledge' },
+  { slug: 'queue-orchestrator', name: 'Queue', domain: 'platform', icon: '📋', status: 'trusted', maturity: 84, summary: 'Task grooming, priority lanes, throughput' },
+]
+
+const DOMAINS = [
+  { key: 'all', label: 'All Capabilities', icon: '◎' },
+  { key: 'engineering', label: 'Engineering', icon: '⚙' },
+  { key: 'devops', label: 'DevOps', icon: '🚀' },
+  { key: 'product-design', label: 'Design', icon: '🎨' },
+  { key: 'legal-ops', label: 'Legal', icon: '⚖' },
+  { key: 'growth', label: 'Growth', icon: '📈' },
+  { key: 'security', label: 'Security', icon: '🔒' },
+  { key: 'platform', label: 'Platform', icon: '🏗' },
+  { key: 'terminal', label: 'Command Terminal', icon: '▸' },
+  { key: 'bots', label: 'Specialist Bots', icon: '🤖' },
+]
+
+const MODELS = [
+  { label: 'Sonnet 4.6', value: 'claude-sonnet-4-6' }, { label: 'Haiku 4.5', value: 'claude-haiku-4-5-20251001' },
+  { label: 'Opus 4.8', value: 'claude-opus-4-8' }, { label: 'GPT-4o', value: 'gpt-4o' },
+  { label: 'GPT-4o Mini', value: 'gpt-4o-mini' }, { label: 'Gemini 2.0 Flash', value: 'gemini/gemini-2.0-flash' },
+  { label: 'Gemini 1.5 Pro', value: 'gemini/gemini-1.5-pro' }, { label: 'Qwen2.5 Coder', value: 'ollama/qwen2.5-coder:7b' },
+  { label: 'Cowork Executor', value: 'cowork-executor' },
+]
+
+const SPECIALIST_BOTS = [
+  { name: 'Change Type Analyzer', group: 'Triage', status: 'active' },
+  { name: 'Impact Scope Assessor', group: 'Triage', status: 'active' },
+  { name: 'Regression Detector', group: 'Triage', status: 'active' },
+  { name: 'Pixel Inspector', group: 'Quality', status: 'active' },
+  { name: 'Consistency Checker', group: 'Quality', status: 'active' },
+  { name: 'A11y Validator', group: 'Quality', status: 'active' },
+  { name: 'Engagement Tracker', group: 'Analytics', status: 'active' },
+  { name: 'Heatmap Analyzer', group: 'Analytics', status: 'active' },
+  { name: 'Brand Consistency Bot', group: 'Brand', status: 'active' },
+  { name: 'Cognitive Load Sensor', group: 'UX', status: 'active' },
+  { name: 'Attention Flow Mapper', group: 'UX', status: 'active' },
+  { name: 'Anomaly Detector', group: 'Security', status: 'active' },
+  { name: 'Threat Modeler', group: 'Security', status: 'active' },
+  { name: 'Pattern Recognizer', group: 'Learning', status: 'active' },
+  { name: 'Intent Predictor', group: 'Learning', status: 'active' },
+]
+
+const activeDomain = ref('all')
+const terminalPrompt = ref('')
+const terminalLoading = ref(false)
+const terminalOutput = ref('')
+const selectedModel = ref('claude-sonnet-4-6')
+const selectedKind = ref('build')
+const selectedMode = ref('build')
+const routeInfo = ref('')
+const showOverride = ref(false)
 const projects = ref<any[]>([])
 const recentTasks = ref<any[]>([])
 const prompt = ref('')
@@ -113,10 +179,22 @@ onMounted(async () => {
       </div>
     </section>
 
-    <section class="autopilot-section">
-      <div class="section-heading">
-        <div><span>Handled automatically</span><h2>One request. A complete, verified route.</h2></div>
-        <p>The operating machinery stays out of your way. Open the proof only when it helps you make a decision.</p>
+      <!-- Specialist Bots -->
+      <div v-else-if="activeDomain === 'bots'" class="p-6 max-w-4xl space-y-4">
+        <h2 class="text-lg font-semibold text-gray-900" style="font-family: 'Fraunces', serif;">Specialist Bot Fleet</h2>
+        <p class="text-xs text-gray-500">60 bots across 15 groups powering automated quality, analytics, and optimization.</p>
+        <div class="space-y-2">
+          <div v-for="b in SPECIALIST_BOTS" :key="b.name" class="bg-white border border-gray-200 rounded-xl p-4 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+              <span class="w-2 h-2 rounded-full bg-emerald-500"></span>
+              <div>
+                <div class="text-sm text-gray-900">{{ b.name }}</div>
+                <div class="text-[10px] text-gray-400">{{ b.group }}</div>
+              </div>
+            </div>
+            <span class="text-[10px] text-emerald-600 font-medium">{{ b.status }}</span>
+          </div>
+        </div>
       </div>
       <div class="proof-grid">
         <article v-for="(item, index) in autopilotProof" :key="item.name"><b>{{ String(index + 1).padStart(2, '0') }}</b><div><h3>{{ item.name }}</h3><p>{{ item.summary }}</p></div><span>Included</span></article>

@@ -209,7 +209,38 @@ watch(user, async value => { if (value) await loadAll() })
         <div class="capability-grid">
           <NuxtLink v-for="capability in capabilityGroups" :key="capability.title" :to="capability.to" class="capability-card"><div class="capability-icon">{{ capability.icon }}</div><div><h3>{{ capability.title }}</h3><p>{{ capability.description }}</p><span>{{ capability.meta }}</span></div><b>↗</b></NuxtLink>
         </div>
-      </section>
+        <div class="divide-y divide-gray-200">
+          <div v-for="a in operatorApprovals" :key="a.id" class="px-5 py-4">
+            <!-- Decision mini brief -->
+            <div class="flex items-start justify-between gap-4 mb-3">
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 flex-wrap mb-1.5">
+                  <span class="text-[10px] px-2 py-0.5 rounded border font-medium"
+                    :class="a.kind === 'legal' ? 'bg-red-50 text-red-600 border-red-300' : a.kind === 'deploy' ? 'bg-blue-50 text-blue-600 border-blue-300' : 'bg-emerald-50 text-emerald-600 border-emerald-300'">
+                    {{ a.kind }}
+                  </span>
+                  <span v-if="a.project" class="text-[10px] text-gray-400 bg-gray-100 px-2 py-0.5 rounded border border-gray-200">{{ a.project }}</span>
+                  <span class="text-[10px] text-gray-400 ml-auto">{{ a.created_at ? ago(a.created_at) : '' }}</span>
+                </div>
+                <div class="text-sm font-medium text-gray-800 mb-2">{{ a.title }}</div>
+                <div class="space-y-1 text-xs">
+                  <div><span class="text-gray-400 font-medium mr-2">C</span><span class="text-gray-600">{{ a.why || 'Authorization required for this action.' }}</span></div>
+                  <div><span class="text-gray-400 font-medium mr-2">D</span>
+                    <span class="text-emerald-600">Approve = {{ a.value || 'proceed' }}</span>
+                    <span class="text-gray-400 mx-1">·</span>
+                    <span class="text-red-600">Deny = {{ a.risk || 'blocks dependent tasks' }}</span>
+                  </div>
+                </div>
+              </div>
+              <div class="flex flex-col gap-2 flex-shrink-0">
+                <button @click="decide(a.id, 'approved')" class="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-600 text-emerald-600 hover:text-white text-xs rounded border border-emerald-300 transition-colors">Approve</button>
+                <button @click="decide(a.id, 'denied')" class="px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 text-xs rounded border border-red-300 transition-colors">Deny</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div v-if="approvalError" class="px-5 py-2 text-xs text-red-600 bg-red-50 border-t border-red-200">{{ approvalError }}</div>
+      </div>
 
       <section v-if="operatorApprovals.length" class="section-block attention-block">
         <div class="section-heading"><div><span class="eyebrow">Your decision</span><h2>{{ operatorApprovals.length }} action{{ operatorApprovals.length === 1 ? '' : 's' }} only you can authorize</h2></div><NuxtLink to="/sign-offs">Review all ↗</NuxtLink></div>
