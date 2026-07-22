@@ -1,0 +1,38 @@
+# Dockerfile.runner - containerized Claude Orchestrator runner.
+#
+# The runner itself has no third-party Python dependencies (db.py is stdlib urllib), so this
+# image is intentionally small: Python3, Node/npm (target repos build with npm), git, and the
+# Claude Code CLI. See deploy/CLOUD_RUNNERS.md before using this in production — subscription
+# auth (not API billing) requires a real login session per container; this is a business/cost
+# decision, not something a Dockerfile can solve for you.
+FROM node:20-bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip git ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Claude Code CLI (subscription-auth client)
+RUN npm install -g @anthropic-ai/claude-code
+
+WORKDIR /app
+COPY runner/ /app/runner/
+
+# No requirements.txt today (stdlib only) — if that changes, add:
+# COPY runner/requirements.txt /app/runner/requirements.txt
+# RUN pip3 install --break-system-packages -r /app/runner/requirements.txt
+
+# Runner identity for account_partition.py / logical-runner accounting.
+# Override per container: docker run -e RUNNER_HOSTNAME=cloud-runner-1 ...
+ENV RUNNER_HOSTNAME=cloud-runner
+ENV CLAUDE_ORCH_HOME=/data/.claude-orchestrator
+
+# Mount a persisted volume at /data for:
+#   /data/.claude-orchestrator  - runtime state (toolchain cache, pause-arbiter state, etc.)
+#   /data/claude-auth           - `claude login` session (see CLOUD_RUNNERS.md)
+VOLUME ["/data"]
+
+# runner/.env is NOT baked into the image (it holds SUPABASE_SERVICE_KEY). Mount it read-only:
+#   docker run -v $(pwd)/runner/.env:/app/runner/.env:ro ...
+# or inject the individual ORCH_/SUPABASE_ vars directly as container env.
+
+CMD ["python3", "/app/runner/runner.py"]

@@ -34,7 +34,7 @@ import db
 import events
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
 import agentic_repair
-import continuous_test_runner
+import repo_lock         # per-repo mutex: concurrent train_run() calls must not race git refs
 
 MARK = "train"                                   # decided_by prefix => handled by the train
 # Non-code policy decisions are terminal approval artifacts, not merge work.  If
@@ -104,19 +104,6 @@ def _materialize_branch(repo, branch):
         return True
     if not repo or not os.path.isdir(repo):
         return False
-    # Worktree recovery: branch may exist in a detached worktree whose ref was pruned
-    try:
-        wt_result = _git(repo, "worktree", "list", "--porcelain", timeout=30)
-        if wt_result.returncode == 0:
-            for line in wt_result.stdout.splitlines():
-                if line.startswith("branch refs/heads/") and line.endswith(branch):
-                    # Found it in a worktree — the ref should already work, but
-                    # if the branch was pruned while the worktree exists, re-create it
-                    _git(repo, "worktree", "prune")
-                    if _branch_exists(repo, branch):
-                        return True
-    except Exception:
-        pass  # fail-soft: worktree recovery is best-effort
     try:
         _git(repo, "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}", timeout=120)
         if _git(repo, "rev-parse", "--verify", f"refs/remotes/origin/{branch}").returncode != 0:
@@ -164,122 +151,6 @@ def _rebase_onto_base(repo, branch, base):
     if _git(repo, "merge-base", "--is-ancestor", base, branch).returncode == 0:
         return True  # already based on current base
     return approval_merge._rebase_isolated(repo, base, branch)
-
-
-def _already_integrated(repo, branch, base):
-    return _git(repo, "merge-base", "--is-ancestor", branch, base).returncode == 0
-
-
-def _try_semantic_merge(repo, branch, base):
-    """Attempt AST-level semantic merge when rebase fails.
-
-    Identifies files changed on both sides since their merge-base, then uses
-    semantic_merge to resolve non-overlapping edits without a full redo.
-    Returns True if ALL conflicting files were auto-merged and a new commit
-    was created on `branch` that sits on top of `base`. Returns False on any
-    failure (caller falls through to existing redo logic).
-
-    Fail-soft: any exception returns False.
-    """
-    if semantic_merge is None:
-        return False
-    try:
-        # find the merge-base commit
-        mb = _git(repo, "merge-base", branch, base)
-        if mb.returncode != 0:
-            return False
-        merge_base = mb.stdout.strip()
-        if not merge_base:
-            return False
-
-        # files changed on the branch side (merge-base..branch)
-        branch_diff = _git(repo, "diff", "--name-only", merge_base, branch)
-        base_diff = _git(repo, "diff", "--name-only", merge_base, base)
-        if branch_diff.returncode != 0 or base_diff.returncode != 0:
-            return False
-
-        branch_files = set(branch_diff.stdout.strip().splitlines())
-        base_files = set(base_diff.stdout.strip().splitlines())
-        conflicting = branch_files & base_files
-        if not conflicting:
-            return False  # no overlapping files — rebase should have succeeded, don't mask the real issue
-
-        # check all conflicting files can be auto-merged
-        file_contents = {}  # filepath -> (ancestor, branch_ver, base_ver)
-        for fp in conflicting:
-            ancestor = _git(repo, "show", f"{merge_base}:{fp}")
-            branch_ver = _git(repo, "show", f"{branch}:{fp}")
-            base_ver = _git(repo, "show", f"{base}:{fp}")
-            # any missing file (added/deleted on one side) — bail out, too complex
-            if ancestor.returncode != 0 or branch_ver.returncode != 0 or base_ver.returncode != 0:
-                return False
-            file_contents[fp] = (ancestor.stdout, branch_ver.stdout, base_ver.stdout)
-
-        # phase 1: check all files are mergeable before touching anything
-        for fp, (anc, bv, basev) in file_contents.items():
-            if not semantic_merge.can_auto_merge(anc, bv, basev, filepath=fp):
-                return False
-
-        # phase 2: merge all files
-        merged_contents = {}
-        for fp, (anc, bv, basev) in file_contents.items():
-            result = semantic_merge.semantic_merge(anc, bv, basev, filepath=fp)
-            if result.get("merged") is None:
-                return False
-            merged_contents[fp] = result["merged"]
-
-        # phase 3: create a new commit on branch that sits on base with merged content
-        # use a temporary worktree to avoid touching the main checkout
-        wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt",
-                          f"smerge-{branch.replace('/', '-')}")
-        try:
-            os.makedirs(os.path.dirname(wt), exist_ok=True)
-            added = subprocess.run(["git", "worktree", "add", "-f", wt, branch], cwd=repo,
-                                   capture_output=True, timeout=60)
-            if added.returncode != 0 or not os.path.isdir(wt):
-                return False
-
-            # reset the worktree branch to base (all base content), then overlay merged files
-            reset = subprocess.run(["git", "reset", "--hard", base], cwd=wt,
-                                   capture_output=True, timeout=30)
-            if reset.returncode != 0:
-                return False
-
-            # apply all branch-only changes (files branch touched that base didn't)
-            branch_only = branch_files - conflicting
-            for fp in branch_only:
-                bv = _git(repo, "show", f"{branch}:{fp}")
-                if bv.returncode != 0:
-                    return False
-                fp_abs = os.path.join(wt, fp)
-                os.makedirs(os.path.dirname(fp_abs), exist_ok=True)
-                with open(fp_abs, "w", errors="replace") as f:
-                    f.write(bv.stdout)
-                subprocess.run(["git", "add", fp], cwd=wt, capture_output=True)
-
-            # write merged content for conflicting files
-            for fp, content in merged_contents.items():
-                fp_abs = os.path.join(wt, fp)
-                os.makedirs(os.path.dirname(fp_abs), exist_ok=True)
-                with open(fp_abs, "w", errors="replace") as f:
-                    f.write(content)
-                subprocess.run(["git", "add", fp], cwd=wt, capture_output=True)
-
-            # commit
-            msg = f"train: semantic merge of {branch} onto {base} (auto-resolved {len(merged_contents)} file(s))"
-            commit = subprocess.run(["git", "commit", "--allow-empty", "-m", msg], cwd=wt,
-                                    capture_output=True, timeout=30)
-            if commit.returncode != 0:
-                return False
-            return True
-        finally:
-            try:
-                subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=repo,
-                               capture_output=True, timeout=30)
-            except Exception:
-                pass
-    except Exception:
-        return False
 
 
 def _run_tests(repo, test_cmd, task=None):
@@ -373,13 +244,13 @@ def _ff_base(repo, branch, base):
 
 
 def _push_base(repo, base):
-    """Step 5: push only when enabled for this base. Returns '' or an error tail.
+    """Step 5: push only when explicitly enabled. Returns '' or an error tail.
 
     On a non-fast-forward rejection (origin moved while we merged — e.g. the other Mac pushed),
     reconcile once in an ISOLATED worktree: fetch origin/base, rebase local base's extra commits
     onto it, retry the push. Still failing -> return the error; the CALLER must NOT mark the task
     MERGED (a failed push previously counted as a merge and desynced the DB from GitHub)."""
-    if not _push_enabled_for_base(base):
+    if os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() != "true":
         return ""
     # Ensure auth before push — the PAT may not have been injected yet if
     # task_refs.publish() hasn't run for this repo in this process.
@@ -643,10 +514,10 @@ def _select_batch(group):
 
     Duplicate cards for one slug (240 were found for a single slug) used to flood
     every batch: keep the NEWEST card per slug and terminally mark the rest so
-    they are never picked again. Cap enforcement lives in train_run and charges
-    every terminal or repair-producing result.  Otherwise an unlimited sequence
-    of already-integrated or redo cards can monopolize the global train lease and
-    prevent newly reconciled cards from ever reaching a bounded pass."""
+    they are never picked again. Cap enforcement moved to train_run, which only
+    charges the cap for REAL integration attempts (merged/testfail/conflict) —
+    non-actionable outcomes (waiting/redo/branch-missing) no longer starve cards
+    whose branches actually exist (the 96%-pass / 2.75%-merge blockade)."""
     newest_by_slug = {}
     for card, slug, task in group:
         cur = newest_by_slug.get(slug)
@@ -660,11 +531,6 @@ def _select_batch(group):
                           {"decided_by": f"{MARK}:dup-card", "status": "approved"})
             except Exception:
                 pass
-    try:
-        import blocker_portfolio
-        value_scores = blocker_portfolio.scores([task for _, _, task in newest_by_slug.values()])
-    except Exception:
-        value_scores = {}
     annotated = [(card, slug, task, _risk_level(card, task))
                  for card, slug, task in newest_by_slug.values()]
     annotated.sort(key=lambda e: ({"low": 0, "standard": 1, "sensitive": 2}[e[3]],
@@ -993,20 +859,11 @@ def train_run():
                "risk": {"low": 0, "standard": 0, "sensitive": 0},
                "pressure": pressure}
     caps = {"low": LOW_RISK_BATCH, "standard": STANDARD_BATCH, "sensitive": SENSITIVE_BATCH}
-    # Every result that touches a card consumes a risk-band slot.  In particular,
-    # redo and already-integrated used to be free; a legacy backlog containing
-    # hundreds of either could therefore hold the global lease for an unbounded
-    # scan and starve later reconciliation cards.
-    BUDGET_OUTCOMES = ("merged", "already-integrated", "redo", "testfail",
-                       "conflict", "push-pending", "waiting-branch")
+    ATTEMPT_OUTCOMES = ("merged", "testfail", "conflict", "push-pending")  # real attempts (tests ran) consume the cap
     scan_cap = int(os.environ.get("MERGE_TRAIN_SCAN_PER_PROJECT", "200"))
-    def process_project(item):
-        pid, group = item
+    for pid, group in by_project.items():
         proj = projects.get(pid, {})
-        result = {"projects": 1, "merged": 0, "already_integrated": 0,
-                  "redo": 0, "testfail": 0,
-                  "conflict": 0, "skipped": 0,
-                  "risk": {"low": 0, "standard": 0, "sensitive": 0}}
+        summary["projects"] += 1
         used = {"low": 0, "standard": 0, "sensitive": 0}
         scanned = 0
         # CONCURRENCY FIX (2026-07-08 merge-stall root cause): train_run() can be invoked
@@ -1018,71 +875,31 @@ def train_run():
         # touches a given project's working copy at a time. On a busy repo where another
         # thread is mid-train, skip this cycle rather than block indefinitely -- the next
         # scheduled pass (or the next task completion) will pick it back up.
-        repo_path = db.localize_repo_path(proj.get("repo_path", ""))
-        with repo_lock.hold(repo_path, timeout=300, priority=True) as got_lock:
+        repo_path = proj.get("repo_path", "")
+        with repo_lock.hold(repo_path, timeout=120) as got_lock:
             if not got_lock:
-                result["skipped"] += len(group)
+                summary["skipped"] += len(group)
                 print(f"merge_train: {proj.get('name') or pid} busy (another train holds the repo lock) — skipping this cycle")
-                return result
-            try:
-                with integration_runtime.isolated_repo(repo_path, "merge_train") as integration_repo:
-                    for card, slug, task, risk in _select_batch(group):
-                        if used[risk] >= caps[risk] or scanned >= scan_cap:
-                            continue
-                        scanned += 1
-                        result["risk"][risk] += 1
-                        outcome = _integrate_card(
-                            card, slug, task, proj, repo_override=integration_repo
-                        )
-                        if outcome in BUDGET_OUTCOMES:
-                            used[risk] += 1
-                        if outcome == "merged":
-                            result["merged"] += 1
-                        elif outcome == "already-integrated":
-                            result["already_integrated"] += 1
-                        elif outcome == "redo":
-                            result["redo"] += 1
-                        elif outcome == "testfail":
-                            result["testfail"] += 1
-                        elif outcome == "conflict":
-                            result["conflict"] += 1
-                        else:
-                            result["skipped"] += 1
-            except integration_runtime.IntegrationRuntimeError as exc:
-                result["skipped"] += len(group)
-                print(f"merge_train: {proj.get('name') or pid} isolation blocked: {exc}")
-        return result
-
-    def process_project_isolated(item):
-        """One broken repo/toolchain must not abort every other project's train."""
-        pid, group = item
-        try:
-            result = process_project(item)
-            result["project_errors"] = 0
-            return result
-        except Exception as exc:
-            pname = (projects.get(pid, {}) or {}).get("name") or str(pid)
-            print(f"merge_train [{pname}] PROJECT-ERROR: {type(exc).__name__}: {str(exc)[:500]}",
-                  flush=True)
-            return {"projects": 1, "merged": 0, "already_integrated": 0,
-                    "redo": 0, "testfail": 0, "conflict": 0,
-                    "skipped": len(group), "project_errors": 1,
-                    "risk": {"low": 0, "standard": 0, "sensitive": 0}}
-
-    items = list(by_project.items())
-    workers = min(len(items), max(1, int(os.environ.get("MERGE_TRAIN_PROJECT_WORKERS", "4"))))
-    if items:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers,
-                                                   thread_name_prefix="merge-project") as pool:
-            results = list(pool.map(process_project_isolated, items))
-        for result in results:
-            for key in ("projects", "merged", "already_integrated", "redo",
-                        "testfail", "conflict", "skipped", "project_errors"):
-                summary[key] += result[key]
-            for risk, count in result["risk"].items():
-                summary["risk"][risk] += count
-    print(f"merge_train: {summary['merged']} merged, {summary['already_integrated']} already, "
-          f"{summary['redo']} redo, "
+                continue
+            for card, slug, task, risk in _select_batch(group):
+                if used[risk] >= caps[risk] or scanned >= scan_cap:
+                    continue
+                scanned += 1
+                summary["risk"][risk] += 1
+                outcome = _integrate_card(card, slug, task, proj)
+                if outcome in ATTEMPT_OUTCOMES:
+                    used[risk] += 1
+                if outcome == "merged":
+                    summary["merged"] += 1
+                elif outcome == "redo":
+                    summary["redo"] += 1
+                elif outcome == "testfail":
+                    summary["testfail"] += 1
+                elif outcome == "conflict":
+                    summary["conflict"] += 1
+                else:
+                    summary["skipped"] += 1
+    print(f"merge_train: {summary['merged']} merged, {summary['redo']} redo, "
           f"{summary['testfail']} testfail, {summary['conflict']} conflict, "
           f"{summary['skipped']} skipped, {summary['project_errors']} project errors "
           f"across {summary['projects']} project(s)")

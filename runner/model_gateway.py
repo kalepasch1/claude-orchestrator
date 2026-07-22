@@ -415,8 +415,8 @@ def complete(provider, model, prompt, project=None, timeout=90, operation="compl
         # redirect to a different provider, defeating per-prompt provider isolation.
         fallback = False
     sensitivity = _sensitivity(prompt)
-    learned = None if confidential else _learned_route(project, operation, task_class, sensitivity)
-    if learned and learned[0] != provider:
+    learned = _learned_route(project, operation, task_class, sensitivity)
+    if learned and learned[0] != provider and not confidential:
         provider, model, learned_reason = learned
     else:
         learned_reason = ""

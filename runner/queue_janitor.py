@@ -192,7 +192,7 @@ def requeue_empty_runs():
 
 
 def refile_stranded_approvals():
-    """BLOCKED awaiting-approval tasks are released back into automatic code-merge flow."""
+    """BLOCKED awaiting-approval tasks are released into automatic code-merge flow."""
     made = 0
     for t in db.select("tasks", {"select": "*", "state": "eq.BLOCKED"}) or []:
         if "awaiting your approval" not in (t.get("note") or ""):

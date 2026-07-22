@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 """Per-repo file lock so concurrent integration attempts never race on shared git refs.
 
 ROOT CAUSE (2026-07-08 merge-stall, 0 merges for 32+ hours): merge_train.train_run() is
 invoked from many places concurrently -- the "train-60" scheduled interval job AND, inline,
-after every successful integrate().  Without serialisation each instance does
-fetch/rebase/push in parallel, causing non-fast-forward failures that look like
-"remote rejected".
+from every worker thread's runner.py integrate() call the instant a task finishes (runner.py
+spawns one thread per claimed task, and a project can have many tasks RUNNING at once). The
+train's docstring promises "serialized per project", but that serialization only held WITHIN
+a single train_run() call -- nothing stopped two SEPARATE, CONCURRENT train_run() calls from
+processing the same project's repo at the same time. Each one rebases agent/<slug> onto the
+shared local base branch, force-moves branch pointers (`git branch -f`), and fast-forwards
+base -- all against the SAME on-disk repo, with no mutual exclusion. Concurrent callers raced:
+one thread's rebase-in-progress could be yanked out from under it by another thread resetting
+the same branch ref, producing spurious rebase conflicts that were not real content conflicts.
+Those conflicts exhausted MERGE_CONFLICT_REDO_CAP, tasks were marked CONFLICT, quarantine spun
+up replacement "rework-*" tasks, and the rework tasks hit the exact same race on their next
+pass -- an infinite loop that grew QUARANTINED/QUEUED counts while MERGED stayed flat.
 
-FIX: one advisory flock per repo path, hashed to a predictable filename so every
-process on this Mac contends on the same file.
+Fix: every git-mutating integration step for a given repo acquires this lock first. Concurrent
+callers now queue up and run one at a time per repo (matching what the train's docstring always
+claimed), instead of racing. Fail-soft: if the lock file itself can't be opened/locked, proceed
+unlocked rather than wedge the runner -- a missed lock is a lot cheaper than a stuck fleet.
 """
 import contextlib
 import fcntl
@@ -22,72 +32,27 @@ LOCK_DIR = os.environ.get(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), ".runtime", "locks"),
 )
 
-# MERGE-PRIORITY YIELD (2026-07-15 merge-starvation fix)
 
 def _lock_path(repo):
     key = hashlib.sha1(str(repo or "unknown-repo").encode()).hexdigest()[:16]
     return os.path.join(LOCK_DIR, f"repo-{key}.lock")
 
-def _priority_path(repo):
-    key = hashlib.sha1(str(repo or "unknown-repo").encode()).hexdigest()[:16]
-    return os.path.join(LOCK_DIR, f"repo-{key}.merge-priority")
-
-def request_priority(repo):
-    """Signal that merge_train wants the lock — integrate() threads will yield."""
-    try:
-        os.makedirs(LOCK_DIR, exist_ok=True)
-        with open(_priority_path(repo), "w") as f:
-            f.write(str(time.time()))
-    except Exception:
-        pass
-
-def release_priority(repo):
-    """Clear the priority signal."""
-    try:
-        os.remove(_priority_path(repo))
-    except Exception:
-        pass
-
-def _merge_waiting(repo):
-    """Check if merge_train has requested priority within the last 10 minutes."""
-    try:
-        p = _priority_path(repo)
-        if not os.path.exists(p):
-            return False
-        with open(p) as f:
-            ts = float(f.read().strip())
-        if time.time() - ts > 600:
-            try:
-                os.remove(p)
-            except Exception:
-                pass
-            return False
-        return True
-    except Exception:
-        return False
 
 @contextlib.contextmanager
-def hold(repo, timeout=None, priority=False):
-    """Acquire the per-repo flock.
-
-    priority=True: used by merge_train to signal integrate() threads to yield.
-    Non-priority callers sleep 2s when merge_train is waiting, creating a window.
-    """
-    if priority:
-        request_priority(repo)
+def hold(repo, timeout=None):
+    """Exclusive lock scoped to `repo`. Yields True if the lock was acquired, False if the
+    lock could not be obtained within `timeout` -- callers should skip their git-mutating
+    work on False rather than proceed unprotected. If the locking infrastructure itself is
+    unavailable (no repo, disk full, etc.), fail-soft to unlocked so a lock bug never becomes
+    a full fleet outage."""
     f = None
     try:
         os.makedirs(LOCK_DIR, exist_ok=True)
         f = open(_lock_path(repo), "a+")
     except Exception:
-        if priority:
-            release_priority(repo)
-        yield False
+        yield True  # fail-soft: locking infra unavailable, proceed unlocked
         return
     acquired = False
-    # Cooperative yield: if merge_train is waiting, non-priority callers pause
-    if not priority and _merge_waiting(repo):
-        time.sleep(2)
     try:
         if timeout:
             deadline = time.time() + timeout
@@ -99,8 +64,6 @@ def hold(repo, timeout=None, priority=False):
                 except (BlockingIOError, OSError):
                     time.sleep(0.25)
             if not acquired:
-                if priority:
-                    release_priority(repo)
                 yield False
                 return
         else:
@@ -108,8 +71,6 @@ def hold(repo, timeout=None, priority=False):
             acquired = True
         yield True
     finally:
-        if priority:
-            release_priority(repo)
         if acquired:
             try:
                 fcntl.flock(f, fcntl.LOCK_UN)
