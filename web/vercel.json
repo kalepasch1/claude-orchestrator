@@ -6,7 +6,7 @@
     }
   },
   "installCommand": "npm ci --ignore-scripts --prefer-offline --no-audit --no-fund",
-  "ignoreCommand": "bash -c 'git diff --quiet ${VERCE_GIT_PREVIOUS_SHA:-HEAD^} HEAD -- . ../packages/darwin-kernel 2>/dev/null || exit 1'",
+  "ignoreCommand": "bash -c 'git diff --quiet ${VERCEL_GIT_PREVIOUS_SHA:-HEAD^} HEAD -- . ../packages/darwin-kernel 2>/dev/null || exit 1'",
   "crons": [
     {
       "path": "/api/fleet/analytics?rangeDays=1&sync=true",
