@@ -22,12 +22,11 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import branch_naming
 
-# If set, also update task state in DB for missing branches
 AUTO_BLOCK = os.environ.get("ORCH_BRANCH_PREFLIGHT_AUTO_BLOCK", "true").lower() in ("1", "true", "yes")
 
 
-def _branch_exists(repo_path: str, branch: str) -> bool:
-    """Check whether *branch* exists locally or in any remote."""
+def _branch_exists(repo_path, branch):
+    """Check whether branch exists locally or in any remote."""
     try:
         r = subprocess.run(
             ["git", "rev-parse", "--verify", branch],
@@ -35,33 +34,24 @@ def _branch_exists(repo_path: str, branch: str) -> bool:
         )
         if r.returncode == 0:
             return True
-        # Check remotes
         r2 = subprocess.run(
             ["git", "ls-remote", "--heads", "origin", branch],
             cwd=repo_path, capture_output=True, text=True, timeout=15,
         )
         return bool(r2.stdout.strip())
     except Exception:
-        return True  # fail-open: assume it exists if we can't check
+        return True
 
 
-def check(repo_path: str, tasks: list) -> list:
-    """Return list of (task_id, slug, expected_branch) for tasks whose branch is missing.
-
-    *tasks* is a list of dicts with at least 'id' and 'slug' keys.
-    Fail-soft: returns [] on any error.
-    """
+def check(repo_path, tasks):
+    """Return list of (task_id, slug, expected_branch) for tasks whose branch is missing."""
     if not repo_path or not tasks:
         return []
     try:
-        # Fetch latest refs (non-blocking, best-effort)
-        subprocess.run(
-            ["git", "fetch", "--prune", "origin"],
-            cwd=repo_path, capture_output=True, timeout=30,
-        )
+        subprocess.run(["git", "fetch", "--prune", "origin"],
+                       cwd=repo_path, capture_output=True, timeout=30)
     except Exception:
         pass
-
     missing = []
     for task in tasks:
         try:
@@ -77,11 +67,8 @@ def check(repo_path: str, tasks: list) -> list:
     return missing
 
 
-def check_and_block(repo_path: str, tasks: list) -> list:
-    """Check for missing branches and optionally BLOCK those tasks in the DB.
-
-    Returns the list of missing (task_id, slug, branch) tuples.
-    """
+def check_and_block(repo_path, tasks):
+    """Check for missing branches and optionally BLOCK those tasks in the DB."""
     missing = check(repo_path, tasks)
     if not missing or not AUTO_BLOCK:
         return missing
@@ -97,6 +84,5 @@ def check_and_block(repo_path: str, tasks: list) -> list:
     return missing
 
 
-def stats() -> dict:
-    """Return empty stats dict (stateless module, included for API consistency)."""
+def stats():
     return {}
