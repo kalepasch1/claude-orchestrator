@@ -1,0 +1,21 @@
+{
+  "name": "heretomorrow-mcp",
+  "version": "1.0.0",
+  "description": "Unified MCP server for HereTomorrow app portfolio",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsx server.ts",
+    "generate": "tsx generator/auto-mcp.ts",
+    "sync": "tsx sync/scan-and-update.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.8.0"
+  }
+}

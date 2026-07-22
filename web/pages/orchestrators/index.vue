@@ -77,7 +77,15 @@ const submitting = ref(false)
 const notice = ref('')
 const projectChoices = ref<any[]>([])
 
-const commandCenters = ORCHESTRATOR_CAPABILITIES
+const commandCenters = [
+  { slug: 'engineering-orchestrator', icon: '↗', eyebrow: 'Build & ship', name: 'Engineering', summary: 'Build products, fix defects, improve systems, and ship verified releases.', actions: ['Build a feature', 'Repair production', 'Improve performance'] },
+  { slug: 'design-orchestrator', icon: '✦', eyebrow: 'Create & refine', name: 'Design + Creative', summary: 'Design interfaces, brands, graphics, motion, campaigns, and production-ready derivatives.', actions: ['Design a product', 'Create a campaign', 'Generate derivatives'] },
+  { slug: 'business-orchestrator', icon: '◇', eyebrow: 'Operate & compound', name: 'Business Operations', summary: 'Coordinate people, money, legal evidence, creative production, and operating priorities from one governed system.', actions: ['Onboard a teammate', 'Optimize cash and tax', 'Run the business'] },
+  { slug: 'legal-orchestrator', icon: '§', eyebrow: 'Review & protect', name: 'Legal + Compliance', summary: 'Review agreements, draft redlines, form entities, and run evidence-backed compliance work.', actions: ['Review a contract', 'Prepare a filing', 'Assess compliance'] },
+  { slug: 'growth-orchestrator', icon: '↗', eyebrow: 'Find & grow demand', name: 'Marketing + Growth', summary: 'Develop positioning, content, campaigns, experiments, and measurable growth programs.', actions: ['Plan a launch', 'Create content', 'Improve conversion'] },
+  { slug: 'research-orchestrator', icon: '◎', eyebrow: 'Understand & decide', name: 'Research + Strategy', summary: 'Investigate markets, competitors, users, and strategic choices with traceable evidence.', actions: ['Research a market', 'Compare options', 'Write a decision brief'] },
+  { slug: 'security-orchestrator', icon: '◇', eyebrow: 'Secure & govern', name: 'Security + Trust', summary: 'Audit access, data, dependencies, policies, and remediation paths across the portfolio.', actions: ['Audit security', 'Fix access controls', 'Model threats'] },
+]
 
 const autopilotProof = [
   { name: 'Context understood', summary: 'Madeus identifies the right project, scope, constraints, and risk.' },

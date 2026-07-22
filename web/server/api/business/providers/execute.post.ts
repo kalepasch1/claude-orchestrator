@@ -1,0 +1,4 @@
+import{timingSafeEqual}from'node:crypto'
+import{executeProviderStep}from'../../../utils/businessProviderFabric'
+const same=(a:string,b:string)=>{const x=Buffer.from(a),y=Buffer.from(b);return x.length===y.length&&timingSafeEqual(x,y)}
+export default defineEventHandler(async event=>{const supplied=getHeader(event,'x-fleet-secret')||'',expected=process.env.FLEET_SHARED_SECRET||'';if(!expected||!same(supplied,expected))throw createError({statusCode:401,message:'bad_fleet_secret'});const body=await readBody(event);try{return await executeProviderStep(body)}catch(error:any){const message=String(error?.message||'provider_execution_failed').slice(0,200);if(message.startsWith('missing_provider_input:'))return{ok:false,retryable:false,human_input_required:message.split(':')[1].split(',')};if(message.startsWith('digital_twin_block:'))return{ok:false,retryable:false,error:message};throw createError({statusCode:/required|mismatch|not_found/.test(message)?409:502,message})}})
