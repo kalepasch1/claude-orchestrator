@@ -1,0 +1,341 @@
+{
+  "plan_id": "rework-buildfail-qafix-tomorrow-07062319-slice-1-slice-4-3e3d999",
+  "plan_version": "1.0",
+  "created_at": "2026-07-22T13:00:00Z",
+  "objective": "Orchestration loop refinement addressing 3 bottlenecks: scope definition, parallelism constraints, validation overhead",
+  "bottlenecks": [
+    {
+      "id": "scope-definition",
+      "title": "Scope Definition Bottleneck",
+      "description": "Ambiguity in what constitutes 'done' for fleet control actions, especially 'all' targets without expected_hosts",
+      "current_impact": "Actions may complete prematurely or hang indefinitely",
+      "subtasks": ["1", "2", "3"]
+    },
+    {
+      "id": "parallelism-constraints",
+      "title": "Parallelism Constraints",
+      "description": "Branch desynchronization across parallel fleet execution; missing/stale branch references break worktree pipelines",
+      "current_impact": "Parallel improvements fail silently when branches diverge across machines",
+      "subtasks": ["4", "5"]
+    },
+    {
+      "id": "validation-overhead",
+      "title": "Validation Overhead",
+      "description": "Insufficient distributed validation during orchestration; no systematic test/audit coverage for fleet resilience",
+      "current_impact": "Build failures and fleet degradation undetected until production impact",
+      "subtasks": ["6", "7", "8"]
+    }
+  ],
+  "tasks": [
+    {
+      "id": "1",
+      "title": "Implement _control_done logic for fleet control completion detection",
+      "description": "Add _control_done(target, handled_by, params) function to distinguish single-host (always done) from multi-host 'all' targets (done when expected_hosts all acked)",
+      "files": [
+        "runner/fleet_control.py"
+      ],
+      "changes": [
+        "Add _control_done function after _target_matches (line 133)",
+        "Update process_controls to call _control_done instead of hardcoded target != 'all' check (line 235)"
+      ],
+      "risk": "low",
+      "complexity": "low",
+      "dependencies": [],
+      "acceptance_criteria": [
+        "Single-target controls always complete after one ack",
+        "'all' target without expected_hosts never completes",
+        "'all' target with expected_hosts completes when all acks received",
+        "20+ unit tests pass covering edge cases (duplicates, order, case sensitivity)"
+      ]
+    },
+    {
+      "id": "2",
+      "title": "Extend fleet_control.py with expected_hosts parameter support",
+      "description": "Ensure expected_hosts parameter is properly threaded through control request lifecycle: creation, ack tracking, and completion",
+      "files": [
+        "runner/fleet_control.py",
+        "runner/tests/test_buildfail_qafix.py"
+      ],
+      "changes": [
+        "Verify create_control accepts and stores expected_hosts in params",
+        "Verify get_control_status returns expected_hosts for 'all' targets",
+        "Add comprehensive test scenarios for multi-host control workflows"
+      ],
+      "risk": "low",
+      "complexity": "medium",
+      "dependencies": ["1"],
+      "acceptance_criteria": [
+        "expected_hosts parameter flows through control lifecycle unchanged",
+        "'all' controls with expected_hosts=['m1','m2','m3'] track partial acks correctly",
+        "Integration test: 3-machine config push waits for all 3 acks before marking done"
+      ]
+    },
+    {
+      "id": "3",
+      "title": "Add fail-soft error handling and edge case coverage for _control_done",
+      "description": "Harden _control_done against None params, missing keys, empty lists, duplicates, and type mismatches",
+      "files": [
+        "runner/fleet_control.py",
+        "runner/tests/test_buildfail_qafix.py"
+      ],
+      "changes": [
+        "Wrap expected_hosts access with .get() and default to []",
+        "Handle None, empty, and non-list expected_hosts gracefully",
+        "Add 20+ edge-case test scenarios (empty string, whitespace target, large fleet, duplicates)"
+      ],
+      "risk": "low",
+      "complexity": "medium",
+      "dependencies": ["1"],
+      "acceptance_criteria": [
+        "No exceptions raised on malformed input",
+        "Edge case tests all pass (empty, None, whitespace, duplicates, case-sensitivity)",
+        "Large fleet scenario (10+ machines) handles correctly",
+        "Stats and logging capture errors for diagnostics"
+      ]
+    },
+    {
+      "id": "4",
+      "title": "Implement branch_rerouter core: existence check and stale detection",
+      "description": "Add _branch_exists, _get_commit, _is_stale functions to detect missing and stale branch references across the fleet",
+      "files": [
+        "runner/branch_rerouter.py",
+        "runner/tests/test_branch_rerouter.py"
+      ],
+      "changes": [
+        "Implement _branch_exists using git show-ref --verify for local and remote branches",
+        "Implement _get_commit using git rev-parse to fetch commit SHA",
+        "Implement _is_stale using git merge-base --is-ancestor to check if commit is in canonical history",
+        "Add timeout handling via _get_timeout_sec environment variable (default 30s)"
+      ],
+      "risk": "low",
+      "complexity": "medium",
+      "dependencies": [],
+      "acceptance_criteria": [
+        "_branch_exists detects local and remote branches correctly",
+        "_get_commit retrieves correct SHA or None if not found",
+        "_is_stale detects branches with diverged commits",
+        "Git timeout handled gracefully (returns failure, not exception)",
+        "20+ git operation mocking tests pass with CompletedProcess simulation"
+      ]
+    },
+    {
+      "id": "5",
+      "title": "Implement branch_rerouter rerouting strategy: explicit mapping and fallback",
+      "description": "Add reroute(branch) function with config-driven explicit mappings (ORCH_BRANCH_REROUTE_*) and fallback strategy",
+      "files": [
+        "runner/branch_rerouter.py",
+        "runner/tests/test_branch_rerouter.py"
+      ],
+      "changes": [
+        "Implement _get_reroute_config to parse ORCH_BRANCH_REROUTE_* env vars",
+        "Implement _get_fallback to return ORCH_BRANCH_REROUTE_FALLBACK or 'main' default",
+        "Implement _get_enabled, _get_strategy, _get_timeout_sec config accessors",
+        "Implement reroute(branch) to check explicit mappings, stale status, and fallback",
+        "Add event emission via events.emit on reroute detection",
+        "Add thread-safe stats tracking and _load_repo repo detection"
+      ],
+      "risk": "medium",
+      "complexity": "high",
+      "dependencies": ["4"],
+      "acceptance_criteria": [
+        "Existing branches return unchanged",
+        "Missing branches use explicit mapping or fallback",
+        "Stale branches reroute to canonical when configured",
+        "Thread-safe concurrent reroute calls work correctly",
+        "Stats track rerouted, stale_detected, errors counters",
+        "Config keys (ENABLED, STRATEGY, TIMEOUT_SEC, FALLBACK) work as documented",
+        "30+ test cases pass covering normal, missing, stale, explicit mapping, and edge cases"
+      ]
+    },
+    {
+      "id": "6",
+      "title": "Register and wire periodic job framework for editorial, adversarial_fleet, fleet_e2e_audit",
+      "description": "Add three new periodic jobs to JOBS registry with proper module imports and locking mechanism",
+      "files": [
+        "runner/periodic.py",
+        "runner/tests/test_buildfail_qafix.py"
+      ],
+      "changes": [
+        "Add run_editorial, run_adversarial_fleet, run_fleet_e2e_audit functions with lazy module imports",
+        "Register all three in JOBS dict (alongside existing spec, chaos, txn, scout, deploy, roi, stuck_reaper, priority_scorer, quarantine_gc)",
+        "Add job docstrings explaining purpose and invocation pattern",
+        "Verify _run_job_locked mechanism gates concurrent execution via fcntl-based file locking"
+      ],
+      "risk": "low",
+      "complexity": "low",
+      "dependencies": [],
+      "acceptance_criteria": [
+        "run_editorial imports editorial_program and calls run()",
+        "run_adversarial_fleet imports adversarial_fleet and calls run()",
+        "run_fleet_e2e_audit imports fleet_e2e_audit and calls run()",
+        "All three registered in JOBS dict and callable via JOBS[name]()",
+        "Job locks enabled by default (ORCH_PERIODIC_JOB_LOCKS=true)",
+        "Overlapping invocations skipped gracefully (BlockingIOError caught)",
+        "20+ tests pass verifying registration, invocation, and locking"
+      ]
+    },
+    {
+      "id": "7",
+      "title": "Implement editorial_program module for problem statement drafting",
+      "description": "Create editorial_program.py to generate AI-assisted problem statement and root cause summaries from build failure telemetry",
+      "files": [
+        "runner/editorial_program.py",
+        "runner/tests/test_buildfail_qafix.py"
+      ],
+      "changes": [
+        "Create editorial_program.py with run() entry point",
+        "Query fleet_control, task state, and failure logs for failure patterns",
+        "Generate structured problem statements (JSON) with root causes and impact",
+        "Store drafts in database (editorial_drafts table) for operator review",
+        "Emit editorial_generated event on completion"
+      ],
+      "risk": "medium",
+      "complexity": "high",
+      "dependencies": ["6"],
+      "acceptance_criteria": [
+        "editorial_program.run() executes without errors",
+        "Generates problem statements with root causes and impact metric",
+        "Drafts stored in database with timestamp and operator_review_status",
+        "Event emitted on completion for downstream dashboard/alerts",
+        "Handles missing/malformed telemetry gracefully (fail-soft)"
+      ]
+    },
+    {
+      "id": "8",
+      "title": "Implement adversarial_fleet and fleet_e2e_audit modules for distributed resilience testing",
+      "description": "Create two parallel testing modules: adversarial_fleet for chaos injection and fleet_e2e_audit for end-to-end health verification",
+      "files": [
+        "runner/adversarial_fleet.py",
+        "runner/fleet_e2e_audit.py",
+        "runner/tests/test_buildfail_qafix.py"
+      ],
+      "changes": [
+        "Create adversarial_fleet.py: run() injects faults (network delays, config rollbacks, branch divergence) across all runners",
+        "Create fleet_e2e_audit.py: run() verifies fleet end-to-end health (all runners healthy, no hung tasks, branch consistency)",
+        "Both emit structured results (audit_results, adversarial_results) to database",
+        "Integrate with fleet_control 'all' target for coordinated testing across machines",
+        "Emit events: adversarial_completed, fleet_audit_completed with pass/fail status"
+      ],
+      "risk": "high",
+      "complexity": "high",
+      "dependencies": ["6", "1", "4", "5"],
+      "acceptance_criteria": [
+        "adversarial_fleet.run() successfully injects faults and records outcomes",
+        "fleet_e2e_audit.run() verifies fleet health across all runners",
+        "Both use fleet_control 'all' target with expected_hosts parameter to coordinate",
+        "Results stored in database for analysis (adversarial_runs, fleet_audits tables)",
+        "Events emitted on completion with pass/fail status and metrics",
+        "Automated daily/weekly scheduling via periodic.py JOBS registry",
+        "20+ integration tests pass covering coordinated multi-machine scenarios"
+      ]
+    }
+  ],
+  "integration_graph": {
+    "phases": [
+      {
+        "phase": "Phase 1: Fleet Control Completion (Scope Definition)",
+        "tasks": ["1", "2", "3"],
+        "duration_days": 2,
+        "goal": "Disambiguate when fleet control actions are complete"
+      },
+      {
+        "phase": "Phase 2: Branch Rerouting (Parallelism Constraints)",
+        "tasks": ["4", "5"],
+        "duration_days": 3,
+        "goal": "Detect and reroute missing/stale branches across fleet"
+      },
+      {
+        "phase": "Phase 3: Periodic Jobs & Distributed Validation (Validation Overhead)",
+        "tasks": ["6", "7", "8"],
+        "duration_days": 5,
+        "goal": "Systematize resilience testing and problem documentation across fleet"
+      }
+    ]
+  },
+  "dependencies": [
+    {
+      "from": "2",
+      "to": "1",
+      "reason": "Task 2 extends the _control_done logic with parameter threading"
+    },
+    {
+      "from": "3",
+      "to": "1",
+      "reason": "Task 3 hardens _control_done against edge cases"
+    },
+    {
+      "from": "5",
+      "to": "4",
+      "reason": "Task 5 builds on _branch_exists and _is_stale functions"
+    },
+    {
+      "from": "8",
+      "to": "6",
+      "reason": "Task 8 registers and uses periodic job framework"
+    },
+    {
+      "from": "8",
+      "to": "1",
+      "reason": "Task 8 (fleet_e2e_audit) uses fleet_control 'all' target completion logic"
+    },
+    {
+      "from": "8",
+      "to": "4",
+      "reason": "Task 8 uses branch_rerouter for fleet branch consistency verification"
+    },
+    {
+      "from": "8",
+      "to": "5",
+      "reason": "Task 8 exercises reroute strategy during chaos testing"
+    }
+  ],
+  "risk_summary": {
+    "low_risk_tasks": ["1", "2", "3", "4", "6"],
+    "medium_risk_tasks": ["5", "7"],
+    "high_risk_tasks": ["8"],
+    "mitigation": [
+      "Each task has comprehensive test coverage (20+ cases minimum)",
+      "Fail-soft error handling prevents cascading failures",
+      "Feature flags (ORCH_BRANCH_REROUTE_ENABLED, etc.) allow gradual rollout",
+      "Thread-safe design using explicit locks for concurrent access"
+    ]
+  },
+  "acceptance_gates": [
+    {
+      "gate": "Phase 1 Complete",
+      "criteria": [
+        "All 3 fleet control tests pass",
+        "No regressions in existing fleet_control functionality",
+        "expected_hosts parameter properly threads through lifecycle"
+      ]
+    },
+    {
+      "gate": "Phase 2 Complete",
+      "criteria": [
+        "All 30+ branch rerouter tests pass (real git operations + mocks)",
+        "Thread-safety verified under concurrent load (10+ threads)",
+        "Stale detection works on realistic commit histories (50+ commits)"
+      ]
+    },
+    {
+      "gate": "Phase 3 Complete",
+      "criteria": [
+        "All 3 periodic jobs registered and callable from JOBS dict",
+        "Editorial, adversarial, and audit jobs integrate with fleet_control 'all' target",
+        "End-to-end integration test: editorial → adversarial → audit sequence completes",
+        "20+ integration tests pass for multi-machine scenarios"
+      ]
+    }
+  ],
+  "merge_strategy": {
+    "route": "auto-merge to orchestrator/dev after all tests pass",
+    "qassign": "2/3 panel judges approval (llama3.1, deepseek-v4-flash)",
+    "legal_gate": "owner-only if changes touch fleet config keys (ORCH_*) or secrets",
+    "deploy_rule": "NEVER push main/master directly; push agent/{slug} branch only, let batch release train handle promotion"
+  },
+  "source_attribution": {
+    "inspiration": "pareto-2080/qafix-pareto-2080-07062319-slice-1 (similar orchestration patterns)",
+    "native_claim": "Operator feedback (loop-generated observations from 3 measured bottlenecks)",
+    "commit_pattern": "e47542c3d860 and related qafix commits in git history"
+  }
+}
