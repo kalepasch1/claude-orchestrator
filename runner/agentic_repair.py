@@ -18,7 +18,9 @@ _DEFAULT_DIRECTIVE = (
 )
 
 
-_REPAIR_CODER_FALLBACK = "claude"
+def is_technical(category):
+    """Return True if the failure category is a technical (retryable) repair."""
+    return str(category or "rework") in TECHNICAL_CATEGORIES
 
 
 def choose_coder(task):
