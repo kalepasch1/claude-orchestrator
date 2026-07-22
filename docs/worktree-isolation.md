@@ -1,26 +1,25 @@
-# Worktree Isolation Policy
+# Worktree Isolation Convention
 
-All executor task implementations MUST use isolated git worktrees.
-Never checkout branches or run `git stash` in the main repo directory.
+All executor task work happens in isolated git worktrees, never in the
+primary checkout. This prevents conflicts with other executors, the runner,
+and sentinel.py (which stashes and resets non-base checkouts it detects).
 
-## Why worktrees?
+## Layout
 
-- **Prevents interference:** Multiple tasks can run against the same repo
-  without stepping on each other's branch state.
-- **Atomic cleanup:** If a task fails mid-implementation, removing the
-  worktree leaves the main repo untouched.
-- **No stash conflicts:** `git stash` in the main repo risks data loss
-  when multiple processes compete for the stash stack.
+```
+{repo_path}/                        # primary checkout — DO NOT modify
+{repo_path}-wt/{slug}/              # per-task worktree
+```
 
-## Worktree lifecycle
+## Lifecycle
 
-1. `git worktree prune` — clean up stale entries from prior crashes
-2. `git worktree add --force "$WT" -B agent/{slug} origin/{base}` — create
-3. Implement, commit, push inside `$WT`
+1. `git worktree add --force "$WT" -B agent/{slug} origin/{base_branch}`
+2. Implement changes inside `$WT`
+3. Commit and push from `$WT`
 4. `git worktree remove --force "$WT"` — the branch survives on the remote
 
-## Failure recovery
+## Rules
 
-If worktree creation fails because a branch is already checked out in a
-stale worktree, run `git worktree prune` then retry. If a `.lock` file
-blocks pruning, remove it manually before retrying.
+- Never run `git checkout` or `git stash` in the primary checkout.
+- If worktree creation fails due to a stale lock, run `git worktree prune` first.
+- Always remove the worktree after push to prevent `-wt` directory accumulation.
