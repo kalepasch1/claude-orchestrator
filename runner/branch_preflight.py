@@ -1,88 +1,163 @@
 #!/usr/bin/env python3
 """
-branch_preflight.py - detect missing branches at the start of each merge cycle.
+branch_preflight.py — Proactive branch validation before merge train processing.
 
-Before approval_merge begins integrating approved tasks, this module checks
-that every task's expected agent branch still exists in the repo.  Missing
-branches (force-deleted, garbage-collected, or never pushed) are flagged
-immediately so the merge cycle can skip or re-queue them instead of failing
-mid-way through a rebase.
+Checks all pending-merge tasks for branch existence BEFORE the merge train starts
+processing them, alerting operators and auto-remediating missing branches to prevent
+the common failure mode where merge_train hits a missing branch mid-run.
 
-Usage (called by approval_merge at cycle start):
-    import branch_preflight
-    missing = branch_preflight.check(repo_path, tasks)
-    # missing: list of (task_id, slug, expected_branch)
-
-Fail-soft: returns [] on any error so the merge cycle always proceeds.
+Owner module: merge_train.py, branch_materializer.py
+Slice-2 of: improve-implement-advanced-branch-management-sys
 """
-import os
-import subprocess
-import sys
-
+import os, sys, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import branch_naming
 
-AUTO_BLOCK = os.environ.get("ORCH_BRANCH_PREFLIGHT_AUTO_BLOCK", "true").lower() in ("1", "true", "yes")
+def _safe_import(mod):
+    try:
+        return __import__(mod)
+    except Exception:
+        return None
+
+db = _safe_import("db")
+log_mod = _safe_import("log")
+_log = log_mod.get("branch_preflight") if log_mod else None
+
+BRANCH_PREFIX = os.environ.get("ORCH_BRANCH_PREFIX", "agent/")
+CHECK_TIMEOUT = int(os.environ.get("ORCH_BRANCH_CHECK_TIMEOUT", "10"))
 
 
 def _branch_exists(repo_path, branch):
-    """Check whether branch exists locally or in any remote."""
+    """Check if a branch exists locally. Returns True/False/None (unresolvable)."""
+    if not repo_path or not os.path.isdir(repo_path):
+        return None
     try:
-        r = subprocess.run(
-            ["git", "rev-parse", "--verify", branch],
-            cwd=repo_path, capture_output=True, text=True, timeout=10,
-        )
-        if r.returncode == 0:
-            return True
-        r2 = subprocess.run(
-            ["git", "ls-remote", "--heads", "origin", branch],
-            cwd=repo_path, capture_output=True, text=True, timeout=15,
-        )
-        return bool(r2.stdout.strip())
+        r = subprocess.run(["git", "rev-parse", "--verify", branch],
+                           cwd=repo_path, capture_output=True, text=True, timeout=CHECK_TIMEOUT)
+        return r.returncode == 0
     except Exception:
-        return True
+        return None
 
 
-def check(repo_path, tasks):
-    """Return list of (task_id, slug, expected_branch) for tasks whose branch is missing."""
-    if not repo_path or not tasks:
-        return []
-    try:
-        subprocess.run(["git", "fetch", "--prune", "origin"],
-                       cwd=repo_path, capture_output=True, timeout=30)
-    except Exception:
-        pass
-    missing = []
+def _localize_repo(raw_path):
+    """Use db.localize_repo_path if available, else return raw."""
+    if db and hasattr(db, "localize_repo_path"):
+        return db.localize_repo_path(raw_path)
+    return raw_path
+
+
+def preflight_check(project_id, repo_path_raw, tasks):
+    """Check all tasks for branch existence before merge processing.
+
+    Args:
+        project_id: project UUID
+        repo_path_raw: raw repo_path from the project record
+        tasks: list of task dicts with at least {slug, state}
+
+    Returns:
+        {
+            "ready": [task_dicts with branches present],
+            "missing": [task_dicts with missing branches],
+            "unresolvable": [task_dicts where repo can't be checked],
+            "repo_path": localized repo path used
+        }
+    """
+    repo = _localize_repo(repo_path_raw)
+    ready, missing, unresolvable = [], [], []
+
     for task in tasks:
-        try:
-            slug = task.get("slug", "")
-            task_id = task.get("id", "")
-            if not slug:
-                continue
-            expected = branch_naming.get_agent_branch_name(slug)
-            if not _branch_exists(repo_path, expected):
-                missing.append((task_id, slug, expected))
-        except Exception:
-            continue
-    return missing
+        slug = task.get("slug", "")
+        branch = f"{BRANCH_PREFIX}{slug}"
+        exists = _branch_exists(repo, branch)
+
+        if exists is True:
+            ready.append(task)
+        elif exists is False:
+            missing.append(task)
+            if _log:
+                _log.warning("preflight: branch %s missing for task %s", branch, slug)
+        else:
+            unresolvable.append(task)
+
+    return {
+        "ready": ready,
+        "missing": missing,
+        "unresolvable": unresolvable,
+        "repo_path": repo,
+        "total_checked": len(tasks),
+    }
 
 
-def check_and_block(repo_path, tasks):
-    """Check for missing branches and optionally BLOCK those tasks in the DB."""
-    missing = check(repo_path, tasks)
-    if not missing or not AUTO_BLOCK:
-        return missing
+def auto_remediate_missing(project_id, repo_path_raw, missing_tasks, base_branch="main"):
+    """Attempt to create missing branches for tasks that need them.
+
+    Uses branch_materializer if available, otherwise creates directly.
+
+    Returns list of {slug, remediated: bool, error: str|None}
+    """
+    repo = _localize_repo(repo_path_raw)
+    if not repo or not os.path.isdir(repo):
+        return [{"slug": t.get("slug"), "remediated": False, "error": "repo not found"}
+                for t in missing_tasks]
+
+    bm = _safe_import("branch_materializer")
+    results = []
+    for task in missing_tasks:
+        slug = task.get("slug", "")
+        if bm:
+            r = bm.materialize_branch(task, repo, base_branch)
+            results.append({"slug": slug, "remediated": r.get("ok", False),
+                            "error": r.get("error")})
+        else:
+            # Direct creation fallback
+            branch = f"{BRANCH_PREFIX}{slug}"
+            try:
+                proc = subprocess.run(["git", "branch", branch, base_branch],
+                                       cwd=repo, capture_output=True, text=True, timeout=15)
+                ok = proc.returncode == 0
+                results.append({"slug": slug, "remediated": ok,
+                                "error": None if ok else proc.stderr.strip()})
+            except Exception as e:
+                results.append({"slug": slug, "remediated": False, "error": str(e)})
+
+    return results
+
+
+def run_preflight(project_id):
+    """Full preflight: load project, check branches, remediate missing ones.
+
+    Returns summary dict.
+    """
+    if not db:
+        return {"error": "db unavailable"}
     try:
-        import db
-        for task_id, slug, branch in missing:
-            db.update_task(task_id, {
-                "state": "BLOCKED",
-                "note": f"branch_preflight: branch '{branch}' missing at merge-cycle start",
-            })
-    except Exception:
-        pass
-    return missing
+        projects = db.select("projects", {"select": "*", "id": f"eq.{project_id}"}) or []
+        if not projects:
+            return {"error": f"project {project_id} not found"}
+        proj = projects[0]
+        repo_raw = proj.get("repo_path", "")
 
+        # Get tasks pending merge (RUNNING state with merge-related notes, or DONE awaiting train)
+        pending = db.select("tasks", {
+            "select": "id,slug,state,kind,base_branch",
+            "project_id": f"eq.{project_id}",
+            "state": "in.(DONE,RUNNING)",
+            "limit": "200"
+        }) or []
 
-def stats():
-    return {}
+        check = preflight_check(project_id, repo_raw, pending)
+        remediated = []
+        if check["missing"]:
+            base = proj.get("base_branch", "main")
+            remediated = auto_remediate_missing(project_id, repo_raw, check["missing"], base)
+
+        return {
+            "project": proj.get("name"),
+            "total_checked": check["total_checked"],
+            "ready": len(check["ready"]),
+            "missing": len(check["missing"]),
+            "unresolvable": len(check["unresolvable"]),
+            "remediated": sum(1 for r in remediated if r.get("remediated")),
+            "remediation_failures": [r for r in remediated if not r.get("remediated")],
+        }
+    except Exception as e:
+        return {"error": str(e)}
