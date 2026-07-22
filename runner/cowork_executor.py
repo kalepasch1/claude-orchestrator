@@ -228,7 +228,17 @@ def execute_task(task):
                           {"state": "DONE",
                            "note": f"cowork-executor completed (${cost:.4f})",
                            "artifact_branch": branch})
-                print(f"[DONE] {slug} -> DONE with branch {branch}")
+                # Auto-create integrate card so the merge train picks this up
+                try:
+                    import merge_train
+                    merge_train.ensure_integration_card(
+                        name, slug,
+                        title=f"merge of {slug}",
+                        decided_by="canonical-train:cowork-executor",
+                    )
+                    print(f"[DONE] {slug} -> DONE with branch {branch} + integrate card")
+                except Exception as _e:
+                    print(f"[DONE] {slug} -> DONE with branch {branch} (card failed: {_e})")
                 return True
             else:
                 db.update("tasks",
