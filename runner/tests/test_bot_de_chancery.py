@@ -1,52 +1,88 @@
 #!/usr/bin/env python3
-"""Tests for de_chancery bot — builds via bot_factory and asserts admission."""
-import os, sys, unittest
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "bots"))
-from bots.de_chancery import SPEC
-import bot_factory as bf
+"""Tests for runner/bots/de_chancery.py — build + admit checks."""
+import sys, os, json
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bots"))
 
-_EXPECTED = {item["issue"]["q"]: item["expected"] for item in SPEC.eval_set}
+# Stub db and model_gateway before importing the module
+import types
 
-def _mock_invoker(persona, issue):
-    q = issue.get("q", "")
-    expected = _EXPECTED.get(q, "unknown")
-    return {"stance": expected, "confidence": 0.88, "citations": ["mock-ref"]}
+_db_mod = types.ModuleType("db")
+_db_mod.query = lambda *a, **kw: []
+_db_mod.insert = lambda *a, **kw: None
+sys.modules.setdefault("db", _db_mod)
 
-class TestDeChanceryBot(unittest.TestCase):
-    def test_spec_is_valid(self):
-        bf._validate_spec(SPEC)
-    def test_spec_role(self):
-        self.assertEqual(SPEC.role, "reviewer")
-    def test_spec_target_app(self):
-        self.assertEqual(SPEC.target_app, "apparently")
-    def test_spec_priors_tag(self):
-        self.assertEqual(SPEC.priors_tag, "de_chancery")
-    def test_spec_has_enough_evals(self):
-        self.assertGreaterEqual(len(SPEC.eval_set), 5)
-    def test_admitted_with_correct_invoker(self):
-        result = bf.build_bot(SPEC, _mock_invoker)
-        self.assertEqual(result["admission"], "admitted")
-        self.assertEqual(result["manifest"]["id"], "de-chancery-recipient")
-        self.assertEqual(result["manifest"]["role"], "reviewer")
-    def test_manifest_has_corpus_filter(self):
-        result = bf.build_bot(SPEC, _mock_invoker)
-        cf = result["manifest"]["corpus_filter"]
-        self.assertIn("DE_Chancery", cf["source"])
-        self.assertIn("opinion", cf["doc_types"])
-    def test_manifest_has_competence(self):
-        result = bf.build_bot(SPEC, _mock_invoker)
-        comp = result["manifest"]["competence"]
-        self.assertIn("fiduciary_duty_analysis", comp)
-        self.assertIn("rfi_anticipation", comp)
-    def test_eval_pass_rate(self):
-        result = bf.run_eval(SPEC, _mock_invoker)
-        self.assertEqual(result["passed"], result["total"])
-    def test_gated_with_bad_invoker(self):
-        def bad_invoker(persona, issue):
-            return {"stance": "wrong_answer", "confidence": 0.5, "citations": []}
-        result = bf.build_bot(SPEC, bad_invoker)
-        self.assertEqual(result["admission"], "gated")
+_mg_mod = types.ModuleType("model_gateway")
+_mg_mod.complete = lambda *a, **kw: {"text": '{"rfis":[],"overall_risk":"low","summary":"ok"}'}
+sys.modules.setdefault("model_gateway", _mg_mod)
 
-if __name__ == "__main__":
-    unittest.main()
+from bots import de_chancery
+
+
+def test_corpus_filter_matches():
+    assert de_chancery.corpus_filter("Delaware Court of Chancery opinion")
+    assert de_chancery.corpus_filter("Del. Ch. ruling on fiduciary duty")
+    assert de_chancery.corpus_filter("C.A. No. 12345")
+
+
+def test_corpus_filter_rejects():
+    assert not de_chancery.corpus_filter("contract dispute in Texas")
+    assert not de_chancery.corpus_filter("")
+    assert not de_chancery.corpus_filter(None)
+
+
+def test_build():
+    result = de_chancery.build()
+    assert result["built"] is True
+    assert result["role"] == "reviewer"
+    assert result["target_app"] == "apparently"
+    assert result["priors_tag"] == "de_chancery"
+
+
+def test_admit_empty():
+    result = de_chancery.admit("")
+    assert result["admitted"] is False
+
+
+def test_admit_non_chancery():
+    result = de_chancery.admit("A Texas contract dispute")
+    assert result["admitted"] is False
+
+
+def test_admit_chancery():
+    result = de_chancery.admit("Delaware Court of Chancery opinion on fiduciary duty")
+    assert result["admitted"] is True
+
+
+def test_score_rfi_recall_perfect():
+    golden = [{"category": "fiduciary_duty"}, {"category": "entire_fairness"}]
+    predicted = [{"category": "fiduciary_duty"}, {"category": "entire_fairness"}, {"category": "standing"}]
+    assert de_chancery.score_rfi_recall(predicted, golden) == 1.0
+
+
+def test_score_rfi_recall_partial():
+    golden = [{"category": "fiduciary_duty"}, {"category": "entire_fairness"}]
+    predicted = [{"category": "fiduciary_duty"}]
+    assert de_chancery.score_rfi_recall(predicted, golden) == 0.5
+
+
+def test_score_rfi_recall_empty_golden():
+    assert de_chancery.score_rfi_recall([], []) == 1.0
+
+
+def test_stats():
+    s = de_chancery.stats()
+    assert s["role"] == "reviewer"
+    assert "rfi_categories" in s
+    assert len(s["rfi_categories"]) > 0
+
+
+def test_review_non_chancery():
+    result = de_chancery.review("A Texas contract dispute")
+    assert result["reviewed"] is False
+
+
+def test_review_chancery():
+    result = de_chancery.review("Delaware Court of Chancery opinion on merger")
+    assert result["reviewed"] is True
+    assert "response" in result

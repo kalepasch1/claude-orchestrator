@@ -17,6 +17,7 @@ import db
 import pipeline_contract
 import privacy
 import agentic_repair
+import quarantine_triage
 
 DEFAULT_LIMIT = int(os.environ.get("ORCH_QUARANTINE_LIMIT", "120"))
 MAX_BASE_CHARS = int(os.environ.get("ORCH_QUARANTINE_PROMPT_CHARS", "12000"))
@@ -214,6 +215,81 @@ def classify(task):
     if _EXHAUSTED.search(text):
         return "oversized"
     return "rework"
+
+
+def classify_multi(task, max_labels=5):
+    """Multi-label classifier: identify ALL failure modes in a quarantined task (up to max_labels).
+
+    Unlike classify() which returns a single primary category, this returns a ranked list of
+    failure modes with confidence scores, enabling more targeted repair strategies. Each mode
+    includes the evidence snippet that triggered it.
+
+    Returns: [{"category": str, "confidence": float, "evidence": str}, ...]
+    """
+    blocker = _blocker_signal(task)
+    evidence = _evidence_signal(task)
+    text = blocker + "\n" + str(task.get("prompt") or "")
+    state = str(task.get("state") or "").upper()
+    results = []
+
+    # Check each classifier independently — a task can have multiple failure modes
+    classifiers = [
+        ("secret", lambda: _is_secret(evidence), evidence, 0.95),
+        ("security", lambda: bool(_SECURITY.search(evidence)), evidence, 0.90),
+        ("legal", lambda: bool(_LEGAL.search(text)), text, 0.85),
+        ("missing-branch", lambda: bool(_MISSING.search(text)), text, 0.92),
+        ("buildfail", lambda: bool(_BUILD.search(text)), text, 0.88),
+        ("testfail", lambda: state == "TESTFAIL" or bool(_TEST.search(text)), text, 0.88),
+        ("noop", lambda: bool(_NOOP.search(text)), text, 0.90),
+        ("oversized", lambda: bool(_EXHAUSTED.search(text)), text, 0.80),
+    ]
+
+    for category, check_fn, source, confidence in classifiers:
+        try:
+            if check_fn():
+                # Extract the matching evidence snippet
+                snippet = _extract_evidence_snippet(source, category)
+                results.append({
+                    "category": category,
+                    "confidence": confidence,
+                    "evidence": snippet[:200],
+                })
+        except Exception:
+            pass
+
+    if not results:
+        results.append({
+            "category": "rework",
+            "confidence": 0.5,
+            "evidence": (str(task.get("note") or "") + " " + str(task.get("log_tail") or ""))[:200].strip(),
+        })
+
+    # Sort by confidence descending, cap at max_labels
+    results.sort(key=lambda r: r["confidence"], reverse=True)
+    return results[:max_labels]
+
+
+def _extract_evidence_snippet(text, category):
+    """Extract the relevant snippet from text that triggered a category match."""
+    patterns = {
+        "secret": _SECRET_TERM,
+        "security": _SECURITY,
+        "legal": _LEGAL,
+        "missing-branch": _MISSING,
+        "buildfail": _BUILD,
+        "testfail": _TEST,
+        "noop": _NOOP,
+        "oversized": _EXHAUSTED,
+    }
+    pat = patterns.get(category)
+    if not pat:
+        return text[:200]
+    m = pat.search(text)
+    if not m:
+        return text[:200]
+    start = max(0, m.start() - 40)
+    end = min(len(text), m.end() + 40)
+    return text[start:end].strip()
 
 
 _REPLACEMENT_NOTE = re.compile(r"replacement for (?P<slug>.+?) category=(?P<category>[a-z-]+)", re.I)
@@ -507,12 +583,29 @@ def run(limit=DEFAULT_LIMIT):
     created = parked = skipped = 0
     repaired_original = 0
     categories = collections.Counter()
-    max_depth = int(os.environ.get("ORCH_QUARANTINE_MAX_REWORK_DEPTH", "2"))
-    escalated = 0
+    triage_retried = 0
     for task in rows:
         if MARK in str(task.get("note") or ""):
             skipped += 1
             continue
+
+        # 3-tier triage: give the task a chance to self-recover before quarantining
+        try:
+            evidence = f"{task.get('note') or ''}\n{task.get('log_tail') or ''}"
+            verdict = quarantine_triage.triage(task, evidence)
+            if verdict["action"] in ("retry", "restart+retry"):
+                rc = int(task.get("remediation_count") or 0)
+                db.update("tasks", {"id": task["id"]}, {
+                    "state": "QUEUED", "account": None, "updated_at": "now()",
+                    "remediation_count": rc + 1,
+                    "note": (f"{MARK}: triage tier-{verdict['tier']} {verdict['category']}: "
+                             f"{verdict['summary']}")[:500],
+                })
+                triage_retried += 1
+                continue
+        except Exception:
+            pass  # fail-soft: fall through to normal quarantine path
+
         category = classify(task)
         # DEPTH CAP: a task whose slug already carries 2+ nested "rework-" segments has already
         # been through this pipeline that many times without landing. Spawning yet another nested
@@ -582,6 +675,7 @@ def run(limit=DEFAULT_LIMIT):
         "categories": dict(categories),
         "coder": os.environ.get("ORCH_QUARANTINE_CODER") or "ollama",
         "local_only": os.environ.get("ORCH_QUARANTINE_LOCAL_ONLY", "true").lower() in ("1", "true", "yes", "on"),
+        "triage_retried": triage_retried,
         "repaired_replacements": repaired,
         "deduped_replacements": deduped,
     }

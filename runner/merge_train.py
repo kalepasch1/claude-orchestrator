@@ -34,26 +34,7 @@ import db
 import events
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
 import agentic_repair
-import repo_lock         # per-repo mutex: concurrent train_run() calls must not race git refs
-import repo_hygiene      # strip stray untracked .js shadowing .ts before every test run
-try:
-    import semantic_merge    # AST-level auto-resolution for rebase conflicts
-except ImportError:
-    semantic_merge = None
-import integration_runtime
-
-
-def emit(kind, **fields):
-    """Public fail-soft event adapter used by integrations and diagnostics."""
-    return events.emit(kind, **fields)
-
-try:
-    import verify as _verify_mod
-except ImportError:
-    _verify_mod = None
-
-# Release-fix slug prefixes — mirrored from db.RELEASE_FIX_PREFIXES for local use
-_RELFIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-", "copyfix-")
+import continuous_test_runner
 
 MARK = "train"                                   # decided_by prefix => handled by the train
 # Non-code policy decisions are terminal approval artifacts, not merge work.  If
@@ -301,119 +282,26 @@ def _try_semantic_merge(repo, branch, base):
         return False
 
 
-def _test_package_paths(repo, test_cmd):
-    roots = [repo]
-    for pattern in (r"(?:^|[;&])\s*cd\s+([^\s;&]+)", r"--prefix(?:=|\s+)([^\s;&]+)"):
-        for match in re.finditer(pattern, test_cmd or ""):
-            candidate = match.group(1).strip("'\"")
-            if not os.path.isabs(candidate):
-                candidate = os.path.join(repo, candidate)
-            if os.path.isdir(candidate):
-                roots.append(candidate)
-    return list(dict.fromkeys(os.path.realpath(root) for root in roots))
+def _run_tests(repo, test_cmd, task=None):
+    """Step 3: run the gate with continuous test integration.
 
-
-def _ensure_node_deps(repo, test_cmd=""):
-    """A node repo whose node_modules is missing makes every test/typecheck fail with
-    'cannot find module' — an ENVIRONMENT failure, not a code failure, that was TESTFAIL-ing
-    all JS/TS merges (2026-07-10: smarter 'cannot find module vue'). Lazily install deps once
-    per repo per process when they're absent. Idempotent; fail-soft (let the test surface the
-    real error if install fails).
-
-    2026-07-10: this walks the WHOLE repo tree and used to give each nested package.json its
-    own fresh MERGE_TRAIN_NPM_TIMEOUT (default 600s) budget. In a repo with several nested
-    packages, that's several independent 600s budgets stacked sequentially -- a single train
-    process (holding that repo's exclusive lock the entire time) sat idle for 74+ minutes
-    across a handful of installs, well past any one install's own timeout, blocking every
-    other project's merges in that same train run. Now enforces one CUMULATIVE budget
-    (MERGE_TRAIN_NPM_TOTAL_TIMEOUT, default 900s) across all installs triggered by a single
-    call, so a monorepo with many nested packages can't multiply timeouts into an effectively
-    unbounded hold on the repo lock."""
-    total_budget = float(os.environ.get("MERGE_TRAIN_NPM_TOTAL_TIMEOUT", "180"))
-    per_install_cap = int(os.environ.get("MERGE_TRAIN_NPM_TIMEOUT", "600"))
-    deadline = time.monotonic() + total_budget
-    # The gate runs in repo unless the command explicitly changes directory or
-    # uses npm --prefix. Walking every package in a monorepo hydrated unrelated
-    # examples/services and turned one branch check into a 15-minute lock hold.
-    roots = _test_package_paths(repo, test_cmd)
-    try:
-        for root in roots:
-            if (os.path.isfile(os.path.join(root, "package.json"))
-                    and not os.path.isdir(os.path.join(root, "node_modules"))):
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break  # cumulative budget exhausted; leave any further packages uninstalled
-                cmd = "npm ci" if os.path.isfile(os.path.join(root, "package-lock.json")) else "npm install"
-                try:
-                    subprocess.run(["bash", "-lc", cmd], cwd=root, capture_output=True,
-                                   text=True, timeout=min(per_install_cap, remaining))
-                except subprocess.TimeoutExpired:
-                    # this one install is over budget -- move on rather than let a single
-                    # slow/hung install consume the entire remaining cumulative budget doing
-                    # nothing else useful.
-                    continue
-    except Exception:
-        pass
-
-
-def _prepare_generated_types(repo, test_cmd=""):
-    """Generate worktree-local Nuxt types for the package under test."""
-    for root in _test_package_paths(repo, test_cmd):
-        package = os.path.join(root, "package.json")
-        tsconfig = os.path.join(root, ".nuxt", "tsconfig.json")
-        if not os.path.isfile(package) or os.path.isfile(tsconfig):
-            continue
-        try:
-            with open(package, encoding="utf-8") as fh:
-                is_nuxt = '"nuxt"' in fh.read()
-            if is_nuxt:
-                subprocess.run(["npx", "nuxi", "prepare"], cwd=root,
-                               capture_output=True, text=True, timeout=180)
-        except Exception:
-            pass
-
-
-def _run_tests(repo, test_cmd, ref=None):
-    """Step 3: run the gate. Returns (ok, tail-of-output)."""
+    Uses continuous_test_runner for flake detection and result persistence.
+    Returns (ok, tail-of-output).
+    """
     if not test_cmd:
         return True, "no test_cmd configured"
-    if ref:
-        import commit_overlay
-        with commit_overlay.checkout(repo, ref, prefix="merge-qa-overlay-") as overlay:
-            worktree = overlay["path"]
-            for shared in ("node_modules", ".env", ".env.local"):
-                src, dst = os.path.join(repo, shared), os.path.join(worktree, shared)
-                if os.path.exists(src) and not os.path.exists(dst):
-                    try: os.symlink(src, dst)
-                    except OSError: pass
-            # npm --prefix web / `cd web && ...` resolves dependencies below
-            # that package, not at the repository root. Reuse the primary
-            # package's content-addressed install instead of reinstalling it in
-            # every disposable QA worktree.
-            for source_root in _test_package_paths(repo, test_cmd)[1:]:
-                rel = os.path.relpath(source_root, repo)
-                src = os.path.join(source_root, "node_modules")
-                dst = os.path.join(worktree, rel, "node_modules")
-                if os.path.isdir(src) and not os.path.exists(dst):
-                    try: os.symlink(src, dst)
-                    except OSError: pass
-            ok, detail = _run_tests(worktree, test_cmd)
-            return ok, f"overlay:{overlay['commit'][:12]} {detail}"
-    timeout = _test_timeout()
-    if "npm" in test_cmd or "vitest" in test_cmd or "vue-tsc" in test_cmd or "tsc" in test_cmd or "jest" in test_cmd:
-        # 2026-07-10: a leftover untracked compiled .js shadowing its .ts source (local build
-        # residue, invisible to git status) broke every test run touching it -- twice today,
-        # once at 10 files (beethoven, tracked -- needed a human) and once at 4106 (tomorrow,
-        # all untracked). This strips only the untracked kind before every test run so the
-        # gate can't be blocked by this class of bug again. See repo_hygiene.py.
-        try:
-            cleaned = repo_hygiene.clean_stray_js_duplicates(repo)
-            if cleaned:
-                print(f"merge_train: cleaned {len(cleaned)} stray untracked .js file(s) shadowing .ts in {repo}")
-        except Exception:
-            pass
-        _ensure_node_deps(repo, test_cmd)
-        _prepare_generated_types(repo, test_cmd)
+    # Use continuous_test_runner for flake-aware testing when available
+    try:
+        result = continuous_test_runner.run_tests(repo, task=task, mode="merge-gate")
+        if result["passed"]:
+            tail = "green"
+            if result.get("flake"):
+                tail += " (flake detected, passed on retry)"
+            return True, tail
+        return False, result.get("output", "")[-600:].strip()
+    except Exception:
+        pass
+    # Fallback to direct execution
     try:
         r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
                            text=True, timeout=timeout)
@@ -1000,51 +888,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
             _log(pname, slug, "CONFLICT", f"redo cap {cap} exhausted")
             return "conflict"
 
-    # (2.5) CONTRACT-FIRST VERIFY: cheap-model diff review BEFORE expensive test execution.
-    # Catches unsafe diffs (security regressions, broken error handling) early, especially
-    # for release fixes that are auto-approved and fast-tracked to production.
-    v_ok, v_detail = _verify_contract(repo, branch, base, slug, task, pname)
-    if not v_ok:
-        _task_patch(task, {"state": "TESTFAIL",
-                           "note": f"train: contract verification blocked merge of {branch}: {v_detail[:200]}"})
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:VERIFY_FAIL"})
-        _attribute_train_outcome(slug, task, "verify-fail", integrated=False)
-        _log(pname, slug, "VERIFY_FAIL", v_detail[:120])
-        return "verify-fail"
-
-    test_cmd = _test_cmd_for(proj, repo)
-    # Rebase changes the commit SHA. Freeze the accepted integration candidate
-    # before QA so attribution follows the exact commit that can reach release.
-    try:
-        frozen_identity = _freeze_integration_identity(repo, branch, task, slug)
-        try:
-            _task_patch(task, frozen_identity)
-        except Exception:
-            # The Git ref is authoritative. Keep exact-commit attribution live
-            # during rolling upgrades where artifact_ref is not in DB yet.
-            _task_patch(task, {"artifact_commit": frozen_identity["artifact_commit"]})
-    except Exception as exc:
-        # Fail-soft: identity freeze is attribution, not correctness. Blocking ALL merges
-        # because a ref can't be pushed (e.g. PAT lacks 'workflow' scope) is worse than
-        # merging without exact attribution. Log and continue — the rebased commit SHA
-        # is still recorded on the task via artifact_commit when available.
-        _log(pname, slug, "IDENTITY-WARN", f"freeze failed ({str(exc)[:80]}), proceeding with merge")
-    ok, tail = _run_tests(repo, test_cmd, branch)  # (3) branch-exact, never primary checkout
-    if not ok and os.environ.get("ORCH_DIFFERENTIAL_QA", "true").lower() in ("1", "true", "yes", "on"):
-        try:
-            import differential_qa
-            baseline = differential_qa.cached(repo, base, test_cmd)
-            if baseline is None:
-                baseline_ok, baseline_log = _run_tests(repo, test_cmd, base)
-                differential_qa.store(repo, base, test_cmd, baseline_ok, baseline_log)
-            else:
-                baseline_ok, baseline_log = baseline.get("ok"), baseline.get("log", "")
-            comparison = differential_qa.compare(tail, baseline_log)
-            if not baseline_ok and comparison.get("allowed"):
-                ok = True
-                tail = "green by differential QA: " + comparison.get("reason", "")
-        except Exception:
-            pass
+    ok, tail = _run_tests(repo, _test_cmd_for(proj, repo), task=task)  # (3)
     if not ok:
         # NEVER force-merge red work.
         _task_patch(task, {"state": "TESTFAIL", "note": f"train: tests failed on rebased {branch}: {tail[:200]}"})

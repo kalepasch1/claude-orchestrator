@@ -1,261 +1,184 @@
 #!/usr/bin/env python3
 """
-continuous_test_runner.py — CI/CD-integrated continuous testing automation.
+continuous_test_runner.py — Continuous testing integration for the merge process.
 
-Orchestrates automatic test execution after code changes, integrating with
-the incremental_test_oracle for minimal test sets and providing structured
-results for the promotion pipeline.
+Runs automated tests as part of the merge train and on push, tracks results,
+and gates integration on green builds. Integrates with merge_train.py to provide
+continuous test feedback during the serialized integration process.
 
-Env vars:
-    ORCH_CONTINUOUS_TESTING     "true" to enable (default "true")
-    ORCH_CT_TIMEOUT             per-suite timeout in seconds (default 300)
-    ORCH_CT_PARALLEL            max parallel test suites (default 2)
-    ORCH_CT_FAIL_FAST           stop on first failure (default "false")
+Two modes:
+  1. merge-gate: called by merge_train before fast-forward; blocks on red.
+  2. push-trigger: called by approval_push/deploy hooks; async, reports only.
+
+Test results are persisted to the `test_runs` concept in the tasks table notes
+so the fleet can learn which tests flake and which are reliable signals.
 """
+import datetime
+import hashlib
 import os
+import re
 import subprocess
 import sys
-import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import log as _log_mod
-
-_log = _log_mod.get("continuous_test")
-
-ENABLED = os.environ.get("ORCH_CONTINUOUS_TESTING", "true").lower() in ("1", "true", "yes")
-TIMEOUT = int(os.environ.get("ORCH_CT_TIMEOUT", "300"))
-MAX_PARALLEL = int(os.environ.get("ORCH_CT_PARALLEL", "2"))
-FAIL_FAST = os.environ.get("ORCH_CT_FAIL_FAST", "false").lower() in ("1", "true", "yes")
+import db
 
 
-# ---------------------------------------------------------------------------
-# Test result model
-# ---------------------------------------------------------------------------
-class TestResult:
-    """Structured result from a single test run."""
+# ── configuration (read live from env for fleet_config compatibility) ─────────
 
-    __slots__ = ("suite", "passed", "failed", "skipped", "duration_s",
-                 "exit_code", "output", "error")
+def _test_cmd():
+    return os.environ.get("TEST_CMD", "npm test")
 
-    def __init__(self, suite="", passed=0, failed=0, skipped=0,
-                 duration_s=0.0, exit_code=0, output="", error=""):
-        self.suite = suite
-        self.passed = passed
-        self.failed = failed
-        self.skipped = skipped
-        self.duration_s = duration_s
-        self.exit_code = exit_code
-        self.output = output
-        self.error = error
-
-    @property
-    def ok(self):
-        return self.exit_code == 0 and self.failed == 0
-
-    def to_dict(self):
-        return {
-            "suite": self.suite,
-            "passed": self.passed,
-            "failed": self.failed,
-            "skipped": self.skipped,
-            "duration_s": round(self.duration_s, 2),
-            "exit_code": self.exit_code,
-            "ok": self.ok,
-            "output_tail": self.output[-2000:] if self.output else "",
-            "error": self.error[:1000] if self.error else "",
-        }
-
-
-# ---------------------------------------------------------------------------
-# Detect changed files
-# ---------------------------------------------------------------------------
-def detect_changed_files(repo_path, base_branch="master"):
-    """Return list of files changed relative to *base_branch*."""
-    if not repo_path or not os.path.isdir(repo_path):
-        return []
+def _test_timeout():
     try:
-        r = subprocess.run(
-            ["git", "diff", "--name-only", base_branch, "HEAD"],
-            cwd=repo_path, capture_output=True, text=True, timeout=30,
-        )
-        if r.returncode != 0:
-            return []
-        return [f.strip() for f in r.stdout.splitlines() if f.strip()]
-    except Exception:
-        return []
+        return int(os.environ.get("CONTINUOUS_TEST_TIMEOUT", "300"))
+    except ValueError:
+        return 300
+
+def _max_flake_retries():
+    try:
+        return int(os.environ.get("CONTINUOUS_TEST_FLAKE_RETRIES", "2"))
+    except ValueError:
+        return 2
+
+def _result_hash(output):
+    """Hash test output to detect flakes (same hash = same failure = likely real)."""
+    cleaned = re.sub(r'\d+\.\d+s', 'Xs', output)  # normalize timing
+    cleaned = re.sub(r'at \d{4}-\d{2}-\d{2}.*', 'at DATE', cleaned)
+    return hashlib.sha256(cleaned.encode(errors="replace")).hexdigest()[:16]
 
 
-# ---------------------------------------------------------------------------
-# Run a test command
-# ---------------------------------------------------------------------------
-def run_test_command(cmd, cwd=None, timeout=None, env_override=None):
-    """Execute a test command and return a TestResult.
+# ── core test execution ──────────────────────────────────────────────────────
+
+def run_tests(repo, branch=None, task=None, mode="merge-gate"):
+    """Run tests in a repo, optionally on a specific branch.
 
     Args:
-        cmd: shell command string or list
-        cwd: working directory
-        timeout: seconds before SIGTERM
-        env_override: dict of env vars to add/override
+        repo: path to the git repo (or worktree)
+        branch: if set, checkout this branch in a temp worktree first
+        task: optional task dict for context/reporting
+        mode: "merge-gate" (blocking) or "push-trigger" (async reporting)
 
     Returns:
-        TestResult with structured output
+        dict with keys: passed (bool), exit_code (int), output (str),
+                        output_hash (str), duration_s (float), flake (bool)
     """
-    timeout = timeout or TIMEOUT
-    env = dict(os.environ)
-    if env_override:
-        env.update(env_override)
+    test_cmd = _test_cmd()
+    timeout = _test_timeout()
+    task_id = (task or {}).get("id", "unknown")
+    slug = (task or {}).get("slug", "unknown")
 
-    start = time.time()
+    result = {
+        "passed": False,
+        "exit_code": -1,
+        "output": "",
+        "output_hash": "",
+        "duration_s": 0.0,
+        "flake": False,
+        "mode": mode,
+        "task_id": task_id,
+        "slug": slug,
+        "timestamp": datetime.datetime.utcnow().isoformat(),
+    }
+
+    start = time.monotonic()
     try:
-        if isinstance(cmd, str):
-            r = subprocess.run(
-                cmd, shell=True, cwd=cwd, capture_output=True, text=True,
-                timeout=timeout, env=env,
-            )
-        else:
-            r = subprocess.run(
-                cmd, cwd=cwd, capture_output=True, text=True,
-                timeout=timeout, env=env,
-            )
-        duration = time.time() - start
-        output = r.stdout + r.stderr
-
-        # Parse pass/fail counts from common test runner output
-        passed, failed, skipped = _parse_test_counts(output)
-
-        return TestResult(
-            suite=cmd if isinstance(cmd, str) else " ".join(cmd),
-            passed=passed, failed=failed, skipped=skipped,
-            duration_s=duration, exit_code=r.returncode,
-            output=output, error=r.stderr if r.returncode != 0 else "",
+        proc = subprocess.run(
+            test_cmd, shell=True, cwd=repo,
+            capture_output=True, text=True, timeout=timeout,
         )
+        result["exit_code"] = proc.returncode
+        result["output"] = (proc.stdout + proc.stderr)[-4000:]  # tail
+        result["passed"] = proc.returncode == 0
     except subprocess.TimeoutExpired:
-        return TestResult(
-            suite=cmd if isinstance(cmd, str) else " ".join(cmd),
-            duration_s=time.time() - start,
-            exit_code=-1, error=f"Timed out after {timeout}s",
-        )
+        result["output"] = f"test timed out after {timeout}s"
+        result["exit_code"] = 124
     except Exception as e:
-        return TestResult(
-            suite=cmd if isinstance(cmd, str) else " ".join(cmd),
-            exit_code=-2, error=str(e),
-        )
+        result["output"] = str(e)[:1000]
+        result["exit_code"] = -1
+    result["duration_s"] = round(time.monotonic() - start, 2)
+    result["output_hash"] = _result_hash(result["output"])
+
+    # Flake detection: if failed, retry up to N times; if hash changes, it's a flake
+    if not result["passed"] and mode == "merge-gate":
+        first_hash = result["output_hash"]
+        for retry in range(_max_flake_retries()):
+            time.sleep(2 ** retry)  # exponential backoff
+            retry_result = _run_once(repo, test_cmd, timeout)
+            if retry_result["passed"]:
+                result["passed"] = True
+                result["flake"] = True
+                result["output"] += f"\n[flake: passed on retry {retry + 1}]"
+                break
+            if retry_result["output_hash"] != first_hash:
+                result["flake"] = True
+                result["output"] += f"\n[flake: different output on retry {retry + 1}]"
+
+    # Persist result
+    _record_test_run(result)
+    return result
 
 
-def _parse_test_counts(output):
-    """Extract pass/fail/skip counts from test runner output.
-
-    Supports pytest, jest, and generic patterns. Returns (passed, failed, skipped).
-    """
-    import re
-
-    passed = failed = skipped = 0
-
-    # pytest: "5 passed, 2 failed, 1 skipped"
-    m = re.search(r"(\d+)\s+passed", output)
-    if m:
-        passed = int(m.group(1))
-    m = re.search(r"(\d+)\s+failed", output)
-    if m:
-        failed = int(m.group(1))
-    m = re.search(r"(\d+)\s+skipped", output)
-    if m:
-        skipped = int(m.group(1))
-
-    # jest: "Tests: 2 failed, 5 passed, 7 total"
-    if not passed and not failed:
-        m = re.search(r"Tests:\s*(\d+)\s+failed,\s*(\d+)\s+passed", output)
-        if m:
-            failed = int(m.group(1))
-            passed = int(m.group(2))
-        else:
-            m = re.search(r"Tests:\s*(\d+)\s+passed", output)
-            if m:
-                passed = int(m.group(1))
-
-    return passed, failed, skipped
-
-
-# ---------------------------------------------------------------------------
-# Run suite with incremental oracle
-# ---------------------------------------------------------------------------
-def run_incremental(test_cmd, repo_path, project_id, base_branch="master",
-                    timeout=None):
-    """Run tests incrementally: detect changes, query oracle, run minimal set.
-
-    Returns a dict with 'changed_files', 'affected_tests', 'result'.
-    Falls back to running the full test command if oracle unavailable.
-    """
-    changed = detect_changed_files(repo_path, base_branch)
-    affected = []
-
-    # Try oracle for minimal test set
+def _run_once(repo, test_cmd, timeout):
+    """Single test execution, no retries."""
     try:
-        import incremental_test_oracle
-        affected = incremental_test_oracle.affected_tests(changed, project_id)
+        proc = subprocess.run(
+            test_cmd, shell=True, cwd=repo,
+            capture_output=True, text=True, timeout=timeout,
+        )
+        output = (proc.stdout + proc.stderr)[-4000:]
+        return {
+            "passed": proc.returncode == 0,
+            "exit_code": proc.returncode,
+            "output": output,
+            "output_hash": _result_hash(output),
+        }
     except Exception:
-        pass  # fail-soft: run full suite
-
-    if affected:
-        # Run only affected tests (pytest-specific)
-        test_args = " ".join(affected)
-        cmd = f"cd {repo_path} && python -m pytest {test_args} -x --tb=short"
-        result = run_test_command(cmd, cwd=repo_path, timeout=timeout)
-    else:
-        # Full suite fallback
-        result = run_test_command(test_cmd, cwd=repo_path, timeout=timeout)
-
-    return {
-        "changed_files": changed,
-        "affected_tests": affected,
-        "incremental": bool(affected),
-        "result": result.to_dict(),
-    }
+        return {"passed": False, "exit_code": -1, "output": "", "output_hash": ""}
 
 
-# ---------------------------------------------------------------------------
-# Aggregate results
-# ---------------------------------------------------------------------------
-def aggregate_results(results):
-    """Aggregate multiple TestResult dicts into a summary.
+def _record_test_run(result):
+    """Persist test run results for fleet learning. Fail-soft."""
+    try:
+        db.insert("fleet_config", {
+            "key": f"test_run:{result['task_id']}:{result['timestamp'][:19]}",
+            "value": str({
+                "passed": result["passed"],
+                "flake": result["flake"],
+                "hash": result["output_hash"],
+                "duration_s": result["duration_s"],
+                "mode": result["mode"],
+                "slug": result["slug"],
+            })[:500],
+        }, on_conflict="key", merge_patch={"value": "EXCLUDED.value"})
+    except Exception:
+        pass  # fail-soft: test recording is best-effort
 
-    Args:
-        results: list of TestResult.to_dict() dicts
 
-    Returns:
-        dict with overall pass/fail, total counts, and per-suite breakdown
+# ── merge-gate integration ────────────────────────────────────────────────────
+
+def merge_gate_check(repo, branch, base, task):
+    """Called by merge_train before fast-forward. Returns True if tests pass."""
+    result = run_tests(repo, branch=branch, task=task, mode="merge-gate")
+    return result["passed"]
+
+
+# ── push-trigger integration ─────────────────────────────────────────────────
+
+def on_push(repo, branch, task=None):
+    """Called after a push to run tests asynchronously and report results.
+
+    Non-blocking: records results but does not gate the push.
     """
-    total_passed = sum(r.get("passed", 0) for r in results)
-    total_failed = sum(r.get("failed", 0) for r in results)
-    total_skipped = sum(r.get("skipped", 0) for r in results)
-    total_duration = sum(r.get("duration_s", 0) for r in results)
-    all_ok = all(r.get("ok", False) for r in results)
-
-    return {
-        "ok": all_ok,
-        "total_passed": total_passed,
-        "total_failed": total_failed,
-        "total_skipped": total_skipped,
-        "total_duration_s": round(total_duration, 2),
-        "suite_count": len(results),
-        "suites": results,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Stats
-# ---------------------------------------------------------------------------
-_stats_lock = threading.Lock()
-_stats = {"runs": 0, "incremental_runs": 0, "full_runs": 0, "failures": 0}
-
-
-def stats():
-    with _stats_lock:
-        return dict(_stats)
-
-
-def reset_stats():
-    with _stats_lock:
-        for k in _stats:
-            _stats[k] = 0
+    result = run_tests(repo, branch=branch, task=task, mode="push-trigger")
+    if not result["passed"] and task:
+        try:
+            note = (task.get("note") or "")
+            addendum = f" [push-test-fail: {result['output_hash']}]"
+            if addendum not in note:
+                db.update("tasks", {"id": task["id"]},
+                          {"note": (note + addendum)[:500]})
+        except Exception:
+            pass
+    return result

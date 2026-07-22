@@ -23,6 +23,8 @@ import db
 import legal_filter
 import pipeline_contract
 import agentic_repair
+import decomposition_backpressure
+import greedy_dispatch
 
 CAP = int(os.environ.get("REMEDIATION_CAP", "3"))
 # HARD TERMINAL CAP: a task remediated this many times without ever merging is almost certainly
@@ -97,14 +99,16 @@ def run(limit=120):
         # genuinely atomic-and-stuck (or already a decomposition product) do we shelve — which should be
         # rare. Legal/material holds still route to the human path below.
         if rc >= HARD_CAP and not _requires_human_hold(t, signal):
-            if not _already_decomposed(t, note):
+            if not _already_decomposed(t, note) and decomposition_backpressure.gate(task=t):
                 subs = _decompose(t, signal)
                 if subs:
-                    n = _spawn_subtasks(t, subs)
+                    n, child_ids = _spawn_subtasks(t, subs, return_ids=True)
                     if n:
                         db.update("tasks", {"id": t["id"]},
                                   {"state": "DECOMPOSED", "account": None, "updated_at": "now()",
                                    "note": (f"too large after {rc} attempts -> auto-split into {n} sub-tasks; parent retired.")[:500]})
+                        # Immediately dispatch children to available runners
+                        greedy_dispatch.on_decomposition_complete(t, child_ids)
                         decomposed += 1
                         continue
             db.update("tasks", {"id": t["id"]},
@@ -490,16 +494,13 @@ def _decompose(task, note):
         return None
 
 
-def _spawn_subtasks(task, subs):
-    """Create child tasks for a decomposed parent. Returns count actually created.
+def _spawn_subtasks(task, subs, return_ids=False):
+    """Create child tasks for a decomposed parent.
 
-    FIXED 2026-07-11: added prompt quality gate. Previously, when the decomposing
-    model returned vague descriptions ("Reuse matching project helpers"), those
-    became the child's entire prompt — producing 503+ unexecutable stub tasks.
-    Now rejects sub-tasks whose prompt is under 80 chars or lacks any verb/action word.
+    Returns count actually created, or (count, [child_ids]) if return_ids=True.
     """
-    ACTION_WORDS = re.compile(r"\b(add|create|implement|fix|update|write|modify|remove|refactor|replace|extract|move|rename|delete|configure|set up|integrate|convert|wrap|define|build|test|validate|ensure|return|handle|parse|send|fetch|call|check)\b", re.I)
     made = 0
+    child_ids = []
     for i, s in enumerate(subs):
         prompt_text = str(s.get("prompt") or "").strip()
         # Quality gate: reject vague/empty sub-task prompts
@@ -509,15 +510,19 @@ def _spawn_subtasks(task, subs):
         if db.select("tasks", {"select": "id", "slug": f"eq.{child}", "limit": "1"}):
             continue
         try:
-            db.insert("tasks", {
+            row = db.insert("tasks", {
                 "project_id": task.get("project_id"), "slug": child, "kind": "build", "state": "QUEUED",
                 "remediation_count": 0, "base_branch": task.get("base_branch") or "main",
                 "material": bool(task.get("material")),
                 "prompt": prompt_text,
                 "note": f"auto-decomposed from {task['slug']}"})
             made += 1
+            if return_ids and isinstance(row, list) and row:
+                child_ids.append(row[0].get("id", ""))
         except Exception:
             pass
+    if return_ids:
+        return made, child_ids
     return made
 
 

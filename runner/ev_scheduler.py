@@ -101,8 +101,18 @@ def score(task, ctx):
     if int(task.get("transient_retries") or 0) >= 2:
         s *= 0.3
 
-    # Outcome weighting: multiply by realized family success (only when flag is ON)
-    s *= outcome_weight(task, ctx)
+    # App-signal adjustments from telemetry_ingest: error spikes boost fix-kind tasks,
+    # rising usage boosts feature tasks, dead apps sink. Missing signal = neutral.
+    app_signals = (ctx.get("app_signals") or {}).get(project, {})
+    if app_signals:
+        error_rate = float(app_signals.get("error_rate", 0))
+        usage_trend = float(app_signals.get("usage_trend", 0))
+        if error_rate > 0.3 and kind in ("bugfix", "fix", "hotfix", "build"):
+            s *= 1 + min(error_rate, 1.0)  # up to 2x for high error rates
+        if usage_trend > 0.2 and kind in ("build", "feature"):
+            s *= 1 + min(usage_trend, 1.0) * 0.5  # up to 1.5x for growing apps
+        if usage_trend < -0.5 and error_rate < 0.1:
+            s *= 0.5  # dead/declining app with no errors: deprioritize
 
     # ORCHESTRATOR-FIRST (owner directive): self-improvements to the orchestration layer have no
     # direct MRR but compound across the WHOLE fleet (a better orchestrator ships every app better),

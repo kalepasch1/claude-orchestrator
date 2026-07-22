@@ -4,6 +4,13 @@
 Writes the small set of numbers that matter for drain mode: queue mix, merge
 rate, first-pass rate, spend, token use, and paused minutes. This is read-only
 except for a controls heartbeat (and an optional table insert if present).
+
+History persistence (D1): appends each snapshot to an append-only JSONL file
+so >=30 days of historical metrics are retained regardless of whether the
+scoreboard table truncates or overwrites.
+
+Lead time metrics (D1): computes objective→prompt and prompt→merged lead times
+from prompt_factory timing and the outcomes table.
 """
 import datetime
 import json
@@ -15,6 +22,10 @@ import db
 
 WINDOW_H = int(os.environ.get("ORCH_SCOREBOARD_WINDOW_H", "24"))
 CONTROL_KEY = "fleet_scoreboard"
+HISTORY_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           ".runtime")
+HISTORY_FILE = os.path.join(HISTORY_DIR, "scoreboard_history.jsonl")
+HISTORY_RETENTION_DAYS = int(os.environ.get("ORCH_SCOREBOARD_RETENTION_DAYS", "90"))
 
 
 def _iso_hours_ago(hours):
@@ -139,6 +150,161 @@ def _by_project(rows):
     return {key: _outcome_metrics(vals) for key, vals in grouped.items()}
 
 
+# ── Lead time metrics (D1) ────────────────────────────────────────────────────
+
+def _lead_time_metrics():
+    """Compute objective→prompt and prompt→merged lead times from recent data.
+
+    - objective_to_prompt_h: average hours from goal creation to first task queued
+    - prompt_to_merged_h: average hours from task creation to merged outcome
+    - tokens_per_task: average token estimate per assembled prompt
+    """
+    result = {
+        "objective_to_prompt_h": None,
+        "prompt_to_merged_h": None,
+        "tokens_per_task": None,
+    }
+
+    # prompt→merged: time from task created_at to outcome created_at (integrated=true)
+    try:
+        outcomes = db.select("outcomes", {
+            "select": "slug,project,created_at",
+            "integrated": "eq.true",
+            "order": "created_at.desc",
+            "limit": "200",
+        }) or []
+        if outcomes:
+            deltas = []
+            for o in outcomes:
+                outcome_ts = _parse_ts(o.get("created_at"))
+                if not outcome_ts:
+                    continue
+                slug = o.get("slug")
+                if not slug:
+                    continue
+                try:
+                    tasks = db.select("tasks", {
+                        "select": "created_at",
+                        "slug": f"eq.{slug}",
+                        "limit": "1",
+                    }) or []
+                except Exception:
+                    continue
+                if tasks:
+                    task_ts = _parse_ts(tasks[0].get("created_at"))
+                    if task_ts and outcome_ts > task_ts:
+                        deltas.append((outcome_ts - task_ts).total_seconds() / 3600.0)
+            if deltas:
+                result["prompt_to_merged_h"] = round(sum(deltas) / len(deltas), 2)
+    except Exception:
+        pass
+
+    # objective→prompt: time from goal created_at to first task created_at for that project
+    try:
+        goals = db.select("goals", {
+            "select": "objective,project,created_at",
+            "status": "in.(active,met)",
+            "order": "created_at.desc",
+            "limit": "50",
+        }) or []
+        if goals:
+            deltas = []
+            for g in goals:
+                goal_ts = _parse_ts(g.get("created_at"))
+                proj = g.get("project")
+                if not goal_ts or not proj:
+                    continue
+                try:
+                    tasks = db.select("tasks", {
+                        "select": "created_at",
+                        "order": "created_at.asc",
+                        "limit": "1",
+                    }) or []
+                except Exception:
+                    continue
+                if tasks:
+                    task_ts = _parse_ts(tasks[0].get("created_at"))
+                    if task_ts and task_ts > goal_ts:
+                        deltas.append((task_ts - goal_ts).total_seconds() / 3600.0)
+            if deltas:
+                result["objective_to_prompt_h"] = round(sum(deltas) / len(deltas), 2)
+    except Exception:
+        pass
+
+    # tokens per task from prompt_assembler stats
+    try:
+        import prompt_assembler
+        pa_stats = prompt_assembler.stats()
+        result["tokens_per_task"] = pa_stats.get("avg_tokens")
+    except Exception:
+        pass
+
+    return result
+
+
+# ── History persistence ───────────────────────────────────────────────────────
+
+def _append_history(payload):
+    """Append snapshot to JSONL file for >=30-day retention."""
+    try:
+        os.makedirs(HISTORY_DIR, exist_ok=True)
+        with open(HISTORY_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, default=str) + "\n")
+    except Exception:
+        pass
+
+
+def _prune_history():
+    """Remove entries older than HISTORY_RETENTION_DAYS from the JSONL file."""
+    if not os.path.isfile(HISTORY_FILE):
+        return
+    try:
+        cutoff = (datetime.datetime.utcnow() -
+                  datetime.timedelta(days=HISTORY_RETENTION_DAYS)).isoformat()
+        kept = []
+        with open(HISTORY_FILE, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    ts = row.get("generated_at", "")
+                    if ts >= cutoff:
+                        kept.append(line)
+                except Exception:
+                    pass
+        with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+            for line in kept:
+                f.write(line + "\n")
+    except Exception:
+        pass
+
+
+def history(days=30):
+    """Read historical snapshots from JSONL. Returns list of dicts."""
+    if not os.path.isfile(HISTORY_FILE):
+        return []
+    cutoff = (datetime.datetime.utcnow() -
+              datetime.timedelta(days=days)).isoformat()
+    results = []
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                    if row.get("generated_at", "") >= cutoff:
+                        results.append(row)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return results
+
+
 def compute():
     outcomes = _select_outcomes()
     return {
@@ -149,11 +315,14 @@ def compute():
         "overall": _outcome_metrics(outcomes),
         "by_model": _by_model(outcomes),
         "by_project": _by_project(outcomes),
+        "lead_times": _lead_time_metrics(),
     }
 
 
 def run():
     payload = compute()
+
+    # Persist to DB
     try:
         db.insert("controls", {"key": CONTROL_KEY, "value": json.dumps(payload, default=str),
                                "updated_at": "now()"}, upsert=True)
@@ -163,15 +332,26 @@ def run():
         db.insert("scoreboard", payload)
     except Exception:
         pass
+
+    # Append to JSONL history (>=30 days retention)
+    _append_history(payload)
+
+    # Prune old history (run infrequently — every ~24h is fine, but safe to call every time)
+    _prune_history()
+
     overall = payload["overall"]
     queue = payload.get("queue") or {}
+    lead = payload.get("lead_times") or {}
     print(
         "scoreboard: "
         f"queued={queue.get('queued')} running={queue.get('running')} "
         f"merged={overall.get('merged')}/{overall.get('attempts')} "
         f"merge_rate={overall.get('merge_rate')} "
         f"usd_per_merge={overall.get('usd_per_merge')} "
-        f"paused_min_today={payload.get('paused_minutes_today')}"
+        f"paused_min_today={payload.get('paused_minutes_today')} "
+        f"obj→prompt_h={lead.get('objective_to_prompt_h')} "
+        f"prompt→merged_h={lead.get('prompt_to_merged_h')} "
+        f"tokens/task={lead.get('tokens_per_task')}"
     )
     return payload
 
