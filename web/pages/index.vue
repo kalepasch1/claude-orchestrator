@@ -12,16 +12,16 @@ const runners = ref<any[]>([])
 const providerSpend = ref<any[]>([])
 const outcomes = ref<any[]>([])
 const capabilities = ref<any[]>([])
-const expandedTask = ref<string | null>(null)
-const intent = ref('')
-const selectedProject = ref('')
-const projectChoice = ref<{ message: string; projects: Array<{ id: string; name: string }> } | null>(null)
-const queueLoading = ref(false)
-const queueError = ref('')
-const lastRoute = ref<any>(null)
-const stopLoading = ref(false)
-const globalPaused = ref(false)
-const approvalError = ref('')
+const capInstances = ref<any[]>([])
+const capProvenance = ref<any[]>([])
+const radarProposals = ref<any[]>([])
+const proofPacks = ref<any>({ commonBrain: [], receipts: [], error: null })
+// Real-time log lines from run_logs table (slice-1 streaming).
+const runLogRows = ref<any[]>([])
+const RUN_LOGS_MAX = 500
+// Mission Control: epoch ms of the last realtime event observed (header live-strip).
+const lastEventAt = ref<number | null>(null)
+let chart: any = null
 
 // ── run_logs realtime ring buffer ────────────────────────────────────────────
 const LOG_RING_MAX = 500
@@ -153,19 +153,252 @@ onMounted(async () => {
   refreshTimer = setInterval(() => { if (user.value) loadAll() }, 30_000)
   realtimeSub = supabase.channel('command-center-live').on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, loadAll).on('postgres_changes', { event: '*', schema: 'public', table: 'approvals' }, loadAll).subscribe()
 
-  // seed with recent log rows then subscribe to inserts
-  if (user.value) {
-    const { data: seed } = await supabase.from('run_logs').select('ts,level,source,message').order('ts', { ascending: false }).limit(LOG_RING_MAX)
-    if (seed && seed.length) {
-      // seed comes newest-first; reverse so oldest is at index 0
-      seed.reverse().forEach((r: any) => pushLogRow(r))
+async function panicStopAndRevoke(providerName: string) {
+  if (!confirm(`SECURITY PANIC: stop the runner and revoke ALL active ${providerName} keys? This cannot be undone automatically.`)) return
+  panicLoading.value = true
+  try {
+    const proj = projects.value[0]
+    if (!proj) { alert('No projects registered'); return }
+    await supabase.from('tasks').insert({
+      project_id: proj.id,
+      slug: `panic-${providerName}-${Date.now()}`,
+      prompt: `REVOKE_AND_STOP:${providerName}`,
+      kind: 'build', state: 'QUEUED',
+    })
+    alert(`Panic task queued. The runner will revoke ${providerName} keys and pause immediately.`)
+    await loadAll()
+  } finally { panicLoading.value = false }
+}
+
+async function rotateKey(providerName: string, keyName: string, project: string | null) {
+  const key = `${providerName}/${keyName}`
+  rotateLoading.value[key] = true
+  try {
+    const proj = project ? projects.value.find((p: any) => p.name === project) : projects.value[0]
+    if (!proj) { alert('Project not found for rotation'); return }
+    await supabase.from('tasks').insert({
+      project_id: proj.id,
+      slug: `rotate-${providerName}-${Date.now()}`,
+      prompt: `ROTATE_KEY:${providerName}:${keyName}`,
+      kind: 'build', state: 'QUEUED',
+    })
+    alert(`Rotation enqueued for ${providerName}/${keyName}. The runner will execute it.`)
+  } finally { rotateLoading.value[key] = false }
+}
+
+async function submitFeedback() {
+  if (!newFeedback.observation.trim()) return
+  feedbackSaving.value = true
+  try {
+    await supabase.from('orchestrator_feedback').insert({
+      category: newFeedback.category, severity: newFeedback.severity,
+      observation: newFeedback.observation, suggestion: newFeedback.suggestion,
+      source: 'human', status: 'new',
+    })
+    newFeedback.observation = ''; newFeedback.suggestion = ''
+    await loadAll()
+  } finally { feedbackSaving.value = false }
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────
+function budgetFor(project: string) {
+  const b = budgets.value.find(x => x.project === project)
+  const spent = outcomes.value.filter(o => o.project === project)
+    .reduce((s, o) => s + Number(o.usd || 0), 0)
+  return { cap: b ? Number(b.monthly_usd_cap) : null, spent, hard: b?.hard_pause }
+}
+
+async function renderChart() {
+  if (!process.client || !outcomes.value.length) return
+  const el = document.getElementById('spendChart') as HTMLCanvasElement | null
+  if (!el) return
+  const { Chart } = await import('chart.js/auto')
+  let cum = 0
+  const pts = outcomes.value.map(o => ({ x: new Date(o.created_at).getTime(), y: (cum += Number(o.usd || 0)) }))
+  if (chart) chart.destroy()
+  chart = new Chart(el, {
+    type: 'line',
+    data: { datasets: [{ label: 'Cumulative spend ($)', data: pts, borderColor: CHART_LINE,
+      backgroundColor: 'rgba(56,139,253,.15)', fill: true, tension: .25, pointRadius: 0 }] },
+    options: { responsive: true, plugins: { legend: { labels: { color: CHART_AXIS } } },
+      scales: { x: { type: 'linear', ticks: { color: CHART_AXIS,
+        callback: (v: any) => new Date(v).toLocaleDateString() } },
+        y: { ticks: { color: CHART_AXIS } } } },
+  })
+}
+
+function alive(r: any) { return (Date.now() - new Date(r.last_seen).getTime()) < 60000 }
+function fmtConf(c: any) { return c != null ? Math.round(Number(c) * 100) + '%' : '' }
+function confidenceLabel(c: any) {
+  if (c == null) return 'not scored'
+  const pct = Math.round(Number(c) * 100)
+  if (pct >= 90) return `${pct}% ready`
+  if (pct >= 75) return `${pct}% needs watch`
+  return `${pct}% risky`
+}
+function ago(ts: string) {
+  const d = Math.round((Date.now() - new Date(ts).getTime()) / 60000)
+  return d < 60 ? `${d}m ago` : d < 1440 ? `${Math.round(d/60)}h ago` : `${Math.round(d/1440)}d ago`
+}
+
+function makeSlug(text: string) {
+  const s = text.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 48)
+  return s || `task-${Date.now()}`
+}
+
+function optimizedImprovementPrompt(text: string, projectName: string) {
+  return [
+    `USER-DRIVEN IMPROVEMENT for ${projectName || 'selected app'}`,
+    '',
+    text.trim(),
+    '',
+    'Route this through the orchestration pipeline:',
+    '1. Use the shared orchestration contract: cheap capable preflight, cross-provider strategy planning, best available coding agent, independent QA, automatic dev merge, and batch production release.',
+    '2. Coordinate with continuous improvement loops already running for this app: reuse prior shipped solutions, avoid duplicate work, and do not delete or overwrite queued improvements from other bots.',
+    '3. Pick fixed-price/subscription capacity first; fall back to configured paid API routes only when that is the highest-value available path for the task.',
+    '4. Use cross-model/cross-bot review before merge: one model plans, one coder implements, another model family checks the diff and legal/regulatory posture.',
+    '5. Do not create manual approval, blocked_task, or paused-session interruptions unless the work would force a licensing/registration/custody/transmission/advice posture change or needs a missing secret.',
+  ].join('\n')
+}
+
+function isActionInboxItem(item: any) {
+  const kind = String(item.kind ?? item.type ?? '').toLowerCase()
+  if (kind === 'blocked_task') return false
+  const text = `${item.title || ''} ${item.message || ''}`.toLowerCase()
+  return !/\bblocked_task\b/.test(text)
+}
+
+const feedbackStats = computed(() => {
+  const cats: Record<string, number> = {}
+  const sevs: Record<string, number> = {}
+  let newCount = 0
+  for (const f of feedbackItems.value) {
+    cats[f.category] = (cats[f.category] || 0) + 1
+    sevs[f.severity] = (sevs[f.severity] || 0) + 1
+    if (f.status === 'new') newCount++
+  }
+  return { cats, sevs, newCount, total: feedbackItems.value.length }
+})
+
+const loopHealth = computed(() => {
+  const m: Record<string, Record<string, any>> = {}
+  for (const l of loops.value) {
+    if (!m[l.project]) m[l.project] = {}
+    m[l.project][l.type] = l
+  }
+  return m
+})
+
+const spend = computed(() => outcomes.value.reduce((s, o) => s + Number(o.usd || 0), 0))
+const savingsKpi = computed(() => {
+  let tokens = 0
+  let minutes = 0
+  for (const e of savingsEvents.value) {
+    tokens += Number(e.value || 0)
+    const m = String(e.action || '').match(/minutes=([\d.]+)/)
+    if (m) minutes += Number(m[1] || 0)
+  }
+  return { tokens, minutes }
+})
+// Cost split: `*-notional` providers are token cost COVERED by the fixed Claude Max plan
+// (no cash). Everything else is REAL out-of-pocket API cash. Sourced from v_provider_spend_mtd.
+const isNotional = (p: any) => String(p ?? '').includes('notional')
+const coveredMtd = computed(() => providerSpend.value.filter(s => isNotional(s.provider)).reduce((n, s) => n + Number(s.spent || 0), 0))
+const cashMtd = computed(() => providerSpend.value.filter(s => !isNotional(s.provider)).reduce((n, s) => n + Number(s.spent || 0), 0))
+const spendSplitByProject = computed(() => {
+  const m: Record<string, { covered: number; cash: number }> = {}
+  for (const s of providerSpend.value) {
+    const p = s.project || '(none)'
+    ;(m[p] ??= { covered: 0, cash: 0 })
+    if (isNotional(s.provider)) m[p].covered += Number(s.spent || 0)
+    else m[p].cash += Number(s.spent || 0)
+  }
+  return m
+})
+// MERGE-RATE KPI: after work reaches a passing QA/build state, it should merge 100%.
+// Raw failed attempts are tracked separately as attemptYield; they should not make the production
+// merge-rate read as 2% when the real control problem is passed work waiting for integration.
+const isChurn = (slug: any) => { const s = String(slug ?? ''); return s.startsWith('cont-') || s.startsWith('batch-mech') }
+const integrateKpi = computed(() => {
+  const m: Record<string, { completed: number; integrated: number; attempts: number; usd: number }> = {}
+  let c = 0, i = 0, attempts = 0, attemptIntegrated = 0, usd = 0
+  for (const o of outcomes.value) {
+    if (isChurn(o.slug)) continue
+    const p = o.project || '(none)'
+    ;(m[p] ??= { completed: 0, integrated: 0, attempts: 0, usd: 0 })
+    m[p].attempts++; attempts++; m[p].usd += Number(o.usd || 0); usd += Number(o.usd || 0)
+    if (o.integrated) attemptIntegrated++
+    if (!(o.tests_passed || o.integrated)) continue
+    m[p].completed++; c++
+    if (o.integrated) { m[p].integrated++; i++ }
+  }
+  const byProject = Object.entries(m)
+    .map(([project, v]) => ({ project, ...v, rate: v.completed ? v.integrated / v.completed : 0,
+                              usdPerMerge: v.integrated ? v.usd / v.integrated : null }))
+    .sort((a, b) => b.completed - a.completed)
+  // $/merged-change is the north-star: drive it DOWN.
+  return {
+    overall: c ? i / c : 1,
+    completed: c,
+    integrated: i,
+    attempts,
+    attemptYield: attempts ? attemptIntegrated / attempts : 0,
+    usd,
+    usdPerMerge: i ? usd / i : null,
+    byProject,
+  }
+})
+const byModel = computed(() => {
+  const m: Record<string, number> = {}
+  for (const o of outcomes.value) m[o.model] = (m[o.model] || 0) + Number(o.usd || 0)
+  return Object.entries(m).sort((a, b) => b[1] - a[1])
+})
+const commonBrainProofRows = computed(() => proofPacks.value?.commonBrain || [])
+const recentProofReceipts = computed(() => proofPacks.value?.receipts || [])
+
+// ── live log lines for LogView ──────────────────────────────────────────────
+// Prefers run_logs realtime rows (slice-1 streaming); falls back to flattening
+// log_tail snapshots for tasks that pre-date the run_logs table.
+function _parseLogTailLines(tasks: any[]): LogLine[] {
+  const out: LogLine[] = []
+  const recent = [...tasks]
+    .filter(t => t.log_tail)
+    .slice(0, 12)
+    .reverse()
+  for (const t of recent) {
+    const base = t.updated_at || t.created_at
+    const baseMs = base ? new Date(base).getTime() : undefined
+    for (const raw of String(t.log_tail).split('\n')) {
+      const line = raw.trimEnd()
+      if (!line) continue
+      const m = line.match(/^\s*(ERROR|ERR|WARN|WARNING|DEBUG|DBG|INFO)\b[:\s-]*/i)
+      let level: LogLine['level'] = 'info'
+      let message = line
+      if (m) {
+        const tok = m[1].toUpperCase()
+        level = tok.startsWith('ERR') ? 'error'
+              : tok.startsWith('WARN') ? 'warn'
+              : (tok === 'DEBUG' || tok === 'DBG') ? 'debug' : 'info'
+        message = line.slice(m[0].length) || line
+      } else if (/\b(fail|failed|exception|traceback|429|rate.?limit)\b/i.test(line)) {
+        level = 'error'
+      }
+      out.push({ ts: baseMs, level, message, source: t.slug })
     }
   }
-  logSub = supabase.channel('run-logs-live')
-    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'run_logs' }, (payload: any) => {
-      pushLogRow(payload.new)
-    })
-    .subscribe()
+  return out
+}
+
+const logLines = computed<LogLine[]>(() => {
+  if (runLogRows.value.length > 0) {
+    return runLogRows.value.map(r => ({
+      ts: r.created_at,
+      level: (r.level as LogLine['level']) || 'info',
+      message: r.message,
+      source: r.task_slug,
+    }))
+  }
+  return _parseLogTailLines(tasks.value)
 })
 
 const deployableTasks = computed(() =>
@@ -250,9 +483,23 @@ const radarBySlug = computed(() => {
 // Wraps loadAll so every realtime event also stamps the Mission Control clock.
 function onRealtime() { lastEventAt.value = Date.now(); loadAll() }
 
+async function loadRunLogs() {
+  try {
+    const rows = await supabase
+      .from('run_logs')
+      .select('id,task_id,task_slug,runner_id,level,message,created_at')
+      .order('created_at', { ascending: false })
+      .limit(RUN_LOGS_MAX)
+    if (rows.data) {
+      runLogRows.value = [...rows.data].reverse()
+    }
+  } catch { /* fail-soft: LogView falls back to log_tail */ }
+}
+
 onMounted(() => {
   if (user.value) {
     loadAll()
+    loadRunLogs()
     supabase.channel('orch')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, onRealtime)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'approvals' }, onRealtime)
@@ -260,6 +507,13 @@ onMounted(() => {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'runs' }, onRealtime)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'txns' }, onRealtime)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orchestrator_feedback' }, onRealtime)
+      .subscribe()
+    supabase.channel('run-logs')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'run_logs' },
+        (payload: any) => {
+          lastEventAt.value = Date.now()
+          runLogRows.value = [...runLogRows.value, payload.new].slice(-RUN_LOGS_MAX)
+        })
       .subscribe()
   }
 })

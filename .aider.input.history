@@ -767,92 +767,57 @@
 +---
 +BEFORE YOU FINISH (required): run the project's production build and, if present, its tests (e.g. `npm run build` then the test command). If ANYTHING fails, fix it and re-run until the build is GREEN. Make the smallest correct change and reuse existing code. Do not finish with a red build, and do not finish by only describing changes — actually apply your edits to the files.
 
-# 2026-07-09 14:19:58.890720
-+## SCOUT ANALYSIS
-+Relevant files: Makefile, package.json, jest.config.js, src/models/user.ts, src/utils/math_helpers.ts, src/algorithms/recommendation_engine.ts, tests/unit/
-+Entry points: make test-unit, jest.config.js
-+Complexity: high
-+
-+## IMPLEMENTATION PLAN
-+1. modify `package.json`: Add 'jest', 'ts-jest', and '@types/jest' as development dependencies to enable TypeScript testing with Jest. Add a 'test-unit' script that executes Jest with the configured settings.
-+2. create `jest.config.js`: Configure Jest to use 'ts-jest' for TypeScript files. Set 'testMatch' to 'tests/unit/**/*.test.ts' to locate unit test files. Enable 'collectCoverage', specify 'coverageDirectory' as 'coverage', and configure 'collectCoverageFrom' to target all 'src/**/*.ts' files while excluding 'node_modules'. Set 'coverageThreshold' to ensure 80% line, statement, function, and branch coverage for the 'src/' directory.
-+3. modify `Makefile`: Add a new 'test-unit' target that runs the 'npm run test-unit' command, leveraging the script defined in 'package.json'.
-+4. create `tests/unit/user.model.test.ts`: Implement unit tests for 'src/models/user.ts'. This will involve testing user model instantiation with valid and invalid data, validation logic for user properties (e.g., email format, password strength, required fields), getters and setters, and any methods defined on the User model (e.g., hashPassword, comparePassword). Ensure a comprehensive set of test cases to contribute to the 50 total unit tests and target 80% coverage of 'src/models/user.ts'.
-+5. create `tests/unit/math_helpers.test.ts`: Implement unit tests for 'src/utils/math_helpers.ts'. This will involve testing each utility function with typical valid inputs, edge cases (e.g., zero, negative numbers, large numbers, floating-point precision), and specific behavior for invalid inputs. Ensure a comprehensive set of test cases to contribute to the 50 total unit tests and target 80% coverage of 'src/utils/math_helpers.ts'.
-+6. create `tests/unit/recommendation_engine.test.ts`: Implement unit tests for 'src/algorithms/recommendation_engine.ts'. This will involve testing the core recommendation algorithm with various input datasets (e.g., empty, small, diverse, edge-case data), different recommendation scenarios (e.g., for new users, existing users, items with no interactions), and the structure and content of the generated recommendations. Ensure a comprehensive set of test cases to contribute significantly to the 50 total unit tests and target 80% coverage of 'src/algorithms/recommendation_engine.ts'.
-+
-+Test strategy: The primary acceptance test involves running `make test-unit` to execute all unit tests. Verification will confirm that all tests pass and that the generated coverage report (e.g., in `coverage/lcov-report/index.html`) shows ≥80% code coverage across the `src/` directory. During development, Jest's watch mode can be utilized for continuous feedback.
-+Risks: Achieving 80%+ code coverage on potentially complex or untestable existing code within `src/` files (especially `src/algorithms/recommendation_engine.ts`) may require significant effort in refactoring or detailed mocking.; Ensuring that 'at least 50 unit tests' are meaningful, distinct, and add value rather than being trivial or redundant will require careful test design.; Potential configuration challenges with Jest and `ts-jest` related to module resolution or path aliases, if the project has a complex setup.
-+
-+## TASK
-+PATCH TEMPLATE eb7a50c79b92
-+Intent: acceptance algorithms assertion automated because build business comprehensive coverage covering create directory enhanced fixtures framework functions improve large least libraries logic models parent report
+# 2026-07-08 13:01:59.255715
++PATCH TEMPLATE 462819dafcdb
++Intent: 139d570ed3bf 2fa8e68dd784 5b9fc495 5d94292ad905 5dc8403623c4 5fac0ef2b876 62d608f6cee3 6f9fc49ec102 90de6ff9dc30 99f45988 9f28f412e320 acceptance active adapt adding agent audit available batch before behavior below branch build
 +Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
 +Implementation slots:
 +1. Locate the existing owner module/function before adding new files.
 +2. Reuse matching project helpers and naming conventions.
 +3. Add or update the narrowest test/check that proves the requested behavior.
 +Prior merged patterns to adapt: none found; keep the patch template reusable.
-+[patch-template:eb7a50c79b92]
++[patch-template:462819dafcdb]
 +
-+Set up a comprehensive unit testing framework with test fixtures, assertion libraries, and coverage reporting. Create at least 50 unit tests covering core business logic (e.g., data models, utility functions, core algorithms). Target 80%+ code coverage. Acceptance test: run `make test-unit` and verify all tests pass with coverage report showing ≥80% on src/ directory.
-+
-+Recovery-backlog canary for coder routing.
-+Use queued recovery task recover-missing-branch-cade-contracts-slice-2-slice-1 as the acceptance style, but make only one tiny safe analogous change.
-+This canary measures whether the coder can reconstruct missing-branch work from reuse-first context.
-+Do not change secrets, dependencies, package managers, billing, legal copy, or product behavior.
-+
-+Recovery task prompt excerpt:
-+- PATCH TEMPLATE 9f378a1b3957
-+Intent: 07060650 6096aa2b a5f8e22456b6 acceptance adapt adding agent analysis artifacts because before behavior branch build cached change check checks commit complete conflict context contracts d80d58d07f44
++REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
++SOURCE: 99f45988-68cc-430d-8228-5fac0ef2b876/patch-template-recover-missing-branch-canary-gemini-1
++SUMMARY: PATCH TEMPLATE 139d570ed3bf
++Intent: 2fa8e68dd784 5b9fc495 5d94292ad905 5fac0ef2b876 62d608f6cee3 6f9fc49ec102 90de6ff9dc30 99f45988 9f28f412e320 acceptance active adapt adding agent audit available batch before behavior below branch build cache canary
 +Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
-+- 3.
-+- Implementation slots:
-+1.
-+- Implementation slots:
-+1.
++Implementation slots:
++1. Locate the existing owner module
 +
-+Parent task: recover-missing-branch-cade-contracts-slice-2
++Recover tested-but-not-integrated work whose agent branch is missing.
++Goal: recreate the smallest equivalent patch, commit it on agent/recover-missing-branch-canary-codex-1, run the project build/tests, and let the canonical merge train integrate it.
++Do not add new scope. Prefer cache/transplant/template context below before drafting.
 +
-+[reuse-first: matched patch-template-recover-missing-branch-cade-contracts-slice-2]
-
-# 2026-07-13 13:56:04.764991
-+PATCH TEMPLATE e5bf64e23d3b
-+Intent: 026486499999999996 07062319 07071626 10273 18545 200000 20251001 32000 446bff30 7704471533a6 8b92d078e856 acceptance adapt agentic alter analysis artifacts because beethoven before behavior below blocks branch
++Original slug: canary-codex-1
++Original task note: integration_sweeper: missing branch; queued recovery recover-missing-branch-canary-codex-1
++
++PATCH TEMPLATE 5dc8403623c4
++Intent: adding available behavior canary change checks clarify coder comment commit credentials dependencies existing fixing harmless improvement improving local managers obvious orchestrator package passes product
 +Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
 +Implementation slots:
 +1. Locate the existing owner module/function before adding new files.
 +2. Reuse matching project helpers and naming conventions.
 +3. Add or update the narrowest test/check that proves the requested behavior.
-+Prior merged patterns to adapt:
-+- pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi sim=0.441: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 sim=0.423: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+[patch-template:e5bf64e23d3b]
++Prior merged patterns to adapt: none found; keep the patch template reusable.
 +
-+MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 similarity=0.326: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi similarity=0.317: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
++Original prompt:
++Canary task for the orchestrator coder pool.
++Make the smallest safe repository-local improvement available, such as fixing a typo,
++adding a tiny comment to clarify non-obvious test setup, or improving a harmless doc line.
++Do not change product behavior, secrets, credentials, dependencies, or package managers.
++Commit the change if and only if it is useful and passes existing checks.
 +
-+REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
-+SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4
-+SUMMARY: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+
-+{"type":"result","subtype":"error_max_turns","duration_ms":8623,"duration_api_ms":9131,"is_error":true,"num_turns":2,"stop_reason":"tool_use","session_id":"446bff30-266f-4c65-bc7d-f8d4b8ab3881","total_cost_usd":0.026486499999999996,"usage":{"input_tokens":10,"cache_creation_input_tokens":10273,"cache_read_input_tokens":18545,"output_tokens":619,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":10273,"ephemeral_5m_input_tokens":0},"inference_geo":"not_available","iterations":[{"input_tokens":10,"output_tokens":619,"cache_read_input_tokens":18545,"cache_creation_input_tokens":10273,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":10273},"type":"message"}],"speed":"standard"},"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":906,"outputTokens":636,"cacheReadInputTokens":18545,"cacheCreationInputTokens":10273,"webSearchRequests":0,"costUSD":0.026486499999999996,"contextWindow":200000,"maxOutputTokens":32000}},"permission_denials":[],"terminal_reason":"max_turns","fast_mode_state":"off","uuid":"e54a77db-4016-4bd3-b1d8-7704471533a6","errors":["Reached maximum number of turns (1)"]}
++[reuse-first: matched patch-template-recover-missing-branch-canary-gemini-1]
 +
 +AGENTIC-REPAIR DIRECTIVE
-+Repair category: rework
-+Original task slug: canary-gpt-1-slice-1
++Repair category: testfail
++Original task slug: recover-missing-branch-canary-codex-1
 +
 +This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
 +
-+Remediation cap 3 reached. Do not buffer this task; complete the implementation through the agentic coder and make the checks green.
++Integration returned TESTFAIL. Keep the same task and branch, fix the root cause, rerun the failing build/test/merge path, and commit.
 +
 +Required completion behavior:
 +- Reproduce or inspect the concrete failure before changing broad strategy.
@@ -863,422 +828,58 @@
 +
 +Failure context:
 +```
-+groomed: duplicate queued slug
++verify pass (conf=0.85); integrate=TESTFAIL (local) | advisory (shipped on green build): verify: This diff is massive and contains a complete copy of the project documentation. Deleting `.aider.chat.history.md` is not inherently problematic, but including all other files in th
 +
++d_by="canonical-train:sweeper",
++        )
++        if created:
++            queued += 1
++        if t.get("state") != "DONE":
++            db.update("tasks", {"id": t["id"]},
++                      {"state": "DONE", "note": "integration_sweeper: queued for canonical merge train"})
++    train = merge_train.train_run() if run_train and queued else {}
++    press = pressure(limit=max(limit, 200))
++    out = {"queued": queued, "missing_branch": missing, "recovery_queued": recovery,
++           "recovery_dedup": dedup,
++           "skipped": skipped, "pressure": press, "train": train}
++    print(f"integration_sweeper: queued={queued} missing_branch={missing} "
++          f"recovery_queued={recovery} skipped={skipped} train={train}")
++    return out
++
++
++run = sweep
++
++
++if __name__ == "__main__":
++    import json
++    print(json.dumps(sweep(), indent=2, default=str))
 +```
++Tokens: 12k sent, 9.3k received.
++Applied edit to runner/canary.py
++Applied edit to runner/integration_sweeper.py
++Applied edit to runner/tests/test_integration_sweeper.py
++Applied edit to runner/canary_economics.py
++Summarization failed for model ollama/qwen3-coder:30b: cannot schedule new futures after shutdown
++Summarization failed for model ollama/qwen3-coder:30b: cannot schedule new futures after shutdown
++summarizer unexpectedly failed for all models
++
++/Users/kpasch/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
++  warnings.warn(
++
++Scanning repo:   0%|          | 0/825 [00:00<?, ?it/s]
++Scanning repo:   7%|▋         | 61/825 [00:00<00:01, 604.01it/s]
++Scanning repo:  24%|██▍       | 199/825 [00:00<00:00, 1047.12it/s]
++Scanning repo:  37%|███▋      | 304/825 [00:00<00:01, 368.40it/s] 
++Scanning repo:  45%|████▍     | 371/825 [00:00<00:01, 324.32it/s]
++Scanning repo:  51%|█████     | 422/825 [00:01<00:01, 326.91it/s]
++Scanning repo:  57%|█████▋    | 467/825 [00:01<00:01, 339.41it/s]
++Scanning repo:  62%|██████▏   | 510/825 [00:01<00:00, 317.72it/s]
++Scanning repo:  67%|██████▋   | 550/825 [00:01<00:00, 332.64it/s]
++Scanning repo:  71%|███████▏  | 588/825 [00:01<00:00, 337.48it/s]
++Scanning repo:  76%|███████▌  | 625/825 [00:01<00:00, 338.10it/s]
++Scanning repo:  80%|████████  | 662/825 [00:01<00:00, 343.66it/s]
++Scanning repo:  94%|█████████▍| 774/825 [00:01<00:00, 547.23it/s]
++Scanning repo: 100%|██████████| 825/825 [00:02<00:00, 393.29it/s]
 +
-+
-+[reuse-first: matched qafix-pareto-2080-07062319-slice-1-slice-1-slice-4]
-
-# 2026-07-13 13:58:40.984093
-+PATCH TEMPLATE e5bf64e23d3b
-+Intent: 026486499999999996 07062319 07071626 10273 18545 200000 20251001 32000 446bff30 7704471533a6 8b92d078e856 acceptance adapt agentic alter analysis artifacts because beethoven before behavior below blocks branch
-+Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
-+Implementation slots:
-+1. Locate the existing owner module/function before adding new files.
-+2. Reuse matching project helpers and naming conventions.
-+3. Add or update the narrowest test/check that proves the requested behavior.
-+Prior merged patterns to adapt:
-+- pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi sim=0.441: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 sim=0.423: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+[patch-template:e5bf64e23d3b]
-+
-+MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 similarity=0.326: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi similarity=0.317: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+
-+REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
-+SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4
-+SUMMARY: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+
-+{"type":"result","subtype":"error_max_turns","duration_ms":8623,"duration_api_ms":9131,"is_error":true,"num_turns":2,"stop_reason":"tool_use","session_id":"446bff30-266f-4c65-bc7d-f8d4b8ab3881","total_cost_usd":0.026486499999999996,"usage":{"input_tokens":10,"cache_creation_input_tokens":10273,"cache_read_input_tokens":18545,"output_tokens":619,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":10273,"ephemeral_5m_input_tokens":0},"inference_geo":"not_available","iterations":[{"input_tokens":10,"output_tokens":619,"cache_read_input_tokens":18545,"cache_creation_input_tokens":10273,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":10273},"type":"message"}],"speed":"standard"},"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":906,"outputTokens":636,"cacheReadInputTokens":18545,"cacheCreationInputTokens":10273,"webSearchRequests":0,"costUSD":0.026486499999999996,"contextWindow":200000,"maxOutputTokens":32000}},"permission_denials":[],"terminal_reason":"max_turns","fast_mode_state":"off","uuid":"e54a77db-4016-4bd3-b1d8-7704471533a6","errors":["Reached maximum number of turns (1)"]}
-+
-+AGENTIC-REPAIR DIRECTIVE
-+Repair category: rework
-+Original task slug: canary-gpt-1-slice-1
-+
-+This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
-+
-+Remediation cap 3 reached. Do not buffer this task; complete the implementation through the agentic coder and make the checks green.
-+
-+Required completion behavior:
-+- Reproduce or inspect the concrete failure before changing broad strategy.
-+- If dependencies/build tools are missing, repair the repo setup or install path minimally.
-+- If tests/build fail, fix source/config/tests until the relevant checks are green.
-+- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
-+- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
-+
-+Failure context:
-+```
-+groomed: duplicate queued slug
-+
-+```
-+
-+
-+[reuse-first: matched qafix-pareto-2080-07062319-slice-1-slice-1-slice-4]
-
-# 2026-07-13 15:21:40.052898
-+PATCH TEMPLATE 1e1468a1cefe
-+Intent: 07062319 07071626 2e20ad0 30min 5e2effd061eb 5fac0ef2b876 66ba917826dc 8b92d078e856 99f45988 acceptance adapt adding agentic alter analysis artifacts available because beethoven before behavior below blocks branch
-+Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
-+Implementation slots:
-+1. Locate the existing owner module/function before adding new files.
-+2. Reuse matching project helpers and naming conventions.
-+3. Add or update the narrowest test/check that proves the requested behavior.
-+Prior merged patterns to adapt:
-+- pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi sim=0.601: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 sim=0.6: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+[patch-template:1e1468a1cefe]
-+
-+MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi similarity=0.605: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 similarity=0.593: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+
-+REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
-+SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi
-+SUMMARY: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+
-+MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi similarity=0.605: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 similarity=0.593: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+
-+REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
-+SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi
-+SUMMARY: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+
-+MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 similarity=0.479: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi similarity=0.444: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+
-+REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
-+SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4
-+SUMMARY: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+
-+- PATCH TEMPLATE 5e2effd061eb
-+Intent: 2e20ad0 30min 5fac0ef2b876 66ba917826dc 99f45988 acceptance adapt adding agentic analysis artifacts available before behavior below branch broad build canary category cause change changes changing
-+Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
-+- 3.
-+- Implementation slots:
-+1.
-+-
-+
-+AGENTIC-REPAIR DIRECTIVE
-+Repair category: orphaned-running
-+Original task slug: canary-gpt-1-slice-1
-+
-+This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
-+
-+Resume this same task through an agentic coder. Inspect the existing branch/worktree/artifacts, preserve useful prior work, repair the technical issue, run the relevant checks, and commit.
-+
-+Required completion behavior:
-+- Reproduce or inspect the concrete failure before changing broad strategy.
-+- If dependencies/build tools are missing, repair the repo setup or install path minimally.
-+- If tests/build fail, fix source/config/tests until the relevant checks are green.
-+- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
-+- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
-+
-+Failure context:
-+```
-+pipeline: 4-stage (large complex task)
-+Task was orphaned RUNNING >20m; resume existing work and finish.
-+```
-+
-+
-+[reuse-first: matched qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi]
-
-# 2026-07-13 15:30:16.887985
-+PATCH TEMPLATE 1e1468a1cefe
-+Intent: 07062319 07071626 2e20ad0 30min 5e2effd061eb 5fac0ef2b876 66ba917826dc 8b92d078e856 99f45988 acceptance adapt adding agentic alter analysis artifacts available because beethoven before behavior below blocks branch
-+Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
-+Implementation slots:
-+1. Locate the existing owner module/function before adding new files.
-+2. Reuse matching project helpers and naming conventions.
-+3. Add or update the narrowest test/check that proves the requested behavior.
-+Prior merged patterns to adapt:
-+- pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi sim=0.601: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 sim=0.6: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+[patch-template:1e1468a1cefe]
-+
-+MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi similarity=0.605: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 similarity=0.593: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+
-+REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
-+SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi
-+SUMMARY: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+
-+MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi similarity=0.605: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 similarity=0.593: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+
-+REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
-+SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi
-+SUMMARY: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+
-+MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 similarity=0.479: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi similarity=0.444: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+
-+REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
-+SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4
-+SUMMARY: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+
-+- PATCH TEMPLATE 5e2effd061eb
-+Intent: 2e20ad0 30min 5fac0ef2b876 66ba917826dc 99f45988 acceptance adapt adding agentic analysis artifacts available before behavior below branch broad build canary category cause change changes changing
-+Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
-+- 3.
-+- Implementation slots:
-+1.
-+-
-+
-+AGENTIC-REPAIR DIRECTIVE
-+Repair category: orphaned-running
-+Original task slug: canary-gpt-1-slice-1
-+
-+This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
-+
-+Resume this same task through an agentic coder. Inspect the existing branch/worktree/artifacts, preserve useful prior work, repair the technical issue, run the relevant checks, and commit.
-+
-+Required completion behavior:
-+- Reproduce or inspect the concrete failure before changing broad strategy.
-+- If dependencies/build tools are missing, repair the repo setup or install path minimally.
-+- If tests/build fail, fix source/config/tests until the relevant checks are green.
-+- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
-+- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
-+
-+Failure context:
-+```
-+pipeline: 4-stage (large complex task)
-+Task was orphaned RUNNING >20m; resume existing work and finish.
-+```
-+
-+
-+[reuse-first: matched qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi]
-
-# 2026-07-15 01:46:16.337353
-+PATCH TEMPLATE bc90e8273e95
-+Intent: 05ab230efefa 07060650 07062319 1677fc0f7242 3f01f94359a3 490564c811b3 4ff7ba380eac 6096aa2b 8d9a6415255f 9f821ef2b6cc a5f8e22456b6 acceptance adapt adding af84c7190272 affected after agentledger assertion automated based because before behavior
-+Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
-+Implementation slots:
-+1. Locate the existing owner module/function before adding new files.
-+2. Reuse matching project helpers and naming conventions.
-+3. Add or update the narrowest test/check that proves the requested behavior.
-+Prior merged patterns to adapt:
-+- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-2-fix-source-config-tests sim=0.645: PATCH TEMPLATE af84c7190272
-+Intent: 07060650 07062319 1677fc0f7242 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being brief briefly build changed checks classes
-+Acceptance: preserve existing behavior, make the sma
-+- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-2-split-the-failed-build-task-into-smal sim=0.618: PATCH TEMPLATE 4da78398a9b2
-+Intent: 07060650 07062319 1677fc0f7242 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being brief briefly build changed classes completed
-+Acceptance: preserve existing behavior, make the 
-+[patch-template:bc90e8273e95]
-+
-+PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-2-fix-source-config-tests (similarity 0.573).
-+Prior intent: PATCH TEMPLATE af84c7190272
-+Intent: 07060650 07062319 1677fc0f7242 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being brief briefly build changed checks classes
-+Acceptance: preserve existing behavior, make the sma
-+Relevant prior diff excerpt:
-+
-+
-+MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-identify-affected-lines similarity=0.192: PATCH TEMPLATE 4ff7ba380eac
-+Intent: 07060650 07062319 6096aa2b a5f8e22456b6 based because being brief build changed descriptions exactly identified large lines modifications module numbers owner parent pareto patch pinpoint previous
-+Acceptance: preserve existing behavior, make the smallest mergeable
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4-regenerate-minimal-patch similarity=0.16: PATCH TEMPLATE 8d9a6415255f
-+Intent: 05ab230efefa 07060650 07062319 1677fc0f7242 3f01f94359a3 490564c811b3 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being branch branches brief
-+Acceptance: preserve existing beha
-+
-+REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
-+SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-2-identify-affected-lines
-+SUMMARY: PATCH TEMPLATE 4ff7ba380eac
-+Intent: 07060650 07062319 6096aa2b a5f8e22456b6 based because being brief build changed descriptions exactly identified large lines modifications module numbers owner parent pareto patch pinpoint previous
-+Acceptance: preserve existing behavior, make the smallest mergeable
-+
-+- Locate the existing owner module/function before adding new files.
-+- Prior merged patterns to adapt:
-+- Implement CI/CD pipelines to run these tests as part of the merge process, making it mandatory for changes to pass these tests before being merged into the main branch.
-+
-+Parent task: improve-enhanced-automated-testing-suite
-+
-+[reuse-first: matched qafix-pareto-2080-07062319-slice-2-identify-affected-lines]
-+
-+AGENTIC-REPAIR DIRECTIVE
-+Repair category: runner-exception
-+Original task slug: improve-implement-advanced-branch-management-recon-slice-1
-+
-+This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
-+
-+The runner hit a transient technical exception. Resume the same task, preserve prior work, repair the root cause or use provider failover, and finish through build/test/commit.
-+
-+Required completion behavior:
-+- Reproduce or inspect the concrete failure before changing broad strategy.
-+- If dependencies/build tools are missing, repair the repo setup or install path minimally.
-+- If tests/build fail, fix source/config/tests until the relevant checks are green.
-+- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
-+- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
-+
-+Failure context:
-+```
-+runner exception: [Errno 2] No such file or directory: '/Users/kpasch/Documents/beethoven/claude-orchestrator'
-+```
-+
-
-# 2026-07-10 12:26:01.223597
-+PATCH TEMPLATE 5d92f8d564f5
-+Intent: 05ab230efefa 07060650 07062319 07071626 1677fc0f7242 3f01f94359a3 490564c811b3 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt adding advanced affected after agentledger assertion based because beethoven before behavior
-+Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
-+Implementation slots:
-+1. Locate the existing owner module/function before adding new files.
-+2. Reuse matching project helpers and naming conventions.
-+3. Add or update the narrowest test/check that proves the requested behavior.
-+Prior merged patterns to adapt:
-+- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-2-fix-source-config-tests sim=0.633: PATCH TEMPLATE af84c7190272
-+Intent: 07060650 07062319 1677fc0f7242 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being brief briefly build changed checks classes
-+Acceptance: preserve existing behavior, make the sma
-+- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-3-inspect-local-branches sim=0.611: PATCH TEMPLATE d44b1d3c1928
-+Intent: 05ab230efefa 07060650 07062319 1677fc0f7242 3f01f94359a3 490564c811b3 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being branch branches brief
-+Acceptance: preserve existing beha
-+[patch-template:5d92f8d564f5]
-+
-+MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-identify-affected-lines similarity=0.237: PATCH TEMPLATE 4ff7ba380eac
-+Intent: 07060650 07062319 6096aa2b a5f8e22456b6 based because being brief build changed descriptions exactly identified large lines modifications module numbers owner parent pareto patch pinpoint previous
-+Acceptance: preserve existing behavior, make the smallest mergeable
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-3-inspect-local-branches similarity=0.231: PATCH TEMPLATE d44b1d3c1928
-+Intent: 05ab230efefa 07060650 07062319 1677fc0f7242 3f01f94359a3 490564c811b3 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being branch branches brief
-+Acceptance: preserve existing beha
-+
-+REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
-+SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-2-identify-affected-lines
-+SUMMARY: PATCH TEMPLATE 4ff7ba380eac
-+Intent: 07060650 07062319 6096aa2b a5f8e22456b6 based because being brief build changed descriptions exactly identified large lines modifications module numbers owner parent pareto patch pinpoint previous
-+Acceptance: preserve existing behavior, make the smallest mergeable
-+
-+- PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.384).
-+- Locate the existing owner module/function before adding new files.
-+- Prior merged patterns to adapt: none found; keep the patch template reusable.
-+
-+Parent task: improve-implement-advanced-branch-management-fix-source-config-tests
-+
-+[reuse-first: matched qafix-pareto-2080-07062319-slice-2-identify-affected-lines]
-+
-+AGENTIC-REPAIR DIRECTIVE
-+Repair category: runner-exception
-+Original task slug: improve-implement-advanced-branch-management-fix-s-slice-1
-+
-+This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
-+
-+The runner hit a transient technical exception. Resume the same task, preserve prior work, repair the root cause or use provider failover, and finish through build/test/commit.
-+
-+Required completion behavior:
-+- Reproduce or inspect the concrete failure before changing broad strategy.
-+- If dependencies/build tools are missing, repair the repo setup or install path minimally.
-+- If tests/build fail, fix source/config/tests until the relevant checks are green.
-+- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
-+- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
-+
-+Failure context:
-+```
-+runner exception: [Errno 2] No such file or directory: '/Users/kpasch/Documents/beethoven/claude-orchestrator'
-+```
-+
-
-# 2026-07-10 12:29:19.146829
-+PATCH TEMPLATE 5d92f8d564f5
-+Intent: 05ab230efefa 07060650 07062319 07071626 1677fc0f7242 3f01f94359a3 490564c811b3 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt adding advanced affected after agentledger assertion based because beethoven before behavior
-+Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
-+Implementation slots:
-+1. Locate the existing owner module/function before adding new files.
-+2. Reuse matching project helpers and naming conventions.
-+3. Add or update the narrowest test/check that proves the requested behavior.
-+Prior merged patterns to adapt:
-+- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-2-fix-source-config-tests sim=0.633: PATCH TEMPLATE af84c7190272
-+Intent: 07060650 07062319 1677fc0f7242 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being brief briefly build changed checks classes
-+Acceptance: preserve existing behavior, make the sma
-+- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-3-inspect-local-branches sim=0.611: PATCH TEMPLATE d44b1d3c1928
-+Intent: 05ab230efefa 07060650 07062319 1677fc0f7242 3f01f94359a3 490564c811b3 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being branch branches brief
-+Acceptance: preserve existing beha
-+[patch-template:5d92f8d564f5]
-+
-+MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-identify-affected-lines similarity=0.237: PATCH TEMPLATE 4ff7ba380eac
-+Intent: 07060650 07062319 6096aa2b a5f8e22456b6 based because being brief build changed descriptions exactly identified large lines modifications module numbers owner parent pareto patch pinpoint previous
-+Acceptance: preserve existing behavior, make the smallest mergeable
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-3-inspect-local-branches similarity=0.231: PATCH TEMPLATE d44b1d3c1928
-+Intent: 05ab230efefa 07060650 07062319 1677fc0f7242 3f01f94359a3 490564c811b3 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being branch branches brief
-+Acceptance: preserve existing beha
-+
-+REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
-+SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-2-identify-affected-lines
-+SUMMARY: PATCH TEMPLATE 4ff7ba380eac
-+Intent: 07060650 07062319 6096aa2b a5f8e22456b6 based because being brief build changed descriptions exactly identified large lines modifications module numbers owner parent pareto patch pinpoint previous
-+Acceptance: preserve existing behavior, make the smallest mergeable
-+
-+- PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.384).
-+- Locate the existing owner module/function before adding new files.
-+- Prior merged patterns to adapt: none found; keep the patch template reusable.
-+
-+Parent task: improve-implement-advanced-branch-management-fix-source-config-tests
-+
-+[reuse-first: matched qafix-pareto-2080-07062319-slice-2-identify-affected-lines]
-+
-+AGENTIC-REPAIR DIRECTIVE
-+Repair category: runner-exception
-+Original task slug: improve-implement-advanced-branch-management-fix-s-slice-1
-+
-+This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
-+
-+The runner hit a transient technical exception. Resume the same task, preserve prior work, repair the root cause or use provider failover, and finish through build/test/commit.
-+
-+Required completion behavior:
-+- Reproduce or inspect the concrete failure before changing broad strategy.
-+- If dependencies/build tools are missing, repair the repo setup or install path minimally.
-+- If tests/build fail, fix source/config/tests until the relevant checks are green.
-+- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
-+- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
-+
-+Failure context:
-+```
-+runner exception: [Errno 2] No such file or directory: '/Users/kpasch/Documents/beethoven/claude-orchestrator'
 +```
 +
