@@ -59,7 +59,7 @@ def _is_sensitive(task: dict) -> bool:
     return False
 
 
-def can_speculate(task: dict, done_slugs: set | list) -> tuple[bool, str]:
+def can_speculate(task: dict, done_slugs) -> tuple:
     """Check if a task can run speculatively despite unfinished deps.
 
     Returns:
