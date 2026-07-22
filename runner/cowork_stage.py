@@ -32,7 +32,21 @@ import os, sys, json, argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pipeline_contract
 
-VALID_KINDS = {"build", "research", "efficiency", "self", "legal", "gtm", "bugfix", "refactor", "batch"}
+VALID_KINDS = {
+    # Core pipeline kinds
+    "build", "bugfix", "refactor", "batch", "research",
+    # Operational kinds
+    "recovery", "toolchain-repair", "canary", "feature",
+    # QA/release kinds
+    "qafix", "relfix",
+    # Improvement kinds (improve-architecture, improve-ux, improve-performance, etc.)
+    "improve-architecture", "improve-ux", "improve-performance",
+    "improve-reliability", "improve-security", "improve-observability",
+    # Strategy/planning kinds
+    "efficiency", "self", "legal", "gtm",
+    # Speculative (excluded from executor claim but valid for staging)
+    "speculative",
+}
 
 
 def load_backlog(path):
@@ -60,8 +74,11 @@ def validate(projects, tasks):
 
     all_keys = {(t["project"], t["slug"]) for t in tasks}
     for t in tasks:
-        if t.get("kind", "build") not in VALID_KINDS:
-            errors.append(f"[{t['project']}/{t['slug']}] invalid kind '{t.get('kind')}'")
+        task_kind = t.get("kind", "build")
+        # Accept any improve-* kind (improve-architecture, improve-latency, etc.)
+        kind_valid = task_kind in VALID_KINDS or task_kind.startswith("improve-")
+        if not kind_valid:
+            errors.append(f"[{t['project']}/{t['slug']}] invalid kind '{task_kind}'")
         for dep in t.get("deps", []):
             if (t["project"], dep) not in all_keys:
                 errors.append(f"[{t['project']}/{t['slug']}] dep '{dep}' not found in same project")
