@@ -184,26 +184,6 @@ def rpc(fn, args):
     return _req("POST", f"/rest/v1/rpc/{fn}", body=args)
 
 
-def append_run_log(task_id: str, task_slug: str, message: str,
-                   level: str = "info", runner_id: str = "") -> None:
-    """Insert a single log line into run_logs for real-time web streaming.
-
-    Fail-soft: network/DB errors are silently swallowed so a logging failure
-    never interrupts task execution.
-    """
-    _VALID_LEVELS = {"debug", "info", "warn", "error"}
-    try:
-        insert("run_logs", {
-            "task_id": str(task_id),
-            "task_slug": str(task_slug),
-            "runner_id": str(runner_id or ""),
-            "level": level if level in _VALID_LEVELS else "info",
-            "message": str(message)[:4000],
-        })
-    except Exception:
-        pass
-
-
 def _ev_rank_map():
     """Best-effort EV ranking fallback.
 
@@ -216,27 +196,24 @@ def _ev_rank_map():
         ids = json.loads(raw) if isinstance(raw, str) else raw
         return {str(tid): i for i, tid in enumerate(ids or [])}
     except Exception:
-        return None
+        return {}
 
 
-def _is_recovery_task(t):
-    return str((t or {}).get("slug") or "").startswith(RECOVERY_PREFIX)
+def _thermal_rank_map():
+    try:
+        rows = select("controls", {"select": "value", "key": "eq.thermal_ranking", "limit": "1"}) or []
+        raw = (rows[0] if rows else {}).get("value") or "[]"
+        ids = json.loads(raw) if isinstance(raw, str) else raw
+        return {str(tid): i for i, tid in enumerate(ids or [])}
+    except Exception:
+        return {}
 
 
-def _is_release_fix_task(t):
-    slug = str((t or {}).get("slug") or "")
-    note = str((t or {}).get("note") or "").lower()
-    return slug.startswith(RELEASE_FIX_PREFIXES) or "release_train" in note or "vercel" in note
-
-
-def _is_improvement_task(t):
-    return str((t or {}).get("slug") or "").startswith(IMPROVEMENT_PREFIX)
-
-
-def _is_evidence_task(t):
-    slug = str((t or {}).get("slug") or "")
-    note = str((t or {}).get("note") or "").lower()
-    return slug.startswith(CANARY_PREFIX) or "coder-canary" in note or "routing sample" in note
+def _num(v, default):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
 
 
 def claim_task(runner_id):
@@ -270,11 +247,27 @@ def claim_task(runner_id):
         s = str(t.get("slug") or "")
         return 1 if deprio_churn and (s.startswith("cont-") or s.startswith("batch-mech")) else 0
 
-    # PINNED TASKS: sort before everything else. pin_rank ASC (lower = higher priority),
-    # then normal ordering. Tasks without the column (older rows) are treated as unpinned.
-    queued.sort(key=lambda t: (0 if t.get("pinned") else 1,                    # pinned express lane first
-                               t.get("pin_rank") or 0,                         # pin_rank ASC within pinned
-                               _churn(t),                                       # real work before churn
+    thermal_rank = _thermal_rank_map()
+    ev_rank = _ev_rank_map()
+
+    def _task_priority(t):
+        return _num(t.get("priority"), 1000)
+
+    def _ev_rank(t):
+        return ev_rank.get(str(t.get("id")), 1000000)
+
+    def _thermal_rank(t):
+        return thermal_rank.get(str(t.get("id")), 1000000)
+
+    def _confidence_rank(t):
+        # Last-resort EV fallback writes higher confidence for better tasks.
+        return -_num(t.get("confidence"), 0.0)
+
+    queued.sort(key=lambda t: (_churn(t),                                        # real work before churn
+                               _thermal_rank(t),                                 # EV/min thermal map
+                               _task_priority(t),                                # EV/task priority when present
+                               _ev_rank(t),                                      # controls.ev_ranking fallback
+                               _confidence_rank(t),                              # tasks.confidence fallback
                                last_act.get(t.get("project_id"), ""),           # least-recently-served first
                                prio.get(t.get("project_id"), 5),
                                -float(roi_w.get(t.get("project_id"), 1) or 1),
