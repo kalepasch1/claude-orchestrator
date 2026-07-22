@@ -34,4 +34,4 @@ export function governAction(params: {
   });
   return { verdict, receipt };
 }
-export * from './receiptProjection.ts';
+export * from './killSwitch.ts';
