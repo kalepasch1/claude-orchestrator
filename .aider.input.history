@@ -767,37 +767,142 @@
 +---
 +BEFORE YOU FINISH (required): run the project's production build and, if present, its tests (e.g. `npm run build` then the test command). If ANYTHING fails, fix it and re-run until the build is GREEN. Make the smallest correct change and reuse existing code. Do not finish with a red build, and do not finish by only describing changes — actually apply your edits to the files.
 
-# 2026-07-09 18:56:11.478427
-+PATCH TEMPLATE 78b173a31d0c
-+Intent: 07062319 07071626 8b92d078e856 acceptance adapt alter analysis areas because beethoven before behavior blocks branch branches build cache canary clear codebase commit conflicts current dealing
+# 2026-07-09 20:17:37.267441
++PATCH TEMPLATE fe4b34831f5f
++Intent: 07060650 07062319 1677fc0f7242 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 ability acceptance adapt affected after against agentledger analysis ancestor assertion attempt attempts based because before behavior being
 +Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
 +Implementation slots:
 +1. Locate the existing owner module/function before adding new files.
 +2. Reuse matching project helpers and naming conventions.
 +3. Add or update the narrowest test/check that proves the requested behavior.
 +Prior merged patterns to adapt:
-+- pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi sim=0.308: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 sim=0.273: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+[patch-template:78b173a31d0c]
++- pareto-2080/qafix-pareto-2080-07062319-slice-5-fix-agentledger-test sim=0.491: PATCH TEMPLATE 1677fc0f7242
++Intent: 07060650 07062319 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being brief briefly build changed classes concrete correct
++Acceptance: preserve existing behavior, make the smalle
++- pareto-2080/qafix-pareto-2080-07062319-slice-5-add-bookingsaga-tests sim=0.333: PATCH TEMPLATE a862edc20dad
++Intent: 0398eb6 056af630dd5f 07060650 07062319 07071626 08c555ef32c3f7b6e04b6ac596540427ae250a95 11c8886f5af3 11d71349c477 148d45efebad 1565ms 170834ms 1ad7cbc 20251001 2105ms 234917ms 27d8ff8 2807983 310833ms 322125ms 441917ms 4a3feba 4ff7ba380eac 4pbjwpmj431__2jrjyb3bq7
++[patch-template:fe4b34831f5f]
++
++PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch pareto-2080/qafix-pareto-2080-07062319-slice-5-fix-agentledger-test (similarity 0.441).
++Prior intent: PATCH TEMPLATE 1677fc0f7242
++Intent: 07060650 07062319 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being brief briefly build changed classes concrete correct
++Acceptance: preserve existing behavior, make the smalle
++Relevant prior diff excerpt:
++
 +
 +MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi similarity=0.149: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 similarity=0.139: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-locate-owner-module similarity=0.142: PATCH TEMPLATE 9f821ef2b6cc
++Intent: 07060650 07062319 6096aa2b a5f8e22456b6 because briefly build classes examine explain function functions identify intends large modify module owner parent pareto patch primary provided purpose
++Acceptance: preserve existing behavior, make the smallest mergeable dif
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-identify-affected-lines similarity=0.136: PATCH TEMPLATE 4ff7ba380eac
++Intent: 07060650 07062319 6096aa2b a5f8e22456b6 based because being brief build changed descriptions exactly identified large lines modifications module numbers owner parent pareto patch pinpoint previous
++Acceptance: preserve existing behavior, make the smallest mergeable
 +
 +REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
-+SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi
-+SUMMARY: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
++SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-2-locate-owner-module
++SUMMARY: PATCH TEMPLATE 9f821ef2b6cc
++Intent: 07060650 07062319 6096aa2b a5f8e22456b6 because briefly build classes examine explain function functions identify intends large modify module owner parent pareto patch primary provided purpose
++Acceptance: preserve existing behavior, make the smallest mergeable dif
 +
-+Inspect the codebase related to `patch-template` to understand its current behavior when dealing with source/target branches. Focus on identifying how it identifies, uses, and reacts to missing or stale branches. Document specific failure points or error messages related to `missing-branch` scenarios, including how `rebase conflicts` might manifest from these. Also, investigate any existing mechanisms for branch recovery or regeneration (e.g., `merged-diff library`, `patch-transplant/cache hints`). The goal is to produce a detailed analysis report outlining the current state, identified gaps, and potential areas for improvement. Repair any missing dependencies or repo setup minimally to enable this analysis. The output should be a clear report (e.g., markdown file or detailed commit message) outlining the current state, specific failure paths for missing/stale branches, and references to relevant code sections.
++Based on the analysis from the previous task, implement new utility functions or modify existing ones within the `patch-template` system (or a related helper module) that can perform robust detection and recovery of missing or stale branches. The recovery strategies should prioritize 'zero-spend' recovery: 1. Check local branches and worktrees for the branch. 2. Query `merged-diff library` or `patch-transplant/cache hints` for historical references. 3. If the branch is still missing, implement logic to infer or regenerate a minimal patch from the original acceptance intent against a suitable base (e.g., `master` or a recent common ancestor). Ensure these utilities are well-tested in isolation, demonstrating their ability to detect and recover (or attempt to regenerate) branches under various conditions. Do not integrate these into the main `patch-template` workflow yet. The acceptance is new or modified utility functions with corresponding unit tests that demonstrate successful branch detection and recovery/regeneration attempts for various scenarios (e.g., branch found locally, branch found in cache, branch regenerated from intent).
 +
-+(Sub-task 1/4 of 'canary-gpt-1-slice-2', auto-split because the parent was too large to build in one pass.)
++(Sub-task 2/4 of 'canary-gpt-1-slice-2', auto-split because the parent was too large to build in one pass.)
 +
-+[reuse-first: matched qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi]
++[reuse-first: matched qafix-pareto-2080-07062319-slice-2-locate-owner-module]
++
++AGENTIC-REPAIR DIRECTIVE
++Repair category: testfail
++Original task slug: canary-gpt-1-slice-2-implement-branch-recovery-utilities
++
++This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
++
++Integration returned TESTFAIL. Keep the same task and branch, fix the root cause, rerun the failing build/test/merge path, and commit.
++
++Required completion behavior:
++- Reproduce or inspect the concrete failure before changing broad strategy.
++- If dependencies/build tools are missing, repair the repo setup or install path minimally.
++- If tests/build fail, fix source/config/tests until the relevant checks are green.
++- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
++- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
++
++Agentic analysis artifacts from prior run:
++Touched files from prior run: runner/patch_recovery.py, runner/tests/test_patch_recovery.py
++Prior commit SHA: 84a2092d2bc935d29a51623dc54100293145dcb3
++Prior patch diff (truncated):
++```diff
++diff --git a/runner/patch_recovery.py b/runner/patch_recovery.py
++index dd8fefb..e4f5c68 100644
++--- a/runner/patch_recovery.py
+++++ b/runner/patch_recovery.py
++@@ -8,6 +8,11 @@ When a task's branch is missing (the #1 cause of recovery tasks), try:
++ 
++ Only fall back to a full model call if all mechanical recovery fails.
++ This is 10X-100X cheaper than re-running the agent.
+++
+++Branch-detection and regeneration utilities (zero-spend, standalone):
+++- detect_branch(repo, slug)        — check local branches and worktrees
+++- query_cache_hints(slug, ...)     — query merged-diff library and artifact cache
+++- regenerate_from_intent(repo, ...) — infer/regenerate minimal patch from intent
++ """
++ import os, subprocess, json, re
++ import db
++@@ -168,6 +173,232 @@ def _template_adaptation(repo, slug, branch, base, project=None):
++         return {"ok": False, "method": "template", "branch": branch, "reason": str(e)[:200]}
++ 
++ 
+++# ---------------------------------------------------------------------------
+++# Standalone branch-detection and regeneration utilities (zero-agent-spend)
+++# These are NOT yet wired into recover() — they are isolated utilities.
+++# ---------------------------------------------------------------------------
+++
+++def detect_branch(repo, slug):
+++    """Zero-spend detection: check local branches and worktrees for agent/<slug>.
+++
+++    Returns dict with:
+++    - found: bool
+++    - location: 'local' | 'worktree' | None
+++    - branch: str
+++    - path: str | None  (worktree path when location=='worktree')
+++    """
+++    branch = f"agent/{slug}"
+++
+++    # 1. Local branches — cheapest check
+++    r = _git(repo, "branch", "--list", branch)
+++    if r.returncode == 0 and branch in (r.stdout or ""):
+++        return {"found": True, "location": "local", "branch": branch, "path": None}
+++
+++    # 2. Worktrees — branch may be checked out without existing as a local ref
+++    r = _git(repo, "worktree", "list", "--porcelain")
+++    if r.returncode == 0:
+++        cur_path = None
+++        for line in (r.stdout or "").splitlines():
+++            if line.startswith("worktree "):
+++                cur_path = line[len("worktree "):].strip()
+++            elif line.strip() == f"branch refs/heads/{branch}":
+++                return {"found": True, "location": "worktree", "branch": branch, "path": cur_path}
+++
+++    return {"found": False, "location": None, "branch": branch, "path": None}
+++
+++
+++def query_cache_hints(slug, intent_words=None, project=None):
+++    """Query merged-diff library and artifact cache for historical references.
+++
+++    Checks (in priority order):
+++    1. task_artifacts for this exact slug (similarity 1.0)
+++    2. merged_diff_library for similar tasks by intent overlap
+++    3. knowledge table for patch-template entries by keyword match
+++
+++    Returns list of hint dicts sorted by similarity descending:
+++    - source: 'task_artifacts' | 'merged_diff' | 'knowledge'
+++    - slug: str
+++    - similarity: float 0..1
+++    - patch_diff: str | None  (None when source is 'knowledge')
++```
++
++Failure context:
++```
++verify pass (conf=0.85); integrate=TESTFAIL (local) | advisory (shipped on green build): verify: Security concerns with secrets added and auth made permissive; missing tests for branch-detection and regeneration utilities.
++
++Fixed. The TESTFAIL was caused by hardcoded personal identifiers (`"Kale Aaron Pasch"` / `"kalepasch@gmail.com"`) used as fallback git author values in `_apply_diff_to_branch` and `_create_intent_stub`. Replaced both with `"Claude Agent"` / `"agent@recovery.local"` — the `FLEET_GIT_AUTHOR_NAME`/`FLEET_GIT_AUTHOR_EMAIL` env-var override path is unchanged. All 31 tests still pass.
++```
++

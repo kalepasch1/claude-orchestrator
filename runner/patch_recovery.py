@@ -8,6 +8,11 @@ When a task's branch is missing (the #1 cause of recovery tasks), try:
 
 Only fall back to a full model call if all mechanical recovery fails.
 This is 10X-100X cheaper than re-running the agent.
+
+Branch-detection and regeneration utilities (zero-spend, standalone):
+- detect_branch(repo, slug)        — check local branches and worktrees
+- query_cache_hints(slug, ...)     — query merged-diff library and artifact cache
+- regenerate_from_intent(repo, ...) — infer/regenerate minimal patch from intent
 """
 import os, subprocess, json, re
 import db
@@ -113,10 +118,10 @@ def _replay_stored_patch(repo, slug, branch, base):
 
         # Commit
         env = {**os.environ,
-               "GIT_AUTHOR_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Kale Aaron Pasch"),
-               "GIT_AUTHOR_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "kalepasch@gmail.com"),
-               "GIT_COMMITTER_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Kale Aaron Pasch"),
-               "GIT_COMMITTER_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "kalepasch@gmail.com")}
+               "GIT_AUTHOR_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
+               "GIT_AUTHOR_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local"),
+               "GIT_COMMITTER_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
+               "GIT_COMMITTER_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local")}
         subprocess.run(["git", "add", "-A"], cwd=wt, env=env, capture_output=True)
         subprocess.run(["git", "commit", "--no-verify", "-m", f"patch-recovery: {slug}"],
                        cwd=wt, env=env, capture_output=True)
@@ -253,6 +258,232 @@ def _apply_patch_to_branch(repo, patch, branch, base):
     except Exception as e:
         return {"ok": False, "method": "template", "branch": branch, "reason": str(e)[:200]}
 
+
+# ---------------------------------------------------------------------------
+# Standalone branch-detection and regeneration utilities (zero-agent-spend)
+# These are NOT yet wired into recover() — they are isolated utilities.
+# ---------------------------------------------------------------------------
+
+def detect_branch(repo, slug):
+    """Zero-spend detection: check local branches and worktrees for agent/<slug>.
+
+    Returns dict with:
+    - found: bool
+    - location: 'local' | 'worktree' | None
+    - branch: str
+    - path: str | None  (worktree path when location=='worktree')
+    """
+    branch = f"agent/{slug}"
+
+    # 1. Local branches — cheapest check
+    r = _git(repo, "branch", "--list", branch)
+    if r.returncode == 0 and branch in (r.stdout or ""):
+        return {"found": True, "location": "local", "branch": branch, "path": None}
+
+    # 2. Worktrees — branch may be checked out without existing as a local ref
+    r = _git(repo, "worktree", "list", "--porcelain")
+    if r.returncode == 0:
+        cur_path = None
+        for line in (r.stdout or "").splitlines():
+            if line.startswith("worktree "):
+                cur_path = line[len("worktree "):].strip()
+            elif line.strip() == f"branch refs/heads/{branch}":
+                return {"found": True, "location": "worktree", "branch": branch, "path": cur_path}
+
+    return {"found": False, "location": None, "branch": branch, "path": None}
+
+
+def query_cache_hints(slug, intent_words=None, project=None):
+    """Query merged-diff library and artifact cache for historical references.
+
+    Checks (in priority order):
+    1. task_artifacts for this exact slug (similarity 1.0)
+    2. merged_diff_library for similar tasks by intent overlap
+    3. knowledge table for patch-template entries by keyword match
+
+    Returns list of hint dicts sorted by similarity descending:
+    - source: 'task_artifacts' | 'merged_diff' | 'knowledge'
+    - slug: str
+    - similarity: float 0..1
+    - patch_diff: str | None  (None when source is 'knowledge')
+    - summary: str
+    """
+    hints = []
+    words = list(intent_words or [])
+
+    # 1. Exact slug hit in task_artifacts
+    try:
+        import task_artifacts
+        art = task_artifacts.get_artifacts(slug)
+        if art and len((art.get("patch_diff") or "").strip()) > 10:
+            hints.append({
+                "source": "task_artifacts",
+                "slug": slug,
+                "similarity": 1.0,
+                "patch_diff": art["patch_diff"],
+                "summary": f"stored artifact for {slug}",
+            })
+    except Exception:
+        pass
+
+    # 2. Merged-diff library: similar tasks by intent overlap
+    if words:
+        try:
+            import merged_diff_library
+            task = {"slug": slug, "prompt": " ".join(words), "project_id": project}
+            for h in merged_diff_library.find(task, limit=3):
+                hints.append({
+                    "source": "merged_diff",
+                    "slug": h.get("slug", ""),
+                    "similarity": float(h.get("similarity", 0)),
+                    "patch_diff": h.get("diff") or None,
+                    "summary": h.get("summary", ""),
+                })
+        except Exception:
+            pass
+
+    # 3. Knowledge table: patch-template entries by keyword overlap
+    try:
+        rows = db.select("knowledge", {
+            "select": "title,body,keywords",
+            "tags": "cs.{patch-template}",
+            "limit": "20",
+        }) or []
+        iw = set(words)
+        for row in rows:
+            kw = set(row.get("keywords") or [])
+            if not kw or not iw:
+                continue
+            score = len(kw & iw) / max(len(kw | iw), 1)
+            if score > 0:
+                hints.append({
+                    "source": "knowledge",
+                    "slug": (row.get("title") or "").replace(" ", "-"),
+                    "similarity": round(score, 3),
+                    "patch_diff": None,
+                    "summary": (row.get("body") or "")[:500],
+                })
+    except Exception:
+        pass
+
+    return sorted(hints, key=lambda h: h["similarity"], reverse=True)
+
+
+def regenerate_from_intent(repo, slug, base, intent_words, template_id=None):
+    """Last-resort regeneration: infer a minimal branch from the acceptance intent.
+
+    Strategy (zero-agent-spend):
+    1. If query_cache_hints() returns a replayable patch_diff, apply it.
+    2. Otherwise create a minimal stub branch with a .recovery-intent file so
+       the runner knows model spend is still needed, but the branch exists.
+
+    Returns dict with:
+    - ok: bool
+    - method: 'cache_replay' | 'intent_stub' | 'failed'
+    - branch: str
+    - reason: str | None
+    """
+    branch = f"agent/{slug}"
+
+    for hint in query_cache_hints(slug, intent_words):
+        diff = hint.get("patch_diff") or ""
+        if len(diff.strip()) < 10:
+            continue
+        result = _apply_diff_to_branch(repo, slug, branch, base, diff, hint["source"])
+        if result["ok"]:
+            return result
+
+    return _create_intent_stub(repo, slug, branch, base, intent_words, template_id)
+
+
+def _apply_diff_to_branch(repo, slug, branch, base, diff, source):
+    """Apply a known diff to a fresh branch off base. Returns recover-style dict."""
+    wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", f"regen-{slug}")
+    try:
+        _git(repo, "branch", "-D", branch)
+        _git(repo, "branch", branch, base)
+        _free_branch(repo, branch)
+        r = _git(repo, "worktree", "add", "-f", wt, branch, timeout=120)
+        if r.returncode != 0:
+            return {"ok": False, "method": "cache_replay", "branch": branch,
+                    "reason": f"worktree setup failed: {r.stderr[:200]}"}
+
+        proc = subprocess.run(["git", "apply", "--3way", "-"], cwd=wt,
+                              input=diff, capture_output=True, text=True, timeout=120)
+        if proc.returncode != 0:
+            return {"ok": False, "method": "cache_replay", "branch": branch,
+                    "reason": f"diff apply failed: {proc.stderr[:200]}"}
+
+        env = {**os.environ,
+               "GIT_AUTHOR_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
+               "GIT_AUTHOR_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local"),
+               "GIT_COMMITTER_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
+               "GIT_COMMITTER_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local")}
+        subprocess.run(["git", "add", "-A"], cwd=wt, env=env, capture_output=True)
+        r2 = subprocess.run(["git", "commit", "--no-verify", "-m",
+                            f"regen-from-cache({source}): {slug}"],
+                           cwd=wt, env=env, capture_output=True, text=True)
+        if r2.returncode != 0:
+            return {"ok": False, "method": "cache_replay", "branch": branch,
+                    "reason": f"commit failed: {r2.stderr[:200]}"}
+
+        ahead = subprocess.run(["git", "rev-list", "--count", f"{base}..HEAD"],
+                               cwd=wt, capture_output=True, text=True)
+        if int((ahead.stdout or "0").strip() or "0") > 0:
+            return {"ok": True, "method": "cache_replay", "branch": branch}
+        return {"ok": False, "method": "cache_replay", "branch": branch,
+                "reason": "diff produced no commits"}
+    except Exception as e:
+        return {"ok": False, "method": "cache_replay", "branch": branch, "reason": str(e)[:200]}
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", wt],
+                      cwd=repo, capture_output=True)
+
+
+def _create_intent_stub(repo, slug, branch, base, intent_words, template_id=None):
+    """Create a minimal stub branch with recovery metadata. Last resort."""
+    wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", f"stub-{slug}")
+    try:
+        _free_branch(repo, branch)
+        _git(repo, "branch", "-D", branch)
+        _git(repo, "branch", branch, base)
+        r = _git(repo, "worktree", "add", "-f", wt, branch, timeout=120)
+        if r.returncode != 0:
+            return {"ok": False, "method": "failed", "branch": branch,
+                    "reason": f"worktree setup failed: {r.stderr[:200]}"}
+
+        intent_text = " ".join(intent_words or [slug])
+        stub_path = os.path.join(wt, f".recovery-intent-{slug}.txt")
+        with open(stub_path, "w") as f:
+            f.write(f"recovery-intent: {slug}\n")
+            if template_id:
+                f.write(f"template: {template_id}\n")
+            f.write(f"intent: {intent_text}\n")
+            f.write(f"base: {base}\n")
+
+        env = {**os.environ,
+               "GIT_AUTHOR_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
+               "GIT_AUTHOR_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local"),
+               "GIT_COMMITTER_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
+               "GIT_COMMITTER_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local")}
+        subprocess.run(["git", "add", stub_path], cwd=wt, env=env, capture_output=True)
+        r2 = subprocess.run(["git", "commit", "--no-verify", "-m",
+                            f"recovery-intent-stub: {slug}\n\nintent: {intent_text}"],
+                           cwd=wt, env=env, capture_output=True, text=True)
+        if r2.returncode != 0:
+            return {"ok": False, "method": "failed", "branch": branch,
+                    "reason": f"stub commit failed: {r2.stderr[:200]}"}
+        return {"ok": True, "method": "intent_stub", "branch": branch}
+    except Exception as e:
+        return {"ok": False, "method": "failed", "branch": branch, "reason": str(e)[:200]}
+    finally:
+        subprocess.run(["git", "worktree", "remove", "--force", wt],
+                      cwd=repo, capture_output=True)
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
 
 def _git(repo, *args, timeout=60):
     return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, timeout=timeout)
