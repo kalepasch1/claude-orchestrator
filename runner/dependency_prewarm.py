@@ -23,7 +23,7 @@ _DEFAULT_TIMEOUT = int(os.environ.get("ORCH_DEPS_PREWARM_TIMEOUT", "900"))
 _COMMON_PACKAGE_DIRS = tuple(
     x.strip() for x in os.environ.get(
         "ORCH_PACKAGE_ROOT_HINTS",
-        "web,app,frontend,client,dashboard,site,ui",
+        "web,app,frontend,client,dashboard,site,ui,mcp",
     ).split(",") if x.strip()
 )
 _PACKAGE_PARENT_DIRS = ("apps", "packages", "services")
@@ -248,6 +248,19 @@ def _deps_ready_local(repo):
     bin_dir = os.path.join(nm, ".bin")
     for choices in required_bins:
         if not any(os.path.exists(os.path.join(bin_dir, c)) for c in choices):
+            return False
+    # A launcher can survive a partial/pruned install while the module it imports
+    # has disappeared. Nuxt then fails at startup with a misleading
+    # ERR_MODULE_NOT_FOUND for @nuxt/cli/dist/index.mjs; the old check accepted
+    # that tree because node_modules/.bin/nuxi still existed. Validate the small
+    # set of runtime entrypoints that makes a Nuxt/Vue install actually usable.
+    is_nuxt = any("nuxt" in group for group in required_bins)
+    if is_nuxt:
+        required_files = (
+            ("@nuxt", "cli", "dist", "index.mjs"),
+            ("@vue", "compiler-sfc", "dist", "compiler-sfc.cjs.js"),
+        )
+        if not all(os.path.isfile(os.path.join(nm, *parts)) for parts in required_files):
             return False
     return True
 

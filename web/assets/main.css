@@ -254,3 +254,34 @@ button:not(:disabled):active, [role='button']:active { transform: translateY(1px
 .app-main :is(.connector-card,.capability-card,.overview-card):hover { transform: translateY(-3px); box-shadow: 0 20px 56px rgba(20,20,20,.075); }
 @keyframes reveal-up { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } .page-enter-active,.page-leave-active,.layout-enter-active,.layout-leave-active { transition: none; } .app-main main > section,.app-main main > article,.app-main .section-block { animation: none; } }
+
+/* Madeus control-plane system — shared by every authenticated route. */
+:root { --ink: #0a1020; --muted: #59677d; --faint: #8b98ab; --line: #dce4ef; --soft-line: #eaf0f7; --canvas: #f5f8fc; --panel: #ffffff; --accent: #2563eb; --accent-soft: #edf4ff; --danger: #c23b42; --warning: #b7791f; --radius: 14px; }
+html, body { background: var(--canvas); }
+body { background: radial-gradient(circle at 93% -10%, #e2efff 0, transparent 34%), var(--canvas); }
+::selection { background: #cfe0ff; color: #0a2360; }
+:focus-visible { outline-color: #2563eb; }
+.orchestrator-shell { background: transparent; }
+.app-sidebar { background: rgba(248, 251, 255, .93); border-right-color: #dce4ef; box-shadow: 16px 0 54px rgba(28, 53, 91, .06); backdrop-filter: blur(18px); }
+.brand-lockup { padding-top: 24px; }
+.brand-glyph { border-radius: 9px; background: linear-gradient(145deg, #1d4ed8, #0a1020); box-shadow: 0 7px 16px rgba(37, 99, 235, .22); }
+.fleet-status { color: #68768a; }
+.live-dot, .connection-dot { background: #17a66b; box-shadow: 0 0 0 3px #17a66b18; }
+.live-dot.muted { background: #a4afbd; box-shadow: none; }
+.app-navigation { padding: 10px; }
+.nav-item { margin: 3px 0; border: 1px solid transparent; color: #56647a; font-weight: 570; }
+.nav-item:hover { border-color: #d8e4f7; background: #f0f6ff; color: #17233a; }
+.nav-item.active { border-color: #d6e3fa; background: #eaf2ff; box-shadow: inset 3px 0 #2563eb, 0 5px 14px rgba(37, 99, 235, .07); color: #14203a; }
+.nav-item.active .nav-icon, .adaptive-primary > span { color: #2563eb; }
+.nav-item::after { background: #2563eb; }
+.nav-count { background: #e8effa; color: #516178; }.nav-count.critical { background: #fff0f0; color: var(--danger); }
+.nav-divider { background: #dce4ef; }.sidebar-footer { border-top-color: #dce4ef; }.user-avatar { border-color: #cfdaea; background: #edf4ff; color: #1d4ed8; }
+.adaptive-focus { border-color: #d8e4f4; background: #f3f7ff; }.adaptive-primary { border: 1px solid #dce6f5; background: #fff; }.adaptive-primary.urgent { box-shadow: inset 2px 0 #d8912b; }
+.app-main { background: transparent; }.mobile-header { border-bottom-color: #dce4ef; background: rgba(255,255,255,.92); backdrop-filter: blur(16px); }
+.command-page { background: transparent; }.command-topbar { border-bottom-color: #dce4ef; background: rgba(255,255,255,.86); }.system-state { color: #3d4d64; }.quiet-button { border-color: #d5e0ef; color: #506078; }
+.intent-hero h1, .section-heading h2 { color: #0a1020; }.eyebrow { color: #2563eb; }.intent-hero > p { color: #5c6a7e; }
+.intent-console { border-color: #cbd9ec; box-shadow: 0 20px 55px rgba(27, 60, 108, .10), 0 2px 8px rgba(23, 44, 78, .05); }.intent-console:focus-within { border-color: #78a6fa; box-shadow: 0 20px 60px rgba(37, 99, 235, .15), 0 0 0 3px rgba(37, 99, 235, .08); }
+.intent-context-row, .intent-footer { border-color: #e5edf6; background: #f9fbff; }.intent-context-row select { border-color: #d4e0ef; }.primary-button { border-color: #2563eb; background: #2563eb; box-shadow: 0 8px 18px rgba(37,99,235,.18); }.primary-button:hover:not(:disabled) { background: #1d4ed8; }.secondary-button { border-color: #d3dfed; color: #42526a; }
+.overview-grid { border-color: #dce4ef; }.overview-card + .overview-card { border-color: #dce4ef; }.overview-card:hover, .activity-row:hover { background: #f6f9ff; }.card-link, .capability-card span { color: #2563eb; }
+.capability-card, .activity-table { border-color: #d7e2ef; }.capability-card:hover { border-color: #adc8fa; box-shadow: 0 16px 34px rgba(37,99,235,.10); }.capability-icon { background: #eaf2ff; color: #2563eb; }.activity-detail { background: #f4f8ff; }.tone-running { background: #eaf2ff; color: #2563eb; }.tone-success { background: #e8f8ef; color: #16754a; }
+@media (max-width: 900px) { .app-sidebar { box-shadow: 18px 0 55px rgba(10, 25, 52, .16); } }
