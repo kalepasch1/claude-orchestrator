@@ -96,13 +96,8 @@ queue drains, no global pause, and no in-flight task is ever required to make an
 live. The only thing "in the background" means here is "not on the critical path of a task
 that's already running" — it does not mean "invisible" or "unmeasured."
 
-## Monthly subsystem audit
+## See also
 
-The `monthly_subsystem_audit.py` module complements improvement steering by identifying
-periodic jobs that should be *removed* rather than improved. It scores every job in
-`_SCHEDULE` by KPI contribution vs incident count, proposes disabling the bottom decile
-as a single material approval card (never auto-applied), and hard-excludes
-infrastructure/safety jobs (billing_guard, pause_arbiter, worktree_gc, etc.) from
-disable proposals. See `runner/monthly_subsystem_audit.py` for the implementation and
-`runner/tests/test_monthly_subsystem_audit.py` for 34 test cases covering the scoring
-math, exclusion logic, and bottom-decile selection.
+- `docs/tdd-config.md` — TDD-gating configuration (controls when test-first phases are injected)
+- `runner/anomaly.py` — self-monitoring anomaly detector (catches regressions from improvements)
+- `runner/resource_governor.py` — host resource protection during parallel execution
