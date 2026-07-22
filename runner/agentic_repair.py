@@ -77,7 +77,12 @@ def repair_patch(task, signal, category="rework", directive=None, prefer_non_cla
     """
     prompt = in_session_prompt(task, signal, category=category, directive=directive)
     rc = int(task.get("remediation_count") or 0)
-    coder = choose_coder(task)
+    # Recovery must remain local and bounded when the control plane is down.
+    # Reuse an already selected coder before asking the live routing stack,
+    # which can consult provider telemetry through the database.
+    coder = choose_coder(task) if prefer_non_claude else (
+        task.get("force_coder") or task.get("model") or choose_coder(task)
+    )
     patch = {
         "state": "QUEUED",
         "prompt": prompt,

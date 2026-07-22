@@ -32,6 +32,13 @@ def is_duplicate(candidate: str, existing_slugs: Set[str],
         norm_existing = normalize_slug(existing)
         if norm_candidate == norm_existing:
             return True
+        # Agent branches commonly receive a retry/version suffix (for example
+        # ``task-name-v2``). They represent the same intended work and should
+        # not bypass queue deduplication merely because of that suffix.
+        candidate_base = re.sub(r"-v\d+$", "", norm_candidate)
+        existing_base = re.sub(r"-v\d+$", "", norm_existing)
+        if candidate_base and candidate_base == existing_base:
+            return True
         if _token_similarity(norm_candidate, norm_existing) >= similarity_threshold:
             return True
     return False

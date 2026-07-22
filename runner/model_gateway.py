@@ -448,6 +448,10 @@ def complete(provider, model, prompt, project=None, timeout=90, operation="compl
             except Exception:
                 pass
             latency = int((time.time() - t0) * 1000)
+            # Keep the observed latency on the response as well as in telemetry.
+            # Routing/bottleneck callers use this to make bounded decisions without
+            # rereading the operation ledger.
+            res["response_time_ms"] = latency
             if record_op:
                 _record_operation(project, operation, task_class, res["provider"], res["model"],
                                   prompt, res.get("cost_usd", 0), latency, ok=True)

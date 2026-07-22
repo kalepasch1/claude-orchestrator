@@ -6,6 +6,51 @@ on:
   pull_request:
 
 jobs:
+  web:
+    name: web — build + contracts
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Verify dependency graph
+        run: node scripts/verify-dependency-graph.mjs
+      - name: Verify experience and journey contracts
+        run: |
+          node scripts/verify-experience-contracts.mjs
+          node scripts/verify-journey-contracts.mjs
+          node scripts/verify-navigation-contract.mjs
+      - name: Build production web app
+        run: npm run build
+
+  runner:
+    name: runner — full test suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      PYTHONPATH: runner/
+      PYTHONPYCACHEPREFIX: /tmp/claude-orchestrator-pycache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: pip install pytest pytest-timeout
+      - name: Run full runner suite with per-test isolation timeout
+        # The runner has tests both directly in runner/ and in runner/tests.
+        # -x reports the first bad or blocked test by exact node id; pytest-timeout
+        # prevents an individual integration test from stalling the whole job.
+        run: python -m pytest runner -q -x --timeout=60 --timeout-method=thread
+
   darwin-kernel:
     name: darwin-kernel — test + typecheck
     runs-on: ubuntu-latest

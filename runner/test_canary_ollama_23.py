@@ -518,7 +518,7 @@ class CoderRoutingPercentileCanary(unittest.TestCase):
                     "model": "llama3.2:3b",
                     "app": "orchestrator",
                     "operation": "completion",
-                    "avg_quality": 6.45,
+                    "avg_quality": 6.5,
                     "p95_response_time_ms": 350,
                 },
                 {
@@ -581,7 +581,7 @@ class CoderRoutingPercentileCanary(unittest.TestCase):
             "model": "llama3.2:3b",
             "app": "orchestrator",
             "operation": "completion",
-            "avg_quality": 6.45,
+            "avg_quality": 6.5,
             "avg_response_time_ms": 350,
             "avg_cost": 0.0,
             # No p50, p95, p99 fields (legacy route data)

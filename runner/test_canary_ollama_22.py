@@ -13,8 +13,8 @@ G) Prefers learned routes when response time is acceptable
 H) Falls back to faster alternatives when bottlenecks are detected
 
 Orchestration Contract (Expected Routes with Performance):
-  - pipeline_scout -> local:llama3.2:3b (q=4.7, ~500ms)
-  - completion -> local:llama3.2:3b (q=6.45, ~400ms)
+  - pipeline_scout -> local:llama3.2:3b (q=6.5, ~500ms)
+  - completion -> local:llama3.2:3b (q=6.5, ~400ms)
   - meta_loop_improvement -> local:codestral:22b (q=7.7, ~800ms)
   - build_fix -> local:llama3.1 (q=7.7, ~600ms)
   - remediation fallback -> deepseek-v4-flash (q=7.4, ~300ms) when response time exceeds threshold
@@ -249,7 +249,7 @@ class CoderRoutingBottleneckCanary(unittest.TestCase):
             "model": "llama3.2:3b",
             "app": "orchestrator",
             "operation": "pipeline_scout",
-            "avg_quality": 4.7,
+            "avg_quality": 6.5,
             "avg_cost": 0.0,
             "avg_response_time_ms": 500,
             "updated_at": "2026-07-16T00:00:00Z",
@@ -274,7 +274,7 @@ class CoderRoutingBottleneckCanary(unittest.TestCase):
             "model": "llama3.2:3b",
             "app": "orchestrator",
             "operation": "completion",
-            "avg_quality": 6.45,
+            "avg_quality": 6.5,
             "avg_cost": 0.0,
             "avg_response_time_ms": 400,
         }]
@@ -519,20 +519,22 @@ class CoderRoutingBottleneckCanary(unittest.TestCase):
         """Accuracy: different operations can have different response time profiles."""
         db = MagicMock()
         def select_side_effect(*args, **kwargs):
-            if "pipeline_scout" in str(kwargs):
+            if "pipeline_scout" in str(args):
                 return [{
                     "provider": "local",
                     "model": "llama3.2:3b",
                     "app": "orchestrator",
                     "operation": "pipeline_scout",
+                    "avg_quality": 6.5,
                     "avg_response_time_ms": 350,  # Fast
                 }]
-            elif "meta_loop" in str(kwargs):
+            elif "meta_loop" in str(args):
                 return [{
                     "provider": "local",
                     "model": "codestral:22b",
                     "app": "orchestrator",
                     "operation": "meta_loop_improvement",
+                    "avg_quality": 6.5,
                     "avg_response_time_ms": 850,  # Slower but acceptable for this op
                 }]
             return []
