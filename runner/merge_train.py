@@ -1115,11 +1115,29 @@ def train_run():
                 summary[key] += result[key]
             for risk, count in result["risk"].items():
                 summary["risk"][risk] += count
+    # AUTO-CONFLICT RESOLVER: second pass on branches that conflicted
+    auto_resolved = 0
+    if summary.get("conflict", 0) > 0:
+        try:
+            import auto_conflict_resolver
+            for pid, group in by_project.items():
+                proj = projects.get(pid, {})
+                repo = proj.get("repo_path")
+                base = proj.get("base_branch") or proj.get("default_base") or "main"
+                if repo and os.path.isdir(repo):
+                    acr_result = auto_conflict_resolver.resolve_repo(repo, base)
+                    auto_resolved += acr_result.get("auto_resolved", 0)
+                    summary["merged"] += acr_result.get("total_merged", 0)
+        except Exception as e:
+            print(f"merge_train: auto-conflict-resolver error: {e}")
+    summary["auto_resolved"] = auto_resolved
+
     print(f"merge_train: {summary['merged']} merged, {summary['already_integrated']} already, "
           f"{summary['redo']} redo, "
           f"{summary['testfail']} testfail, {summary['conflict']} conflict, "
           f"{summary['skipped']} skipped, {summary['project_errors']} project errors "
-          f"across {summary['projects']} project(s)")
+          f"across {summary['projects']} project(s)"
+          f"{f', {auto_resolved} auto-resolved' if auto_resolved else ''}")
     return summary
 
 

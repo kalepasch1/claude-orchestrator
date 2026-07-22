@@ -196,6 +196,23 @@ def set_state(task_id: str, **kw) -> None:
     # branch. A crashed worker is covered by the server-side lease TTL.
     if kw.get("state") in {"QUEUED", "DONE", "MERGED", "BLOCKED", "QUARANTINED"}:
         branch_lease.release(str(task_id))
+        # Release file reservations when task finishes (any terminal state)
+        try:
+            import file_reservation
+            file_reservation.release({"id": str(task_id)})
+        except Exception:
+            pass
+    # CONTINUOUS MERGER: when a task reaches DONE, immediately attempt to merge
+    # its branch instead of waiting for the next scheduled merge_train run.
+    if kw.get("state") == "DONE":
+        try:
+            import continuous_merger
+            # Fetch the full task record for the merger (needs project_id, slug, branch)
+            _task_row = (db.select("tasks", {"id": f"eq.{task_id}"}) or [None])[0]
+            if _task_row:
+                continuous_merger.on_task_done(_task_row)
+        except Exception as _e:
+            _log.debug("continuous_merger hook failed: %s", _e)
 
 
 def _next_non_claude_coder(task, exclude=()):
@@ -766,6 +783,27 @@ def run_task(t):
             set_state(t["id"], state="QUEUED",
                       note=f"branch-lease-held: another executor owns {branch_ref}")
             return
+        # FILE RESERVATION: structural enforcement of file-level mutual exclusion.
+        # Uses static_file_scope to compute deterministic scope when LLM scope is missing.
+        try:
+            import file_reservation
+            import static_file_scope
+            _declared_files = [f.strip() for f in (t.get("file_scope") or "").split(",") if f.strip()]
+            if not _declared_files:
+                # No LLM-declared scope — compute via static analysis
+                _analyzed = static_file_scope.override_scope(t, repo)
+                _declared_files = sorted(_analyzed) if _analyzed else []
+            if _declared_files:
+                _blockers = file_reservation.blocked_by(t, repo, _declared_files)
+                if _blockers:
+                    _blocking_info = ", ".join(f"{f} (held by {s})" for f, s in _blockers[:3])
+                    set_state(t["id"], state="QUEUED",
+                              note=f"file-reservation-held: {_blocking_info}")
+                    branch_lease.release(str(t["id"]))
+                    return
+                file_reservation.reserve(t, repo, _declared_files)
+        except Exception as e:
+            _log.debug("hook file_reservation failed: %s", e)
         # ADAPTIVE RETRY BUDGET: use historical success data to set max retries
         _max_attempts = 4
         try:

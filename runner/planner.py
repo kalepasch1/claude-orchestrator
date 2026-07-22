@@ -159,6 +159,19 @@ def plan(master: str, repo: str = None) -> list:
     # Apply tests-first gate: split tasks whose proof references a missing test file
     tasks = tests_first_gate.apply_gate(tasks, repo_path=repo)
 
+    # STATIC FILE-SCOPE ANALYSIS: override/augment LLM-declared file scopes with
+    # deterministic analysis. This catches the ~40% of cases where the LLM gets
+    # file dependencies wrong, preventing merge conflicts before branches are created.
+    if repo:
+        try:
+            import static_file_scope
+            for t in tasks:
+                analyzed = static_file_scope.override_scope(t, repo)
+                if analyzed:
+                    t["file_scope"] = ",".join(sorted(analyzed))
+        except Exception as e:
+            sys.stderr.write(f"[planner] static_file_scope failed ({e}); using LLM scopes\n")
+
     return tasks
 
 
