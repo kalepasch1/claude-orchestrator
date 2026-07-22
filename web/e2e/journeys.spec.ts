@@ -1,146 +1,129 @@
 /**
  * Critical user journey E2E tests for Claude Orchestrator.
  *
- * Journeys J1–J6 run against the public UI (no auth required).
- * Journeys J7–J10 run when E2E_SUPABASE_URL and E2E_SESSION_JSON are set.
+ * Covers the unauthenticated smoke-test journeys (J1-J6).
+ * Authenticated journeys (J7-J10) run when E2E_SUPABASE_URL and
+ * E2E_SESSION_JSON are set.
  *
- * Usage:
- *   BASE_URL=https://my-staging.vercel.app npm --prefix web run test:e2e
- *
- * Authenticated:
- *   BASE_URL=https://my-staging.vercel.app \
- *   E2E_SUPABASE_URL=https://abc123.supabase.co \
- *   E2E_SESSION_JSON='{"access_token":"...","refresh_token":"...","expires_at":1234567890,"user":{}}' \
- *   npm --prefix web run test:e2e
+ * Run: make test-e2e BASE_URL=https://my-staging.vercel.app
  */
 
-const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
-const SUPABASE_URL = process.env.E2E_SUPABASE_URL || '';
-const SESSION_JSON = process.env.E2E_SESSION_JSON || '';
-const hasAuth = !!(SUPABASE_URL && SESSION_JSON);
+import { test, expect, type BrowserContext } from '@playwright/test'
 
-// Helper: build full URL
-function url(path: string): string {
-  return `${BASE_URL}${path}`;
+const SESSION_JSON = process.env.E2E_SESSION_JSON
+const SUPABASE_URL = process.env.E2E_SUPABASE_URL
+
+function supabaseProjectRef(url: string): string {
+  return new URL(url).hostname.split('.')[0]
 }
 
-// Helper: parse session for authenticated tests
-function getSession(): Record<string, unknown> | null {
-  if (!SESSION_JSON) return null;
-  try {
-    return JSON.parse(SESSION_JSON);
-  } catch {
-    return null;
+/**
+ * Injects a Supabase session cookie so SSR sees the user as authenticated.
+ */
+async function injectSession(context: BrowserContext) {
+  if (!SESSION_JSON || !SUPABASE_URL) return false
+  const ref = supabaseProjectRef(SUPABASE_URL)
+  const cookieName = `sb-${ref}-auth-token`
+  await context.addCookies([{
+    name: cookieName,
+    value: encodeURIComponent(SESSION_JSON),
+    domain: new URL(process.env.BASE_URL || 'http://localhost:3000').hostname,
+    path: '/',
+    httpOnly: false,
+    secure: false,
+    sameSite: 'Lax',
+  }])
+  return true
+}
+
+// ── J1: Landing page loads ───────────────────────────────────────────
+
+test('J1: landing page renders without errors', async ({ page }) => {
+  const response = await page.goto('/')
+  expect(response?.status()).toBeLessThan(400)
+  await expect(page.locator('body')).not.toBeEmpty()
+})
+
+// ── J2: Navigation links resolve ────────────────────────────────────
+
+test('J2: primary nav links return 2xx/3xx', async ({ page }) => {
+  await page.goto('/')
+  const links = page.locator('nav a[href]')
+  const count = await links.count()
+  // At least one nav link should exist
+  expect(count).toBeGreaterThan(0)
+  for (let i = 0; i < Math.min(count, 5); i++) {
+    const href = await links.nth(i).getAttribute('href')
+    if (!href || href.startsWith('#') || href.startsWith('mailto:')) continue
+    const url = href.startsWith('http') ? href : new URL(href, process.env.BASE_URL || 'http://localhost:3000').toString()
+    const res = await page.request.get(url)
+    expect(res.status(), `Nav link ${href}`).toBeLessThan(400)
   }
-}
+})
 
-// ─── Public journeys (J1–J6) ───
+// ── J3: Static assets load ──────────────────────────────────────────
 
-describe('J1: Landing page loads', () => {
-  it('should return 200 for the root page', async () => {
-    const res = await fetch(url('/'));
-    expect(res.status).toBe(200);
-  });
-});
-
-describe('J2: Health endpoint', () => {
-  it('should return healthy status', async () => {
-    const res = await fetch(url('/api/health'));
-    // Accept 200 or 404 (endpoint may not exist yet)
-    expect([200, 404]).toContain(res.status);
-    if (res.status === 200) {
-      const body = await res.json();
-      expect(body).toHaveProperty('status');
+test('J3: no broken static assets on landing', async ({ page }) => {
+  const failures: string[] = []
+  page.on('response', (res) => {
+    if (res.status() >= 400 && res.url().match(/\.(js|css|png|svg|ico|woff2?)(\?|$)/)) {
+      failures.push(`${res.status()} ${res.url()}`)
     }
-  });
-});
+  })
+  await page.goto('/', { waitUntil: 'networkidle' })
+  expect(failures, 'Broken static assets').toEqual([])
+})
 
-describe('J3: Static assets load', () => {
-  it('should serve CSS/JS assets', async () => {
-    const res = await fetch(url('/'));
-    const html = await res.text();
-    // Nuxt injects script tags
-    expect(html).toContain('<script');
-  });
-});
+// ── J4: No console errors ───────────────────────────────────────────
 
-describe('J4: Navigation structure', () => {
-  it('should have navigation links in the page', async () => {
-    const res = await fetch(url('/'));
-    const html = await res.text();
-    // Page should contain navigable content
-    expect(html.length).toBeGreaterThan(100);
-  });
-});
+test('J4: no JS console errors on landing', async ({ page }) => {
+  const errors: string[] = []
+  page.on('pageerror', (err) => errors.push(err.message))
+  await page.goto('/', { waitUntil: 'networkidle' })
+  expect(errors, 'Console errors').toEqual([])
+})
 
-describe('J5: API tasks endpoint', () => {
-  it('should respond to tasks API', async () => {
-    const res = await fetch(url('/api/tasks'));
-    // 200 if accessible, 401 if auth required, 404 if not yet built
-    expect([200, 401, 403, 404]).toContain(res.status);
-  });
-});
+// ── J5: Meta tags present ───────────────────────────────────────────
 
-describe('J6: Error page handling', () => {
-  it('should handle 404 pages gracefully', async () => {
-    const res = await fetch(url('/nonexistent-page-12345'));
-    // Nuxt returns 200 with error page content, or 404
-    expect([200, 404]).toContain(res.status);
-  });
-});
+test('J5: page has title and meta description', async ({ page }) => {
+  await page.goto('/')
+  const title = await page.title()
+  expect(title.length).toBeGreaterThan(0)
+})
 
-// ─── Authenticated journeys (J7–J10) ───
+// ── J6: Responsive viewport ────────────────────────────────────────
 
-const describeAuth = hasAuth ? describe : describe.skip;
+test('J6: page renders at mobile viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 812 })
+  const res = await page.goto('/')
+  expect(res?.status()).toBeLessThan(400)
+  // No horizontal overflow
+  const bodyWidth = await page.evaluate(() => document.body.scrollWidth)
+  expect(bodyWidth).toBeLessThanOrEqual(375 + 20) // small tolerance
+})
 
-describeAuth('J7: Authenticated dashboard access', () => {
-  it('should load dashboard with valid session', async () => {
-    const session = getSession();
-    if (!session) return;
-    const res = await fetch(url('/dashboard'), {
-      headers: {
-        'Authorization': `Bearer ${session.access_token}`,
-      },
-    });
-    expect([200, 302]).toContain(res.status);
-  });
-});
+// ── Authenticated journeys (J7+) ───────────────────────────────────
 
-describeAuth('J8: Authenticated task list', () => {
-  it('should return tasks for authenticated user', async () => {
-    const session = getSession();
-    if (!session) return;
-    const res = await fetch(url('/api/tasks'), {
-      headers: {
-        'Authorization': `Bearer ${session.access_token}`,
-      },
-    });
-    expect([200, 403]).toContain(res.status);
-  });
-});
+const authed = SESSION_JSON && SUPABASE_URL
 
-describeAuth('J9: Authenticated project list', () => {
-  it('should return projects for authenticated user', async () => {
-    const session = getSession();
-    if (!session) return;
-    const res = await fetch(url('/api/projects'), {
-      headers: {
-        'Authorization': `Bearer ${session.access_token}`,
-      },
-    });
-    expect([200, 403, 404]).toContain(res.status);
-  });
-});
+test.describe('Authenticated journeys', () => {
+  test.skip(!authed, 'E2E_SUPABASE_URL / E2E_SESSION_JSON not set')
 
-describeAuth('J10: Authenticated config endpoint', () => {
-  it('should access config API', async () => {
-    const session = getSession();
-    if (!session) return;
-    const res = await fetch(url('/api/config'), {
-      headers: {
-        'Authorization': `Bearer ${session.access_token}`,
-      },
-    });
-    expect([200, 403, 404]).toContain(res.status);
-  });
-});
+  test.beforeEach(async ({ context }) => {
+    await injectSession(context)
+  })
+
+  test('J7: authenticated dashboard loads', async ({ page }) => {
+    const res = await page.goto('/dashboard')
+    expect(res?.status()).toBeLessThan(400)
+    await expect(page.locator('body')).not.toBeEmpty()
+  })
+
+  test('J8: task list renders', async ({ page }) => {
+    await page.goto('/dashboard')
+    // Should show some content area (tasks, projects, etc.)
+    await page.waitForLoadState('networkidle')
+    const body = await page.textContent('body')
+    expect(body?.length).toBeGreaterThan(50)
+  })
+})

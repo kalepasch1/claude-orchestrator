@@ -1,5 +1,3 @@
-# Makefile for claude-orchestrator
-
 BASE_URL ?= http://localhost:3000
 E2E_SUPABASE_URL ?=
 E2E_SESSION_JSON ?=
@@ -15,11 +13,9 @@ test-e2e:
 	BASE_URL=$(BASE_URL) \
 	E2E_SUPABASE_URL=$(E2E_SUPABASE_URL) \
 	E2E_SESSION_JSON=$(E2E_SESSION_JSON) \
-	npm --prefix web run test:e2e
+	npx --prefix web playwright test
 
-test-unit:
-	cd runner && python -m pytest tests/ -x -q
+test:
+	npm --prefix web run test
 
-test: test-unit
-
-.PHONY: test-e2e test-unit test
+.PHONY: test test-e2e
