@@ -23,9 +23,7 @@ import os, sys, time, socket, subprocess, datetime, json
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import kill_switch
-import log_util
-
-log = log_util.get_logger(__name__)
+import config_approval
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOST = socket.gethostname()
@@ -69,21 +67,14 @@ def _safe_key(k):
 
 
 def load_config():
-    """Apply central fleet_config into this process's env (safe keys only)."""
+    """Apply central fleet_config into this process's env (safe keys only, gated keys skipped)."""
     n = 0
     try:
-        for row in (db.select("fleet_config", {"select": "key,value,policy_change_id"}) or []):
+        blocked = config_approval.blocked_keys()
+        for row in (db.select("fleet_config", {"select": "key,value"}) or []):
             k, v = row.get("key"), row.get("value")
-            try:
-                import policy_compiler
-                authorized = policy_compiler.authorized(row.get("policy_change_id"))
-            except Exception:
-                authorized = False
-            if k and v is not None and _safe_key(k) and authorized:
-                _v = str(v).strip()
-                if len(_v) >= 2 and _v[0] == chr(34) and _v[-1] == chr(34):
-                    _v = _v[1:-1]
-                os.environ[k] = _v
+            if k and v is not None and _safe_key(k) and k not in blocked:
+                os.environ[k] = str(v)
                 n += 1
     except Exception as e:
         log.warning("fleet_config load failed: %s", e)
@@ -258,6 +249,7 @@ def process_controls():
 def tick():
     """One coordination cycle — call from the main loop and/or the scheduler. Fail-soft."""
     try:
+        config_approval.sweep()
         load_config()
         process_controls()
         self_update()
