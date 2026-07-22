@@ -608,7 +608,7 @@ watch(slug, () => { refreshInsights() })
       </nav>
       <!-- Specialist Bots -->
       <div class="px-3 py-2 border-t border-gray-200">
-        <div class="text-[9px] text-gray-400 uppercase tracking-wider mb-1.5 px-1">Specialist Bots</div>
+        <div class="text-[9px] text-gray-400 uppercase tracking-wider mb-1.5 px-1">Analysis Bots</div>
         <div class="space-y-0.5">
           <div v-for="b in bots.slice(0, 4)" :key="b" class="flex items-center gap-1.5 px-1 py-0.5">
             <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
@@ -699,7 +699,7 @@ watch(slug, () => { refreshInsights() })
                 </div>
                 <div class="flex items-center gap-2">
                   <span class="text-[10px] px-2 py-0.5 rounded-full font-medium" :class="docStatusColor(doc.status)">{{ doc.status }}</span>
-                  <button class="px-2 py-0.5 text-[10px] bg-blue-50 text-blue-700 border border-blue-200 rounded opacity-0 group-hover:opacity-100">Decision Review</button>
+                  <button class="px-2 py-0.5 text-[10px] bg-blue-50 text-blue-700 border border-blue-200 rounded opacity-0 group-hover:opacity-100">Review</button>
                 </div>
               </div>
             </div>
@@ -879,7 +879,7 @@ watch(slug, () => { refreshInsights() })
             </div>
           </div>
           <div class="bg-white border border-gray-200 rounded-xl p-5">
-            <div class="text-xs font-semibold text-gray-700 mb-3">Specialist Bots — {{ cap.domain }}</div>
+            <div class="text-xs font-semibold text-gray-700 mb-3">Analysis Bots — {{ cap.domain }}</div>
             <div class="space-y-1.5">
               <div v-for="b in bots" :key="b" class="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-lg">
                 <div class="flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span><span class="text-sm text-gray-700">{{ b }}</span></div>
@@ -909,7 +909,7 @@ watch(slug, () => { refreshInsights() })
     <!-- RIGHT PANEL — Decision Insights -->
     <aside v-if="showInsights" class="w-72 bg-gray-50 border-l border-gray-200 flex flex-col flex-shrink-0 overflow-hidden">
       <div class="px-3 py-2 border-b border-gray-200 flex items-center justify-between">
-        <span class="text-[10px] text-gray-400 uppercase tracking-wider font-medium">Decision Intelligence</span>
+        <span class="text-[10px] text-gray-400 uppercase tracking-wider font-medium">Intelligence</span>
         <div class="flex items-center gap-1.5">
           <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
           <span class="text-[9px] text-emerald-600">Auto-running</span>

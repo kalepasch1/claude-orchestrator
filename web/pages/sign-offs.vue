@@ -301,7 +301,7 @@ watch(user, u => { if (u) loadAll() })
             <!-- ── AI Consensus Assessment ────────────────────────────────── -->
             <div class="rounded border border-blue-200 overflow-hidden">
               <div class="px-3 py-1 bg-blue-50 border-b border-blue-200 flex items-center gap-2">
-                <span class="text-[9px] font-medium text-blue-600 tracking-[0.15em] uppercase">AI Consensus Assessment</span>
+                <span class="text-[9px] font-medium text-blue-600 tracking-[0.15em] uppercase">AI Assessment</span>
                 <span class="text-[8px] text-blue-400">· claude-orchestrator intelligence</span>
               </div>
               <div class="px-3 py-3 space-y-3">
