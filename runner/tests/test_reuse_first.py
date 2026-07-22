@@ -10,6 +10,7 @@ PROMPT = "implement stripe webhook signature verification handler endpoint"
 
 
 def task(**kw):
+    """Build a mock task dict with sensible defaults, overridden by any keyword args."""
     base = {"id": "t1", "slug": "stripe-hook", "prompt": PROMPT, "project_id": "p1"}
     base.update(kw)
     return base
