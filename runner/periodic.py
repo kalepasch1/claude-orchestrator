@@ -218,58 +218,10 @@ def run_dagfix():
     dag_optimizer.optimize()
 
 
-def run_dep_release():
-    """Release BLOCKED tasks whose dependencies have all resolved.
-
-    Tasks blocked on deps that complete (DONE/MERGED) should be re-queued, but the only
-    dep check runs at claim time (for QUEUED tasks). Once a task is BLOCKED, nothing
-    checks whether its deps have since resolved. This sweep fixes that gap — it caused
-    479 tasks to be permanently stuck.
-    """
-    import json
-    limit = int(os.environ.get("DEP_RELEASE_LIMIT", "50"))
-    blocked = db.select("tasks", {
-        "select": "id,slug,state,deps,note,project_id",
-        "state": "eq.BLOCKED",
-        "order": "updated_at.asc",
-        "limit": str(limit * 3),
-    }) or []
-
-    released = 0
-    for t in blocked:
-        deps = t.get("deps")
-        if not deps:
-            continue
-        if isinstance(deps, str):
-            try:
-                deps = json.loads(deps)
-            except Exception:
-                continue
-        if not isinstance(deps, list) or not deps:
-            continue
-
-        # Check if all deps are resolved
-        all_resolved = True
-        for dep_slug in deps:
-            dep_tasks = db.select("tasks", {
-                "select": "id,state",
-                "slug": f"eq.{dep_slug}",
-                "state": "in.(DONE,MERGED)",
-                "limit": "1",
-            }) or []
-            if not dep_tasks:
-                all_resolved = False
-                break
-
-        if all_resolved and released < limit:
-            db.update("tasks", {"id": t["id"]}, {
-                "state": "QUEUED",
-                "note": f"dep-release: all {len(deps)} deps resolved — re-queued for execution",
-            })
-            released += 1
-
-    print(f"dep-release: released {released} blocked tasks whose deps resolved")
-    return {"released": released}
+def run_dagspecunblock():
+    """Speculatively release tasks waiting only on actively-retrying deps (removes RETRY-wait stalls)."""
+    import dag_optimizer
+    dag_optimizer.speculative_unblock()
 
 
 def run_selftune():
@@ -749,7 +701,7 @@ JOBS = {
     "batch": run_batch,
     "unstick": run_unstick,
     "dagfix": run_dagfix,
-    "deprelease": run_dep_release,
+    "dagspecunblock": run_dagspecunblock,
     "selftune": run_selftune,
     "batchmech": run_batchmech,
     "appreview": run_appreview,
@@ -839,17 +791,7 @@ if __name__ == "__main__":
         print(f"periodic {job}: drain policy unavailable ({e})")
     # honor the kill switch: model-spending jobs don't run while paused.
     # these only read outcomes / move task state / edit thresholds — they never spend tokens
-    _SAFE_WHEN_PAUSED = {
-        "resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn",
-        "approval_policy.py", "queue_janitor.py", "unstick", "dagfix", "batchmech",
-        "selftune", "cluster", "governor", "costslo", "promote", "prewarm",
-        "billingguard", "dedup", "canaryecon", "forecast", "arbitrage", "autoscale",
-        "bizradar", "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",
-        "stripe", "ownerreport", "worktreegc", "stuck_reaper", "remediate", "selfcheck",
-        "quarantine", "credresolver", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain",
-        "priority_scorer", "quarantine_gc", "portfolioautopilot",
-        "release_kpi.py", "integrate_kpi.py", "fleet_control.py",
-    }
+    _SAFE_WHEN_PAUSED = {"roi", "txn", "unstick", "dagfix", "dagspecunblock", "selftune", "batchmech"}
     if job not in _SAFE_WHEN_PAUSED:
         try:
             import kill_switch

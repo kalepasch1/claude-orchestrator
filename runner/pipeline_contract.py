@@ -15,7 +15,6 @@ still returns a deterministic contract rather than blocking task execution.
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import sys
@@ -123,30 +122,6 @@ def _coder(slug: str, prompt: str, material: bool) -> str:
         return "claude"
 
 
-def _executor_route(slug: str, prompt: str, kind: str, material: bool,
-                    need: int) -> Dict[str, Any]:
-    """Resolve the actual agentic executor, model, and capability requirements.
-
-    This is shared by Cowork admission and native runner admission so neither
-    path has to infer an executor from prose in the rendered contract.
-    """
-    task = {"slug": slug or "", "prompt": prompt or "", "kind": kind or "build",
-            "material": material, "deps": [], "_need": int(need or 6)}
-    try:
-        route = agentic_coders.route(task) or {}
-        return {
-            "coder": str(route.get("coder") or _coder(slug, prompt, material)),
-            "provider": str(route.get("provider") or ""),
-            "model": str(route.get("model") or _author_model(prompt, kind)),
-            "required_capabilities": list(route.get("required_capabilities") or []),
-            "cowork_skills_needed": list(route.get("cowork_skills_needed") or []),
-        }
-    except Exception:
-        return {"coder": _coder(slug, prompt, material), "provider": "",
-                "model": _author_model(prompt, kind),
-                "required_capabilities": [], "cowork_skills_needed": []}
-
-
 def _qa_panel(author_model: str) -> List[str]:
     try:
         if judge is not None and hasattr(judge, "_panel_providers"):
@@ -208,9 +183,8 @@ def _recent_context(project: str) -> List[str]:
 def build_plan(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
                slug: str = "", material: bool = False) -> Dict[str, Any]:
     cls = classify(prompt, kind=kind, material=material)
-    executor = _executor_route(slug, prompt, kind, material, int(cls["need"]))
-    author = executor["model"] or _author_model(prompt, kind)
-    coder = executor["coder"]
+    author = _author_model(prompt, kind)
+    coder = _coder(slug, prompt, material)
     preflight = _safe_route("orchestrator", "task_preflight", "rating", need=5, agentic=False)
     strategy = _safe_route("orchestrator", "task_strategy", "plan", need=max(7, int(cls["need"])), agentic=False)
     qa = _safe_route("orchestrator", "task_qa", "review", need=6 if cls["need"] < 8 else 8, agentic=False)
@@ -225,10 +199,6 @@ def build_plan(prompt: str, project: str = "", kind: str = "build", source: str 
         "preflight": preflight,
         "strategy": strategy,
         "coder": coder,
-        "executor_provider": executor.get("provider", ""),
-        "executor_model": executor.get("model", ""),
-        "required_capabilities": executor.get("required_capabilities", []),
-        "cowork_skills_needed": executor.get("cowork_skills_needed", []),
         "author_model": author,
         "qa": qa,
         "qa_panel": _qa_panel(author),
@@ -252,12 +222,10 @@ def render_plan(plan: Dict[str, Any]) -> str:
         route_line("preflight triage", plan.get("preflight") or {}),
         route_line("strategy planner", plan.get("strategy") or {}),
         f"- agentic coder: {plan.get('coder')} using author model {plan.get('author_model')}",
-        f"- required executor capabilities: {', '.join(plan.get('required_capabilities') or ['code_generation'])}",
         route_line("independent QA route", plan.get("qa") or {}),
         f"- QA panel: {', '.join(plan.get('qa_panel') or [])}",
         f"- legal gate: {plan.get('legal_gate')}",
         f"- merge/release: {plan.get('release')}",
-        "- deploy-cost rule: never run `vercel --prod`, `vercel deploy --prod`, or an equivalent CLI production deploy; never push main/master directly. Push only the task branch, then let the verified batch release train promote production.",
         "- coordination rule: reconcile with active loop-generated work, reuse prior solutions first, do not delete or overwrite unrelated queued improvements, and leave recovered work in the queue until shipped.",
     ]
     ctx = plan.get("collaboration") or []
@@ -278,61 +246,10 @@ def wrap_prompt(prompt: str, project: str = "", kind: str = "build", source: str
     return render_plan(plan) + "\n\n" + ORIGINAL_HEADER + "\n" + text
 
 
-def artifact(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
-             slug: str = "", material: bool = False) -> str:
-    """Return a compact JSON string of the storable contract fields. Fail-soft: returns '{}' on any error."""
-    try:
-        plan = build_plan(prompt, project=project, kind=kind, source=source, slug=slug, material=material)
-        storable = {
-            "task_class": plan.get("task_class"),
-            "need": plan.get("need"),
-            "risk": plan.get("risk"),
-            "coder": plan.get("coder"),
-            "author_model": plan.get("author_model"),
-            "preflight": plan.get("preflight"),
-            "strategy": plan.get("strategy"),
-            "qa": plan.get("qa"),
-            "qa_panel": plan.get("qa_panel"),
-            "source": plan.get("source"),
-            "project": plan.get("project"),
-        }
-        return json.dumps(storable, separators=(",", ":"))
-    except Exception:
-        return "{}"
-
-
 def note(existing: str = "", source: str = "unknown") -> str:
     base = (existing or "").strip()
     suffix = f"pipeline:{source or 'unknown'}; triage-plan-code-qa-devmerge-release"
     return f"{base}; {suffix}" if base else suffix
-
-
-def artifact(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
-             slug: str = "", material: bool = False) -> str:
-    """Return a compact JSON string capturing the analysis plan for this task.
-
-    Stored alongside the task (e.g. in log_tail or a dedicated column) so the routing
-    decisions made before the agent ran are queryable without re-parsing the prompt.
-    Fail-soft: returns "{}" on any error so callers are never blocked.
-    """
-    try:
-        plan = build_plan(prompt, project=project, kind=kind, source=source, slug=slug, material=material)
-        storable = {
-            "task_class": plan.get("task_class"),
-            "need": plan.get("need"),
-            "risk": plan.get("risk"),
-            "coder": plan.get("coder"),
-            "author_model": plan.get("author_model"),
-            "preflight": plan.get("preflight", {}).get("model"),
-            "strategy": plan.get("strategy", {}).get("model"),
-            "qa": plan.get("qa", {}).get("model"),
-            "qa_panel": plan.get("qa_panel"),
-            "source": plan.get("source"),
-            "project": plan.get("project"),
-        }
-        return json.dumps(storable, separators=(",", ":"))
-    except Exception:
-        return "{}"
 
 
 if __name__ == "__main__":
