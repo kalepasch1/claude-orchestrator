@@ -129,9 +129,9 @@ useHead({
     <section class="outcome-loop">
       <div class="loop-copy">
         <p class="dark-kicker"><i /> Founder at the helm</p>
-        <h2>You choose the destination.<br>The platform navigates.</h2>
-        <p>Madeus is the GPS, lane-departure warning, and creative route planner for your portfolio. You keep authority. The intelligence network watches the whole terrain, warns before drift, and continually proposes faster, safer, higher-value routes.</p>
-        <div class="loop-stats"><span><b>YOU</b> hold the wheel</span><span><b>CADE</b> predicts the road</span><span><b>∞</b> routes compared</span></div>
+        <h2>You choose the destination.<br>The hivemind navigates.</h2>
+        <p>Madeus is the GPS, lane-departure warning, and creative route planner for your portfolio. You keep authority. The hivemind watches the whole terrain, warns before drift, and continually proposes faster, safer, higher-value routes.</p>
+        <div class="loop-stats"><span><b>YOU</b> hold the wheel</span><span><b>AI</b> predicts the road</span><span><b>∞</b> routes compared</span></div>
       </div>
       <div class="loop-console">
         <header><span>madeus / navigation-intelligence network</span><b>FOUNDER CONTROLLED</b></header>
@@ -157,7 +157,7 @@ useHead({
       <div class="hive-orbit" aria-label="Animated Madeus capability intelligence network">
         <div class="orbit-track track-one" /><div class="orbit-track track-two" /><div class="orbit-track track-three" />
         <div class="hive-core"><MadeusMark /><span>FOUNDER<br>OBJECTIVE</span></div>
-        <div class="hive-node legal"><b>LEGAL</b><small>CADE dispute · policy · contracts</small></div>
+        <div class="hive-node legal"><b>LEGAL</b><small>AI-assisted dispute · policy · contracts</small></div>
         <div class="hive-node design"><b>DESIGN</b><small>Brand · product · visual QA</small></div>
         <div class="hive-node build"><b>BUILD</b><small>Architecture · code · release</small></div>
         <div class="hive-node research"><b>RESEARCH</b><small>Markets · evidence · strategy</small></div>
