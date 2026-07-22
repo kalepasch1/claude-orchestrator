@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 conflict_predictor.py - predict and prevent merge conflicts by checking file-scope
 overlap between QUEUED tasks and currently IN_PROGRESS tasks.

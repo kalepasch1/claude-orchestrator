@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 outcome_router.py - outcome-weighted model router.
 

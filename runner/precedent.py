@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 precedent.py - retrieval-augmented drafting. Before an agent writes a change from scratch, find the
 most-similar change that ALREADY MERGED and hand it to the drafter as a worked example. Turns "invent a

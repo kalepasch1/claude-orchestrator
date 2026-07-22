@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 pattern_transfer -- transfer proven patterns across projects.
 

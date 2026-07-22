@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 intake_dedup.py - Semantic deduplication for intake tasks.
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 preflight_filter.py — Pre-dispatch quality gate for the orchestrator.
 

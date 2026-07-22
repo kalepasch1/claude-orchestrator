@@ -32,7 +32,9 @@ Enable Email auth (magic links) in Supabase → Authentication. Add your + partn
 **2. Web (Vercel)** — deploy `web/`:
 ```
 cd web && npm install
-# set env: SUPABASE_URL, SUPABASE_KEY (anon)  — locally in .env, and in Vercel project settings
+# set env: SUPABASE_URL, SUPABASE_KEY (anon), SUPABASE_SERVICE_KEY (server only),
+#          and CRON_SECRET (server only; required for the daily analytics sync)
+#          — locally in .env, and in Vercel project settings
 npm run dev          # or: vercel  (import the repo in Vercel, root = web/)
 ```
 Open the URL → sign in with a magic link → you'll see the dashboard.

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 batch_fusion.py — Batch task fusion (500X on burst queues).
 

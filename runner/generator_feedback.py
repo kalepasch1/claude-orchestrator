@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 generator_feedback.py — Outcome feedback into task generators (50X).
 

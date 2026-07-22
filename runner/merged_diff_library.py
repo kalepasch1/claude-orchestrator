@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """Merged-diff library for reuse-first development.
 
 Indexes merged work by prompt words, AST-ish symbols, tests, framework markers,

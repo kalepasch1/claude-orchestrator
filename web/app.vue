@@ -2,12 +2,12 @@
   <LegoraLanding v-if="!user" :signing-in="signingIn" :auth-error="authError" @sign-in="signIn" />
   <template v-else><NuxtLayout><NuxtPage /></NuxtLayout><PreActionGuidance /></template>
   <ExperienceLayer />
+  <Analytics />
 </template>
 
 <script setup lang="ts">
-// @vercel/analytics is enabled as a Nuxt module in nuxt.config.ts ('@vercel/analytics/nuxt'),
-// which auto-injects tracking. Importing its module entry here pulled @nuxt/kit into the Vue
-// app and failed the build (nuxt:import-protection).
+import { Analytics } from '@vercel/analytics/nuxt'
+
 const supabase = useSupabaseClient<any>()
 const user = useSupabaseUser()
 const route = useRoute()

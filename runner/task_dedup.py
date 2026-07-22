@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 task_dedup.py - stop the swarm solving the same thing twice. Across ALL projects, detect QUEUED tasks
 that are near-duplicates (same work, maybe different app) and collapse them so it's solved ONCE and the

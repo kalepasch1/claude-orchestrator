@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 prompt_distillation.py — Prompt distillation (200X token savings on repeat patterns).
 

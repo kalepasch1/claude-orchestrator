@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 pattern_compiler.py — mines merge history for repeatable task patterns and
 compiles them into zero-token deterministic scripts.

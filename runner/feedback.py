@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 feedback.py - the AGENT -> ORCHESTRATOR channel (makes learning bidirectional). Worker
 sessions report how the orchestration itself could be better (context too narrow, wrong

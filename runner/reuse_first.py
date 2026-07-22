@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 reuse_first.py - search before build. Before a task is claimed, check whether a
 solved implementation already exists in the cross-project stores (Supabase

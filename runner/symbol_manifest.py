@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 import hashlib,json,os,re,subprocess,time
 SYMBOL=re.compile(r'\b(?:class|def|function|interface|type|const|let|var)\s+([A-Za-z_][A-Za-z0-9_]*)');TEXT={'.py','.js','.ts','.tsx','.jsx','.go','.rs','.java','.vue','.sql'}
 def _git(repo,*args):return subprocess.run(['git',*args],cwd=repo,capture_output=True,text=True,timeout=120)

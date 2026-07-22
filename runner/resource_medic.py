@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """resource_medic.py — autonomous resource-remediation bots for the orchestration layer.
 
 The sentinel reacts (unload a model, kill a zombie, cycle a runner). The MEDIC learns and

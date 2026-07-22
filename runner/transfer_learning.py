@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 transfer_learning.py — Cross-project transfer learning (100X pattern reuse).
 

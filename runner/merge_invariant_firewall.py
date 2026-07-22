@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 merge_invariant_firewall.py - global pre-merge invariant checks that run BEFORE merge
 and block (route to human) any diff that:

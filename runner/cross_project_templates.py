@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 cross_project_templates.py — Cross-project template transfer (100X-1000X).
 

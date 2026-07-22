@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 prompt_evolution.py - Track which prompt structures lead to first-pass merges and
 evolve templates automatically. The system learns to write better instructions for itself.

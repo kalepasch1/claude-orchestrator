@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """Per-repo file lock so concurrent integration attempts never race on shared git refs.
 
 ROOT CAUSE (2026-07-08 merge-stall, 0 merges for 32+ hours): merge_train.train_run() is

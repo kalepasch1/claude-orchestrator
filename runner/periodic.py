@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 periodic.py - coordinator for all scheduled periodic jobs.
 Called by launchd (or manually) with a single job argument.

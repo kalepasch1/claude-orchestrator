@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 output_recycling.py — Agent output recycling (100X retry savings).
 

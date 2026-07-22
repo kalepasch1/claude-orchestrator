@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 session_cache.py — Agent session caching / warm resumption (20X-100X retry savings).
 

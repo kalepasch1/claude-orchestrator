@@ -65,10 +65,26 @@ function getAccessToken(event: any): string | null {
 
 export default defineEventHandler(async (event) => {
   const path = event.path || event.node.req.url || ''
+  const pathname = path.split('?')[0]
 
   // Only protect /api/ routes
   if (!path.startsWith('/api/')) return
-  if (PUBLIC_ACCESS_PATHS.has(path.split('?')[0])) return
+  if (PUBLIC_ACCESS_PATHS.has(pathname)) return
+
+  // Vercel cron requests are server-to-server and do not have a Supabase
+  // session. Limit this exception to the single scheduled analytics sync and
+  // require Vercel's CRON_SECRET header; all interactive callers still take
+  // the normal Supabase authorization path below.
+  const cronSecret = process.env.CRON_SECRET
+  const authorization = getHeader(event, 'authorization')
+  if (
+    pathname === '/api/fleet/analytics' &&
+    cronSecret &&
+    authorization === `Bearer ${cronSecret}`
+  ) {
+    event.context.cron = true
+    return
+  }
 
   const token = getAccessToken(event)
   if (!token) {

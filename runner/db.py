@@ -118,7 +118,7 @@ def redact_secrets(text):
 
 
 _TASK_SENSITIVE_FIELDS = {"note", "log_tail"}
-HTTP_RETRIES = int(os.environ.get("ORCH_SUPABASE_RETRIES", "1") or 1)
+HTTP_RETRIES = int(os.environ.get("ORCH_SUPABASE_RETRIES", "3") or 3)
 HTTP_RETRY_STATUSES = {429, 500, 502, 503, 504, 521, 522, 523}  # incl. Cloudflare origin-down codes so monitors ride through Supabase capacity blips instead of silently no-op'ing
 
 # DB Failover state: track consecutive DB failures to trigger offline mode
@@ -272,6 +272,10 @@ def _req(method, path, body=None, headers=None, params=None):
     h.update(headers or {})
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(URL + path + qs, data=data, method=method, headers=h)
+    # Reads are idempotent, so they can safely ride out transient resolver and
+    # edge failures.  Writes deliberately remain single-attempt: retrying an
+    # uncertain POST could create duplicate work when the first request reached
+    # PostgREST but its response was lost.
     attempts = HTTP_RETRIES + 1 if method == "GET" else 1
     for attempt in range(attempts):
         try:
@@ -287,11 +291,11 @@ def _req(method, path, body=None, headers=None, params=None):
                 return None
             if method != "GET" or e.code not in HTTP_RETRY_STATUSES or attempt >= attempts - 1:
                 raise
-            time.sleep(min(8, 2 ** attempt))
+            time.sleep(min(12, 2 ** attempt) + (0.1 * attempt))
         except (urllib.error.URLError, TimeoutError, socket.timeout):
             if method != "GET" or attempt >= attempts - 1:
                 raise
-            time.sleep(min(8, 2 ** attempt))
+            time.sleep(min(12, 2 ** attempt) + (0.1 * attempt))
 
 
 def select(table, params=None):

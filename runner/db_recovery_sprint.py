@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """Run a drain sprint immediately after an authenticated Supabase outage clears."""
 import datetime
 import json

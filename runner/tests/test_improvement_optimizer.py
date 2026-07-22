@@ -41,4 +41,18 @@ def test_generation_slots_follow_slowest_downstream_stage(monkeypatch):
             return [{"id": "one"}] if table == "improvement_proposals" else [{"id": "build"}, {"id": "build2"}]
 
     result = optimizer.capacity(DB())
-    assert result["slots"] == 1
+    assert result["slots"] == 4
+    assert result["build_limited"] is False
+
+
+def test_build_backlog_does_not_stop_review_only_drafting(monkeypatch):
+    monkeypatch.setattr(optimizer, "REVIEW_CAP", 5)
+    monkeypatch.setattr(optimizer, "BUILD_CAP", 2)
+
+    class DB:
+        def select(self, table, params):
+            return [{"id": "review"}] if table == "improvement_proposals" else [{"id": "a"}, {"id": "b"}]
+
+    result = optimizer.capacity(DB())
+    assert result["slots"] == 4
+    assert result["build_limited"] is True

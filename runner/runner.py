@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 runner.py - the Mac engine. Polls Supabase for queued tasks, executes Claude Code in
 isolated git worktrees, and streams status/cost/outcomes back to Supabase so the

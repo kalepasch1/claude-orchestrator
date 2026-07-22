@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 train_status_backfill.py — attribute train and deploy outcomes back to the originating
 coder outcome so router_stats can optimize by stage-specific deployed value per minute.
