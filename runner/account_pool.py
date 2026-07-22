@@ -313,6 +313,62 @@ class AccountPool:
             self._save()
             self._write_exhausted_flag()   # a Claude account recovered -> clear the fail-over signal
 
+    def stats(self):
+        """Return observable pool state for operators and tests (per CLAUDE.md conventions)."""
+        self._maybe_reload()
+        now = time.time()
+        acct_stats = []
+        for a in self.accts:
+            st = self.state.get(a["name"], {})
+            cd_until = st.get("cooldown_until", 0)
+            acct_stats.append({
+                "name": a["name"],
+                "type": a.get("type", "login"),
+                "healthy": now >= cd_until,
+                "use_count": int(st.get("use_count", 0)),
+                "exh_hits": int(st.get("exh_hits", 0)),
+                "cooldown_remaining_s": max(0, round(cd_until - now, 1)) if cd_until > now else 0,
+            })
+        cur = self.current()
+        return {
+            "total_accounts": len(self.accts),
+            "healthy_count": sum(1 for s in acct_stats if s["healthy"]),
+            "all_exhausted": self.all_exhausted(),
+            "current": cur["name"] if cur else None,
+            "accounts": acct_stats,
+        }
+
+    def invalidate(self, name=None):
+        """Force-reload config and state from DB/disk (per CLAUDE.md conventions).
+        If name is given, clear cooldown for that specific account."""
+        self.accts = self._load_cfg()
+        self._cfg_ts = time.time()
+        self.state = self._load_state()
+        self._state_ts = time.time()
+        if name and name in self.state:
+            self.state[name].pop("cooldown_until", None)
+            self.state[name].pop("exh_hits", None)
+            self._save()
+            self._write_exhausted_flag()
+
+
+# --- Module-level convenience functions (singleton pattern per CLAUDE.md) ---
+_pool = None
+
+def _get_pool():
+    global _pool
+    if _pool is None:
+        _pool = AccountPool()
+    return _pool
+
+def stats():
+    """Module-level stats() delegating to singleton (per CLAUDE.md conventions)."""
+    return _get_pool().stats()
+
+def invalidate(name=None):
+    """Module-level invalidate() delegating to singleton (per CLAUDE.md conventions)."""
+    return _get_pool().invalidate(name)
+
 
     def stats(self):
         """Return a dict summarizing pool health for diagnostics and monitoring."""
