@@ -8,6 +8,23 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
+AI_SLICE_MODEL = os.environ.get("ORCH_AI_SLICE_MODEL", "claude-haiku-4-5-20251001")
+_AI_SLICE_PROMPT = """\
+You are a task decomposition assistant for an autonomous code orchestration system.
+Break the following task prompt into {n} independent sub-tasks that can be worked
+on sequentially. Each sub-task should be a self-contained unit of work.
+
+Return ONLY a JSON array with {n} objects, each with:
+  "title": short kebab-case suffix (will be appended to the parent slug)
+  "prompt": the full sub-task prompt (copy relevant context from the parent)
+
+Keep titles under 20 chars. Do not include explanations outside the JSON.
+
+Parent slug: {slug}
+Parent prompt:
+{prompt}
+"""
+
 THRESHOLD = int(os.environ.get("ORCH_SLICE_PROMPT_CHARS", "2400"))
 MAX_PARTS = int(os.environ.get("ORCH_SLICE_MAX_PARTS", "5"))
 MAX_DEPTH = int(os.environ.get("ORCH_SLICE_MAX_DEPTH", "1"))
@@ -60,28 +77,13 @@ def slice_task(task):
     return parts
 
 
-_AI_SLICE_PROMPT = """\
-You are a task decomposition assistant for an autonomous code orchestration system.
-Break the following task prompt into {n} independent sub-tasks that can be worked
-on sequentially. Each sub-task should be a self-contained unit of work.
-
-Return ONLY a JSON array with {n} objects, each with:
-  "title": short kebab-case suffix (will be appended to the parent slug)
-  "prompt": the full sub-task prompt (copy relevant context from the parent)
-
-Keep titles under 20 chars. Do not include explanations outside the JSON.
-
-Parent slug: {slug}
-Parent prompt:
-{prompt}
-"""
-
-
 def ai_slice_task(task):
     """Use Claude to decompose a task into semantically meaningful slices.
 
     Returns the same format as slice_task() — list of {"slug", "prompt", "deps"} dicts —
     or None if AI slicing is disabled, fails, or produces unusable output.
+
+    Credentials come exclusively from the environment via claude_cli; no hardcoded keys.
     """
     if os.environ.get("ORCH_AI_SLICE", "false").lower() not in ("1", "true", "yes", "on"):
         return None
@@ -100,7 +102,6 @@ def ai_slice_task(task):
     except Exception:
         return None
 
-    # Extract JSON array from the response (may have surrounding prose)
     match = re.search(r"\[.*?\]", raw, re.DOTALL)
     if not match:
         return None

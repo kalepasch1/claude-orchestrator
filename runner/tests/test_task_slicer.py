@@ -19,7 +19,6 @@ def _sliceable_task(**over):
 
 
 class AiSliceTaskTest(unittest.TestCase):
-    """Tests for ai_slice_task — validates parse/fallback without live Claude calls."""
 
     def _task(self):
         return _sliceable_task()
@@ -97,9 +96,23 @@ class AiSliceTaskTest(unittest.TestCase):
                 result = task_slicer.ai_slice_task(self._task())
         self.assertIsNone(result)
 
+    def test_model_from_env_var(self):
+        """AI_SLICE_MODEL can be overridden — no hardcoded keys."""
+        fake_claude = MagicMock()
+        payload = json.dumps([
+            {"title": "a", "prompt": "Step A."},
+            {"title": "b", "prompt": "Step B."},
+        ])
+        fake_claude.run.return_value = {"text": payload}
+        with patch.dict(os.environ, {"ORCH_AI_SLICE": "true"}), \
+             patch.object(task_slicer, "AI_SLICE_MODEL", "test-model"), \
+             patch.dict(sys.modules, {"claude_cli": fake_claude}):
+            task_slicer.ai_slice_task(self._task())
+        call_args = fake_claude.run.call_args[0]
+        self.assertIn("test-model", call_args)
+
 
 class PreAgentHookAiIntegrationTest(unittest.TestCase):
-    """Tests that pre_agent_hook uses AI slicing when enabled and falls back correctly."""
 
     def test_uses_ai_when_enabled(self):
         fake_db = MagicMock()
@@ -127,7 +140,7 @@ class PreAgentHookAiIntegrationTest(unittest.TestCase):
                 with patch.dict(sys.modules, {"claude_cli": fake_claude}):
                     out = task_slicer.pre_agent_hook(_sliceable_task())
         self.assertTrue(out)
-        fake_db.insert.assert_called()  # heuristic slices inserted
+        fake_db.insert.assert_called()
 
     def test_non_sliceable_never_calls_claude(self):
         fake_claude = MagicMock()

@@ -292,11 +292,7 @@ def local_branch_audit(repo, slugs=None, limit=200):
         except Exception:
             slugs = []
 
-    local_out = []
-    remote_only_out = []
-    missing_out = []
-    reflog_hints = []
-
+    local_out, remote_only_out, missing_out = [], [], []
     for slug in slugs:
         branch = f"agent/{slug}"
         if branch in local_set:
@@ -305,41 +301,48 @@ def local_branch_audit(repo, slugs=None, limit=200):
             remote_only_out.append({"slug": slug, "branch": branch})
         else:
             missing_out.append({"slug": slug, "branch": branch})
-            # Check reflog for hints about the missing branch
-            if repo and os.path.isdir(repo):
-                try:
-                    r = subprocess.run(
-                        ["git", "reflog", "show", branch, "--format=%H", "-1"],
-                        cwd=repo, capture_output=True, text=True, timeout=10,
-                    )
-                    sha = r.stdout.strip()
-                    if sha:
-                        reflog_hints.append({"slug": slug, "sha": sha})
-                except Exception:
-                    pass
 
-    # Stale worktrees: agent/* worktrees whose task is not RUNNING
     running_slugs = set()
     try:
         rows = db.select("tasks", {
             "select": "slug",
-            "state": "eq.RUNNING",
+            "state": "in.(RUNNING,RETRY)",
         }) or []
-        running_slugs = {row["slug"] for row in rows if row.get("slug")}
+        running_slugs = {r["slug"] for r in rows if r.get("slug")}
     except Exception:
         pass
+    stale_wt = [
+        {"branch": b, "worktree": wt_map[b]}
+        for b in wt_map
+        if b.startswith("agent/") and b[len("agent/"):] not in running_slugs
+    ]
 
-    stale_worktrees = []
-    for branch, wt_path in wt_map.items():
-        slug = branch[len("agent/"):] if branch.startswith("agent/") else branch
-        if slug not in running_slugs:
-            stale_worktrees.append({"branch": branch, "worktree": wt_path})
+    missing_slugs = {item["slug"] for item in missing_out}
+    reflog_hints = []
+    if missing_slugs and repo and os.path.isdir(repo):
+        try:
+            r = subprocess.run(
+                ["git", "reflog", "--format=%H %gs"],
+                cwd=repo, capture_output=True, text=True, timeout=30,
+            )
+            seen = set()
+            for line in r.stdout.splitlines():
+                parts = line.split(None, 1)
+                if len(parts) != 2:
+                    continue
+                sha, ref_action = parts
+                for slug in missing_slugs:
+                    if slug in ref_action and slug not in seen:
+                        seen.add(slug)
+                        reflog_hints.append({"slug": slug, "sha": sha})
+        except Exception:
+            pass
 
     return {
         "local": local_out,
         "remote_only": remote_only_out,
         "missing": missing_out,
-        "stale_worktrees": stale_worktrees,
+        "stale_worktrees": stale_wt,
         "reflog_hints": reflog_hints,
     }
 
