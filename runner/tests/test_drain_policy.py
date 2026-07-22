@@ -8,8 +8,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import drain_policy
 
 
-class DrainPolicyModeTest(unittest.TestCase):
-    """Tests for ORCH_DRAIN_MODE behavior."""
+class DrainPolicyTest(unittest.TestCase):
+    def test_explicit_drain_skips_improve_but_allows_prewarm(self):
+        with patch.dict(os.environ, {"ORCH_DRAIN_MODE": "true"}, clear=False):
+            self.assertTrue(drain_policy.should_skip("spec"))
+            self.assertFalse(drain_policy.should_skip("prewarm"))
 
     def test_explicit_true_enables(self):
         with patch.dict(os.environ, {"ORCH_DRAIN_MODE": "true"}, clear=False):
@@ -167,9 +170,8 @@ class DrainPolicyStatusTest(unittest.TestCase):
             {"ORCH_DRAIN_MODE": "auto", "ORCH_DRAIN_QUEUE_FLOOR": "5"},
             clear=False,
         ):
-            reason = drain_policy.skip_reason("scout", queue_depth=10)
-            self.assertIn("auto", reason)
-            self.assertIn("5", reason)
+            self.assertFalse(drain_policy.should_skip("spec", queue_depth=9))
+            self.assertTrue(drain_policy.should_skip("spec", queue_depth=10))
 
     def test_skip_reason_empty_when_not_skipped(self):
         with patch.dict(os.environ, {"ORCH_DRAIN_MODE": "false"}, clear=False):
