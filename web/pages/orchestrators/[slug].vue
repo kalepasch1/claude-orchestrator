@@ -162,61 +162,6 @@ const selectedBranch = ref('dev')
 const showConfig = ref(false)
 function toggleAdvanced() { persistentContext.advanced = !persistentContext.advanced; recordConfigurationChurn(); if (persistentContext.advanced) recordProficiency('advanced'); trackExperience('guidance_followed', { action: 'toggle_advanced', enabled: persistentContext.advanced, stage: proficiency.value.stage }) }
 
-// Design command center
-const designCategory = ref<(typeof DESIGN_CATEGORIES)[number]>('All')
-const designQuery = ref('')
-const activeDesignTool = ref<DesignCapability | null>(null)
-const connectorRegistry = ref<any[]>([])
-const builderPrompt = ref('')
-const builderRunning = ref(false)
-const builderNotice = ref('')
-const builderSettings = reactive({ format: 'Production assets', ratio: '16:9', variants: 4, brand: true, duration: 8, fidelity: 'High' })
-const filteredDesignCapabilities = computed(() => DESIGN_CAPABILITIES.filter(tool => designCategory.value === 'All' || tool.category === designCategory.value).filter(tool => !designQuery.value || `${tool.name} ${tool.summary} ${tool.outputs.join(' ')}`.toLowerCase().includes(designQuery.value.toLowerCase())))
-function connectorFor(id: string) { return connectorRegistry.value.find(item => item.id === id) }
-function connectorReady(id: string) { const item = connectorFor(id); return Boolean(item?.connected_accounts?.length || (item?.kind === 'internal' && item?.configured)) }
-function toolReady(tool: DesignCapability) { return tool.connectorIds.some(connectorReady) }
-function openDesignTool(tool: DesignCapability) { activeDesignTool.value = tool; builderPrompt.value = tool.prompt; builderNotice.value = '' }
-async function loadConnectors() {
-  try { const result: any = await authedFetch('/api/connectors'); connectorRegistry.value = result.connectors || [] } catch { connectorRegistry.value = [] }
-}
-async function runDesignTool() {
-  const tool = activeDesignTool.value
-  if (!tool || !builderPrompt.value.trim()) return
-  builderRunning.value = true; builderNotice.value = ''
-  try {
-    const controls = tool.controls.map(control => `${control}: ${String((builderSettings as any)[control])}`).join(', ')
-    const route: any = await authedFetch('/api/connectors/route-plan', { method: 'POST', body: { capability: tool.capability, intent: builderPrompt.value } }).catch(() => null)
-    const selected = route?.selected
-    const providerInstruction = selected?.connected ? `Use connected provider ${selected.name} via account ${selected.account_label || 'Primary'}.` : 'Choose the strongest connected or native provider automatically; request a connector only if execution truly requires it.'
-    const intent = [`Use ${tool.name} for ${selectedApp.value}.`, builderPrompt.value.trim(), `Creative controls: ${controls}.`, providerInstruction, `Required outputs: ${tool.outputs.join(', ')}.`, 'Preserve editable sources, provenance, accessibility, brand constraints, and independent visual QA.'].join('\n')
-    const result: any = await authedFetch('/api/tasks/intake', { method: 'POST', body: { intent, project_id: selectedProject.value || undefined } })
-    builderNotice.value = `Queued ${result.task.slug}${selected ? ` via ${selected.name}` : ''}. Madeus will return reviewable outputs and evidence.`
-    terminalOutput.value = `✓ ${tool.name} queued: ${result.task.slug}\n  Provider: ${selected?.name || 'Madeus auto-selection'}\n  Outputs: ${tool.outputs.join(' · ')}`
-    await loadData()
-  } catch (error: any) { builderNotice.value = error?.data?.message || error?.message || 'The design workflow could not be queued.' }
-  finally { builderRunning.value = false }
-}
-
-// Iframe state
-const iframeLoaded = ref(false)
-const iframeKey = ref(0)
-const previewLoading = ref(true)
-const previewTarget = ref<{ available: boolean; embeddable: boolean; url: string | null; gateway_url?: string | null; external_url: string | null; reason: string; mode?: string; proof?: any } | null>(null)
-const previewUrl = computed(() => previewTarget.value?.url || previewTarget.value?.gateway_url || '')
-const usingPreviewGateway = computed(() => Boolean(previewTarget.value?.gateway_url && !previewTarget.value?.url))
-async function authedFetch<T = any>(url: string, options: any = {}): Promise<T> {
-  const { data: { session } } = await supabase.auth.getSession()
-  return $fetch<T>(url, { ...options, headers: { ...(options.headers || {}), ...(session?.access_token ? { authorization: `Bearer ${session.access_token}` } : {}) } })
-}
-async function resolvePreview() {
-  previewLoading.value = true; iframeLoaded.value = false; previewTarget.value = null
-  try { previewTarget.value = await authedFetch(`/api/previews/resolve?app=${encodeURIComponent(selectedApp.value)}&branch=${encodeURIComponent(selectedBranch.value)}`) }
-  catch (error: any) { previewTarget.value = { available: false, embeddable: false, url: null, external_url: null, reason: error?.data?.message || 'No verified preview is configured for this application.' } }
-  finally { previewLoading.value = false; iframeKey.value++ }
-}
-function onIframeLoad() { iframeLoaded.value = true }
-function reloadIframe() { resolvePreview() }
-
 // Right panel — insights
 const showInsights = ref(true)
 const activeInsight = ref('')
