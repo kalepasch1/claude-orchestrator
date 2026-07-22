@@ -1,130 +1,130 @@
 #!/usr/bin/env python3
 """
-cx_tribunal_model.py - forecast how real decision-makers would react to escalated
-determinations and attach an audience-read note so drafted outputs are tuned to
-who actually reads them.
+cx_tribunal_model.py - Audience-read forecaster for escalated determinations.
 
-For each recent escalated determination, inspects subject_type + domain to infer
-the likely audience (owner / regulator / investor), builds a short prompt with the
-determination's contributors/factions as context, calls model_gateway.complete for
-a brief "audience read", and writes the result as an inbox row (kind='tribunal')
-or appends to the determination's rationale note.
+For recent escalated determinations, forecasts how the ACTUAL decision-maker
+(owner / regulator / investor depending on subject_type + domain) would likely
+react, and attaches a short "audience read" so drafted outputs are tuned to
+who reads them. Reuses model_gateway.complete and the determination's
+contributors/factions as context. Bounded to a few per run.
 
-Bounded: processes at most MAX_PER_RUN determinations per invocation.
-Does not edit committees.py or change any schema.
+Does NOT edit committees.py or change the schema.
 """
 import os, sys, json, time
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import model_gateway
 
-MAX_PER_RUN = int(os.environ.get("CX_TRIBUNAL_MAX", "5"))
-MODEL = os.environ.get("CX_TRIBUNAL_MODEL", "claude-haiku-4-5-20251001")
-PROVIDER = os.environ.get("CX_TRIBUNAL_PROVIDER", "claude")
+MAX_PER_RUN = int(os.environ.get("CX_TRIBUNAL_MAX_PER_RUN", "5"))
 
-# Map subject_type + domain hints to likely audience
+
 AUDIENCE_MAP = {
-    "legal": "regulator",
-    "compliance": "regulator",
-    "regulatory": "regulator",
-    "financial": "investor",
-    "investment": "investor",
-    "funding": "investor",
-    "cap_table": "investor",
+    "owner": "the business owner / founder who prioritizes ROI, speed, and competitive advantage",
+    "regulator": "a regulatory body focused on compliance, consumer protection, and legal risk",
+    "investor": "an investor focused on growth metrics, unit economics, and market positioning",
 }
-DEFAULT_AUDIENCE = "owner"
+
+TRIBUNAL_PROMPT = """You are modeling how a specific decision-maker would react to this determination.
+
+Decision-maker type: {audience_type}
+Audience profile: {audience_profile}
+
+The determination was made by these contributors/factions:
+{factions}
+
+Determination summary:
+{determination}
+
+Predict the decision-maker's likely reaction in ONE JSON object:
+{{"reaction":"supportive|cautious|resistant|hostile",
+  "concerns":["top concern 1","top concern 2"],
+  "language_cues":"tone/framing adjustments to land well with this reader (1 sentence)",
+  "risk_of_rejection":0.0-1.0,
+  "suggested_framing":"how to present this determination to maximize acceptance (1-2 sentences)"}}"""
 
 
-def _infer_audience(det):
-    """Infer who the real decision-maker is from subject_type and domain."""
-    subject = str(det.get("subject_type") or "").lower()
-    domain = str(det.get("domain") or "").lower()
-    combined = subject + " " + domain
-    for keyword, audience in AUDIENCE_MAP.items():
-        if keyword in combined:
-            return audience
-    return DEFAULT_AUDIENCE
+def _detect_audience(subject_type, domain):
+    """Map subject_type + domain to the likely actual decision-maker."""
+    st = (subject_type or "").lower()
+    dom = (domain or "").lower()
+    if any(k in st or k in dom for k in ("regulat", "compliance", "legal", "license")):
+        return "regulator"
+    if any(k in st or k in dom for k in ("invest", "fund", "capital", "financ")):
+        return "investor"
+    return "owner"
 
 
-def _build_prompt(det, audience):
-    """Build a short prompt asking the model to forecast the audience's reaction."""
-    title = det.get("title") or det.get("slug") or "untitled"
-    rationale = det.get("rationale") or det.get("note") or ""
-    contributors = det.get("contributors") or det.get("factions") or []
-    if isinstance(contributors, str):
-        try:
-            contributors = json.loads(contributors)
-        except (json.JSONDecodeError, TypeError):
-            contributors = [contributors]
+def _get_factions_text(det):
+    """Extract contributors/factions context from a determination row."""
+    parts = []
+    for key in ("contributors", "factions", "rationale"):
+        val = det.get(key)
+        if val:
+            parts.append(f"{key}: {json.dumps(val) if isinstance(val, (dict, list)) else str(val)}")
+    return "\n".join(parts) or "(no faction data)"
 
-    context_parts = [f"Determination: {title}"]
-    if rationale:
-        context_parts.append(f"Rationale: {rationale[:500]}")
-    if contributors:
-        context_parts.append(f"Contributors/factions: {json.dumps(contributors[:10])}")
-    context = "\n".join(context_parts)
 
-    return (
-        f"You are forecasting how a {audience} would react to the following determination.\n"
-        f"{context}\n\n"
-        f"In 2-3 sentences, predict the {audience}'s likely reaction: what questions they'd "
-        f"raise, what concerns they'd flag, and what framing would resonate. Be specific and "
-        f"actionable. Return JSON: {{\"audience\":\"{audience}\",\"reaction\":\"...\","
-        f"\"suggested_framing\":\"...\"}}"
+def _build_audience_read(det, provider="local", model=None):
+    """Generate an audience-read forecast for a single determination."""
+    subject_type = det.get("subject_type", "")
+    domain = det.get("domain", "")
+    audience_key = _detect_audience(subject_type, domain)
+    audience_profile = AUDIENCE_MAP.get(audience_key, AUDIENCE_MAP["owner"])
+
+    prompt = TRIBUNAL_PROMPT.format(
+        audience_type=audience_key,
+        audience_profile=audience_profile,
+        factions=_get_factions_text(det),
+        determination=det.get("summary") or det.get("title") or str(det.get("id", "")),
     )
 
-
-def _write_audience_read(det, audience, read_text, project=None):
-    """Write the audience read as an inbox row kind='tribunal'."""
+    model = model or os.environ.get("CX_TRIBUNAL_MODEL", "llama3.2:3b")
     try:
-        db.insert("inbox", {
-            "project": project or det.get("project") or "beethoven",
-            "kind": "tribunal",
-            "title": f"Audience read ({audience}): {(det.get('title') or det.get('slug') or '')[:80]}",
-            "body": read_text[:2000],
-            "source": "cx_tribunal_model",
-            "ref_id": str(det.get("id") or ""),
-            "created_at": "now()",
+        result = model_gateway.complete(provider, model, prompt)
+        text = result.get("text", "")
+        # Try to parse JSON from the response
+        try:
+            parsed = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            parsed = {"raw": text[:500]}
+        parsed["audience_type"] = audience_key
+        return parsed
+    except Exception as e:
+        return {"audience_type": audience_key, "error": str(e)[:200]}
+
+
+def run():
+    """Main entry point: fetch recent escalated determinations, attach audience reads."""
+    try:
+        rows = db.query("committee_opinions", params={
+            "select": "id,subject_type,domain,summary,title,contributors,factions,rationale",
+            "verdict": "eq.escalate",
+            "order": "created_at.desc",
+            "limit": str(MAX_PER_RUN),
         })
     except Exception:
-        pass  # fail-soft
+        # Table may not exist yet or query may fail; fail soft
+        rows = []
 
-
-def run(project=None):
-    """Main entry point: process recent escalated determinations."""
-    try:
-        dets = db.query(
-            "determinations",
-            filters={"escalated": "eq.true"},
-            order="created_at.desc",
-            limit=MAX_PER_RUN,
-        ) or []
-    except Exception:
-        dets = []
-
-    if not dets:
+    if not rows:
         return {"processed": 0, "note": "no escalated determinations found"}
 
-    results = []
-    for det in dets[:MAX_PER_RUN]:
-        audience = _infer_audience(det)
-        prompt = _build_prompt(det, audience)
+    processed = 0
+    for det in rows[:MAX_PER_RUN]:
+        audience_read = _build_audience_read(det)
+        # Attach as advisory metadata via note update (no schema change)
+        note_payload = json.dumps({"tribunal_audience_read": audience_read})
         try:
-            resp = model_gateway.complete(PROVIDER, MODEL, prompt, project=project, timeout=30)
-            read_text = resp.get("text", "") if isinstance(resp, dict) else str(resp)
-        except Exception as e:
-            read_text = f"[tribunal model error: {e}]"
+            db.update("committee_opinions", det["id"], {
+                "note": note_payload,
+            })
+            processed += 1
+        except Exception:
+            pass  # fail soft per item
 
-        _write_audience_read(det, audience, read_text, project=project)
-        results.append({
-            "det_id": str(det.get("id", "")),
-            "audience": audience,
-            "read_len": len(read_text),
-        })
-
-    return {"processed": len(results), "results": results}
+    return {"processed": processed, "total_candidates": len(rows)}
 
 
 if __name__ == "__main__":
-    print(json.dumps(run(), indent=2))
+    result = run()
+    print(json.dumps(result, indent=2))

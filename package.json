@@ -1,11 +1,10 @@
 {
   "name": "claude-orchestrator",
   "private": true,
-  "version": "0.1.0",
-  "description": "Claude Orchestrator — multi-agent fleet coordination",
   "scripts": {
-    "test": "python3 -m pytest runner/tests -x -q",
-    "test:verbose": "python3 -m pytest runner/tests -v",
-    "test:kernel": "cd packages/darwin-kernel && npm test"
+    "test": "python3 -m pytest runner/tests -q --tb=short && npm --prefix web test -- --run",
+    "test:python": "python3 -m pytest runner/tests -q --tb=short",
+    "test:web": "npm --prefix web test -- --run",
+    "build": "npm --prefix web run build"
   }
 }
