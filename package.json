@@ -1,0 +1,9 @@
+{
+  "name": "claude-orchestrator",
+  "private": true,
+  "scripts": {
+    "test": "python3 -m pytest runner/tests/ -x -q",
+    "test:web": "cd web && npm test",
+    "build": "cd web && npm run build"
+  }
+}
