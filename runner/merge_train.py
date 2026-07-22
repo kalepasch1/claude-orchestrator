@@ -111,6 +111,13 @@ def _materialize_branch(repo, branch):
         return _git(repo, "branch", branch, f"refs/remotes/origin/{branch}").returncode == 0 \
             or _branch_exists(repo, branch)
     except Exception:
+        pass
+    try:
+        if _git(repo, "rev-parse", "--verify", f"refs/remotes/origin/{branch}").returncode != 0:
+            return False
+        return _git(repo, "branch", branch, f"refs/remotes/origin/{branch}").returncode == 0 \
+            or _branch_exists(repo, branch)
+    except Exception:
         return False
 
 
