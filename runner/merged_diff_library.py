@@ -190,165 +190,29 @@ def adapter_directive(task, limit=3):
     return "\n".join(lines)
 
 
-def _parse_hunks(patch_content: str):
-    """Parse unified diff patch into list of hunks with metadata."""
-    import re as _re
-    hunks = []
-    current_file = None
-    lines = patch_content.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-        if line.startswith('--- '):
-            current_file = line[4:].split('\t')[0].lstrip('a/')
-        elif line.startswith('+++ '):
-            pass
-        elif line.startswith('@@ '):
-            m = _re.match(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@', line)
-            if m:
-                old_start = int(m.group(1))
-                old_count = int(m.group(2)) if m.group(2) is not None else 1
-                new_start = int(m.group(3))
-                new_count = int(m.group(4)) if m.group(4) is not None else 1
-                hunk_lines = []
-                j = i + 1
-                while j < len(lines) and not lines[j].startswith('@@ ') and not lines[j].startswith('diff '):
-                    hunk_lines.append(lines[j])
-                    j += 1
-                hunks.append({
-                    'file': current_file,
-                    'old_start': old_start,
-                    'old_count': old_count,
-                    'new_start': new_start,
-                    'new_count': new_count,
-                    'lines': hunk_lines,
-                })
-                i = j
-                continue
-        i += 1
-    return hunks
-
-
-def _apply_hunk(content_lines: list, hunk: dict, offset: int) -> tuple:
-    """Apply a single hunk to content_lines with an offset. Returns (new_lines, new_offset, conflict)."""
-    removes = []
-    adds = []
-    for line in hunk['lines']:
-        if line.startswith('-'):
-            removes.append(line[1:])
-        elif line.startswith('+'):
-            adds.append(line[1:])
-
-    pos = hunk['old_start'] - 1 + offset  # 0-indexed
-    old_count = hunk['old_count']
-
-    # Fuzzy context matching: scan ±5 lines if exact position doesn't match
-    actual_pos = pos
-    if removes:
-        expected = removes[0].rstrip('\n')
-        for delta in range(0, min(6, len(content_lines))):
-            for sign in (1, -1) if delta > 0 else (0,):
-                candidate = pos + sign * delta
-                if 0 <= candidate < len(content_lines):
-                    if content_lines[candidate].rstrip('\n') == expected:
-                        actual_pos = candidate
-                        break
-            else:
-                continue
-            break
-
-    conflict = False
-    if old_count == 0:
-        # Pure insertion
-        result = content_lines[:actual_pos] + [a + '\n' for a in adds] + content_lines[actual_pos:]
-        new_offset = offset + len(adds)
-    else:
-        existing = [l.rstrip('\n') for l in content_lines[actual_pos:actual_pos + old_count]]
-        expected_removes = [r.rstrip('\n') for r in removes]
-        if existing != expected_removes and expected_removes:
-            conflict = True
-        result = content_lines[:actual_pos] + [a + '\n' for a in adds] + content_lines[actual_pos + old_count:]
-        new_offset = offset + len(adds) - old_count
-
-    return result, new_offset, conflict
-
-
-def _render_template(patch_content: str, context: dict) -> str:
-    """Substitute {key} placeholders in patch_content using context dict."""
-    if not context:
-        return patch_content
-    for key, value in context.items():
-        patch_content = patch_content.replace('{' + key + '}', str(value))
-    return patch_content
-
-
-def transplant_proven_patch(
-    patch_content: str,
-    target_codebase: str,
-    common_ancestor: str = None,
-    template_context: dict = None
-) -> dict:
-    """Adapt a proven patch to a target codebase, applying hunks with fuzzy matching."""
-    if not patch_content or not isinstance(target_codebase, str):
-        return {'success': False, 'error': 'invalid inputs', 'content': target_codebase or '', 'conflicts': []}
-
+def stats():
+    """Return library statistics for operator observability."""
     try:
-        rendered = _render_template(patch_content, template_context or {})
-        hunks = _parse_hunks(rendered)
-        lines = target_codebase.splitlines(keepends=True)
-        conflicts = []
-        offset = 0
-        for hunk in hunks:
-            lines, offset, conflict = _apply_hunk(lines, hunk, offset)
-            if conflict:
-                conflicts.append(f"conflict at line {hunk['old_start']}")
-        return {
-            'success': True,
-            'content': ''.join(lines),
-            'conflicts': conflicts,
-            'resolution_notes': f"Applied {len(hunks)} hunk(s); {len(conflicts)} conflict(s)",
-        }
-    except Exception as e:
-        return {'success': False, 'error': str(e), 'content': target_codebase, 'conflicts': []}
-
-
-def create_merged_diff_from_patch(
-    patch_content: str,
-    base_content: str,
-    target_content: str,
-    common_ancestor: str = None
-) -> str:
-    """Apply patch to base_content and produce a unified diff against target_content."""
-    import difflib as _difflib
-
-    if not patch_content or not isinstance(base_content, str):
-        return ""
-
-    result = transplant_proven_patch(patch_content, base_content)
-    patched = result.get('content', base_content)
-
-    if target_content is None:
-        a_lines = base_content.splitlines(keepends=True)
-        b_lines = patched.splitlines(keepends=True)
-        return ''.join(_difflib.unified_diff(a_lines, b_lines, fromfile='base', tofile='patched'))
-
-    # Three-way: merge patched vs target relative to base
-    base_lines = base_content.splitlines(keepends=True)
-    patched_lines = patched.splitlines(keepends=True)
-    target_lines = target_content.splitlines(keepends=True)
-
-    # Use Differ to build merged view: accept patch additions, keep target where unchanged
-    sm_base_patched = _difflib.SequenceMatcher(None, base_lines, patched_lines)
-    sm_base_target = _difflib.SequenceMatcher(None, base_lines, target_lines)
-
-    patch_adds = {n for tag, i1, i2, j1, j2 in sm_base_patched.get_opcodes()
-                  if tag in ('replace', 'insert') for n in range(j1, j2)}
-
-    merged = list(_difflib.unified_diff(base_lines, patched_lines, fromfile='base', tofile='merged'))
-    diff_out = ''.join(_difflib.unified_diff(target_lines, patched_lines, fromfile='target', tofile='merged'))
-    return diff_out
+        rows = db.select("merged_diffs", {"select": "*", "limit": "10000"}) or []
+    except Exception:
+        rows = []
+    projects = {}
+    kinds = {}
+    for r in rows:
+        p = r.get("project") or "unknown"
+        k = r.get("kind") or "unknown"
+        projects[p] = projects.get(p, 0) + 1
+        kinds[k] = kinds.get(k, 0) + 1
+    return {
+        "total_entries": len(rows),
+        "by_project": projects,
+        "by_kind": kinds,
+    }
 
 
 if __name__ == "__main__":
     import json
-    print(json.dumps(find({"prompt": " ".join(sys.argv[1:])}), indent=2))
+    if len(sys.argv) > 1 and sys.argv[1] == "--stats":
+        print(json.dumps(stats(), indent=2))
+    else:
+        print(json.dumps(find({"prompt": " ".join(sys.argv[1:])}), indent=2))
