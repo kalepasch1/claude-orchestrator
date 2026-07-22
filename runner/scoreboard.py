@@ -1,21 +1,13 @@
 #!/usr/bin/env python3
-"""Fleet scoreboard heartbeat.
+"""Fleet scoreboard – persistence layer.
 
-Writes the small set of numbers that matter for drain mode: queue mix, merge
-rate, first-pass rate, spend, token use, and paused minutes. This is read-only
-except for a controls heartbeat (and an optional table insert if present).
+Assembles payload from collect_all + compute_metrics, upserts to controls,
+appends to scoreboard table, prints summary.
 
-History persistence (D1): appends each snapshot to an append-only JSONL file
-so >=30 days of historical metrics are retained regardless of whether the
-scoreboard table truncates or overwrites.
-
-Lead time metrics (D1): computes objective→prompt and prompt→merged lead times
-from prompt_factory timing and the outcomes table.
+NOTE: scoreboard rows are pruned by RETENTION_DAYS (default 90) via
+scheduled DB maintenance; see fleet_config / db_maintenance for details.
 """
-import datetime
-import json
-import os
-import sys
+import datetime, json, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
@@ -306,53 +298,28 @@ def history(days=30):
 
 
 def compute():
-    outcomes = _select_outcomes()
-    return {
-        "generated_at": datetime.datetime.utcnow().isoformat(),
-        "window_h": WINDOW_H,
-        "queue": _queue(),
-        "paused_minutes_today": _paused_minutes_today(),
-        "overall": _outcome_metrics(outcomes),
-        "by_model": _by_model(outcomes),
-        "by_project": _by_project(outcomes),
-        "lead_times": _lead_time_metrics(),
-    }
+    data = collect_all()
+    return {"generated_at": datetime.datetime.utcnow().isoformat(),
+            "window_h": WINDOW_H, "queue": data["queue"],
+            "paused_minutes_today": data["paused_minutes"],
+            **compute_metrics(data["outcomes"])}
 
 
 def run():
     payload = compute()
-
-    # Persist to DB
-    try:
-        db.insert("controls", {"key": CONTROL_KEY, "value": json.dumps(payload, default=str),
-                               "updated_at": "now()"}, upsert=True)
-    except Exception:
-        pass
-    try:
-        db.insert("scoreboard", payload)
-    except Exception:
-        pass
-
-    # Append to JSONL history (>=30 days retention)
-    _append_history(payload)
-
-    # Prune old history (run infrequently — every ~24h is fine, but safe to call every time)
-    _prune_history()
-
-    overall = payload["overall"]
-    queue = payload.get("queue") or {}
-    lead = payload.get("lead_times") or {}
-    print(
-        "scoreboard: "
-        f"queued={queue.get('queued')} running={queue.get('running')} "
-        f"merged={overall.get('merged')}/{overall.get('attempts')} "
-        f"merge_rate={overall.get('merge_rate')} "
-        f"usd_per_merge={overall.get('usd_per_merge')} "
-        f"paused_min_today={payload.get('paused_minutes_today')} "
-        f"obj→prompt_h={lead.get('objective_to_prompt_h')} "
-        f"prompt→merged_h={lead.get('prompt_to_merged_h')} "
-        f"tokens/task={lead.get('tokens_per_task')}"
-    )
+    for table, row in [("controls", {"key": CONTROL_KEY,
+                                      "value": json.dumps(payload, default=str),
+                                      "updated_at": "now()"}),
+                       ("scoreboard", payload)]:
+        try:
+            db.insert(table, row, upsert=(table == "controls"))
+        except Exception:
+            pass
+    o, q = payload["overall"], payload.get("queue") or {}
+    print(f"scoreboard: queued={q.get('queued')} running={q.get('running')} "
+          f"merged={o.get('merged')}/{o.get('attempts')} "
+          f"merge_rate={o.get('merge_rate')} usd/merge={o.get('usd_per_merge')} "
+          f"paused_min={payload.get('paused_minutes_today')}")
     return payload
 
 
