@@ -270,102 +270,11 @@ def claim_task(runner_id):
         s = str(t.get("slug") or "")
         return 1 if deprio_churn and (s.startswith("cont-") or s.startswith("batch-mech")) else 0
 
-    thermal_rank = _thermal_rank_map()
-    ev_rank = _ev_rank_map()
-    recovery_backlog = (
-        os.environ.get("ORCH_RECOVERY_JUMP_QUEUE", "true").lower() in ("true", "1", "yes", "on")
-        and any(_is_recovery_task(t) for t in queued)
-    )
-    release_fix_backlog = (
-        os.environ.get("ORCH_RELEASE_FIX_JUMP_QUEUE", "true").lower() in ("true", "1", "yes", "on")
-        and any(_is_release_fix_task(t) for t in queued)
-    )
-    improvement_backlog = (
-        os.environ.get("ORCH_IMPROVEMENT_JUMP_QUEUE", "true").lower() in ("true", "1", "yes", "on")
-        and any(_is_improvement_task(t) for t in queued)
-    )
-    evidence_backlog = (
-        os.environ.get("ORCH_EVIDENCE_JUMP_QUEUE", "true").lower() in ("true", "1", "yes", "on")
-        and any(_is_evidence_task(t) for t in queued)
-    )
-
-    def _task_priority(t):
-        return _num(t.get("priority"), 1000)
-
-    def _portfolio_project_rank(t):
-        # Owner directive: prioritize portfolio work in this exact product order. Keep this
-        # independent from mutable DB priority so newly-added rows with stale/null values cannot
-        # silently outrank the core apps.
-        return _project_rank_name(project_names.get(t.get("project_id")))
-
-    def _ev_rank(t):
-        if _is_release_fix_task(t):
-            return 0
-        return ev_rank.get(str(t.get("id")), 1000000)
-
-    def _thermal_rank(t):
-        if _is_release_fix_task(t):
-            return 0
-        return thermal_rank.get(str(t.get("id")), 1000000)
-
-    def _confidence_rank(t):
-        if _is_release_fix_task(t):
-            return 0
-        # Last-resort EV fallback writes higher confidence for better tasks.
-        return -_num(t.get("confidence"), 0.0)
-
-    def _recovery_rank(t):
-        # Missing-branch recovery is already mostly solved work. While any of that backlog exists,
-        # claim it ahead of net-new work regardless of stale thermal/priority rows.
-        return 0 if (recovery_backlog and _is_recovery_task(t)) else (1 if recovery_backlog else 0)
-
-    def _release_fix_rank(t):
-        # Red release gates are the only thing between completed work and Vercel review. Drain those
-        # before recovery so green staged batches can ship overnight.
-        return 0 if (release_fix_backlog and _is_release_fix_task(t)) else (1 if release_fix_backlog else 0)
-
-    def _release_fix_urgency(t):
-        if not _is_release_fix_task(t):
-            return 9
-        slug = str(t.get("slug") or "")
-        # Explicit release-gate self-heals beat generic Vercel mentions and stale EV labels.
-        if slug.startswith(("qafix-", "relfix-", "buildfix-", "deployfix-")):
-            return 0
-        return 1
-
-    def _improvement_rank(t):
-        # Once recovery is drained, orchestrator self-improvements should ship before fresh product
-        # expansion because every merge compounds throughput/cost/quality across the whole fleet.
-        return 0 if (improvement_backlog and _is_improvement_task(t)) else (1 if improvement_backlog else 0)
-
-    def _evidence_rank(t):
-        # Canary/evidence tasks are tiny, bounded, and produce the non-Claude merge samples the router
-        # needs; run them before ordinary new work, but never ahead of missing-branch recovery.
-        return 0 if (evidence_backlog and _is_evidence_task(t)) else (1 if evidence_backlog else 0)
-
-    def _project_lane_limit(t):
-        # Priority drains should not wait forever just because the same project already has one
-        # unrelated task active. Keep the override bounded so one repo cannot consume the fleet.
-        if _is_release_fix_task(t):
-            return max(per_project_limit, int(os.environ.get("ORCH_RELEASE_FIX_PER_PROJECT_CODE_LANES", "3")))
-        if _is_recovery_task(t):
-            return max(per_project_limit, int(os.environ.get("ORCH_RECOVERY_PER_PROJECT_CODE_LANES", "3")))
-        if _is_evidence_task(t):
-            return max(per_project_limit, int(os.environ.get("ORCH_EVIDENCE_PER_PROJECT_CODE_LANES", "2")))
-        if _is_improvement_task(t):
-            return max(per_project_limit, int(os.environ.get("ORCH_IMPROVEMENT_PER_PROJECT_CODE_LANES", "2")))
-        return per_project_limit
-
-    queued.sort(key=lambda t: (_release_fix_rank(t),                             # unblock Vercel releases first
-                               _release_fix_urgency(t),                          # hot gate fixes before stale EV noise
-                               _recovery_rank(t),                                # recover tested work next
-                               _evidence_rank(t),                                # then collect routing evidence
-                               _improvement_rank(t),                             # then drain improve-* work
-                               _churn(t),                                        # real work before churn
-                               _thermal_rank(t),                                 # EV/min thermal map
-                               _task_priority(t),                                # EV/task priority when present
-                               _ev_rank(t),                                      # controls.ev_ranking fallback
-                               _confidence_rank(t),                              # tasks.confidence fallback
+    # PINNED TASKS: sort before everything else. pin_rank ASC (lower = higher priority),
+    # then normal ordering. Tasks without the column (older rows) are treated as unpinned.
+    queued.sort(key=lambda t: (0 if t.get("pinned") else 1,                    # pinned express lane first
+                               t.get("pin_rank") or 0,                         # pin_rank ASC within pinned
+                               _churn(t),                                       # real work before churn
                                last_act.get(t.get("project_id"), ""),           # least-recently-served first
                                prio.get(t.get("project_id"), 5),
                                -float(roi_w.get(t.get("project_id"), 1) or 1),
@@ -387,6 +296,13 @@ def claim_task(runner_id):
                     active_by_project[pid] = active_by_project.get(pid, 0) + 1
                 return res[0]
     return None
+
+
+def set_pin(slug, rank=1):
+    """Pin a QUEUED task so it sorts before the normal fairness round-robin.
+    rank is a positive int; lower = higher priority (1 = top). Pass rank=0 to unpin."""
+    pinned = rank > 0
+    return update("tasks", {"slug": slug}, {"pinned": pinned, "pin_rank": rank})
 
 
 def heartbeat(runner_id, hostname, active):
