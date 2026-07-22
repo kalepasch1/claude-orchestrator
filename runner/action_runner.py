@@ -17,7 +17,12 @@ import db
 from action_drafter import SAFE_CMD, UNSAFE
 
 
-def _repo_for(approval_id: str) -> str:
+def _repo_for(approval_id):
+    """Look up the local filesystem path for the repo associated with an approval.
+
+    Returns the repo_path string from the projects table, or empty string if
+    the approval or project is not found.
+    """
     a = (db.select("approvals", {"select": "project", "id": f"eq.{approval_id}"}) or [{}])[0]
     name = a.get("project")
     p = (db.select("projects", {"select": "repo_path", "name": f"eq.{name}"}) or [{}])[0]
