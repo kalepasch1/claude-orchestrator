@@ -2370,7 +2370,7 @@ _SCHEDULE = [
     ("drafts-90",     "decision_drafts.py", "interval", 90),    # auto-draft on founder directives
     ("businesscreative-15", "business_os_worker.py", "interval", 15), # atomically claim cost-capped creative jobs; outputs always enter review
     ("virtualexec-30", "virtual_executive_worker.py", "interval", 30), # predict work and execute only policy/credential/approval-authorized saga steps
-
+    ("remediation-3600","quarantine_remediation.py","interval",3600), # scan quarantined tasks, requeue viable undelivered improvements
 
     ("anomaly-3600",  "anomaly.py",         "interval", 3600),
     ("roi-daily",     "roi",                "daily",    (0, 15)),
