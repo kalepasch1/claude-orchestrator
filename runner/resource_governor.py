@@ -92,13 +92,8 @@ def _event(kind, value=None, detail="", action=""):
         pass
 
 
-def disk_pct(path="/"):
-    """Return (used_percent, free_gb) for the filesystem at *path*.
-
-    Used by can_claim() for the real-time gate and by govern() for the periodic sweep.
-    The predictive trending in govern() fits a line to recent resource_events rows
-    containing these values; if the projected usage would breach DISK_HARD_PCT within
-    PREDICT_DISK_WINDOW_H hours, it triggers preemptive pruning and throttle-down."""
+def disk_pct(path: str = "/") -> tuple[float, float]:
+    """Return (used_percent, free_gb) for the given mount point."""
     u = shutil.disk_usage(path)
     return round(u.used / u.total * 100, 1), round(u.free / 1e9, 1)
 
@@ -137,9 +132,8 @@ def _vm_stat():
         return None, None
 
 
-def ram_pct():
-    """Return RAM usage as a percentage, or None if unavailable."""
-    # Prefer our macOS-accurate calc; psutil's macOS `available` also undercounts cache.
+def ram_pct() -> float | None:
+    """Return RAM usage percentage (macOS-accurate, counting reclaimable cache as free)."""
     v = _vm_stat()[0]
     if v is not None:
         return v
@@ -150,11 +144,8 @@ def ram_pct():
         return None
 
 
-def ram_free_gb():
-    """Return available RAM in GB using the macOS-accurate vm_stat calculation.
-
-    Prefers _vm_stat() which counts reclaimable file cache as available (matching
-    Activity Monitor). Falls back to psutil if vm_stat is unavailable."""
+def ram_free_gb() -> float | None:
+    """Return available RAM in GB (macOS-accurate, counts reclaimable cache as available)."""
     v = _vm_stat()[1]
     if v is not None:
         return v
@@ -165,8 +156,8 @@ def ram_free_gb():
         return None
 
 
-def total_gb():
-    """Return total physical RAM in GB. Tries psutil first, falls back to sysctl."""
+def total_gb() -> float | None:
+    """Return total physical RAM in GB."""
     try:
         import psutil
         return round(psutil.virtual_memory().total / 1e9, 1)
@@ -177,7 +168,7 @@ def total_gb():
             return None
 
 
-def effective_floor_gb():
+def effective_floor_gb() -> float:
     """Flat, env-tunable RAM reserve. (Earlier this scaled to 12% of total RAM, but macOS
     normally runs with most RAM committed to cache — on a large-RAM Mac that pushed the floor
     so high the runner never claimed. The kernel memory-pressure brake is the real anti-crash
@@ -185,7 +176,7 @@ def effective_floor_gb():
     return _ram_floor_gb()
 
 
-def mem_pressure_ok():
+def mem_pressure_ok() -> bool:
     """macOS authoritative brake. The free-GB heuristic (free+inactive+speculative) is
     optimistic; the kernel's own pressure level is the reliable signal.
     sysctl kern.memorystatus_vm_pressure_level -> 1=normal, 2=warn, 4=critical."""
@@ -198,7 +189,7 @@ def mem_pressure_ok():
         return True  # signal unavailable -> don't block on it alone
 
 
-def pressure_should_block(free_gb=None, floor_gb=None):
+def pressure_should_block(free_gb: float | None = None, floor_gb: float | None = None) -> bool:
     """Treat kernel memory pressure as decisive only when measured headroom is also tight.
 
     macOS can leave kern.memorystatus_vm_pressure_level at warn/critical after a burst even
@@ -217,24 +208,9 @@ def pressure_should_block(free_gb=None, floor_gb=None):
     return free_gb < floor_gb + (_per_task_gb() * extra_tasks)
 
 
-def can_claim(n_active=0):
-    """Real-time gate the runner calls BEFORE starting each new task.
-
-    Protects the Mac in the gaps between the slower periodic govern() ticks.
-    Checks, in order:
-      1. RAM headroom: free GB must exceed effective_floor_gb() + per-task reserve.
-      2. Kernel memory pressure: blocks only when macOS reports warn/critical AND
-         measured headroom corroborates (see pressure_should_block).
-      3. Disk usage: blocks if disk_pct >= DISK_HARD_PCT.
-
-    Args:
-        n_active: number of tasks currently running (reserved for future
-                  concurrency-aware gating; not yet used in checks).
-
-    Returns:
-        (ok: bool, reason: str) — True/'ok' when safe to start a new task,
-        False/description when resource pressure requires waiting.
-    """
+def can_claim(n_active: int = 0) -> tuple[bool, str]:
+    """Real-time gate the runner calls BEFORE starting each new task — protects the Mac in
+    the gaps between the slower periodic govern() ticks. Returns (ok, reason)."""
     free = ram_free_gb()
     floor = effective_floor_gb()
     per_task = _per_task_gb()
