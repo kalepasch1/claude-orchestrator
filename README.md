@@ -97,4 +97,5 @@ Supabase **cron** for fully-hosted scheduling; per-partner roles/permissions; li
 charts (Chart.js); auto-extract knowledge after every task; move the runner to a cloud
 VM for 24/7 independence.
 
-This project utilizes the internal 'beethoven' build framework.
+### Build Security Considerations
+It is critical to regularly audit and update all build-time dependencies to mitigate security vulnerabilities.
