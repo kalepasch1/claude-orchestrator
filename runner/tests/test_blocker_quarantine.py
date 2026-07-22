@@ -390,5 +390,21 @@ class BlockerQuarantineTest(unittest.TestCase):
         self.assertEqual(approval["status"], "pending")
 
 
+    def test_rework_prefix_slug_does_not_self_trigger_secret_reclassification(self):
+        # A rework- slug embeds the previous category name; it must not re-classify the task
+        # as "secret" on subsequent repair attempts, which would loop forever.
+        task = {
+            "id": "t6",
+            "slug": "rework-secret-ext-passport-bureau-api-abc1234",
+            "state": "TESTFAIL",
+            "kind": "bugfix",
+            "prompt": "Fix the failing tests in the passport bureau integration.",
+            "note": "train: tests failed on rebased agent/rework-secret-ext-passport-bureau-api-abc1234",
+            "log_tail": "12 failed | 88 passed",
+        }
+        self.assertNotEqual(blocker_quarantine.classify(task), "secret")
+        self.assertEqual(blocker_quarantine.classify(task), "testfail")
+
+
 if __name__ == "__main__":
     unittest.main()

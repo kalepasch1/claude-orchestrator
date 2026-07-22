@@ -126,40 +126,24 @@ def _clean_note_for_classification(note):
     return text
 
 
-_REWORK_PREFIX_RE = re.compile(r"^rework-(?:[a-z]+-)?", re.I)
-
-
-def _strip_rework_noise(slug, max_strips=10):
-    """Strip leading 'rework-<category>-' (or bare 'rework-') segments so a task's OWN
-    replacement history never re-triggers its own classification.
-
-    blocker_quarantine renames a quarantined task to e.g. 'rework-secret-<original>'. If that
-    replacement later fails for ANY reason (a real conflict, a flaky test, an unrelated build
-    error), classify() re-scans its slug -- which now contains the literal word 'secret' from
-    the PREVIOUS rework, independent of the new failure's actual cause. That reclassifies it as
-    'secret' again, renames it to 'rework-secret-rework-secret-<original>', and repeats forever.
-    Observed in production: chains of 5+ nested 'rework-legal-rework-legal-...' on one task.
-    Stripping the prefix before classification breaks the self-reference; the ORIGINAL slug
-    (project/feature name) is still available for genuine signal."""
-    s = str(slug or "")
-    for _ in range(max_strips):
-        stripped = _REWORK_PREFIX_RE.sub("", s, count=1)
-        if stripped == s:
-            break
-        s = stripped
-    return s
-
-
-def _rework_depth(slug):
-    return len(re.findall(r"rework-", str(slug or ""), re.I))
+_REWORK_PREFIX = re.compile(r"^(?:rework-[a-z]+-)+", re.I)
 
 
 def _blocker_signal(task):
+    raw_slug = str(task.get("slug") or "")
+    slug = _REWORK_PREFIX.sub("", raw_slug)
+    note = _clean_note_for_classification(task.get("note"))
+    log_tail = str(task.get("log_tail") or "")
+    # strip the task's own full slug from evidence so the quarantine history embedded in branch
+    # names / notes never re-triggers its own prior category on repair attempts
+    if raw_slug:
+        note = note.replace(raw_slug, "")
+        log_tail = log_tail.replace(raw_slug, "")
     return "\n".join(
         (
-            _strip_rework_noise(task.get("slug")),
-            _clean_note_for_classification(task.get("note")),
-            str(task.get("log_tail") or ""),
+            slug,
+            note,
+            log_tail,
             str(task.get("kind") or ""),
             str(task.get("state") or ""),
         )

@@ -226,6 +226,75 @@ class AutoRemediateRecoveryTest(unittest.TestCase):
             auto_remediate._NON_CLAUDE_CACHE = {"t": 0.0, "coder": None}
             self.assertEqual(auto_remediate._non_claude_coder({"prompt": "x"}), "ollama")
 
+    def test_hard_cap_task_is_decomposed_into_subtasks(self):
+        """BLOCKED task at HARD_CAP that isn't already decomposed should spawn sub-tasks."""
+        task = {
+            "id": "t-hard",
+            "slug": "big-feature",
+            "state": "BLOCKED",
+            "prompt": "Implement a very large feature with many components.",
+            "note": "quality gate: too many failures",
+            "remediation_count": auto_remediate.HARD_CAP,
+            "model": "claude-sonnet-4-6",
+            "material": False,
+            "project_id": "p1",
+            "base_branch": "main",
+        }
+        updates = []
+        db_mock = MagicMock()
+        db_mock.select.side_effect = [[], [], [], [task]]
+        db_mock.update.side_effect = lambda table, match, patch: updates.append((table, match, patch))
+
+        with patch.object(auto_remediate, "db", db_mock), \
+             patch.object(auto_remediate, "_decompose", return_value=[
+                 {"title": "part-one", "prompt": "Implement step one."},
+                 {"title": "part-two", "prompt": "Implement step two."},
+             ]), \
+             patch.object(auto_remediate, "_spawn_subtasks", return_value=2):
+            result = auto_remediate.run()
+
+        self.assertEqual(result["decomposed"], 1)
+        task_patch = next(p for table, _, p in updates if table == "tasks")
+        self.assertEqual(task_patch["state"], "DECOMPOSED")
+        self.assertIn("auto-split", task_patch["note"])
+
+    def test_already_decomposed_task_at_hard_cap_is_shelved(self):
+        """BLOCKED task at HARD_CAP that IS already decomposed must be shelved, not re-decomposed."""
+        task = {
+            "id": "t-sub",
+            "slug": "big-feature-part-one",
+            "state": "BLOCKED",
+            "prompt": "Implement step one.",
+            "note": "auto-decomposed from big-feature; quality gate: still failing",
+            "remediation_count": auto_remediate.HARD_CAP,
+            "model": "claude-sonnet-4-6",
+            "material": False,
+            "project_id": "p1",
+        }
+        updates = []
+        db_mock = MagicMock()
+        db_mock.select.side_effect = [[], [], [], [task]]
+        db_mock.update.side_effect = lambda table, match, patch: updates.append((table, match, patch))
+
+        with patch.object(auto_remediate, "db", db_mock):
+            result = auto_remediate.run()
+
+        self.assertEqual(result["shelved"], 1)
+        task_patch = next(p for table, _, p in updates if table == "tasks")
+        self.assertEqual(task_patch["state"], "SHELVED")
+
+    def test_already_decomposed_recognizes_note_marker(self):
+        self.assertTrue(auto_remediate._already_decomposed(
+            {"slug": "child-task"}, "auto-decomposed from parent-slug"))
+        self.assertFalse(auto_remediate._already_decomposed(
+            {"slug": "original-task"}, "some other note"))
+
+    def test_already_decomposed_recognizes_multi_part_slug(self):
+        self.assertTrue(auto_remediate._already_decomposed(
+            {"slug": "parent-part-one-part-two"}, ""))
+        self.assertFalse(auto_remediate._already_decomposed(
+            {"slug": "parent-part-one"}, ""))
+
 
 if __name__ == "__main__":
     unittest.main()
