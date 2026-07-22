@@ -30,7 +30,14 @@ Returns JSON to stdout:
   "preopt_available": false
 }
 """
-import sys, os, json, argparse, time, re
+import sys, os, json, argparse, time, re, logging
+
+# Diagnostic logger — writes to stderr so stdout stays clean JSON for callers
+_log = logging.getLogger("cowork_assemble")
+_log.setLevel(logging.DEBUG if os.environ.get("COWORK_ASSEMBLE_DEBUG") else logging.INFO)
+_handler = logging.StreamHandler(sys.stderr)
+_handler.setFormatter(logging.Formatter("%(asctime)s cowork_assemble %(levelname)s %(message)s"))
+_log.addHandler(_handler)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -53,7 +60,8 @@ def _safe_import(name):
     """
     try:
         return __import__(name)
-    except Exception:
+    except Exception as e:
+        _log.debug("import %s unavailable: %s", name, e)
         return None
 
 
@@ -89,8 +97,8 @@ def get_vercel_config():
                     proj_name = k[len("VERCEL_PROJECT_"):].lower()
                     if proj_name not in project_map and v:
                         project_map[proj_name] = str(v).strip('"')
-    except Exception:
-        pass
+    except Exception as e:
+        _log.debug("fleet_config vercel lookup failed: %s", e)
 
     return {"token": "", "team_id": team_id, "project_map": project_map}
 
@@ -121,9 +129,10 @@ def get_enriched_prompt(task_id, slug, kind, attempt, repo_path, project_id, pro
         enriched = prompt_assembler.assemble(task_dict)
         if enriched and enriched.get("prompt"):
             layers_used = enriched.get("layers", [])
+            _log.info("prompt_assembler succeeded, layers=%s", layers_used)
             return enriched["prompt"], layers_used
     except Exception as e:
-        pass
+        _log.debug("prompt_assembler unavailable: %s", e)
 
     # Fallback: fetch raw prompt from DB
     prompt = ""
@@ -136,8 +145,8 @@ def get_enriched_prompt(task_id, slug, kind, attempt, repo_path, project_id, pro
                 prompt = row.get("prompt", "")
                 if not kind:
                     kind = row.get("kind", "")
-    except Exception:
-        pass
+    except Exception as e:
+        _log.warning("DB fallback prompt fetch failed: %s", e)
 
     layers_used = ["raw_prompt"]
 
@@ -160,8 +169,8 @@ def get_model_suggestion(kind, attempt, slug):
         result = model_router.route(task_dict)
         if result:
             return result.get("model", ""), result.get("reason", "")
-    except Exception:
-        pass
+    except Exception as e:
+        _log.debug("model_router unavailable: %s", e)
 
     # Fallback heuristic
     attempt = int(attempt or 0)
@@ -189,8 +198,8 @@ def get_cross_project_hints(slug, kind, prompt):
         result = cross_project_templates.find_templates(task_dict)
         if result:
             hints = result.get("hints", [])
-    except Exception:
-        pass
+    except Exception as e:
+        _log.debug("cross_project_templates unavailable: %s", e)
 
     if not hints:
         try:
@@ -199,8 +208,8 @@ def get_cross_project_hints(slug, kind, prompt):
             result = reuse_first.check(task_dict)
             if result and result.get("matches"):
                 hints = [f"reuse: {m}" for m in result["matches"][:5]]
-        except Exception:
-            pass
+        except Exception as e:
+            _log.debug("reuse_first hint fallback failed: %s", e)
 
     return hints
 
@@ -213,8 +222,8 @@ def get_reuse_notes(slug, kind, prompt):
         result = reuse_first.check(task_dict)
         if result:
             return result.get("summary", "")
-    except Exception:
-        pass
+    except Exception as e:
+        _log.debug("reuse_first notes failed: %s", e)
     return ""
 
 
@@ -225,8 +234,8 @@ def get_ev_score(task_id):
         score = ev_scheduler.score(task_id)
         if score is not None:
             return float(score)
-    except Exception:
-        pass
+    except Exception as e:
+        _log.debug("ev_scheduler unavailable: %s", e)
 
     # Fallback: read from DB
     try:
@@ -235,8 +244,8 @@ def get_ev_score(task_id):
             rows = db.select("tasks", {"select": "confidence", "id": f"eq.{task_id}"}) or []
             if rows and rows[0].get("confidence") is not None:
                 return float(rows[0]["confidence"])
-    except Exception:
-        pass
+    except Exception as e:
+        _log.debug("DB ev_score fallback failed: %s", e)
 
     return 0.0
 
@@ -257,8 +266,8 @@ def get_preopt_cache(task_id):
             if cached.get("ensemble_predictor"):
                 summary.append("ensemble_predictor")
             return True, ", ".join(summary)
-    except Exception:
-        pass
+    except Exception as e:
+        _log.debug("queue_preopt cache lookup failed: %s", e)
     return False, ""
 
 
@@ -272,6 +281,8 @@ def main():
     parser.add_argument("--project-id", default="")
     parser.add_argument("--project-name", default="")
     args = parser.parse_args()
+    t0 = time.monotonic()
+    _log.info("assembling task=%s slug=%s kind=%s attempt=%d", args.task_id[:8], args.slug, args.kind, args.attempt)
 
     result = {}
 
@@ -309,6 +320,9 @@ def main():
     preopt_available, context_pack_summary = get_preopt_cache(args.task_id)
     result["preopt_available"] = preopt_available
     result["context_pack_summary"] = context_pack_summary
+
+    elapsed = time.monotonic() - t0
+    _log.info("assembly complete in %.2fs, layers=%s model=%s", elapsed, layers_used, model)
 
     print(json.dumps(result, indent=2))
 
