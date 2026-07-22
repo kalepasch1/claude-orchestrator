@@ -120,176 +120,155 @@ def run():
     print(f"self-review filed {made} improvement proposals (approve them in the dashboard).")
 
 
-# ── Monthly subsystem audit (D5) ─────────────────────────────────────────────
+###############################################################################
+# Monthly subsystem job audit
+###############################################################################
 
-def _parse_schedule_table():
-    """Parse runner.py's _SCHEDULE list to enumerate all periodic jobs."""
-    runner_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runner.py")
-    jobs = []
+# Infrastructure jobs that must never be disabled regardless of ranking.
+_INFRASTRUCTURE_JOBS = frozenset({
+    "txn", "resource_governor.py", "resource_medic.py", "sentinel.py",
+    "db_recovery_sprint.py", "resilience_mesh.py", "fleet_control.py",
+    "selfcheck", "selfheal", "exhaustion_signal.py",
+    "fleet_stuck_alarm.py", "lane_scheduler.py", "service_agent.py",
+})
+
+
+def _load_schedule():
+    """Import _SCHEDULE from runner.py, fail-soft to empty list."""
     try:
-        with open(runner_path, encoding="utf-8", errors="replace") as f:
-            text = f.read()
-        # Find _SCHEDULE = [...] block
-        m = re.search(r'_SCHEDULE\s*=\s*\[', text)
-        if not m:
-            return jobs
-        start = m.end()
-        depth = 1
-        i = start
-        while i < len(text) and depth > 0:
-            if text[i] == '[':
-                depth += 1
-            elif text[i] == ']':
-                depth -= 1
-            i += 1
-        block = text[start:i - 1]
-        # Parse tuples: ("name", "script", "type", interval_or_tuple)
-        for tm in re.finditer(r'\(\s*"([^"]+)"\s*,\s*"([^"]+)"\s*,', block):
-            jobs.append({"id": tm.group(1), "script": tm.group(2)})
+        import runner as _runner_mod
+        return list(getattr(_runner_mod, "_SCHEDULE", []))
     except Exception:
-        pass
-    return jobs
+        return []
 
 
-def _job_kpi_scores():
-    """Attribute KPI contribution to jobs using scoreboard/outcomes data."""
-    scores = {}
-    try:
-        import scoreboard
-        payload = scoreboard.compute()
-        overall = payload.get("overall", {})
-        scores["_overall_merge_rate"] = overall.get("merge_rate")
-        scores["_overall_usd_per_merge"] = overall.get("usd_per_merge")
-    except Exception:
-        pass
-    return scores
+def _fetch_kpi_contributions():
+    """Return {job_script: float} of KPI contribution from outcomes.
 
-
-def _job_incidents():
-    """Count incidents attributable to each job: pause_arbiter trips, build failures,
-    revert postmortems."""
-    incidents = collections.Counter()
-    # Check for pause events mentioning job names
-    try:
-        rows = db.select("controls", {
-            "select": "key,value,updated_at",
-            "order": "updated_at.desc",
-            "limit": "500",
-        }) or []
-        for r in rows:
-            val = str(r.get("value") or "")
-            key = str(r.get("key") or "")
-            if "pause" in key.lower() or "trip" in val.lower():
-                # Try to attribute to a job
-                for word in val.split():
-                    w = word.strip(".,;:'\"()").lower()
-                    if w.endswith(".py") or "-" in w:
-                        incidents[w] += 1
-    except Exception:
-        pass
-    # Check outcomes for build failures
+    KPI contribution = count of outcomes whose ``source`` field matches the job
+    script name and that passed tests, weighted by 1.0 each.  Fail-soft: if the
+    table or column doesn't exist we return an empty dict (every job scores 0).
+    """
     try:
         rows = db.select("outcomes", {
-            "select": "slug,tests_passed",
-            "tests_passed": "eq.false",
+            "select": "source,tests_passed",
             "order": "created_at.desc",
-            "limit": "500",
+            "limit": "5000",
         }) or []
-        for r in rows:
-            slug = str(r.get("slug") or "")
-            if slug:
-                incidents[slug] += 1
     except Exception:
-        pass
-    return dict(incidents)
+        return {}
+    kpi = collections.defaultdict(float)
+    for r in rows:
+        src = r.get("source") or ""
+        if r.get("tests_passed"):
+            kpi[src] += 1.0
+    return dict(kpi)
 
 
-def _score_job(job, kpi_scores, incidents):
-    """Score a single job. Higher = more valuable (keep). Lower = candidate for disable.
+def _fetch_incident_counts():
+    """Return {job_script: int} of incidents attributed to each job.
 
-    Pure infrastructure/safety jobs with no direct KPI line but zero incidents get a
-    neutral score (not punished for having no KPI contribution).
+    Reads the ``incidents`` table (columns ``source``, ``severity``).  If the
+    table doesn't exist we return an empty dict — no penalties applied.
     """
-    job_id = job["id"]
-    script = job["script"]
-    incident_count = incidents.get(script, 0) + incidents.get(job_id, 0)
-
-    # Protected jobs get max score — never proposed for disable
-    if job_id in _PROTECTED_JOBS or script in _PROTECTED_JOBS:
-        return {"score": float("inf"), "incidents": incident_count,
-                "kpi_contribution": "protected", "protected": True}
-
-    # Base score: 50 (neutral)
-    score = 50.0
-    # Penalty for incidents
-    score -= incident_count * 10
-    # Jobs that are infrastructure/safety (no direct KPI) but incident-free are kept neutral
-    # Jobs with known KPI contribution get a boost (placeholder — real attribution from scoreboard)
-    return {"score": score, "incidents": incident_count,
-            "kpi_contribution": "unmeasured", "protected": False}
+    try:
+        rows = db.select("incidents", {
+            "select": "source,severity",
+            "limit": "5000",
+        }) or []
+    except Exception:
+        return {}
+    counts = collections.defaultdict(int)
+    for r in rows:
+        src = r.get("source") or ""
+        counts[src] += 1
+    return dict(counts)
 
 
-def monthly_audit():
-    """Monthly subsystem audit: enumerate all scheduled jobs, score them, propose
-    disabling the bottom decile as a single material approval card."""
-    jobs = _parse_schedule_table()
-    if not jobs:
-        print("monthly_audit: could not parse schedule table from runner.py")
-        return None
+INCIDENT_PENALTY_WEIGHT = float(os.environ.get("ORCH_INCIDENT_PENALTY", "2.0"))
 
-    kpi_scores = _job_kpi_scores()
-    incidents = _job_incidents()
 
-    scored = []
-    for job in jobs:
-        s = _score_job(job, kpi_scores, incidents)
-        scored.append({**job, **s})
+def audit_subsystem_jobs():
+    """Enumerate every scheduled job, rank by value, propose disabling bottom decile.
 
-    # Sort by score ascending (worst first)
-    scored.sort(key=lambda x: x["score"] if x["score"] != float("inf") else 1e9)
+    Returns a list of dicts, each containing:
+        key, job, schedule_type, kpi_contribution, incident_count, value,
+        rank, is_infrastructure, disable_recommendation
+    sorted by value descending (rank 1 = highest value).
+    """
+    schedule = _load_schedule()
+    if not schedule:
+        return []
 
-    # Bottom decile (excluding protected jobs)
-    non_protected = [j for j in scored if not j.get("protected")]
-    decile_size = max(1, math.ceil(len(non_protected) * 0.1))
-    bottom_decile = non_protected[:decile_size]
+    kpi_map = _fetch_kpi_contributions()
+    incident_map = _fetch_incident_counts()
 
-    report = {
-        "total_jobs": len(jobs),
-        "scored_jobs": len(non_protected),
-        "protected_jobs": len(scored) - len(non_protected),
-        "bottom_decile_count": len(bottom_decile),
-        "bottom_decile": [{"id": j["id"], "script": j["script"],
-                           "score": j["score"], "incidents": j["incidents"]}
-                          for j in bottom_decile],
-        "all_scores": [{"id": j["id"], "script": j["script"],
-                        "score": j["score"] if j["score"] != float("inf") else "protected",
-                        "incidents": j["incidents"]}
-                       for j in scored],
-    }
+    records = []
+    for entry in schedule:
+        key, job, stype, args = entry[0], entry[1], entry[2], entry[3]
+        kpi = kpi_map.get(job, 0.0)
+        incidents = incident_map.get(job, 0)
+        value = kpi - (incidents * INCIDENT_PENALTY_WEIGHT)
+        records.append({
+            "key": key,
+            "job": job,
+            "schedule_type": stype,
+            "schedule_args": args,
+            "kpi_contribution": kpi,
+            "incident_count": incidents,
+            "value": value,
+            "is_infrastructure": job in _INFRASTRUCTURE_JOBS,
+            "rank": 0,
+            "disable_recommendation": False,
+        })
 
-    # File a single material approval card for the batch
-    if bottom_decile:
-        disable_list = ", ".join(j["id"] for j in bottom_decile)
+    # Sort by value descending (highest value first)
+    records.sort(key=lambda r: r["value"], reverse=True)
+    for i, rec in enumerate(records):
+        rec["rank"] = i + 1
+
+    # Bottom decile threshold (at least 1 job must be in the bottom decile
+    # when there are 10+ jobs; for fewer, no recommendations are made).
+    total = len(records)
+    if total >= 10:
+        cutoff_rank = total - max(1, total // 10) + 1
+        for rec in records:
+            if rec["rank"] >= cutoff_rank and not rec["is_infrastructure"]:
+                rec["disable_recommendation"] = True
+
+    return records
+
+
+def run_monthly_audit():
+    """Entry point: run audit_subsystem_jobs and persist results."""
+    records = audit_subsystem_jobs()
+    if not records:
+        print("monthly audit: no scheduled jobs found — nothing to audit.")
+        return records
+
+    # Write to subsystem_audits table (fail-soft)
+    written = 0
+    for rec in records:
         try:
-            db.insert("approvals", {
-                "project": "ORCHESTRATOR",
-                "kind": "material",
-                "title": f"Monthly audit: propose disabling {len(bottom_decile)} bottom-decile jobs",
-                "why": f"Monthly subsystem audit scored {len(jobs)} scheduled jobs. "
-                       f"Bottom decile ({len(bottom_decile)} jobs) have the lowest KPI contribution "
-                       f"and/or highest incident counts: {disable_list}",
-                "value": f"Reduce orchestrator overhead by disabling {len(bottom_decile)} low-value periodic jobs",
-                "risk": "Jobs may have hidden dependencies. Review each before disabling. "
-                        "This is a batch proposal — approve or reject as a whole.",
-                "detail": json.dumps(report, indent=2, default=str),
-                "command": "",
+            db.insert("subsystem_audits", {
+                "key": rec["key"],
+                "job": rec["job"],
+                "schedule_type": rec["schedule_type"],
+                "kpi_contribution": rec["kpi_contribution"],
+                "incident_count": rec["incident_count"],
+                "value": rec["value"],
+                "rank": rec["rank"],
+                "is_infrastructure": rec["is_infrastructure"],
+                "disable_recommendation": rec["disable_recommendation"],
             })
+            written += 1
         except Exception as e:
-            sys.stderr.write(f"[monthly_audit] failed to file approval: {e}\n")
+            print(f"monthly audit: failed to write record for {rec['key']}: {e}")
 
-    print(f"monthly_audit: scored {len(jobs)} jobs, {len(bottom_decile)} in bottom decile, "
-          f"{len(scored) - len(non_protected)} protected. Filed 1 material approval card.")
-    return report
+    disabled = [r for r in records if r["disable_recommendation"]]
+    print(f"monthly audit: {len(records)} jobs audited, {written} written, "
+          f"{len(disabled)} flagged for disable review.")
+    return records
 
 
 if __name__ == "__main__":
