@@ -52,14 +52,7 @@ def _insert_control(action, target="all", params=None):
 def _set_config(key, value):
     if not fleet_control._safe_key(key):
         raise SystemExit(f"refusing unsafe fleet config key: {key}")
-    row = {
-        "key": key,
-        "value": str(value),
-        "updated_by": socket.gethostname(),
-        "updated_at": _now(),
-    }
-    db.insert("fleet_config", row, upsert=True)
-    return row
+    return fleet_control.update_fleet_config(key, value)
 
 
 def _recent_controls(limit=10):
