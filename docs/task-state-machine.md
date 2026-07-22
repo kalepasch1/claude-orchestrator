@@ -1,38 +1,32 @@
 # Task State Machine
 
-Tasks in the `tasks` table transition through these states:
+Tasks move through a strict state machine. Only valid transitions are
+enforced by the executor and merge-train.
+
+## States
+
+| State       | Meaning                                      |
+|-------------|----------------------------------------------|
+| QUEUED      | Ready for an executor to claim                |
+| RUNNING     | Claimed by an executor, work in progress      |
+| DONE        | Code committed and pushed to agent branch     |
+| MERGED      | Branch merged to base by the merge-train      |
+| BLOCKED     | Repo path does not exist (only valid reason)  |
+| QUARANTINED | Binary hex-only PATCH TEMPLATE stub           |
+
+## Transitions
 
 ```
-QUEUED ──► RUNNING ──► DONE ──► MERGED
-  ▲            │         │
-  │            ▼         ▼
-  └──── RETRY      TESTFAIL / CONFLICT
-               │
-               ▼
-           BLOCKED
-           QUARANTINED
-           DECOMPOSED
+QUEUED → RUNNING     executor claims via CTE with SKIP LOCKED
+RUNNING → DONE       code committed + pushed (or push failed, merge-train retries)
+RUNNING → BLOCKED    repo path literally missing
+RUNNING → QUARANTINED  binary stub with no readable English
+DONE → MERGED        merge-train verifies and merges to base branch
+RUNNING → QUEUED     zombie release (heartbeat stale >90 min)
 ```
 
-## State definitions
+## Invalid Transitions
 
-- **QUEUED** — ready for claim. `db.claim_task()` atomically transitions
-  QUEUED → RUNNING with an optimistic PATCH so two runners never double-claim.
-- **RUNNING** — claimed by an executor (`account` column identifies which).
-  Heartbeated via `updated_at`; stale runners (>90 min) are zombie-released
-  back to QUEUED.
-- **DONE** — implementation committed and pushed to `agent/{slug}` branch.
-  Awaiting merge-train pickup.
-- **MERGED** — branch merged to the base branch by the merge train.
-- **RETRY** — transient failure; eligible for re-claim on next loop.
-- **TESTFAIL** — tests failed post-implementation.
-- **CONFLICT** — merge conflict detected during merge-train.
-- **BLOCKED** — cannot proceed (e.g., budget cap, missing repo).
-- **QUARANTINED** — invalid or binary-only prompt; will not be retried.
-- **DECOMPOSED** — replaced by child tasks from planner decomposition.
-
-## Transition rules
-
-Only `QUEUED` tasks are eligible for claim. The `attempt` column tracks
-how many times a task has been tried. Kill-switch and waste-guard can
-return a RUNNING task to QUEUED without incrementing `attempt`.
+- RUNNING → QUEUED for any reason other than zombie release
+- Any state → BLOCKED for reasons other than missing repo path
+- Skipping a task is never valid — every claim must resolve
