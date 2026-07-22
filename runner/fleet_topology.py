@@ -74,6 +74,25 @@ SUBSCRIPTION_CATALOG = [
 COWORK_PER_SUB = int(os.environ.get("ORCH_COWORK_PER_SUB", "2"))
 
 
+def _detect_cowork_terminals():
+    """Count active Cowork executor sessions from DB task accounting.
+
+    A Cowork terminal is "running" if at least one task is in RUNNING state
+    with a cowork-executor account and a recent heartbeat (updated_at within
+    the last 30 minutes). Each distinct account string represents one terminal.
+    Returns 0 on any error (fail-soft).
+    """
+    try:
+        rows = db.query(
+            "SELECT COUNT(DISTINCT account) AS n FROM tasks "
+            "WHERE state = 'RUNNING' AND account LIKE 'cowork-executor%' "
+            "AND updated_at > now() - interval '30 minutes'"
+        )
+        return int(rows[0]["n"]) if rows else 0
+    except Exception:
+        return 0
+
+
 class FleetTopology:
     """Model the fleet and recommend optimal allocation."""
 
@@ -176,13 +195,7 @@ class FleetTopology:
 
         # 2. If we have cowork-capable subs not running Cowork terminals, recommend starting them
         cowork_capable = sum(1 for s in self._subscriptions if s.get("vendor") == "anthropic")
-        # Detect running Cowork terminals from cowork_dispatch heartbeats
-        try:
-            import cowork_dispatch
-            cw_stats = cowork_dispatch.cowork_stats()
-            cowork_running = cw_stats.get("cowork_active_sessions", 0)
-        except Exception:
-            cowork_running = 0
+        cowork_running = _detect_cowork_terminals()
         if cowork_capable > 0 and cowork_running < cowork_capable * COWORK_PER_SUB:
             recommendations.append({
                 "action": "start_cowork_terminals",
