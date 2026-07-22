@@ -68,6 +68,7 @@ def requires_owner_approval(card=None, text="", kind="", radar_tag=""):
 
 
 def trigger_excerpt(card=None, text=""):
+    """Return a short excerpt of the text around the first matching regulatory keyword."""
     blob = text_for(card, text)
     for rx in (EXTREME_LEGAL, REGULATED_ACTIVITY, POSTURE_CHANGE):
         m = rx.search(blob)
