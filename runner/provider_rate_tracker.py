@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 """
 provider_rate_tracker.py - per-provider rate-limit state for parallel-safe routing.
 
