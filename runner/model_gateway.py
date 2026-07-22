@@ -63,7 +63,11 @@ PRICES = {
     ("google", "gemini-3.1-flash-lite"): (0.25, 1.50),
     ("google", "gemini-3-flash"): (0.50, 3.0),
     ("google", "gemini-2.5-pro"): (1.25, 10.0),
-    ("google", "gemini-2.5-flash"): (0.30, 2.50),
+    ("google", "gemini-4.0-flash-lite"): (0.10, 0.40),
+    ("google", "gemini-4.0-flash"): (0.50, 4.00),
+    ("google", "gemini-4.0-pro"): (2.00, 16.00),
+    ("deepseek", "deepseek-chat"): (0.14, 0.28),
+    ("deepseek", "deepseek-reasoner"): (0.14, 0.28),
     ("deepseek", "deepseek-v4-flash"): (0.14, 0.28),
     ("deepseek", "deepseek-v4-pro"): (0.435, 0.87),
     ("deepseek", "deepseek-chat"): (0.14, 0.28),
@@ -172,6 +176,7 @@ def _google(model, prompt):
     candidates = [model, os.environ.get("GEMINI_MODEL", ""),
                   os.environ.get("GEMINI_CHEAP_MODEL", ""),
                   os.environ.get("GEMINI_STRONG_MODEL", ""),
+                  "gemini-4.0-flash", "gemini-4.0-flash-lite",
                   "gemini-2.5-flash", "gemini-2.5-flash-lite-preview-09-2025",
                   "gemini-flash-latest"]
     seen, ordered = set(), []
@@ -246,9 +251,8 @@ DEFAULT_MODELS = {
     "groq": lambda: os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
     "deepseek": lambda: _configured("DEEPSEEK_CHEAP_MODEL", "deepseek-v4-flash",
                                     deprecated=("deepseek-chat", "deepseek-reasoner")),
-    "google": lambda: _configured("GEMINI_MODEL", "gemini-3-flash",
-                                  deprecated=("gemini-2.0-",)),
-    "xai": lambda: os.environ.get("XAI_MODEL", "grok-build-0.1"),
+    "google": lambda: _configured("GEMINI_MODEL", "gemini-4.0-flash",
+                                  deprecated=("gemini-2.0-", "gemini-2.5-")),
     "openai": lambda: os.environ.get("OPENAI_CHEAP_MODEL", "gpt-5.4-nano"),
     "claude": lambda: "claude-haiku-4-5-20251001",
 }

@@ -12,7 +12,7 @@ Configure the pool with ONE env var (JSON list), plus the legacy single-second/t
     ORCH_EXTRA_CODERS='[
       {"name":"ollama-qwen","cmd":"aider --model ollama/qwen2.5-coder --yes --no-auto-commit --message {prompt}","cost":0,"cap":5},
       {"name":"deepseek","cmd":"aider --model deepseek/deepseek-chat --yes --no-auto-commit --message {prompt}","cost":2,"cap":6,"daily_usd":5,"est_usd":0.02},
-      {"name":"gemini","cmd":"aider --model gemini/gemini-2.0-flash --yes --no-auto-commit --message {prompt}","cost":2,"cap":6,"daily_usd":5,"est_usd":0.02},
+      {"name":"gemini","cmd":"aider --model gemini/gemini-4.0-flash --yes --no-auto-commit --message {prompt}","cost":2,"cap":6,"daily_usd":5,"est_usd":0.02},
       {"name":"gpt","cmd":"aider --model openai/gpt-4o-mini --yes --no-auto-commit --message {prompt}","cost":2,"cap":6,"daily_usd":5,"est_usd":0.02}
     ]'
 
@@ -215,7 +215,7 @@ def _auto_coders():
         coders.append({"name": "deepseek", "cmd": _aider_cmd("deepseek/" + os.environ.get("DEEPSEEK_AGENTIC_MODEL", "deepseek-v4-flash")), "auto": True,
                        "cost": 2, "cap": int(os.environ.get("DEEPSEEK_AGENTIC_CAP", "7")), "daily_usd": paid_cap, "est_usd": 0.02})
     if "google" in available:
-        coders.append({"name": "gemini", "cmd": _aider_cmd("gemini/" + (os.environ.get("GEMINI_AGENTIC_MODEL") or os.environ.get("GEMINI_MODEL") or "gemini-2.5-flash")), "auto": True,
+        coders.append({"name": "gemini", "cmd": _aider_cmd("gemini/" + (os.environ.get("GEMINI_AGENTIC_MODEL") or os.environ.get("GEMINI_MODEL") or "gemini-4.0-flash")),
                        "cost": 2, "cap": int(os.environ.get("GEMINI_AGENTIC_CAP", "8")), "daily_usd": paid_cap, "est_usd": 0.02})
     if "openai" in available:
         coders.append({"name": "gpt-mini", "cmd": _aider_cmd("openai/" + os.environ.get("OPENAI_CHEAP_AGENTIC_MODEL", "gpt-5.4-mini")), "auto": True,
