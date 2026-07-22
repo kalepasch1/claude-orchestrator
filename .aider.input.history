@@ -767,53 +767,85 @@
 +---
 +BEFORE YOU FINISH (required): run the project's production build and, if present, its tests (e.g. `npm run build` then the test command). If ANYTHING fails, fix it and re-run until the build is GREEN. Make the smallest correct change and reuse existing code. Do not finish with a red build, and do not finish by only describing changes — actually apply your edits to the files.
 
-# 2026-07-10 09:12:12.693489
-+PATCH TEMPLATE 3956df06d4a5
-+Intent: 07060650 07062319 1677fc0f7242 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion attempt based because before behavior being branch brief briefly build changed
+# 2026-07-10 01:17:22.287868
++PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 (similarity 0.34).
++Prior intent: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
++Relevant prior diff excerpt:
++
++
++REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
++SOURCE: 99f45988-68cc-430d-8228-5fac0ef2b876/patch-template-relfix-beethoven-07061350
++SUMMARY: PATCH TEMPLATE 78949c4096ba
++Intent: 06t13_49_47_819z 4pbjwpmj431__2jrjyb3bq7w0000gn _logs access analysis appears arises artifacts attempt backlog backup based being blocked blocking branch budget build capacity change changes check checking checkout
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/
++
++PATCH TEMPLATE 78949c4096ba
++Intent: 06t13_49_47_819z 4pbjwpmj431__2jrjyb3bq7w0000gn _logs access analysis appears arises artifacts attempt backlog backup based being blocked blocking branch budget build capacity change changes check checking checkout
 +Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
 +Implementation slots:
 +1. Locate the existing owner module/function before adding new files.
 +2. Reuse matching project helpers and naming conventions.
 +3. Add or update the narrowest test/check that proves the requested behavior.
-+Prior merged patterns to adapt:
-+- pareto-2080/qafix-pareto-2080-07062319-slice-5-fix-agentledger-test sim=0.672: PATCH TEMPLATE 1677fc0f7242
-+Intent: 07060650 07062319 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being brief briefly build changed classes concrete correct
-+Acceptance: preserve existing behavior, make the smalle
-+- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-5-inspect-local-branches sim=0.536: PATCH TEMPLATE 490564c811b3
-+Intent: 07060650 07062319 1677fc0f7242 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being branch branches brief briefly build cache
-+Acceptance: preserve existing behavior, make the smal
-+[patch-template:3956df06d4a5]
++Prior merged patterns to adapt: none found; keep the patch template reusable.
++[patch-template:78949c4096ba]
 +
-+PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch pareto-2080/qafix-pareto-2080-07062319-slice-5-fix-agentledger-test (similarity 0.593).
-+Prior intent: PATCH TEMPLATE 1677fc0f7242
-+Intent: 07060650 07062319 4ff7ba380eac 6096aa2b 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentledger assertion based because before behavior being brief briefly build changed classes concrete correct
-+Acceptance: preserve existing behavior, make the smalle
-+Relevant prior diff excerpt:
++The production build for this app is RED and is BLOCKING release. Make `npm run build` pass with the SMALLEST possible change (fix types/imports/syntax). Do NOT add features.
 +
++# Build error (tail):
++npm error code ENOENT
++npm error syscall open
++npm error path /private/var/folders/l4/4pbjwpmj431__2jrjyb3bq7w0000gn/T/build-ex2yi9_i/package.json
++npm error errno -2
++npm error enoent Could not read package.json: Error: ENOENT: no such file or directory, open '/private/var/folders/l4/4pbjwpmj431__2jrjyb3bq7w0000gn/T/build-ex2yi9_i/package.json'
++npm error enoent This is related to npm not being able to find a file.
++npm error enoent
++npm error A complete log of this run can be found in: /Users/kpasch/.npm/_logs/2026-07-06T13_49_47_819Z-debug-0.log
 +
-+MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-identify-affected-lines similarity=0.132: PATCH TEMPLATE 4ff7ba380eac
-+Intent: 07060650 07062319 6096aa2b a5f8e22456b6 based because being brief build changed descriptions exactly identified large lines modifications module numbers owner parent pareto patch pinpoint previous
-+Acceptance: preserve existing behavior, make the smallest mergeable
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-locate-owner-module similarity=0.129: PATCH TEMPLATE 9f821ef2b6cc
-+Intent: 07060650 07062319 6096aa2b a5f8e22456b6 because briefly build classes examine explain function functions identify intends large modify module owner parent pareto patch primary provided purpose
-+Acceptance: preserve existing behavior, make the smallest mergeable dif
++# The previous attempt FAILED the production build. Fix the build first, per this analysis from local:llama3.1:
++Based on the error message, it appears that `npm` is trying to access a temporary package.json file in a directory, but can't find it.
 +
-+REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
-+SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-2-identify-affected-lines
-+SUMMARY: PATCH TEMPLATE 4ff7ba380eac
-+Intent: 07060650 07062319 6096aa2b a5f8e22456b6 based because being brief build changed descriptions exactly identified large lines modifications module numbers owner parent pareto patch pinpoint previous
-+Acceptance: preserve existing behavior, make the smallest mergeable
++Here's a possible fix:
 +
-+Adapt proven prior diff to create initial patch template, then attempt to integrate it on top of current codebase.
++* The issue likely arises from an incomplete merge or conflict resolution. 
++* Check the merged files from commit e6ce948d183485c56459f4d8668fcc8c25fab8f5.
++* Specifically, verify that the `package.json` file in the root of the project is present and correctly formatted.
 +
-+(Sub-task 1/1 of 'recover-missing-branch-committee-owner-preference', auto-split because the parent was too large to build in one pass.)
++To resolve this issue, you can try:
 +
-+[reuse-first: matched qafix-pareto-2080-07062319-slice-2-identify-affected-lines]
++* Checking out a previous commit where the build was successful (e.g., `git checkout e6ce948d183485c56459f4d8668fcc8c25fab8f5`) to confirm that the problem lies in the recent changes.
++* If the `package.json` file is missing or corrupted, restore it from a previous backup or recreate it from scratch.
++
++AUTO-REMEDIATION DIRECTIVE
++Claude capacity or budget blocked this task. Use the selected non-Claude/local coder path; make a concrete change and commit it.
++Failure context: auto-remediate: backlog offloaded from Claude budget/capacity guard
++
++Do not stop at analysis or manual review. Make the smallest complete code change, restore any missing/deleted branch or worktree artifacts if needed, run the relevant checks, and commit the implementation.
++
++PRIOR ATTEMPT FAILED — address specifically: verify pass (conf=0.85); integrate=BLOCKED (local)
++Make a concrete, tested change and COMMIT it; do not return with no edits.
++
++[reuse-first: matched patch-template-relfix-beethoven-07061350]
++
++STRUCTURAL QUARANTINE REWORK
++Original task: relfix-beethoven-07061350
++Replacement task: rework-buildfail-relfix-beethoven-07061350-dabfa6b
++Blocked category: buildfail
++Blocked context: verify pass (conf=0.85); integrate=BLOCKED (local) | advisory (shipped on green build): verify: Removed tests in runner/tests/test_idea_decomposition.py; judge: Introduce new functionality without proper testing and validation. Consider adding more tests to ensure correctness. | Introduce new functionality without proper testing and valida
++
++This is a build-green recovery task. Fix only the source/config/dependency issue needed for the production build to pass. Reuse dependency prewarm/cache and avoid package-manager churn unless the detected repo setup requires it.
++
++Execution rules:
++- Prefer reuse before drafting: search existing repo helpers, merged-diff library, patch templates, and sibling patterns.
++- Keep the diff small and independently mergeable.
++- Run the relevant build/test/QA command and commit the patch.
++- Do not reintroduce the blocker that caused quarantine.
 +
 +AGENTIC-REPAIR DIRECTIVE
-+Repair category: orphaned-running
-+Original task slug: recover-missing-branch-committee-owner-preference-split-patch-transplant-into-2-
++Repair category: noop
++Original task slug: rework-buildfail-relfix-beethoven-07061350-dabfa6b
 +
 +This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
 +
@@ -828,347 +860,7 @@
 +
 +Failure context:
 +```
-+pipeline: 4-stage (large complex task)
-+Task was orphaned RUNNING >20m; resume existing work and finish.
++agent run failed after 3 error-retries
++Previous run produced no committable changes; make the smallest concrete implementation and commit.
 +```
 +
-
-# 2026-07-11 21:40:47.485412
-+Recover tested-but-not-integrated work whose agent branch is missing.
-+Goal: recreate the smallest equivalent patch, commit it on agent/recover-missing-branch-improve-enhance-branch-management-with-automated-repair-repo-setup, run the project build/tests, and let the canonical merge train integrate it.
-+Do not add new scope. Prefer cache/transplant/template context below before drafting.
-+
-+Original slug: improve-enhance-branch-management-with-automated-repair-repo-setup
-+Original task note: verify pass (conf=0.85); integrate=BLOCKED (local)
-+
-+PATCH TEMPLATE 2363d60d31da
-+Intent: 0000000 0398eb6 07071626 100644 1ad7cbc 27d8ff8 2807983 4a3feba 64772 750555b 7c6d0c56f0df 865741a 8b0aeb3 8e31575 919b0d6 98ff235edcf60da935efc9cee8e743a19ac8fd70 a3245a1 acceptance across acting active actual actually adapt
-+Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
-+Implementation slots:
-+1. Locate the existing owner module/function before adding new files.
-+2. Reuse matching project helpers and naming conventions.
-+3. Add or update the narrowest test/check that proves the requested behavior.
-+Prior merged patterns to adapt:
-+- beethoven/recover-missing-branch-relfix-beethoven-07071626 sim=0.251: PATCH TEMPLATE e47542c3d860
-+Intent: 0398eb6 07071626 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 865741a 8e31575 919b0d6 a3245a1 acceptance agent agentic analysis artifacts automatic beethoven before behavior below blocking boundary branch
-+Acceptance: preserve existing behavior, make the smallest mergea
-+
-+Original prompt:
-+PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.365).
-+Prior intent: PATCH TEMPLATE e47542c3d860
-+Intent: 0398eb6 07071626 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 865741a 8e31575 919b0d6 a3245a1 acceptance agent agentic analysis artifacts automatic beethoven before behavior below blocking boundary branch
-+Acceptance: preserve existing behavior, make the smallest mergea
-+Relevant prior diff excerpt:
-+
-+
-+MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE beethoven/recover-missing-branch-relfix-beethoven-07071626 similarity=0.231: PATCH TEMPLATE e47542c3d860
-+Intent: 0398eb6 07071626 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 865741a 8e31575 919b0d6 a3245a1 acceptance agent agentic analysis artifacts automatic beethoven before behavior below blocking boundary branch
-+Acceptance: preserve existing behavior, make the smallest mergea
-+
-+REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
-+SOURCE: beethoven/recover-missing-branch-relfix-beethoven-07071626
-+SUMMARY: PATCH TEMPLATE e47542c3d860
-+Intent: 0398eb6 07071626 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 865741a 8e31575 919b0d6 a3245a1 acceptance agent agentic analysis artifacts automatic beethoven before behavior below blocking boundary branch
-+Acceptance: preserve existing behavior, make the smallest mergea
-+
-+PATCH TEMPLATE 7c6d0c56f0df
-+Intent: automated because branch build dependencies enhance improve installing large libraries management minimally missing necessary parent repair setup split tools
-+Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
-+Implementation slots:
-+1. Locate the existing owner module/function before adding new files.
-+2. Reuse matching project helpers and naming conventions.
-+3. Add or update the narrowest test/check that proves the requested behavior.
-+Prior merged patterns to adapt: none found; keep the patch template reusable.
-+[patch-template:7c6d0c56f0df]
-+
-+If dependencies or build tools are missing, repair the repo setup minimally by installing necessary tools and libraries.
-+
-+(Sub-task 2/5 of 'improve-enhance-branch-management-with-automated', auto-split because the parent was too large to build in one pass.)
-+
-+[reuse-first: matched recover-missing-branch-relfix-beethoven-07071626]
-+
-+AGENTIC-REPAIR DIRECTIVE
-+Repair category: runner-exception
-+Original task slug: recover-missing-branch-improve-enhance-branch-management-with-automated-repair-repo-setup
-+
-+This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
-+
-+The runner hit a transient technical exception. Resume the same task, preserve prior work, repair the root cause or use provider failover, and finish through build/test/commit.
-+
-+Required completion behavior:
-+- Reproduce or inspect the concrete failure before changing broad strategy.
-+- If dependencies/build tools are missing, repair the repo setup or install path minimally.
-+- If tests/build fail, fix source/config/tests until the relevant checks are green.
-+- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
-+- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
-+
-+Failure context:
-+```
-+runner exception: [Errno 2] No such file or directory: 'claude'
-+```
-+
-
-# 2026-07-11 21:59:58.327693
-+Recover tested-but-not-integrated work whose agent branch is missing.
-+Goal: recreate the smallest equivalent patch, commit it on agent/recover-missing-branch-improve-enhance-branch-management-with-automated-repair-repo-setup, run the project build/tests, and let the canonical merge train integrate it.
-+Do not add new scope. Prefer cache/transplant/template context below before drafting.
-+
-+Original slug: improve-enhance-branch-management-with-automated-repair-repo-setup
-+Original task note: verify pass (conf=0.85); integrate=BLOCKED (local)
-+
-+PATCH TEMPLATE 2363d60d31da
-+Intent: 0000000 0398eb6 07071626 100644 1ad7cbc 27d8ff8 2807983 4a3feba 64772 750555b 7c6d0c56f0df 865741a 8b0aeb3 8e31575 919b0d6 98ff235edcf60da935efc9cee8e743a19ac8fd70 a3245a1 acceptance across acting active actual actually adapt
-+Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
-+Implementation slots:
-+1. Locate the existing owner module/function before adding new files.
-+2. Reuse matching project helpers and naming conventions.
-+3. Add or update the narrowest test/check that proves the requested behavior.
-+Prior merged patterns to adapt:
-+- beethoven/recover-missing-branch-relfix-beethoven-07071626 sim=0.251: PATCH TEMPLATE e47542c3d860
-+Intent: 0398eb6 07071626 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 865741a 8e31575 919b0d6 a3245a1 acceptance agent agentic analysis artifacts automatic beethoven before behavior below blocking boundary branch
-+Acceptance: preserve existing behavior, make the smallest mergea
-+
-+Original prompt:
-+PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.365).
-+Prior intent: PATCH TEMPLATE e47542c3d860
-+Intent: 0398eb6 07071626 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 865741a 8e31575 919b0d6 a3245a1 acceptance agent agentic analysis artifacts automatic beethoven before behavior below blocking boundary branch
-+Acceptance: preserve existing behavior, make the smallest mergea
-+Relevant prior diff excerpt:
-+
-+
-+MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE beethoven/recover-missing-branch-relfix-beethoven-07071626 similarity=0.231: PATCH TEMPLATE e47542c3d860
-+Intent: 0398eb6 07071626 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 865741a 8e31575 919b0d6 a3245a1 acceptance agent agentic analysis artifacts automatic beethoven before behavior below blocking boundary branch
-+Acceptance: preserve existing behavior, make the smallest mergea
-+
-+REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
-+SOURCE: beethoven/recover-missing-branch-relfix-beethoven-07071626
-+SUMMARY: PATCH TEMPLATE e47542c3d860
-+Intent: 0398eb6 07071626 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 865741a 8e31575 919b0d6 a3245a1 acceptance agent agentic analysis artifacts automatic beethoven before behavior below blocking boundary branch
-+Acceptance: preserve existing behavior, make the smallest mergea
-+
-+PATCH TEMPLATE 7c6d0c56f0df
-+Intent: automated because branch build dependencies enhance improve installing large libraries management minimally missing necessary parent repair setup split tools
-+Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
-+Implementation slots:
-+1. Locate the existing owner module/function before adding new files.
-+2. Reuse matching project helpers and naming conventions.
-+3. Add or update the narrowest test/check that proves the requested behavior.
-+Prior merged patterns to adapt: none found; keep the patch template reusable.
-+[patch-template:7c6d0c56f0df]
-+
-+If dependencies or build tools are missing, repair the repo setup minimally by installing necessary tools and libraries.
-+
-+(Sub-task 2/5 of 'improve-enhance-branch-management-with-automated', auto-split because the parent was too large to build in one pass.)
-+
-+[reuse-first: matched recover-missing-branch-relfix-beethoven-07071626]
-+
-+AGENTIC-REPAIR DIRECTIVE
-+Repair category: runner-exception
-+Original task slug: recover-missing-branch-improve-enhance-branch-management-with-automated-repair-repo-setup
-+
-+This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
-+
-+The runner hit a transient technical exception. Resume the same task, preserve prior work, repair the root cause or use provider failover, and finish through build/test/commit.
-+
-+Required completion behavior:
-+- Reproduce or inspect the concrete failure before changing broad strategy.
-+- If dependencies/build tools are missing, repair the repo setup or install path minimally.
-+- If tests/build fail, fix source/config/tests until the relevant checks are green.
-+- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
-+- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
-+
-+Failure context:
-+```
-+runner exception: [Errno 2] No such file or directory: 'claude'
-+```
-+
-+
-+## ATTEMPT 1 FAILED — FIX THE ERROR (retry 1/3)
-+Error classified as: timeout
-+Your previous attempt to complete this task failed with the following error. Diagnose and fix the root cause — do not just retry the same approach. If a dependency is missing, install it. If a file path is wrong, correct it. If a test fails, fix the code to pass the test. If an import is missing, add it.
-+
-+The previous attempt for 'recover-missing-branch-improve-enhance-branch-management-with-automated-repair-repo-setup' timed out. Increase the timeout or token budget and retry.
-+ERROR OUTPUT:
-+```
-+
-+ollama timeout
-+```
-+
-
-# 2026-07-11 22:20:28.135810
-+Recover tested-but-not-integrated work whose agent branch is missing.
-+Goal: recreate the smallest equivalent patch, commit it on agent/recover-missing-branch-improve-enhance-branch-management-with-automated-repair-repo-setup, run the project build/tests, and let the canonical merge train integrate it.
-+Do not add new scope. Prefer cache/transplant/template context below before drafting.
-+
-+Original slug: improve-enhance-branch-management-with-automated-repair-repo-setup
-+Original task note: verify pass (conf=0.85); integrate=BLOCKED (local)
-+
-+PATCH TEMPLATE 2363d60d31da
-+Intent: 0000000 0398eb6 07071626 100644 1ad7cbc 27d8ff8 2807983 4a3feba 64772 750555b 7c6d0c56f0df 865741a 8b0aeb3 8e31575 919b0d6 98ff235edcf60da935efc9cee8e743a19ac8fd70 a3245a1 acceptance across acting active actual actually adapt
-+Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
-+Implementation slots:
-+1. Locate the existing owner module/function before adding new files.
-+2. Reuse matching project helpers and naming conventions.
-+3. Add or update the narrowest test/check that proves the requested behavior.
-+Prior merged patterns to adapt:
-+- beethoven/recover-missing-branch-relfix-beethoven-07071626 sim=0.251: PATCH TEMPLATE e47542c3d860
-+Intent: 0398eb6 07071626 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 865741a 8e31575 919b0d6 a3245a1 acceptance agent agentic analysis artifacts automatic beethoven before behavior below blocking boundary branch
-+Acceptance: preserve existing behavior, make the smallest mergea
-+
-+Original prompt:
-+PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.365).
-+Prior intent: PATCH TEMPLATE e47542c3d860
-+Intent: 0398eb6 07071626 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 865741a 8e31575 919b0d6 a3245a1 acceptance agent agentic analysis artifacts automatic beethoven before behavior below blocking boundary branch
-+Acceptance: preserve existing behavior, make the smallest mergea
-+Relevant prior diff excerpt:
-+
-+
-+MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE beethoven/recover-missing-branch-relfix-beethoven-07071626 similarity=0.231: PATCH TEMPLATE e47542c3d860
-+Intent: 0398eb6 07071626 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 865741a 8e31575 919b0d6 a3245a1 acceptance agent agentic analysis artifacts automatic beethoven before behavior below blocking boundary branch
-+Acceptance: preserve existing behavior, make the smallest mergea
-+
-+REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
-+SOURCE: beethoven/recover-missing-branch-relfix-beethoven-07071626
-+SUMMARY: PATCH TEMPLATE e47542c3d860
-+Intent: 0398eb6 07071626 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 865741a 8e31575 919b0d6 a3245a1 acceptance agent agentic analysis artifacts automatic beethoven before behavior below blocking boundary branch
-+Acceptance: preserve existing behavior, make the smallest mergea
-+
-+PATCH TEMPLATE 7c6d0c56f0df
-+Intent: automated because branch build dependencies enhance improve installing large libraries management minimally missing necessary parent repair setup split tools
-+Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
-+Implementation slots:
-+1. Locate the existing owner module/function before adding new files.
-+2. Reuse matching project helpers and naming conventions.
-+3. Add or update the narrowest test/check that proves the requested behavior.
-+Prior merged patterns to adapt: none found; keep the patch template reusable.
-+[patch-template:7c6d0c56f0df]
-+
-+If dependencies or build tools are missing, repair the repo setup minimally by installing necessary tools and libraries.
-+
-+(Sub-task 2/5 of 'improve-enhance-branch-management-with-automated', auto-split because the parent was too large to build in one pass.)
-+
-+[reuse-first: matched recover-missing-branch-relfix-beethoven-07071626]
-+
-+AGENTIC-REPAIR DIRECTIVE
-+Repair category: runner-exception
-+Original task slug: recover-missing-branch-improve-enhance-branch-management-with-automated-repair-repo-setup
-+
-+This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
-+
-+The runner hit a transient technical exception. Resume the same task, preserve prior work, repair the root cause or use provider failover, and finish through build/test/commit.
-+
-+Required completion behavior:
-+- Reproduce or inspect the concrete failure before changing broad strategy.
-+- If dependencies/build tools are missing, repair the repo setup or install path minimally.
-+- If tests/build fail, fix source/config/tests until the relevant checks are green.
-+- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
-+- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
-+
-+Failure context:
-+```
-+runner exception: [Errno 2] No such file or directory: 'claude'
-+```
-+
-+
-+## ATTEMPT 1 FAILED — FIX THE ERROR (retry 1/3)
-+Error classified as: timeout
-+Your previous attempt to complete this task failed with the following error. Diagnose and fix the root cause — do not just retry the same approach. If a dependency is missing, install it. If a file path is wrong, correct it. If a test fails, fix the code to pass the test. If an import is missing, add it.
-+
-+The previous attempt for 'recover-missing-branch-improve-enhance-branch-management-with-automated-repair-repo-setup' timed out. Increase the timeout or token budget and retry.
-+ERROR OUTPUT:
-+```
-+
-+ollama timeout
-+```
-+
-+
-+## ATTEMPT 2 FAILED — FIX THE ERROR (retry 2/3)
-+Error classified as: timeout
-+Your previous attempt to complete this task failed with the following error. Diagnose and fix the root cause — do not just retry the same approach. If a dependency is missing, install it. If a file path is wrong, correct it. If a test fails, fix the code to pass the test. If an import is missing, add it.
-+
-+The previous attempt for 'recover-missing-branch-improve-enhance-branch-management-with-automated-repair-repo-setup' timed out. Increase the timeout or token budget and retry.
-+ERROR OUTPUT:
-+```
-+
-+ollama timeout
-+```
-+
-
-# 2026-07-13 02:59:48.432714
-+PATCH TEMPLATE df518aba82b5
-+Intent: 07062319 07071626 8b92d078e856 _reuse_context above acceptance adapt agent agentic alter analysis apply artifacts because beethoven before behavior below blocks branch broad build candidate capabilities
-+Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
-+Implementation slots:
-+1. Locate the existing owner module/function before adding new files.
-+2. Reuse matching project helpers and naming conventions.
-+3. Add or update the narrowest test/check that proves the requested behavior.
-+Prior merged patterns to adapt:
-+- pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 sim=0.489: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+- pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi sim=0.476: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+[patch-template:df518aba82b5]
-+
-+MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 similarity=0.484: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi similarity=0.478: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+
-+REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
-+SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4
-+SUMMARY: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+
-+MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 similarity=0.381: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi similarity=0.331: PATCH TEMPLATE 8b92d078e856
-+Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
-+Acceptance: preserve existing behavior,
-+
-+REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
-+SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4
-+SUMMARY: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
-+SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
-+
-+merged_diff_library, patch_transplant, result_cache and pgvector embeddings all exist but fire
-+    at RUN time. Move the match to ENQUEUE time: in intake_watcher (and prompt_factory's insert
-+    path), embed the new task prompt and query the merged-diff library + capabilities for
-+    similarity above a threshold; on a strong hit, tag the task row (note: transplant-candidate,
-+    ref to the source diff) AND force_coder to the cheapest lane so the agent starts from the
-+    prior patch (inject via the existing _reuse_context pattern from integration_sweeper). On a
-+    VERY strong hit for mechanical kinds, auto-fold: mark the task DECOMPOSED with a single child
-+    that is a pure transplant-apply task. Never auto-fold material tasks. Tests: threshold
-+    behavior with synthetic embeddings, material exclusion, reuse-context injection.
-+
-+Proof: `python3 -m pytest runner/tests -q -k transplant` exits 0
-+
-+AGENTIC-REPAIR DIRECTIVE
-+Repair category: orphaned-running
-+Original task slug: relfix-enqueue-transplant
-+
-+This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
-+
-+Resume this same task through an agentic coder. Inspect the existing branch/worktree/artifacts, preserve useful prior work, repair the technical issue, run the relevant checks, and commit.
-+
-+Required completion behavior:
-+- Reproduce or inspect the concrete failure before changing broad strategy.
-+- If dependencies/build tools are missing, repair the repo setup or install path minimally.
-+- If tests/build fail, fix source/config/tests until the relevant checks are green.
-+- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
-+- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
-+
-+Failure context:
-+```
-+agentic-repair:rework; same-task repair via ollama
-+Task was orphaned RUNNING >20m; resume existing work and finish.
-+```
-+
-+
-+[reuse-first: matched qafix-pareto-2080-07062319-slice-1-slice-1-slice-4]
