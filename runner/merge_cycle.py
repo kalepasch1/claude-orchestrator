@@ -1,29 +1,22 @@
 #!/usr/bin/env python3
 """
-merge_cycle.py — diagnostics for branch-blocked work in the merge queue.
-
-Provides detect_missing_branches() (grouped diagnostics) and run() for the
-periodic scheduler. Stored under controls key 'merge_cycle_pressure' so
-operators and the SLO controller can read the snapshot without a live DB query.
+merge_cycle.py - diagnostics for branch-blocked work in the merge queue.
 """
 import datetime
-import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
-CONTROL_KEY = "merge_cycle_pressure"
-
 
 def detect_missing_branches():
     """Return QUEUED tasks blocked on branch errors, grouped by project and target branch.
 
     Returns {project_name: {branch_name: {count: int, oldest_age_s: int}}}.
-    Filters tasks where state='QUEUED' and note contains 'branch'. Groups by
-    (project_name, base_branch) so operators can see how many tasks are stuck per
-    project/target-branch pair and how stale the backlog is.
+    Filters tasks where state='QUEUED' and note contains 'branch' (agentic-repair:missing-branch
+    and similar notes). Groups by (project_name, base_branch) so operators can see how many
+    tasks are stuck per project/target-branch pair and how stale the backlog is.
     Returns empty dict on DB error or no matching rows.
     """
     try:
@@ -45,7 +38,7 @@ def detect_missing_branches():
         projects = {}
 
     now = datetime.datetime.now(datetime.timezone.utc)
-    groups = {}
+    groups = {}  # (project_name, branch_name) -> {count, oldest_age_s}
 
     for row in rows:
         project_id = row.get("project_id")
@@ -77,30 +70,6 @@ def detect_missing_branches():
     return result
 
 
-def run():
-    """Periodic entry: snapshot branch-blocked queue pressure to the controls table."""
-    data = detect_missing_branches()
-    total = sum(v["count"] for proj in data.values() for v in proj.values())
-
-    payload = {
-        "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "total_blocked": total,
-        "by_project": data,
-    }
-    try:
-        db.insert("controls", {
-            "key": CONTROL_KEY,
-            "value": json.dumps(payload),
-            "updated_at": "now()",
-        }, upsert=True)
-    except Exception:
-        pass
-
-    if total:
-        print(f"[merge_cycle] {total} branch-blocked tasks across {len(data)} project(s)")
-    return payload
-
-
 # ── inline unit tests ────────────────────────────────────────────────────────
 
 def _run_tests():
@@ -111,9 +80,21 @@ def _run_tests():
     _PROJ_B = "proj-b-id"
 
     def _ts(seconds_ago):
-        return (_NOW - _dt.timedelta(seconds=seconds_ago)).isoformat().replace("+00:00", "Z")
+        t = _NOW - _dt.timedelta(seconds=seconds_ago)
+        return t.isoformat().replace("+00:00", "Z")
 
-    def _detect(rows, project_rows, *, now=_NOW):
+    def _run(rows, project_rows, *, now=_NOW):
+        # Patch datetime.now so oldest_age_s is deterministic
+        import unittest.mock as mock
+        orig = _dt.datetime.now
+        _dt.datetime.now = lambda tz=None: _NOW
+        try:
+            return _detect(rows, project_rows, now=_NOW)
+        finally:
+            _dt.datetime.now = orig
+
+    def _detect(rows, project_rows, *, now):
+        """Pure-Python version of detect_missing_branches for unit testing."""
         if not rows:
             return {}
         projects = {p["id"]: p.get("name") or str(p["id"]) for p in project_rows}
@@ -148,15 +129,15 @@ def _run_tests():
 
     # T2: single task
     rows = [{"project_id": _PROJ_A, "base_branch": "main",
-             "created_at": _ts(3600), "note": "agentic-repair:missing-branch",
+             "created_at": _ts(3600), "note": "agentic-repair:missing-branch; via ollama",
              "slug": "fix-auth"}]
     r = _detect(rows, projs, now=_NOW)
     assert r == {"alpha": {"main": {"count": 1, "oldest_age_s": 3600}}}, r
 
     # T3: two tasks same project/branch -> count=2, oldest wins
     rows = [
-        {"project_id": _PROJ_A, "base_branch": "main", "created_at": _ts(1000), "note": "missing branch", "slug": "s1"},
-        {"project_id": _PROJ_A, "base_branch": "main", "created_at": _ts(5000), "note": "missing branch", "slug": "s2"},
+        {"project_id": _PROJ_A, "base_branch": "main", "created_at": _ts(1000), "note": "missing branch x", "slug": "s1"},
+        {"project_id": _PROJ_A, "base_branch": "main", "created_at": _ts(5000), "note": "missing branch y", "slug": "s2"},
     ]
     r = _detect(rows, projs, now=_NOW)
     assert r["alpha"]["main"]["count"] == 2
@@ -182,12 +163,16 @@ def _run_tests():
     assert r == {"alpha": {"main": {"count": 1, "oldest_age_s": 500}}}
 
     # T6: malformed created_at falls back to age_s=0 without raising
-    rows = [{"project_id": _PROJ_A, "base_branch": "main", "created_at": "not-a-date", "note": "branch", "slug": "s1"}]
+    rows = [
+        {"project_id": _PROJ_A, "base_branch": "main", "created_at": "not-a-date", "note": "branch", "slug": "s1"},
+    ]
     r = _detect(rows, projs, now=_NOW)
     assert r == {"alpha": {"main": {"count": 1, "oldest_age_s": 0}}}
 
     # T7: unknown project_id falls back to str(project_id) as project_name
-    rows = [{"project_id": "unknown-id", "base_branch": "main", "created_at": _ts(10), "note": "branch", "slug": "s1"}]
+    rows = [
+        {"project_id": "unknown-id", "base_branch": "main", "created_at": _ts(10), "note": "branch", "slug": "s1"},
+    ]
     r = _detect(rows, projs, now=_NOW)
     assert "unknown-id" in r
 
