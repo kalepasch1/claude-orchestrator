@@ -1,106 +1,133 @@
 #!/usr/bin/env python3
 """
-marginal_value_scheduler.py - Diminishing-returns task prioritization.
+marginal_value_scheduler.py — priority/duration-based task ranking.
 
-Applies marginal value scoring to prevent any single project from monopolizing
-the fleet. Each additional RUNNING/QUEUED task for a project is worth less than
-the last, pushing the queue toward a balanced portfolio of work.
+Calculates the marginal value of each task based on its priority weight and
+estimated duration.  Higher priority and shorter duration yield higher marginal
+value, so the swarm picks impactful quick wins first.
 
-score_marginal(task, ctx) = ev_score / (1 + active_count_for_project)^decay
+Functions:
+    calculate_marginal_value(task)  — value = priority_weight / max(duration, 1)
+    rank_tasks(tasks)              — sort by marginal value descending
+    select_next_batch(tasks, n)    — top-N tasks for next execution
+    stats()                        — module statistics
 
-Environment / fleet_config knobs:
-  ORCH_MARGINAL_ENABLED   - enable marginal re-ranking (default true)
-  ORCH_MARGINAL_DECAY     - decay exponent (default 0.5)
-  ORCH_MARGINAL_DONE_WINDOW_H - hours of recent DONE tasks to count (default 4)
+Feature flag: ORCH_MARGINAL_VALUE_ENABLED (default "true")
 """
-import os, sys, math, json, time
+import os, sys, threading
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
-import thermal_map
 
-DECAY = float(os.environ.get("ORCH_MARGINAL_DECAY", "0.5"))
-DONE_WINDOW_H = int(os.environ.get("ORCH_MARGINAL_DONE_WINDOW_H", "4"))
-TOP_N = 50
+ENABLED = os.environ.get("ORCH_MARGINAL_VALUE_ENABLED", "true").lower() in ("true", "1", "yes")
 
+# Priority weight mapping — lower numeric priority = higher urgency = higher weight.
+# Mirrors priority_scorer.py where priority 1 is most urgent.
+PRIORITY_WEIGHTS = {
+    "critical": 100,
+    "high": 75,
+    "medium": 50,
+    "low": 25,
+}
+DEFAULT_PRIORITY_WEIGHT = 50
 
-def _is_enabled():
-    val = os.environ.get("ORCH_MARGINAL_ENABLED", "true").lower()
-    if val in ("false", "0", "no", "off"):
-        return False
-    try:
-        rows = db.select("fleet_config", {"select": "value", "key": "eq.ORCH_MARGINAL_ENABLED"}) or []
-        if rows:
-            return str(rows[0].get("value", "true")).lower() in ("true", "1", "yes", "on")
-    except Exception:
-        pass
-    return True
-
-
-def _active_counts():
-    counts = {}
-    try:
-        running = db.select("tasks", {"select": "project_id", "state": "eq.RUNNING"}) or []
-        for r in running:
-            pid = r.get("project_id") or "unknown"
-            counts[pid] = counts.get(pid, 0) + 1
-    except Exception:
-        pass
-    try:
-        rows = db.select("tasks", {"select": "project_id", "state": "eq.DONE",
-                                    "order": "updated_at.desc", "limit": "200"}) or []
-        for r in rows:
-            pid = r.get("project_id") or "unknown"
-            counts[pid] = counts.get(pid, 0) + 0.5
-    except Exception:
-        pass
-    return counts
+_lock = threading.Lock()
+_stats = {
+    "tasks_scored": 0,
+    "tasks_ranked": 0,
+    "batches_selected": 0,
+}
 
 
-def score_marginal(task, ctx, active_counts=None):
-    ev = thermal_map.score(task, ctx)
-    if active_counts is None:
-        active_counts = {}
-    pid = task.get("project_id") or task.get("project") or "unknown"
-    active = active_counts.get(pid, 0)
-    decay = float(os.environ.get("ORCH_MARGINAL_DECAY", str(DECAY)))
-    return ev / math.pow(1 + active, decay)
+def _priority_weight(task):
+    """Extract a numeric priority weight from a task dict.
 
-
-def rank(ctx=None):
-    if not _is_enabled():
-        return {"enabled": False, "ranked": 0}
-    if ctx is None:
-        ctx = {}
-    try:
-        tasks = db.select("tasks", {
-            "select": "id,slug,project_id,kind,prompt,deps,attempt,transient_retries,note,remediation_count",
-            "state": "eq.QUEUED", "order": "created_at.asc", "limit": "200"}) or []
-    except Exception as e:
-        return {"ranked": 0, "error": str(e)}
-    if not tasks:
-        return {"ranked": 0}
-    active = _active_counts()
-    scored = [(score_marginal(t, ctx, active), t) for t in tasks]
-    scored.sort(key=lambda x: -x[0])
-    n = 0
-    for idx, (s, t) in enumerate(scored[:TOP_N]):
+    Checks for an explicit 'priority_weight' field first, then maps
+    string 'priority' labels, then treats numeric 'priority' as an
+    inverse score (lower number = higher weight).
+    """
+    pw = task.get("priority_weight")
+    if pw is not None:
         try:
-            db.update("tasks", {"id": t["id"]}, {"priority": idx + 1})
-            n += 1
-        except Exception:
+            return float(pw)
+        except (TypeError, ValueError):
             pass
-    return {"ranked": len(scored), "written": n}
+    pri = task.get("priority")
+    if isinstance(pri, str):
+        return float(PRIORITY_WEIGHTS.get(pri.lower(), DEFAULT_PRIORITY_WEIGHT))
+    if pri is not None:
+        try:
+            # Numeric priority: lower = more urgent, invert to weight.
+            # priority 1 → weight 100, priority 1000 → weight 0.1
+            p = float(pri)
+            return max(100.0 / max(p, 1), 0.1)
+        except (TypeError, ValueError):
+            pass
+    return float(DEFAULT_PRIORITY_WEIGHT)
 
 
-def run():
+def _duration_estimate(task):
+    """Extract duration estimate from a task, defaulting to 1."""
+    d = task.get("duration_estimate")
+    if d is None:
+        d = task.get("duration")
+    if d is None:
+        return 1.0
     try:
-        result = rank()
-        print(f"marginal_value_scheduler: {result}")
-        return result
-    except Exception as e:
-        print(f"marginal_value_scheduler: skipped ({e})")
-        return {"ranked": 0, "error": str(e)}
+        return float(d)
+    except (TypeError, ValueError):
+        return 1.0
 
 
-if __name__ == "__main__":
-    run()
+def calculate_marginal_value(task):
+    """Compute marginal value = priority_weight / max(duration_estimate, 1).
+
+    Higher priority and shorter duration produce a higher value.
+    Returns 0.0 when the feature flag is disabled.
+    """
+    if not ENABLED:
+        return 0.0
+    weight = _priority_weight(task)
+    duration = max(_duration_estimate(task), 1)
+    value = weight / duration
+    with _lock:
+        _stats["tasks_scored"] += 1
+    return value
+
+
+def rank_tasks(tasks):
+    """Sort tasks by marginal value descending.
+
+    Returns a list of dicts, each containing the original task under 'task'
+    and its computed 'marginal_value'.  Empty input returns [].
+    """
+    if not tasks:
+        return []
+    ranked = []
+    for t in tasks:
+        mv = calculate_marginal_value(t)
+        ranked.append({"task": t, "marginal_value": mv})
+    ranked.sort(key=lambda r: r["marginal_value"], reverse=True)
+    with _lock:
+        _stats["tasks_ranked"] += len(ranked)
+    return ranked
+
+
+def select_next_batch(tasks, batch_size=5):
+    """Select the top N tasks by marginal value for next execution.
+
+    Returns a list of ranked-task dicts (same shape as rank_tasks output),
+    capped at batch_size.  Gracefully handles empty/None input.
+    """
+    if not tasks:
+        return []
+    ranked = rank_tasks(tasks)
+    batch = ranked[:batch_size]
+    with _lock:
+        _stats["batches_selected"] += 1
+    return batch
+
+
+def stats() -> dict:
+    """Return module statistics (thread-safe snapshot)."""
+    with _lock:
+        return dict(_stats)
