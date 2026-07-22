@@ -17,6 +17,24 @@ Branch-detection and regeneration utilities (zero-spend, standalone):
 import os, subprocess, json, re
 import db
 
+
+def _git_commit_env():
+    """Return a minimal env dict for git commit operations.
+
+    Reads fleet-wide identity vars (non-sensitive: name/email for commits only).
+    Does not spread os.environ — only passes what git needs to commit.
+    """
+    _name = os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent")
+    _email = os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local")
+    return {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", ""),
+        "GIT_AUTHOR_NAME": _name,
+        "GIT_AUTHOR_EMAIL": _email,
+        "GIT_COMMITTER_NAME": _name,
+        "GIT_COMMITTER_EMAIL": _email,
+    }
+
 def recover(repo, slug, base, project=None):
     """Attempt mechanical recovery of a missing branch. Returns dict with:
     - ok: bool — whether recovery succeeded
@@ -117,11 +135,7 @@ def _replay_stored_patch(repo, slug, branch, base):
                         "reason": f"patch apply failed: {proc.stderr[:200]}"}
 
         # Commit
-        env = {**os.environ,
-               "GIT_AUTHOR_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
-               "GIT_AUTHOR_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local"),
-               "GIT_COMMITTER_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
-               "GIT_COMMITTER_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local")}
+        env = _git_commit_env()
         subprocess.run(["git", "add", "-A"], cwd=wt, env=env, capture_output=True)
         subprocess.run(["git", "commit", "--no-verify", "-m", f"patch-recovery: {slug}"],
                        cwd=wt, env=env, capture_output=True)
@@ -212,49 +226,6 @@ def _template_adaptation(repo, slug, branch, base, project=None):
             return {"ok": False, "method": "template", "branch": branch,
                     "reason": "similar diff found but patch_diff is empty"}
         return _apply_patch_to_branch(repo, patch, branch, base)
-    except Exception as e:
-        return {"ok": False, "method": "template", "branch": branch, "reason": str(e)[:200]}
-
-
-def _apply_patch_to_branch(repo, patch, branch, base):
-    """Create a fresh branch from base, apply an arbitrary patch string, and commit."""
-    try:
-        if not os.path.isdir(repo):
-            return {"ok": False, "method": "template", "branch": branch,
-                    "reason": f"repo path not accessible: {repo}"}
-        _git(repo, "branch", "-D", branch)
-        _git(repo, "branch", branch, base)
-        wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt",
-                          f"template-{branch.replace('/', '-')}")
-        os.makedirs(os.path.dirname(wt), exist_ok=True)
-        _free_branch(repo, branch)
-        r = _git(repo, "worktree", "add", "-f", wt, branch, timeout=120)
-        if r.returncode != 0:
-            return {"ok": False, "method": "template", "branch": branch,
-                    "reason": f"worktree setup failed: {r.stderr[:200]}"}
-        try:
-            proc = subprocess.run(["git", "apply", "--3way", "-"], cwd=wt,
-                                  input=patch, capture_output=True, text=True, timeout=120)
-            if proc.returncode != 0:
-                return {"ok": False, "method": "template", "branch": branch,
-                        "reason": f"template patch apply failed: {proc.stderr[:200]}"}
-            env = {**os.environ,
-                   "GIT_AUTHOR_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Kale Aaron Pasch"),
-                   "GIT_AUTHOR_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "kalepasch@gmail.com"),
-                   "GIT_COMMITTER_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Kale Aaron Pasch"),
-                   "GIT_COMMITTER_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "kalepasch@gmail.com")}
-            subprocess.run(["git", "add", "-A"], cwd=wt, env=env, capture_output=True)
-            subprocess.run(["git", "commit", "--no-verify", "-m", f"template-recovery: {branch}"],
-                           cwd=wt, env=env, capture_output=True)
-            ahead = subprocess.run(["git", "rev-list", "--count", f"{base}..HEAD"],
-                                   cwd=wt, capture_output=True, text=True)
-            if int((ahead.stdout or "0").strip() or "0") > 0:
-                return {"ok": True, "method": "template", "branch": branch}
-            return {"ok": False, "method": "template", "branch": branch,
-                    "reason": "template patch produced no commits"}
-        finally:
-            subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=repo,
-                           capture_output=True, timeout=30)
     except Exception as e:
         return {"ok": False, "method": "template", "branch": branch, "reason": str(e)[:200]}
 
@@ -400,6 +371,9 @@ def _apply_diff_to_branch(repo, slug, branch, base, diff, source):
     """Apply a known diff to a fresh branch off base. Returns recover-style dict."""
     wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", f"regen-{slug}")
     try:
+        wt_parent = os.path.dirname(wt)
+        if wt_parent:
+            os.makedirs(wt_parent, exist_ok=True)
         _git(repo, "branch", "-D", branch)
         _git(repo, "branch", branch, base)
         _free_branch(repo, branch)
@@ -414,11 +388,7 @@ def _apply_diff_to_branch(repo, slug, branch, base, diff, source):
             return {"ok": False, "method": "cache_replay", "branch": branch,
                     "reason": f"diff apply failed: {proc.stderr[:200]}"}
 
-        env = {**os.environ,
-               "GIT_AUTHOR_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
-               "GIT_AUTHOR_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local"),
-               "GIT_COMMITTER_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
-               "GIT_COMMITTER_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local")}
+        env = _git_commit_env()
         subprocess.run(["git", "add", "-A"], cwd=wt, env=env, capture_output=True)
         r2 = subprocess.run(["git", "commit", "--no-verify", "-m",
                             f"regen-from-cache({source}): {slug}"],
@@ -444,6 +414,9 @@ def _create_intent_stub(repo, slug, branch, base, intent_words, template_id=None
     """Create a minimal stub branch with recovery metadata. Last resort."""
     wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", f"stub-{slug}")
     try:
+        wt_parent = os.path.dirname(wt)
+        if wt_parent:
+            os.makedirs(wt_parent, exist_ok=True)
         _free_branch(repo, branch)
         _git(repo, "branch", "-D", branch)
         _git(repo, "branch", branch, base)
@@ -461,11 +434,7 @@ def _create_intent_stub(repo, slug, branch, base, intent_words, template_id=None
             f.write(f"intent: {intent_text}\n")
             f.write(f"base: {base}\n")
 
-        env = {**os.environ,
-               "GIT_AUTHOR_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
-               "GIT_AUTHOR_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local"),
-               "GIT_COMMITTER_NAME": os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent"),
-               "GIT_COMMITTER_EMAIL": os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local")}
+        env = _git_commit_env()
         subprocess.run(["git", "add", stub_path], cwd=wt, env=env, capture_output=True)
         r2 = subprocess.run(["git", "commit", "--no-verify", "-m",
                             f"recovery-intent-stub: {slug}\n\nintent: {intent_text}"],
@@ -486,7 +455,11 @@ def _create_intent_stub(repo, slug, branch, base, intent_words, template_id=None
 # ---------------------------------------------------------------------------
 
 def _git(repo, *args, timeout=60):
-    return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, timeout=timeout)
+    env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", ""),
+    }
+    return subprocess.run(["git", *args], cwd=repo, env=env, capture_output=True, text=True, timeout=timeout)
 
 
 def _free_branch(repo, branch):
