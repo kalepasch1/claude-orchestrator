@@ -93,7 +93,12 @@ def _event(kind, value=None, detail="", action=""):
 
 
 def disk_pct(path="/"):
-    """Return (used_percent, free_gb) for the filesystem at *path*."""
+    """Return (used_percent, free_gb) for the filesystem at *path*.
+
+    Used by can_claim() for the real-time gate and by govern() for the periodic sweep.
+    The predictive trending in govern() fits a line to recent resource_events rows
+    containing these values; if the projected usage would breach DISK_HARD_PCT within
+    PREDICT_DISK_WINDOW_H hours, it triggers preemptive pruning and throttle-down."""
     u = shutil.disk_usage(path)
     return round(u.used / u.total * 100, 1), round(u.free / 1e9, 1)
 
