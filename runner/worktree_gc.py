@@ -34,8 +34,8 @@ GIT_TIMEOUT = int(os.environ.get("WORKTREE_GC_GIT_TIMEOUT", "90"))
 MIN_AGE_MIN = int(os.environ.get("WORKTREE_GC_MIN_AGE_MIN", "180"))
 
 
-def _run_git(args, repo) -> subprocess.CompletedProcess:
-    """Run a git command in the given repo directory with GIT_TIMEOUT seconds ceiling."""
+def _run_git(args, repo):
+    """Execute a git command in the given repo, with timeout protection."""
     try:
         return subprocess.run(args, cwd=repo, capture_output=True, text=True, timeout=GIT_TIMEOUT)
     except subprocess.TimeoutExpired:
