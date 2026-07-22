@@ -27,10 +27,9 @@ import db
 PROTECTED_STATES = ("RUNNING", "RETRY")
 MERGE_KINDS = ("verify", "material", "integrate")
 GIT_TIMEOUT = int(os.environ.get("WORKTREE_GC_GIT_TIMEOUT", "90"))
-# Never GC a worktree that showed filesystem/git activity within this window. Cowork/manual
-# executors create worktrees that may sit briefly before their task row flips to RUNNING,
-# and a fresh checkout has zero commits ahead of base — recency is the only reliable signal.
-MIN_AGE_MIN = int(os.environ.get("WORKTREE_GC_MIN_AGE_MIN", "180"))
+# ORCH_SHARE_AGENT_BRANCHES (default "true"): push agent/* branches to origin before
+# removing the local worktree, so work survives on the remote even if the executor's own
+# push never landed. Disable only in CI/testing where origin is unavailable.
 
 
 def _run_git(args, repo):
