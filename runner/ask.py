@@ -12,7 +12,7 @@ MODEL = os.environ.get("ASK_MODEL", "claude-sonnet-4-6")
 
 
 def snapshot() -> dict:
-    """Gather a compact telemetry snapshot for the analytics model."""
+    """Return a compact telemetry dict (health, inbox, ROI, open tasks) for LLM analysis."""
     return {
         "health": db.select("v_project_health", {"select": "*"}) or [],
         "inbox": (db.select("v_action_inbox", {"select": "*"}) or [])[:30],
