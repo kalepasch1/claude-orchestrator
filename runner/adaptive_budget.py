@@ -8,7 +8,7 @@ similar past tasks and sets a tight budget.
 
 Factors:
   1. Historical output length for this (kind × domain) pair
-  2. Prompt length (longer prompts → longer outputs, but with diminishing returns)
+  2. Prompt length (longer prompts → longer outputs, but with diminishing returns past ~4K tokens)
   3. Diff compiler confidence (template matches need less output)
   4. Task complexity signals (file count, scope)
 
