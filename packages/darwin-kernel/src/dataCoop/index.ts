@@ -1,3 +1,3 @@
 export * from './dataCoop.ts';
 export * from './exchange.ts';
-export * from './dataCoopProduct.ts';
+export * from './rewardExperiments.ts';
