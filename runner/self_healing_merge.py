@@ -21,6 +21,7 @@ Usage from continuous_merger.py:
         # partial merge succeeded
 """
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -124,6 +125,134 @@ def _classify_files(repo: str, branch: str, base: str) -> dict:
             result["clean"].append(f)
 
     return result
+
+
+_IMPORT_RE = re.compile(
+    r"(?:import|export)\s+(?:type\s+)?(?:\{([^}]*)\}|[\w*$,\s]+?)\s*from\s*['\"]([^'\"]+)['\"]"
+    r"|require\(\s*['\"]([^'\"]+)['\"]\s*\)"
+)
+_EXPORT_RE = re.compile(
+    r"^export\s+(?:async\s+)?(?:function|const|let|var|class|type|interface|enum)\s+"
+    r"([A-Za-z0-9_$]+)", re.M,
+)
+_EXPORT_BRACE_RE = re.compile(r"^export\s*\{([^}]*)\}", re.M)
+_CODE_EXTS = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue")
+
+
+def _show_file(repo: str, ref: str, path: str):
+    r = _git(["git", "show", f"{ref}:{path}"], repo)
+    return r.stdout if r.returncode == 0 else None
+
+
+def _module_candidates(importer: str, spec: str) -> list:
+    if spec.startswith("."):
+        root = os.path.normpath(os.path.join(os.path.dirname(importer), spec))
+    elif spec.startswith("~~/"):
+        root = spec[3:]
+    elif spec.startswith(("~/", "@/")):
+        root = spec[2:]
+    else:
+        return []
+    root = root.replace(os.sep, "/")
+    cands = [root + ext for ext in _CODE_EXTS]
+    cands += [root + "/index" + ext for ext in (".ts", ".js")]
+    cands.append(root)
+    return cands
+
+
+def _exports_of(text: str) -> set:
+    names = set(_EXPORT_RE.findall(text))
+    for blk in _EXPORT_BRACE_RE.findall(text):
+        for part in blk.split(","):
+            part = part.strip()
+            if part:
+                names.add(part.split(" as ")[-1].strip())
+    if re.search(r"^export\s+default", text, re.M):
+        names.add("default")
+    if re.search(r"^export\s+\*\s+from", text, re.M):
+        names.add("*")
+    return names
+
+
+def _dependency_defer(repo: str, branch: str, base: str, classification: dict) -> dict:
+    """Defer 'clean' files whose imports depend on conflicting files or on
+    symbols that would not exist after a clean-files-only merge.
+
+    This is the fix for the "stub disease": previously a new API route (clean,
+    never conflicts) could merge while the shared utils file implementing its
+    imports (conflicting) was deferred to a repair task — leaving call sites
+    without implementations, breaking the build, and provoking auto-stub
+    commits. A clean file is now only merged if every symbol it imports will
+    actually exist post-merge; otherwise it is deferred with its dependency
+    and covered by the same repair task flow.
+    """
+    clean = list(classification.get("clean") or [])
+    conflicting = set(classification.get("conflicting") or [])
+    changed = set(classification.get("all_changed") or [])
+    if not clean or not conflicting:
+        return classification
+
+    moved = True
+    while moved:
+        moved = False
+        still_clean = []
+        for f in clean:
+            if not f.endswith(_CODE_EXTS):
+                still_clean.append(f)
+                continue
+            text = _show_file(repo, branch, f) or ""
+            defer = False
+            for m in _IMPORT_RE.finditer(text):
+                names = m.group(1)
+                spec = m.group(2) or m.group(3)
+                if not spec:
+                    continue
+                target = None
+                for c in _module_candidates(f, spec):
+                    if c in conflicting or c in changed or _show_file(repo, base, c) is not None:
+                        target = c
+                        break
+                if target is None:
+                    continue
+                if not names:
+                    # Namespace/default import from a conflicted module whose
+                    # branch-side changes will not land — cannot verify, defer.
+                    if target in conflicting and _show_file(repo, base, target) is None:
+                        defer = True
+                        break
+                    continue
+                # Symbol-level check against the content the file will
+                # actually see after a clean-files-only merge.
+                if target in changed and target not in conflicting:
+                    eff = _show_file(repo, branch, target)
+                else:
+                    eff = _show_file(repo, base, target)
+                if eff is None:
+                    defer = True
+                    break
+                exports = _exports_of(eff)
+                if "*" in exports:
+                    continue
+                for n in names.split(","):
+                    n = n.strip()
+                    if not n:
+                        continue
+                    n = re.sub(r"^type\s+", "", n).split(" as ")[0].strip()
+                    if n and n not in exports:
+                        defer = True
+                        break
+                if defer:
+                    break
+            if defer:
+                conflicting.add(f)
+                moved = True
+            else:
+                still_clean.append(f)
+        clean = still_clean
+
+    classification["clean"] = clean
+    classification["conflicting"] = sorted(conflicting)
+    return classification
 
 
 def _create_sub_branch(
@@ -297,6 +426,14 @@ def heal(
 
     # Classify files
     classification = _classify_files(repo, branch, base)
+
+    # Dependency-aware deferral: never merge a call site whose implementation
+    # is being deferred (prevents MISSING_EXPORT builds and stub commits).
+    try:
+        classification = _dependency_defer(repo, branch, base, classification)
+    except Exception:
+        pass  # fail-open to the original behavior
+
     result["clean_files"] = classification["clean"]
     result["conflicting_files"] = classification["conflicting"]
 
