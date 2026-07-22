@@ -19,6 +19,7 @@ Env keys enable providers (added by the owner; Cowork cannot create accounts/key
 """
 import os, sys, time
 import threading
+from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import model_gateway as mg
 
@@ -73,7 +74,7 @@ _PROJECT_REV_CACHE: dict = {}
 _PROJECT_REV_TS: float = 0.0
 
 
-def _project_revenue_weight(project_id: str | None) -> float:
+def _project_revenue_weight(project_id: Optional[str] = None) -> float:
     """Return a revenue multiplier for the project (1.0 = baseline)."""
     global _PROJECT_REV_CACHE, _PROJECT_REV_TS
     if not project_id:

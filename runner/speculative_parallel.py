@@ -16,6 +16,7 @@ Env vars:
 """
 import os, sys, re, threading, time, json
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import log as _log_mod
 
@@ -109,7 +110,7 @@ def find_independent_groups(tasks):
 def _run_speculative_task(task, executor_fn, timeout_s):
     """Run a single task speculatively with timeout.
 
-    executor_fn(task) should return {"ok": bool, "output": str, "error": str|None}
+    executor_fn(task) should return {"ok": bool, "output": str, "error": Optional[str]}
     """
     slug = task.get("slug", "?")
     t0 = time.time()
@@ -163,7 +164,7 @@ def run_parallel_speculation(tasks, executor_fn, max_workers=None, timeout=None)
 
     Args:
         tasks: list of task dicts
-        executor_fn: callable(task) -> {"ok": bool, "output": str, "error": str|None}
+        executor_fn: callable(task) -> {"ok": bool, "output": str, "error": Optional[str]}
         max_workers: override for ORCH_SPEC_PARALLEL_WORKERS
         timeout: override for ORCH_SPEC_PARALLEL_TIMEOUT
 

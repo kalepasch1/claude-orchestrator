@@ -7,6 +7,7 @@ sensible defaults on any bad input (None, empty, malformed).
 
 import os
 import re
+from typing import Optional
 
 # ---------------------------------------------------------------------------
 # Configuration (env-var overrides)
@@ -163,7 +164,7 @@ def is_transient(classification: dict) -> bool:
 def extract_error_context(error_text: str, max_lines=None) -> dict:
     """Extract structured context from *error_text*.
 
-    Returns ``{"file": str|None, "line": int|None, "module": str|None,
+    Returns ``{"file": Optional[str], "line": Optional[int], "module": Optional[str],
     "snippet": str}``.
     """
     if max_lines is None:

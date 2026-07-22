@@ -6,6 +6,7 @@ import os
 import subprocess
 
 import repo_lock
+from typing import Optional
 
 
 class WorktreeIsolationError(RuntimeError):
@@ -50,7 +51,7 @@ def is_nested_in(child: str, parent: str) -> bool:
         return False
 
 
-def validate_task_worktree(repo: str, slug: str, worktree: str | None = None) -> str:
+def validate_task_worktree(repo: str, slug: str, worktree: Optional[str] = None) -> str:
     repo = os.path.realpath(repo)
     wt = os.path.realpath(worktree or task_worktree_path(repo, slug))
     if wt == repo:
@@ -92,7 +93,7 @@ def validate_task_worktree(repo: str, slug: str, worktree: str | None = None) ->
 
 
 def ensure_task_worktree(repo: str, slug: str, base: str, setup_script: str, *,
-                         task_id: str | None = None, lease_token: str | None = None) -> str:
+                         task_id: Optional[str] = None, lease_token: Optional[str] = None) -> str:
     """Create or reuse a task worktree while holding the repository lock."""
     wt = task_worktree_path(repo, slug)
     with repo_lock.hold(repo, timeout=120) as acquired:

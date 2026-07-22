@@ -19,6 +19,7 @@ Env vars (never hardcoded):
 import os
 import sys
 import time
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
@@ -54,7 +55,7 @@ def run_preview_promote(slug, task, proj):
         proj: project dict from DB.
 
     Returns:
-        {"promoted": bool, "smoke_passed": bool|None, "error"?: str,
+        {"promoted": bool, "smoke_passed": Optional[bool], "error"?: str,
          "preview_url"?: str, "tests"?: list}
     """
     if not is_enabled():

@@ -18,6 +18,7 @@ Env vars:
     ORCH_BRANCH_PUSH_TIMEOUT          – push timeout in seconds (default 30)
 """
 import os, sys, subprocess, re, threading, time
+from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import log as _log_mod
 
@@ -80,7 +81,7 @@ def materialize_branch(task, repo_path, base_branch="master"):
     """Ensure a git branch exists for this task, creating and pushing if needed.
 
     Returns dict:
-        {"ok": bool, "branch": str, "action": str, "error": str|None}
+        {"ok": bool, "branch": str, "action": str, "error": Optional[str]}
     """
     if not ENABLED:
         return {"ok": True, "branch": "", "action": "disabled", "error": None}

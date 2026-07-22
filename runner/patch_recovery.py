@@ -16,6 +16,7 @@ Branch-detection and regeneration utilities (zero-spend, standalone):
 """
 import os, subprocess, json, re
 import db
+from typing import Optional
 
 
 def _git_commit_env():
@@ -242,7 +243,7 @@ def detect_branch(repo, slug):
     - found: bool
     - location: 'local' | 'worktree' | None
     - branch: str
-    - path: str | None  (worktree path when location=='worktree')
+    - path: Optional[str]  (worktree path when location=='worktree')
     """
     branch = f"agent/{slug}"
 
@@ -276,7 +277,7 @@ def query_cache_hints(slug, intent_words=None, project=None):
     - source: 'task_artifacts' | 'merged_diff' | 'knowledge'
     - slug: str
     - similarity: float 0..1
-    - patch_diff: str | None  (None when source is 'knowledge')
+    - patch_diff: Optional[str]  (None when source is 'knowledge')
     - summary: str
     """
     hints = []
@@ -352,7 +353,7 @@ def regenerate_from_intent(repo, slug, base, intent_words, template_id=None):
     - ok: bool
     - method: 'cache_replay' | 'intent_stub' | 'failed'
     - branch: str
-    - reason: str | None
+    - reason: Optional[str]
     """
     branch = f"agent/{slug}"
 

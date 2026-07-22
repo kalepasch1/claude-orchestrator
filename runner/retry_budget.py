@@ -12,6 +12,7 @@ Env knobs:
     ORCH_RETRY_DEFAULT_MAX        default max attempts when no data (default "4")
 """
 import sys, os, json, time, threading, hashlib
+from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import log as _log_mod
 _log = _log_mod.get("retry_budget")
@@ -194,7 +195,7 @@ class _RetryBudget:
     def should_retry(self, task, attempt, last_error):
         """Decide whether to retry a task after a failure.
 
-        Returns {"retry": bool, "reason": str, "recommended_model": str|None}.
+        Returns {"retry": bool, "reason": str, "recommended_model": Optional[str]}.
         """
         if not ENABLED:
             return {"retry": attempt < DEFAULT_MAX, "reason": "budget disabled, using default", "recommended_model": None}

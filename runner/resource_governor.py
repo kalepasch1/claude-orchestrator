@@ -10,6 +10,7 @@ DISK_HARD within ~2h, prune and throttle BEFORE it happens. Also prunes node_mod
 Docker images, and ~/Library/Caches behind opt-in flags.
 """
 import os, sys, time, shutil, subprocess, glob, json
+from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import events
@@ -132,7 +133,7 @@ def _vm_stat():
         return None, None
 
 
-def ram_pct() -> float | None:
+def ram_pct() -> Optional[float]:
     """Return RAM usage percentage (macOS-accurate, counting reclaimable cache as free)."""
     v = _vm_stat()[0]
     if v is not None:
@@ -144,7 +145,7 @@ def ram_pct() -> float | None:
         return None
 
 
-def ram_free_gb() -> float | None:
+def ram_free_gb() -> Optional[float]:
     """Return available RAM in GB (macOS-accurate, counts reclaimable cache as available)."""
     v = _vm_stat()[1]
     if v is not None:
@@ -156,7 +157,7 @@ def ram_free_gb() -> float | None:
         return None
 
 
-def total_gb() -> float | None:
+def total_gb() -> Optional[float]:
     """Return total physical RAM in GB."""
     try:
         import psutil
@@ -189,7 +190,7 @@ def mem_pressure_ok() -> bool:
         return True  # signal unavailable -> don't block on it alone
 
 
-def pressure_should_block(free_gb: float | None = None, floor_gb: float | None = None) -> bool:
+def pressure_should_block(free_gb: Optional[float] = None, floor_gb: Optional[float] = None) -> bool:
     """Treat kernel memory pressure as decisive only when measured headroom is also tight.
 
     macOS can leave kern.memorystatus_vm_pressure_level at warn/critical after a burst even

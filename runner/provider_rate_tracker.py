@@ -23,6 +23,7 @@ Usage:
 import os
 import threading
 import time
+from typing import Optional
 
 _lock = threading.Lock()
 _throttle_until: dict[str, float] = {}  # provider -> epoch-seconds when cooldown expires
@@ -31,7 +32,7 @@ DEFAULT_COOLDOWN_S = int(os.environ.get("ORCH_RATE_COOLDOWN_S", "60"))
 MAX_COOLDOWN_S = int(os.environ.get("ORCH_RATE_MAX_COOLDOWN_S", "300"))
 
 
-def record_rate_limit(provider: str, cooldown_s: int | None = None) -> None:
+def record_rate_limit(provider: str, cooldown_s: Optional[int] = None) -> None:
     """Mark `provider` as throttled for `cooldown_s` seconds.
 
     Subsequent calls extend the window multiplicatively (up to MAX_COOLDOWN_S) so a sustained
@@ -75,7 +76,7 @@ def preferred_order(providers: list[str]) -> list[str]:
     return free + busy
 
 
-def clear(provider: str | None = None) -> None:
+def clear(provider: Optional[str] = None) -> None:
     """Remove throttle state. Pass None to clear all providers (useful in tests)."""
     with _lock:
         if provider is None:

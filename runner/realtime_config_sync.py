@@ -16,6 +16,7 @@ Usage:
     realtime_config_sync.stats()   # monitoring
 """
 import os, sys, time, threading, hashlib, json
+from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import log as _log_mod
 
@@ -144,7 +145,7 @@ def sync_from_git_event(repo_path, commit_sha=None):
     Checks if the commit touched any config files. If so, reads the updated
     config and pushes it to Supabase's fleet_config table via db.upsert.
 
-    Returns {"synced": int, "skipped": int, "error": str|None}.
+    Returns {"synced": int, "skipped": int, "error": Optional[str]}.
     """
     if not _GIT_TRIGGER_ENABLED:
         return {"synced": 0, "skipped": 0, "error": "git trigger disabled"}

@@ -18,6 +18,7 @@ ORCH_MERGE_CONFIDENCE_MIN    0.0-1.0 (default "0.8")
 """
 
 import sys, os, ast, re, threading, time, difflib
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import log as _log_mod
@@ -294,7 +295,7 @@ def semantic_merge(base_content, diff_a, diff_b, filepath="unknown.py"):
 
     Returns
     -------
-    dict  {"merged": str|None, "conflicts": list, "auto_resolved": int}
+    dict  {"merged": Optional[str], "conflicts": list, "auto_resolved": int}
           On failure, merged is None.
     """
     if not _ENABLED:

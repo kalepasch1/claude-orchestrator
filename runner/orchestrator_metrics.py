@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+from typing import Optional
 """
 orchestrator_metrics.py - KPI computation and competitive comparison for the orchestrator.
 
@@ -527,7 +528,7 @@ def compute_orchestrator_advantages() -> dict:
 # 5. compute_competitive_comparison
 # ---------------------------------------------------------------------------
 
-def compute_competitive_comparison(actual_data: dict | None = None) -> dict:
+def compute_competitive_comparison(actual_data: Optional[dict] = None) -> dict:
     """Price out the orchestrator's actual workload on each competitor.
 
     Args:
@@ -660,7 +661,7 @@ def generate_report() -> dict:
 # 7. export_json
 # ---------------------------------------------------------------------------
 
-def export_json(filepath: str | None = None) -> str:
+def export_json(filepath: Optional[str] = None) -> str:
     """Write full report to a JSON file and return the path.
 
     Args:

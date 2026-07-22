@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any
+from typing import Any, Optional
 
 # ── Known apps ──────────────────────────────────────────────────────
 KNOWN_APPS = frozenset([
@@ -193,7 +193,7 @@ def apps_covered(fmap: dict[str, dict[str, Any]] | None = None) -> set[str]:
     return {cfg["owner_app"] for cfg in fmap.values() if "owner_app" in cfg}
 
 
-def export_json(path: str | None = None) -> str:
+def export_json(path: Optional[str] = None) -> str:
     """Export the feature map as JSON. If *path* given, also write to file."""
     data = json.dumps(FEATURE_MAP, indent=2, sort_keys=True)
     if path:

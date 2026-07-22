@@ -54,7 +54,8 @@ def check_worktree_health(repo):
     git_dir = os.path.join(repo, ".git")
     lock = os.path.join(git_dir if os.path.isdir(git_dir) else repo, "index.lock")
     if os.path.exists(lock):
-        issues.append("index.lock")    wt_dir = os.path.join(git_dir, "worktrees") if os.path.isdir(git_dir) else None
+        issues.append("index.lock")
+    wt_dir = os.path.join(git_dir, "worktrees") if os.path.isdir(git_dir) else None
     if wt_dir and os.path.isdir(wt_dir):
         for entry in os.listdir(wt_dir):
             gitdir_file = os.path.join(wt_dir, entry, "gitdir")
@@ -83,7 +84,8 @@ def repair_git_config(repo):
 def repair_index_lock(repo):
     """Remove stale index.lock if no git process is running."""
     git_dir = os.path.join(repo, ".git")
-    lock = os.path.join(git_dir if os.path.isdir(git_dir) else repo, "index.lock")    if not os.path.exists(lock):
+    lock = os.path.join(git_dir if os.path.isdir(git_dir) else repo, "index.lock")
+    if not os.path.exists(lock):
         return False
     _, ps_out, _ = _run(["pgrep", "-f", f"git.*{os.path.basename(repo)}"])
     if ps_out:
@@ -112,7 +114,8 @@ def diagnose(repo):
         report["issues"].append(f"git status failed: {git_err}")
     config_issues = check_git_config(repo)
     if config_issues:
-        report["issues"].append(f"missing git config: {', '.join(config_issues)}")    for tool in ["git", "python3", "node"]:
+        report["issues"].append(f"missing git config: {', '.join(config_issues)}")
+    for tool in ["git", "python3", "node"]:
         if not check_tool(tool):
             report["issues"].append(f"tool not found: {tool}")
     wt_issues = check_worktree_health(repo)
@@ -141,7 +144,8 @@ def repair(repo):
 
 def repair_for_task(task):
     """Repair repo setup for a specific task's project. Returns report."""
-    try:        pid = task.get("project_id")
+    try:
+        pid = task.get("project_id")
         proj = db.select("projects", {"select": "repo_path", "id": f"eq.{pid}"})
         if not proj:
             return {"valid": False, "error": "project not found"}

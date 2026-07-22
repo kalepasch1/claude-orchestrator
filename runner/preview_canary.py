@@ -5,7 +5,7 @@ preview_canary.py — instant health check against a Vercel preview deployment.
 After pr_integrate opens a PR, call check(project, branch) to:
   1. Poll the Vercel API until the preview deployment is READY (up to PREVIEW_CANARY_TIMEOUT_S).
   2. HTTP-GET the preview URL at PREVIEW_CANARY_HEALTH_PATH (default /api/health, fallback /).
-  3. Return {"verdict": "pass"|"fail"|"skip", "url": str|None, "reason": str}.
+  3. Return {"verdict": "pass"|"fail"|"skip", "url": Optional[str], "reason": str}.
 
 Env:
   VERCEL_TOKEN              required; same token used by deploy_watch
@@ -24,6 +24,7 @@ import time
 import urllib.request
 import urllib.parse
 import urllib.error
+from typing import Optional
 
 TOKEN = os.environ.get("VERCEL_TOKEN", "")
 TEAM = os.environ.get("VERCEL_TEAM_ID", "")

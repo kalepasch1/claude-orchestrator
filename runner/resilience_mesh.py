@@ -17,7 +17,7 @@ import signal
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, Optional
 
 
 RUNNER_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -98,7 +98,7 @@ def _append_spool(action: dict[str, Any]) -> None:
         f.write(json.dumps(row, default=str) + "\n")
 
 
-def _age_seconds(iso: str | None) -> float:
+def _age_seconds(iso: Optional[str]) -> float:
     if not iso:
         return 10**9
     try:
@@ -166,7 +166,7 @@ def _discover_repos() -> list[dict[str, Any]]:
     return sorted(repos.values(), key=lambda r: r.get("name", ""))
 
 
-def _read_lock_pid() -> int | None:
+def _read_lock_pid() -> Optional[int]:
     try:
         pid = int(open(RUNNER_LOCK, encoding="utf-8").read().strip())
         os.kill(pid, 0)

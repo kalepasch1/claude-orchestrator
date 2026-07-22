@@ -83,7 +83,8 @@ def inspect_task_branch(task, repo=None):
                 "last_time": "", "has_work": False, "suggested_state": None}
 
     commits = branch_commit_count(repo, branch)
-    msg = branch_last_commit_msg(repo, branch)    ts = branch_last_commit_time(repo, branch)
+    msg = branch_last_commit_msg(repo, branch)
+    ts = branch_last_commit_time(repo, branch)
     has_work = commits > 0
 
     suggested = None
@@ -112,7 +113,8 @@ def inspect_all_running(project_id=None):
     if not tasks:
         return []
     proj_cache = {}
-    results = []    for t in tasks:
+    results = []
+    for t in tasks:
         pid = t.get("project_id")
         if pid not in proj_cache:
             proj = db.select("projects", {"select": "repo_path", "id": f"eq.{pid}"})
@@ -141,7 +143,8 @@ def auto_recover_stuck(project_id=None, dry_run=True):
                     "note": (f"branch_inspector: auto-recovered from RUNNING -> {new_state}, "
                              f"{info['commits_ahead']} commits found, "
                              f"last: {info['last_message'][:80]}"),
-                })            except Exception:
+                })
+            except Exception:
                 continue
         recovered.append({
             "id": task_id,

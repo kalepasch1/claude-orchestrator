@@ -205,7 +205,7 @@ def validate_config_value(key, value):
 def compute_diff(local, remote):
     """Compute config keys that differ between local and remote.
 
-    Returns list of {'key': str, 'local_value': str, 'remote_value': str|None, 'action': 'set'|'delete'}
+    Returns list of {'key': str, 'local_value': str, 'remote_value': Optional[str], 'action': 'set'|'delete'}
     """
     changes = []
     for k, v in local.items():

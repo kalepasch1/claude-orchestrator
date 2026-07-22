@@ -10,6 +10,7 @@ Ensures configuration changes are safe before they take effect:
 import os
 import sys
 import re
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -35,7 +36,7 @@ BOOL_FALSE = {"false", "0", "no", "off"}
 def validate_value(key, value):
     """Validate a single config key-value pair.
 
-    Returns: (valid: bool, error: str | None)
+    Returns: (valid: bool, error: Optional[str])
     """
     schema = CONFIG_SCHEMA.get(key)
     if not schema:

@@ -7,6 +7,7 @@ Optimistic flow: claim → agent run (captures build result) → integrate
 
 The agent already runs builds via BUILD_MANDATE. If we capture that exit code
 from the agent's output, we can skip the redundant post-agent build gate.
+from typing import Optional
 
 For high-confidence task types (mechanical, template-matched, diff_compiler
 confidence > 0.8), the entire post-agent pipeline collapses to just integration.
@@ -100,7 +101,7 @@ def extract_build_result(agent_output):
     """Parse the agent's output for build/test results.
 
     Returns:
-        {"build_ok": bool|None, "tests_ok": bool|None, "evidence": str}
+        {"build_ok": Optional[bool], "tests_ok": Optional[bool], "evidence": str}
 
     None means we couldn't determine the result (fall back to explicit gate).
     """

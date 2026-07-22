@@ -22,6 +22,7 @@ Usage:
         # skip agent entirely — diff already applied and verified
 """
 import os, sys, json, subprocess, time, hashlib
+from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
@@ -136,7 +137,7 @@ def try_replay(task, repo, base, worktree):
 
     Returns:
         {applied: bool, reason: str, cost_usd: 0, tokens: 0,
-         match: dict|None, build_ok: bool|None}
+         match: Optional[dict], build_ok: Optional[bool]}
     """
     result = {
         "applied": False, "reason": "", "cost_usd": 0, "tokens": 0,

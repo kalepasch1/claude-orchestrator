@@ -11,6 +11,7 @@ Reuses build_gate.py's worktree+node_modules symlink helper for ephemeral checko
 CANDIDATE-SHARED: reusable by any build gate across the portfolio.
 """
 import os, sys, re, shlex
+from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -20,7 +21,7 @@ def classify_proof(proof_cmd):
     Returns dict with:
       kind: 'test' | 'build' | 'weak'
       has_specific_file: bool - whether proof names a specific test file/path
-      file_path: str | None - the specific test file referenced, if any
+      file_path: Optional[str] - the specific test file referenced, if any
     """
     if not proof_cmd or not isinstance(proof_cmd, str):
         return {"kind": "weak", "has_specific_file": False, "file_path": None}

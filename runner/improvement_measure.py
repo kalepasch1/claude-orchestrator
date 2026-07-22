@@ -17,6 +17,7 @@ import json
 import os
 import sys
 import time
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
@@ -109,7 +110,7 @@ def cycle_time_by_kind(days: int = 30) -> dict:
 def first_try_yield(days: int = 30) -> dict:
     """
     Fraction of MERGED tasks where remediation_count == 0 (merged on first attempt).
-    Returns {"overall": float|None, model1: float|None, ...}.
+    Returns {"overall": Optional[float], model1: Optional[float], ...}.
     """
     rows = db.select("tasks", {
         "select": "model,remediation_count,created_at",

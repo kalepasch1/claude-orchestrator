@@ -10,6 +10,7 @@ Owner module: merge_train.py, branch_materializer.py
 Slice-2 of: improve-implement-advanced-branch-management-sys
 """
 import os, sys, subprocess
+from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 def _safe_import(mod):
@@ -92,7 +93,7 @@ def auto_remediate_missing(project_id, repo_path_raw, missing_tasks, base_branch
 
     Uses branch_materializer if available, otherwise creates directly.
 
-    Returns list of {slug, remediated: bool, error: str|None}
+    Returns list of {slug, remediated: bool, error: Optional[str]}
     """
     repo = _localize_repo(repo_path_raw)
     if not repo or not os.path.isdir(repo):

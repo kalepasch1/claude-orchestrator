@@ -13,6 +13,7 @@ With speculative premerge:
 If A fails merge or gets reworked, B is rebased onto the new A or aborted.
 """
 import os, sys, json, datetime
+from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
@@ -34,7 +35,7 @@ def _get_task(slug, project_id):
 def find_speculative_base(task):
     """Find the best base branch for a task whose deps are judge-passed but not merged.
 
-    Returns {"base": branch, "speculative": bool, "parent_slug": str|None, "reason": str}
+    Returns {"base": branch, "speculative": bool, "parent_slug": Optional[str], "reason": str}
     """
     if not ENABLED:
         return {"base": task.get("base_branch", "master"), "speculative": False,

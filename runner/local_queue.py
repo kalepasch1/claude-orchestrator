@@ -13,6 +13,7 @@ import socket
 import json
 import datetime
 import logging
+from typing import Optional
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -163,8 +164,7 @@ def claim_task_offline(runner_id):
     Args:
         runner_id (str): Unique identifier for this runner/executor.
 
-    Returns:
-        dict | None: Task dict (id, slug, project_id, state, etc.) if claim succeeds,
+    Returns: Optional[dict]: Task dict (id, slug, project_id, state, etc.) if claim succeeds,
                      None if no task in queue or claiming not allowed for this host.
                      Fail-soft: returns None on any error instead of raising.
     """

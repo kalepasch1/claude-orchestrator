@@ -9,6 +9,7 @@ import threading
 import uuid
 
 import db
+from typing import Optional
 
 
 DEFAULT_TTL = int(os.environ.get("ORCH_BRANCH_LEASE_TTL_SECONDS", "3600") or 3600)
@@ -16,7 +17,7 @@ _active: dict[tuple[str, str], dict] = {}
 _lock = threading.RLock()
 
 
-def _sha(repo: str, ref: str) -> str | None:
+def _sha(repo: str, ref: str) -> Optional[str]:
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--verify", ref], cwd=repo,
@@ -27,8 +28,8 @@ def _sha(repo: str, ref: str) -> str | None:
         return None
 
 
-def acquire(task: dict, repo: str, branch: str, base: str, *, owner: str | None = None,
-            ttl: int = DEFAULT_TTL) -> dict | None:
+def acquire(task: dict, repo: str, branch: str, base: str, *, owner: Optional[str] = None,
+            ttl: int = DEFAULT_TTL) -> Optional[dict]:
     """Acquire and register the sole writer lease, or return ``None`` on contention."""
     token = str(uuid.uuid4())
     owner = owner or f"native:{socket.gethostname()}:{os.getpid()}"
@@ -50,7 +51,7 @@ def acquire(task: dict, repo: str, branch: str, base: str, *, owner: str | None 
     return lease
 
 
-def heartbeat(task_id: str, branch: str | None = None) -> bool:
+def heartbeat(task_id: str, branch: Optional[str] = None) -> bool:
     with _lock:
         leases = [lease for (tid, b), lease in _active.items()
                   if tid == str(task_id) and (branch is None or b == branch)]
@@ -65,7 +66,7 @@ def heartbeat(task_id: str, branch: str | None = None) -> bool:
     }) is True for lease in leases)
 
 
-def release(task_id: str, branch: str | None = None) -> bool:
+def release(task_id: str, branch: Optional[str] = None) -> bool:
     with _lock:
         keys = [key for key in list(_active)
                 if key[0] == str(task_id) and (branch is None or key[1] == branch)]
@@ -87,7 +88,7 @@ def release(task_id: str, branch: str | None = None) -> bool:
     return released
 
 
-def active(task_id: str, branch: str | None = None) -> dict | None:
+def active(task_id: str, branch: Optional[str] = None) -> Optional[dict]:
     with _lock:
         for (tid, b), lease in _active.items():
             if tid == str(task_id) and (branch is None or b == branch):
