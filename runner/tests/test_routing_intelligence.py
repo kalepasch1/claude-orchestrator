@@ -98,7 +98,8 @@ class RoutingIntelligenceTest(unittest.TestCase):
             [],
         ]
         db.insert.side_effect = lambda table, row: inserted.append((table, row))
-        with patch.object(coder_canary, "db", db), \
+        with patch.dict(os.environ, {"ORCH_DRAIN_MODE": "false"}, clear=False), \
+             patch.object(coder_canary, "db", db), \
              patch.object(coder_canary.agentic_coders, "available", return_value=["ollama", "gpt"]):
             res = coder_canary.run(limit_per_coder=1)
         self.assertEqual(res["queued"], 2)
@@ -115,7 +116,8 @@ class RoutingIntelligenceTest(unittest.TestCase):
             [],
         ]
         db.insert.side_effect = lambda table, row: inserted.append((table, row))
-        with patch.object(coder_canary, "db", db), \
+        with patch.dict(os.environ, {"ORCH_DRAIN_MODE": "false"}, clear=False), \
+             patch.object(coder_canary, "db", db), \
              patch.object(coder_canary.agentic_coders, "available", return_value=["gpt"]):
             res = coder_canary.run(limit_per_coder=1)
         self.assertEqual(res["queued"], 1)
@@ -158,11 +160,30 @@ class RoutingIntelligenceTest(unittest.TestCase):
             [{"slug": "merged-x", "kind": "build", "prompt": "Implement webhook validation with tests " * 8}],
         ]
         db.insert.side_effect = lambda table, row: inserted.append((table, row))
-        with patch.object(coder_canary, "db", db), \
+        with patch.dict(os.environ, {"ORCH_DRAIN_MODE": "false"}, clear=False), \
+             patch.object(coder_canary, "db", db), \
              patch.object(coder_canary.agentic_coders, "available", return_value=["ollama"]):
             res = coder_canary.run(limit_per_coder=1)
         self.assertEqual(res["queued"], 1)
         self.assertIn("Historical merged-task canary", inserted[0][1]["prompt"])
+
+    def test_coder_canary_uses_recovery_backlog_prompt_when_available(self):
+        inserted = []
+        db = MagicMock()
+        recovery_prompt = "Recovery task prompt for missing branch reconstruction " * 3
+        db.select.side_effect = [
+            [{"id": "p1", "name": "beethoven"}],
+            [],
+            [{"slug": "recover-missing-branch-canary-gpt-1", "kind": "canary",
+              "prompt": recovery_prompt}],
+        ]
+        db.insert.side_effect = lambda table, row: inserted.append((table, row))
+        with patch.dict(os.environ, {"ORCH_DRAIN_MODE": "false"}, clear=False), \
+             patch.object(coder_canary, "db", db), \
+             patch.object(coder_canary.agentic_coders, "available", return_value=["ollama"]):
+            res = coder_canary.run(limit_per_coder=1)
+        self.assertEqual(res["queued"], 1)
+        self.assertIn("Recovery-backlog canary", inserted[0][1]["prompt"])
 
     def test_patch_template_injects_prior_diff_directive(self):
         db = MagicMock()

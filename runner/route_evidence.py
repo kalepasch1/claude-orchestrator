@@ -305,7 +305,7 @@ def stock_canaries(summary=None):
 
 
 def stale_canaries():
-    cutoff = (datetime.datetime.utcnow() - datetime.timedelta(minutes=STALE_CANARY_MIN)).isoformat()
+    cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=STALE_CANARY_MIN)).isoformat()
     try:
         rows = db.select("tasks", {"select": "id,slug,state,force_coder,model,updated_at,note",
                                    "slug": "like.canary-%",

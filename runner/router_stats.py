@@ -45,7 +45,7 @@ def _stage_of(row):
 
 def _rebuild():
     import datetime
-    cutoff = (datetime.datetime.utcnow() - datetime.timedelta(hours=WINDOW_H)).isoformat()
+    cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=WINDOW_H)).isoformat()
     try:
         rows = db.select("outcomes", {"select": "id,task_id,model,project,kind,integrated,tests_passed,usd,wall_ms,attempts,created_at,slug,input_tokens,output_tokens,diff_bytes,review_failures,deployed,deploy_status,note",
                                       "created_at": f"gte.{cutoff}", "order": "created_at.desc",
