@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Orchestrator oversight of the Growth OS — the control-plane view. Shows how marketing momentum,
 // budget, and spend map to AI token usage + a suggested improvement-focus weight per app.
-const { data, pending, refresh } = await useFetch('/api/growth-oversight')
+const { data, pending, refresh } = await useFetch<any>('/api/growth-oversight')
 const money = (n: any) => '$' + Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })
 </script>
 

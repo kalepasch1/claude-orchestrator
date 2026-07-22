@@ -1,7 +1,7 @@
 <script setup lang="ts">
 definePageMeta({ layout: 'default' })
 // Portfolio health — one glance: runner uptime, per-app deploy state, RLS security, momentum, spend.
-const { data, pending, refresh } = await useFetch('/api/portfolio-health')
+const { data, pending, refresh } = await useFetch<any>('/api/portfolio-health')
 const money = (n: any) => '$' + Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })
 const dc = (s: string) => s === 'READY' ? '#39a06b' : ['ERROR', 'CANCELED'].includes(s) ? '#f2618f' : '#f0b429'
 const sc = (s: string) => s === 'ok' ? '#39a06b' : s === 'critical' ? '#f2618f' : '#f0b429'
