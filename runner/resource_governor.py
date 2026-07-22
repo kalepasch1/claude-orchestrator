@@ -85,7 +85,7 @@ os.makedirs(HOME, exist_ok=True)
 
 
 def _event(kind, value=None, detail="", action=""):
-    """Persist a resource-governor event to the DB for operator dashboards (fail-soft)."""
+    """Log a resource event to the DB (fail-soft — never raises)."""
     try:
         db.insert("resource_events", {"kind": kind, "value": value, "detail": detail[:500], "action": action})
     except Exception:
@@ -93,7 +93,12 @@ def _event(kind, value=None, detail="", action=""):
 
 
 def disk_pct(path="/"):
-    """Return (used_percent, free_gb) for the filesystem containing *path*."""
+    """Return (used_percent, free_gb) for the filesystem at *path*.
+
+    Used by can_claim() for the real-time gate and by govern() for the periodic sweep.
+    The predictive trending in govern() fits a line to recent resource_events rows
+    containing these values; if the projected usage would breach DISK_HARD_PCT within
+    PREDICT_DISK_WINDOW_H hours, it triggers preemptive pruning and throttle-down."""
     u = shutil.disk_usage(path)
     return round(u.used / u.total * 100, 1), round(u.free / 1e9, 1)
 
@@ -133,7 +138,7 @@ def _vm_stat():
 
 
 def ram_pct():
-    """Return current RAM usage as a percentage (0-100), or None on failure."""
+    """Return RAM usage as a percentage, or None if unavailable."""
     # Prefer our macOS-accurate calc; psutil's macOS `available` also undercounts cache.
     v = _vm_stat()[0]
     if v is not None:
@@ -146,7 +151,7 @@ def ram_pct():
 
 
 def ram_free_gb():
-    """Return free RAM in GB (including reclaimable cache), or None on failure."""
+    """Return available RAM in GB, or None if unavailable."""
     # Prefer our macOS-accurate calc (counts reclaimable cache as available).
     v = _vm_stat()[1]
     if v is not None:
@@ -214,16 +219,19 @@ def can_claim(n_active=0):
     """Real-time gate the runner calls BEFORE starting each new task.
 
     Protects the Mac in the gaps between the slower periodic govern() ticks.
-    Checks RAM headroom (free >= floor + per_task), kernel memory pressure,
-    and disk usage against DISK_HARD before allowing a new task to start.
+    Checks, in order:
+      1. RAM headroom: free GB must exceed effective_floor_gb() + per-task reserve.
+      2. Kernel memory pressure: blocks only when macOS reports warn/critical AND
+         measured headroom corroborates (see pressure_should_block).
+      3. Disk usage: blocks if disk_pct >= DISK_HARD_PCT.
 
     Args:
-        n_active: Number of tasks currently running (used for logging context).
+        n_active: number of tasks currently running (reserved for future
+                  concurrency-aware gating; not yet used in checks).
 
     Returns:
-        Tuple of (ok: bool, reason: str). ``ok`` is True when it's safe to
-        start another task; ``reason`` is ``"ok"`` or a human-readable
-        explanation of the blocking condition.
+        (ok: bool, reason: str) — True/'ok' when safe to start a new task,
+        False/description when resource pressure requires waiting.
     """
     free = ram_free_gb()
     floor = effective_floor_gb()
@@ -514,7 +522,11 @@ def set_throttle(n):
 
 
 def current_limit():
-    """Read the persisted concurrency limit, falling back to ceiling if unset or corrupt."""
+    """Read the current effective MAX_PARALLEL from the throttle file.
+
+    Returns the ceiling if the file is missing or unreadable, clamped to
+    [1, MAX_PARALLEL_CEILING].
+    """
     try:
         with open(THROTTLE_FILE) as f:
             return max(1, min(int(f.read().strip()), _ceiling()))
@@ -554,7 +566,13 @@ def _global_pause_reason():
 
 
 def govern():
-    _t0 = time.monotonic()
+    """Periodic resource sweep — the main loop calls this every tick.
+
+    Checks disk and RAM, prunes stale worktrees when disk exceeds DISK_SOFT,
+    auto-resumes cost-circuit pauses once the rolling hour clears, unloads
+    heavy Ollama models under memory pressure, and adjusts the throttle file
+    so concurrency scales with available headroom.
+    """
     used, free_gb = disk_pct()
     ram = ram_pct()
     free_ram = ram_free_gb()

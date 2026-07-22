@@ -90,10 +90,7 @@ URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 HTTP_TIMEOUT = float(os.environ.get("ORCH_SUPABASE_TIMEOUT", "15") or 15)
 
-# ── SECRET HYGIENE (2026-07-15) ──────────────────────────────────────────────
-# Redact API keys, service keys, and other secrets from strings before they are
-# stored in the database (task notes, log_tail, error messages). Prevents secrets
-# from leaking into the tasks table via raw command output or tracebacks.
+# --- Secret redaction: strip credentials from task fields before DB writes ---
 _SECRET_PATTERNS = re.compile(
     r"("
     # Anthropic API keys (sk-ant-api03-...)
@@ -102,22 +99,32 @@ _SECRET_PATTERNS = re.compile(
     # Supabase service role keys (eyJ...)
     r"eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}"
     r"|"
-    # Generic long API key patterns (key=..., token=..., secret=..., password=...)
-    r"(?:(?:api[_-]?key|secret[_-]?key|service[_-]?key|token|password|credential)"
-    r"\s*[=:]\s*['\"]?)([A-Za-z0-9_/+\-.]{16,})"
+    # GitHub PATs and tokens (github_pat_, ghp_, gho_, ghs_, ghu_, ghr_)
+    r"(?:github_pat_|gh[posur]_)[A-Za-z0-9_]{20,}"
+    r"|"
+    # Vercel tokens (vcp_)
+    r"vcp_[A-Za-z0-9]{20,}"
+    r"|"
+    # AWS access key IDs (AKIA...)
+    r"AKIA[0-9A-Z]{16}"
     r"|"
     # OpenAI keys (sk-...)
     r"sk-[A-Za-z0-9]{20,}"
+    r"|"
+    # Generic key=value patterns
+    r"(?:(?:api[_-]?key|secret[_-]?key|service[_-]?key|token|password|credential)"
+    r"\s*[=:]\s*['\"]?)([A-Za-z0-9_/+\-.]{16,})"
     r"|"
     # Generic bearer tokens
     r"Bearer\s+[A-Za-z0-9_\-/.]{20,}"
     r")",
     re.I,
 )
+_TASK_SENSITIVE_FIELDS = {"note", "log_tail", "prompt"}
 
 
 def redact_secrets(text):
-    """Replace secret-like patterns in *text* with [REDACTED]. Fail-soft: returns
+    """Replace secret-like patterns in text with [REDACTED]. Fail-soft: returns
     original text on any error so it never blocks writes."""
     if not text or not isinstance(text, str):
         return text
@@ -125,10 +132,7 @@ def redact_secrets(text):
         return _SECRET_PATTERNS.sub("[REDACTED]", text)
     except Exception:
         return text
-
-
-_TASK_SENSITIVE_FIELDS = {"note", "log_tail"}
-HTTP_RETRIES = int(os.environ.get("ORCH_SUPABASE_RETRIES", "3") or 3)
+HTTP_RETRIES = int(os.environ.get("ORCH_SUPABASE_RETRIES", "1") or 1)
 HTTP_RETRY_STATUSES = {429, 500, 502, 503, 504, 521, 522, 523}  # incl. Cloudflare origin-down codes so monitors ride through Supabase capacity blips instead of silently no-op'ing
 
 # DB Failover state: track consecutive DB failures to trigger offline mode
@@ -397,22 +401,12 @@ def insert(table, row, upsert=False):
             if existing:
                 return existing
         except Exception:
-            pass
-        # Process-level lock: serialize inserts with the same slug on this machine.
-        # Cross-machine races still possible but reduced (the sentinel catches the rest).
-        with _dedup_lock(_dedup_key):
-            try:
-                # Re-check after lock (another thread may have inserted while we waited)
-                existing = select("tasks", {
-                    "select": "id,slug,state",
-                    "project_id": f"eq.{row['project_id']}",
-                    "slug": f"eq.{row['slug']}",
-                    "state": "in.(QUEUED,RUNNING,RETRY,DONE,MERGED,BLOCKED,DECOMPOSED)",
-                    "limit": "1"}) or []
-                if existing:
-                    return existing
-            except Exception:
-                pass
+            pass  # fail-soft: never let the guard block a legitimate insert
+    # SECRET HYGIENE: redact secrets from sensitive fields on task insert.
+    if table == "tasks" and isinstance(row, dict):
+        for field in _TASK_SENSITIVE_FIELDS:
+            if field in row and isinstance(row[field], str):
+                row[field] = redact_secrets(row[field])
     h = {"Prefer": "return=representation" + (",resolution=merge-duplicates" if upsert else "")}
     try:
         result = _req("POST", f"/rest/v1/{table}", body=row, headers=h)
@@ -472,8 +466,6 @@ def upsert(table, row):
 
 def update(table, match, patch):
     # SECRET HYGIENE: redact secrets from sensitive task fields before DB write.
-    # Applied here (the single choke point for all task updates) so every caller
-    # — set_state, blocker_quarantine, error-retry, etc. — gets automatic protection.
     if table == "tasks" and isinstance(patch, dict):
         for field in _TASK_SENSITIVE_FIELDS:
             if field in patch and isinstance(patch[field], str):

@@ -1,16 +1,23 @@
 # Canary Routing Notes
 
-## Purpose
-Documents the coder-routing canary system used by the orchestrator
-to validate that each AI vendor pathway (xai, claude, gpt, ollama, gemini, deepseek)
-can successfully claim, implement, commit, and push a task branch.
+## Coder Routing Quality Signals
 
-## How Canaries Work
-1. `planner.py` emits canary tasks with `force_coder` set to each vendor.
-2. The executor claims and implements a tiny, safe change (doc, test hygiene, comment).
-3. Success/failure feeds back into the QPD (quality-per-dollar) routing table.
+When evaluating coder routing decisions, the pipeline considers:
 
-## Acceptance Criteria
-- No secrets, dependency changes, or product behavior changes.
-- Must merge cleanly against the default base branch.
-- One minimal file change (doc clarification, comment, or test improvement).
+- **QPD (Quality Per Dollar)**: Primary metric for model selection per task class
+- **Historical merge rate**: Fraction of tasks that successfully merge on first attempt
+- **Task class affinity**: Some models perform better on specific task classes (security, build, bugfix)
+- **Attempt count**: Higher attempts indicate the task may need a stronger model
+
+## Cross-Learning Context
+
+The pipeline tracks recent outcome signals across all models to inform routing:
+- Merge rate and test-pass rate per model
+- Cost efficiency per successful merge
+- Route-specific quality scores from the learned routing table
+
+## Legal Gate
+
+Tasks that would force licensing, registration, custody, transmission, or advice
+changes, or that require secrets, are routed through the owner-only legal gate
+regardless of model routing scores.

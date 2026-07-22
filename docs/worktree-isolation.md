@@ -1,18 +1,26 @@
-# Worktree Isolation Pattern
+# Worktree Isolation Policy
 
-All task implementations use isolated git worktrees. The main repository
-checkout is never modified by the executor — branches are created, built,
-and pushed entirely from throwaway worktrees.
+All executor task implementations MUST use isolated git worktrees.
+Never checkout branches or run `git stash` in the main repo directory.
 
-## Why isolation matters
+## Why worktrees?
 
-- Prevents state leakage between concurrent tasks.
-- A failed or interrupted task cannot corrupt the main working tree.
-- Worktrees are removed after push, keeping disk usage bounded.
+- **Prevents interference:** Multiple tasks can run against the same repo
+  without stepping on each other's branch state.
+- **Atomic cleanup:** If a task fails mid-implementation, removing the
+  worktree leaves the main repo untouched.
+- **No stash conflicts:** `git stash` in the main repo risks data loss
+  when multiple processes compete for the stash stack.
 
-## Lifecycle
+## Worktree lifecycle
 
-1. `git worktree add` creates the worktree from the default branch.
-2. Code is written and committed inside the worktree.
-3. The branch is force-pushed to `agent/{slug}`.
-4. `git worktree remove` cleans up the directory.
+1. `git worktree prune` — clean up stale entries from prior crashes
+2. `git worktree add --force "$WT" -B agent/{slug} origin/{base}` — create
+3. Implement, commit, push inside `$WT`
+4. `git worktree remove --force "$WT"` — the branch survives on the remote
+
+## Failure recovery
+
+If worktree creation fails because a branch is already checked out in a
+stale worktree, run `git worktree prune` then retry. If a `.lock` file
+blocks pruning, remove it manually before retrying.

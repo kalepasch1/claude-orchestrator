@@ -217,7 +217,7 @@ async function resolvePreview() {
 function onIframeLoad() { iframeLoaded.value = true }
 function reloadIframe() { resolvePreview() }
 
-// Right panel — CADE insights
+// Right panel — insights
 const showInsights = ref(true)
 const activeInsight = ref('')
 type CadeInsight = {
@@ -424,7 +424,7 @@ watch(terminalPrompt, (val) => {
     routeInfo.value = r.reason
   } else { routeInfo.value = '' }
 })
-// --- CADE Insights engine (auto-running) ---
+// --- Insights engine (auto-running) ---
 function refreshInsights() {
   const domain = cap.value.domain
   const app = selectedApp.value
@@ -640,13 +640,36 @@ watch(slug, () => { refreshInsights() })
         <NuxtLink to="/orchestrators" class="text-[10px] text-gray-400 hover:text-gray-600 uppercase tracking-wider">← Back</NuxtLink>
         <div><h2 class="text-sm font-bold text-gray-900" style="font-family: 'Fraunces', serif;">{{ cap.name }}</h2><p class="mt-0.5 text-[9px] text-gray-400">{{ cap.summary }}</p></div>
       </div>
-      <div class="flex items-center gap-3">
-        <!-- App selector (was in sidebar) -->
-        <div class="flex items-center gap-1.5">
-          <span class="text-[10px] text-gray-400">App:</span>
-          <select v-model="selectedApp" class="bg-white border border-gray-200 rounded px-2 py-1 text-xs text-gray-700">
-            <option v-for="app in APPS" :key="app.id" :value="app.id">{{ app.name }}</option>
-          </select>
+
+      <!-- App Switcher -->
+      <div class="px-3 py-2 border-b border-gray-200">
+        <div class="text-[9px] text-gray-400 uppercase tracking-wider mb-1 px-1">App</div>
+        <select v-model="selectedApp" class="w-full bg-white border border-gray-200 rounded px-2 py-1 text-xs text-gray-700">
+          <option v-for="app in APPS" :key="app.id" :value="app.id">{{ app.name }}</option>
+        </select>
+      </div>
+
+      <!-- Nav: Workspace / Config / History only -->
+      <nav class="flex-1 py-1">
+        <button v-for="tab in [
+          { key: 'workspace', label: 'Workspace', icon: '▸' },
+          { key: 'config', label: 'Config', icon: '⚙' },
+          { key: 'history', label: 'History', icon: '📋' },
+        ]" :key="tab.key" @click="activeTab = tab.key"
+          class="w-full flex items-center gap-2 px-3 py-2 text-xs transition-colors text-left"
+          :class="activeTab === tab.key ? 'bg-blue-50 text-blue-700 border-r-2 border-blue-600 font-medium' : 'text-gray-600 hover:bg-gray-100'">
+          <span class="w-4 text-center text-[11px]">{{ tab.icon }}</span>{{ tab.label }}
+        </button>
+      </nav>
+      <!-- AI Assistants -->
+      <div class="px-3 py-2 border-t border-gray-200">
+        <div class="text-[9px] text-gray-400 uppercase tracking-wider mb-1.5 px-1">AI Assistants</div>
+        <div class="space-y-0.5">
+          <div v-for="b in bots.slice(0, 4)" :key="b" class="flex items-center gap-1.5 px-1 py-0.5">
+            <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+            <span class="text-[10px] text-gray-600 truncate">{{ b }}</span>
+          </div>
+          <div v-if="bots.length > 4" class="text-[9px] text-gray-400 px-1">+{{ bots.length - 4 }} more</div>
         </div>
         <!-- Project selector -->
         <select v-model="selectedProject" class="bg-white border border-gray-200 rounded px-2 py-1 text-[10px] text-gray-700">
@@ -658,15 +681,39 @@ watch(slug, () => { refreshInsights() })
           <span class="text-[9px] text-gray-400">{{ autoSaveStatus === 'saved' ? 'Saved' : autoSaveStatus === 'saving' ? 'Saving...' : autoSaveStatus === 'unsaved' ? 'Unsaved' : 'Error' }}</span>
         </div>
       </div>
-    </div>
-
-    <!-- Main content area: flex row for content + CADE insights panel -->
-    <div class="flex flex-1 overflow-hidden min-h-0">
-      <!-- CENTER: Main workspace -->
-      <div class="flex-1 flex flex-col overflow-hidden min-w-0">
-        <template>
-          <!-- Workspace top bar -->
-          <div class="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-white flex-shrink-0">
+    </aside>
+    <!-- CENTER: Main workspace -->
+    <main class="flex-1 flex flex-col overflow-hidden min-w-0">
+      <!-- ===== WORKSPACE TAB ===== -->
+      <template v-if="activeTab === 'workspace'">
+        <!-- Top bar -->
+        <div class="flex items-center justify-between px-4 py-2 border-b border-gray-200 bg-gray-50/50 flex-shrink-0">
+          <div class="flex items-center gap-3">
+            <span class="text-xs font-medium text-gray-700">{{ cap.name }}</span>
+            <span class="text-[10px] text-gray-400">{{ APPS.find(a => a.id === selectedApp)?.name }}</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <select v-model="selectedBranch" class="bg-white border border-gray-200 rounded px-2 py-1 text-[10px] text-gray-600 font-mono">
+              <option value="dev">dev</option>
+              <option :value="orchBranch">{{ orchBranch }}</option>
+              <option :value="'feature/'+selectedApp+'-redesign'">feature/{{ selectedApp }}-redesign</option>
+              <option :value="'design/'+selectedApp+'-updates'">design/{{ selectedApp }}-updates</option>
+              <option :value="'hotfix/'+selectedApp">hotfix/{{ selectedApp }}</option>
+              <option value="main" class="font-bold">main (prod)</option>
+            </select>
+            <button @click="showDeployPanel = !showDeployPanel"
+              class="px-3 py-1 text-[10px] rounded font-medium transition-colors"
+              :class="showDeployPanel ? 'bg-emerald-700 text-white' : 'bg-emerald-600 text-white hover:bg-emerald-700'">
+              {{ showDeployPanel ? '▼ Merge' : '🚢 Merge → Prod' }}
+            </button>
+            <button @click="showInsights = !showInsights" class="px-2 py-1 text-[10px] border rounded" :class="showInsights ? 'bg-blue-50 text-blue-700 border-blue-200' : 'text-gray-500 border-gray-200'">
+              {{ showInsights ? 'Hide' : 'Show' }} Insights
+            </button>
+          </div>
+        </div>
+        <!-- INLINE DEPLOY PANEL (expandable, not separate page) -->
+        <div v-if="showDeployPanel" class="border-b border-gray-200 bg-emerald-50/30 px-4 py-3 flex-shrink-0">
+          <div class="flex items-center justify-between">
             <div class="flex items-center gap-3">
               <span class="text-xs text-gray-500">{{ APPS.find(a => a.id === selectedApp)?.name }}</span>
               <!-- CADE Bots inline -->
@@ -705,325 +752,9 @@ watch(slug, () => { refreshInsights() })
                     <p class="text-xs text-gray-400">Verifying {{ APPS.find(a => a.id === selectedApp)?.name }}...</p>
                   </div>
                 </div>
-                <div v-else-if="!previewUrl" class="absolute inset-0 flex items-center justify-center bg-white p-8">
-                  <div class="max-w-md text-center">
-                    <div class="mx-auto grid h-10 w-10 place-items-center rounded-xl bg-emerald-50 text-emerald-700">↗</div>
-                    <h3 class="mt-4 text-sm font-semibold text-gray-900">{{ previewTarget?.available ? 'Live app verified' : 'Preview temporarily unavailable' }}</h3>
-                    <p class="mt-2 text-xs leading-5 text-gray-500">{{ previewTarget?.reason }}</p>
-                    <a v-if="previewTarget?.available && previewTarget.external_url" :href="previewTarget.external_url" target="_blank" rel="noopener" class="mt-4 inline-flex rounded-lg bg-gray-900 px-4 py-2 text-xs font-medium text-white">Open live app ↗</a>
-                    <button v-else class="mt-4 rounded-lg border px-4 py-2 text-xs text-gray-600" @click="reloadIframe">Check again</button>
-                    <p class="mt-3 text-[9px] text-gray-400">Madeus never embeds guessed branch URLs. A branch preview appears only after a durable deployment is verified.</p>
-                  </div>
-                </div>
-                <iframe
-                  v-else
-                  :key="iframeKey"
-                  :src="previewUrl"
-                  title="Verified live application preview"
-                  @load="onIframeLoad"
-                  class="w-full h-full border-0"
-                  allow="clipboard-read; clipboard-write"
-                  sandbox="allow-forms allow-modals allow-popups allow-scripts allow-downloads"
-                  referrerpolicy="no-referrer-when-downgrade"
-                />
-              </div>
-            </div>
-
-            <!-- CADE ACTION RAIL + TERMINAL -->
-            <aside v-if="showInsights" class="bg-gray-50 flex flex-col min-h-[520px] max-h-[65vh] overflow-hidden">
-              <div class="px-4 py-3 border-b border-gray-200 bg-white">
-                <div class="flex items-center justify-between">
-                  <div>
-                    <div class="text-[10px] text-emerald-800 uppercase tracking-[0.16em] font-semibold">Decision guidance</div>
-                    <div class="mt-1 text-sm font-semibold text-gray-900">Understand → decide → implement</div>
-                  </div>
-                  <div class="flex items-center gap-1.5 rounded-full bg-emerald-50 px-2 py-1">
-                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                    <span class="text-[9px] font-medium text-emerald-700">Live analysis</span>
-                  </div>
-                </div>
-                <p class="mt-2 text-[11px] leading-4 text-gray-500">Recommendations are grounded in the selected app and capability. Review the evidence, adjust implementation scope, or let Madeus execute safely.</p>
-              </div>
-
-              <div class="flex gap-1 px-3 py-2 border-b border-gray-200 overflow-x-auto bg-white">
-                <button v-for="ins in insights" :key="ins.key" @click="activeInsight = ins.key"
-                  class="shrink-0 px-2 py-1 text-[10px] rounded-md transition-colors"
-                  :class="activeInsight === ins.key ? 'bg-gray-900 text-white font-medium' : 'text-gray-500 hover:bg-gray-100'">
-                  {{ ins.icon }} {{ ins.label }}
-                </button>
-              </div>
-
-              <div class="flex-1 overflow-y-auto p-3 space-y-2">
-                <div v-if="insightNotice" class="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[10px] leading-4 text-emerald-800">{{ insightNotice }}</div>
-                <article v-for="entry in insightsForActive" :key="entry.id" class="rounded-xl border bg-white p-3 shadow-sm" :class="entry.resolved ? 'border-emerald-200' : 'border-gray-200'">
-                  <div class="flex items-start justify-between gap-3">
-                    <div class="min-w-0">
-                      <div class="flex items-center gap-1.5">
-                        <span class="h-1.5 w-1.5 rounded-full" :class="severityDot(entry.severity)"></span>
-                        <span class="text-[9px] font-semibold uppercase tracking-wider" :class="entry.severity === 'high' ? 'text-red-600' : entry.severity === 'warning' ? 'text-amber-600' : 'text-emerald-700'">{{ entry.severity === 'info' ? 'Opportunity' : entry.severity }}</span>
-                      </div>
-                      <h4 class="mt-1 text-xs font-semibold leading-4 text-gray-900">{{ entry.title }}</h4>
-                    </div>
-                    <span class="shrink-0 text-[9px] text-gray-400">{{ entry.confidence }}% confidence</span>
-                  </div>
-                  <p class="mt-2 text-[10px] leading-4 text-gray-500"><strong class="text-gray-700">Evidence:</strong> {{ entry.message }}</p>
-                  <p class="mt-1 text-[10px] leading-4 text-gray-500"><strong class="text-gray-700">Why CADE suggests this:</strong> {{ entry.why }}</p>
-                  <div class="mt-2 rounded-lg bg-gray-50 px-2.5 py-2">
-                    <div class="text-[9px] font-semibold uppercase tracking-wider text-gray-400">Recommended change</div>
-                    <p class="mt-1 text-[10px] leading-4 text-gray-700">{{ entry.recommendation }}</p>
-                    <p class="mt-1 text-[10px] leading-4 text-emerald-700"><strong>Expected value:</strong> {{ entry.outcome }}</p>
-                  </div>
-                  <div class="mt-3 flex items-center gap-2">
-                    <select v-model="implementationScope[entry.id]" :disabled="entry.resolved" class="min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-[10px] text-gray-600">
-                      <option value="safe">Safe patch · verify first</option>
-                      <option value="focused">Focused improvement</option>
-                      <option value="full">Full implementation</option>
-                    </select>
-                    <button @click="expandInsight(entry)" class="rounded-md border border-gray-200 px-2 py-1.5 text-[10px] font-medium text-gray-600 hover:bg-gray-50">Expand</button>
-                    <button @click="editInsightPlan(entry)" :disabled="entry.resolved" class="rounded-md border border-gray-200 px-2 py-1.5 text-[10px] font-medium text-gray-600 hover:bg-gray-50 disabled:opacity-40">Edit</button>
-                    <button @click="implementInsight(entry)" :disabled="entry.implementing || entry.resolved" class="rounded-md bg-gray-900 px-2.5 py-1.5 text-[10px] font-semibold text-white hover:bg-black disabled:bg-emerald-600">
-                      {{ entry.resolved ? '✓ Queued' : entry.implementing ? 'Queuing…' : 'Implement' }}
-                    </button>
-                  </div>
-                </article>
-                <div v-if="!insightsForActive.length" class="rounded-xl border border-dashed border-gray-200 bg-white p-6 text-center text-[11px] text-gray-400">No actionable guidance in this category yet.</div>
-              </div>
-
-              <div v-if="terminalOutput" class="mx-3 mb-2 max-h-20 overflow-y-auto whitespace-pre-wrap rounded-lg bg-emerald-50 px-2.5 py-2 text-[10px] leading-4 text-emerald-800">{{ terminalOutput }}</div>
-              <OutcomeCanvas v-model="terminalPrompt" v-model:successCriteria="successCriteria" v-model:constraints="outcomeConstraints" v-model:advanced="advancedOpen" :app-name="APPS.find(a => a.id === selectedApp)?.name || selectedApp" :capability="cap.name" :busy="terminalLoading" @submit="runCommand" />
-            </aside>
-            </div>
-
-            <!-- DOMAIN-SPECIFIC CAPABILITIES below the app + command workbench -->
-            <div class="p-4 space-y-4">
-              <div v-if="proficiency.stage === 'guided' || frictionSimplified" class="flex items-center justify-between gap-4 rounded-xl border border-emerald-200 bg-emerald-50/60 px-4 py-3"><div><div class="text-[9px] font-semibold uppercase tracking-wider text-emerald-800">{{ frictionSimplified ? 'Simplified from your usage' : 'Guided workspace' }}</div><p class="mt-1 text-[10px] leading-4 text-emerald-950">Start with the outcome box above. Madeus will choose the project context, specialists, tools, verification, and release path. Advanced controls appear as they become useful.</p></div><button class="shrink-0 rounded-lg border border-emerald-300 bg-white px-3 py-2 text-[9px] font-semibold text-emerald-900" @click="toggleAdvanced">Show advanced</button></div>
-              <CadeOperatingSystem
-                :app="APPS.find(a => a.id === selectedApp)?.name || selectedApp"
-                :capability="cap.name"
-                :domain="cap.domain"
-                :project-id="selectedProject"
-                :recommendation="insightsForActive[0]?.recommendation"
-                :outcome="insightsForActive[0]?.outcome"
-                @use-prompt="useCadePrompt"
-              />
-              <OutcomeIntelligenceLive :app="APPS.find(a => a.id === selectedApp)?.name || selectedApp" :capability="cap.name" :project-id="selectedProject" />
-              <ProofTimeline :tasks="recentTasks" :deployments="recentDeploys" :capability="cap.name" />
-              <div class="flex items-end justify-between gap-4">
-                <div>
-                  <div class="text-[10px] font-semibold uppercase tracking-[0.16em] text-gray-400">Capability workspace</div>
-                  <h3 class="mt-1 text-base font-semibold text-gray-900">Measure, configure, and verify {{ cap.name }}</h3>
-                  <p class="mt-1 text-xs text-gray-500">Supporting metrics and controls live below the app-and-action workbench so they add context without interrupting execution.</p>
-                </div>
-                <button v-if="advancedOpen" @click="showConfig = !showConfig" class="shrink-0 rounded-lg border border-gray-200 bg-white px-3 py-2 text-[10px] font-semibold text-gray-700 hover:bg-gray-50">{{ showConfig ? 'Hide tuning' : 'Configure capability' }}</button>
-              </div>
-              <!-- Design domain metrics -->
-              <div v-if="cap.domain === 'product-design'" class="space-y-4">
-                <section class="overflow-hidden rounded-2xl border border-gray-200 bg-white">
-                  <div class="border-b border-gray-100 p-4">
-                    <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                      <div>
-                      <div class="text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-800">Creative capability cloud</div>
-                        <h4 class="mt-1 text-lg font-semibold text-gray-900">Design, generate, animate, test, and ship</h4>
-                        <p class="mt-1 max-w-3xl text-xs leading-5 text-gray-500">Madeus selects the strongest connected model or app for the job. You choose the creative outcome and constraints—not vendors, model IDs, or routing mechanics.</p>
-                      </div>
-                      <div class="flex items-center gap-2">
-                        <NuxtLink to="/connectors" class="rounded-lg border border-gray-200 bg-white px-3 py-2 text-[10px] font-semibold text-gray-700 hover:bg-gray-50">Manage design connections</NuxtLink>
-                        <span class="rounded-full bg-emerald-50 px-2.5 py-1 text-[9px] font-medium text-emerald-700">{{ connectorRegistry.filter(c => c.recommended && c.connected_accounts?.length).length }} specialist accounts connected</span>
-                      </div>
-                    </div>
-                    <div class="mt-4 flex flex-col gap-2 lg:flex-row">
-                      <input v-model="designQuery" type="search" placeholder="Search UI, brand, artwork, motion, video, QA…" class="min-w-0 flex-1 rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-xs outline-none focus:border-blue-400 focus:bg-white focus:ring-2 focus:ring-blue-100">
-                      <div class="flex gap-1 overflow-x-auto">
-                        <button v-for="category in DESIGN_CATEGORIES" :key="category" @click="designCategory = category" class="shrink-0 rounded-lg px-2.5 py-2 text-[10px] font-medium" :class="designCategory === category ? 'bg-gray-900 text-white' : 'bg-gray-50 text-gray-500 hover:bg-gray-100'">{{ category }}</button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div class="grid gap-px bg-gray-100 md:grid-cols-2 xl:grid-cols-3">
-                    <article v-for="tool in filteredDesignCapabilities" :key="tool.id" class="flex min-h-52 flex-col bg-white p-4">
-                      <div class="flex items-start justify-between gap-3">
-                        <div class="grid h-9 w-9 place-items-center rounded-xl bg-gray-900 text-sm text-white">{{ tool.icon }}</div>
-                        <span class="rounded-full px-2 py-1 text-[9px] font-medium" :class="toolReady(tool) ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'">{{ toolReady(tool) ? 'Route ready' : 'Connection helpful' }}</span>
-                      </div>
-                      <h5 class="mt-3 text-sm font-semibold text-gray-900">{{ tool.name }}</h5>
-                      <p class="mt-1 flex-1 text-[11px] leading-5 text-gray-500">{{ tool.summary }}</p>
-                      <div class="mt-3 flex flex-wrap gap-1">
-                        <span v-for="output in tool.outputs" :key="output" class="rounded bg-gray-50 px-2 py-1 text-[9px] text-gray-500">{{ output }}</span>
-                      </div>
-                      <div class="mt-3 flex items-center justify-between gap-2 border-t border-gray-100 pt-3">
-                        <div class="flex -space-x-1">
-                          <span v-for="provider in tool.connectorIds.slice(0, 5)" :key="provider" :title="connectorFor(provider)?.name || provider" class="grid h-5 w-5 place-items-center rounded-full border border-white text-[8px] font-semibold" :class="connectorReady(provider) ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-400'">{{ (connectorFor(provider)?.name || provider).charAt(0).toUpperCase() }}</span>
-                        </div>
-                        <button @click="openDesignTool(tool)" class="rounded-lg bg-gray-900 px-3 py-1.5 text-[10px] font-semibold text-white hover:bg-black">Open builder</button>
-                      </div>
-                    </article>
-                  </div>
-                </section>
-
-                <section v-if="activeDesignTool" class="rounded-2xl border border-emerald-200 bg-emerald-50/40 p-4">
-                  <div class="flex items-start justify-between gap-4">
-                    <div>
-                      <div class="text-[10px] font-semibold uppercase tracking-[0.16em] text-emerald-800">Active builder</div>
-                      <h4 class="mt-1 text-base font-semibold text-gray-900">{{ activeDesignTool.name }}</h4>
-                      <p class="mt-1 text-xs text-gray-500">{{ activeDesignTool.summary }}</p>
-                    </div>
-                    <button @click="activeDesignTool = null" class="rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-[10px] text-gray-500">Close</button>
-                  </div>
-                  <label class="mt-4 block text-[10px] font-semibold uppercase tracking-wider text-gray-500">Creative direction
-                    <textarea v-model="builderPrompt" rows="4" class="mt-1 w-full resize-y rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs leading-5 text-gray-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"></textarea>
-                  </label>
-                  <div class="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-                    <label v-if="activeDesignTool.controls.includes('format')" class="text-[10px] font-medium text-gray-500">Output<select v-model="builderSettings.format" class="mt-1 w-full rounded-lg border bg-white px-2 py-2 text-[10px]"><option>Production assets</option><option>Editable source</option><option>Concept board</option><option>Implementation spec</option></select></label>
-                    <label v-if="activeDesignTool.controls.includes('ratio')" class="text-[10px] font-medium text-gray-500">Aspect ratio<select v-model="builderSettings.ratio" class="mt-1 w-full rounded-lg border bg-white px-2 py-2 text-[10px]"><option>16:9</option><option>1:1</option><option>4:5</option><option>9:16</option><option>Auto set</option></select></label>
-                    <label v-if="activeDesignTool.controls.includes('variants')" class="text-[10px] font-medium text-gray-500">Variants<input v-model.number="builderSettings.variants" type="range" min="1" max="12" class="mt-2 w-full accent-emerald-700"><span class="font-mono text-gray-900">{{ builderSettings.variants }}</span></label>
-                    <label v-if="activeDesignTool.controls.includes('duration')" class="text-[10px] font-medium text-gray-500">Duration<input v-model.number="builderSettings.duration" type="range" min="2" max="30" class="mt-2 w-full accent-emerald-700"><span class="font-mono text-gray-900">{{ builderSettings.duration }}s</span></label>
-                    <label v-if="activeDesignTool.controls.includes('fidelity')" class="text-[10px] font-medium text-gray-500">Fidelity<select v-model="builderSettings.fidelity" class="mt-1 w-full rounded-lg border bg-white px-2 py-2 text-[10px]"><option>Fast concept</option><option>High</option><option>Production</option></select></label>
-                    <label v-if="activeDesignTool.controls.includes('brand')" class="flex items-center justify-between rounded-lg border bg-white px-3 py-2 text-[10px] font-medium text-gray-600">Lock brand<input v-model="builderSettings.brand" type="checkbox" class="accent-emerald-700"></label>
-                  </div>
-                  <div class="mt-4 flex flex-wrap items-center justify-between gap-3">
-                    <div class="text-[10px] text-gray-500">Madeus will compare eligible routes, preserve sources and provenance, and return outputs behind a review gate.</div>
-                    <div class="flex items-center gap-2">
-                      <NuxtLink v-if="!toolReady(activeDesignTool)" to="/connectors" class="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[10px] font-semibold text-amber-800">Connect a specialist provider</NuxtLink>
-                      <button @click="runDesignTool" :disabled="builderRunning || !builderPrompt.trim()" class="rounded-lg bg-blue-600 px-4 py-2 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-40">{{ builderRunning ? 'Routing…' : 'Create with Madeus' }}</button>
-                    </div>
-                  </div>
-                  <div v-if="builderNotice" class="mt-3 rounded-lg border border-emerald-200 bg-white px-3 py-2 text-[10px] text-emerald-800">{{ builderNotice }}</div>
-                </section>
-
-                <div class="grid grid-cols-4 gap-3">
-                  <div class="bg-white border border-gray-200 rounded-lg p-3">
-                    <div class="text-[10px] text-gray-400">Pages</div><div class="text-xl font-bold text-gray-900 mt-1">12</div><div class="text-[10px] text-emerald-600">All passing</div>
-                  </div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3">
-                    <div class="text-[10px] text-gray-400">Components</div><div class="text-xl font-bold text-gray-900 mt-1">47</div><div class="text-[10px] text-blue-600">3 need review</div>
-                  </div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3">
-                    <div class="text-[10px] text-gray-400">Cognitive Load</div><div class="text-xl font-bold text-gray-900 mt-1">6.2</div><div class="text-[10px] text-amber-600">Slightly elevated</div>
-                  </div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3">
-                    <div class="text-[10px] text-gray-400">Tasks</div><div class="text-xl font-bold text-gray-900 mt-1">{{ recentTasks.filter(t => t.note?.includes(selectedApp)).length }}</div><div class="text-[10px] text-gray-500">For {{ APPS.find(a => a.id === selectedApp)?.name }}</div>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Legal domain tools -->
-              <div v-else-if="cap.domain === 'legal-ops'" class="space-y-4">
-                <div class="flex items-center justify-between">
-                  <h4 class="text-sm font-semibold text-gray-700">Documents — {{ APPS.find(a => a.id === selectedApp)?.name }}</h4>
-                  <button class="px-2 py-1 text-[10px] bg-blue-600 text-white rounded">+ New Document</button>
-                </div>
-                <div class="space-y-2">
-                  <div v-for="doc in appDocs" :key="doc.name + selectedApp" class="bg-white border border-gray-200 rounded-lg p-3 flex items-center justify-between hover:shadow-sm transition-shadow cursor-pointer group">
-                    <div class="flex items-center gap-2">
-                      <span>📄</span>
-                      <div>
-                        <div class="text-sm font-medium text-gray-900 group-hover:text-blue-700">{{ doc.name }}</div>
-                        <div class="text-[10px] text-gray-400">{{ APPS.find(a => a.id === selectedApp)?.name }} · {{ doc.type }}</div>
-                      </div>
-                    </div>
-                    <div class="flex items-center gap-2">
-                      <span class="text-[10px] px-2 py-0.5 rounded-full font-medium" :class="docStatusColor(doc.status)">{{ doc.status }}</span>
-                      <button class="px-2 py-0.5 text-[10px] bg-blue-50 text-blue-700 border border-blue-200 rounded opacity-0 group-hover:opacity-100">CADE Review</button>
-                    </div>
-                  </div>
-                </div>
-                <div class="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                  <p class="text-xs text-blue-600">{{ appDocs.filter(d => d.status === 'current').length }}/{{ appDocs.length }} documents current for <strong>{{ APPS.find(a => a.id === selectedApp)?.name }}</strong>. {{ appDocs.some(d => d.status === 'draft') ? 'Drafts need review.' : 'All up to date.' }}</p>
-                </div>
-              </div>
-
-              <!-- Engineering domain -->
-              <div v-else-if="cap.domain === 'engineering'" class="space-y-4">
-                <h4 class="text-sm font-semibold text-gray-700">Code & Review — {{ APPS.find(a => a.id === selectedApp)?.name }}</h4>
-                <div class="grid grid-cols-4 gap-3">
-                  <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Open PRs</div><div class="text-xl font-bold text-gray-900 mt-1">3</div><div class="text-[10px] text-amber-600">2 need review</div></div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Test Coverage</div><div class="text-xl font-bold text-gray-900 mt-1">94%</div><div class="text-[10px] text-emerald-600">Above target</div></div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Dep Patches</div><div class="text-xl font-bold text-gray-900 mt-1">5</div><div class="text-[10px] text-amber-600">Security</div></div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">P95 Latency</div><div class="text-xl font-bold text-gray-900 mt-1">220ms</div><div class="text-[10px] text-emerald-600">Under target</div></div>
-                </div>
-                <div v-if="recentTasks.length" class="space-y-1">
-                  <div class="text-[10px] text-gray-400 uppercase tracking-wider">Recent tasks</div>
-                  <div v-for="t in recentTasks.slice(0, 6)" :key="t.id" class="bg-white border border-gray-200 rounded-lg px-3 py-2 flex items-center gap-2 text-xs">
-                    <span class="font-mono" :class="stateClass(t.state)">{{ stateIcon(t.state) }}</span>
-                    <span class="text-gray-700 flex-1 truncate">{{ t.slug }}</span>
-                    <span class="text-[10px] text-gray-400 px-1.5 py-0.5 bg-gray-50 rounded">{{ t.kind || '—' }}</span>
-                    <span class="text-[10px] text-gray-400">{{ timeAgo(t.created_at) }}</span>
-                  </div>
-                </div>
-              </div>
-
-              <!-- DevOps domain -->
-              <div v-else-if="cap.domain === 'devops'" class="space-y-4">
-                <h4 class="text-sm font-semibold text-gray-700">Deployment Health — {{ APPS.find(a => a.id === selectedApp)?.name }}</h4>
-                <div class="grid grid-cols-4 gap-3">
-                  <div class="bg-white border border-gray-200 rounded-lg p-3 text-center"><div class="text-xl font-bold text-emerald-600">●</div><div class="text-[10px] text-gray-500 mt-1">Healthy</div></div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3 text-center"><div class="text-xl font-bold text-gray-900">{{ recentDeploys.length }}</div><div class="text-[10px] text-gray-500 mt-1">Deploys</div></div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3 text-center"><div class="text-xl font-bold text-gray-900">0</div><div class="text-[10px] text-gray-500 mt-1">Rollbacks</div></div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3 text-center"><div class="text-xl font-bold text-gray-900">99.9%</div><div class="text-[10px] text-gray-500 mt-1">Uptime</div></div>
-                </div>
-                <div v-if="recentDeploys.length" class="space-y-1">
-                  <div class="text-[10px] text-gray-400 uppercase tracking-wider">Recent deploys</div>
-                  <div v-for="d in recentDeploys.slice(0, 5)" :key="d.id" class="bg-white border border-gray-200 rounded-lg px-3 py-2 flex items-center gap-2 text-xs">
-                    <span class="w-2 h-2 rounded-full" :class="d.deploy_status === 'deployed' ? 'bg-emerald-500' : 'bg-red-500'"></span>
-                    <span class="font-mono text-gray-600">{{ d.version }}</span>
-                    <span class="flex-1 truncate text-gray-400">{{ d.note }}</span>
-                    <span class="text-gray-400">{{ timeAgo(d.created_at) }}</span>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Growth domain -->
-              <div v-else-if="cap.domain === 'growth'" class="space-y-4">
-                <h4 class="text-sm font-semibold text-gray-700">Growth — {{ APPS.find(a => a.id === selectedApp)?.name }}</h4>
-                <div class="grid grid-cols-4 gap-3">
-                  <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Experiments</div><div class="text-xl font-bold text-gray-900 mt-1">3</div></div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Conversion</div><div class="text-xl font-bold text-emerald-600 mt-1">4.2%</div></div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">MAU</div><div class="text-xl font-bold text-gray-900 mt-1">12.4k</div></div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Retention D7</div><div class="text-xl font-bold text-blue-600 mt-1">68%</div></div>
-                </div>
-              </div>
-
-              <!-- Security domain -->
-              <div v-else-if="cap.domain === 'security'" class="space-y-4">
-                <h4 class="text-sm font-semibold text-gray-700">Security — {{ APPS.find(a => a.id === selectedApp)?.name }}</h4>
-                <div class="grid grid-cols-4 gap-3">
-                  <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">RLS</div><div class="text-xl font-bold text-emerald-600 mt-1">✓</div></div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Key Age</div><div class="text-xl font-bold text-gray-900 mt-1">12d</div></div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Vulns</div><div class="text-xl font-bold text-amber-600 mt-1">2</div></div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Last Scan</div><div class="text-xl font-bold text-gray-900 mt-1">4h</div></div>
-                </div>
-              </div>
-
-              <!-- Platform / fallback -->
-              <div v-else class="space-y-4">
-                <h4 class="text-sm font-semibold text-gray-700">{{ cap.name }} — {{ APPS.find(a => a.id === selectedApp)?.name }}</h4>
-                <p class="text-xs text-gray-500">{{ cap.summary }}</p>
-                <div class="grid grid-cols-3 gap-3">
-                  <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Tasks Today</div><div class="text-xl font-bold text-gray-900 mt-1">{{ recentTasks.filter(t => new Date(t.created_at) > new Date(Date.now() - 86400000)).length }}</div></div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Queued</div><div class="text-xl font-bold text-gray-900 mt-1">{{ recentTasks.filter(t => t.state === 'QUEUED').length }}</div></div>
-                  <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Maturity</div><div class="text-xl font-bold text-gray-900 mt-1">{{ cap.maturity }}%</div></div>
-                </div>
-                <div v-if="recentTasks.length" class="space-y-1">
-                  <div class="text-[10px] text-gray-400 uppercase tracking-wider">Recent tasks</div>
-                  <div v-for="t in recentTasks.slice(0, 6)" :key="t.id" class="bg-white border border-gray-200 rounded-lg px-3 py-2 flex items-center gap-2 text-xs">
-                    <span class="font-mono" :class="stateClass(t.state)">{{ stateIcon(t.state) }}</span>
-                    <span class="text-gray-700 flex-1 truncate">{{ t.slug }}</span>
-                    <span class="text-[10px] text-gray-400">{{ timeAgo(t.created_at) }}</span>
-                  </div>
-                </div>
-              </div>
-
-              <!-- CONFIG SLIDERS (inline, collapsible) -->
-              <div class="mt-4 border-t border-gray-200 pt-3">
-                <button @click="showConfig = !showConfig" class="flex items-center gap-2 text-[10px] text-gray-500 hover:text-gray-700 uppercase tracking-wider font-medium">
-                  <span>{{ showConfig ? '▼' : '▶' }}</span> Configuration & Tuning
-                </button>
-                <div v-if="showConfig" class="mt-3 bg-white border border-gray-200 rounded-lg p-4 space-y-3">
-                  <div v-for="s in domainSliders" :key="s.label">
-                    <div class="flex justify-between text-xs mb-1"><span class="text-gray-600">{{ s.label }}</span><span class="font-mono text-gray-900 font-medium">{{ sliders[s.label] ?? s.default }}{{ s.unit }}</span></div>
-                    <input type="range" :min="s.min" :max="s.max" v-model.number="sliders[s.label]" class="w-full h-1.5 bg-gray-200 rounded-full appearance-none cursor-pointer accent-emerald-700" />
-                  </div>
-                  <div class="border-t border-gray-100 pt-3"><div class="mb-2 text-[9px] font-semibold uppercase tracking-wider text-gray-400">Active specialists</div><div class="flex flex-wrap gap-1.5"><span v-for="b in bots" :key="b" class="rounded-full bg-emerald-50 px-2 py-1 text-[9px] text-emerald-800">{{ b }}</span></div></div>
+                <div class="flex items-center gap-2">
+                  <span class="text-[10px] px-2 py-0.5 rounded-full font-medium" :class="docStatusColor(doc.status)">{{ doc.status }}</span>
+                  <button class="px-2 py-0.5 text-[10px] bg-blue-50 text-blue-700 border border-blue-200 rounded opacity-0 group-hover:opacity-100">AI Review</button>
                 </div>
               </div>
             </div>
@@ -1106,8 +837,184 @@ watch(slug, () => { refreshInsights() })
               </div>
             </aside>
           </div>
-        </section>
+
+          <!-- Growth domain -->
+          <div v-else-if="cap.domain === 'growth'" class="space-y-4">
+            <h4 class="text-sm font-semibold text-gray-700">Growth — {{ APPS.find(a => a.id === selectedApp)?.name }}</h4>
+            <div class="grid grid-cols-4 gap-3">
+              <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Experiments</div><div class="text-xl font-bold text-gray-900 mt-1">3</div></div>
+              <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Conversion</div><div class="text-xl font-bold text-emerald-600 mt-1">4.2%</div></div>
+              <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">MAU</div><div class="text-xl font-bold text-gray-900 mt-1">12.4k</div></div>
+              <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Retention D7</div><div class="text-xl font-bold text-blue-600 mt-1">68%</div></div>
+            </div>
+          </div>
+
+          <!-- Security domain -->
+          <div v-else-if="cap.domain === 'security'" class="space-y-4">
+            <h4 class="text-sm font-semibold text-gray-700">Security — {{ APPS.find(a => a.id === selectedApp)?.name }}</h4>
+            <div class="grid grid-cols-4 gap-3">
+              <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">RLS</div><div class="text-xl font-bold text-emerald-600 mt-1">✓</div></div>
+              <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Key Age</div><div class="text-xl font-bold text-gray-900 mt-1">12d</div></div>
+              <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Vulns</div><div class="text-xl font-bold text-amber-600 mt-1">2</div></div>
+              <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Last Scan</div><div class="text-xl font-bold text-gray-900 mt-1">4h</div></div>
+            </div>
+          </div>
+
+          <!-- Platform / fallback -->
+          <div v-else class="space-y-4">
+            <h4 class="text-sm font-semibold text-gray-700">{{ cap.name }} — {{ APPS.find(a => a.id === selectedApp)?.name }}</h4>
+            <p class="text-xs text-gray-500">{{ cap.summary }}</p>
+            <div class="grid grid-cols-3 gap-3">
+              <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Tasks Today</div><div class="text-xl font-bold text-gray-900 mt-1">{{ recentTasks.filter(t => new Date(t.created_at) > new Date(Date.now() - 86400000)).length }}</div></div>
+              <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Queued</div><div class="text-xl font-bold text-gray-900 mt-1">{{ recentTasks.filter(t => t.state === 'QUEUED').length }}</div></div>
+              <div class="bg-white border border-gray-200 rounded-lg p-3"><div class="text-[10px] text-gray-400">Maturity</div><div class="text-xl font-bold text-gray-900 mt-1">{{ cap.maturity }}%</div></div>
+            </div>
+            <div v-if="recentTasks.length" class="space-y-1">
+              <div class="text-[10px] text-gray-400 uppercase tracking-wider">Recent tasks</div>
+              <div v-for="t in recentTasks.slice(0, 6)" :key="t.id" class="bg-white border border-gray-200 rounded-lg px-3 py-2 flex items-center gap-2 text-xs">
+                <span class="font-mono" :class="stateClass(t.state)">{{ stateIcon(t.state) }}</span>
+                <span class="text-gray-700 flex-1 truncate">{{ t.slug }}</span>
+                <span class="text-[10px] text-gray-400">{{ timeAgo(t.created_at) }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- CONFIG SLIDERS (inline, collapsible) — available on ALL domains -->
+          <div class="mt-4 border-t border-gray-200 pt-3">
+            <button @click="showConfig = !showConfig" class="flex items-center gap-2 text-[10px] text-gray-500 hover:text-gray-700 uppercase tracking-wider font-medium">
+              <span>{{ showConfig ? '▼' : '▶' }}</span> Configuration & Tuning
+            </button>
+            <div v-if="showConfig" class="mt-3 bg-white border border-gray-200 rounded-lg p-4 space-y-3">
+              <div v-for="s in domainSliders" :key="s.label">
+                <div class="flex justify-between text-xs mb-1"><span class="text-gray-600">{{ s.label }}</span><span class="font-mono text-gray-900 font-medium">{{ sliders[s.label] ?? s.default }}{{ s.unit }}</span></div>
+                <input type="range" :min="s.min" :max="s.max" v-model.number="sliders[s.label]" class="w-full h-1.5 bg-gray-200 rounded-full appearance-none cursor-pointer accent-blue-600" />
+              </div>
+            </div>
+          </div>
+        </div>
+        </div>
+        <!-- TERMINAL — always visible at bottom of workspace -->
+        <div class="flex-shrink-0 border-t border-gray-200 bg-gray-900" style="font-family: 'JetBrains Mono', monospace;">
+          <div class="px-4 py-2 flex items-center justify-between border-b border-gray-700">
+            <span class="text-[10px] text-gray-500 uppercase tracking-wider">Terminal — {{ APPS.find(a => a.id === selectedApp)?.name }}</span>
+            <div v-if="routeInfo" class="flex items-center gap-2 text-[10px]">
+              <span class="text-blue-400">auto →</span>
+              <span class="px-1.5 py-0.5 rounded bg-blue-900/50 text-blue-300">{{ modelLabel(selectedModel) }}</span>
+              <span class="px-1.5 py-0.5 rounded bg-gray-700 text-gray-300">{{ selectedKind }}</span>
+              <span class="px-1.5 py-0.5 rounded bg-gray-700 text-gray-300">{{ selectedMode }}</span>
+              <button @click="showOverride = !showOverride" class="text-gray-500 hover:text-gray-300">{{ showOverride ? '▼' : '▶' }} override</button>
+            </div>
+          </div>
+          <div v-if="showOverride" class="px-4 py-2 border-b border-gray-700 space-y-1.5">
+            <div class="flex flex-wrap gap-1"><button v-for="m in MODELS" :key="m.value" @click="selectedModel = m.value" class="px-2 py-0.5 text-[10px] rounded border transition-colors" :class="selectedModel === m.value ? 'bg-blue-600 text-white border-blue-600' : 'bg-gray-800 text-gray-400 border-gray-700'">{{ m.label }}</button></div>
+            <div class="flex gap-3">
+              <div class="flex flex-wrap gap-1"><button v-for="k in ['build','fix','research','qa','deploy','canary']" :key="k" @click="selectedKind = k" class="px-2 py-0.5 text-[10px] rounded border" :class="selectedKind === k ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-gray-800 text-gray-400 border-gray-700'">{{ k }}</button></div>
+              <div class="flex flex-wrap gap-1"><button v-for="mm in ['build','research','efficiency','speculative']" :key="mm" @click="selectedMode = mm" class="px-2 py-0.5 text-[10px] rounded border" :class="selectedMode === mm ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-gray-800 text-gray-400 border-gray-700'">{{ mm }}</button></div>
+            </div>
+          </div>
+          <div class="px-4 py-3 max-h-[180px] overflow-y-auto">
+            <div v-if="terminalOutput" class="text-xs text-emerald-400 whitespace-pre-wrap mb-2">{{ terminalOutput }}</div>
+            <div v-else class="text-xs text-gray-600 mb-2">{{ cap.name }} ready — describe what you need while viewing the context above.</div>
+            <div class="flex items-center gap-2">
+              <span class="text-emerald-500 text-sm">$</span>
+              <input v-model="terminalPrompt" @keydown.enter="runCommand" placeholder="Describe changes, fixes, improvements..." class="flex-1 bg-transparent text-white text-sm outline-none placeholder-gray-600" />
+              <button @click="runCommand" :disabled="terminalLoading || !terminalPrompt.trim()" class="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-medium rounded transition-colors disabled:opacity-40">{{ terminalLoading ? '...' : '→' }}</button>
+            </div>
+          </div>
+        </div>
+      </template>
+      <!-- ===== CONFIG TAB ===== -->
+      <div v-else-if="activeTab === 'config'" class="flex-1 overflow-y-auto p-6">
+        <div class="max-w-3xl mx-auto space-y-5">
+          <h3 class="text-lg font-semibold text-gray-900" style="font-family: 'Fraunces', serif;">Configuration — {{ APPS.find(a => a.id === selectedApp)?.name }}</h3>
+          <div class="bg-white border border-gray-200 rounded-xl p-5 space-y-4">
+            <div v-for="s in domainSliders" :key="s.label">
+              <div class="flex justify-between text-sm mb-1"><span class="text-gray-600">{{ s.label }}</span><span class="font-mono text-gray-900 font-medium">{{ sliders[s.label] ?? s.default }}{{ s.unit }}</span></div>
+              <input type="range" :min="s.min" :max="s.max" v-model.number="sliders[s.label]" class="w-full h-1.5 bg-gray-200 rounded-full appearance-none cursor-pointer accent-blue-600" />
+            </div>
+          </div>
+          <div class="bg-white border border-gray-200 rounded-xl p-5">
+            <div class="text-xs font-semibold text-gray-700 mb-3">AI Assistants — {{ cap.domain }}</div>
+            <div class="space-y-1.5">
+              <div v-for="b in bots" :key="b" class="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-lg">
+                <div class="flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span><span class="text-sm text-gray-700">{{ b }}</span></div>
+                <span class="text-[10px] text-emerald-600 font-medium">Active</span>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
-    </Teleport>
+
+      <!-- ===== HISTORY TAB ===== -->
+      <div v-else-if="activeTab === 'history'" class="flex-1 overflow-y-auto p-6">
+        <div class="max-w-3xl mx-auto space-y-5">
+          <h3 class="text-lg font-semibold text-gray-900" style="font-family: 'Fraunces', serif;">Task History</h3>
+          <div class="space-y-1.5">
+            <div v-for="t in recentTasks" :key="t.id" class="bg-white border border-gray-200 rounded-lg px-4 py-3 flex items-center gap-3 text-sm">
+              <span class="font-mono text-base" :class="stateClass(t.state)">{{ stateIcon(t.state) }}</span>
+              <span class="text-gray-900 flex-1 truncate">{{ t.slug }}</span>
+              <span class="text-xs text-gray-400 px-2 py-0.5 bg-gray-50 rounded">{{ t.kind || '—' }}</span>
+              <span class="text-xs text-gray-400">{{ timeAgo(t.created_at) }}</span>
+            </div>
+            <div v-if="!recentTasks.length" class="text-center py-8 text-gray-400 text-sm">No tasks yet</div>
+          </div>
+        </div>
+      </div>
+    </main>
+    <!-- RIGHT PANEL — Insights -->
+    <aside v-if="showInsights" class="w-72 bg-gray-50 border-l border-gray-200 flex flex-col flex-shrink-0 overflow-hidden">
+      <div class="px-3 py-2 border-b border-gray-200 flex items-center justify-between">
+        <span class="text-[10px] text-gray-400 uppercase tracking-wider font-medium">Intelligence</span>
+        <div class="flex items-center gap-1.5">
+          <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+          <span class="text-[9px] text-emerald-600">Auto-running</span>
+        </div>
+      </div>
+
+      <!-- Insight tabs -->
+      <div class="flex flex-wrap gap-1 px-3 py-2 border-b border-gray-200">
+        <button v-for="ins in insights" :key="ins.key" @click="activeInsight = ins.key"
+          class="px-2 py-1 text-[10px] rounded transition-colors"
+          :class="activeInsight === ins.key ? 'bg-blue-100 text-blue-700 font-medium' : 'text-gray-500 hover:bg-gray-100'">
+          {{ ins.icon }} {{ ins.label }}
+        </button>
+      </div>
+
+      <!-- High-priority suggestions -->
+      <div v-if="highPriority.length" class="px-3 py-2 border-b border-gray-200">
+        <div class="text-[9px] text-red-500 uppercase tracking-wider font-medium mb-1.5">High Priority</div>
+        <div class="space-y-1.5">
+          <div v-for="hp in highPriority.filter(h => !h.stale)" :key="hp.id" class="px-2 py-1.5 rounded border text-[10px] leading-snug" :class="severityColor(hp.severity)">
+            {{ hp.message }}
+          </div>
+        </div>
+      </div>
+
+      <!-- Insight feed -->
+      <div class="flex-1 overflow-y-auto px-3 py-2">
+        <div class="text-[9px] text-gray-400 uppercase tracking-wider mb-2">{{ insights.find(i => i.key === activeInsight)?.label || 'Feed' }} — History</div>
+        <div class="space-y-2">
+          <div v-for="(entry, idx) in insightsForActive" :key="idx" class="relative pl-4">
+            <span class="absolute left-0 top-1.5 w-2 h-2 rounded-full" :class="severityDot(entry.severity)"></span>
+            <div class="text-[11px] text-gray-700 leading-snug">{{ entry.message }}</div>
+            <div class="text-[9px] text-gray-400 mt-0.5 flex items-center gap-2">
+              <span>{{ timeAgo(entry.timestamp) }}</span>
+              <span v-if="entry.resolved" class="text-emerald-600">resolved</span>
+            </div>
+          </div>
+          <div v-if="!insightsForActive.length" class="text-center py-6 text-gray-400 text-[11px]">No feedback yet.</div>
+        </div>
+      </div>
+
+      <!-- Bot status footer -->
+      <div class="px-3 py-2 border-t border-gray-200">
+        <div class="text-[9px] text-gray-400 uppercase tracking-wider mb-1">Active Bots ({{ bots.length }})</div>
+        <div class="flex flex-wrap gap-1">
+          <span v-for="b in bots" :key="b" class="inline-flex items-center gap-1 px-1.5 py-0.5 bg-white border border-gray-200 rounded text-[9px] text-gray-600">
+            <span class="w-1 h-1 rounded-full bg-emerald-500"></span>{{ b.split(' ').map(w => w[0]).join('') }}
+          </span>
+        </div>
+      </div>
+    </aside>
   </div>
 </template>

@@ -21,9 +21,10 @@ second Mac (which checks out there) is unaffected; only THIS Mac's *runtime* was
 To harden the other Mac, repeat: clone to `~/claude-orchestrator`, copy `.env` to
 `~/.claude-orchestrator/.env`, repoint its launcher/plists/`.zprofile`.
 
-## See Also
+## Troubleshooting
 
-- `DEPLOY.md` — deployment procedures and environment setup
-- `OPERATOR-GUIDE.md` — day-to-day fleet operation instructions
-- `docs/tdd-config.md` — TDD configuration for task execution
-- `docs/improvement_steering.md` — how background optimization works without blocking tasks
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| `keepalive.sh` crash-loops on login | FDA was reset; runtime still under `~/Documents` | Re-clone to `~/claude-orchestrator` and repoint launcher |
+| `.env` not found at startup | Symlink broken after clone refresh | `ln -sf ~/.claude-orchestrator/.env runner/.env` |
+| Double runner instances | Lock file path mismatch between launcher and zprofile | Ensure both use `~/claude-orchestrator/.runtime/runner.lock` |

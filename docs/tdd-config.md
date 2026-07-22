@@ -228,10 +228,17 @@ print(valid, error)
 EOF
 ```
 
-## Quick Reference
 
-| Key | Default | Purpose |
-|---|---|---|
-| `ORCH_TDD_ENABLED` | `false` | Master gate for TDD-gating |
-| `ORCH_TDD_TASK_KINDS` | `build,feature` | Task kinds that require TDD |
-| `ORCH_TDD_TIMEOUT_SEC` | `300` | Max seconds for test-write phase |
+## Troubleshooting
+
+### TDD gate reports "no tests collected" but tests exist
+
+Ensure `must_pass_tests` entries match the actual test function names (without the `test_` prefix duplication). pytest collects functions named `test_*` in files named `test_*.py` — if the file is named differently, pass the full path in the task spec.
+
+### Config changes not taking effect
+
+Fleet config has a ~30s cache TTL in `tdd_gate.py`. If changes seem stuck: call `tdd_gate.invalidate_cache()` in the runner, or restart the runner process. Verify the key was written correctly with `SELECT * FROM fleet_config WHERE key LIKE 'ORCH_TDD%';`.
+
+### Task blocked but tests pass locally
+
+The build gate runs in the CI environment, which may differ from local. Check that the pytest invocation in `tdd_gate.run_must_pass_tests()` uses the same Python version and dependencies as your local run. Also confirm the task's `must_pass_tests` list matches the exact function names (case-sensitive).

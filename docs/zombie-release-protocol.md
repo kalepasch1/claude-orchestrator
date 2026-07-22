@@ -1,18 +1,36 @@
 # Zombie Release Protocol
 
-## Overview
-Tasks stuck in RUNNING state beyond their heartbeat window (90 minutes)
-are automatically released back to QUEUED by the executor's zombie-release step.
+When an executor session crashes, is rate-limited, or times out, its claimed
+tasks remain in `RUNNING` state with a stale `updated_at` timestamp. These
+"zombie" tasks block queue throughput until released.
 
-## Mechanism
-At the start of each executor loop (Step 0b), a SQL update identifies tasks where:
-- `state = 'RUNNING'`
-- `updated_at < now() - interval '90 minutes'`
-- `account LIKE 'cowork-executor%'`
+## Detection
 
-These are reset to QUEUED with a note indicating zombie release.
+Every executor loop iteration runs a zombie-release query before claiming
+new work:
 
-## Why 90 Minutes
-Balances between giving slow tasks time to complete and not blocking the queue.
-Most tasks complete in under 10 minutes; 90 minutes accounts for large repos
-and network delays without creating excessive idle time.
+```sql
+UPDATE tasks SET state='QUEUED', note='zombie released — heartbeat stale >90min'
+WHERE state='RUNNING'
+  AND updated_at < now() - interval '90 minutes'
+  AND account LIKE 'cowork-executor%';
+```
+
+## Why 90 minutes?
+
+- Typical task implementation takes 2–15 minutes.
+- The longest observed legitimate task run is ~60 minutes (large build tasks).
+- 90 minutes provides a safety margin above the longest legitimate run while
+  still recovering zombies within a reasonable window.
+
+## Heartbeat mechanism
+
+While processing a batch, executors update `updated_at=now()` on all their
+remaining claimed tasks after each task completion. This keeps alive tasks
+from being mistakenly released while the executor is still active.
+
+## Related
+
+- `fleet_control.py` — fleet-wide config propagation
+- `runner.py` — primary task loop with periodic heartbeat
+- `scoreboard.py` — tracks zombie-release events in merge-rate metrics
