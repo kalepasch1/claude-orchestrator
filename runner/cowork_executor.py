@@ -210,9 +210,14 @@ def execute_task(task):
         text = result.get("text", "")
         cost = result.get("cost_usd", 0)
         rc = result.get("returncode", 1)
+        stderr = result.get("stderr", "")
 
         print(f"\n[result] returncode={rc} cost=${cost:.4f}")
         print(f"[result] output length: {len(text)} chars")
+        if stderr:
+            print(f"[result] STDERR: {stderr[:500]}")
+        if rc != 0 and not text and not stderr:
+            print(f"[result] WARNING: rc={rc} with no output — likely CLI startup failure")
 
         if rc == 0:
             # Check if there's a diff

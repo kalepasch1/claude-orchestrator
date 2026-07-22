@@ -141,10 +141,13 @@ def check_worktree_count(repo_path):
     if rc != 0:
         return {"passed": True, "count": 0, "reason": "could not list worktrees"}
     count = max(0, sum(1 for l in out.splitlines() if l.startswith("worktree ")) - 1)
-    if count > MAX_WORKTREES:
-        v = _violation("worktree_cap", f"{count} active worktrees (limit {MAX_WORKTREES})",
-                       {"count": count, "limit": MAX_WORKTREES})
-        return {"passed": MODE != "block", "count": count, "violation": v}
+    # Re-read from env each call so fleet_config updates take effect without restart
+    _mode = os.environ.get("ORCH_GUARDRAIL_MODE", "warn")
+    _max_wt = int(os.environ.get("ORCH_MAX_WORKTREES", "8"))
+    if count > _max_wt:
+        v = _violation("worktree_cap", f"{count} active worktrees (limit {_max_wt})",
+                       {"count": count, "limit": _max_wt})
+        return {"passed": _mode != "block", "count": count, "violation": v}
     return {"passed": True, "count": count}
 
 # ── Guardrail 6: Remote branch GC (the missing piece) ─────────────────────
