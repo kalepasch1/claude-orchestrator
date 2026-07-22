@@ -159,6 +159,27 @@ def plan(master: str, repo: str = None) -> list:
     # Apply tests-first gate: split tasks whose proof references a missing test file
     tasks = tests_first_gate.apply_gate(tasks, repo_path=repo)
 
+    # PREDICTIVE CONFLICT AVOIDANCE: feed currently-reserved files and predicted
+    # conflicts back into task deps so the planner chains correctly.
+    try:
+        import file_reservation
+        predictions = file_reservation.predict_conflicts()
+        if predictions:
+            hot_files = {p["file"] for p in predictions if p.get("risk") in ("high", "medium")}
+            for t in tasks:
+                scope_str = t.get("file_scope", "") or t.get("prompt", "")
+                for hf in hot_files:
+                    if hf in scope_str:
+                        for other in tasks:
+                            if other is t:
+                                continue
+                            other_scope = other.get("file_scope", "") or other.get("prompt", "")
+                            if hf in other_scope and t.get("slug") not in (other.get("deps") or []):
+                                other.setdefault("deps", []).append(t["slug"])
+                                break
+    except Exception as e:
+        sys.stderr.write(f"[planner] predictive_conflict_avoidance failed ({e}); skipping\n")
+
     # STATIC FILE-SCOPE ANALYSIS: override/augment LLM-declared file scopes with
     # deterministic analysis. This catches the ~40% of cases where the LLM gets
     # file dependencies wrong, preventing merge conflicts before branches are created.

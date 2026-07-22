@@ -116,6 +116,18 @@ import speculative_diff, adaptive_budget, transfer_learning
 import pipeline_fusion, prompt_distillation, output_recycling
 import cade_tournaments
 import branch_lease
+try:
+    import soft_dep_spec
+except ImportError:
+    soft_dep_spec = None
+try:
+    import ast_merger
+except ImportError:
+    ast_merger = None
+try:
+    import self_healing_merge
+except ImportError:
+    self_healing_merge = None
 import queue_elimination, adaptive_pipeline, unified_knowledge
 import fast_path, batch_fusion, proof_propagation
 import intent_compiler, ensemble_predictor, bankruptcy_decompose
@@ -211,6 +223,18 @@ def set_state(task_id: str, **kw) -> None:
             _task_row = (db.select("tasks", {"id": f"eq.{task_id}"}) or [None])[0]
             if _task_row:
                 continuous_merger.on_task_done(_task_row)
+                # SOFT-DEP SPECULATION: check if completing this dep invalidates
+                # any speculating tasks that assumed disjoint file scopes.
+                if soft_dep_spec:
+                    try:
+                        _invalidated = soft_dep_spec.on_dep_done(_task_row)
+                        for _inv_id in _invalidated:
+                            db.update("tasks", {"id": _inv_id},
+                                      {"state": "QUEUED",
+                                       "note": "soft-dep-spec: invalidated by dep completion",
+                                       "updated_at": "now()"})
+                    except Exception:
+                        pass
         except Exception as _e:
             _log.debug("continuous_merger hook failed: %s", _e)
 

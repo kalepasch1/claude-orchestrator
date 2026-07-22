@@ -114,6 +114,14 @@ def _classify_conflict(filepath: str, conflict_type: str = "") -> str:
     if "add/add" in conflict_type.lower():
         return "theirs"
 
+    # AST MERGER: try semantic merge for supported file types before giving up
+    try:
+        import ast_merger
+        if ast_merger.can_handle(normalized):
+            return "ast_merge"
+    except Exception:
+        pass
+
     return "manual"
 
 def _resolve_file(repo: str, filepath: str, strategy: str, branch: str, base: str) -> bool:
@@ -139,6 +147,21 @@ def _resolve_file(repo: str, filepath: str, strategy: str, branch: str, base: st
         if r.returncode == 0:
             _git(["git", "add", filepath], repo)
             return True
+        return False
+    elif strategy == "ast_merge":
+        try:
+            import ast_merger
+            mb = _git(["git", "merge-base", base, branch], repo)
+            merge_base = mb.stdout.strip() if mb.returncode == 0 else base
+            result = ast_merger.try_semantic_merge(repo, filepath, merge_base, base, branch)
+            if result["success"] and result["merged_content"]:
+                fullpath = os.path.join(repo, filepath)
+                with open(fullpath, "w") as f:
+                    f.write(result["merged_content"])
+                _git(["git", "add", filepath], repo)
+                return True
+        except Exception:
+            pass
         return False
     return False
 

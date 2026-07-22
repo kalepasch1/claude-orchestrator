@@ -238,6 +238,29 @@ def _process_task(task: dict):
                         time.sleep(2)
                         continue
 
+                    # SELF-HEALING MERGE: decompose the conflicting branch into
+                    # mergeable sub-branches and focused repair tasks
+                    try:
+                        import self_healing_merge
+                        heal_result = self_healing_merge.heal(
+                            repo, branch, base, project_id=project_id
+                        )
+                        if heal_result.get("healed"):
+                            _log.info("continuous_merger: self-healed %s: %s",
+                                      slug, heal_result["reason"])
+                            with _stats_lock:
+                                _stats["merged"] += heal_result.get("merged", 0)
+                            if db:
+                                try:
+                                    db.update("tasks", {"id": task_id},
+                                              {"note": f"self-healed: {heal_result['reason'][:400]}",
+                                               "updated_at": "now()"})
+                                except Exception:
+                                    pass
+                            return
+                    except Exception as _heal_err:
+                        _log.debug("continuous_merger: self-healing failed: %s", _heal_err)
+
                     _log.info("continuous_merger: conflict on %s: %s", slug, error)
                     with _stats_lock:
                         _stats["conflict"] += 1
