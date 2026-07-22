@@ -1,4 +1,4 @@
-"""Tests for reset_scheduler.py — reset-aware scheduling.
+"""Tests for reset_scheduler.py -- reset-aware scheduling.
 Run: python3 -m pytest runner/tests -q -k reset_aware
 """
 import os, sys, datetime, json, tempfile, unittest
@@ -67,7 +67,6 @@ class TestResetAwareDeferBoost(unittest.TestCase):
     def test_defer_near_reset_exhausted(self):
         now = datetime.datetime(2026, 7, 7, 12, 0)
         reset_scheduler.record_reset_banner("acct1", "resets Jul 7 at 4pm", now=datetime.datetime(2026, 7, 6, 12, 0))
-        # 4 hours until reset, account exhausted, material task -> defer
         defer, reason = reset_scheduler.should_defer_task("acct1", "build", True, now=now)
         self.assertTrue(defer)
         self.assertIn("defer_near_reset", reason)
@@ -83,3 +82,52 @@ class TestResetAwareDeferBoost(unittest.TestCase):
         reset_scheduler.record_reset_banner("acct1", "resets Jul 7 at 4pm", now=datetime.datetime(2026, 7, 6, 12, 0))
         defer, _ = reset_scheduler.should_defer_task("acct1", "mechanical", True, now=now)
         self.assertFalse(defer)
+
+    def test_night_window_defers(self):
+        now = datetime.datetime(2026, 7, 7, 23, 0)
+        defer, reason = reset_scheduler.should_defer_task("acct1", "build", False, now=now)
+        self.assertTrue(defer)
+        self.assertEqual(reason, "night_window")
+
+    def test_daytime_no_night_defer(self):
+        now = datetime.datetime(2026, 7, 7, 14, 0)
+        defer, _ = reset_scheduler.should_defer_task("acct1", "build", False, now=now)
+        self.assertFalse(defer)
+
+    def test_boost_after_reset(self):
+        now_record = datetime.datetime(2026, 7, 6, 12, 0)
+        reset_scheduler.record_reset_banner("acct1", "resets Jul 7 at 10am", now=now_record)
+        now = datetime.datetime(2026, 7, 7, 10, 30)
+        share = reset_scheduler.get_claude_share("acct1", now=now)
+        self.assertEqual(share, reset_scheduler.BOOST_CLAUDE_SHARE)
+
+    def test_normal_share_outside_boost(self):
+        now_record = datetime.datetime(2026, 7, 6, 12, 0)
+        reset_scheduler.record_reset_banner("acct1", "resets Jul 7 at 10am", now=now_record)
+        now = datetime.datetime(2026, 7, 7, 15, 0)
+        share = reset_scheduler.get_claude_share("acct1", now=now)
+        self.assertEqual(share, reset_scheduler.NORMAL_CLAUDE_SHARE)
+
+    def test_night_share_zero(self):
+        now = datetime.datetime(2026, 7, 7, 23, 0)
+        share = reset_scheduler.get_claude_share("acct1", now=now)
+        self.assertEqual(share, 0.0)
+
+
+class TestResetAwareNightWindow(unittest.TestCase):
+    def test_night_wrapping_midnight(self):
+        self.assertTrue(reset_scheduler.is_night_window(datetime.datetime(2026, 1, 1, 22, 0)))
+        self.assertTrue(reset_scheduler.is_night_window(datetime.datetime(2026, 1, 1, 0, 0)))
+        self.assertTrue(reset_scheduler.is_night_window(datetime.datetime(2026, 1, 1, 5, 59)))
+        self.assertFalse(reset_scheduler.is_night_window(datetime.datetime(2026, 1, 1, 6, 0)))
+        self.assertFalse(reset_scheduler.is_night_window(datetime.datetime(2026, 1, 1, 12, 0)))
+        self.assertFalse(reset_scheduler.is_night_window(datetime.datetime(2026, 1, 1, 21, 59)))
+
+    def test_unknown_account_returns_none(self):
+        self.assertIsNone(reset_scheduler.get_account_reset("nonexistent"))
+        self.assertIsNone(reset_scheduler.hours_until_reset("nonexistent"))
+        self.assertIsNone(reset_scheduler.hours_since_reset("nonexistent"))
+
+
+if __name__ == "__main__":
+    unittest.main()
