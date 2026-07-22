@@ -27,3 +27,4 @@ runner/runner.log
 .deploy-canary
 .ssw-bot-log.md
 .claude/settings.json
+.vercel

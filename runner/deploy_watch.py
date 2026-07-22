@@ -126,6 +126,11 @@ def _escalate_error_apps():
 
 
 def run():
+    try:
+        import fleet_deploy_doctor
+        fleet_deploy_doctor.run(file_cards=True)
+    except Exception as e:
+        print(f"deploy_watch binding audit: {e}")
     if not TOKEN:
         print("deploy_watch: VERCEL_TOKEN unset; skipping"); return
     rows = db.select("deploy_health", {"select": "app,vercel_project"}) or []

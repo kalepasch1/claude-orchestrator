@@ -1,0 +1,113 @@
+{
+  "targets": [
+    {
+      "app": "apparently",
+      "repo_path": "/Users/kpasch/Documents/apparently",
+      "github_repo": "kalepasch1/apparently",
+      "branch": "master",
+      "vercel_project": "apparently",
+      "supabase_project_ref": "oosolxvlfyifkhjohdzq"
+    },
+    {
+      "app": "beethoven",
+      "repo_path": "/Users/kpasch/Documents/beethoven/claude-orchestrator",
+      "github_repo": "kalepasch1/claude-orchestrator",
+      "branch": "master",
+      "vercel_project": "claude-orchestrator",
+      "supabase_project_ref": "eatfwdzfurujcuwlhdgj"
+    },
+    {
+      "app": "darwn",
+      "repo_path": "/Users/kpasch/Documents/darwn/darwn",
+      "github_repo": "kalepasch1/darwn",
+      "branch": "main",
+      "vercel_project": "darwn",
+      "supabase_project_ref": "xnzrxkjixouzcizjemjg"
+    },
+    {
+      "app": "kalepasch-com",
+      "repo_path": "/Users/kpasch/Documents/smarter/pasch",
+      "github_repo": "kalepasch1/pasch",
+      "branch": "main",
+      "vercel_project": "kale-pasch"
+    },
+    {
+      "app": "pareto-2080",
+      "repo_path": "/Users/kpasch/Documents/pareto/2080",
+      "github_repo": "kalepasch1/2080",
+      "branch": "main",
+      "vercel_project": "2080",
+      "supabase_project_ref": "jygxrfpswgpmtspfoawy"
+    },
+    {
+      "app": "prediction-markets-institute",
+      "repo_path": "/Users/kpasch/Documents/smarter/prediction-markets-institute/pmi",
+      "github_repo": "kalepasch1/prediction-markets-institute",
+      "branch": "main",
+      "vercel_project": "prediction-markets-institute",
+      "supabase_project_ref": "rpsnzlyhnvswqoyhzwrb"
+    },
+    {
+      "app": "racefeed",
+      "repo_path": "/Users/kpasch/Documents/galop/racefeed",
+      "github_repo": "kalepasch1/racefeed",
+      "branch": "master",
+      "vercel_project": "racefeed",
+      "supabase_project_ref": "qlzsnuspiypyejaqcdad"
+    },
+    {
+      "app": "santas-secret-workshop",
+      "repo_path": "/Users/kpasch/Documents/hisanta",
+      "github_repo": "kalepasch1/hisanta",
+      "branch": "master",
+      "vercel_project": "hisanta",
+      "supabase_project_ref": "whhfugddqehxxbmwutsw"
+    },
+    {
+      "app": "smarter",
+      "repo_path": "/Users/kpasch/Documents/smarter",
+      "github_repo": "kalepasch1/smarter",
+      "branch": "main",
+      "vercel_project": "smarter",
+      "supabase_project_ref": "olaxnyrzoptjcntrrjgn"
+    },
+    {
+      "app": "sustainable-barks",
+      "repo_path": "/Users/kpasch/Documents/Sustainable_Barks",
+      "github_repo": "kalepasch1/Sustainable_Barks",
+      "branch": "main",
+      "vercel_project": "sustainable-barks"
+    },
+    {
+      "app": "tomorrow",
+      "repo_path": "/Users/kpasch/Documents/tomorrow/tomorrow",
+      "github_repo": "kalepasch1/tomorrow",
+      "branch": "main",
+      "vercel_project": "tomorrow",
+      "supabase_project_ref": "edetxpcoaiqlqrwyzltw"
+    },
+    {
+      "app": "vigil",
+      "repo_path": "/Users/kpasch/Documents/vigil",
+      "github_repo": "kalepasch1/vigil",
+      "branch": "main",
+      "vercel_project": "vigil",
+      "supabase_project_ref": "hjortulytchuaptnuciz"
+    }
+  ],
+  "shared_deployments": [
+    {
+      "app": "madeus",
+      "github_repo": "kalepasch1/claude-orchestrator",
+      "branch": "master",
+      "vercel_project": "web",
+      "domain": "madeus.cc"
+    }
+  ],
+  "retired_vercel_projects": [
+    "pasch",
+    "pasch-prod",
+    "pareto",
+    "prediction-markets-advisors"
+  ]
+}
