@@ -1,67 +1,71 @@
-"""Tests for cade_extras harness."""
-import os, sys, types, importlib, tempfile, textwrap
+"""Tests for cade_extras harness — auto-discovers and runs cx_* modules."""
+import importlib
+import os
+import sys
+import types
 import pytest
 
 # Ensure runner/ is on sys.path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import cade_extras
 
 
-def test_discovers_and_runs_cx_module(tmp_path, monkeypatch):
-    """A dummy cx_hello.py is discovered and its run() is called."""
-    # Write a dummy cx_ module into tmp_path
-    cx_file = tmp_path / "cx_hello.py"
-    cx_file.write_text(textwrap.dedent("""\
-        _called = False
-        def run():
-            global _called
-            _called = True
-    """))
+def test_dummy_cx_module_run_is_invoked(tmp_path, monkeypatch):
+    """A dummy cx_ module's run() is discovered and invoked by the harness."""
+    # Create a dummy cx_dummy_test.py in a temp dir
+    dummy = tmp_path / "cx_dummy_test.py"
+    dummy.write_text("invoked = False\ndef run():\n    global invoked\n    invoked = True\n")
 
-    # Patch _RUNNER_DIR so discovery looks in tmp_path
-    import cade_extras
+    # Point the harness at the temp dir
     monkeypatch.setattr(cade_extras, "_RUNNER_DIR", str(tmp_path))
-    # Clear module cache
-    cade_extras._loaded_modules.clear()
 
-    # Also ensure tmp_path is importable
+    # Ensure the temp dir is importable
     monkeypatch.syspath_prepend(str(tmp_path))
 
-    result = cade_extras.run()
-    assert result["ran"] == 1
-    assert result["failed"] == 0
+    success, failure = cade_extras.run()
+    assert success == 1
+    assert failure == 0
 
-    # Verify the module's run() was actually invoked
-    mod = cade_extras._loaded_modules["cx_hello"]
-    assert mod._called is True
+    # Verify run() was actually called
+    mod = importlib.import_module("cx_dummy_test")
+    assert mod.invoked is True
 
 
 def test_bad_module_does_not_break_loop(tmp_path, monkeypatch):
-    """A failing cx_ module is logged but doesn't stop others."""
-    (tmp_path / "cx_bad.py").write_text("def run(): raise RuntimeError('boom')\n")
-    (tmp_path / "cx_good.py").write_text(textwrap.dedent("""\
-        _called = False
-        def run():
-            global _called
-            _called = True
-    """))
+    """One failing cx_ module must not prevent others from running."""
+    good = tmp_path / "cx_aaa_good.py"
+    good.write_text("invoked = False\ndef run():\n    global invoked\n    invoked = True\n")
 
-    import cade_extras
+    bad = tmp_path / "cx_bbb_bad.py"
+    bad.write_text("def run():\n    raise RuntimeError('intentional')\n")
+
+    good2 = tmp_path / "cx_ccc_good2.py"
+    good2.write_text("invoked = False\ndef run():\n    global invoked\n    invoked = True\n")
+
     monkeypatch.setattr(cade_extras, "_RUNNER_DIR", str(tmp_path))
-    cade_extras._loaded_modules.clear()
     monkeypatch.syspath_prepend(str(tmp_path))
 
-    result = cade_extras.run()
-    # cx_bad fails, cx_good succeeds (sorted order: bad < good)
-    assert result["ran"] == 1
-    assert result["failed"] == 1
+    success, failure = cade_extras.run()
+    assert success == 2
+    assert failure == 1
 
 
-def test_no_cx_modules(tmp_path, monkeypatch):
-    """When no cx_* modules exist, run() returns zeros."""
-    import cade_extras
+def test_no_modules_returns_zero(tmp_path, monkeypatch):
+    """Empty directory returns (0, 0) without error."""
     monkeypatch.setattr(cade_extras, "_RUNNER_DIR", str(tmp_path))
-    cade_extras._loaded_modules.clear()
+    success, failure = cade_extras.run()
+    assert success == 0
+    assert failure == 0
 
-    result = cade_extras.run()
-    assert result["ran"] == 0
-    assert result["failed"] == 0
+
+def test_module_without_run_is_skipped(tmp_path, monkeypatch):
+    """A cx_ module that lacks run() is skipped (not counted as failure)."""
+    no_run = tmp_path / "cx_no_run.py"
+    no_run.write_text("x = 42\n")
+
+    monkeypatch.setattr(cade_extras, "_RUNNER_DIR", str(tmp_path))
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    success, failure = cade_extras.run()
+    assert success == 0
+    assert failure == 0
