@@ -34,7 +34,7 @@ THROTTLE_FILE = os.path.join(HOME, "throttle")
 # PER_TASK_GB/RAM_FLOOR_GB pushed centrally after it last started. Read all of these live from
 # env on every call instead of freezing them at import.
 def _ceiling():
-    """Maximum number of parallel tasks allowed regardless of available resources."""
+    """Return max concurrent task lanes, read live from env each call."""
     return int(os.environ.get("MAX_PARALLEL_CEILING", "12"))
 
 
