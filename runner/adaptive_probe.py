@@ -13,7 +13,6 @@ MARK = "ADAPTIVE PROBE-FIRST SLICE"
 
 
 def should_probe(task: dict | None, prompt: str | None) -> bool:
-    """Decide whether a task warrants a cheap preflight probe before the full coder run."""
     if os.environ.get("ORCH_ADAPTIVE_PROBE", "true").lower() not in ("1", "true", "yes", "on"):
         return False
     if MARK in str(prompt or ""):
@@ -30,8 +29,7 @@ def should_probe(task: dict | None, prompt: str | None) -> bool:
     return kind in ("build", "security", "legal")
 
 
-def make_probe(task: dict | None, prompt: str, project: str) -> str:
-    """Run a cheap model to produce a routing brief, returned as a text block to prepend."""
+def make_probe(task: dict | None, prompt: str | None, project: str) -> str:
     try:
         import model_policy, model_gateway
         sensitivity = str((task or {}).get("sensitivity") or "standard")
@@ -56,8 +54,7 @@ def make_probe(task: dict | None, prompt: str, project: str) -> str:
         return ""
 
 
-def inject(task: dict | None, prompt: str, project: str = "orchestrator") -> str:
-    """Optionally prepend a probe brief to *prompt* if the task qualifies."""
+def inject(task: dict | None, prompt: str | None, project: str = "orchestrator") -> str:
     if not should_probe(task, prompt):
         return prompt
     probe = make_probe(task, prompt, project)
