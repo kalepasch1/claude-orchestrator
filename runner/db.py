@@ -295,16 +295,7 @@ def count(table, params=None):
 
 
 def insert(table, row, upsert=False):
-    # SECRET HYGIENE: redact secrets from sensitive fields on task insert too.
-    if table == "tasks" and isinstance(row, dict):
-        # The database contract is a non-null array. Normalizing at the sole
-        # enqueue choke point preserves the semantic meaning of SQL NULL
-        # (independent work) without relying on callers to know storage details.
-        from execution_assurance import normalize_deps
-        row["deps"] = normalize_deps(row.get("deps"))
-        for field in _TASK_SENSITIVE_FIELDS:
-            if field in row and isinstance(row[field], str):
-                row[field] = redact_secrets(row[field])
+    """Insert a single row into *table* via PostgREST POST.  Returns the created row or None on 409 dedup."""
     # IDEMPOTENT TASK ENQUEUE (2026-07-10): the queue has no UNIQUE(project_id, slug) constraint,
     # so ~20 different generators that db.insert("tasks", ...) directly kept creating duplicate
     # QUEUED rows (5-at-a-time, recurring — the sentinel dedupe was firing 45x/24h just cleaning up
