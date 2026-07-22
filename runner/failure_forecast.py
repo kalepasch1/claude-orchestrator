@@ -1,75 +1,39 @@
-"""Predictive preemption: skip tasks with repeated consecutive failures.
+"""
+failure_forecast.py - rule-based skip for tasks with consecutive terminal failures.
 
-Rule-based only — no ML, no embeddings, no proposals.
+should_skip(task_id, db) returns True when the task has >= 3 consecutive terminal
+failures in the run history. Rule-based only - no ML, no embeddings.
 """
 
-import db
+TERMINAL_STATES = ('failed', 'error')
+CONSECUTIVE_FAIL_THRESHOLD = 3
 
 
-def should_skip(task_id: str, _db=None) -> bool:
-    """Return True when the task has >=3 consecutive terminal failures.
+def should_skip(task_id, db):
+    """Return True when the task has >= 3 consecutive terminal failures.
 
-    Checks the tasks table for rows sharing the same slug root (ignoring
-    remediation suffixes) with terminal states ('QUARANTINED', 'BLOCKED',
-    'FAILED', 'ERROR'). Only the most recent consecutive run of terminal
-    states counts — a single success resets the streak.
-
-    Parameters
-    ----------
-    task_id : str
-        The task UUID to evaluate.
-    _db : module, optional
-        Injectable db module for testing; defaults to the real ``db`` module.
+    Queries the run_history table ordered by created_at DESC. Counts consecutive
+    terminal statuses from the most recent run backwards. If the most recent run
+    succeeded, returns False (the streak is broken).
     """
-    store = _db or db
-    TERMINAL = {"QUARANTINED", "BLOCKED", "FAILED", "ERROR"}
-
-    # Fetch the task to get its slug
     try:
-        rows = store.select("tasks", {
-            "select": "slug,project_id",
-            "id": f"eq.{task_id}",
-        })
+        rows = db.select("run_history", {
+            "select": "status",
+            "task_id": "eq." + str(task_id),
+            "order": "created_at.desc",
+            "limit": str(CONSECUTIVE_FAIL_THRESHOLD + 1),
+        }) or []
     except Exception:
         return False
 
-    if not rows:
+    if len(rows) < CONSECUTIVE_FAIL_THRESHOLD:
         return False
 
-    task = rows[0]
-    slug = task.get("slug", "")
-    project_id = task.get("project_id", "")
-
-    if not slug or not project_id:
-        return False
-
-    # Extract the base slug (strip rework-/recover- prefixes and hash suffixes)
-    base_slug = slug
-    for prefix in ("rework-buildfail-", "rework-testfail-", "rework-",
-                    "recover-missing-branch-", "recover-"):
-        if base_slug.startswith(prefix):
-            base_slug = base_slug[len(prefix):]
-            break
-
-    # Fetch recent tasks with similar slugs, ordered newest first
-    try:
-        rows = store.select("tasks", {
-            "select": "state,updated_at",
-            "project_id": f"eq.{project_id}",
-            "slug": f"like.*{base_slug[:40]}*",
-            "order": "updated_at.desc",
-            "limit": "10",
-        })
-    except Exception:
-        return False
-
-    # Count consecutive terminal failures from most recent
-    consecutive = 0
+    consecutive_failures = 0
     for row in rows:
-        state = (row.get("state") or "").upper()
-        if state in TERMINAL:
-            consecutive += 1
+        if row.get("status") in TERMINAL_STATES:
+            consecutive_failures += 1
         else:
             break
 
-    return consecutive >= 3
+    return consecutive_failures >= CONSECUTIVE_FAIL_THRESHOLD
