@@ -18,6 +18,3 @@ runner/.env.bak*
 # runner log (huge, machine-local — never commit)
 runner/runner.log
 .aider*
-
-# machine-local Claude Code settings — never commit (contains allowlists, deny lists)
-.claude/settings.local.json
