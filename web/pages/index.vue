@@ -23,22 +23,34 @@ const RUN_LOGS_MAX = 500
 const lastEventAt = ref<number | null>(null)
 let chart: any = null
 
+// ── missing reactive state (recovered from merge gap) ────────────────────────
+const intent = ref('')
+const email = ref('')
+const sent = ref(false)
+const queueLoading = ref(false)
+const queueError = ref('')
+const lastRoute = ref<any>(null)
+const selectedProject = ref('')
+const projectChoice = ref<any>(null)
+const approvalError = ref('')
+const globalPaused = ref(false)
+const stopLoading = ref(false)
+const panicLoading = ref(false)
+const rotateLoading = ref<Record<string, boolean>>({})
+const feedbackSaving = ref(false)
+const newFeedback = reactive({ category: 'general', severity: 'low', observation: '', suggestion: '' })
+const budgets = ref<any[]>([])
+const loops = ref<any[]>([])
+const savingsEvents = ref<any[]>([])
+const feedbackItems = ref<any[]>([])
+const queueCounts = ref<any>({ states: {}, totalTasks: 0, recoveryQueued: 0, releaseFixQueued: 0, releaseFixRunning: 0, improvementsQueued: 0, canariesActive: 0, updatedAt: null, error: null })
+const BLOCKED_QUEUE_STATES = ['BLOCKED', 'CONFLICT', 'TESTFAIL', 'QUARANTINED']
+const CHART_LINE = '#388bfd'
+const CHART_AXIS = '#8b949e'
+
 // ── run_logs realtime ring buffer ────────────────────────────────────────────
 const LOG_RING_MAX = 500
-const logLines = ref<LogLine[]>([])
-
-function pushLogRow(row: { ts?: string; level?: string; source?: string; message?: string }) {
-  const line: LogLine = {
-    ts: row.ts ?? new Date().toISOString(),
-    level: (['debug', 'info', 'warn', 'error'].includes(row.level ?? '') ? row.level : 'info') as LogLine['level'],
-    source: row.source ?? undefined,
-    message: row.message ?? '',
-  }
-  const buf = logLines.value
-  buf.push(line)
-  // trim to ring-buffer cap (slice from end to keep recent)
-  if (buf.length > LOG_RING_MAX) logLines.value = buf.slice(buf.length - LOG_RING_MAX)
-}
+// logLines is defined as a computed below (see recentRunLogs / log_tail merge)
 function signalOutcome(tone: 'success' | 'error', title: string, detail: string) { if (import.meta.client) window.dispatchEvent(new CustomEvent('madeus:outcome', { detail: { tone, title, detail } })) }
 
 async function authedFetch<T = any>(url: string, opts: any = {}): Promise<T> {
@@ -152,6 +164,7 @@ onMounted(async () => {
   if (user.value) await loadAll()
   refreshTimer = setInterval(() => { if (user.value) loadAll() }, 30_000)
   realtimeSub = supabase.channel('command-center-live').on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, loadAll).on('postgres_changes', { event: '*', schema: 'public', table: 'approvals' }, loadAll).subscribe()
+})
 
 async function panicStopAndRevoke(providerName: string) {
   if (!confirm(`SECURITY PANIC: stop the runner and revoke ALL active ${providerName} keys? This cannot be undone automatically.`)) return
@@ -227,7 +240,7 @@ async function renderChart() {
   })
 }
 
-function alive(r: any) { return (Date.now() - new Date(r.last_seen).getTime()) < 60000 }
+// alive() and ago() defined above — deduped
 function fmtConf(c: any) { return c != null ? Math.round(Number(c) * 100) + '%' : '' }
 function confidenceLabel(c: any) {
   if (c == null) return 'not scored'
@@ -235,10 +248,6 @@ function confidenceLabel(c: any) {
   if (pct >= 90) return `${pct}% ready`
   if (pct >= 75) return `${pct}% needs watch`
   return `${pct}% risky`
-}
-function ago(ts: string) {
-  const d = Math.round((Date.now() - new Date(ts).getTime()) / 60000)
-  return d < 60 ? `${d}m ago` : d < 1440 ? `${Math.round(d/60)}h ago` : `${Math.round(d/1440)}d ago`
 }
 
 function makeSlug(text: string) {
@@ -304,7 +313,7 @@ const savingsKpi = computed(() => {
 // (no cash). Everything else is REAL out-of-pocket API cash. Sourced from v_provider_spend_mtd.
 const isNotional = (p: any) => String(p ?? '').includes('notional')
 const coveredMtd = computed(() => providerSpend.value.filter(s => isNotional(s.provider)).reduce((n, s) => n + Number(s.spent || 0), 0))
-const cashMtd = computed(() => providerSpend.value.filter(s => !isNotional(s.provider)).reduce((n, s) => n + Number(s.spent || 0), 0))
+// cashMtd defined above — deduped
 const spendSplitByProject = computed(() => {
   const m: Record<string, { covered: number; cash: number }> = {}
   for (const s of providerSpend.value) {
@@ -423,7 +432,7 @@ const repairingTaskCount = computed(() => exactCountsLoaded.value
   ? exactBlockedLike.value
   : tasks.value.filter(t => ['BLOCKED', 'CONFLICT', 'TESTFAIL'].includes(String(t.state || '').toUpperCase())).length
 )
-const liveRunnerCount = computed(() => runners.value.filter(alive).length)
+// liveRunnerCount defined above — deduped
 const runnerFleetTarget = computed(() => Math.max(8, liveRunnerCount.value || 0))
 const hiddenBacklog = computed(() => exactTotalTasks.value > tasks.value.length)
 const queueCoveragePct = computed(() => exactTotalTasks.value
