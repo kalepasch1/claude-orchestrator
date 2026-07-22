@@ -162,7 +162,7 @@ const selectedBranch = ref('dev')
 const showConfig = ref(false)
 function toggleAdvanced() { persistentContext.advanced = !persistentContext.advanced; recordConfigurationChurn(); if (persistentContext.advanced) recordProficiency('advanced'); trackExperience('guidance_followed', { action: 'toggle_advanced', enabled: persistentContext.advanced, stage: proficiency.value.stage }) }
 
-// Right panel — portfolio insights
+// Right panel — AI insights
 const showInsights = ref(true)
 const activeInsight = ref('')
 type CadeInsight = {
@@ -369,7 +369,7 @@ watch(terminalPrompt, (val) => {
     routeInfo.value = r.reason
   } else { routeInfo.value = '' }
 })
-// --- Portfolio Insights engine (auto-running) ---
+// --- AI Insights engine (auto-running) ---
 function refreshInsights() {
   const domain = cap.value.domain
   const app = selectedApp.value
@@ -606,9 +606,9 @@ watch(slug, () => { refreshInsights() })
           <span class="w-4 text-center text-[11px]">{{ tab.icon }}</span>{{ tab.label }}
         </button>
       </nav>
-      <!-- Quality Bots -->
+      <!-- AI Assistants -->
       <div class="px-3 py-2 border-t border-gray-200">
-        <div class="text-[9px] text-gray-400 uppercase tracking-wider mb-1.5 px-1">Quality Bots</div>
+        <div class="text-[9px] text-gray-400 uppercase tracking-wider mb-1.5 px-1">AI Assistants</div>
         <div class="space-y-0.5">
           <div v-for="b in bots.slice(0, 4)" :key="b" class="flex items-center gap-1.5 px-1 py-0.5">
             <span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
@@ -699,7 +699,7 @@ watch(slug, () => { refreshInsights() })
                 </div>
                 <div class="flex items-center gap-2">
                   <span class="text-[10px] px-2 py-0.5 rounded-full font-medium" :class="docStatusColor(doc.status)">{{ doc.status }}</span>
-                  <button class="px-2 py-0.5 text-[10px] bg-blue-50 text-blue-700 border border-blue-200 rounded opacity-0 group-hover:opacity-100">Quality Review</button>
+                  <button class="px-2 py-0.5 text-[10px] bg-blue-50 text-blue-700 border border-blue-200 rounded opacity-0 group-hover:opacity-100">AI Review</button>
                 </div>
               </div>
             </div>
@@ -879,7 +879,7 @@ watch(slug, () => { refreshInsights() })
             </div>
           </div>
           <div class="bg-white border border-gray-200 rounded-xl p-5">
-            <div class="text-xs font-semibold text-gray-700 mb-3">Quality Bots — {{ cap.domain }}</div>
+            <div class="text-xs font-semibold text-gray-700 mb-3">AI Assistants — {{ cap.domain }}</div>
             <div class="space-y-1.5">
               <div v-for="b in bots" :key="b" class="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-lg">
                 <div class="flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span><span class="text-sm text-gray-700">{{ b }}</span></div>
@@ -906,10 +906,10 @@ watch(slug, () => { refreshInsights() })
         </div>
       </div>
     </main>
-    <!-- RIGHT PANEL — Portfolio Insights -->
+    <!-- RIGHT PANEL — AI Insights -->
     <aside v-if="showInsights" class="w-72 bg-gray-50 border-l border-gray-200 flex flex-col flex-shrink-0 overflow-hidden">
       <div class="px-3 py-2 border-b border-gray-200 flex items-center justify-between">
-        <span class="text-[10px] text-gray-400 uppercase tracking-wider font-medium">Portfolio Intelligence</span>
+        <span class="text-[10px] text-gray-400 uppercase tracking-wider font-medium">AI Intelligence</span>
         <div class="flex items-center gap-1.5">
           <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
           <span class="text-[9px] text-emerald-600">Auto-running</span>
