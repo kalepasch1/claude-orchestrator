@@ -158,14 +158,47 @@ def _table():
     return _CACHE["table"]
 
 
+_STAGE_FALLBACKS = {
+    "recovery": ["build-fix", "bugfix", "build"],
+    "build-fix": ["bugfix", "recovery", "build"],
+    "bugfix": ["build-fix", "recovery", "build"],
+    "merge-conflict": ["build-fix", "build"],
+    "canary": ["mechanical", "build"],
+    "mechanical": ["canary", "build"],
+    "security": ["build-fix", "build"],
+    "legal": ["build"],
+    "improve": ["build", "feature"],
+    "feature": ["build", "improve"],
+}
+
+
 def best_coder(kind, available, stage=None):
-    """Preferred coder for this task/stage by empirical $/deployed-merge, restricted to `available`."""
+    """Preferred coder for this task/stage by empirical $/deployed-merge, restricted to `available`.
+
+    Uses stage similarity fallback: if no data exists for the exact stage, tries
+    related stages (e.g. recovery → build-fix → bugfix → build) before giving up.
+    """
     if os.environ.get("ORCH_LEARNED_ROUTER", "true").lower() not in ("true", "1", "yes"):
         return None
-    ranked = _table().get((stage or kind or "build").lower()) or _table().get((kind or "build").lower()) or _table().get("build") or []
-    for row in ranked:
-        if row["coder"] in set(available) and row.get("confidence_lower", 0) > 0:
-            return row["coder"]
+    t = _table()
+    avail_set = set(available)
+    primary = (stage or kind or "build").lower()
+
+    # Build lookup chain: primary → fallbacks → generic "build"
+    chain = [primary]
+    if primary != kind and kind:
+        chain.append(kind.lower())
+    chain.extend(_STAGE_FALLBACKS.get(primary, []))
+    if "build" not in chain:
+        chain.append("build")
+
+    for lookup in chain:
+        ranked = t.get(lookup)
+        if not ranked:
+            continue
+        for row in ranked:
+            if row["coder"] in avail_set and row["rate"] > 0:
+                return row["coder"]
     return None
 
 
