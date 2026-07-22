@@ -187,8 +187,9 @@ onMounted(async () => {
       </div>
     </section>
 
+    <section class="autopilot-section">
       <!-- Specialist Bots -->
-      <div v-else-if="activeDomain === 'bots'" class="p-6 max-w-4xl space-y-4">
+      <div v-if="activeDomain === 'bots'" class="p-6 max-w-4xl space-y-4">
         <h2 class="text-lg font-semibold text-gray-900" style="font-family: 'Fraunces', serif;">Quality Bot Fleet</h2>
         <p class="text-xs text-gray-500">60 bots across 15 groups powering automated quality, analytics, and optimization.</p>
         <div class="space-y-2">
