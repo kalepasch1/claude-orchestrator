@@ -95,6 +95,20 @@ _TEST = re.compile(r"\b(testfail|tests? failed|qa failed|verify failed|judge:|qu
 _MISSING = re.compile(r"\b(missing branch|branch.*missing|no longer exists|approved.*agent/|recover-missing-branch)\b", re.I)
 _NOOP = re.compile(r"\b(no committable|no file changes|changed nothing|empty diff|agent produced no)\b", re.I)
 _EXHAUSTED = re.compile(r"\b(exhausted retries|remediation cap|blocked after \d+ auto-fixes|too large)\b", re.I)
+_FLAKE = re.compile(
+    r"\b(ECONNRESET|ETIMEDOUT|ECONNREFUSED|EPIPE|socket hang up|"
+    r"flaky|intermittent|timed?\s*out|timeout exceeded|"
+    r"race condition|heap out of memory|ENOMEM|killed|OOM|"
+    r"SIGKILL|SIGTERM|connection reset|429|rate limit|"
+    r"retry after|too many requests|temporary failure|"
+    r"network error|fetch failed|ENOTFOUND|EAI_AGAIN)\b",
+    re.I,
+)
+_CONFLICT = re.compile(
+    r"\b(merge conflict|rebase conflict|CONFLICT \(content\)|cannot rebase|"
+    r"diverged|cherry-pick.*failed|patch does not apply)\b",
+    re.I,
+)
 
 
 def _norm_slug(text, fallback="task"):
@@ -198,6 +212,14 @@ def classify(task):
         return "noop"
     if _EXHAUSTED.search(text):
         return "oversized"
+    # Flake detection: transient infra failures (timeouts, OOM, network) that are safe to
+    # retry verbatim rather than reworking. Checked AFTER testfail/buildfail so a genuine
+    # test failure with a spurious timeout mention still gets the right category; but if the
+    # ONLY signal is infra noise, route to simple retry instead of expensive rework.
+    if _FLAKE.search(evidence) and not _TEST.search(evidence) and not _BUILD.search(evidence):
+        return "flake"
+    if _CONFLICT.search(text):
+        return "conflict"
     return "rework"
 
 
@@ -419,6 +441,17 @@ def _category_directive(category):
             "mergeable slice only, with clear acceptance checks. Leave later slices discoverable in the "
             "final note instead of broadening this patch."
         )
+    if category == "flake":
+        return (
+            "The previous attempt failed due to a transient infrastructure issue (timeout, OOM, network "
+            "error, rate limit). This is NOT a code bug — retry the original implementation verbatim. "
+            "If the flake persists, add resilience (retry logic, timeout increase, or resource guard)."
+        )
+    if category == "conflict":
+        return (
+            "The previous attempt failed due to a merge/rebase conflict. Rebase cleanly onto the current "
+            "base branch, resolve conflicts preserving the original intent, and recommit."
+        )
     return (
         "The original blocker should not be retried verbatim. Reconsider the strategy, preserve the "
         "functional value, remove the blocked mechanism, and implement the smallest mergeable safe variant."
@@ -430,6 +463,9 @@ def _forced_coder(category):
         return os.environ.get("ORCH_QUARANTINE_LEGAL_CODER") or os.environ.get("ORCH_QUARANTINE_CODER") or "ollama"
     if category in ("secret", "security"):
         return os.environ.get("ORCH_QUARANTINE_SECURITY_CODER") or os.environ.get("ORCH_QUARANTINE_CODER") or "ollama"
+    if category == "flake":
+        # Flakes are transient — use fast coder for quick retry
+        return os.environ.get("ORCH_QUARANTINE_FAST_CODER") or os.environ.get("ORCH_QUARANTINE_CODER") or "ollama"
     return os.environ.get("ORCH_QUARANTINE_CODER") or os.environ.get("ORCH_QUARANTINE_FAST_CODER") or "ollama"
 
 
