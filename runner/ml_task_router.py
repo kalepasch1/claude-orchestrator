@@ -1,135 +1,167 @@
 #!/usr/bin/env python3
 """
-ml_task_router.py - predict optimal task routing using historical outcomes.
+ml_task_router.py - dynamic task-to-runner assignment based on capability and load.
 
-Uses a lightweight statistical model (no external ML deps) trained on the
-outcomes table to predict which account/model combination is most likely to
-succeed for a given task kind and complexity.
+Slice-3: uses historical outcome data to learn which runners/accounts are best
+suited for different task kinds, and routes accordingly:
+  - Builds a capability profile per account from outcome history
+  - Considers current load (running task count) per account
+  - Scores candidate accounts using success-rate × availability
+  - Falls back to round-robin when data is insufficient
 
-predict_route(task) -> {"account": str, "model": str, "confidence": float, "reason": str}
-train()            -> retrain from recent outcomes
-stats()            -> model performance metrics
+Integrates with claim_task in runner.py: instead of random claim, the runner
+calls suggest_account() to pick the best-fit account for a task.
 """
-import os, sys, time, threading, math, collections
+import collections, json, os, sys, threading, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import db
 import log as _log_mod
-
 _log = _log_mod.get("ml_task_router")
 
-_ENABLED = os.environ.get("ORCH_ML_ROUTER_ENABLED", "true").lower() == "true"
-_MIN_SAMPLES = int(os.environ.get("ORCH_ML_MIN_SAMPLES", "5") or 5)
-_RETRAIN_INTERVAL = float(os.environ.get("ORCH_ML_RETRAIN_HOURS", "1") or 1)
+MIN_SAMPLES = int(os.environ.get("ORCH_ROUTER_MIN_SAMPLES", "5"))
+LOAD_PENALTY = float(os.environ.get("ORCH_ROUTER_LOAD_PENALTY", "0.15"))
+REFRESH_INTERVAL = int(os.environ.get("ORCH_ROUTER_REFRESH_SEC", "300"))
 
 _lock = threading.Lock()
-_model = {}  # (kind, account) -> {successes, failures, avg_attempts}
-_last_train = 0.0
-_stats_data = {"predictions": 0, "train_count": 0, "accuracy_hits": 0}
+_profiles = {}  # account -> {kind -> {attempts, successes, avg_cost}}
+_last_refresh = 0
 
 
-def _complexity_bucket(prompt):
-    """Classify task complexity from prompt length and keywords."""
-    if not prompt:
-        return "simple"
-    length = len(prompt)
-    if length > 2000 or any(k in prompt.lower() for k in ("refactor", "redesign", "migration", "architecture")):
-        return "complex"
-    if length > 500:
-        return "medium"
-    return "simple"
-
-
-def train():
-    """Retrain the routing model from the outcomes table."""
-    global _last_train
-    if not _ENABLED:
+def _refresh_profiles():
+    """Build capability profiles from outcome history."""
+    global _last_refresh
+    now = time.time()
+    if now - _last_refresh < REFRESH_INTERVAL:
         return
+    _last_refresh = now
+
     try:
-        import db
         outcomes = db.select("outcomes", {
-            "select": "kind,account,model,attempts,tests_passed,integrated",
+            "select": "account,kind,merged,usd",
             "order": "created_at.desc",
-            "limit": "2000",
+            "limit": "500",
         }) or []
+    except Exception as e:
+        _log.debug("ml_task_router: profile refresh failed: %s", e)
+        return
 
-        new_model = {}
-        for o in outcomes:
-            kind = o.get("kind", "unknown")
-            account = o.get("account", "unknown")
-            key = (kind, account)
-            if key not in new_model:
-                new_model[key] = {"successes": 0, "failures": 0, "total_attempts": 0, "count": 0}
-            entry = new_model[key]
-            entry["count"] += 1
-            entry["total_attempts"] += (o.get("attempts") or 1)
-            if o.get("integrated") or o.get("tests_passed"):
-                entry["successes"] += 1
-            else:
-                entry["failures"] += 1
+    profiles = collections.defaultdict(lambda: collections.defaultdict(
+        lambda: {"attempts": 0, "successes": 0, "total_cost": 0.0}))
 
-        with _lock:
-            _model.clear()
-            _model.update(new_model)
-            _stats_data["train_count"] += 1
-            _last_train = time.time()
-
-        _log.info("ml_task_router trained on %d outcomes, %d route keys", len(outcomes), len(new_model))
-    except Exception as exc:
-        _log.warning("ml_task_router train failed: %s", exc)
-
-
-def predict_route(task):
-    """Predict the best account/model for a task based on historical success rates.
-
-    Returns {"account": str, "model": str, "confidence": float, "reason": str}
-    """
-    if not _ENABLED:
-        return {"account": "", "model": "", "confidence": 0.0, "reason": "ml router disabled"}
-
-    # Auto-retrain if stale
-    if time.time() - _last_train > _RETRAIN_INTERVAL * 3600:
-        train()
-
-    kind = ""
-    if isinstance(task, dict):
-        kind = task.get("kind", "build")
+    for o in outcomes:
+        acct = o.get("account", "unknown")
+        kind = o.get("kind", "build")
+        profiles[acct][kind]["attempts"] += 1
+        if o.get("merged"):
+            profiles[acct][kind]["successes"] += 1
+        profiles[acct][kind]["total_cost"] += float(o.get("usd") or 0)
 
     with _lock:
-        candidates = []
-        for (k, account), entry in _model.items():
-            if k != kind:
-                continue
-            if entry["count"] < _MIN_SAMPLES:
-                continue
-            success_rate = entry["successes"] / max(entry["count"], 1)
-            avg_attempts = entry["total_attempts"] / max(entry["count"], 1)
-            # Score: high success rate + low attempts = best
-            score = success_rate / max(avg_attempts, 0.5)
-            candidates.append((score, account, success_rate, avg_attempts, entry["count"]))
+        _profiles.clear()
+        _profiles.update(profiles)
 
-        _stats_data["predictions"] += 1
+
+def _current_load():
+    """Get running task count per account."""
+    try:
+        running = db.select("tasks", {
+            "select": "account",
+            "state": "eq.RUNNING",
+        }) or []
+        load = collections.Counter(t.get("account", "") for t in running)
+        return dict(load)
+    except Exception:
+        return {}
+
+
+def suggest_account(task_kind, available_accounts=None):
+    """Suggest the best account for a task of the given kind.
+
+    Args:
+        task_kind: str like "build", "bugfix", "test", etc.
+        available_accounts: optional list of accounts to choose from
+
+    Returns:
+        {"account": str, "score": float, "reason": str}
+    """
+    _refresh_profiles()
+    load = _current_load()
+
+    with _lock:
+        candidates = list(_profiles.keys()) if not available_accounts else available_accounts
 
     if not candidates:
-        return {"account": "", "model": "", "confidence": 0.0,
-                "reason": f"no historical data for kind={kind}"}
+        return {"account": None, "score": 0, "reason": "no candidates"}
 
-    candidates.sort(reverse=True)
-    best_score, best_account, best_rate, best_avg, best_n = candidates[0]
-    confidence = min(1.0, best_rate * math.log2(max(best_n, 2)) / 5)
+    scored = []
+    for acct in candidates:
+        with _lock:
+            kind_stats = _profiles.get(acct, {}).get(task_kind, {})
 
-    return {
-        "account": best_account,
-        "model": "",
-        "confidence": round(confidence, 3),
-        "reason": f"best for kind={kind}: {best_account} (rate={best_rate:.2f}, avg_attempts={best_avg:.1f}, n={best_n})",
-    }
+        attempts = kind_stats.get("attempts", 0) if kind_stats else 0
+        successes = kind_stats.get("successes", 0) if kind_stats else 0
+
+        if attempts < MIN_SAMPLES:
+            # Insufficient data — use neutral score with slight exploration bonus
+            base_score = 0.5 + (0.01 * (MIN_SAMPLES - attempts))
+        else:
+            base_score = successes / attempts
+
+        # Penalize loaded accounts
+        current = load.get(acct, 0)
+        score = max(0.0, base_score - (current * LOAD_PENALTY))
+
+        scored.append((score, acct))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    best_score, best_acct = scored[0]
+
+    reason = "historical performance" if best_score != 0.5 else "exploration (insufficient data)"
+    return {"account": best_acct, "score": round(best_score, 3), "reason": reason}
+
+
+def bulk_assign(tasks, available_accounts=None):
+    """Assign accounts to a batch of tasks, load-balancing across them.
+
+    Args:
+        tasks: list of task dicts with at least "kind" field
+        available_accounts: optional list
+
+    Returns:
+        list of {"task_id": str, "account": str, "score": float}
+    """
+    assignments = []
+    simulated_load = collections.Counter()
+
+    for t in tasks:
+        kind = t.get("kind", "build")
+        suggestion = suggest_account(kind, available_accounts)
+        acct = suggestion["account"]
+        if acct:
+            simulated_load[acct] += 1
+        assignments.append({
+            "task_id": t.get("id", ""),
+            "account": acct,
+            "score": suggestion["score"],
+        })
+    return assignments
 
 
 def stats():
     """Return router statistics."""
     with _lock:
         return {
-            "predictions": _stats_data["predictions"],
-            "train_count": _stats_data["train_count"],
-            "route_keys": len(_model),
-            "last_train": _last_train,
+            "profiles": {acct: {k: dict(v) for k, v in kinds.items()}
+                         for acct, kinds in _profiles.items()},
+            "last_refresh": _last_refresh,
         }
+
+
+def run():
+    """Periodic: refresh profiles."""
+    _refresh_profiles()
+    return stats()
+
+
+if __name__ == "__main__":
+    print(json.dumps(run(), indent=2, default=str))

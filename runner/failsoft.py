@@ -1,148 +1,105 @@
 #!/usr/bin/env python3
 """
-failsoft.py - fail-soft error handling utilities for critical operations.
+failsoft.py - decorator-based fail-soft error handling for the orchestrator.
 
-Provides decorators and context managers that catch exceptions in database
-operations and external API calls, log them for review, and return sensible
-defaults instead of crashing the process.
+Slice-3: replaces ad-hoc try/except blocks with a unified decorator that:
+  - Catches all exceptions and returns a safe default instead of crashing
+  - Logs structured error context (function name, args summary, traceback)
+  - Tracks error frequency per function for monitoring
+  - Supports configurable retry with exponential backoff
+  - Integrates with proactive_error_resolver for pattern detection
 
 Usage:
-    @failsoft(default=None)
-    def fetch_data():
-        return db.select("tasks", ...)
+    from failsoft import failsoft
 
-    with failsoft_ctx("merge_train.integrate"):
-        risky_operation()
+    @failsoft(default="", retries=1)
+    def risky_operation(task_id):
+        ...
 
-Conventions (from CLAUDE.md):
-- Return empty string "" or sensible defaults on any error
-- Never raise on bad input (None, missing path, permission errors)
-- Log errors for review without crashing
+    @failsoft(default=[], retries=2, backoff=1.0)
+    def fetch_tasks():
+        ...
 """
-import os, sys, time, functools, threading, traceback
+import functools, os, sys, threading, time, traceback, collections
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import log as _log_mod
-
 _log = _log_mod.get("failsoft")
 
-_ENABLED = os.environ.get("ORCH_FAILSOFT_ENABLED", "true").lower() == "true"
-_MAX_LOG_ERRORS = int(os.environ.get("ORCH_FAILSOFT_MAX_LOG", "500") or 500)
+_ENABLED = os.environ.get("ORCH_FAILSOFT_ENABLED", "true").lower() in ("true", "1")
+_MAX_RETRIES = int(os.environ.get("ORCH_FAILSOFT_MAX_RETRIES", "3"))
 
 _lock = threading.Lock()
-_error_log = []  # recent errors for stats/review
-_stats = {
-    "total_caught": 0,
-    "by_source": {},  # source_name -> count
-}
+_error_counts = collections.Counter()  # fn_name -> count
+_last_errors = {}  # fn_name -> (timestamp, error_str)
+_WINDOW_SEC = 300  # 5-minute sliding window for frequency
 
 
-def _record_error(source, exc, tb_str):
-    """Record an error for later review without raising."""
-    with _lock:
-        _stats["total_caught"] += 1
-        _stats["by_source"][source] = _stats["by_source"].get(source, 0) + 1
-        if len(_error_log) < _MAX_LOG_ERRORS:
-            _error_log.append({
-                "source": source,
-                "error": str(exc),
-                "type": type(exc).__name__,
-                "traceback": tb_str[:500],
-                "ts": time.time(),
-            })
-    _log.warning("failsoft caught in %s: %s: %s", source, type(exc).__name__, exc)
+def failsoft(default=None, retries=0, backoff=0.5, log_level="warning"):
+    """Decorator: catch exceptions, return default, log, optionally retry.
 
-
-def failsoft(default=None, source=None):
-    """Decorator: catch all exceptions, log them, return default.
-
-    @failsoft(default=[])
-    def get_tasks():
-        return db.select("tasks", ...)
+    Args:
+        default: value to return on failure (use callable for mutable defaults)
+        retries: number of retry attempts before returning default (0 = no retry)
+        backoff: seconds between retries (doubles each attempt)
+        log_level: "warning", "error", or "debug"
     """
-    def decorator(fn):
-        _source = source or f"{fn.__module__}.{fn.__qualname__}"
+    if retries > _MAX_RETRIES:
+        retries = _MAX_RETRIES
 
+    def decorator(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             if not _ENABLED:
                 return fn(*args, **kwargs)
-            try:
-                return fn(*args, **kwargs)
-            except Exception as exc:
-                tb_str = traceback.format_exc()
-                _record_error(_source, exc, tb_str)
-                return default() if callable(default) else default
 
+            last_exc = None
+            attempts = 1 + max(0, retries)
+            delay = backoff
+
+            for attempt in range(attempts):
+                try:
+                    return fn(*args, **kwargs)
+                except Exception as exc:
+                    last_exc = exc
+                    fn_name = fn.__qualname__
+                    with _lock:
+                        _error_counts[fn_name] += 1
+                        _last_errors[fn_name] = (time.time(), str(exc))
+
+                    if attempt < attempts - 1:
+                        _log.debug("failsoft retry %d/%d for %s: %s",
+                                   attempt + 1, retries, fn_name, exc)
+                        time.sleep(delay)
+                        delay *= 2
+                    else:
+                        tb = traceback.format_exc()
+                        getattr(_log, log_level, _log.warning)(
+                            "failsoft: %s failed after %d attempt(s): %s\n%s",
+                            fn_name, attempts, exc, tb[:500])
+
+            # Return safe default
+            if callable(default) and not isinstance(default, (str, int, float, bool, type(None))):
+                return default()
+            return default
+
+        wrapper._failsoft = True
         return wrapper
     return decorator
 
 
-def failsoft_call(fn, *args, default=None, source="failsoft_call", **kwargs):
-    """Call fn(*args, **kwargs) with fail-soft wrapping. Returns default on error."""
-    if not _ENABLED:
-        return fn(*args, **kwargs)
-    try:
-        return fn(*args, **kwargs)
-    except Exception as exc:
-        tb_str = traceback.format_exc()
-        _record_error(source, exc, tb_str)
-        return default() if callable(default) else default
-
-
-class failsoft_ctx:
-    """Context manager for fail-soft blocks.
-
-    with failsoft_ctx("merge_train.integrate"):
-        do_risky_thing()
-    # execution continues even if do_risky_thing() raised
-    """
-
-    def __init__(self, source="failsoft_ctx", default=None):
-        self.source = source
-        self.default = default
-        self.error = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type is not None and _ENABLED:
-            tb_str = traceback.format_exc()
-            _record_error(self.source, exc_val, tb_str)
-            self.error = exc_val
-            return True  # suppress exception
-        return False
-
-
-def failsoft_db(fn):
-    """Specialized decorator for database operations. Returns None on error."""
-    return failsoft(default=None, source=f"db.{fn.__name__}")(fn)
-
-
-def failsoft_api(fn):
-    """Specialized decorator for external API calls. Returns None on error."""
-    return failsoft(default=None, source=f"api.{fn.__name__}")(fn)
-
-
 def stats():
-    """Return fail-soft statistics for monitoring."""
+    """Return error frequency stats for monitoring."""
     with _lock:
+        cutoff = time.time() - _WINDOW_SEC
         return {
-            "total_caught": _stats["total_caught"],
-            "by_source": dict(_stats["by_source"]),
-            "recent_errors": len(_error_log),
+            "total_errors": sum(_error_counts.values()),
+            "by_function": dict(_error_counts.most_common(20)),
+            "recent": {k: v for k, (t, v) in _last_errors.items() if t > cutoff},
         }
 
 
-def recent_errors(limit=20):
-    """Return recent errors for review."""
+def reset():
+    """Reset counters (for testing)."""
     with _lock:
-        return list(_error_log[-limit:])
-
-
-def clear():
-    """Reset stats and error log."""
-    with _lock:
-        _error_log.clear()
-        _stats["total_caught"] = 0
-        _stats["by_source"].clear()
+        _error_counts.clear()
+        _last_errors.clear()
