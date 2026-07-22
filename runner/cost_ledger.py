@@ -29,6 +29,11 @@ def _n(s): return int(s.replace(",", ""))
 
 
 def record(project, slug, model, logpath):
+    """Extract token counts from a task log and append a costed row to the ledger.
+
+    Parses input/output token counts from the log file at *logpath*, computes USD
+    cost using PRICES, and appends a JSON line to LEDGER. Returns the row dict.
+    """
     itok = otok = 0
     try:
         txt = open(logpath, errors="replace").read()
