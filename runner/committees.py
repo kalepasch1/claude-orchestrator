@@ -421,26 +421,20 @@ def _owner_bias():
 
 
 def _matches_owner_calls(title, recommendation):
-    """Compares the current recommendation against past owner decisions on similar subjects."""
+    """Compares current recommendation against past owner decisions on similar subjects."""
     try:
-        # Get recent owner overrides
         overrides = db.select("owner_overrides", {"select": "subject_title,owner_decision",
                                                   "order": "created_at.desc", "limit": "50"}) or []
         if not overrides:
             return None
-
         current_pos = not str(recommendation or "").startswith(("HOLD", "ESCALATE"))
         key = set(re.findall(r"[a-z]{4,}", (title or "").lower()))
-
         for o in overrides:
             past_title = o.get("subject_title") or ""
             past_owner_decision = o.get("owner_decision") or ""
-
             kk = set(re.findall(r"[a-z]{4,}", past_title.lower()))
-            if len(key & kk) >= 3: # Sufficient keyword overlap for similarity
-                # owner_decision "approved" implies a positive stance, "override" implies a negative stance
+            if len(key & kk) >= 3:
                 past_owner_pos = (past_owner_decision == "approved")
-                
                 if current_pos == past_owner_pos:
                     return f"matches owner's prior '{past_owner_decision}' on '{past_title}'"
                 else:
