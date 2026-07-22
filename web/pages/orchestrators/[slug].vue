@@ -39,8 +39,9 @@ const CAPS: Record<string, { name: string; domain: string; status: string; matur
 
 const APPS = [
   { id: 'apparently', name: 'Apparently' }, { id: 'beethoven', name: 'Beethoven' },
-  { id: 'darwn', name: 'Darwn' }, { id: 'pareto-2080', name: 'Pareto 2080' },
-  { id: 'racefeed', name: 'RaceFeed' }, { id: 'santas-secret-workshop', name: "Santa's Workshop" },
+  { id: 'darwn', name: 'Darwn' }, { id: 'illuminati', name: 'Illuminati' },
+  { id: 'pareto-2080', name: 'Pareto 2080' }, { id: 'racefeed', name: 'RaceFeed' },
+  { id: 'santas-secret-workshop', name: "Santa's Workshop" },
   { id: 'smarter', name: 'Smarter' }, { id: 'sustainable-barks', name: 'Sustainable Barks' },
   { id: 'tomorrow', name: 'Tomorrow' },
 ]
