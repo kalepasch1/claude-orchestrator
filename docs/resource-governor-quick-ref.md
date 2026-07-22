@@ -34,3 +34,7 @@ and prunes stale worktrees.
   and pre-emptively prunes/throttles before hitting `DISK_HARD`.
 - Worktree pruning checks: uncommitted changes, unmerged branches, recent
   activity, and origin push status before removing.
+- `pressure_should_block()` uses two-signal corroboration: kernel memory
+  pressure AND low measured headroom must BOTH be true before blocking new
+  tasks. This prevents stale `/proc/pressure` signals (which can linger after
+  a transient spike) from collapsing fleet concurrency on their own.
