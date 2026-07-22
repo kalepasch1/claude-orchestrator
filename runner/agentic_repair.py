@@ -19,12 +19,13 @@ _DEFAULT_DIRECTIVE = (
 
 
 def is_technical(category):
-    """Return True if the failure category is a technical (retryable) repair."""
+    """Return True if the failure category is a technical (auto-repairable) issue."""
     return str(category or "rework") in TECHNICAL_CATEGORIES
 
 
-def choose_coder(task):
-    """Return the coder to use for agentic repair of this task.
+def replacement_required(category):
+    """Return True if the category requires full prompt replacement (legal/secret/security)."""
+    return str(category or "") in REPLACEMENT_ONLY_CATEGORIES
 
     Priority: ORCH_AGENTIC_REPAIR_DEFAULT_CODER > agentic_coders.pick() >
     ORCH_REPAIR_CODER_FALLBACK (default: "claude").  Never hardcodes "ollama"
