@@ -16,11 +16,15 @@ SPIKE = float(os.environ.get("ANOMALY_SPIKE", "1.75"))   # x baseline to alert
 
 
 def _rate(rows, pred):
-    """Return the fraction of *rows* for which *pred(row)* is truthy (0.0 if empty)."""
+    """Return the fraction of rows satisfying pred, or 0.0 if rows is empty."""
     return (sum(1 for r in rows if pred(r)) / len(rows)) if rows else 0.0
 
 
-def check() -> dict:
+def check():
+    """Compare recent task outcomes against a trailing baseline for anomaly detection.
+
+    Returns dict with 'ok' (bool), 'alerts' (list of spike descriptions), and 'metrics'.
+    Files an approval card for each detected anomaly so operators are notified early."""
     try:
         rows = db.select("outcomes", {"select": "*", "order": "created_at.desc", "limit": "300"}) or []
     except Exception as e:
