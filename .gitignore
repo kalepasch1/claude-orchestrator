@@ -19,14 +19,5 @@ runner/.env.bak*
 runner/runner.log
 .aider*
 
-# Preview deployment files
-preview_deploy.py
-preview-deploy-*.py
-deploy-preview-*.py
-
-# Agent branch deployment ignores
-agent-branch-*.py
-agent-branch-*.sh
-
-# Vercel deployment ignores (based on the patch template reference)
-.vercel
+# machine-local Claude Code settings — never commit (contains allowlists, deny lists)
+.claude/settings.local.json
