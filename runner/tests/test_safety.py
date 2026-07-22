@@ -443,112 +443,123 @@ class TestCostCapture(unittest.TestCase):
 
 # ── F: committees domain mapping ──────────────────────────────────────────────
 
-@unittest.skip("stale: written for per-app boards committees.py, since replaced by adaptive panels "
-               "(commit 2f8662d); task reconcile-committees-deliberation-wip restores coverage")
 class TestCommittees(unittest.TestCase):
+    """Coverage for the adaptive per-issue expert panel system (commit 2f8662d).
 
-    def test_fintech_committee_has_regulatory_veto(self):
-        """Fintech apps must have Regulatory seat with veto power."""
-        from committees import for_app, has_veto_seat
-        board = for_app("paypal")  # infer from name
-        seats = [m["seat"] for m in board]
-        self.assertIn("Regulatory", seats, "fintech must have Regulatory seat")
-        self.assertTrue(has_veto_seat("paypal", "Regulatory"),
-                       "Regulatory must have veto power for fintech")
+    These replace the stale per-app board tests with equivalent invariants:
+    - Legal/compliance panels are force-seated whenever an issue has legal exposure
+      (the new veto guarantee, now dynamic rather than per-app-type)
+    - _fallback_panels routes issues to domain-matched committees offline
+    - _is_legal correctly identifies any name that carries the legal veto
+    """
 
-    def test_consumer_committee_has_privacy_veto(self):
-        """Consumer apps must have Privacy seat with veto power."""
-        from committees import for_app, has_veto_seat
-        board = for_app("social_media")  # infer from name
-        seats = [m["seat"] for m in board]
-        self.assertIn("Privacy", seats, "consumer must have Privacy seat")
-        self.assertTrue(has_veto_seat("social_media", "Privacy"),
-                       "Privacy must have veto power for consumer")
+    def test_is_legal_identifies_common_legal_names(self):
+        """_is_legal returns True for any legal/compliance/regulatory/privacy name."""
+        from committees import _is_legal
+        for name in ("Legal & Compliance", "Regulatory Affairs", "Privacy Counsel",
+                     "GDPR Compliance", "Counsel", "regulatory", "privacy", "compliance",
+                     "CCPA officer", "sanctions review"):
+            self.assertTrue(_is_legal(name), f"_is_legal should be True for {name!r}")
 
-    def test_saas_committee_has_reliability_veto(self):
-        """SaaS apps must have Reliability seat with veto power."""
-        from committees import for_app, has_veto_seat
-        board = for_app("workspace_saas")  # infer from name
-        seats = [m["seat"] for m in board]
-        self.assertIn("Reliability", seats, "saas must have Reliability seat")
-        self.assertTrue(has_veto_seat("workspace_saas", "Reliability"),
-                       "Reliability must have veto power for saas")
+    def test_is_legal_returns_false_for_non_legal(self):
+        """_is_legal returns False for panels that carry no legal veto."""
+        from committees import _is_legal
+        for name in ("Engineering", "Product", "Security & Trust",
+                     "Finance", "Architecture", "", None):
+            self.assertFalse(_is_legal(name), f"_is_legal should be False for {name!r}")
 
-    def test_platform_committee_has_stability_veto(self):
-        """Platform apps must have Stability seat with veto power."""
-        from committees import for_app, has_veto_seat
-        board = for_app("platform-core")  # infer from name
-        seats = [m["seat"] for m in board]
-        self.assertIn("Stability", seats, "platform must have Stability seat")
-        self.assertTrue(has_veto_seat("platform-core", "Stability"),
-                       "Stability must have veto power for platform")
+    def test_fallback_panels_legal_issue_seats_legal_panel(self):
+        """Offline fallback must seat a legal panel when the issue has legal exposure."""
+        from committees import _fallback_panels, _is_legal
+        panels = _fallback_panels("GDPR compliance changes",
+                                  "Update data retention policy for GDPR compliance")
+        self.assertTrue(any(_is_legal(p["name"]) for p in panels),
+                        "fallback must include a legal/compliance panel for legal-hint issues")
+        legal = next(p for p in panels if _is_legal(p["name"]))
+        seat_text = " ".join(legal["seats"]).lower()
+        self.assertTrue(
+            any(k in seat_text for k in ("counsel", "regulatory", "privacy", "compliance")),
+            "legal fallback panel seats must include a compliance-oriented role")
 
-    def test_explicit_app_type_overrides_inference(self):
-        """If db_project['type'] is set, it should override name inference."""
-        from committees import for_app
-        # Pass a dict with explicit type
-        db_project = {"type": "fintech", "name": "ambiguous-name"}
-        board = for_app("ambiguous-name", db_project)
-        seats = [m["seat"] for m in board]
-        self.assertIn("Regulatory", seats,
-                     "explicit type=fintech should return fintech committee")
+    def test_fallback_panels_security_issue_seats_security_panel(self):
+        """Offline fallback must seat a security panel when the issue has security markers."""
+        from committees import _fallback_panels
+        panels = _fallback_panels("auth vulnerability discovered",
+                                  "A security flaw in auth was found")
+        names_lower = [p["name"].lower() for p in panels]
+        self.assertTrue(any("security" in n or "trust" in n for n in names_lower),
+                        "fallback should seat a security panel for security-hint issues")
 
-    def test_unknown_app_type_uses_default(self):
-        """Unknown app types should fall back to the default committee."""
-        from committees import for_app
-        board = for_app("xyz-system-123")
-        seats = [m["seat"] for m in board]
-        # Default has Code, Security, Performance
-        self.assertIn("Security", seats, "default committee must have Security")
-        self.assertIn("Code", seats, "default committee must have Code")
+    def test_fallback_panels_pricing_issue_seats_pricing_panel(self):
+        """Offline fallback must seat a pricing/monetization panel for revenue issues."""
+        from committees import _fallback_panels
+        panels = _fallback_panels("add new pricing tier",
+                                  "Add a new revenue tier to the pricing page")
+        names_lower = [p["name"].lower() for p in panels]
+        self.assertTrue(
+            any("pricing" in n or "monetiz" in n or "revenue" in n for n in names_lower),
+            "fallback should seat a pricing/monetization panel for pricing-hint issues")
 
-    def test_members_for_app_returns_seat_names(self):
-        """members_for_app should return a list of seat names only."""
-        from committees import members_for_app
-        seats = members_for_app("bank-app")  # infer fintech
-        self.assertIsInstance(seats, list)
-        self.assertTrue(all(isinstance(s, str) for s in seats))
-        self.assertIn("Regulatory", seats)
+    def test_fallback_panels_always_returns_at_least_one_panel(self):
+        """_fallback_panels never returns an empty list regardless of input."""
+        from committees import _fallback_panels
+        for title, body in [("", ""), (None, None),
+                            ("add button", "small UI tweak"),
+                            ("GDPR", "legal compliance"),
+                            ("security auth", "fix auth")]:
+            panels = _fallback_panels(title, body)
+            self.assertGreaterEqual(len(panels), 1,
+                                    f"fallback must return >=1 panel for ({title!r}, {body!r})")
 
-    def test_has_veto_seat_for_nonexistent_seat(self):
-        """has_veto_seat should return False for a seat that doesn't exist."""
-        from committees import has_veto_seat
-        result = has_veto_seat("social-app", "NonexistentSeat")
-        self.assertFalse(result, "nonexistent seat should return False")
+    def test_fallback_panel_has_required_fields(self):
+        """Each fallback panel must carry name, mandate, chair, seats, and weight."""
+        from committees import _fallback_panels
+        for p in _fallback_panels("review this change", "some proposal body"):
+            for key in ("name", "mandate", "chair", "seats", "weight"):
+                self.assertIn(key, p, f"panel missing field {key!r}")
+            self.assertIsInstance(p["name"], str)
+            self.assertIsInstance(p["seats"], list)
+            self.assertGreaterEqual(len(p["seats"]), 1, "panel must have at least one seat")
+            self.assertIsInstance(p["weight"], float)
 
-    def test_all_veto_seats_respected(self):
-        """All defined veto seats must actually have veto=True in their definition."""
-        from committees import APP_COMMITTEES, has_veto_seat
-        for app_type, members in APP_COMMITTEES.items():
-            for m in members:
-                if m.get("veto"):
-                    # Double-check: calling has_veto_seat should agree
-                    result = has_veto_seat(app_type, m["seat"],
-                                          db_project={"type": app_type})
-                    self.assertTrue(result,
-                                   f"{app_type}/{m['seat']} marked veto but has_veto_seat disagrees")
+    def test_triage_panels_force_seats_legal_on_legal_issue(self):
+        """_triage_panels adds a legal panel when issue has legal hints, even if the
+        triage model returned only non-legal panels."""
+        from committees import _triage_panels
+        from unittest.mock import patch
+        non_legal = [{"domain": "Engineering", "chair": "Tech Lead",
+                      "seats": ["Backend Engineer", "QA Lead"], "why": "code change"}]
+        with patch("committees.active_committees", return_value=[]), \
+             patch("committees._json", return_value=non_legal):
+            panels = _triage_panels("GDPR compliance update required",
+                                    "Update data retention policy for GDPR compliance")
+        names = [p["name"] for p in panels]
+        self.assertTrue(
+            any("legal" in n.lower() or "compliance" in n.lower() for n in names),
+            f"legal panel must be force-seated for legal-hint issue; got {names}")
 
-    def test_all_committee_types_defined(self):
-        """all_types() must return fintech, consumer, saas, platform, opensource."""
-        from committees import all_types
-        types = all_types()
-        self.assertIn("fintech", types)
-        self.assertIn("consumer", types)
-        self.assertIn("saas", types)
-        self.assertIn("platform", types)
-        self.assertIn("opensource", types)
+    def test_triage_panels_no_duplicate_legal(self):
+        """_triage_panels does NOT add a second legal panel when one is already present."""
+        from committees import _triage_panels, _is_legal
+        from unittest.mock import patch
+        already_legal = [{"domain": "Legal & Compliance", "chair": "Managing Partner",
+                          "seats": ["Regulatory counsel", "Privacy counsel"],
+                          "why": "legal matter"}]
+        with patch("committees.active_committees", return_value=[]), \
+             patch("committees._json", return_value=already_legal):
+            panels = _triage_panels("GDPR compliance update", "legal privacy issue")
+        legal_count = sum(1 for p in panels if _is_legal(p["name"]))
+        self.assertEqual(legal_count, 1, "exactly one legal panel should be seated, not two")
 
-    def test_committee_members_structure(self):
-        """Each member must have seat, expertise, and veto keys."""
-        from committees import for_app
-        board = for_app("fintech-app")
-        for member in board:
-            self.assertIn("seat", member, "member must have 'seat'")
-            self.assertIn("expertise", member, "member must have 'expertise'")
-            self.assertIn("veto", member, "member must have 'veto'")
-            self.assertIsInstance(member["seat"], str)
-            self.assertIsInstance(member["expertise"], str)
-            self.assertIsInstance(member["veto"], bool)
+    def test_triage_panels_uses_fallback_when_model_offline(self):
+        """When the triage model returns nothing, _fallback_panels is used."""
+        from committees import _triage_panels
+        from unittest.mock import patch
+        with patch("committees.active_committees", return_value=[]), \
+             patch("committees._json", return_value=[]):
+            panels = _triage_panels("add a login button", "small UI change")
+        self.assertGreaterEqual(len(panels), 1,
+                                "must return at least one panel even when model is offline")
 
 # ── G: auto-approval safety ──────────────────────────────────────────────────
 
