@@ -938,7 +938,19 @@ def claim_task(runner_id):
                 occupied = active_by_project.get(pid, 0)
             if occupied >= _project_lane_limit(t):
                 continue
-        if all(d in done for d in (t.get("deps") or [])):
+        # SOFT-DEP SPECULATION: if deps aren't all done, check if file scopes
+        # are disjoint — if so, start the task speculatively instead of waiting.
+        deps_ok = all(d in done for d in (t.get("deps") or []))
+        if not deps_ok:
+            try:
+                import soft_dep_spec
+                deps_ok, _spec_reason = soft_dep_spec.can_speculate(t, done)
+                if deps_ok:
+                    _pending = [d for d in (t.get("deps") or []) if d not in done]
+                    soft_dep_spec.register(t, _pending)
+            except Exception:
+                pass
+        if deps_ok:
             # optimistic claim: flip to RUNNING only if still QUEUED
             try:
                 res = _req("PATCH", "/rest/v1/tasks",
