@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+"""Tests for runner/agentic_repair.py — patch rewriting and failure-context injection."""
 import os
 import sys
 import types
