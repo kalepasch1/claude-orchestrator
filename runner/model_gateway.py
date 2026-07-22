@@ -44,10 +44,12 @@ provider_credentials.activate_aliases()
 
 # rough $/1M tokens (input,output) for routing decisions; edit to current pricing
 PRICES = {
+    # Anthropic (Jul 2026)
     ("claude", "claude-haiku-4-5-20251001"): (1.0, 5.0),
     ("claude", "claude-sonnet-5"): (3.0, 15.0),
     ("claude", "claude-opus-4-8"): (5.0, 25.0),
     ("claude", "claude-fable-5"): (10.0, 50.0),
+    # OpenAI (Jul 2026)
     ("openai", "gpt-5.6-sol"): (5.0, 30.0),
     ("openai", "gpt-5.6-terra"): (2.50, 15.0),
     ("openai", "gpt-5.6-luna"): (1.0, 6.0),
@@ -58,23 +60,23 @@ PRICES = {
     ("openai", "o4-mini"): (1.1, 4.4),
     ("openai", "gpt-4o-mini"): (0.15, 0.6),
     ("openai", "gpt-4o"): (2.5, 10.0),
+    # Google Gemini (Jul 2026)
     ("google", "gemini-3.5-flash"): (1.50, 9.0),
     ("google", "gemini-3.1-pro"): (2.0, 12.0),
     ("google", "gemini-3.1-flash-lite"): (0.25, 1.50),
     ("google", "gemini-3-flash"): (0.50, 3.0),
     ("google", "gemini-2.5-pro"): (1.25, 10.0),
-    ("google", "gemini-4.0-flash-lite"): (0.10, 0.40),
-    ("google", "gemini-4.0-flash"): (0.50, 4.00),
-    ("google", "gemini-4.0-pro"): (2.00, 16.00),
-    ("deepseek", "deepseek-chat"): (0.14, 0.28),
-    ("deepseek", "deepseek-reasoner"): (0.14, 0.28),
+    ("google", "gemini-2.5-flash"): (0.30, 2.50),
+    # DeepSeek (Jul 2026)
     ("deepseek", "deepseek-v4-flash"): (0.14, 0.28),
     ("deepseek", "deepseek-v4-pro"): (0.435, 0.87),
     ("deepseek", "deepseek-chat"): (0.14, 0.28),
     ("deepseek", "deepseek-reasoner"): (0.14, 0.28),
     ("local", "*"): (0.0, 0.0),
+    # Groq
     ("groq", "llama-3.1-8b-instant"): (0.05, 0.08),
     ("groq", "llama-3.3-70b-versatile"): (0.59, 0.79),
+    # xAI Grok (Jul 2026)
     ("xai", "grok-4.5"): (2.0, 6.0),
     ("xai", "grok-4.3"): (1.25, 2.50),
     ("xai", "grok-4.20"): (1.25, 2.50),
@@ -119,11 +121,11 @@ def configured():
     """Providers with local configuration present, regardless of health."""
     prov = ["claude"]
     # a key counts only if it's non-empty (blank .env lines don't enable a provider)
-    if provider_credentials.has("openai"): prov.append("openai")
-    if provider_credentials.has("google"): prov.append("google")
-    if provider_credentials.has("deepseek"): prov.append("deepseek")
-    if provider_credentials.has("groq"): prov.append("groq")
-    if provider_credentials.has("xai"): prov.append("xai")
+    if os.environ.get("OPENAI_API_KEY", "").strip(): prov.append("openai")
+    if os.environ.get("GOOGLE_API_KEY", "").strip(): prov.append("google")
+    if os.environ.get("DEEPSEEK_API_KEY", "").strip(): prov.append("deepseek")
+    if os.environ.get("GROQ_API_KEY", "").strip(): prov.append("groq")
+    if os.environ.get("XAI_API_KEY", "").strip(): prov.append("xai")
     if _ollama_up(): prov.append("local")
     return prov
 
@@ -176,8 +178,7 @@ def _google(model, prompt):
     candidates = [model, os.environ.get("GEMINI_MODEL", ""),
                   os.environ.get("GEMINI_CHEAP_MODEL", ""),
                   os.environ.get("GEMINI_STRONG_MODEL", ""),
-                  "gemini-4.0-flash", "gemini-4.0-flash-lite",
-                  "gemini-2.5-flash", "gemini-2.5-flash-lite-preview-09-2025",
+                  "gemini-3-flash", "gemini-3.5-flash", "gemini-2.5-flash",
                   "gemini-flash-latest"]
     seen, ordered = set(), []
     for c in candidates:
@@ -251,8 +252,9 @@ DEFAULT_MODELS = {
     "groq": lambda: os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile"),
     "deepseek": lambda: _configured("DEEPSEEK_CHEAP_MODEL", "deepseek-v4-flash",
                                     deprecated=("deepseek-chat", "deepseek-reasoner")),
-    "google": lambda: _configured("GEMINI_MODEL", "gemini-4.0-flash",
-                                  deprecated=("gemini-2.0-", "gemini-2.5-")),
+    "google": lambda: _configured("GEMINI_MODEL", "gemini-3-flash",
+                                  deprecated=("gemini-2.0-",)),
+    "xai": lambda: os.environ.get("XAI_MODEL", "grok-build-0.1"),
     "openai": lambda: os.environ.get("OPENAI_CHEAP_MODEL", "gpt-5.4-nano"),
     "claude": lambda: "claude-haiku-4-5-20251001",
 }

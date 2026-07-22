@@ -100,26 +100,40 @@ VENDORS = {
             "web_search", "code_execution",
         },
         "models": {
-            "gpt-4o": {
+            "gpt-5.5": {
+                "context_window": 200_000,
+                "cost_per_mtok_in": 5.0,
+                "cost_per_mtok_out": 30.0,
+                "strengths": ["reasoning", "multimodal", "code"],
+                "tier": "heavy",
+            },
+            "gpt-5.4-mini": {
                 "context_window": 128_000,
-                "cost_per_mtok_in": 2.50,
-                "cost_per_mtok_out": 10.0,
-                "strengths": ["multimodal", "function_calling", "speed"],
+                "cost_per_mtok_in": 0.75,
+                "cost_per_mtok_out": 4.50,
+                "strengths": ["speed", "cost", "general"],
                 "tier": "mid",
             },
-            "gpt-4o-mini": {
+            "gpt-5.4-nano": {
                 "context_window": 128_000,
-                "cost_per_mtok_in": 0.15,
-                "cost_per_mtok_out": 0.60,
-                "strengths": ["speed", "cost", "simple_tasks"],
+                "cost_per_mtok_in": 0.20,
+                "cost_per_mtok_out": 1.25,
+                "strengths": ["ultra_fast", "cost", "simple_tasks"],
                 "tier": "fast",
             },
-            "o3": {
+            "gpt-5.6-sol": {
                 "context_window": 200_000,
-                "cost_per_mtok_in": 10.0,
-                "cost_per_mtok_out": 40.0,
-                "strengths": ["deep_reasoning", "math", "science"],
-                "tier": "heavy",
+                "cost_per_mtok_in": 5.0,
+                "cost_per_mtok_out": 30.0,
+                "strengths": ["frontier_reasoning", "multimodal"],
+                "tier": "frontier",
+            },
+            "o4-mini": {
+                "context_window": 200_000,
+                "cost_per_mtok_in": 1.1,
+                "cost_per_mtok_out": 4.4,
+                "strengths": ["reasoning", "math", "cost_efficient"],
+                "tier": "mid",
             },
         },
         "unique_strengths": [
@@ -187,19 +201,33 @@ VENDORS = {
             "code_execution",
         },
         "models": {
+            "gemini-3.1-pro": {
+                "context_window": 1_000_000,
+                "cost_per_mtok_in": 2.0,
+                "cost_per_mtok_out": 12.0,
+                "strengths": ["reasoning", "multimodal", "ultra_long_context"],
+                "tier": "heavy",
+            },
+            "gemini-3.5-flash": {
+                "context_window": 1_000_000,
+                "cost_per_mtok_in": 1.50,
+                "cost_per_mtok_out": 9.0,
+                "strengths": ["speed", "multimodal", "long_context"],
+                "tier": "mid",
+            },
+            "gemini-3-flash": {
+                "context_window": 1_000_000,
+                "cost_per_mtok_in": 0.50,
+                "cost_per_mtok_out": 3.0,
+                "strengths": ["speed", "cost", "long_context"],
+                "tier": "fast",
+            },
             "gemini-2.5-pro": {
                 "context_window": 1_000_000,
                 "cost_per_mtok_in": 1.25,
                 "cost_per_mtok_out": 10.0,
-                "strengths": ["ultra_long_context", "multimodal", "reasoning"],
+                "strengths": ["ultra_long_context", "reasoning"],
                 "tier": "heavy",
-            },
-            "gemini-2.5-flash": {
-                "context_window": 1_000_000,
-                "cost_per_mtok_in": 0.15,
-                "cost_per_mtok_out": 0.60,
-                "strengths": ["speed", "cost", "long_context"],
-                "tier": "fast",
             },
         },
         "unique_strengths": [
@@ -268,11 +296,25 @@ VENDORS = {
             "video_generation", "web_search", "real_time_data", "batch_api",
         },
         "models": {
+            "grok-4.5": {
+                "context_window": 500_000,
+                "cost_per_mtok_in": 2.0,
+                "cost_per_mtok_out": 6.0,
+                "strengths": ["frontier_reasoning", "multimodal"],
+                "tier": "frontier",
+            },
             "grok-4.3": {
-                "context_window": 256_000,
+                "context_window": 1_000_000,
                 "cost_per_mtok_in": 1.25,
                 "cost_per_mtok_out": 2.50,
                 "strengths": ["reasoning", "real_time_data", "multimodal"],
+                "tier": "heavy",
+            },
+            "grok-4.20": {
+                "context_window": 1_000_000,
+                "cost_per_mtok_in": 1.25,
+                "cost_per_mtok_out": 2.50,
+                "strengths": ["reasoning", "non_reasoning", "multi_agent"],
                 "tier": "heavy",
             },
             "grok-build-0.1": {
