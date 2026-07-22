@@ -1,112 +1,181 @@
-"""Branch reconciler: reconciles local vs remote branches.
-
-Identifies orphaned, stale, and conflicting branches without
-hardcoded secrets. All config via environment variables.
+#!/usr/bin/env python3
 """
+branch_reconciler.py - reconcile stuck unmerged branches.
 
-import os
-import subprocess
-import re
-from datetime import datetime, timezone, timedelta
-from typing import Dict, Any, List, Optional
+Scans unmerged agent/* branches, extracts build failure reasons (via
+build_gate), clusters branches by their missing dependency (e.g. same
+missing module, same missing table), and generates foundation task
+proposals for each cluster so the root dependency can be fixed once.
 
-# Config via env vars only — no hardcoded secrets
-STALE_DAYS = int(os.environ.get("BRANCH_STALE_DAYS", "30"))
-REMOTE_NAME = os.environ.get("GIT_REMOTE_NAME", "origin")
-PROTECTED_BRANCHES = set(
-    os.environ.get("PROTECTED_BRANCHES", "master,main,develop").split(",")
-)
+Feature flag: ORCH_BRANCH_RECONCILER_ENABLED (default true)
+Fail-soft: every public function returns a safe default on error.
+"""
+import os, sys
+from collections import defaultdict
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import db
+import build_gate
 
-def _run_git(args: List[str], cwd: Optional[str] = None) -> str:
-    """Run a git command and return stdout. Returns '' on error."""
-    try:
-        result = subprocess.run(
-            ["git"] + args,
-            capture_output=True, text=True, timeout=30,
-            cwd=cwd or os.getcwd(),
-        )
-        return result.stdout.strip()
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return ""
+ENABLED = os.environ.get("ORCH_BRANCH_RECONCILER_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 
 
-def list_local_branches(cwd: Optional[str] = None) -> List[str]:
-    """List all local branch names."""
-    output = _run_git(["branch", "--format=%(refname:short)"], cwd=cwd)
-    if not output:
-        return []
-    return [b.strip() for b in output.splitlines() if b.strip()]
+def scan_unmerged(repo=None):
+    """Get all unmerged agent/* branches with their failure reasons.
 
-
-def list_remote_branches(remote: Optional[str] = None,
-                         cwd: Optional[str] = None) -> List[str]:
-    """List all remote branch names (without remote/ prefix)."""
-    r = remote or REMOTE_NAME
-    output = _run_git(["branch", "-r", "--format=%(refname:short)"], cwd=cwd)
-    if not output:
-        return []
-    prefix = f"{r}/"
-    return [
-        b.strip().removeprefix(prefix)
-        for b in output.splitlines()
-        if b.strip().startswith(prefix) and "HEAD" not in b
-    ]
-
-
-def get_branch_age_days(branch: str, cwd: Optional[str] = None) -> int:
-    """Get the age in days of the last commit on a branch."""
-    ts = _run_git(["log", "-1", "--format=%ct", branch], cwd=cwd)
-    if not ts or not ts.isdigit():
-        return -1
-    commit_time = datetime.fromtimestamp(int(ts), tz=timezone.utc)
-    age = datetime.now(timezone.utc) - commit_time
-    return age.days
-
-
-def reconcile(cwd: Optional[str] = None) -> Dict[str, Any]:
-    """Reconcile local vs remote branches.
-
-    Returns a report with:
-      - orphaned_local: local branches with no remote counterpart
-      - orphaned_remote: remote branches with no local counterpart
-      - stale: branches older than STALE_DAYS
-      - conflicting: branches that exist both locally and remotely
-                     but have diverged
-      - protected: branches that are protected (informational)
+    Returns list of dicts: [{branch, has_failures, reasons: [{type, detail}]}]
+    Fail-soft: returns [] on error.
     """
-    local = set(list_local_branches(cwd=cwd))
-    remote = set(list_remote_branches(cwd=cwd))
-    orphaned_local = sorted(local - remote - PROTECTED_BRANCHES)
-    orphaned_remote = sorted(remote - local - PROTECTED_BRANCHES)
-    common = local & remote
-    stale = []
-    for b in sorted(local | remote):
-        if b in PROTECTED_BRANCHES:
+    if not ENABLED:
+        return []
+    try:
+        branches = build_gate.scan_branches(repo)
+        results = []
+        for branch in branches:
+            status = build_gate.check_build_status(branch, repo=repo)
+            results.append(status)
+        return results
+    except Exception:
+        return []
+
+
+def cluster_by_dependency(failures):
+    """Group branches by their missing dependency.
+
+    Input: list of dicts from scan_unmerged (each has branch, reasons).
+    Output: dict of dependency_key -> [branch_info, ...]
+
+    The dependency_key is "type:detail" (e.g. "missing_module:utils.helpers",
+    "missing_table:accounts").  Branches with no detected failures are grouped
+    under "unknown".
+    """
+    if not failures:
+        return {}
+    clusters = defaultdict(list)
+    for entry in failures:
+        branch = entry.get("branch", "")
+        reasons = entry.get("reasons", [])
+        if not reasons:
+            clusters["unknown"].append(entry)
             continue
-        age = get_branch_age_days(b, cwd=cwd)
-        if age >= STALE_DAYS:
-            stale.append({"branch": b, "age_days": age})
-    conflicting = []
-    for b in sorted(common):
-        if b in PROTECTED_BRANCHES:
-            continue
-        local_sha = _run_git(["rev-parse", b], cwd=cwd)
-        remote_sha = _run_git(
-            ["rev-parse", f"{REMOTE_NAME}/{b}"], cwd=cwd
-        )
-        if local_sha and remote_sha and local_sha != remote_sha:
-            conflicting.append({
-                "branch": b,
-                "local_sha": local_sha[:10],
-                "remote_sha": remote_sha[:10],
-            })
-    return {
-        "orphaned_local": orphaned_local,
-        "orphaned_remote": orphaned_remote,
-        "stale": stale,
-        "conflicting": conflicting,
-        "protected": sorted(PROTECTED_BRANCHES & (local | remote)),
-        "total_local": len(local),
-        "total_remote": len(remote),
-    }
+        # A branch may have multiple failure reasons; assign to the first
+        # actionable one (missing_module, missing_table, missing_file first)
+        priority_order = [
+            "missing_module", "missing_table", "missing_column",
+            "missing_file", "import_error",
+        ]
+        assigned = False
+        for ptype in priority_order:
+            for reason in reasons:
+                if reason.get("type") == ptype:
+                    key = f"{ptype}:{reason['detail']}"
+                    clusters[key].append(entry)
+                    assigned = True
+                    break
+            if assigned:
+                break
+        if not assigned:
+            # Use the first reason as the cluster key
+            r = reasons[0]
+            key = f"{r['type']}:{r.get('detail', 'unknown')}"
+            clusters[key].append(entry)
+    return dict(clusters)
+
+
+def generate_proposals(clusters):
+    """For each cluster, generate a task proposal that fixes the root dependency.
+
+    Input: dict from cluster_by_dependency.
+    Output: list of proposal dicts, one per cluster:
+        [{dependency_key, affected_branches, proposal: {slug, prompt, kind}}]
+    """
+    if not clusters:
+        return []
+    proposals = []
+    for dep_key, entries in clusters.items():
+        affected = [e.get("branch", "") for e in entries]
+        parts = dep_key.split(":", 1)
+        dep_type = parts[0] if parts else "unknown"
+        dep_detail = parts[1] if len(parts) > 1 else "unknown"
+
+        # Generate a slug and prompt based on the dependency type
+        if dep_type == "missing_module":
+            slug = f"foundation-create-{dep_detail.replace('.', '-')}"
+            prompt = (f"Create the missing Python module '{dep_detail}' that "
+                      f"{len(affected)} agent branch(es) depend on. "
+                      f"Affected branches: {', '.join(affected[:5])}")
+        elif dep_type == "missing_table":
+            slug = f"foundation-create-table-{dep_detail.replace('.', '-')}"
+            prompt = (f"Create the missing database table '{dep_detail}' that "
+                      f"{len(affected)} agent branch(es) need. "
+                      f"Affected branches: {', '.join(affected[:5])}")
+        elif dep_type == "missing_column":
+            slug = f"foundation-add-column-{dep_detail.replace('.', '-')}"
+            prompt = (f"Add the missing column '{dep_detail}' that "
+                      f"{len(affected)} agent branch(es) reference. "
+                      f"Affected branches: {', '.join(affected[:5])}")
+        elif dep_type == "missing_file":
+            slug = f"foundation-create-file-{os.path.basename(dep_detail)}"
+            prompt = (f"Create the missing file '{dep_detail}' that "
+                      f"{len(affected)} agent branch(es) require. "
+                      f"Affected branches: {', '.join(affected[:5])}")
+        elif dep_type == "import_error":
+            slug = f"foundation-fix-import-{dep_detail.replace('.', '-')}"
+            prompt = (f"Fix the import error for '{dep_detail}' that blocks "
+                      f"{len(affected)} agent branch(es). "
+                      f"Affected branches: {', '.join(affected[:5])}")
+        else:
+            slug = f"foundation-fix-{dep_type}-{dep_detail[:30].replace(' ', '-')}"
+            prompt = (f"Fix the root cause ({dep_type}: {dep_detail}) blocking "
+                      f"{len(affected)} agent branch(es). "
+                      f"Affected branches: {', '.join(affected[:5])}")
+
+        proposals.append({
+            "dependency_key": dep_key,
+            "affected_branches": affected,
+            "proposal": {
+                "slug": slug,
+                "prompt": prompt,
+                "kind": "foundation",
+            },
+        })
+    return proposals
+
+
+def reconcile(repo=None):
+    """Orchestrate: scan -> cluster -> propose.
+
+    Returns dict: {branches_scanned, clusters, proposals, error?}
+    Fail-soft: returns a safe summary on any error.
+    """
+    if not ENABLED:
+        return {"branches_scanned": 0, "clusters": {}, "proposals": [], "skipped": "disabled"}
+    try:
+        scanned = scan_unmerged(repo)
+        # Only cluster branches that have failures
+        with_failures = [s for s in scanned if s.get("has_failures")]
+        clusters = cluster_by_dependency(with_failures)
+        proposals = generate_proposals(clusters)
+        return {
+            "branches_scanned": len(scanned),
+            "branches_with_failures": len(with_failures),
+            "clusters": clusters,
+            "proposals": proposals,
+        }
+    except Exception as e:
+        return {"branches_scanned": 0, "clusters": {}, "proposals": [], "error": str(e)}
+
+
+def stats():
+    """Module statistics."""
+    try:
+        result = reconcile()
+        return {
+            "enabled": ENABLED,
+            "branches_scanned": result.get("branches_scanned", 0),
+            "branches_with_failures": result.get("branches_with_failures", 0),
+            "cluster_count": len(result.get("clusters", {})),
+            "proposal_count": len(result.get("proposals", [])),
+        }
+    except Exception:
+        return {"enabled": ENABLED, "branches_scanned": 0, "cluster_count": 0, "proposal_count": 0}

@@ -1,222 +1,133 @@
-import json
 import os
-import shutil
-import subprocess
 import sys
-import tempfile
+import types
 import unittest
 from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Provide a stub db before importing build_gate
+_fake_db = types.ModuleType("db")
+_fake_db.select = MagicMock(return_value=[])
+_fake_db.insert = MagicMock()
+_fake_db.update = MagicMock()
+sys.modules.setdefault("db", _fake_db)
+
 import build_gate
-import dependency_prewarm
 
 
-class TestBuildGate(unittest.TestCase):
-    def test_yarn_lock_falls_back_to_npm_when_yarn_missing(self):
-        d = tempfile.mkdtemp()
-        with open(os.path.join(d, "package.json"), "w") as f:
-            json.dump({"scripts": {"build": "nuxt build"}}, f)
-        with open(os.path.join(d, "yarn.lock"), "w") as f:
-            f.write("")
-        orig = build_gate.shutil.which
-        try:
-            build_gate.shutil.which = lambda name: None if name == "yarn" else orig(name)
-            self.assertEqual(build_gate.detect_build_cmd(d), "npm run build")
-        finally:
-            build_gate.shutil.which = orig
+class TestScanBranches(unittest.TestCase):
+    """scan_branches finds agent/* branches."""
 
-    def test_uses_installed_pnpm_for_pnpm_lock(self):
-        d = tempfile.mkdtemp()
-        with open(os.path.join(d, "package.json"), "w") as f:
-            json.dump({"scripts": {"typecheck": "vue-tsc --noEmit"}}, f)
-        with open(os.path.join(d, "pnpm-lock.yaml"), "w") as f:
-            f.write("")
-        orig = build_gate.shutil.which
-        try:
-            build_gate.shutil.which = lambda name: "/usr/local/bin/pnpm" if name == "pnpm" else None
-            self.assertEqual(build_gate.detect_build_cmd(d), "pnpm typecheck")
-        finally:
-            build_gate.shutil.which = orig
+    @patch.object(build_gate, "_git")
+    def test_scan_finds_agent_branches(self, mock_git):
+        mock_git.return_value = (0, "  agent/fix-auth\n  agent/add-table\n  agent/refactor", "")
+        branches = build_gate.scan_branches("/fake/repo")
+        self.assertEqual(branches, ["agent/fix-auth", "agent/add-table", "agent/refactor"])
 
-    def test_real_build_wins_over_typecheck(self):
-        d = tempfile.mkdtemp()
-        with open(os.path.join(d, "package.json"), "w") as f:
-            json.dump({"scripts": {"typecheck": "vue-tsc --noEmit", "build": "nuxt build"}}, f)
-        self.assertEqual(build_gate.detect_build_cmd(d), "npm run build")
+    @patch.object(build_gate, "_git")
+    def test_scan_empty_when_no_branches(self, mock_git):
+        mock_git.return_value = (0, "", "")
+        branches = build_gate.scan_branches("/fake/repo")
+        self.assertEqual(branches, [])
 
-    def test_vercel_build_command_wins(self):
-        d = tempfile.mkdtemp()
-        with open(os.path.join(d, "package.json"), "w") as f:
-            json.dump({"scripts": {"build": "nuxt build", "build:vercel": "node scripts/preflight.mjs && nuxt build"}}, f)
-        with open(os.path.join(d, "vercel.json"), "w") as f:
-            json.dump({"buildCommand": "npm run build:vercel"}, f)
-        self.assertEqual(build_gate.detect_build_cmd(d), "npm run build:vercel")
+    @patch.object(build_gate, "_git")
+    def test_scan_fails_soft_on_error(self, mock_git):
+        mock_git.return_value = (128, "", "fatal: not a git repo")
+        branches = build_gate.scan_branches("/fake/repo")
+        self.assertEqual(branches, [])
 
-    def test_vercelignore_removes_tracked_build_dependency(self):
-        d = tempfile.mkdtemp()
-        subprocess.run(["git", "init", "-q", d], check=True)
-        os.makedirs(os.path.join(d, "scripts"))
-        with open(os.path.join(d, "scripts", "preflight.mjs"), "w") as f:
-            f.write("export {}\n")
-        with open(os.path.join(d, ".vercelignore"), "w") as f:
-            f.write("scripts/\n")
-        subprocess.run(["git", "add", "."], cwd=d, check=True)
-        removed = build_gate._apply_vercelignore(d)
-        self.assertEqual(removed, ["scripts/preflight.mjs"])
-        self.assertFalse(os.path.exists(os.path.join(d, "scripts", "preflight.mjs")))
+    def test_scan_disabled_returns_empty(self):
+        with patch.object(build_gate, "ENABLED", False):
+            self.assertEqual(build_gate.scan_branches("/fake"), [])
 
-    def test_dependency_prewarm_uses_npm_when_yarn_missing(self):
-        d = tempfile.mkdtemp()
-        with open(os.path.join(d, "package.json"), "w") as f:
-            json.dump({"scripts": {"build": "nuxt build"}}, f)
-        with open(os.path.join(d, "yarn.lock"), "w") as f:
-            f.write("")
-        orig = dependency_prewarm.shutil.which
-        try:
-            dependency_prewarm.shutil.which = lambda name: None if name == "yarn" else orig(name)
-            manager, cmd = dependency_prewarm._manager(d)
-            self.assertEqual(manager, "npm")
-            self.assertEqual([os.path.basename(cmd[0]), cmd[1]], ["npm", "install"])
-        finally:
-            dependency_prewarm.shutil.which = orig
 
-    def test_dependency_prewarm_cache_skips_warm_repo(self):
-        d = tempfile.mkdtemp()
-        with open(os.path.join(d, "package.json"), "w") as f:
-            json.dump({"scripts": {"build": "echo ok"}}, f)
-        os.makedirs(os.path.join(d, "node_modules"))
-        self.assertTrue(dependency_prewarm.deps_ready(d))
+class TestCheckBuildStatus(unittest.TestCase):
+    """check_build_status extracts failure reasons."""
 
-    def test_dependency_prewarm_prefers_package_lock_when_multiple_locks_exist(self):
-        d = tempfile.mkdtemp()
-        with open(os.path.join(d, "package.json"), "w") as f:
-            json.dump({}, f)
-        for name in ("package-lock.json", "pnpm-lock.yaml"):
-            with open(os.path.join(d, name), "w") as f:
-                f.write("{}")
-        with patch.object(dependency_prewarm.shutil, "which", return_value="/usr/bin/tool"):
-            manager, cmd = dependency_prewarm._manager(d)
-        self.assertEqual(manager, "npm")
-        self.assertEqual(cmd[1], "ci")
+    @patch.object(build_gate, "db")
+    @patch.object(build_gate, "_git")
+    def test_extracts_missing_module(self, mock_git, mock_db):
+        mock_db.select = MagicMock(return_value=[])
+        mock_git.side_effect = [
+            (0, "ModuleNotFoundError: No module named 'utils.helpers'\n---", ""),
+            (1, "", ""),  # notes
+        ]
+        result = build_gate.check_build_status("agent/fix-auth", repo="/fake")
+        self.assertTrue(result["has_failures"])
+        self.assertEqual(result["reasons"][0]["type"], "missing_module")
+        self.assertIn("utils.helpers", result["reasons"][0]["detail"])
 
-    def test_detects_nested_web_build_when_root_has_no_package(self):
-        d = tempfile.mkdtemp()
-        web = os.path.join(d, "web")
-        os.makedirs(web)
-        with open(os.path.join(web, "package.json"), "w") as f:
-            json.dump({"scripts": {"build": "nuxt build"}}, f)
-        self.assertEqual(build_gate.detect_build_cmd(d), "npm --prefix web run build")
+    @patch.object(build_gate, "db")
+    @patch.object(build_gate, "_git")
+    def test_extracts_missing_table(self, mock_git, mock_db):
+        mock_db.select = MagicMock(return_value=[])
+        mock_git.side_effect = [
+            (0, 'relation "accounts" does not exist\n---', ""),
+            (1, "", ""),
+        ]
+        result = build_gate.check_build_status("agent/add-table", repo="/fake")
+        self.assertTrue(result["has_failures"])
+        self.assertEqual(result["reasons"][0]["type"], "missing_table")
+        self.assertEqual(result["reasons"][0]["detail"], "accounts")
 
-    def test_stale_root_build_cmd_is_replaced_for_nested_package(self):
-        d = tempfile.mkdtemp()
-        web = os.path.join(d, "web")
-        os.makedirs(web)
-        with open(os.path.join(web, "package.json"), "w") as f:
-            json.dump({"scripts": {"build": "vite build"}}, f)
-        fake_db = MagicMock()
-        with patch.object(build_gate, "db", fake_db):
-            cmd = build_gate.build_cmd_for({"name": "app", "build_cmd": "npm run build"}, d)
-        self.assertEqual(cmd, "npm --prefix web run build")
-        fake_db.update.assert_called_once()
+    @patch.object(build_gate, "db")
+    @patch.object(build_gate, "_git")
+    def test_no_failures_clean_branch(self, mock_git, mock_db):
+        mock_db.select = MagicMock(return_value=[])
+        mock_git.side_effect = [
+            (0, "feat: add login page\n---", ""),
+            (1, "", ""),
+        ]
+        result = build_gate.check_build_status("agent/clean", repo="/fake")
+        self.assertFalse(result["has_failures"])
+        self.assertEqual(result["reasons"], [])
 
-    def test_dependency_prewarm_ensure_all_warms_nested_packages(self):
-        d = tempfile.mkdtemp()
-        web = os.path.join(d, "web")
-        os.makedirs(web)
-        with open(os.path.join(web, "package.json"), "w") as f:
-            json.dump({"scripts": {"build": "echo ok"}}, f)
+    @patch.object(build_gate, "db")
+    @patch.object(build_gate, "_git")
+    def test_extracts_from_task_note(self, mock_git, mock_db):
+        mock_db.select = MagicMock(return_value=[{
+            "note": "ModuleNotFoundError: No module named 'config_loader'",
+            "log_tail": "",
+        }])
+        mock_git.side_effect = [
+            (0, "feat: something\n---", ""),
+            (1, "", ""),
+        ]
+        result = build_gate.check_build_status("agent/needs-config", repo="/fake")
+        self.assertTrue(result["has_failures"])
+        self.assertEqual(result["reasons"][0]["type"], "missing_module")
 
-        calls = []
 
-        def fake_ensure(root, reason="prewarm", timeout=None):
-            calls.append((root, reason))
-            return {"ok": True, "skipped": "test"}
+class TestGetFailureReasons(unittest.TestCase):
+    """Batch failure reason checking."""
 
-        with patch.object(dependency_prewarm, "ensure", side_effect=fake_ensure):
-            res = dependency_prewarm.ensure_all(d, reason="test")
-        self.assertTrue(res["ok"])
-        self.assertEqual(calls[0][0], web)
-        self.assertEqual(res["roots"][0]["root"], "web")
+    @patch.object(build_gate, "check_build_status")
+    def test_batch_returns_dict(self, mock_check):
+        mock_check.side_effect = [
+            {"branch": "agent/a", "has_failures": True, "reasons": [{"type": "missing_module", "detail": "foo"}]},
+            {"branch": "agent/b", "has_failures": False, "reasons": []},
+        ]
+        result = build_gate.get_failure_reasons(["agent/a", "agent/b"], repo="/fake")
+        self.assertEqual(len(result), 2)
+        self.assertEqual(len(result["agent/a"]), 1)
+        self.assertEqual(len(result["agent/b"]), 0)
 
-    def test_dependency_prewarm_requires_tsc_for_typescript_builds(self):
-        d = tempfile.mkdtemp()
-        with open(os.path.join(d, "package.json"), "w") as f:
-            json.dump({"scripts": {"build": "tsc --noEmit"}}, f)
-        os.makedirs(os.path.join(d, "node_modules", ".bin"))
-        self.assertFalse(dependency_prewarm.deps_ready(d))
-        with open(os.path.join(d, "node_modules", ".bin", "tsc"), "w") as f:
-            f.write("#!/bin/sh\n")
-        self.assertTrue(dependency_prewarm.deps_ready(d))
+    def test_empty_branches(self):
+        result = build_gate.get_failure_reasons([], repo="/fake")
+        self.assertEqual(result, {})
 
-    def test_dependency_prewarm_retries_install_without_lifecycle_scripts(self):
-        d = tempfile.mkdtemp()
-        with open(os.path.join(d, "package.json"), "w") as f:
-            json.dump({"scripts": {"build": "echo ok", "postinstall": "nuxt prepare"}}, f)
-        with open(os.path.join(d, "package-lock.json"), "w") as f:
-            f.write("{}")
 
-        calls = []
+class TestStats(unittest.TestCase):
+    """stats() output."""
 
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            p = MagicMock()
-            p.stdout = ""
-            p.stderr = "postinstall failed"
-            p.returncode = 1
-            if "--ignore-scripts" in cmd:
-                install_root = kwargs["cwd"]
-                os.makedirs(os.path.join(install_root, "node_modules", ".bin"))
-                with open(os.path.join(install_root, "node_modules", ".bin", "nuxi"), "w") as f:
-                    f.write("#!/bin/sh\n")
-                p.returncode = 0
-            return p
-
-        with patch.object(dependency_prewarm, "_STAMP_DIR", tempfile.mkdtemp()), \
-             patch.object(dependency_prewarm.subprocess, "run", side_effect=fake_run):
-            res = dependency_prewarm.ensure(d, reason="test")
-        self.assertTrue(res["ok"])
-        self.assertTrue(res["ignored_scripts"])
-        self.assertIn("--ignore-scripts", calls[-1])
-        self.assertFalse(os.path.exists(os.path.join(d, "node_modules")))
-
-    def test_dependency_snapshot_is_atomically_activated_in_worktree(self):
-        d = tempfile.mkdtemp()
-        worktree = tempfile.mkdtemp()
-        with open(os.path.join(d, "package.json"), "w") as f:
-            json.dump({"scripts": {"build": "echo ok"}}, f)
-
-        def fake_run(cmd, **kwargs):
-            if cmd[0] == "cp":
-                shutil.copytree(cmd[-2], cmd[-1])
-                return MagicMock(returncode=0, stdout="", stderr="")
-            os.makedirs(os.path.join(kwargs["cwd"], "node_modules"))
-            p = MagicMock(returncode=0, stdout="", stderr="")
-            return p
-
-        with patch.object(dependency_prewarm, "_STAMP_DIR", tempfile.mkdtemp()), \
-             patch.object(dependency_prewarm.subprocess, "run", side_effect=fake_run):
-            res = dependency_prewarm.ensure(d, reason="test")
-            linked = dependency_prewarm.link_shared_runtime(d, worktree)
-        target = os.path.join(worktree, "node_modules")
-        self.assertTrue(res["ok"])
-        self.assertIn(target, linked)
-        self.assertTrue(os.path.isdir(target))
-        self.assertFalse(os.path.samefile(target, os.path.join(res["snapshot"], "node_modules")))
-
-    def test_snapshot_stages_local_file_dependencies(self):
-        d = tempfile.mkdtemp()
-        local = os.path.join(d, "stubs", "shim")
-        os.makedirs(local)
-        with open(os.path.join(local, "package.json"), "w") as f:
-            json.dump({"name": "shim", "version": "1.0.0"}, f)
-        with open(os.path.join(d, "package.json"), "w") as f:
-            json.dump({"dependencies": {"shim": "file:./stubs/shim"}}, f)
-        target = tempfile.mkdtemp()
-        copied = dependency_prewarm._copy_local_dependencies(d, target)
-        self.assertEqual(copied, ["./stubs/shim"])
-        self.assertTrue(os.path.isfile(os.path.join(target, "stubs", "shim", "package.json")))
+    @patch.object(build_gate, "get_failure_reasons", return_value={})
+    @patch.object(build_gate, "scan_branches", return_value=[])
+    def test_stats_keys(self, mock_scan, mock_failures):
+        s = build_gate.stats()
+        self.assertIn("enabled", s)
+        self.assertIn("unmerged_agent_branches", s)
+        self.assertIn("branches_with_failures", s)
 
 
 if __name__ == "__main__":

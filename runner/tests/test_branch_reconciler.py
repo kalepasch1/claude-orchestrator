@@ -1,145 +1,158 @@
-"""Tests for branch_reconciler module."""
-
-import unittest
-import sys
 import os
+import sys
+import types
+import unittest
 from unittest.mock import patch, MagicMock
-from datetime import datetime, timezone, timedelta
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
-from runner.branch_reconciler import (
-    list_local_branches, list_remote_branches,
-    get_branch_age_days, reconcile, _run_git,
-    STALE_DAYS, REMOTE_NAME, PROTECTED_BRANCHES,
-)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# Provide stub db before importing
+_fake_db = types.ModuleType("db")
+_fake_db.select = MagicMock(return_value=[])
+_fake_db.insert = MagicMock()
+_fake_db.update = MagicMock()
+sys.modules.setdefault("db", _fake_db)
 
-class TestListLocalBranches(unittest.TestCase):
-    @patch("runner.branch_reconciler._run_git")
-    def test_parses_branches(self, mock_git):
-        mock_git.return_value = "main\nfeature-a\nfix-bug"
-        result = list_local_branches()
-        self.assertEqual(result, ["main", "feature-a", "fix-bug"])
-
-    @patch("runner.branch_reconciler._run_git")
-    def test_empty_output(self, mock_git):
-        mock_git.return_value = ""
-        self.assertEqual(list_local_branches(), [])
+import branch_reconciler
+import build_gate
 
 
-class TestListRemoteBranches(unittest.TestCase):
-    @patch("runner.branch_reconciler._run_git")
-    def test_strips_remote_prefix(self, mock_git):
-        mock_git.return_value = "origin/main\norigin/feature-b\norigin/HEAD -> origin/main"
-        result = list_remote_branches()
-        self.assertIn("main", result)
-        self.assertIn("feature-b", result)
-        self.assertNotIn("HEAD", str(result))
+class TestClusterByDependency(unittest.TestCase):
+    """Clustering groups branches by same missing dependency."""
 
-    @patch("runner.branch_reconciler._run_git")
-    def test_empty(self, mock_git):
-        mock_git.return_value = ""
-        self.assertEqual(list_remote_branches(), [])
+    def test_groups_by_same_module(self):
+        failures = [
+            {"branch": "agent/a", "has_failures": True,
+             "reasons": [{"type": "missing_module", "detail": "utils.helpers"}]},
+            {"branch": "agent/b", "has_failures": True,
+             "reasons": [{"type": "missing_module", "detail": "utils.helpers"}]},
+            {"branch": "agent/c", "has_failures": True,
+             "reasons": [{"type": "missing_module", "detail": "config_loader"}]},
+        ]
+        clusters = branch_reconciler.cluster_by_dependency(failures)
+        self.assertIn("missing_module:utils.helpers", clusters)
+        self.assertEqual(len(clusters["missing_module:utils.helpers"]), 2)
+        self.assertIn("missing_module:config_loader", clusters)
+        self.assertEqual(len(clusters["missing_module:config_loader"]), 1)
+
+    def test_groups_by_missing_table(self):
+        failures = [
+            {"branch": "agent/x", "has_failures": True,
+             "reasons": [{"type": "missing_table", "detail": "accounts"}]},
+            {"branch": "agent/y", "has_failures": True,
+             "reasons": [{"type": "missing_table", "detail": "accounts"}]},
+        ]
+        clusters = branch_reconciler.cluster_by_dependency(failures)
+        self.assertIn("missing_table:accounts", clusters)
+        self.assertEqual(len(clusters["missing_table:accounts"]), 2)
+
+    def test_no_reasons_goes_to_unknown(self):
+        failures = [
+            {"branch": "agent/z", "has_failures": False, "reasons": []},
+        ]
+        clusters = branch_reconciler.cluster_by_dependency(failures)
+        self.assertIn("unknown", clusters)
+
+    def test_empty_input(self):
+        self.assertEqual(branch_reconciler.cluster_by_dependency([]), {})
+        self.assertEqual(branch_reconciler.cluster_by_dependency(None), {})
+
+    def test_priority_selects_actionable_type(self):
+        """When a branch has both missing_module and type_error, cluster by missing_module."""
+        failures = [
+            {"branch": "agent/multi", "has_failures": True,
+             "reasons": [
+                 {"type": "type_error", "detail": "TypeError: bad arg"},
+                 {"type": "missing_module", "detail": "core.engine"},
+             ]},
+        ]
+        clusters = branch_reconciler.cluster_by_dependency(failures)
+        self.assertIn("missing_module:core.engine", clusters)
+        self.assertNotIn("type_error", str(list(clusters.keys())))
 
 
-class TestGetBranchAgeDays(unittest.TestCase):
-    @patch("runner.branch_reconciler._run_git")
-    def test_recent_branch(self, mock_git):
-        now = int(datetime.now(timezone.utc).timestamp())
-        mock_git.return_value = str(now)
-        self.assertEqual(get_branch_age_days("main"), 0)
+class TestGenerateProposals(unittest.TestCase):
+    """Proposal generation creates one task per cluster."""
 
-    @patch("runner.branch_reconciler._run_git")
-    def test_old_branch(self, mock_git):
-        old = int((datetime.now(timezone.utc) - timedelta(days=60)).timestamp())
-        mock_git.return_value = str(old)
-        self.assertEqual(get_branch_age_days("stale-branch"), 60)
+    def test_one_proposal_per_cluster(self):
+        clusters = {
+            "missing_module:utils.helpers": [
+                {"branch": "agent/a", "reasons": [{"type": "missing_module", "detail": "utils.helpers"}]},
+                {"branch": "agent/b", "reasons": [{"type": "missing_module", "detail": "utils.helpers"}]},
+            ],
+            "missing_table:accounts": [
+                {"branch": "agent/c", "reasons": [{"type": "missing_table", "detail": "accounts"}]},
+            ],
+        }
+        proposals = branch_reconciler.generate_proposals(clusters)
+        self.assertEqual(len(proposals), 2)
+        slugs = [p["proposal"]["slug"] for p in proposals]
+        self.assertTrue(any("utils-helpers" in s for s in slugs))
+        self.assertTrue(any("accounts" in s for s in slugs))
 
-    @patch("runner.branch_reconciler._run_git")
-    def test_invalid_output(self, mock_git):
-        mock_git.return_value = "not-a-number"
-        self.assertEqual(get_branch_age_days("bad"), -1)
+    def test_proposal_has_required_keys(self):
+        clusters = {
+            "missing_module:foo": [
+                {"branch": "agent/x", "reasons": [{"type": "missing_module", "detail": "foo"}]},
+            ],
+        }
+        proposals = branch_reconciler.generate_proposals(clusters)
+        p = proposals[0]
+        self.assertIn("dependency_key", p)
+        self.assertIn("affected_branches", p)
+        self.assertIn("proposal", p)
+        self.assertIn("slug", p["proposal"])
+        self.assertIn("prompt", p["proposal"])
+        self.assertEqual(p["proposal"]["kind"], "foundation")
+
+    def test_empty_clusters(self):
+        self.assertEqual(branch_reconciler.generate_proposals({}), [])
+        self.assertEqual(branch_reconciler.generate_proposals(None), [])
 
 
 class TestReconcile(unittest.TestCase):
-    @patch("runner.branch_reconciler.get_branch_age_days")
-    @patch("runner.branch_reconciler._run_git")
-    @patch("runner.branch_reconciler.list_remote_branches")
-    @patch("runner.branch_reconciler.list_local_branches")
-    def test_orphaned_local(self, mock_local, mock_remote, mock_git, mock_age):
-        mock_local.return_value = ["main", "feature-x"]
-        mock_remote.return_value = ["main"]
-        mock_age.return_value = 5
-        mock_git.return_value = "abc123"
-        result = reconcile()
-        self.assertIn("feature-x", result["orphaned_local"])
+    """End-to-end reconcile orchestration."""
 
-    @patch("runner.branch_reconciler.get_branch_age_days")
-    @patch("runner.branch_reconciler._run_git")
-    @patch("runner.branch_reconciler.list_remote_branches")
-    @patch("runner.branch_reconciler.list_local_branches")
-    def test_orphaned_remote(self, mock_local, mock_remote, mock_git, mock_age):
-        mock_local.return_value = ["main"]
-        mock_remote.return_value = ["main", "remote-only"]
-        mock_age.return_value = 5
-        mock_git.return_value = "abc123"
-        result = reconcile()
-        self.assertIn("remote-only", result["orphaned_remote"])
+    @patch.object(branch_reconciler, "scan_unmerged")
+    def test_reconcile_end_to_end(self, mock_scan):
+        mock_scan.return_value = [
+            {"branch": "agent/a", "has_failures": True,
+             "reasons": [{"type": "missing_module", "detail": "core.db"}]},
+            {"branch": "agent/b", "has_failures": True,
+             "reasons": [{"type": "missing_module", "detail": "core.db"}]},
+            {"branch": "agent/c", "has_failures": False, "reasons": []},
+        ]
+        result = branch_reconciler.reconcile()
+        self.assertEqual(result["branches_scanned"], 3)
+        self.assertEqual(result["branches_with_failures"], 2)
+        self.assertEqual(len(result["proposals"]), 1)
 
-    @patch("runner.branch_reconciler.get_branch_age_days")
-    @patch("runner.branch_reconciler._run_git")
-    @patch("runner.branch_reconciler.list_remote_branches")
-    @patch("runner.branch_reconciler.list_local_branches")
-    def test_conflicting_branches(self, mock_local, mock_remote, mock_git, mock_age):
-        mock_local.return_value = ["feature-a"]
-        mock_remote.return_value = ["feature-a"]
-        mock_age.return_value = 5
-        mock_git.side_effect = lambda args, cwd=None: (
-            "aaa" if "feature-a" == args[-1] else "bbb"
-        )
-        result = reconcile()
-        self.assertEqual(len(result["conflicting"]), 1)
-
-    @patch("runner.branch_reconciler.get_branch_age_days")
-    @patch("runner.branch_reconciler._run_git")
-    @patch("runner.branch_reconciler.list_remote_branches")
-    @patch("runner.branch_reconciler.list_local_branches")
-    def test_stale_detected(self, mock_local, mock_remote, mock_git, mock_age):
-        mock_local.return_value = ["old-branch"]
-        mock_remote.return_value = []
-        mock_age.return_value = 60
-        mock_git.return_value = ""
-        result = reconcile()
-        stale_names = [s["branch"] for s in result["stale"]]
-        self.assertIn("old-branch", stale_names)
-
-    @patch("runner.branch_reconciler.get_branch_age_days")
-    @patch("runner.branch_reconciler._run_git")
-    @patch("runner.branch_reconciler.list_remote_branches")
-    @patch("runner.branch_reconciler.list_local_branches")
-    def test_report_structure(self, mock_local, mock_remote, mock_git, mock_age):
-        mock_local.return_value = ["main"]
-        mock_remote.return_value = ["main"]
-        mock_age.return_value = 1
-        mock_git.return_value = "same"
-        result = reconcile()
-        for key in ("orphaned_local", "orphaned_remote", "stale",
-                     "conflicting", "protected", "total_local", "total_remote"):
-            self.assertIn(key, result)
+    def test_reconcile_disabled(self):
+        with patch.object(branch_reconciler, "ENABLED", False):
+            result = branch_reconciler.reconcile()
+            self.assertEqual(result["branches_scanned"], 0)
+            self.assertIn("skipped", result)
 
 
-class TestConfig(unittest.TestCase):
-    def test_no_hardcoded_secrets(self):
-        """Verify no secrets/credentials in module source."""
-        import inspect
-        source = inspect.getsource(
-            sys.modules["runner.branch_reconciler"]
-        )
-        for pattern in ["password", "token", "secret", "api_key", "credential"]:
-            # Should only appear in comments/docstrings about env vars, not as values
-            self.assertNotIn(f'= "{pattern}', source.lower())
-            self.assertNotIn(f"= '{pattern}", source.lower())
+class TestStats(unittest.TestCase):
+    """Stats output."""
+
+    @patch.object(branch_reconciler, "reconcile")
+    def test_stats_keys(self, mock_reconcile):
+        mock_reconcile.return_value = {
+            "branches_scanned": 5,
+            "branches_with_failures": 2,
+            "clusters": {"a": [], "b": []},
+            "proposals": [{"p": 1}, {"p": 2}],
+        }
+        s = branch_reconciler.stats()
+        self.assertIn("enabled", s)
+        self.assertIn("branches_scanned", s)
+        self.assertIn("cluster_count", s)
+        self.assertIn("proposal_count", s)
+        self.assertEqual(s["cluster_count"], 2)
+        self.assertEqual(s["proposal_count"], 2)
 
 
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)
