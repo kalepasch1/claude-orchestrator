@@ -1,19 +1,31 @@
-# Resource Governor — Environment Variables Quick Reference
+# Resource Governor — Quick Reference
 
-The resource governor reads all tunables from environment variables on every
-call (not frozen at import). This ensures fleet-wide config pushes via
-`fleet_control.load_config()` take effect immediately without process restart.
+## Overview
+`runner/resource_governor.py` monitors disk and RAM pressure on fleet Macs
+and dynamically throttles task concurrency to keep machines healthy.
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `MAX_PARALLEL_CEILING` | `12` | Upper bound on concurrent task lanes |
-| `PER_TASK_GB` | `2` | RAM headroom reserved per running task |
-| `RAM_FLOOR_GB` | `4` | Minimum free RAM before throttling kicks in |
-| `DISK_SOFT_PCT` | `85` | Disk usage % that triggers soft throttle |
-| `DISK_HARD_PCT` | `95` | Disk usage % that triggers hard prune + throttle |
-| `ORCH_EVENT_FILE_SIZE_MB` | `100` | Max size per daily JSONL event file |
-| `ORCH_EVENT_BACKUPS_PER_DAY` | `3` | Rotated backups kept per day |
+## Key Thresholds (all read live from env via fleet_control)
 
-All values are re-read live from `os.environ` on each governor cycle so that
-centrally pushed tuning (via `fleet_config` table → `fleet_control.py`) is
-picked up without restarting the runner process.
+| Env Var               | Default | Effect                                      |
+|-----------------------|---------|---------------------------------------------|
+| MAX_PARALLEL_CEILING  | 12      | Hard cap on concurrent tasks                |
+| DISK_SOFT_PCT         | 80      | Triggers automatic pruning                  |
+| DISK_HARD_PCT         | 90      | Throttles to 1 task + emits alert           |
+| RAM_HARD_PCT          | 82      | Aggressive throttling engages               |
+| RAM_FLOOR_GB          | 2.0     | Pauses all new claims below this free RAM   |
+| PER_TASK_GB           | 0.15    | Reserved headroom per concurrent task       |
+
+## Why Live Reads Matter
+All thresholds are read from `os.environ` on every call (not frozen at import).
+This ensures `fleet_control.load_config()` pushes take effect without restarting
+the runner process. See the 2026-07-11 comment block in resource_governor.py for
+the root-cause analysis of the Mac 2 stale-ceiling incident.
+
+## Pruning Opt-Ins
+
+| Env Var             | Default | What it prunes                  |
+|---------------------|---------|----------------------------------|
+| LOG_KEEP_DAYS       | 7       | Logs older than N days           |
+| PRUNE_NODE_MODULES  | false   | node_modules in worktrees        |
+| PRUNE_DOCKER        | false   | Dangling Docker images           |
+| PRUNE_LIB_CACHES    | false   | ~/Library/Caches                 |
