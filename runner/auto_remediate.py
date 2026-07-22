@@ -494,16 +494,14 @@ def _decompose(task, note):
         return None
 
 
-def _spawn_subtasks(task, subs, return_ids=False):
-    """Create child tasks for a decomposed parent.
-
-    Returns count actually created, or (count, [child_ids]) if return_ids=True.
-    """
+def _spawn_subtasks(task, subs):
+    """Create child tasks for a decomposed parent. Returns count actually created.
+    FIXED 2026-07-11: quality gate rejects sub-tasks < 80 chars or missing action verbs."""
+    ACTION_WORDS = re.compile(r"\b(add|create|implement|fix|update|write|modify|remove|refactor|replace|extract|move|rename|delete|configure|set up|integrate|convert|wrap|define|build|test|validate|ensure|return|handle|parse|send|fetch|call|check)\b", re.I)
     made = 0
     child_ids = []
     for i, s in enumerate(subs):
         prompt_text = str(s.get("prompt") or "").strip()
-        # Quality gate: reject vague/empty sub-task prompts
         if len(prompt_text) < 80 or not ACTION_WORDS.search(prompt_text):
             continue
         child = f"{task['slug']}-{s['title']}"[:80]
@@ -527,14 +525,7 @@ def _spawn_subtasks(task, subs, return_ids=False):
 
 
 def _already_decomposed(task, note):
-    """Depth guard: a task that was itself a decomposition product and STILL can't build is genuinely
-    stuck — don't recurse forever.
-
-    FIXED 2026-07-11: also counts '-slice-' depth, not just '-part'. Previously,
-    task_slicer created -slice-N children which bypassed this guard (it only checked
-    -part), allowing auto_remediate to decompose them further — creating a cascading
-    amplification loop that produced depth-3+ nesting and 2,700+ over-decomposed tasks.
-    """
+    """Depth guard — FIXED 2026-07-11: counts both -part and -slice- depth."""
     slug = task.get("slug") or ""
     decomposition_depth = slug.count("-part") + slug.count("-slice-")
     return "auto-decomposed from" in (note or "") or decomposition_depth >= 2

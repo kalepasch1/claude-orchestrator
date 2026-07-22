@@ -152,16 +152,7 @@ def _ensure_branch(task):
 
 
 def pre_claim_hook(task):
-    """Inject patch template into the in-memory task dict for the current run.
-
-    FIXED 2026-07-11: previously wrote the mutated prompt back to the DB via
-    db.update(), permanently corrupting the original prompt.  Tasks that failed
-    and retried accumulated layers of PATCH TEMPLATE boilerplate until the
-    original instructions were buried under hex-hash keyword salad.  1,801 tasks
-    were quarantined as unexecutable garbage from this bug.
-
-    Now: template is prepended in-memory only — the DB prompt stays clean.
-    """
+    """FIXED 2026-07-11: removed db.update() that permanently corrupted prompts."""
     try:
         if not isinstance(task, dict) or MARK in str(task.get("prompt") or ""):
             return task
