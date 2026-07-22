@@ -85,7 +85,11 @@ os.makedirs(HOME, exist_ok=True)
 
 
 def _event(kind, value=None, detail="", action=""):
-    """Log a resource event to the DB (fail-soft — never raises)."""
+    """Log a resource event to the database for trending and alerting.
+
+    Fail-soft: swallows all exceptions so monitoring never disrupts the runner.
+    Detail is truncated to 500 chars to stay within column limits.
+    """
     try:
         db.insert("resource_events", {"kind": kind, "value": value, "detail": detail[:500], "action": action})
     except Exception:
@@ -93,12 +97,7 @@ def _event(kind, value=None, detail="", action=""):
 
 
 def disk_pct(path="/"):
-    """Return (used_percent, free_gb) for the filesystem at *path*.
-
-    Used by can_claim() for the real-time gate and by govern() for the periodic sweep.
-    The predictive trending in govern() fits a line to recent resource_events rows
-    containing these values; if the projected usage would breach DISK_HARD_PCT within
-    PREDICT_DISK_WINDOW_H hours, it triggers preemptive pruning and throttle-down."""
+    """Return (used_percent, free_gb) for the given mount point."""
     u = shutil.disk_usage(path)
     return round(u.used / u.total * 100, 1), round(u.free / 1e9, 1)
 
