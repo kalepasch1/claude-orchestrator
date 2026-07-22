@@ -40,6 +40,7 @@ import os, sys, re, glob, json, datetime, shutil
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import intake_gate
+import pipeline_contract
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 INTAKE = os.path.abspath(os.path.join(HERE, "..", "intake"))
@@ -160,6 +161,7 @@ def ingest_file(path, projects_by_name):
         if not ok:
             print(f"intake: {t['slug']} rejected — {reason}")
             skipped += 1; continue
+        raw_prompt = (t["prompt"] + (f"\n\nProof: {t['proof']}" if t["proof"] else ""))
         row = {"project_id": proj["id"], "slug": t["slug"],
                "prompt": pipeline_contract.wrap_prompt(raw_prompt, project=t["project"],
                                                         kind="build", source="intake-file",

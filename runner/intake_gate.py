@@ -16,17 +16,44 @@ Filters applied in order (first rejection wins):
 INTAKE_DRY_RUN=1: logs all rejections but always returns ok=True (preview mode).
 
 Returns (ok: bool, reason: str) from should_queue().
+
+Security invariants:
+  - Env var floats are parsed defensively; invalid values fall back to safe defaults.
+  - VALUE_THRESHOLD is clamped to [0.0, 100.0]; SIM_THRESHOLD to (0.0, 1.0].
+  - Prompts are truncated to _EMBED_PROMPT_CHARS before reaching the embedding API.
+  - Embeddings only run when context_embed.ENABLED (provider + ORCH_PAID_EMBED=true).
 """
-import os, sys, math
+import math
+import os
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
-VALUE_THRESHOLD = float(os.environ.get("INTAKE_VALUE_THRESHOLD", "0.10"))
+
+def _safe_float(env_key, default, lo=None, hi=None):
+    """Parse an env-var float; return default on ValueError. Clamp to [lo, hi] if given."""
+    raw = os.environ.get(env_key, "")
+    try:
+        val = float(raw) if raw else default
+    except ValueError:
+        val = default
+    if lo is not None and val < lo:
+        val = lo
+    if hi is not None and val > hi:
+        val = hi
+    return val
+
+
+VALUE_THRESHOLD = _safe_float("INTAKE_VALUE_THRESHOLD", 0.10, lo=0.0, hi=100.0)
+SIM_THRESHOLD   = _safe_float("INTAKE_SIM_THRESHOLD",   0.92, lo=0.01, hi=1.0)
+_DEFAULT_VALUE  = _safe_float("INTAKE_DEFAULT_VALUE_USD", 0.50, lo=0.0)
+
 EMBEDDING_DEDUP = os.environ.get("INTAKE_EMBEDDING_DEDUP", "").lower() in ("1", "true", "yes")
-DRY_RUN = os.environ.get("INTAKE_DRY_RUN", "").lower() in ("1", "true", "yes")
-SIM_THRESHOLD = float(os.environ.get("INTAKE_SIM_THRESHOLD", "0.92"))
-_DEFAULT_VALUE = float(os.environ.get("INTAKE_DEFAULT_VALUE_USD", "0.50"))
-_MIN_PROMPT_LEN = 30  # prompts shorter than this get zero value
+DRY_RUN         = os.environ.get("INTAKE_DRY_RUN", "").lower() in ("1", "true", "yes")
+
+_MIN_PROMPT_LEN  = 30    # prompts shorter than this get zero value
+_EMBED_PROMPT_CHARS = 2000  # truncate before sending to embedding API
 
 
 def estimate_value(task, proj):
@@ -35,14 +62,15 @@ def estimate_value(task, proj):
     Priority: explicit value_usd field > project MRR signal > prompt-quality heuristic.
     """
     if task.get("value_usd") is not None:
-        return float(task["value_usd"])
+        try:
+            return float(task["value_usd"])
+        except (TypeError, ValueError):
+            pass
     if task.get("material"):
         return 1.0
     mrr = _project_mrr(proj)
     if mrr > 0:
-        # log10(1+mrr)*0.1 yields ~$0.29 at MRR=$100, ~$0.59 at MRR=$10k
         return math.log10(1 + mrr) * 0.1
-    # Heuristic: a meaningful task needs a substantive prompt
     if len((task.get("prompt") or "").strip()) < _MIN_PROMPT_LEN:
         return 0.0
     return _DEFAULT_VALUE
@@ -92,7 +120,9 @@ def _similar_exists(prompt, project_id):
         import context_embed
         if not context_embed.ENABLED:
             return False
-        vecs = context_embed._batch_embed([prompt])
+        # Truncate before sending to the embedding API — limits data exposure.
+        safe_prompt = prompt[:_EMBED_PROMPT_CHARS]
+        vecs = context_embed._batch_embed([safe_prompt])
         if not vecs:
             return False
         v = vecs[0]
@@ -103,7 +133,7 @@ def _similar_exists(prompt, project_id):
             "limit": "300",
         }) or []
         for t in active:
-            other = (t.get("prompt") or "").strip()
+            other = (t.get("prompt") or "").strip()[:_EMBED_PROMPT_CHARS]
             if not other:
                 continue
             evs = context_embed._batch_embed([other])
