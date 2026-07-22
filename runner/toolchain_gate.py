@@ -153,7 +153,11 @@ def is_ready_cached(project_id):
     is no cached entry yet so a cold start or brand-new project never gets stuck blocked on
     missing data. This is what makes it safe to call on every claimed task without adding
     subprocess latency to the poll loop — the actual `npm --version`/`tsc --version` probing
-    only ever happens in the periodic job, never inline."""
+    only ever happens in the periodic job, never inline.
+
+    Set ORCH_DISABLE_TOOLCHAIN_GATE=1 to bypass entirely (always returns True)."""
+    if os.environ.get("ORCH_DISABLE_TOOLCHAIN_GATE", "").lower() in ("1", "true", "yes"):
+        return True
     try:
         state = _load_state()
         entry = state.get(project_id)
