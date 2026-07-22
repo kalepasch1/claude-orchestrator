@@ -1,66 +1,118 @@
-"""Tests for cx_calibration_budget."""
-import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+"""
+test_cx_calibration_budget.py - Brier-scored autonomy budget advisories.
 
-from cx_calibration_budget import (
-    VerticalSignal, allocate_calibration_budget,
-    score_urgency, should_trigger_calibration,
-)
+The module must write only the advisory owner_model key and an inbox note. It must never write the
+live autonomy_budget key owned by committees.tune_budget().
+"""
+import os, sys, unittest
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-
-def test_stable_verticals_get_no_budget():
-    signals = [
-        VerticalSignal("insurance", accuracy=0.92, sample_count=100, drift_score=0.1),
-        VerticalSignal("lending", accuracy=0.90, sample_count=50, drift_score=0.2),
-    ]
-    plan = allocate_calibration_budget(signals, total_budget_usd=100)
-    assert plan.verticals_needing_calibration == 0
-    assert plan.verticals_stable == 2
-    assert len(plan.allocations) == 0
+import cx_calibration_budget as cxb
+import db
 
 
-def test_low_accuracy_gets_budget():
-    signals = [
-        VerticalSignal("insurance", accuracy=0.70, sample_count=100, drift_score=0.1),
-        VerticalSignal("lending", accuracy=0.95, sample_count=100, drift_score=0.1),
-    ]
-    plan = allocate_calibration_budget(signals, total_budget_usd=100)
-    assert plan.verticals_needing_calibration == 1
-    assert plan.allocations[0].vertical == "insurance"
-    assert plan.allocations[0].budget_pct == 100.0
+class MockDB(unittest.TestCase):
+
+    def setUp(self):
+        self.orig = (db.select, db.insert)
+        self.inserts = []
+
+    def tearDown(self):
+        db.select, db.insert = self.orig
+
+    def install(self, scoreboard, budget=20):
+        def _select(table, params=None):
+            if table == "committee_scoreboard":
+                return list(scoreboard)
+            if table == "owner_model" and params and params.get("key") == "eq.autonomy_budget":
+                return [{"value": budget}]
+            return []
+        db.select = _select
+        db.insert = lambda table, row, upsert=False: self.inserts.append((table, row, upsert))
+
+    def advisory_insert(self):
+        return next(row for table, row, _ in self.inserts
+                    if table == "owner_model" and row.get("key") == cxb.ADVISORY_KEY)
+
+    def note_insert(self):
+        return next(row for table, row, _ in self.inserts if table == "approvals")
 
 
-def test_high_drift_gets_budget():
-    signals = [
-        VerticalSignal("insurance", accuracy=0.90, sample_count=100, drift_score=0.8),
-    ]
-    plan = allocate_calibration_budget(signals, total_budget_usd=100)
-    assert plan.verticals_needing_calibration == 1
-    assert "drift" in plan.allocations[0].reason
+class TestRun(MockDB):
+
+    def test_good_brier_recommends_increase_without_live_budget_write(self):
+        self.install([
+            {"committee": "Growth", "brier": 0.10, "calls": 10},
+            {"committee": "Risk", "brier": 0.20, "calls": 10},
+        ], budget=20)
+        result = cxb.run()
+
+        self.assertEqual(result["weighted_brier"], 0.15)
+        self.assertEqual(result["adjustment"], 3)
+        self.assertEqual(result["recommended_budget"], 23)
+        self.assertEqual(self.advisory_insert()["value"], 3)
+        self.assertTrue(any(table == "owner_model" and row.get("key") == cxb.ADVISORY_KEY and upsert
+                            for table, row, upsert in self.inserts))
+        self.assertFalse(any(table == "owner_model" and row.get("key") == cxb.LIVE_BUDGET_KEY
+                             for table, row, _ in self.inserts))
+        self.assertIn("committees.tune_budget remains the sole writer",
+                      self.note_insert()["value"])
+
+    def test_bad_brier_recommends_decrease(self):
+        self.install([
+            {"committee": "General", "brier": 0.50, "calls": 6},
+            {"committee": "Security", "brier": 0.35, "calls": 4},
+        ], budget=12)
+        result = cxb.run()
+
+        self.assertEqual(result["weighted_brier"], 0.44)
+        self.assertEqual(result["adjustment"], -4)
+        self.assertEqual(result["recommended_budget"], 8)
+        self.assertIn("under-calibrated", self.note_insert()["why"])
+
+    def test_missing_brier_scores_write_neutral_advisory(self):
+        self.install([
+            {"committee": "NoBrier", "brier": None, "calls": 10},
+            {"committee": "NoCalls", "brier": 0.1, "calls": 0},
+        ], budget=20)
+        result = cxb.run()
+
+        self.assertIsNone(result["weighted_brier"])
+        self.assertEqual(result["calls"], 0)
+        self.assertEqual(result["adjustment"], 0)
+        self.assertEqual(result["recommended_budget"], 20)
+        self.assertEqual(self.advisory_insert()["value"], 0)
+
+    def test_empty_scoreboard_is_neutral(self):
+        self.install([], budget=20)
+        result = cxb.run()
+
+        self.assertEqual(result["committees"], 0)
+        self.assertEqual(result["adjustment"], 0)
+        self.assertEqual(result["recommended_budget"], 20)
+
+    def test_extreme_values_are_clamped_and_budget_is_bounded(self):
+        self.install([
+            {"committee": "ImpossibleLow", "brier": -10, "calls": 1},
+            {"committee": "ImpossibleHigh", "brier": 2, "calls": 9},
+        ], budget=7)
+        result = cxb.run()
+
+        self.assertEqual(result["weighted_brier"], 0.9)
+        self.assertEqual(result["adjustment"], -4)
+        self.assertEqual(result["recommended_budget"], cxb.MIN_BUDGET)
 
 
-def test_budget_proportional_to_urgency():
-    signals = [
-        VerticalSignal("insurance", accuracy=0.60, sample_count=100, drift_score=0.1),
-        VerticalSignal("lending", accuracy=0.80, sample_count=100, drift_score=0.1),
-    ]
-    plan = allocate_calibration_budget(signals, total_budget_usd=200)
-    assert len(plan.allocations) == 2
-    assert plan.allocations[0].budget_pct > plan.allocations[1].budget_pct
-    assert plan.allocations[0].priority == 1
+class TestPureHelpers(unittest.TestCase):
 
-
-def test_should_trigger():
-    stable = VerticalSignal("ok", accuracy=0.95, sample_count=100, drift_score=0.1)
-    unstable = VerticalSignal("bad", accuracy=0.70, sample_count=5, drift_score=0.5)
-    assert not should_trigger_calibration(stable)
-    assert should_trigger_calibration(unstable)
+    def test_adjustment_bands(self):
+        self.assertEqual(cxb._adjustment_for_brier(0.12), 5)
+        self.assertEqual(cxb._adjustment_for_brier(0.18), 3)
+        self.assertEqual(cxb._adjustment_for_brier(0.25), 1)
+        self.assertEqual(cxb._adjustment_for_brier(0.30), 0)
+        self.assertEqual(cxb._adjustment_for_brier(0.40), -2)
+        self.assertEqual(cxb._adjustment_for_brier(0.41), -4)
 
 
 if __name__ == "__main__":
-    test_stable_verticals_get_no_budget()
-    test_low_accuracy_gets_budget()
-    test_high_drift_gets_budget()
-    test_budget_proportional_to_urgency()
-    test_should_trigger()
-    print("All cx_calibration_budget tests passed")
+    unittest.main(verbosity=2)

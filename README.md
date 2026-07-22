@@ -70,6 +70,9 @@ CLAUDE_BIN=claude python3 runner/planner.py "Build X end to end" > tasks.yaml   
   telemetry, proposes orchestrator improvements as approval cards, and A/B-gates prompt
   changes before adoption. Never self-edits silently; material self-changes go through
   git + CI + your approval.
+- `cx_calibration_budget.py` — reads committee Brier scores and writes an advisory
+  `owner_model.autonomy_budget_brier_adj` plus an inbox note. It does not overwrite the
+  live `autonomy_budget` owned by `committees.tune_budget()`.
 
 **Web (`web/`)** — Nuxt + Tailwind dashboard: realtime tasks board, approval queue with
 **Why / Value / Risk / Alternatives**, queue-a-task form, spend-by-model, runner health.
