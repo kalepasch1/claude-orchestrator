@@ -46,6 +46,11 @@ if os.path.exists(_env_path):
 
 
 def _safe_import(name):
+    """Import a module by name, returning None on any failure.
+
+    Used to optionally pull in runner-internal modules (db, prompt_assembler,
+    etc.) that may not be available when called outside the runner venv.
+    """
     try:
         return __import__(name)
     except Exception:
@@ -53,7 +58,14 @@ def _safe_import(name):
 
 
 def get_vercel_config():
-    """Read Vercel token and project map from env + fleet_config."""
+    """Read Vercel token and project map from env + fleet_config.
+
+    Resolution order (first non-empty wins):
+      1. Environment variables: VERCEL_TOKEN, VERCEL_TEAM_ID, VERCEL_PROJECT_*
+      2. Supabase fleet_config table (via db module, if importable)
+
+    Returns dict with keys: token (str), team_id (str), project_map (dict).
+    """
     token = os.environ.get("VERCEL_TOKEN", "")
     team_id = os.environ.get("VERCEL_TEAM_ID", "")
     project_map = {}
