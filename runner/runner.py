@@ -194,39 +194,8 @@ def set_state(task_id: str, **kw) -> None:
     db.update("tasks", {"id": task_id}, kw)
     # Every non-running transition ends this executor's right to mutate the
     # branch. A crashed worker is covered by the server-side lease TTL.
-    if kw.get("state") in {"QUEUED", "DONE", "MERGED", "BLOCKED", "QUARANTINED", "RETRY"}:
+    if kw.get("state") in {"QUEUED", "DONE", "MERGED", "BLOCKED", "QUARANTINED"}:
         branch_lease.release(str(task_id))
-    # AUTO-INTEGRATE: whenever a task lands in DONE with an artifact_branch, ensure
-    # the merge train has a card for it.  Without this, tasks completed via cache-hit,
-    # replay, rotation, or any non-standard path silently stall in DONE forever —
-    # the root cause of 1,200+ orphaned DONE tasks discovered 2026-07-20.
-    if kw.get("state") == "DONE" and kw.get("artifact_branch"):
-        try:
-            task_row = db.select("tasks", {"select": "slug,project_id",
-                                           "id": f"eq.{task_id}", "limit": "1"})
-            if task_row:
-                _slug = task_row[0].get("slug", "")
-                _pid = task_row[0].get("project_id", "")
-                if _slug and _pid:
-                    _proj = projects(_pid)
-                    _pname = _proj.get("name", "") if _proj else ""
-                    if _pname:
-                        import merge_train as _mt
-                        _mt.ensure_integration_card(
-                            _pname, _slug,
-                            title=f"merge of {_slug}",
-                            decided_by="canonical-train:auto-set-state",
-                        )
-        except Exception as _e:
-            _log.debug("set_state auto-integrate failed for %s: %s", task_id, _e)
-
-
-def emit_task_log(slug, level, message):
-    """Emit a structured log entry to run_logs (Supabase Realtime pushes it to the dashboard)."""
-    try:
-        db.insert("run_logs", {"source": slug, "level": level, "message": str(message)[:2000]})
-    except Exception:
-        pass
 
 
 def _next_non_claude_coder(task, exclude=()):
@@ -869,12 +838,22 @@ def run_task(t):
             if acct:
                 POOL.record_use(acct)
             set_state(t["id"], state="RUNNING", model=visible_model, attempt=attempt,
-                      account=(acct or {}).get("name"), note=f"agentic coder: {coder}")
-            emit_task_log(slug, "info", f"attempt {attempt} started ({visible_model})")
-            subprocess.run([os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"), slug, base],
-                           cwd=repo, capture_output=True)
-            wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", slug)
-            env = dict(os.environ); env.update(POOL.env_for(acct))
+                      account=(acct or {}).get("name") or f"agentic:{coder}",
+                      note=f"agentic coder: {coder}")
+            try:
+                wt = worktree_isolation.ensure_task_worktree(
+                    repo, slug, base,
+                    os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"),
+                    task_id=str(t["id"]), lease_token=_branch_lease["token"],
+                )
+            except worktree_isolation.WorktreeIsolationError as e:
+                set_state(t["id"], state="RETRY", note=f"git-isolation blocked execution: {e}")
+                record(t, name, slug, kind, visible_model, acct, attempt,
+                       False, False, f"worktree isolation: {e}", t0)
+                return
+            env = dict(os.environ)
+            if acct:
+                env.update(POOL.env_for(acct))
             # inject this project's external-provider secrets (values never logged)
             try:
                 env.update(secrets_manager.inject_env(name))

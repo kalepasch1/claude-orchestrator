@@ -165,20 +165,191 @@ def _run_tests(repo, test_cmd, task=None):
     Uses continuous_test_runner for flake detection and result persistence.
     Returns (ok, tail-of-output).
     """
-    if not test_cmd:
-        return True, "no test_cmd configured"
-    # Use continuous_test_runner for flake-aware testing when available
     try:
-        result = continuous_test_runner.run_tests(repo, task=task, mode="merge-gate")
-        if result["passed"]:
-            tail = "green"
-            if result.get("flake"):
-                tail += " (flake detected, passed on retry)"
-            return True, tail
-        return False, result.get("output", "")[-600:].strip()
+        # find the merge-base commit
+        mb = _git(repo, "merge-base", branch, base)
+        if mb.returncode != 0:
+            return False
+        merge_base = mb.stdout.strip()
+        if not merge_base:
+            return False
+
+        # files changed on the branch side (merge-base..branch)
+        branch_diff = _git(repo, "diff", "--name-only", merge_base, branch)
+        base_diff = _git(repo, "diff", "--name-only", merge_base, base)
+        if branch_diff.returncode != 0 or base_diff.returncode != 0:
+            return False
+
+        branch_files = set(branch_diff.stdout.strip().splitlines())
+        base_files = set(base_diff.stdout.strip().splitlines())
+        conflicting = branch_files & base_files
+        if not conflicting:
+            return False  # no overlapping files — rebase should have succeeded, don't mask the real issue
+
+        # check all conflicting files can be auto-merged
+        file_contents = {}  # filepath -> (ancestor, branch_ver, base_ver)
+        for fp in conflicting:
+            ancestor = _git(repo, "show", f"{merge_base}:{fp}")
+            branch_ver = _git(repo, "show", f"{branch}:{fp}")
+            base_ver = _git(repo, "show", f"{base}:{fp}")
+            # any missing file (added/deleted on one side) — bail out, too complex
+            if ancestor.returncode != 0 or branch_ver.returncode != 0 or base_ver.returncode != 0:
+                return False
+            file_contents[fp] = (ancestor.stdout, branch_ver.stdout, base_ver.stdout)
+
+        # phase 1: check all files are mergeable before touching anything
+        for fp, (anc, bv, basev) in file_contents.items():
+            if not semantic_merge.can_auto_merge(anc, bv, basev, filepath=fp):
+                return False
+
+        # phase 2: merge all files
+        merged_contents = {}
+        for fp, (anc, bv, basev) in file_contents.items():
+            result = semantic_merge.semantic_merge(anc, bv, basev, filepath=fp)
+            if result.get("merged") is None:
+                return False
+            merged_contents[fp] = result["merged"]
+
+        # phase 3: create a new commit on branch that sits on base with merged content
+        # use a temporary worktree to avoid touching the main checkout
+        wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt",
+                          f"smerge-{branch.replace('/', '-')}")
+        try:
+            os.makedirs(os.path.dirname(wt), exist_ok=True)
+            added = subprocess.run(["git", "worktree", "add", "-f", wt, branch], cwd=repo,
+                                   capture_output=True, timeout=60)
+            if added.returncode != 0 or not os.path.isdir(wt):
+                return False
+
+            # reset the worktree branch to base (all base content), then overlay merged files
+            reset = subprocess.run(["git", "reset", "--hard", base], cwd=wt,
+                                   capture_output=True, timeout=30)
+            if reset.returncode != 0:
+                return False
+
+            # apply all branch-only changes (files branch touched that base didn't)
+            branch_only = branch_files - conflicting
+            for fp in branch_only:
+                bv = _git(repo, "show", f"{branch}:{fp}")
+                if bv.returncode != 0:
+                    return False
+                fp_abs = os.path.join(wt, fp)
+                os.makedirs(os.path.dirname(fp_abs), exist_ok=True)
+                with open(fp_abs, "w", errors="replace") as f:
+                    f.write(bv.stdout)
+                subprocess.run(["git", "add", fp], cwd=wt, capture_output=True)
+
+            # write merged content for conflicting files
+            for fp, content in merged_contents.items():
+                fp_abs = os.path.join(wt, fp)
+                os.makedirs(os.path.dirname(fp_abs), exist_ok=True)
+                with open(fp_abs, "w", errors="replace") as f:
+                    f.write(content)
+                subprocess.run(["git", "add", fp], cwd=wt, capture_output=True)
+
+            # commit
+            msg = f"train: semantic merge of {branch} onto {base} (auto-resolved {len(merged_contents)} file(s))"
+            commit = subprocess.run(["git", "commit", "--allow-empty", "-m", msg], cwd=wt,
+                                    capture_output=True, timeout=30)
+            if commit.returncode != 0:
+                return False
+            return True
+        finally:
+            try:
+                subprocess.run(["git", "worktree", "remove", "--force", wt], cwd=repo,
+                               capture_output=True, timeout=30)
+            except Exception:
+                pass
+    except Exception:
+        return False
+
+
+def _ensure_node_deps(repo, test_cmd=""):
+    """A node repo whose node_modules is missing makes every test/typecheck fail with
+    'cannot find module' — an ENVIRONMENT failure, not a code failure, that was TESTFAIL-ing
+    all JS/TS merges (2026-07-10: smarter 'cannot find module vue'). Lazily install deps once
+    per repo per process when they're absent. Idempotent; fail-soft (let the test surface the
+    real error if install fails).
+
+    2026-07-10: this walks the WHOLE repo tree and used to give each nested package.json its
+    own fresh MERGE_TRAIN_NPM_TIMEOUT (default 600s) budget. In a repo with several nested
+    packages, that's several independent 600s budgets stacked sequentially -- a single train
+    process (holding that repo's exclusive lock the entire time) sat idle for 74+ minutes
+    across a handful of installs, well past any one install's own timeout, blocking every
+    other project's merges in that same train run. Now enforces one CUMULATIVE budget
+    (MERGE_TRAIN_NPM_TOTAL_TIMEOUT, default 900s) across all installs triggered by a single
+    call, so a monorepo with many nested packages can't multiply timeouts into an effectively
+    unbounded hold on the repo lock."""
+    total_budget = float(os.environ.get("MERGE_TRAIN_NPM_TOTAL_TIMEOUT", "180"))
+    per_install_cap = int(os.environ.get("MERGE_TRAIN_NPM_TIMEOUT", "600"))
+    deadline = time.monotonic() + total_budget
+    # The gate runs in repo unless the command explicitly changes directory or
+    # uses npm --prefix. Walking every package in a monorepo hydrated unrelated
+    # examples/services and turned one branch check into a 15-minute lock hold.
+    roots = [repo]
+    for pattern in (r"(?:^|[;&])\s*cd\s+([^\s;&]+)", r"--prefix(?:=|\s+)([^\s;&]+)"):
+        for match in re.finditer(pattern, test_cmd or ""):
+            candidate = match.group(1).strip("'\"")
+            if not os.path.isabs(candidate):
+                candidate = os.path.join(repo, candidate)
+            if os.path.isdir(candidate):
+                roots.append(candidate)
+    roots = list(dict.fromkeys(os.path.realpath(root) for root in roots))
+    try:
+        for root in roots:
+            if (os.path.isfile(os.path.join(root, "package.json"))
+                    and not os.path.isdir(os.path.join(root, "node_modules"))):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break  # cumulative budget exhausted; leave any further packages uninstalled
+                cmd = "npm ci" if os.path.isfile(os.path.join(root, "package-lock.json")) else "npm install"
+                try:
+                    subprocess.run(["bash", "-lc", cmd], cwd=root, capture_output=True,
+                                   text=True, timeout=min(per_install_cap, remaining))
+                except subprocess.TimeoutExpired:
+                    # this one install is over budget -- move on rather than let a single
+                    # slow/hung install consume the entire remaining cumulative budget doing
+                    # nothing else useful.
+                    continue
     except Exception:
         pass
-    # Fallback to direct execution
+
+
+def _run_tests(repo, test_cmd, ref=None):
+    """Step 3: run the gate. Returns (ok, tail-of-output)."""
+    if not test_cmd:
+        return True, "no test_cmd configured"
+    if ref:
+        import shutil, tempfile
+        root = tempfile.mkdtemp(prefix="merge-qa-")
+        worktree = os.path.join(root, "candidate")
+        try:
+            added = _git(repo, "worktree", "add", "--detach", worktree, ref)
+            if added.returncode != 0:
+                return False, "could not create branch-exact QA worktree: " + (added.stderr or "")[-500:]
+            for shared in ("node_modules", ".env", ".env.local"):
+                src, dst = os.path.join(repo, shared), os.path.join(worktree, shared)
+                if os.path.exists(src) and not os.path.exists(dst):
+                    try: os.symlink(src, dst)
+                    except OSError: pass
+            return _run_tests(worktree, test_cmd)
+        finally:
+            _git(repo, "worktree", "remove", "--force", worktree)
+            shutil.rmtree(root, ignore_errors=True)
+    timeout = _test_timeout()
+    if "npm" in test_cmd or "vitest" in test_cmd or "vue-tsc" in test_cmd or "tsc" in test_cmd or "jest" in test_cmd:
+        # 2026-07-10: a leftover untracked compiled .js shadowing its .ts source (local build
+        # residue, invisible to git status) broke every test run touching it -- twice today,
+        # once at 10 files (beethoven, tracked -- needed a human) and once at 4106 (tomorrow,
+        # all untracked). This strips only the untracked kind before every test run so the
+        # gate can't be blocked by this class of bug again. See repo_hygiene.py.
+        try:
+            cleaned = repo_hygiene.clean_stray_js_duplicates(repo)
+            if cleaned:
+                print(f"merge_train: cleaned {len(cleaned)} stray untracked .js file(s) shadowing .ts in {repo}")
+        except Exception:
+            pass
+        _ensure_node_deps(repo, test_cmd)
     try:
         r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
                            text=True, timeout=timeout)
@@ -872,30 +1043,80 @@ def train_run():
         summary["projects"] += 1
         used = {"low": 0, "standard": 0, "sensitive": 0}
         scanned = 0
-        for card, slug, task, risk in _select_batch(group):
-            if used[risk] >= caps[risk] or scanned >= scan_cap:
-                continue
-            scanned += 1
-            summary["risk"][risk] += 1
-            outcome = _integrate_card(card, slug, task, proj)
-            if outcome in ATTEMPT_OUTCOMES:
-                used[risk] += 1
-            if outcome == "merged":
-                summary["merged"] += 1
-            elif outcome == "redo":
-                summary["redo"] += 1
-            elif outcome == "testfail":
-                summary["testfail"] += 1
-            elif outcome == "conflict":
-                summary["conflict"] += 1
-            else:
-                summary["skipped"] += 1
-    if _pm:
+        # CONCURRENCY FIX (2026-07-08 merge-stall root cause): train_run() can be invoked
+        # concurrently for the SAME project -- the 60s scheduler AND, inline, one call per
+        # worker thread the instant its task finishes (runner.py integrate() -> train_run()).
+        # Without this lock, two concurrent passes over the same project raced on the shared
+        # repo's git refs (rebase/branch -f/fast-forward), producing spurious rebase conflicts
+        # that were not real content conflicts. Serialize per-repo so only one train ever
+        # touches a given project's working copy at a time. On a busy repo where another
+        # thread is mid-train, skip this cycle rather than block indefinitely -- the next
+        # scheduled pass (or the next task completion) will pick it back up.
+        repo_path = db.localize_repo_path(proj.get("repo_path", ""))
+        with repo_lock.hold(repo_path, timeout=300, priority=True) as got_lock:
+            if not got_lock:
+                result["skipped"] += len(group)
+                print(f"merge_train: {proj.get('name') or pid} busy (another train holds the repo lock) — skipping this cycle")
+                return result
+            try:
+                with integration_runtime.isolated_repo(repo_path, "merge_train") as integration_repo:
+                    for card, slug, task, risk in _select_batch(group):
+                        if used[risk] >= caps[risk] or scanned >= scan_cap:
+                            continue
+                        scanned += 1
+                        result["risk"][risk] += 1
+                        outcome = _integrate_card(
+                            card, slug, task, proj, repo_override=integration_repo
+                        )
+                        if outcome in ATTEMPT_OUTCOMES:
+                            used[risk] += 1
+                        if outcome == "merged":
+                            result["merged"] += 1
+                        elif outcome == "already-integrated":
+                            result["already_integrated"] += 1
+                        elif outcome == "redo":
+                            result["redo"] += 1
+                        elif outcome == "testfail":
+                            result["testfail"] += 1
+                        elif outcome == "conflict":
+                            result["conflict"] += 1
+                        else:
+                            result["skipped"] += 1
+            except integration_runtime.IntegrationRuntimeError as exc:
+                result["skipped"] += len(group)
+                print(f"merge_train: {proj.get('name') or pid} isolation blocked: {exc}")
+        return result
+
+    def process_project_isolated(item):
+        """One broken repo/toolchain must not abort every other project's train."""
+        pid, group = item
         try:
-            summary["test_pipeline"] = _pm.get_health(lookback_minutes=60)
-        except Exception:
-            pass
-    print(f"merge_train: {summary['merged']} merged, {summary['redo']} redo, "
+            result = process_project(item)
+            result["project_errors"] = 0
+            return result
+        except Exception as exc:
+            pname = (projects.get(pid, {}) or {}).get("name") or str(pid)
+            print(f"merge_train [{pname}] PROJECT-ERROR: {type(exc).__name__}: {str(exc)[:500]}",
+                  flush=True)
+            return {"projects": 1, "merged": 0, "already_integrated": 0,
+                    "redo": 0, "testfail": 0, "conflict": 0,
+                    "skipped": len(group), "project_errors": 1,
+                    "risk": {"low": 0, "standard": 0, "sensitive": 0}}
+
+    items = list(by_project.items())
+    workers = min(len(items), max(1, int(os.environ.get("MERGE_TRAIN_PROJECT_WORKERS", "4"))))
+    if items:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers,
+                                                   thread_name_prefix="merge-project") as pool:
+            results = list(pool.map(process_project_isolated, items))
+        for result in results:
+            for key in ("projects", "merged", "already_integrated", "redo",
+                        "testfail", "conflict", "skipped", "project_errors"):
+                summary[key] += result[key]
+            for risk, count in result["risk"].items():
+                summary["risk"][risk] += count
+    print(f"merge_train: {summary['merged']} merged, {summary['already_integrated']} already, "
+          f"{summary['redo']} redo, "
           f"{summary['testfail']} testfail, {summary['conflict']} conflict, "
           f"{summary['skipped']} skipped, {summary['project_errors']} project errors "
           f"across {summary['projects']} project(s)")

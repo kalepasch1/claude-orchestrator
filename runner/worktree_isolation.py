@@ -91,41 +91,6 @@ def validate_task_worktree(repo: str, slug: str, worktree: str | None = None) ->
     return wt
 
 
-def _remove_stale_worktree(repo: str, wt: str, slug: str) -> None:
-    """Best-effort removal of a worktree whose owner marker is missing or stale."""
-    import shutil, logging
-    _log = logging.getLogger("worktree_isolation")
-    # Try git worktree remove first (clean deregistration)
-    try:
-        subprocess.run(
-            ["git", "worktree", "remove", "--force", wt],
-            cwd=repo, capture_output=True, text=True, timeout=30,
-        )
-    except Exception:
-        pass
-    # If directory still exists, rm -rf it
-    if os.path.isdir(wt):
-        try:
-            shutil.rmtree(wt)
-        except Exception as exc:
-            _log.warning("failed to rmtree stale worktree %s: %s", wt, exc)
-    # Clean owner marker
-    marker = owner_marker_path(repo, slug)
-    try:
-        os.unlink(marker)
-    except OSError:
-        pass
-    # Prune dangling worktree registrations
-    try:
-        subprocess.run(
-            ["git", "worktree", "prune"],
-            cwd=repo, capture_output=True, text=True, timeout=30,
-        )
-    except Exception:
-        pass
-    _log.info("cleaned stale worktree: %s", wt)
-
-
 def ensure_task_worktree(repo: str, slug: str, base: str, setup_script: str, *,
                          task_id: str | None = None, lease_token: str | None = None) -> str:
     """Create or reuse a task worktree while holding the repository lock."""
@@ -140,14 +105,8 @@ def ensure_task_worktree(repo: str, slug: str, base: str, setup_script: str, *,
         # Preserve interrupted work only for the exact still-leased writer.
         # A matching branch name is not ownership proof.
         if os.path.isdir(wt):
-            try:
-                validate_owner(repo, slug, task_id, lease_token)
-                return validate_task_worktree(repo, slug, wt)
-            except WorktreeIsolationError:
-                # Stale worktree from a previous run — clean up and recreate.
-                # The branch lease is the authoritative ownership; if this task
-                # holds the lease, it can safely reclaim the worktree slot.
-                _remove_stale_worktree(repo, wt, slug)
+            validate_owner(repo, slug, task_id, lease_token)
+            return validate_task_worktree(repo, slug, wt)
 
         created = subprocess.run(
             [setup_script, slug, base, task_id, lease_token],

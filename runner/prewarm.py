@@ -109,8 +109,9 @@ def run():
         slug = t["slug"]
         base = _normalize_base(repo, proj, t.get("base_branch") or proj.get("default_base"))
         try:
-            subprocess.run([os.path.join(_DIR, "setup-worktrees.sh"), slug, base],
-                           cwd=repo, capture_output=True, timeout=60)
+            # Prewarming is read-only. Creating the mutable task branch here made
+            # the warmer an untracked second writer; the real executor now owns
+            # branch/worktree creation under a server-side lease.
             deps = dependency_prewarm.ensure_all(repo, reason="idle_prewarm")
             if not deps.get("ok"):
                 print(f"prewarm: {slug} dependency warm skipped ({(deps.get('error') or deps)})")
