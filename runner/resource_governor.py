@@ -146,8 +146,10 @@ def ram_pct():
 
 
 def ram_free_gb():
-    """Return available RAM in GB, or None if unavailable."""
-    # Prefer our macOS-accurate calc (counts reclaimable cache as available).
+    """Return available RAM in GB using the macOS-accurate vm_stat calculation.
+
+    Prefers _vm_stat() which counts reclaimable file cache as available (matching
+    Activity Monitor). Falls back to psutil if vm_stat is unavailable."""
     v = _vm_stat()[1]
     if v is not None:
         return v
@@ -159,7 +161,7 @@ def ram_free_gb():
 
 
 def total_gb():
-    """Return total physical RAM in GB, or None if unavailable."""
+    """Return total physical RAM in GB. Tries psutil first, falls back to sysctl."""
     try:
         import psutil
         return round(psutil.virtual_memory().total / 1e9, 1)
