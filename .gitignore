@@ -17,30 +17,6 @@ runner/.env.bak*
 
 # runner log (huge, machine-local — never commit)
 runner/runner.log
-.aider*
 
-# machine-local build caches — keep the worktree clean so fleet auto-pull isn't blocked
-.npm-cache/
-.pip-cache/
-.orch-context-cache.json
-runner/.env.pre-symlink-merge-*
-.vercel
-.env*
-
-# machine-local settings with PIDs, credentials, hardcoded paths
+# machine-local Claude Code settings — never commit
 .claude/settings.local.json
-
-runner/*.bak.wedgefix
-runner/.preopt_cache/
-
-# Intake drops + their receipts are ephemeral queue state, never tracked.
-# Untracked-and-not-ignored made sentinel's `git stash push -u` sweep every
-# drop into a stash within ~2.5min of landing (282 sentinel-drift stashes).
-intake/*.md
-intake/processed/*.md
-
-# Agent worktrees must never live inside the primary checkout: a committed
-# gitlink here dangles as soon as the worktree is pruned, which breaks
-# `git status` repo-wide (fatal: not a git repository).
-claude-orchestrator-wt/
-.runner_boot_commit
