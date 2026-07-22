@@ -54,7 +54,23 @@ def preflight_check(task: dict) -> str:
     note = str(task.get("note") or "")
     attempt = task.get("attempt") or 0
 
-    if _GARBAGE_PROMPT_RE.search(prompt):
+    # 2026-07-22: strip MERGED-DIFF LIBRARY preamble before garbage check.
+    # The library injects prior diffs that may contain "PATCH TEMPLATE" text
+    # from old tasks — matching on those false-positives quarantines real work.
+    _check_prompt = prompt
+    for _lib_marker in ("## ORCHESTRATION PIPELINE CONTRACT", "## TASK", "## OBJECTIVE"):
+        _lib_idx = _check_prompt.find(_lib_marker)
+        if _lib_idx >= 0:
+            _check_prompt = _check_prompt[_lib_idx:]
+            break
+    else:
+        # No marker found — if it starts with "MERGED-DIFF LIBRARY", skip that block
+        if _check_prompt.startswith("MERGED-DIFF LIBRARY"):
+            _eol = _check_prompt.find("\n\n")
+            if _eol > 0:
+                _check_prompt = _check_prompt[_eol + 2:]
+
+    if _GARBAGE_PROMPT_RE.search(_check_prompt):
         return "preflight: PATCH TEMPLATE or garbage prompt (auto-quarantine)"
     if _RECYCLED_NOTE_RE.search(note):
         return f"preflight: recycled task ({note[:80]})"

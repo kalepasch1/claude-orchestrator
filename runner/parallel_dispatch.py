@@ -213,13 +213,22 @@ def _preflight_check(task: dict) -> str:
     prompt = str(task.get("prompt") or "")
     note = str(task.get("note") or "")
     attempt = task.get("attempt") or 0
-    if _GARBAGE_PROMPT_RE.search(prompt):
-        return "preflight: PATCH TEMPLATE or garbage prompt (auto-quarantine)"
-    body = prompt
+    # Strip MERGED-DIFF LIBRARY preamble before garbage check — library refs
+    # can contain "PATCH TEMPLATE" from old tasks, causing false quarantines.
+    _check_prompt = prompt
     for marker in ("## ORCHESTRATION PIPELINE CONTRACT", "## TASK", "## OBJECTIVE"):
-        idx = body.find(marker)
+        idx = _check_prompt.find(marker)
         if idx >= 0:
-            body = body[idx:]
+            _check_prompt = _check_prompt[idx:]
+            break
+    else:
+        if _check_prompt.startswith("MERGED-DIFF LIBRARY"):
+            _eol = _check_prompt.find("\n\n")
+            if _eol > 0:
+                _check_prompt = _check_prompt[_eol + 2:]
+    if _GARBAGE_PROMPT_RE.search(_check_prompt):
+        return "preflight: PATCH TEMPLATE or garbage prompt (auto-quarantine)"
+    body = _check_prompt
     lines = [l for l in body.split("\n") if l.strip() and not l.startswith("- source:")
              and not l.startswith("- project:") and not l.startswith("- task class:")
              and not l.startswith("- preflight") and not l.startswith("- strategy")]
