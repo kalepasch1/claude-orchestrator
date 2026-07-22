@@ -3117,3 +3117,121 @@
 +bugfix
 +```
 +
++[reuse-first: matched qafix-pareto-2080-07062319-slice-1-slice-1-slice-4]
+
+# 2026-07-10 19:11:00.731438
++PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.356).
++Prior intent: PATCH TEMPLATE e47542c3d860
++Intent: 0398eb6 07071626 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 865741a 8e31575 919b0d6 a3245a1 acceptance agent agentic analysis artifacts automatic beethoven before behavior below blocking boundary branch
++Acceptance: preserve existing behavior, make the smallest mergea
++Relevant prior diff excerpt:
++
++
++PATCH TEMPLATE 55096ff48bec
++Intent: 00786708f8ba acceptance adapt adding before behavior binding branch build c6646d9b4b46 check contracts existing exists fc9a136c first function implementation instead intent locate matched mergeable missing
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new files.
++2. Reuse matching project helpers and naming conventions.
++3. Add or update the narrowest test/check that proves the requested behavior.
++Prior merged patterns to adapt:
++- beethoven/recover-missing-branch-relfix-beethoven-07071626 sim=0.158: PATCH TEMPLATE e47542c3d860
++Intent: 0398eb6 07071626 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 865741a 8e31575 919b0d6 a3245a1 acceptance agent agentic analysis artifacts automatic beethoven before behavior below blocking boundary branch
++Acceptance: preserve existing behavior, make the smallest mergea
++[patch-template:55096ff48bec]
++
++REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
++SOURCE: fc9a136c-78d5-49a8-b723-c6646d9b4b46/patch-template-recover-missing-branch-perpetual-memo-binding
++SUMMARY: PATCH TEMPLATE 00786708f8ba
++Intent: behavior binding branch check existing implementation locate missing mocked module narrowest oracle owner parent perpetual proves recover requested slice slots supabase update versioning
++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
++Implementation slots:
++1. Locate the existing owner module/function before adding new f
++
++- Implementation slots:
++1.
++- Add or update the narrowest test/check that proves the requested behavior.
++- Locate the existing owner module/function before adding
++- Add or update the narrowest test/check that proves the requested behavior.
++
++Parent task: recover-missing-branch-cade-contracts-slice-2
++
++[reuse-first: matched patch-template-recover-missing-branch-perpetual-memo-binding]
++
++STRUCTURAL QUARANTINE REWORK
++Original task: recover-missing-branch-cade-contracts-slice-2-slice-2
++Replacement task: rework-secret-recover-missing-branch-cade-contracts-slice-2-slice-2-89ed663
++Blocked category: secret
++Blocked context: agent run failed after 3 error-retries
++
++The original task was blocked by secret/security risk. Preserve the useful behavior while removing the unsafe mechanism. Do not commit secrets, tokens, credentials, broad local allowlists, or hardcoded fallback keys. Use environment-variable placeholders, validation, least-privilege config, safe defaults, scrubbed logs, and tests proving the unsafe path is closed.
++
++Execution rules:
++- Prefer reuse before drafting: search existing repo helpers, merged-diff library, patch templates, and sibling patterns.
++- Keep the diff small and independently mergeable.
++- Run the relevant build/test/QA command and commit the patch.
++- Do not reintroduce the blocker that caused quarantine.
++
++AGENTIC-REPAIR DIRECTIVE
++Repair category: conflict
++Original task slug: rework-secret-recover-missing-branch-cade-contracts-slice-2-slice-2-89ed663
++
++This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
++
++Rebuild the same task on fresh orchestrator/dev, resolve the conflict in code, run tests, and commit.
++
++Required completion behavior:
++- Reproduce or inspect the concrete failure before changing broad strategy.
++- If dependencies/build tools are missing, repair the repo setup or install path minimally.
++- If tests/build fail, fix source/config/tests until the relevant checks are green.
++- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
++- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
++
++Agentic analysis artifacts from prior run:
++Touched files from prior run: .aider.chat.history.md, .aider.input.history, .aider.tags.cache.v4/cache.db, .aider.tags.cache.v4/cache.db-shm, runner/db.py, runner/tests/test_public_copy_guard.py
++Prior commit SHA: efc81382fe13b1049d1f92a3c54a7947e6785d14
++Prior patch diff (truncated):
++```diff
++diff --git a/.aider.chat.history.md b/.aider.chat.history.md
++index f04f34c..39cfbd4 100644
++--- a/.aider.chat.history.md
+++++ b/.aider.chat.history.md
++@@ -4071,3 +4071,409 @@ train: rebase conflict on agent/rework-secret-cont-801b8665-b875a41 against orch
++ > litellm.APIConnectionError: OllamaException - {"error":"an error was encountered while running the model: unexpected EOF"}  
++ > Retrying in 32.0 seconds...  
++ > litellm.APIConnectionError: OllamaException - {"error":"an error was encountered while running the model: unexpected EOF"}  
+++
+++# aider chat started at 2026-07-10 17:53:38
+++
+++> /Users/kpasch/Library/Python/3.9/lib/python/site-packages/aider/__main__.py --model ollama/codestral:22b --yes-always --no-auto-commits --no-show-model-warnings --no-check-model-accepts-settings --no-browser --no-gui --no-check-update --no-show-release-notes --analytics-disable --no-detect-urls --no-notifications --no-gitignore --no-restore-chat-history --no-suggest-shell-commands --no-fancy-input --no-pretty --message PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.356).
+++Prior intent: PATCH TEMPLATE e47542c3d860
+++Intent: 0398eb6 07071626 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 865741a 8e31575 919b0d6 a3245a1 acceptance agent agentic analysis artifacts automatic beethoven before behavior below blocking boundary branch
+++Acceptance: preserve existing behavior, make the smallest mergea
+++Relevant prior diff excerpt:
+++
+++
+++PATCH TEMPLATE 55096ff48bec
+++Intent: 00786708f8ba acceptance adapt adding before behavior binding branch build c6646d9b4b46 check contracts existing exists fc9a136c first function implementation instead intent locate matched mergeable missing
+++Acceptance: preserve existing behavior, make the smallest mergeable diff, run build/tests.
+++Implementation slots:
+++1. Locate the existing owner module/function before adding new files.
+++2. Reuse matching project helpers and naming conventions.
+++3. Add or update the narrowest test/check that proves the requested behavior.
+++Prior merged patterns to adapt:
+++- beethoven/recover-missing-branch-relfix-beethoven-07071626 sim=0.158: PATCH TEMPLATE e47542c3d860
+++Intent: 0398eb6 07071626 1ad7cbc 27d8ff8 2807983 4a3feba 750555b 865741a 8e31575 919b0d6 a3245a1 acceptance agent agentic analysis artifacts automatic beethoven before behavior below blocking boundary branch
+++Acceptance: preserve existing behavior, make the smallest mergea
+++[patch-template:55096ff48bec]
+++
+++REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
+++SOURCE: fc9a136c-78d5-49a8-b723-c6646d9b4b46/patch-template-recover-missing-branch-perpetual-memo-binding
+++SUMMARY: PATCH TEMPLATE 00786708f8ba
+++Intent: behavior binding branch check existing implementation locate missing mocked module narrowest oracle owner parent perpetual proves recover requested slice slots supabase update versioning
+++Acceptance: preserve existing behavior, make the
++```
++
++Failure context:
++```
++train: rebase conflict on agent/rework-secret-recover-missing-branch-cade-contracts-slice-2-slice-2-89ed663 against orchestrator/dev
++```
++
