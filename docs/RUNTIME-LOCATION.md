@@ -21,10 +21,13 @@ second Mac (which checks out there) is unaffected; only THIS Mac's *runtime* was
 To harden the other Mac, repeat: clone to `~/claude-orchestrator`, copy `.env` to
 `~/.claude-orchestrator/.env`, repoint its launcher/plists/`.zprofile`.
 
-## Troubleshooting
+## Verification
 
-| Symptom | Likely cause | Fix |
-|---|---|---|
-| `runner.py` crash-loops after macOS update | FDA revoked; runtime still under `~/Documents` | Move runtime to `~/claude-orchestrator` per above |
-| `.env` not found at startup | Symlink broken or `~/.claude-orchestrator/.env` missing | Re-create: `ln -sf ~/.claude-orchestrator/.env runner/.env` |
-| Double-start (two runners) | Lock file path mismatch between `keepalive.sh` and launchd | Ensure both use `.runtime/runner.lock` in the same clone |
+To confirm the runtime is correctly located outside TCC-protected paths:
+
+```bash
+# Should resolve to ~/claude-orchestrator, NOT ~/Documents/...
+launchctl print system/com.claudeorchestrator.runner 2>/dev/null | grep WorkingDirectory
+# .env symlink should point to ~/.claude-orchestrator/.env
+ls -la ~/claude-orchestrator/runner/.env
+```
