@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """
 build_cache.py — Cache build-gate results by commit SHA to avoid redundant builds.
 
