@@ -27,7 +27,11 @@ import db
 PROTECTED_STATES = ("RUNNING", "RETRY")
 # Approval kinds that indicate an in-flight merge; their slugs are protected from GC.
 MERGE_KINDS = ("verify", "material", "integrate")
-GIT_TIMEOUT = int(os.environ.get("WORKTREE_GC_GIT_TIMEOUT", "90"))  # seconds
+GIT_TIMEOUT = int(os.environ.get("WORKTREE_GC_GIT_TIMEOUT", "90"))
+# Never GC a worktree that showed filesystem activity within this window. Cowork/manual
+# executors create worktrees that may sit briefly before their task row flips to RUNNING,
+# and a fresh checkout has zero commits ahead of base — recency is the only reliable signal.
+MIN_AGE_MIN = int(os.environ.get("WORKTREE_GC_MIN_AGE_MIN", "180"))
 
 
 def _run_git(args, repo):
@@ -142,14 +146,16 @@ def gc_repo(repo):
             # end of a worktree block
             if path and branch and branch.startswith("agent/"):
                 slug = branch[len("agent/"):]
-                # NOTE: creation locks (git worktree lock) protect against OTHER deleters
-                # (resource_governor, merge handlers). Here the guards below decide; once they
-                # all pass we unlock and reclaim, so finished worktrees don't leak disk.
-                if _is_dirty(path):
-                    pass  # uncommitted work — never GC
-                elif _recently_active(path):
-                    pass  # fresh checkout or active executor — never GC
-                elif slug not in protected and os.path.abspath(path) != main_worktree:
+                if slug not in protected and os.path.abspath(path) != main_worktree:
+                    # Recency guard: skip worktrees touched recently — the task row may not
+                    # have flipped to RUNNING yet.
+                    try:
+                        mtime = os.path.getmtime(path)
+                        if (time.time() - mtime) < MIN_AGE_MIN * 60:
+                            path = branch = None
+                            continue
+                    except OSError:
+                        pass
                     # DURABILITY: push the branch to origin before reclaiming the worktree, so the
                     # work survives on the remote even if the runner's fail-soft share push never
                     # landed. This is what stops the recover-missing-branch churn at the source —
