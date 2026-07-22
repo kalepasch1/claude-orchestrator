@@ -48,6 +48,11 @@ def enqueue_experiment_pair(experiment_id, project_id, prompt, base_branch="main
             "experiment_id": experiment_id, "experiment_variant": "control",
             "created_at": "now()"
         })
+        try:
+            import policy_compiler
+            policy_compiler.route_experiment(experiment_id, control_id, "control", None)
+        except Exception:
+            pass
         # Enqueue the candidate: with the proposed change
         db.insert("tasks", {
             "id": candidate_id, "project_id": project_id, "prompt": prompt,
@@ -56,6 +61,11 @@ def enqueue_experiment_pair(experiment_id, project_id, prompt, base_branch="main
             "experiment_id": experiment_id, "experiment_variant": "candidate",
             "created_at": "now()"
         })
+        try:
+            import policy_compiler
+            policy_compiler.route_experiment(experiment_id, candidate_id, "treatment", None)
+        except Exception:
+            pass
         return control_id, candidate_id
     except Exception as e:
         print(f"enqueue_experiment_pair failed: {e}")

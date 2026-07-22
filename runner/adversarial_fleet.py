@@ -112,6 +112,31 @@ def predictive_incident(snapshot):
             "detail": "leading indicators: queue/latency/budget=" + "/".join(map(str, signals))}
 
 
+def collect_snapshot():
+    """Emit the minimum common leading-indicator snapshot from the running control plane."""
+    try:
+        queued = db.count("tasks", {"state": "eq.QUEUED"})
+    except Exception:
+        queued = 0
+    try:
+        import fleet
+        capacity = max(int((fleet.capacity() or {}).get("capacity") or 1), 1)
+    except Exception:
+        capacity = 1
+    snapshot = {"app": "ORCHESTRATOR", "queue_growth": round(float(queued) / capacity / 10, 4),
+                "latency_drift": 0.0, "budget_burn": 0.0, "source": "fleet-control"}
+    try:
+        db.insert("fleet_signal_snapshots", snapshot)
+    except Exception:
+        pass
+    try:
+        import evidence_bus
+        evidence_bus.append("ORCHESTRATOR", "fleet.snapshot", "current", snapshot)
+    except Exception:
+        pass
+    return snapshot
+
+
 # #31: constitution amendments remain human-gated ----------------------------------
 def amendment_proposal(rule, blocked, later_safe, threshold=.20, min_samples=20):
     rate = float(later_safe) / max(int(blocked), 1)
@@ -175,6 +200,11 @@ def advance_advisory_controls():
 def run():
     """Read-only/append-only coordination pass; external actions stay in existing gated loops."""
     now = int(time.time())
+    try:
+        import evidence_bus
+        evidence_bus.flush()
+    except Exception:
+        pass
     def select(table, query):
         try:
             return db.select(table, query) or []
@@ -182,6 +212,7 @@ def run():
             print(f"adversarial_fleet: {table} unavailable ({e})")
             return []
 
+    collect_snapshot()
     snapshots = select("fleet_signal_snapshots", {"select": "*", "limit": "100"})
     predicted = 0
     for snap in snapshots:

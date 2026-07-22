@@ -76,7 +76,6 @@ def _adversarial_gate(key, value):
     """Reject a config rollout whose deterministic failure simulation exceeds its SLO."""
     try:
         import adversarial_fleet
-        capacity = float(value) if key in ("MAX_PARALLEL", "ORCH_FLEET_CAPACITY") else float(os.environ.get("MAX_PARALLEL", 4))
         return adversarial_fleet.calibrated_simulation(
             key, value, runs=int(os.environ.get("ORCH_SIMULATION_RUNS", "500")))
     except Exception as e:
@@ -120,10 +119,11 @@ def apply_config(key, value, by="auto", canary=True):
 
     after = _get_metric_snapshot()
     log.info("config_applier: METRICS before=%s after=%s", before, after)
+    healthy, canary_metrics = policy_compiler.observe_canary(policy["id"], before, after)
 
     # Simple rollback heuristic: if resource_governor flipped from can_claim=True to False
     rolled_back = False
-    if before.get("can_claim") is True and after.get("can_claim") is False:
+    if not healthy:
         log.warning("config_applier: ROLLBACK %s (resource pressure after apply)", key)
         if old_value is not None:
             os.environ[key] = old_value
@@ -134,7 +134,7 @@ def apply_config(key, value, by="auto", canary=True):
         state["rollbacks"].append({"key": key, "value": value, "by": by,
                                     "ts": time.time(), "reason": "resource_pressure"})
         _save_state(state)
-        policy_compiler.complete_config(policy["id"], "rolled_back", {"before": before, "after": after})
+        policy_compiler.complete_config(policy["id"], "rolled_back", canary_metrics)
         return {"outcome": "rolled_back", "key": key, "reason": "resource_pressure"}
 
     # Promote: persist to fleet_config
@@ -144,12 +144,18 @@ def apply_config(key, value, by="auto", canary=True):
         log.info("config_applier: PROMOTED %s=%s fleet-wide", key, value)
     except Exception as e:
         log.warning("config_applier: fleet_config write failed: %s", e)
+        if old_value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = old_value
+        policy_compiler.complete_config(policy["id"], "rolled_back", {**canary_metrics, "persist_error": str(e)})
+        return {"outcome": "rolled_back", "key": key, "reason": "fleet_config_persistence"}
 
     state = _load_state()
     state["applied"][key] = {"value": str(value), "by": by, "ts": time.time(),
                               "old_value": old_value}
     _save_state(state)
-    policy_compiler.complete_config(policy["id"], "applied", {"before": before, "after": after})
+    policy_compiler.complete_config(policy["id"], "applied", canary_metrics)
     return {"outcome": "applied", "key": key, "value": value}
 
 
