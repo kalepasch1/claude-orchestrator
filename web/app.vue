@@ -2,11 +2,9 @@
   <LegoraLanding v-if="!user" :signing-in="signingIn" :auth-error="authError" @sign-in="signIn" />
   <template v-else><NuxtLayout><NuxtPage /></NuxtLayout><PreActionGuidance /></template>
   <ExperienceLayer />
-  <Analytics />
 </template>
 
 <script setup lang="ts">
-import { Analytics } from '@vercel/analytics/nuxt'
 
 const supabase = useSupabaseClient<any>()
 const user = useSupabaseUser()
