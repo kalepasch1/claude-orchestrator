@@ -332,6 +332,10 @@ def run_autopilot():
     import autopilot; autopilot.run()
 
 
+def run_portfolio_autopilot():
+    import portfolio_autopilot; portfolio_autopilot.run()
+
+
 def run_abedge():
     import ab_edge; ab_edge.run()
 
@@ -814,7 +818,9 @@ JOBS = {
     "modelportfolios": run_modelportfolios,
     "modelslashing": run_modelslashing,
     "commonbrain": run_commonbrain,
-    "nightsweep": run_nightsweep,
+    "priority_scorer": run_priority_scorer,
+    "quarantine_gc": run_quarantine_gc,
+    "portfolioautopilot": run_portfolio_autopilot,
 }
 
 if __name__ == "__main__":
@@ -839,7 +845,9 @@ if __name__ == "__main__":
         "selftune", "cluster", "governor", "costslo", "promote", "prewarm",
         "billingguard", "dedup", "canaryecon", "forecast", "arbitrage", "autoscale",
         "bizradar", "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",
-        "stripe", "ownerreport", "worktreegc", "remediate", "selfcheck",
+        "stripe", "ownerreport", "worktreegc", "stuck_reaper", "remediate", "selfcheck",
+        "quarantine", "credresolver", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain",
+        "priority_scorer", "quarantine_gc", "portfolioautopilot",
         "release_kpi.py", "integrate_kpi.py", "fleet_control.py",
     }
     if job not in _SAFE_WHEN_PAUSED:

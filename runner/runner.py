@@ -2500,7 +2500,7 @@ _SCHEDULE = [
     ("fleet-topo-600",     "fleet_topology_tick.py",    "interval", 600),   # fleet topology optimization recommendations
     ("sub-recommend-3600", "sub_recommend_tick.py",     "interval", 3600),  # hourly subscription cost/value analysis
     ("serviceagent-120",   "service_agent.py",          "interval", 120),   # proactive health fixer (throttle drift, merge starvation)
-    ("rtmon-300",          "realtime_approval_monitor.py","interval", 300),  # realtime approval monitor polling fallback (every 5 min)
+    ("portfolioautopilot-night","portfolioautopilot",    "daily",    (1, 0)),  # nightly: cold-start idle apps, auto-tune distribution, digest
 ]
 _sched_last: dict = {}
 
@@ -2513,7 +2513,7 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      "unstick", "dagfix", "batchmech", "selftune", "cluster",
                      "governor", "costslo", "promote", "prewarm", "billingguard",
                      "dedup", "contcompact", "backlogcompact", "canaryecon", "forecast", "arbitrage", "autoscale", "bizradar",
-                     "credresolver", "pushdecisions", "selfheal", "adversarial_fleet", "fleet_e2e_audit", "newapp", "autopilot", "abedge",
+                     "credresolver", "pushdecisions", "selfheal", "newapp", "autopilot", "abedge", "portfolioautopilot",
                      "stripe", "ownerreport", "worktreegc", "remediate", "quarantine", "selfcheck", "release_kpi.py",
                      "integrate_kpi.py", "fleet_control.py",
                      "thermal_queue.py", "model_score.py", "queue_materializer.py",
