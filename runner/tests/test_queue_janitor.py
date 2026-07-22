@@ -8,7 +8,9 @@ Reproduces the core failure modes the janitor was built to handle:
 """
 import datetime
 import os
+import subprocess
 import sys
+import tempfile
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -17,6 +19,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import agentic_repair
 import queue_janitor
+
+
+def _git(repo, *args):
+    return subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True, text=True)
 
 
 def _ts(seconds_ago):
@@ -251,6 +257,44 @@ class RefileStrandedApprovalsTest(unittest.TestCase):
         count, updates = self._run([task])
 
         self.assertEqual(count, 0)
+
+
+class GitRecoveryTest(unittest.TestCase):
+    def test_stale_temp_objects_are_archived_and_dangling_commits_are_pinned(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repo = os.path.join(directory, "repo")
+            os.mkdir(repo)
+            _git(repo, "init", "-b", "main")
+            _git(repo, "config", "user.email", "test@example.com")
+            _git(repo, "config", "user.name", "Test")
+            with open(os.path.join(repo, "tracked.txt"), "w") as handle:
+                handle.write("base\n")
+            _git(repo, "add", "tracked.txt")
+            _git(repo, "commit", "-m", "base")
+            _git(repo, "checkout", "-b", "abandoned")
+            with open(os.path.join(repo, "abandoned.txt"), "w") as handle:
+                handle.write("recovery work\n")
+            _git(repo, "add", "abandoned.txt")
+            _git(repo, "commit", "-m", "recover me")
+            abandoned = _git(repo, "rev-parse", "HEAD").stdout.strip()
+            _git(repo, "checkout", "main")
+            _git(repo, "branch", "-D", "abandoned")
+            tmp_dir = os.path.join(repo, ".git", "objects", "aa")
+            os.makedirs(tmp_dir)
+            temporary = os.path.join(tmp_dir, "tmp_obj_interrupted")
+            with open(temporary, "w") as handle:
+                handle.write("partial object\n")
+            old = time.time() - 3600
+            os.utime(temporary, (old, old))
+            with patch.object(queue_janitor, "_lock_has_live_holder", return_value=False):
+                result = queue_janitor.archive_stale_git_objects(repo, stale_min=1, now=time.time())
+            self.assertEqual(result["objects"], 1)
+            self.assertGreaterEqual(result["refs"], 1)
+            self.assertFalse(os.path.exists(temporary))
+            self.assertIn(
+                abandoned,
+                _git(repo, "for-each-ref", "--format=%(objectname)", "refs/recovery").stdout.splitlines(),
+            )
 
 
 if __name__ == "__main__":

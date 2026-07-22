@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import time
 
@@ -17,6 +18,15 @@ class IntegrationRuntimeError(RuntimeError):
 
 class CanonicalCheckoutMutationError(IntegrationRuntimeError):
     pass
+
+
+# Generated dependency/build artifacts can make an otherwise clean persistent
+# integration slot consume gigabytes.  They are removed only after a successful
+# integration pass; failures retain their full worktree for forensic recovery.
+_RUNTIME_ARTIFACT_DIRS = (
+    "node_modules", ".nuxt", ".output", ".next", "dist", "coverage",
+    ".pytest_cache", "__pycache__",
+)
 
 
 def _home():
@@ -69,6 +79,21 @@ def _registered_worktrees(repo):
         for line in result.stdout.splitlines()
         if line.startswith("worktree ")
     }
+
+
+def _purge_runtime_artifacts(path):
+    """Remove only known rebuildable artifacts from a successful worktree."""
+    for root, dirs, _ in os.walk(path):
+        # Do not descend into directories that we will delete.  This is both
+        # faster for node_modules and avoids following any directory symlinks.
+        for name in list(dirs):
+            if name not in _RUNTIME_ARTIFACT_DIRS:
+                continue
+            candidate = os.path.join(root, name)
+            if os.path.islink(candidate):
+                continue
+            shutil.rmtree(candidate, ignore_errors=True)
+            dirs.remove(name)
 
 
 @contextlib.contextmanager
@@ -164,8 +189,10 @@ def isolated_repo(canonical_repo, owner):
     positioned = _git(path, "checkout", "--detach", before["head"])
     if positioned.returncode:
         raise IntegrationRuntimeError((positioned.stderr or positioned.stdout)[-1000:])
+    completed = False
     try:
         yield path
+        completed = True
     finally:
         after = canonical_snapshot(canonical_repo)
         if after != before:
@@ -179,3 +206,7 @@ def isolated_repo(canonical_repo, owner):
             clean = _git(path, "status", "--porcelain=v1", "--untracked-files=all")
             if clean.returncode == 0 and not clean.stdout:
                 _git(canonical_repo, "worktree", "remove", "--force", path)
+        elif completed:
+            # The worktree completed normally, so generated dependencies and
+            # build output are safe to rebuild on the next integration pass.
+            _purge_runtime_artifacts(path)

@@ -69,6 +69,28 @@ def test_dirty_persistent_slot_is_preserved_and_bypassed(repo, tmp_path, monkeyp
     assert not Path(replacement_path).exists()
 
 
+def test_successful_persistent_slot_purges_rebuildable_artifacts(repo, tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("CLAUDE_ORCH_HOME", str(runtime))
+    with integration_runtime.isolated_repo(str(repo), "test") as slot:
+        artifact = Path(slot) / "node_modules" / "package" / "file.js"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_text("generated\n")
+    assert not (Path(slot) / "node_modules").exists()
+
+
+def test_failed_persistent_slot_preserves_artifacts_for_recovery(repo, tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    monkeypatch.setenv("CLAUDE_ORCH_HOME", str(runtime))
+    with pytest.raises(RuntimeError, match="integration failed"):
+        with integration_runtime.isolated_repo(str(repo), "test") as slot:
+            artifact = Path(slot) / "node_modules" / "package" / "file.js"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text("evidence\n")
+            raise RuntimeError("integration failed")
+    assert artifact.exists()
+
+
 def test_merge_and_release_share_one_global_lease(tmp_path, monkeypatch):
     monkeypatch.setenv("CLAUDE_ORCH_HOME", str(tmp_path / "runtime"))
     entered = threading.Event()

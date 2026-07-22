@@ -21,7 +21,7 @@ queue_janitor.py - automates the manual cleanup session of 2026-07-02, every cyc
 Everything is bounded, idempotent (the approvals_one_pending_per_issue index blocks
 duplicate cards), and audited via notes/notifications. No model spend.
 """
-import os, sys, glob, time, socket, subprocess
+import datetime, json, os, sys, glob, time, socket, subprocess
 import repo_hygiene
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
@@ -35,6 +35,10 @@ REQUEUE_CAP = int(os.environ.get("JANITOR_REQUEUE_CAP", "3"))
 # exact stall a Mac restart caused. This threshold is well beyond the agentic coder timeout (~15 min),
 # so a task RUNNING past it has already exceeded its own run and is orphaned, not live.
 ORPHAN_RUNNING_MIN = float(os.environ.get("JANITOR_ORPHAN_RUNNING_MIN", "20"))
+# A Git writer first creates tmp_obj_* files before atomically installing the
+# object.  A crash can leave them behind indefinitely.  Never delete them: move
+# only cold files to Git's recovery area, and pin any dangling commits first.
+GIT_TMP_OBJECT_STALE_MIN = float(os.environ.get("JANITOR_GIT_TMP_OBJECT_STALE_MIN", "30"))
 
 EMPTY_RUN_MARKERS = ("no committable changes", "empty diff", "diff is empty",
                      "no diff provided", "missing diff", "no code diff",
@@ -247,6 +251,96 @@ def clear_stale_git_locks():
     return cleared
 
 
+def _git_dir(repo):
+    """Return the canonical Git directory, or an empty string on failure."""
+    try:
+        out = subprocess.run(["git", "rev-parse", "--git-dir"], cwd=repo,
+                             capture_output=True, text=True, timeout=20)
+        if out.returncode:
+            return ""
+        path = out.stdout.strip()
+        return path if os.path.isabs(path) else os.path.join(repo, path)
+    except Exception:
+        return ""
+
+
+def archive_stale_git_objects(repo, stale_min=None, now=None):
+    """Preserve stale Git write debris without pruning recoverable work.
+
+    This deliberately does *not* run ``git gc``.  It first creates durable
+    recovery refs for dangling commits, then moves only old ``tmp_obj_*`` files
+    out of ``objects/``.  Any live/recent writer or lock makes the operation a
+    no-op, preventing a cleanup race from corrupting a repository.
+    """
+    git_dir = _git_dir(repo)
+    if not git_dir:
+        return {"refs": 0, "objects": 0}
+    stale_seconds = (GIT_TMP_OBJECT_STALE_MIN if stale_min is None else stale_min) * 60
+    current = time.time() if now is None else now
+    locks = glob.glob(os.path.join(git_dir, "*.lock"))
+    if any(_lock_has_live_holder(lock) or os.path.getmtime(lock) > current - stale_seconds for lock in locks):
+        return {"refs": 0, "objects": 0}
+    objects = []
+    for prefix in glob.glob(os.path.join(git_dir, "objects", "[0-9a-f][0-9a-f]")):
+        for path in glob.glob(os.path.join(prefix, "tmp_obj_*")):
+            try:
+                if os.path.getmtime(path) <= current - stale_seconds:
+                    objects.append(path)
+            except OSError:
+                continue
+    # No stale writer debris means there is no recovery event to process.
+    if not objects:
+        return {"refs": 0, "objects": 0}
+    stamp = datetime.datetime.fromtimestamp(current, datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    recovered = 0
+    try:
+        fsck = subprocess.run(["git", "fsck", "--connectivity-only", "--no-reflogs"], cwd=repo,
+                              capture_output=True, text=True, timeout=180)
+        commits = {
+            line.rsplit(" ", 1)[-1] for line in fsck.stdout.splitlines()
+            if line.startswith("dangling commit ")
+        }
+        for sha in commits:
+            ref = f"refs/recovery/git-write-{stamp}/{sha}"
+            exists = subprocess.run(["git", "show-ref", "--verify", "--quiet", ref], cwd=repo,
+                                    capture_output=True, timeout=20)
+            if exists.returncode == 0:
+                continue
+            pin = subprocess.run(["git", "update-ref", ref, sha], cwd=repo,
+                                 capture_output=True, text=True, timeout=20)
+            if pin.returncode == 0:
+                recovered += 1
+    except Exception:
+        # A failed inventory must never lead to removal/movement of objects.
+        return {"refs": 0, "objects": 0}
+    archive = os.path.join(git_dir, "recovery", "stale-git-objects", stamp)
+    moved = []
+    try:
+        for path in objects:
+            destination = os.path.join(archive, os.path.basename(os.path.dirname(path)), os.path.basename(path))
+            os.makedirs(os.path.dirname(destination), exist_ok=True)
+            os.replace(path, destination)
+            moved.append({"source": path, "archive": destination})
+        with open(os.path.join(archive, "manifest.json"), "w") as handle:
+            json.dump({"created_at": stamp, "repo": os.path.realpath(repo), "objects": moved}, handle, indent=2)
+    except OSError:
+        # Files already moved remain archived; this is recoverable and never a discard.
+        pass
+    return {"refs": recovered, "objects": len(moved)}
+
+
+def archive_stale_git_objects_across_projects():
+    refs = objects = 0
+    for project in db.select("projects", {"select": "repo_path"}) or []:
+        repo = project.get("repo_path") or ""
+        if not repo or not os.path.isdir(repo):
+            continue
+        result = archive_stale_git_objects(repo)
+        refs += result["refs"]
+        objects += result["objects"]
+    return refs, objects
+
+
 def clean_stray_js_across_projects():
     """Periodic sweep (all registered repos on this machine) for untracked compiled .js
     files shadowing their .ts source in ESM projects -- see repo_hygiene.py. This catches
@@ -273,11 +367,12 @@ def run():
     empty = requeue_empty_runs()
     refiled = refile_stranded_approvals()
     locks = clear_stale_git_locks()
+    recovery_refs, archived_objects = archive_stale_git_objects_across_projects()
     stray_js = clean_stray_js_across_projects()
     print(f"queue_janitor: heartbeat={'ok' if hb else 'FAIL'} orphans-released={orphans} unstuck={stuck} "
           f"merge-released={merging} empty-agentic-repair={empty} cards-refiled={refiled} locks-cleared={locks} "
-          f"stray-js-cleaned={stray_js}")
-    return orphans + stuck + merging + empty + refiled + locks + stray_js
+          f"recovery-refs={recovery_refs} stale-git-objects-archived={archived_objects} stray-js-cleaned={stray_js}")
+    return orphans + stuck + merging + empty + refiled + locks + recovery_refs + archived_objects + stray_js
 
 
 if __name__ == "__main__":
