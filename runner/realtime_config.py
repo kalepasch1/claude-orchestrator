@@ -1,74 +1,140 @@
 #!/usr/bin/env python3
-"""realtime_config.py — Real-time fleet configuration via Supabase polling.
+"""realtime_config.py - Cached config accessor for fleet parameters.
 
-Provides a lightweight config watcher that detects fleet_config changes
-and applies them immediately, rather than waiting for the next full loop tick.
+Provides thread-safe, TTL-cached access to fleet_config with:
+  - Single key get() and batch get_many()
+  - Type coercion helpers (get_int, get_float, get_bool)
+  - Config validation via config_validator before cache population
+  - Staleness detection and stats() for observability
+  - Manual invalidate() for tests and operator control
+  - Fail-soft: returns defaults on any error, never raises
 
-Uses a change-detection approach: hashes the current config state and
-re-applies only when a change is detected. This is cheaper than full
-Supabase Realtime websocket but gives near-instant config propagation
-(poll interval configurable, default 5s).
-
-Integration: call realtime_config.start() from the runner's main init,
-or call realtime_config.poll() from the main loop for synchronous mode.
+Env vars:
+    CONFIG_CACHE_TTL   seconds between DB refreshes (default 10)
 """
-import hashlib
-import json
-import os
-import sys
-import threading
-import time
-
+import os, sys, threading, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
-POLL_INTERVAL_S = float(os.environ.get("ORCH_REALTIME_POLL_S", "5"))
-_state = {"hash": "", "running": False, "last_apply": 0.0}
+_cache = {}
+_cache_ts = 0.0
+_TTL = float(os.environ.get("CONFIG_CACHE_TTL", "10"))
 _lock = threading.Lock()
-
-# Only these prefixes are applied (mirrors fleet_control.py safety list)
-_SAFE_PREFIXES = ("ORCH_", "MAX_PARALLEL", "PER_TASK_GB", "RAM_FLOOR_GB", "RAM_",
-                  "RELEASE_", "QUEUE_", "CONT_", "JANITOR_", "REMEDIATION_",
-                  "DEFAULT_TEST_CMD", "TASK_TIMEOUT", "ENABLE_", "SESSION_",
-                  "ACCOUNT_COOLDOWN", "MERGE_", "DEPLOY_", "INTEGRATE_", "COST_")
-_DENY_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "PWD", "CREDENTIAL")
+_refresh_count = 0
+_refresh_errors = 0
+_last_error = ""
 
 
-def _safe_key(k):
-    ku = k.upper()
-    if any(m in ku for m in _DENY_MARKERS):
-        return False
-    return any(ku.startswith(p) for p in _SAFE_PREFIXES)
+def get(key, default=None):
+    """Get a config value by key. Returns default if missing or on error."""
+    global _cache, _cache_ts
+    if time.time() - _cache_ts > _TTL:
+        _refresh()
+    return _cache.get(key, default)
 
 
-def _fetch_config():
-    """Fetch all fleet_config rows, return sorted list of (key, value)."""
+def get_int(key, default=0):
+    """Get a config value coerced to int. Returns default on missing/bad value."""
+    val = get(key)
+    if val is None:
+        return default
     try:
-        rows = db.select("fleet_config", {"select": "key,value", "order": "key.asc"}) or []
-        return [(r["key"], str(r.get("value", ""))) for r in rows if r.get("key")]
-    except Exception:
-        return []
+        return int(val)
+    except (ValueError, TypeError):
+        return default
 
 
-def _config_hash(pairs):
-    """Deterministic hash of config state for change detection."""
-    raw = json.dumps(pairs, sort_keys=True)
-    return hashlib.md5(raw.encode()).hexdigest()
+def get_float(key, default=0.0):
+    """Get a config value coerced to float. Returns default on missing/bad value."""
+    val = get(key)
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
 
 
-def poll():
-    """Check for config changes and apply if detected. Returns count of keys applied."""
-    pairs = _fetch_config()
-    h = _config_hash(pairs)
+def get_bool(key, default=False):
+    """Get a config value coerced to bool. Returns default on missing/bad value."""
+    val = get(key)
+    if val is None:
+        return default
+    if isinstance(val, str):
+        return val.lower() in ("1", "true", "yes", "on")
+    return bool(val)
 
+
+def get_many(keys, defaults=None):
+    """Get multiple config values at once. Returns dict keyed by requested keys.
+    defaults is an optional dict of fallback values."""
+    global _cache, _cache_ts
+    if time.time() - _cache_ts > _TTL:
+        _refresh()
+    defaults = defaults or {}
+    return {k: _cache.get(k, defaults.get(k)) for k in keys}
+
+
+def invalidate():
+    """Force cache invalidation. Next get() will refresh from DB.
+    Useful for tests and operator control."""
+    global _cache_ts
     with _lock:
-        rows = db.sql("SELECT key, value FROM fleet_config") or []
-        _cache = {r["key"]: r["value"] for r in rows}
-        _cache_ts = time.time()
+        _cache_ts = 0.0
 
-def force_refresh():
-    """
-    Forces an immediate refresh of the configuration cache from the database.
-    This can be used to ensure the latest configuration is loaded without waiting for the TTL.
-    """
-    _refresh()
+
+def stats():
+    """Return cache observability stats."""
+    with _lock:
+        age = time.time() - _cache_ts if _cache_ts > 0 else -1
+        return {
+            "cached_keys": len(_cache),
+            "cache_age_s": round(age, 1),
+            "ttl_s": _TTL,
+            "refresh_count": _refresh_count,
+            "refresh_errors": _refresh_errors,
+            "last_error": _last_error,
+            "stale": age > _TTL if age >= 0 else True,
+        }
+
+
+def _refresh():
+    """Reload config from fleet_config table. Validates entries via config_validator
+    if available. Fail-soft: errors are counted but never raised."""
+    global _cache, _cache_ts, _refresh_count, _refresh_errors, _last_error
+    with _lock:
+        # Double-check under lock (another thread may have refreshed)
+        if time.time() - _cache_ts <= _TTL:
+            return
+        try:
+            rows = db.select("fleet_config", {"select": "key,value"}) or []
+        except Exception as exc:
+            _refresh_errors += 1
+            _last_error = str(exc)[:200]
+            # Keep stale cache rather than clearing — better stale than empty
+            _cache_ts = time.time()
+            return
+
+        # Validate entries if config_validator is available
+        new_cache = {}
+        validator = None
+        try:
+            import config_validator
+            validator = config_validator
+        except ImportError:
+            pass
+
+        for r in rows:
+            k, v = r.get("key", ""), r.get("value", "")
+            if not k:
+                continue
+            if validator:
+                ok, reason = validator.validate_key_value(k, str(v))
+                if not ok:
+                    # Skip invalid entries silently — they stay out of cache
+                    continue
+            new_cache[k] = v
+
+        _cache = new_cache
+        _cache_ts = time.time()
+        _refresh_count += 1
