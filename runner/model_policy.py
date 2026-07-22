@@ -45,12 +45,124 @@ TRANCHES = [t for t in TRANCHES if t[1]]  # drop the strong-local row when not c
 NEED = {"mechanical": 5, "qa": 6, "review": 6, "rating": 5, "plan": 7,
         "build": 6, "hard": 9, "security": 9, "legal": 9}
 
+# ---------------------------------------------------------------------------
+# Value-per-token routing  (enabled by ORCH_VALUE_ROUTING=true)
+# ---------------------------------------------------------------------------
+
+def revenue_keywords() -> set:
+    """Slug keywords that indicate revenue-adjacent work."""
+    return {"pricing", "billing", "payment", "contract", "onboarding",
+            "subscription", "invoice", "checkout", "stripe", "revenue",
+            "upgrade", "plan", "trial", "churn", "retention", "upsell"}
+
+# Estimated cost per 1k tokens (input) by provider — used for value/token math.
+# Kept intentionally approximate; updated when new providers land.
+_TOKEN_COST_PER_1K = {
+    "local":    0.0,
+    "deepseek": 0.00014,
+    "groq":     0.00008,
+    "google":   0.00015,
+    "xai":      0.005,
+    "openai":   0.003,
+    "claude":   0.003,       # blended Sonnet default
+}
+_OPUS_COST_PER_1K = 0.015    # Opus is materially more expensive
+
+# Revenue-weight by project (project_id -> multiplier).  Loaded once from DB, cached.
+_PROJECT_REV_CACHE: dict = {}
+_PROJECT_REV_TS: float = 0.0
+
+
+def _project_revenue_weight(project_id: str | None) -> float:
+    """Return a revenue multiplier for the project (1.0 = baseline)."""
+    global _PROJECT_REV_CACHE, _PROJECT_REV_TS
+    if not project_id:
+        return 1.0
+    now = time.time()
+    if now - _PROJECT_REV_TS > 300:       # refresh every 5 min
+        try:
+            import db
+            rows = db.select("projects", {"select": "id,revenue_weight", "limit": "200"}) or []
+            _PROJECT_REV_CACHE = {r["id"]: float(r.get("revenue_weight") or 1.0) for r in rows}
+            _PROJECT_REV_TS = now
+        except Exception:
+            pass
+    return _PROJECT_REV_CACHE.get(project_id, 1.0)
+
+
+def value_score(task: dict) -> float:
+    """Estimate the business value of *task* on a 0-10 scale.
+
+    Factors:
+      - kind: "build" tasks that touch revenue code score higher
+      - slug: revenue-adjacent keywords boost the score
+      - project revenue weight (from DB)
+      - merge-readiness: already tested/reviewed tasks are closer to shipping value
+    """
+    score = 1.0
+    kind = task.get("kind", "")
+    slug = (task.get("slug") or task.get("title") or "").lower()
+
+    # kind bonus
+    if kind in ("hard", "security", "legal"):
+        score += 2.0
+    elif kind == "build":
+        score += 1.0
+
+    # slug keyword match — each hit adds weight
+    kw_hits = revenue_keywords() & set(slug.replace("-", " ").replace("_", " ").split())
+    score += min(len(kw_hits) * 1.5, 4.0)
+
+    # project revenue multiplier
+    project_id = task.get("project_id") or task.get("project")
+    score *= _project_revenue_weight(project_id)
+
+    # merge-readiness: tasks that are tested + reviewed are about to ship value
+    if task.get("tested") or task.get("status") == "tested":
+        score += 1.5
+    if task.get("reviewed") or task.get("status") == "reviewed":
+        score += 1.0
+
+    return min(round(score, 2), 10.0)
+
+
+def value_per_token(task: dict, provider: str, model: str) -> float:
+    """Return estimated business-value per 1k tokens spent.
+
+    Higher is better — means more value extracted per dollar of inference cost.
+    For free/local providers the denominator is floored at 0.00001 to avoid division
+    by zero while still ranking them very favourably.
+    """
+    vs = value_score(task)
+    is_opus = "opus" in model.lower()
+    cost = _OPUS_COST_PER_1K if is_opus else _TOKEN_COST_PER_1K.get(provider, 0.003)
+    cost = max(cost, 0.00001)   # floor for free providers
+    return round(vs / cost, 2)
+
+
+# Threshold above which value-routing kicks in (task.value_score >= this AND task is hard)
+_VALUE_ROUTE_THRESHOLD = float(os.environ.get("ORCH_VALUE_ROUTE_THRESHOLD", "5.0"))
+
 
 def choose(task_class="build", agentic=True, need=None, prefer_free=True, sensitivity="standard",
-           project_id=None):
+           project_id=None, task=None):
     """Return (provider, model, reason). Cheapest capable, subscription/free-first.
-    Reads project cost_bias (0=normal, 1=cheap, 2=cheapest) from DB to tighten tier selection."""
+    Reads project cost_bias (0=normal, 1=cheap, 2=cheapest) from DB to tighten tier selection.
+    When ORCH_VALUE_ROUTING=true and *task* is supplied, high-value hard tasks are routed to
+    Opus even if a cheaper model clears the capability threshold."""
     need = need if need is not None else NEED.get(task_class, 6)
+
+    # --- value-per-token routing (opt-in) ---
+    if (task and os.environ.get("ORCH_VALUE_ROUTING", "").lower() == "true"
+            and task_class in ("hard", "build", "security", "legal")):
+        vs = value_score(task)
+        if vs >= _VALUE_ROUTE_THRESHOLD and need >= 8:
+            # High-value + hard -> reserve Opus to maximize revenue impact
+            return ("claude", "claude-opus-4-8",
+                    f"value-routing: value_score={vs} >= {_VALUE_ROUTE_THRESHOLD}, "
+                    f"vpt(opus)={value_per_token(task, 'claude', 'claude-opus-4-8'):.1f} "
+                    f"— reserving Opus for revenue-adjacent merge")
+
     # --- cost_bias feedback: cost_slo writes this; we consume it here ---
     cost_bias = 0
     if project_id:
@@ -202,6 +314,22 @@ def analysis():
         agentic = tc in ("build", "hard", "security", "legal")
         p, m, why = choose(tc, agentic=agentic)
         out["routing"][tc] = {"agentic": agentic, "provider": p, "model": m, "why": why}
+    # value-routing diagnostics
+    vr_enabled = os.environ.get("ORCH_VALUE_ROUTING", "").lower() == "true"
+    out["value_routing"] = {
+        "enabled": vr_enabled,
+        "threshold": _VALUE_ROUTE_THRESHOLD,
+        "revenue_keywords": sorted(revenue_keywords()),
+    }
+    if vr_enabled:
+        # show what a sample high-value task would route to
+        sample = {"kind": "hard", "slug": "billing-upgrade-flow", "tested": True}
+        vs = value_score(sample)
+        sample_p, sample_m, sample_why = choose("hard", agentic=True, task=sample)
+        out["value_routing"]["sample"] = {
+            "task": sample, "value_score": vs,
+            "routed_to": f"{sample_p}:{sample_m}", "reason": sample_why,
+        }
     return out
 
 
