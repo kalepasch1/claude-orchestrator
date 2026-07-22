@@ -1,31 +1,25 @@
-"""Tests for cx_provider_divergence."""
-import unittest
+#!/usr/bin/env python3
+"""Canary test for cx_provider_divergence — offline, no network."""
+import os, sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from cx_provider_divergence import _extract_verdict
 
 
-class TestProviderDivergence(unittest.TestCase):
-
-    def test_verdicts_diverge_yes_no(self):
-        from runner.cx_provider_divergence import _verdicts_diverge
-        self.assertTrue(_verdicts_diverge("Yes, this is compliant", "No, this fails"))
-        self.assertFalse(_verdicts_diverge("Yes, approved", "Yes, looks good"))
-
-    def test_verdicts_diverge_empty(self):
-        from runner.cx_provider_divergence import _verdicts_diverge
-        self.assertTrue(_verdicts_diverge("Yes", None))
-        self.assertTrue(_verdicts_diverge(None, "No"))
-        self.assertTrue(_verdicts_diverge("", "No"))
-
-    def test_pick_alternate_provider(self):
-        from runner.cx_provider_divergence import _pick_alternate_provider
-        alt = _pick_alternate_provider("claude-sonnet-4-6")
-        self.assertNotIn("claude", alt.lower())
-        alt2 = _pick_alternate_provider("openai:gpt-4o")
-        self.assertNotIn("openai", alt2.lower())
-
-    def test_syntax_check(self):
-        import py_compile
-        py_compile.compile("runner/cx_provider_divergence.py", doraise=True)
+def test_extract_verdict_valid_json():
+    result = _extract_verdict('{"verdict":"support","score":8,"reasoning":"clear"}')
+    assert result["verdict"] == "support"
+    assert result["score"] == 8
 
 
-if __name__ == "__main__":
-    unittest.main()
+def test_extract_verdict_embedded_json():
+    result = _extract_verdict('Here is my answer: {"verdict":"oppose","score":3,"reasoning":"weak"} end')
+    assert result["verdict"] == "oppose"
+
+
+def test_extract_verdict_empty():
+    assert _extract_verdict("") == {}
+    assert _extract_verdict(None) == {}
+
+
+def test_extract_verdict_no_json():
+    assert _extract_verdict("just plain text with no json") == {}
