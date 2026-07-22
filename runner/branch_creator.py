@@ -1,97 +1,106 @@
-"""Branch creation executor.
+#!/usr/bin/env python3
+"""branch_creator.py — create missing agent branches on approval.
 
-Creates missing branches on approval, handling existing branches
-and permission errors gracefully.
+Creates agent/<slug> branches from a base branch when the merge train or
+task executor discovers a branch is missing. Uses environment-variable
+credentials (never hardcoded). All git operations use subprocess with
+timeouts to prevent hangs.
+
+Env vars:
+    GITHUB_PAT              Personal access token (required for push)
+    ORCH_GIT_TIMEOUT        Git command timeout in seconds (default 60)
+
+Security:
+    - No secrets in code — reads GITHUB_PAT from env only
+    - PAT is never logged or included in error messages
+    - Failed auth returns a generic error, not credential details
 """
-
+import os
 import subprocess
-import logging
-from typing import Dict, Any, Optional
+import sys
 
-log = logging.getLogger(__name__)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import log as _log_mod
+import branch_lifecycle as bl
 
-
-class BranchCreationResult:
-    """Result of a branch creation attempt."""
-
-    def __init__(self, success: bool, branch_name: str, reason: str = ""):
-        self.success = success
-        self.branch_name = branch_name
-        self.reason = reason
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "success": self.success,
-            "branch_name": self.branch_name,
-            "reason": self.reason,
-        }
+_log = _log_mod.get("branch_creator")
+GIT_TIMEOUT = int(os.environ.get("ORCH_GIT_TIMEOUT", "60"))
 
 
-def create_branch(project_path: str, branch_name: str,
-                  base_branch: str = "main",
-                  remote: str = "origin",
-                  push: bool = True,
-                  run_command=None) -> BranchCreationResult:
-    """Create a branch from base and optionally push to origin.
+def _git(args, repo):
+    """Run a git command. Returns (stdout, success_bool)."""
+    try:
+        r = subprocess.run(
+            ["git"] + args, cwd=repo,
+            capture_output=True, text=True, timeout=GIT_TIMEOUT,
+        )
+        return r.stdout.strip(), r.returncode == 0
+    except subprocess.TimeoutExpired:
+        _log.warning("git timeout: %s", " ".join(args[:3]))
+        return "", False
+    except Exception as exc:
+        _log.warning("git error: %s", exc)
+        return "", False
+
+
+def create_branch(project_id, branch_name, base_branch="main", repo_path=None):
+    """Create an agent branch from *base_branch* and push to origin.
 
     Args:
-        project_path: Local path to the git repo
-        branch_name: Name of the branch to create
-        base_branch: Branch to base off of
-        remote: Remote name
-        push: Whether to push after creation
-        run_command: Optional callable(cmd, cwd) -> (returncode, stdout, stderr)
-                     for testing. Defaults to subprocess.run.
+        project_id:  project identifier (used for logging, not git ops)
+        branch_name: full branch name, e.g. "agent/my-task-slug"
+        base_branch: branch to fork from (default "main")
+        repo_path:   absolute path to local repo clone
+
+    Returns:
+        dict with keys: success (bool), reason (str)
     """
-    if run_command is None:
-        run_command = _default_run
+    # ── Validate inputs ──
+    if not repo_path or not os.path.isdir(repo_path):
+        return {"success": False, "reason": f"repo path not found: {repo_path}"}
 
-    # 1. Fetch latest
-    rc, out, err = run_command(["git", "fetch", remote], project_path)
-    if rc != 0:
-        return BranchCreationResult(False, branch_name, f"fetch failed: {err}")
+    ok, err = bl.validate_branch_name(branch_name)
+    if not ok:
+        return {"success": False, "reason": f"invalid branch name: {err}"}
 
-    # 2. Check if branch already exists locally or remotely
-    rc, out, _ = run_command(
-        ["git", "branch", "--list", branch_name], project_path
+    # ── Check PAT availability (never log the value) ──
+    pat = os.environ.get("GITHUB_PAT", "")
+    if not pat:
+        return {"success": False,
+                "reason": "GITHUB_PAT not set — cannot push. "
+                          "Set it in the environment before calling."}
+
+    # ── Fetch latest ──
+    _, fetched = _git(["fetch", "origin", "--quiet"], repo_path)
+    if not fetched:
+        _log.warning("fetch failed for %s (continuing with local state)", project_id)
+
+    # ── Check if branch already exists ──
+    existing = bl.branch_exists(repo_path, branch_name)
+    if existing:
+        return {"success": True, "reason": "branch already exists"}
+
+    # ── Create branch from base ──
+    _, created = _git(
+        ["branch", branch_name, f"origin/{base_branch}"],
+        repo_path,
     )
-    if out.strip():
-        return BranchCreationResult(True, branch_name, "branch already exists locally")
+    if not created:
+        # Fallback: try local base branch
+        _, created = _git(["branch", branch_name, base_branch], repo_path)
+    if not created:
+        return {"success": False,
+                "reason": f"failed to create branch from {base_branch}"}
 
-    rc, out, _ = run_command(
-        ["git", "ls-remote", "--heads", remote, branch_name], project_path
+    # ── Push to origin ──
+    _, pushed = _git(
+        ["push", "origin", f"{branch_name}:{branch_name}"],
+        repo_path,
     )
-    if out.strip():
-        return BranchCreationResult(True, branch_name, "branch already exists on remote")
+    if not pushed:
+        return {"success": False,
+                "reason": "branch created locally but push failed "
+                          "(check GITHUB_PAT scope)"}
 
-    # 3. Create branch
-    rc, out, err = run_command(
-        ["git", "branch", branch_name, f"{remote}/{base_branch}"], project_path
-    )
-    if rc != 0:
-        return BranchCreationResult(False, branch_name, f"branch creation failed: {err}")
-
-    # 4. Push if requested
-    if push:
-        rc, out, err = run_command(
-            ["git", "push", remote, branch_name], project_path
-        )
-        if rc != 0:
-            if "permission" in err.lower() or "denied" in err.lower():
-                return BranchCreationResult(False, branch_name, f"permission denied: {err}")
-            return BranchCreationResult(False, branch_name, f"push failed: {err}")
-
-    return BranchCreationResult(True, branch_name, "created successfully")
-
-
-def _default_run(cmd, cwd):
-    """Default command runner using subprocess."""
-    try:
-        result = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, timeout=60
-        )
-        return result.returncode, result.stdout, result.stderr
-    except subprocess.TimeoutExpired:
-        return 1, "", "command timed out"
-    except FileNotFoundError:
-        return 1, "", "git not found"
+    _log.info("created branch %s from %s in %s", branch_name, base_branch, project_id)
+    return {"success": True, "reason": "created and pushed"}
