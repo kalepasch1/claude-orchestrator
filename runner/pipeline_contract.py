@@ -15,6 +15,7 @@ still returns a deterministic contract rather than blocking task execution.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import sys
@@ -309,57 +310,32 @@ def note(existing: str = "", source: str = "unknown") -> str:
     return f"{base}; {suffix}" if base else suffix
 
 
-def verify_contract_first(tasks: list, repo_path: str = "") -> Dict[str, Any]:
-    """Verify that a planned DAG follows contract-first conventions.
+def artifact(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
+             slug: str = "", material: bool = False) -> str:
+    """Return a compact JSON string capturing the analysis plan for this task.
 
-    Checks:
-    1. Each code task has a sibling test-authoring task that precedes it in deps.
-    2. If repo_path is given, the acceptance test file exists on disk.
-    3. If the test file exists, check whether it contains passing (non-xfail) tests.
-
-    Returns {"ok": bool, "errors": [...], "verified": [...]}
+    Stored alongside the task (e.g. in log_tail or a dedicated column) so the routing
+    decisions made before the agent ran are queryable without re-parsing the prompt.
+    Fail-soft: returns "{}" on any error so callers are never blocked.
     """
-    errors = []
-    verified = []
-    slugs = {t.get("slug", "") for t in tasks}
-
-    for t in tasks:
-        slug = t.get("slug", "")
-        if slug == "contracts" or slug.endswith("-write-tests"):
-            continue
-        # Check for a sibling test task
-        test_slug = f"{slug}-write-tests"
-        deps = t.get("deps", [])
-        if test_slug in slugs:
-            if test_slug not in deps:
-                errors.append(f"{slug}: test task '{test_slug}' exists but is not in deps")
-            else:
-                verified.append(slug)
-        # Check for acceptance test file on disk
-        if repo_path:
-            test_file = os.path.join(repo_path, "runner", "tests", f"test_{slug.replace('-', '_')}.py")
-            if os.path.isfile(test_file):
-                try:
-                    with open(test_file) as f:
-                        content = f.read()
-                    if "xfail" in content or "TODO" in content or "skip" in content.lower():
-                        verified.append(f"{slug}: test file exists (xfail/pending)")
-                    else:
-                        verified.append(f"{slug}: test file exists (active)")
-                except Exception:
-                    pass
-
-    return {"ok": len(errors) == 0, "errors": errors, "verified": verified}
-
-
-def rewrite_proof_for_contract_first(proof: str, test_slug: str) -> str:
-    """Rewrite a task's proof string to reference the contract-first acceptance test.
-
-    If proof is empty or generic, replace it with "that test passes + suite green".
-    """
-    if not proof or proof.strip() in ("", "tests pass", "suite green"):
-        return f"acceptance test from '{test_slug}' passes + suite green"
-    return proof
+    try:
+        plan = build_plan(prompt, project=project, kind=kind, source=source, slug=slug, material=material)
+        storable = {
+            "task_class": plan.get("task_class"),
+            "need": plan.get("need"),
+            "risk": plan.get("risk"),
+            "coder": plan.get("coder"),
+            "author_model": plan.get("author_model"),
+            "preflight": plan.get("preflight", {}).get("model"),
+            "strategy": plan.get("strategy", {}).get("model"),
+            "qa": plan.get("qa", {}).get("model"),
+            "qa_panel": plan.get("qa_panel"),
+            "source": plan.get("source"),
+            "project": plan.get("project"),
+        }
+        return json.dumps(storable, separators=(",", ":"))
+    except Exception:
+        return "{}"
 
 
 if __name__ == "__main__":
