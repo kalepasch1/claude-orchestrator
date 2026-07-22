@@ -513,7 +513,11 @@ def set_throttle(n):
 
 
 def current_limit():
-    """Read the persisted throttle limit, falling back to the ceiling."""
+    """Read the current effective MAX_PARALLEL from the throttle file.
+
+    Returns the ceiling if the file is missing or unreadable, clamped to
+    [1, MAX_PARALLEL_CEILING].
+    """
     try:
         with open(THROTTLE_FILE) as f:
             return max(1, min(int(f.read().strip()), _ceiling()))
