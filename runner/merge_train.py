@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import events
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
+import integration_runtime
 import agentic_repair
 try:
     import pipeline_metrics as _pm
