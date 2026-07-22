@@ -25,6 +25,6 @@ To harden the other Mac, repeat: clone to `~/claude-orchestrator`, copy `.env` t
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `keepalive.sh` crash-loops on login | FDA was reset; runtime still under `~/Documents` | Re-clone to `~/claude-orchestrator` and repoint launcher |
-| `.env` not found at startup | Symlink broken after clone refresh | `ln -sf ~/.claude-orchestrator/.env runner/.env` |
-| Double runner instances | Lock file path mismatch between launcher and zprofile | Ensure both use `~/claude-orchestrator/.runtime/runner.lock` |
+| `runner.py` crash-loops after macOS update | FDA revoked; runtime still under `~/Documents` | Move runtime to `~/claude-orchestrator` per above |
+| `.env` not found at startup | Symlink broken or `~/.claude-orchestrator/.env` missing | Re-create: `ln -sf ~/.claude-orchestrator/.env runner/.env` |
+| Double-start (two runners) | Lock file path mismatch between `keepalive.sh` and launchd | Ensure both use `.runtime/runner.lock` in the same clone |
