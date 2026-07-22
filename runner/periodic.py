@@ -734,16 +734,10 @@ def run_roi():
         print(f"roi {r['project']}: cpm=${cpm} weight={weight}")
 
 
-def run_error_remediation_periodic():
-    """Periodic AI-powered error detection and config rollback."""
-    try:
-        import error_remediation
-        error_remediation.periodic_check()
-        s = error_remediation.stats()
-        if s.get("rollback_count", 0) > 0 or s.get("errors_in_window", 0) > 0:
-            print(f"[error-remediation] stats: {s}")
-    except Exception as e:
-        print(f"[error-remediation] periodic run failed (fail-soft): {e}")
+def run_nightsweep():
+    """Batch mechanical/doc/test tasks to cheapest providers during off-peak hours."""
+    import nightly_cheap_sweep
+    nightly_cheap_sweep.run()
 
 
 JOBS = {
@@ -828,9 +822,7 @@ JOBS = {
     "modelportfolios": run_modelportfolios,
     "modelslashing": run_modelslashing,
     "commonbrain": run_commonbrain,
-    "priority_scorer": run_priority_scorer,
-    "quarantine_gc": run_quarantine_gc,
-    "error_remediation_periodic": run_error_remediation_periodic,
+    "nightsweep": run_nightsweep,
 }
 
 if __name__ == "__main__":
@@ -856,12 +848,8 @@ if __name__ == "__main__":
         "billingguard", "dedup", "conflictresolve", "canaryecon", "forecast", "arbitrage", "autoscale",
         "contcompact", "backlogcompact",
         "bizradar", "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",
-        "stripe", "ownerreport", "worktreegc", "stuck_reaper", "remediate", "selfcheck",
-        "quarantine", "credresolver", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain",
-        "priority_scorer", "quarantine_gc",
-        "editorial",
-        "adversarial_fleet",
-        "fleet_e2e_audit",
+        "stripe", "ownerreport", "worktreegc", "remediate", "selfcheck",
+        "quarantine", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain", "nightsweep",
         "release_kpi.py", "integrate_kpi.py", "fleet_control.py",
     }
     if job not in _SAFE_WHEN_PAUSED:
