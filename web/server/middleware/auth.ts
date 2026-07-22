@@ -20,6 +20,7 @@ const PUBLIC_ACCESS_PATHS = new Set([
   '/api/public/access/request',
   '/api/public/access/claim',
   '/api/public/access/status',
+  '/api/public/portfolio-simulation',
   // Machine-to-machine delivery hooks authenticate their raw body with an
   // HMAC in the route; requiring a Supabase user token would make them inert.
   '/api/webhooks/github',

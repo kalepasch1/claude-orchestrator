@@ -12,6 +12,10 @@
     {
       "path": "/api/fleet/analytics?rangeDays=1&sync=true",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/hivemind/autopilot/run",
+      "schedule": "17 * * * *"
     }
   ],
   "headers": [

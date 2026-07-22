@@ -1,10 +1,10 @@
 {
-  "version": 6,
+  "version": 10,
   "journeys": [
     { "name": "command-center", "route": "/", "file": "pages/index.vue", "mustContain": ["What should we accomplish?", "/api/tasks/intake", "Autopilot"] },
     { "name": "connections", "route": "/connectors", "file": "pages/connectors.vue", "mustContain": ["Connections", "Connect"] },
     { "name": "digital-twin", "route": "/digital-twin", "file": "pages/digital-twin.vue", "mustContain": ["Portfolio digital twin"] },
-    { "name": "business-os", "route": "/business", "file": "pages/business.vue", "mustContain": ["Business operating system", "/api/business/action", "Workforce intelligence contract", "On-platform production fabric"] },
+    { "name": "hivemind-economy", "route": "/hivemind", "file": "pages/hivemind.vue", "mustContain": ["HivemindEconomy"] },
     { "name": "capability-passport", "route": "/admin/capability-passport", "file": "pages/admin/capability-passport.vue", "mustContain": ["Capability passport & routing", "CapabilityEvolution"] }
   ],
   "criticalActions": [
@@ -16,6 +16,10 @@
     { "file": "components/UniversalCommand.vue", "mustContain": ["Universal capability command", "Continue with this outcome", "Least privilege", "command/context", "madeus:pending-command"] },
     { "file": "components/ExecutionConstitution.vue", "mustContain": ["Capture current world", "Issue temporary scoped grant", "Sign and publish capability", "Compile governed consensus", "Create governed warranty", "Run certification", "Capture release state", "Preview latest replay"] },
     { "file": "components/ConstitutionalAutonomy.vue", "mustContain": ["Establish institution", "Record privacy-safe evidence", "Propose evidence-weighted allocation", "Issue committed credential", "Generate least-disruptive response", "Compile and contract-test policy", "Seal encrypted continuity capsule", "Run adversarial contract matrix"] },
-    { "file": "components/FederationAssurance.vue", "mustContain": ["Propose sovereign trust", "Prepare selective evidence exchange", "Update causal twin", "Attest latest execution chain", "Delegate attenuated authority", "Propose verified-outcome contract", "Compile operating memory", "Predict inclusion barriers", "Convene adversarial court"] }
+    { "file": "components/FederationAssurance.vue", "mustContain": ["Propose sovereign trust", "Prepare selective evidence exchange", "Update causal twin", "Attest latest execution chain", "Delegate attenuated authority", "Propose verified-outcome contract", "Compile operating memory", "Predict inclusion barriers", "Convene adversarial court"] },
+    { "file": "components/HivemindEconomy.vue", "mustContain": ["Required by default", "Autonomous improvement immune system", "Publish reusable learning", "Start bounded canary", "Credit ledger"] },
+    { "file": "components/HivemindAdvanced.vue", "mustContain": ["Founder disclosure dial", "Compatibility without code transfer", "Pay only for incremental value", "One failure protects every adopter", "License derivatives, never the original", "Synthetic founder benchmarks"] },
+    { "file": "components/HivemindGovernance.vue", "mustContain": ["The network works", "Earn", "Adopt", "Protect", "Govern", "Portfolio protected", "Prepare safely", "No private payload pooling", "FOUNDER CONSTITUTION"] },
+    { "file": "components/PortfolioSafeSimulator.vue", "mustContain": ["bounded categories only", "Generate private simulation", "Privacy receipt"] }
   ]
 }
