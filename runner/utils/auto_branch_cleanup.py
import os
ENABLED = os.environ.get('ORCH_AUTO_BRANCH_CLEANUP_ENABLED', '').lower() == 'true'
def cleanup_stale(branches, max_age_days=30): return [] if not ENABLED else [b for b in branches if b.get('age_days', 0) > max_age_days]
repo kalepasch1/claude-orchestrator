@@ -1,0 +1,4 @@
+"""auto_branch_cleanup.py — Automated branch cleanup. Env gate: ORCH_AUTO_BRANCH_CLEANUP_ENABLED (default OFF)."""
+import os
+ENABLED = os.environ.get('ORCH_AUTO_BRANCH_CLEANUP_ENABLED', '').lower() == 'true'
+def cleanup_stale(branches, max_age_days=30): return [] if not ENABLED else [b for b in branches if b.get('age_days', 0) > max_age_days]
