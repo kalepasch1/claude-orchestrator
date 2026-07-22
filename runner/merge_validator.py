@@ -50,8 +50,28 @@ _FAIL_SOFT = {
 def validate_draft(task, draft_diff, repo_path, base_branch, test_cmd):
     """Apply *draft_diff* on a temp worktree of *repo_path*, run *test_cmd*.
 
-    Returns dict with keys: valid, test_results, failures, can_fast_track.
-    Never raises -- returns fail-soft result on any error.
+    Parameters
+    ----------
+    task : dict
+        Task record (needs 'id' or 'slug' for logging/tracking).
+    draft_diff : str
+        Unified diff to apply (``git apply --3way``).
+    repo_path : str
+        Absolute path to the project repository.
+    base_branch : str
+        Branch to create the worktree from (e.g. ``"master"``).
+    test_cmd : str
+        Shell command to run tests (e.g. ``"npm test"``).
+
+    Returns
+    -------
+    dict
+        ``valid`` (bool) — tests passed on the draft.
+        ``test_results`` (str) — raw test output or error message.
+        ``failures`` (list[str]) — extracted failure messages.
+        ``can_fast_track`` (bool) — True when the draft can skip a full agent run.
+
+    Never raises — returns a fail-soft result on any error.
     """
     if not _ENABLED:
         return dict(_FAIL_SOFT, test_results="merge_validator disabled")
