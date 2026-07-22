@@ -25,7 +25,8 @@ def should_probe(task: dict | None, prompt: str | None) -> bool:
     return len(text) > int(os.environ.get("ORCH_ADAPTIVE_PROBE_CHARS", "1200")) or (task or {}).get("material") or kind in ("build", "security", "legal")
 
 
-def make_probe(task, prompt, project):
+def make_probe(task: dict | None, prompt: str, project: str) -> str:
+    """Run a cheap model to produce a routing brief, returned as a text block to prepend."""
     try:
         import model_policy, model_gateway
         sensitivity = str((task or {}).get("sensitivity") or "standard")
