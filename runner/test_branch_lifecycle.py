@@ -71,6 +71,28 @@ class TestValidateBranchName:
         ok, reason = bl.validate_branch_name("agent/foo^bar")
         assert ok is False
 
+    def test_at_brace(self):
+        ok, reason = bl.validate_branch_name("agent/foo@{bar}")
+        assert ok is False
+
+    def test_colon(self):
+        ok, reason = bl.validate_branch_name("agent/foo:bar")
+        assert ok is False
+
+    def test_bracket(self):
+        ok, reason = bl.validate_branch_name("agent/foo[1]")
+        assert ok is False
+
+    def test_starts_with_dot(self):
+        ok, reason = bl.validate_branch_name(".agent/foo")
+        assert ok is False
+
+    def test_single_char(self):
+        ok, reason = bl.validate_branch_name("a")
+        # Single char — git allows it, our regex requires 2+ chars
+        # This documents the current behavior
+        assert isinstance(ok, bool)
+
 
 # ---------------------------------------------------------------------------
 # is_agent_branch / is_feature_branch

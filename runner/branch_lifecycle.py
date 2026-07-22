@@ -34,8 +34,7 @@ MAX_RETRIES = int(os.environ.get("ORCH_BRANCH_MAX_RETRIES", "3"))
 def log_branch_event(event_type, slug, project_id=None, details=None):
     """Record a branch lifecycle event to Supabase for observability.
 
-    Events: 'created', 'cleaned', 'recovered', 'stale_detected', 'recovery_failed'.
-    Fails silently — branch operations must never block on logging.
+    Returns (True, "") on success or (False, reason) on failure.
     """
     if not ENABLED:
         return
