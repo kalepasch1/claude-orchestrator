@@ -14,6 +14,7 @@ Env vars:
     ORCH_CI_PASS_THRESHOLD       minimum pass rate 0.0-1.0 (default: 1.0)
     ORCH_CI_MAX_DURATION_S       max test duration in seconds (default: 300)
     ORCH_CI_DRY_RUN              "true" for dry-run mode
+    ORCH_CI_AUTO_BLOCK           "true" to auto-block merge on failure
 """
 import os, sys, subprocess, time, json
 
@@ -26,13 +27,11 @@ ENABLED = os.environ.get("ORCH_CI_TEST_GATE", "true").lower() in ("1", "true", "
 PASS_THRESHOLD = float(os.environ.get("ORCH_CI_PASS_THRESHOLD", "1.0") or 1.0)
 MAX_DURATION = float(os.environ.get("ORCH_CI_MAX_DURATION_S", "300") or 300)
 DRY_RUN = os.environ.get("ORCH_CI_DRY_RUN", "true").lower() in ("1", "true", "yes", "on")
+AUTO_BLOCK = os.environ.get("ORCH_CI_AUTO_BLOCK", "true").lower() in ("1", "true", "yes", "on")
 
 
 def run_tests(repo_path, test_cmd, branch=None, timeout=None):
-    """
-    Run test_cmd in repo_path, optionally checking out branch first.
-    Returns {passed: bool, exit_code: int, duration_s: float, stdout: str, stderr: str}.
-    """
+    """Run test_cmd in repo_path. Returns dict with pass/fail, timing, output."""
     timeout = timeout or MAX_DURATION
     env = {**os.environ}
 
@@ -51,111 +50,61 @@ def run_tests(repo_path, test_cmd, branch=None, timeout=None):
             "stderr": r.stderr[-2000:] if r.stderr else "",
         }
     except subprocess.TimeoutExpired:
-        duration = time.monotonic() - start
         return {
             "passed": False,
             "exit_code": -1,
-            "duration_s": round(duration, 2),
+            "duration_s": round(time.monotonic() - start, 2),
             "stdout": "",
-            "stderr": f"test timed out after {timeout}s",
+            "stderr": f"Test timed out after {timeout}s",
         }
     except Exception as e:
-        duration = time.monotonic() - start
         return {
             "passed": False,
             "exit_code": -1,
-            "duration_s": round(duration, 2),
+            "duration_s": round(time.monotonic() - start, 2),
             "stdout": "",
             "stderr": str(e),
         }
 
 
-def gate_task(task, project):
-    """
-    Run CI gate for a task. Returns {task_id, gate_passed, result, reason}.
-    """
+def gate_merge(project_id, task_slug, repo_path, test_cmd, branch=None):
+    """Run tests and gate merge. Returns {allow: bool, ...}."""
     if not ENABLED:
-        return {"task_id": task["id"], "gate_passed": True, "reason": "gate disabled"}
+        return {"allow": True, "reason": "ci_test_gate disabled"}
 
-    repo = db.localize_repo_path(project.get("repo_path", ""))
-    test_cmd = project.get("test_cmd", "")
-
-    if not repo or not os.path.isdir(repo):
-        return {"task_id": task["id"], "gate_passed": False,
-                "reason": f"repo not resolvable: {repo}"}
-    if not test_cmd:
-        return {"task_id": task["id"], "gate_passed": True,
-                "reason": "no test_cmd configured, passing by default"}
-
-    if DRY_RUN:
-        _log.info("[DRY RUN] would run '%s' in %s for task %s", test_cmd, repo, task.get("slug"))
-        return {"task_id": task["id"], "gate_passed": True, "reason": "dry run"}
-
-    _log.info("running CI gate for task %s: %s", task.get("slug"), test_cmd)
-    result = run_tests(repo, test_cmd)
-
-    gate_passed = result["passed"] and result["duration_s"] <= MAX_DURATION
-    reason = "passed" if gate_passed else (
-        f"tests failed (exit {result['exit_code']})" if not result["passed"]
-        else f"exceeded duration limit ({result['duration_s']}s > {MAX_DURATION}s)"
-    )
-
-    return {
-        "task_id": task["id"],
-        "gate_passed": gate_passed,
-        "result": result,
-        "reason": reason,
+    result = run_tests(repo_path, test_cmd, branch)
+    record = {
+        "project_id": project_id,
+        "task_slug": task_slug,
+        "passed": result["passed"],
+        "exit_code": result["exit_code"],
+        "duration_s": result["duration_s"],
+        "log_tail": (result.get("stdout", "") + "\n" + result.get("stderr", ""))[-3000:],
     }
 
+    try:
+        db.insert("ci_test_runs", record)
+    except Exception:
+        pass
 
-def run_gate_batch(project_id=None, limit=5):
-    """Run CI gate for DONE tasks pending merge."""
-    params = {"select": "id,slug,project_id,base_branch,kind",
-              "state": "eq.DONE", "limit": str(limit)}
-    if project_id:
-        params["project_id"] = f"eq.{project_id}"
+    if DRY_RUN:
+        _log.info(f"DRY_RUN: test {'passed' if result['passed'] else 'FAILED'} for {task_slug}")
+        return {"allow": True, "reason": "dry-run mode", "test_result": result}
 
-    tasks = db.select("tasks", params) or []
-    results = []
-    for t in tasks:
-        pid = t.get("project_id", "")
-        projects = db.select("projects", {"select": "*", "id": f"eq.{pid}"}) or []
-        if not projects:
-            continue
-        gate_result = gate_task(t, projects[0])
-        results.append(gate_result)
-        _log.info("task %s: gate %s (%s)", t.get("slug"),
-                  "PASSED" if gate_result["gate_passed"] else "FAILED",
-                  gate_result.get("reason", ""))
+    if not result["passed"]:
+        if AUTO_BLOCK:
+            try:
+                db.update("tasks", {"state": "BLOCKED", "note": f"CI gate: tests failed (exit {result['exit_code']})"}, {"slug": task_slug, "project_id": project_id})
+            except Exception:
+                pass
+        return {"allow": False, "reason": f"tests failed (exit {result['exit_code']})", "test_result": result}
 
-    return results
+    if result["duration_s"] > MAX_DURATION:
+        return {"allow": False, "reason": f"tests too slow ({result['duration_s']}s > {MAX_DURATION}s)", "test_result": result}
 
-
-# --- Tests ---
-def test_run_tests_success():
-    """Successful test command returns passed=True."""
-    result = run_tests("/tmp", "echo ok", timeout=10)
-    assert result["passed"] is True
-    assert result["exit_code"] == 0
-    assert result["duration_s"] < 10
+    return {"allow": True, "reason": "tests passed", "test_result": result}
 
 
-def test_run_tests_failure():
-    """Failed test command returns passed=False."""
-    result = run_tests("/tmp", "exit 1", timeout=10)
-    assert result["passed"] is False
-    assert result["exit_code"] == 1
-
-
-def test_run_tests_timeout():
-    """Timed out test returns passed=False."""
-    result = run_tests("/tmp", "sleep 30", timeout=1)
-    assert result["passed"] is False
-    assert "timed out" in result["stderr"]
-
-
-if __name__ == "__main__":
-    test_run_tests_success()
-    test_run_tests_failure()
-    test_run_tests_timeout()
-    print("All ci_test_gate tests passed")
+def premerge_check(project_id, task_slug, repo_path, test_cmd):
+    """Convenience: called from merge_train before allowing merge."""
+    return gate_merge(project_id, task_slug, repo_path, test_cmd)

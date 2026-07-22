@@ -1,0 +1,13 @@
+{
+  "name": "negotiation-room-open-portal",
+  "project": "smarter-negotiation",
+  "description": "Open a negotiation room and verify the portal renders with deal data",
+  "auth": {"env_user": "QA_NEGOTIATION_USER", "env_pass": "QA_NEGOTIATION_PASS"},
+  "steps": [
+    {"action": "navigate", "url": "/rooms"},
+    {"action": "wait", "selector": ".room-list"},
+    {"action": "click", "selector": ".room-list a:first-child"},
+    {"action": "assert_visible", "selector": ".deal-portal", "assert": "deal portal renders"},
+    {"action": "assert_visible", "selector": ".deal-terms", "assert": "terms section visible"}
+  ]
+}

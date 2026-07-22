@@ -1,0 +1,15 @@
+{
+  "name": "licensing-intake-happy-path",
+  "project": "licensing-intake",
+  "description": "Happy path: submit a new licensing intake form and verify confirmation",
+  "auth": {"env_user": "QA_LICENSING_USER", "env_pass": "QA_LICENSING_PASS"},
+  "steps": [
+    {"action": "navigate", "url": "/intake"},
+    {"action": "wait", "selector": "form"},
+    {"action": "fill", "selector": "[name=company]", "value": "Test Corp"},
+    {"action": "fill", "selector": "[name=contact_email]", "value": "qa@test.com"},
+    {"action": "click", "selector": "button[type=submit]"},
+    {"action": "assert_visible", "selector": ".confirmation", "assert": "confirmation message appears"},
+    {"action": "assert_text", "selector": ".confirmation", "value": "submitted"}
+  ]
+}
