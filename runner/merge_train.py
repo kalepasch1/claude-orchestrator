@@ -142,15 +142,19 @@ def _refresh_base(repo, base):
 
 
 def _rebase_onto_base(repo, branch, base):
-    """Step 2: rebase the branch onto the CURRENT base in an ISOLATED worktree
-    (approval_merge._rebase_isolated). The old `git rebase base branch` form checked the branch
-    out in the repo's OWN primary checkout, and an aborted rebase left the main checkout parked
-    on an agent branch — the runner then executed stale agent-branch code for hours (root cause
-    of the 2026-07-08/09 checkout-drift incidents). Never mutate the main checkout here."""
+    """Step 2: rebase the branch onto the CURRENT base. Returns (ok, conflict_detail).
+    Frees any leftover agent worktree first (approval_merge._free_branch — git refuses to
+    rebase a branch checked out elsewhere, and that error used to be mislabeled CONFLICT).
+    conflict_detail is a newline-separated list of conflicting filenames (empty on success),
+    captured before --abort so repair directives can name the specific files."""
     approval_merge._free_branch(repo, branch)
     if _git(repo, "merge-base", "--is-ancestor", base, branch).returncode == 0:
-        return True  # already based on current base
-    return approval_merge._rebase_isolated(repo, base, branch)
+        return True, ""  # already based on current base
+    if _git(repo, "rebase", base, branch, timeout=300).returncode != 0:
+        detail = (_git(repo, "diff", "--name-only", "--diff-filter=U").stdout or "").strip()
+        _git(repo, "rebase", "--abort")
+        return False, detail
+    return True, ""
 
 
 def _run_tests(repo, test_cmd, task=None):
@@ -711,48 +715,31 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         return "already-integrated"
     _task_patch(task, {"state": MERGING_STATE, "note": f"train: integrating {branch} into {base}"})
 
-    if not _rebase_onto_base(repo, branch, base):                 # (2)
-        # --- semantic merge attempt: try AST-level auto-resolution before expensive redo ---
-        _semantic_ok = False
-        try:
-            _semantic_ok = _try_semantic_merge(repo, branch, base)
-        except Exception:
-            pass  # fail-soft: any error → fall through to redo
-        if not _semantic_ok and os.environ.get("ORCH_MINIMAL_COMMIT_EXTRACTION", "true").lower() in ("1", "true", "yes", "on"):
-            try:
-                import minimal_commit
-                approval_merge._free_branch(repo, branch)
-                extracted = minimal_commit.extract(repo, branch, base, task)
-                _semantic_ok = bool(extracted.get("ok"))
-                if _semantic_ok:
-                    _log(pname, slug, "MINIMAL_EXTRACT",
-                         f"{len(extracted.get('files') or [])} task files onto fresh {base}")
-            except Exception:
-                _semantic_ok = False
-        if _semantic_ok:
-            _log(pname, slug, "SEMANTIC_MERGE", f"auto-resolved rebase conflict on {branch}")
-            # branch now sits on base with merged content — fall through to step (3): tests
-        else:
-            # redo-on-fresh-base: a stale branch conflicting with the advanced base should be REBUILT
-            # on the new base, not rot as CONFLICT (that's what stalled the queue before).
-            tr = int(task.get("transient_retries") or 0)
-            cap = int(os.environ.get("MERGE_CONFLICT_REDO_CAP", "2"))
-            if tr < cap:
-                _delete_branch(repo, branch)
-                patch = agentic_repair.repair_patch(
-                    task, f"train: rebase conflict on {branch} against {base}",
-                    category="conflict",
-                    directive=f"Rebuild the same task on fresh {base}, resolve the conflict in code, run tests, and commit.")
-                patch["transient_retries"] = tr + 1
-                _task_patch(task, patch)
-                db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:redo"})
-                _log(pname, slug, "REDO", f"rebase conflict, rebuild on fresh {base} ({tr+1}/{cap})")
-                return "redo"
-            _task_patch(task, {"state": "CONFLICT", "note": f"train: still conflicts after {cap} redos - needs manual rebase"})
-            db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:conflict-exhausted"})
-            _attribute_train_outcome(slug, task, "conflict", integrated=False)
-            _log(pname, slug, "CONFLICT", f"redo cap {cap} exhausted")
-            return "conflict"
+    rebase_ok, conflict_detail = _rebase_onto_base(repo, branch, base)  # (2)
+    if not rebase_ok:
+        # redo-on-fresh-base: a stale branch conflicting with the advanced base should be REBUILT
+        # on the new base, not rot as CONFLICT (that's what stalled the queue before).
+        tr = int(task.get("transient_retries") or 0)
+        cap = int(os.environ.get("MERGE_CONFLICT_REDO_CAP", "2"))
+        files_hint = (f" Conflicting files: {conflict_detail}." if conflict_detail else "")
+        if tr < cap:
+            _delete_branch(repo, branch)
+            patch = agentic_repair.repair_patch(
+                task, f"train: rebase conflict on {branch} against {base}.{files_hint}",
+                category="conflict",
+                directive=(f"Rebuild the same task on fresh {base}, resolve the conflict in "
+                           f"code, run tests, and commit.{files_hint}"))
+            patch["transient_retries"] = tr + 1
+            _task_patch(task, patch)
+            db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:redo"})
+            _log(pname, slug, "REDO", f"rebase conflict{files_hint}, rebuild on fresh {base} ({tr+1}/{cap})")
+            return "redo"
+        _task_patch(task, {"state": "CONFLICT",
+                           "note": f"train: still conflicts after {cap} redos - needs manual rebase.{files_hint}"})
+        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:conflict-exhausted"})
+        _attribute_train_outcome(slug, task, "conflict", integrated=False)
+        _log(pname, slug, "CONFLICT", f"redo cap {cap} exhausted{files_hint}")
+        return "conflict"
 
     ok, tail = _run_tests(repo, _test_cmd_for(proj, repo), task=task)  # (3)
     if not ok:

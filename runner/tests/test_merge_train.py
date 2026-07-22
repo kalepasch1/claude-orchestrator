@@ -57,9 +57,9 @@ class TrainCase(unittest.TestCase):
         patches = [
             patch.object(merge_train, "db", self.mock_db),
             patch.object(merge_train, "_branch_exists", return_value=True),
+            patch.object(merge_train, "_materialize_branch", return_value=True),
             patch.object(merge_train, "_refresh_base", return_value=None),
-            patch.object(merge_train, "_already_integrated", return_value=False),
-            patch.object(merge_train, "_rebase_onto_base", return_value=True),
+            patch.object(merge_train, "_rebase_onto_base", return_value=(True, "")),
             patch.object(merge_train, "_run_tests", return_value=(True, "green")),
             patch.object(merge_train, "_ff_base", return_value=True),
             patch.object(merge_train, "_push_base", return_value=""),
@@ -286,7 +286,7 @@ class TestBranchMissing(TrainCase):
     def test_running_task_waits_without_consuming_approved_card(self):
         self.cards = [_card("c1", "feat-x")]
         self.tasks = [_task("t1", "feat-x", state="RUNNING")]
-        self.mocks["_branch_exists"].return_value = False
+        self.mocks["_materialize_branch"].return_value = False
         summary = merge_train.train_run()
         self.assertEqual(summary["skipped"], 1)
         self.assertEqual(self.task_updates("t1"), [])
@@ -296,7 +296,7 @@ class TestBranchMissing(TrainCase):
     def test_blocked_task_with_missing_branch_requeues_without_consuming_card(self):
         self.cards = [_card("c1", "feat-x")]
         self.tasks = [_task("t1", "feat-x", state="BLOCKED", retries=0)]
-        self.mocks["_branch_exists"].return_value = False
+        self.mocks["_materialize_branch"].return_value = False
         with patch.dict(os.environ, {"MERGE_BRANCH_MISSING_REDO_CAP": "2"}):
             summary = merge_train.train_run()
         self.assertEqual(summary["redo"], 1)
@@ -314,7 +314,7 @@ class TestConflictRedo(TrainCase):
     def test_conflict_under_cap_requeues(self):
         self.cards = [_card("c1", "feat-x")]
         self.tasks = [_task("t1", "feat-x", retries=0)]
-        self.mocks["_rebase_onto_base"].return_value = False
+        self.mocks["_rebase_onto_base"].return_value = (False, "")
         with patch.dict(os.environ, {"MERGE_CONFLICT_REDO_CAP": "2"}):
             summary = merge_train.train_run()
         self.assertEqual(summary["redo"], 1)
@@ -328,7 +328,7 @@ class TestConflictRedo(TrainCase):
     def test_conflict_past_cap_marks_conflict(self):
         self.cards = [_card("c1", "feat-x")]
         self.tasks = [_task("t1", "feat-x", retries=2)]
-        self.mocks["_rebase_onto_base"].return_value = False
+        self.mocks["_rebase_onto_base"].return_value = (False, "")
         with patch.dict(os.environ, {"MERGE_CONFLICT_REDO_CAP": "2"}):
             summary = merge_train.train_run()
         self.assertEqual(summary["conflict"], 1)
@@ -364,7 +364,7 @@ class TestSerialization(TrainCase):
         self.tasks = [_task("t1", "feat-a"), _task("t2", "feat-b")]
         order = []
         self.mocks["_rebase_onto_base"].side_effect = \
-            lambda repo, branch, base: order.append(branch) or True
+            lambda repo, branch, base: order.append(branch) or (True, "")
         summary = merge_train.train_run()
         self.assertEqual(summary["merged"], 2)
         self.assertEqual(order, ["agent/feat-a", "agent/feat-b"],
@@ -377,7 +377,7 @@ class TestSerialization(TrainCase):
                       {**_task("t2", "docs-cleanup"), "kind": "docs"}]
         order = []
         self.mocks["_rebase_onto_base"].side_effect = \
-            lambda repo, branch, base: order.append(branch) or True
+            lambda repo, branch, base: order.append(branch) or (True, "")
         summary = merge_train.train_run()
         self.assertEqual(summary["merged"], 2)
         self.assertEqual(order, ["agent/docs-cleanup", "agent/pricing-auth-change"])
@@ -391,7 +391,7 @@ class TestSerialization(TrainCase):
                       _task("t2", "feat-b", project_id="p2")]
         # p1's branch conflicts; p2's merges
         self.mocks["_rebase_onto_base"].side_effect = \
-            lambda repo, branch, base: branch != "agent/feat-a"
+            lambda repo, branch, base: (False, "") if branch == "agent/feat-a" else (True, "")
         summary = merge_train.train_run()
         self.assertEqual(summary["redo"], 1)
         self.assertEqual(summary["merged"], 1)
