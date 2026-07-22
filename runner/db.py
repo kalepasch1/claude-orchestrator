@@ -216,14 +216,106 @@ def _num(v, default):
         return default
 
 
+def _is_recovery_task(t):
+    return str((t or {}).get("slug") or "").startswith(RECOVERY_PREFIX)
+
+
+def _is_release_fix_task(t):
+    slug = str((t or {}).get("slug") or "")
+    note = str((t or {}).get("note") or "").lower()
+    return slug.startswith(RELEASE_FIX_PREFIXES) or "release_train" in note or "vercel" in note
+
+
+def _is_improvement_task(t):
+    return str((t or {}).get("slug") or "").startswith(IMPROVEMENT_PREFIX)
+
+
+def _is_quarantine_rework_task(t):
+    return str((t or {}).get("slug") or "").startswith(REWORK_PREFIX)
+
+
+def _is_evidence_task(t):
+    slug = str((t or {}).get("slug") or "")
+    note = str((t or {}).get("note") or "").lower()
+    kind = str((t or {}).get("kind") or "").lower()
+    return (slug.startswith(CANARY_PREFIX)
+            or "-canary-" in slug
+            or kind == "canary"
+            or "coder-canary" in note
+            or "routing sample" in note)
+
+
+# ── done-slug cache (T4 hardening) ─────────────────────────────────
+_done_cache_lock = threading.Lock()
+_done_cache = {"slugs": set(), "ts": 0.0, "ttl": 60.0}
+
+
+def _done_slugs():
+    """Return cached set of DONE/MERGED slugs, refreshing every 60s."""
+    now = time.time()
+    if now - _done_cache["ts"] < _done_cache["ttl"]:
+        return _done_cache["slugs"]
+    with _done_cache_lock:
+        # double-check after acquiring lock
+        if now - _done_cache["ts"] < _done_cache["ttl"]:
+            return _done_cache["slugs"]
+        rows = select("tasks", {
+            "select": "slug",
+            "state": "in.(DONE,MERGED)",
+            "limit": "10000",
+        }) or []
+        _done_cache["slugs"] = {r["slug"] for r in rows}
+        _done_cache["ts"] = time.time()
+        return _done_cache["slugs"]
+
+
+def invalidate_done_cache():
+    """Clear the done-slug cache (for tests and after state transitions)."""
+    with _done_cache_lock:
+        _done_cache["slugs"] = set()
+        _done_cache["ts"] = 0.0
+
+
+def _claim_via_rpc(runner_id):
+    """Try the Postgres claim_next() RPC. Returns the claimed task row or None.
+    Feature-gated by ORCH_CLAIM_RPC (fleet_config or env), default false.
+    Passes runnable project IDs for host affinity."""
+    use_rpc = os.environ.get("ORCH_CLAIM_RPC", "false").lower() in ("true", "1", "yes")
+    if not use_rpc:
+        return None
+    try:
+        # Compute runnable projects for host affinity
+        projs = select("projects", {"select": "id,repo_path"}) or []
+        runnable = [p["id"] for p in projs if repo_runnable_here(p.get("repo_path"))]
+        args = {"p_runner_id": runner_id}
+        if runnable:
+            args["p_runnable_projects"] = runnable
+        result = rpc("claim_next", args)
+        if result and len(result) > 0:
+            return result[0]
+    except Exception as e:
+        print(f"[claim] RPC claim_next failed ({e}), falling back to scan path", flush=True)
+    return None
+
+
 def claim_task(runner_id):
-    """Atomically grab one QUEUED or TESTING task whose deps are satisfied. ECONOMIC ORDERING:
-    within a project-priority band, prefer higher-ROI projects (projects.concurrency_weight, set
-    from cost-per-merge by roi.py) and then FIFO. This makes the highest expected-value work run
-    first under any capacity limit — and stays correct across MULTIPLE machines because the final
-    claim is an atomic optimistic PATCH (state=QUEUED/TESTING -> RUNNING), so two runners never
-    double-claim."""
-    prio, roi_w, project_names, paused_pids = {}, {}, {}, set()
+    """Atomically grab one QUEUED task whose deps are satisfied. ECONOMIC ORDERING: within a
+    project-priority band, prefer higher-ROI projects (projects.concurrency_weight, set from
+    cost-per-merge by roi.py) and then FIFO. This makes the highest expected-value work run first
+    under any capacity limit — and stays correct across MULTIPLE machines because the final claim
+    is an atomic optimistic PATCH (state=QUEUED -> RUNNING), so two runners never double-claim."""
+    # RPC fast path: try the Postgres function first (feature flag ORCH_CLAIM_RPC, default false).
+    # Falls back to the full scan path on any error.
+    rpc_result = _claim_via_rpc(runner_id)
+    if rpc_result:
+        try:
+            import queue_preopt
+            queue_preopt.invalidate(rpc_result["id"])
+        except Exception:
+            pass
+        invalidate_done_cache()
+        return rpc_result
+    prio, roi_w, project_names, paused_pids, local_repo_pids = {}, {}, {}, set(), None
     try:
         projs = select("projects", {"select": "id,name,priority,concurrency_weight"}) or []
         prio = {p["id"]: (p.get("priority") if p.get("priority") is not None else 5) for p in projs}
