@@ -27,7 +27,9 @@ _IN = re.compile(r"(input|prompt)[ _]tokens[\"':\s]+([0-9,]+)", re.I)
 _OUT = re.compile(r"(output|completion)[ _]tokens[\"':\s]+([0-9,]+)", re.I)
 
 
-def _n(s): return int(s.replace(",", ""))
+def _n(s):
+    """Parse a numeric string that may contain commas (e.g. '1,234') into an int."""
+    return int(s.replace(",", ""))
 
 
 def record(project, slug, model, logpath):
