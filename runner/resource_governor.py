@@ -212,6 +212,10 @@ def pressure_should_block(free_gb: Optional[float] = None, floor_gb: Optional[fl
 def can_claim(n_active: int = 0) -> tuple[bool, str]:
     """Real-time gate the runner calls BEFORE starting each new task — protects the Mac in
     the gaps between the slower periodic govern() ticks. Returns (ok, reason)."""
+    # 2026-07-22: RAM gate disabled — workloads deploy to repo/cloud, not local.
+    # The mem-gate was blocking all 6,622 queued tasks with 48GB machine.
+    if os.environ.get("ORCH_DISABLE_MEM_GATE", "").lower() in ("1", "true", "yes"):
+        return True, "ok (mem-gate disabled)"
     free = ram_free_gb()
     floor = effective_floor_gb()
     per_task = _per_task_gb()
@@ -527,7 +531,7 @@ def dashboard_gauge():
         pass
     return {
         "disk_pct": used, "free_gb": free_gb,
-        "ram_pct": ram, "throttle": current_limit(), "ceiling": CEILING,
+        "ram_pct": ram, "throttle": current_limit(), "ceiling": _ceiling(),
         "ram_free_gb": ram_free_gb(), "ollama_loaded": ollama_loaded,
         "predicted_disk_pct_2h": pred_pct, "hours_to_hard": hours_to_hard,
         "disk_soft": _disk_soft(), "disk_hard": _disk_hard(),
@@ -610,7 +614,7 @@ def govern():
             free_ram = ram_free_gb()
             ram = ram_pct()
             pressure_bad = pressure_should_block(free_ram, eff_floor)
-            if free_ram is not None and free_ram >= eff_floor + PER_TASK_GB and not pressure_bad:
+            if free_ram is not None and free_ram >= eff_floor + per_task and not pressure_bad:
                 cur_reason = _global_pause_reason()
                 if cur_reason == "auto:low-memory":
                     try:
@@ -683,11 +687,11 @@ def govern():
     latest_free = g.get("ram_free_gb")
     latest_ram = g.get("ram_pct")
     if (latest_free is not None
-            and used < DISK_SOFT - 10
-            and (latest_ram is None or latest_ram < RAM_HARD - 12)
+            and used < disk_soft - 10
+            and (latest_ram is None or latest_ram < ram_hard - 12)
             and not pressure_should_block(latest_free, eff_floor)):
-        recovered_budget = max(1, int((latest_free - eff_floor) / PER_TASK_GB))
-        recovered_target = min(CEILING, recovered_budget)
+        recovered_budget = max(1, int((latest_free - eff_floor) / per_task))
+        recovered_target = min(ceiling, recovered_budget)
         if recovered_target > current_limit():
             set_throttle(recovered_target)
             action += f"; mem-recover->{recovered_target}"
