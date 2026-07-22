@@ -12,6 +12,8 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.112.3",
     "@darwin/kernel": "file:../packages/darwin-kernel",
+    "@nuxt/cli": "^3.37.0",
+    "@vercel/analytics": "^2.0.1",
     "chart.js": "^4.5.1",
     "nuxt": "^3.13.0",
     "vue": "^3.5.0"
