@@ -96,8 +96,9 @@ queue drains, no global pause, and no in-flight task is ever required to make an
 live. The only thing "in the background" means here is "not on the critical path of a task
 that's already running" — it does not mean "invisible" or "unmeasured."
 
-## See also
+## Glossary
 
-- `docs/tdd-config.md` — TDD-gating configuration (controls when test-first phases are injected)
-- `runner/anomaly.py` — self-monitoring anomaly detector (catches regressions from improvements)
-- `runner/resource_governor.py` — host resource protection during parallel execution
+- **Proactive loop**: Background job that discovers improvements without blocking task execution
+- **Hot-swap**: Updating routing or config mid-flight without restarting runners
+- **Spend cap**: Daily budget limit for model API calls, tracked per-runner
+- **Canary task**: Small safe improvement used to validate a coder routing path
