@@ -114,6 +114,7 @@ def _already_shipped(slug):
 
 
 def _open_factory_file_count():
+    """Count factory-generated intake files still awaiting processing."""
     return len(glob.glob(os.path.join(INTAKE_DIR, "factory-*.md")))
 
 
