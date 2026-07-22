@@ -49,10 +49,11 @@ def _run_git(args, repo):
 def _protected_slugs():
     """Branches in active execution or approved integration must not be garbage-collected.
 
-    FAIL CLOSED: returns None if the task/approval DB cannot be read. An empty protected set
-    caused mass deletion of in-use worktrees whenever Supabase errored or rate-limited (the
-    old code swallowed the exception and 'protected' nothing) — executors then lost RUNNING
-    work mid-task. Callers MUST skip GC entirely when this returns None."""
+    Returns a set of slug strings, or None if the DB is unreachable.  Callers MUST
+    treat None as "unknown" and skip GC entirely — an empty set means "nothing is
+    protected" which is a valid (but dangerous if wrong) answer, while None means
+    "we couldn't ask."
+    """
     slugs = set()
     for state in PROTECTED_STATES:
         try:
