@@ -88,7 +88,7 @@ class WarmPoolEvictionTest(unittest.TestCase):
         r1, r2, r3 = _repo("# R1"), _repo("# R2"), _repo("# R3")
         pool = WarmPool(pool_size=2)
         pool.acquire(r1)
-        time.sleep(0.01)
+        time.sleep(0.01)  # ensure r1.loaded_at < r2.loaded_at so eviction order is deterministic
         pool.acquire(r2)
         # Third acquire should evict r1 (oldest)
         pool.acquire(r3)
