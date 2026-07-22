@@ -85,11 +85,7 @@ os.makedirs(HOME, exist_ok=True)
 
 
 def _event(kind, value=None, detail="", action=""):
-    """Log a resource event to the database for trending and alerting.
-
-    Fail-soft: swallows all exceptions so monitoring never disrupts the runner.
-    Detail is truncated to 500 chars to stay within column limits.
-    """
+    """Log a resource event to the DB (fail-soft — never raises)."""
     try:
         db.insert("resource_events", {"kind": kind, "value": value, "detail": detail[:500], "action": action})
     except Exception:
