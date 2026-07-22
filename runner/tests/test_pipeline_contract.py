@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import unittest
@@ -59,17 +60,16 @@ class PipelineContractTest(unittest.TestCase):
              patch.object(pipeline_contract, "_recent_context", return_value=[]), \
              patch.object(pipeline_contract, "_qa_panel", return_value=["claude:claude-haiku-4-5-20251001"]):
             result = pipeline_contract.artifact(
-                "Optimise queue throughput.",
+                "Improve queue throughput.",
                 project="beethoven",
                 kind="build",
-                source="dashboard",
-                slug="queue-opt",
+                source="test",
+                slug="queue-throughput",
             )
-        import json
         data = json.loads(result)
-        for key in ("task_class", "need", "risk", "coder", "author_model", "source", "project"):
+        for key in ("task_class", "need", "risk", "coder", "author_model", "preflight", "strategy", "qa", "qa_panel", "source", "project"):
             self.assertIn(key, data)
-        self.assertEqual(data["source"], "dashboard")
+        self.assertEqual(data["source"], "test")
         self.assertEqual(data["project"], "beethoven")
 
     def test_artifact_is_fail_soft(self):

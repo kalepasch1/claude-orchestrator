@@ -278,30 +278,27 @@ def wrap_prompt(prompt: str, project: str = "", kind: str = "build", source: str
     return render_plan(plan) + "\n\n" + ORIGINAL_HEADER + "\n" + text
 
 
-def task_fields(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
-                slug: str = "", material: bool = False, existing_note: str = "",
-                model: Optional[str] = None, force_coder: Optional[str] = None) -> Dict[str, Any]:
-    """Return schema-safe admission fields shared by every task source.
-
-    Persisting the route is important for Cowork executors that claim directly
-    from Supabase and do not execute the native runner's prompt assembler.
-    Native execution still revalidates forced routes at claim time, so provider
-    exhaustion or capability drift safely falls through to a fresh choice.
-    """
-    text = prompt or ""
-    plan = build_plan(text, project=project, kind=kind, source=source,
-                      slug=slug, material=material)
-    wrapped = text if (already_wrapped(text) or is_control_prompt(text) or not text.strip()) else (
-        render_plan(plan) + "\n\n" + ORIGINAL_HEADER + "\n" + text
-    )
-    chosen_coder = force_coder or plan.get("coder") or None
-    chosen_model = model or plan.get("executor_model") or plan.get("author_model") or None
-    return {
-        "prompt": wrapped,
-        "note": note(existing_note, source=source),
-        "model": chosen_model,
-        "force_coder": chosen_coder,
-    }
+def artifact(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
+             slug: str = "", material: bool = False) -> str:
+    """Return a compact JSON string of the storable contract fields. Fail-soft: returns '{}' on any error."""
+    try:
+        plan = build_plan(prompt, project=project, kind=kind, source=source, slug=slug, material=material)
+        storable = {
+            "task_class": plan.get("task_class"),
+            "need": plan.get("need"),
+            "risk": plan.get("risk"),
+            "coder": plan.get("coder"),
+            "author_model": plan.get("author_model"),
+            "preflight": plan.get("preflight"),
+            "strategy": plan.get("strategy"),
+            "qa": plan.get("qa"),
+            "qa_panel": plan.get("qa_panel"),
+            "source": plan.get("source"),
+            "project": plan.get("project"),
+        }
+        return json.dumps(storable, separators=(",", ":"))
+    except Exception:
+        return "{}"
 
 
 def note(existing: str = "", source: str = "unknown") -> str:
