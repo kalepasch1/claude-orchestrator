@@ -4,6 +4,9 @@ Exports compute_metrics(outcomes: list) -> dict with keys:
   - overall: aggregate outcome metrics
   - by_model: outcome metrics grouped by model/coder
   - by_project: outcome metrics grouped by project
+  - lead_times: objective->prompt and prompt->merged lead times
+  - deploy_success_rate: fraction of DONE tasks that deployed successfully
+  - knowledge_reuse_rate: fraction of tasks that benefited from context reuse
 """
 
 
@@ -49,127 +52,95 @@ def _by_project(rows):
     return {key: _outcome_metrics(vals) for key, vals in grouped.items()}
 
 
-def _lead_times(rows):
-    """Compute lead time stats: median time from task creation to merge."""
-    times = []
-    for r in rows:
+def _lead_times(outcomes):
+    """Compute objective->prompt and prompt->merged lead times from outcome rows.
+
+    Each outcome row may carry created_at (objective birth), started_at (prompt
+    sent / work started), and completed_at (merged / done). All are ISO strings.
+    Returns median and p90 for each leg, in minutes. Missing timestamps are skipped.
+    """
+    import datetime
+
+    obj_to_prompt = []
+    prompt_to_merged = []
+
+    for r in outcomes:
         created = r.get("created_at")
-        merged_at = r.get("merged_at") or r.get("updated_at")
-        if created and merged_at and r.get("integrated"):
-            try:
-                from datetime import datetime
-                c = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
-                m = datetime.fromisoformat(str(merged_at).replace("Z", "+00:00"))
-                times.append((m - c).total_seconds() / 3600)
-            except Exception:
-                pass
-    if not times:
-        return {"median_hours": None, "p90_hours": None}
-    times.sort()
-    mid = len(times) // 2
-    p90 = int(len(times) * 0.9)
-    return {
-        "median_hours": round(times[mid], 2),
-        "p90_hours": round(times[min(p90, len(times) - 1)], 2),
-    }
-
-
-def _deploy_rate(rows):
-    """Compute deploy rate: merges per hour over the window."""
-    if not rows:
-        return None
-    merged = sum(1 for r in rows if r.get("integrated"))
-    hours = max(1, len(set(str(r.get("created_at", ""))[:13] for r in rows)))
-    return round(merged / hours, 3)
-
-
-def _knowledge_reuse(rows):
-    """Estimate knowledge reuse: fraction of tasks that leveraged prior patches."""
-    if not rows:
-        return None
-    reused = sum(1 for r in rows if r.get("reused_patch") or r.get("transplant_source"))
-    return round(reused / len(rows), 4) if rows else None
-
-
-
-def _objective_to_prompt_lead_time(rows):
-    """Median hours from objective creation (queued_at) to prompt dispatch (started_at)."""
-    times = []
-    for r in rows:
-        queued = r.get("queued_at") or r.get("created_at")
         started = r.get("started_at")
-        if queued and started:
-            try:
-                from datetime import datetime
-                q = datetime.fromisoformat(str(queued).replace("Z", "+00:00"))
-                s = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
-                dt = (s - q).total_seconds() / 3600
-                if dt >= 0:
-                    times.append(dt)
-            except Exception:
-                pass
-    if not times:
-        return {"median_hours": None, "p90_hours": None}
-    times.sort()
-    mid = len(times) // 2
-    p90 = int(len(times) * 0.9)
+        completed = r.get("completed_at") or r.get("merged_at")
+
+        try:
+            if created and started:
+                t0 = datetime.datetime.fromisoformat(str(created).replace("Z", "+00:00"))
+                t1 = datetime.datetime.fromisoformat(str(started).replace("Z", "+00:00"))
+                delta = (t1 - t0).total_seconds() / 60.0
+                if 0 <= delta < 10080:  # cap at 7 days
+                    obj_to_prompt.append(delta)
+        except (ValueError, TypeError):
+            pass
+
+        try:
+            if started and completed:
+                t1 = datetime.datetime.fromisoformat(str(started).replace("Z", "+00:00"))
+                t2 = datetime.datetime.fromisoformat(str(completed).replace("Z", "+00:00"))
+                delta = (t2 - t1).total_seconds() / 60.0
+                if 0 <= delta < 10080:
+                    prompt_to_merged.append(delta)
+        except (ValueError, TypeError):
+            pass
+
+    def _stats(vals):
+        if not vals:
+            return {"median_min": None, "p90_min": None, "count": 0}
+        vals.sort()
+        n = len(vals)
+        median = vals[n // 2]
+        p90 = vals[int(n * 0.9)]
+        return {"median_min": round(median, 2), "p90_min": round(p90, 2), "count": n}
+
     return {
-        "median_hours": round(times[mid], 2),
-        "p90_hours": round(times[min(p90, len(times) - 1)], 2),
+        "objective_to_prompt": _stats(obj_to_prompt),
+        "prompt_to_merged": _stats(prompt_to_merged),
     }
 
 
-def _prompt_to_merged_lead_time(rows):
-    """Median hours from prompt dispatch (started_at) to merge (merged_at)."""
-    times = []
-    for r in rows:
-        started = r.get("started_at")
-        merged_at = r.get("merged_at") or r.get("updated_at")
-        if started and merged_at and r.get("integrated"):
-            try:
-                from datetime import datetime
-                s = datetime.fromisoformat(str(started).replace("Z", "+00:00"))
-                m = datetime.fromisoformat(str(merged_at).replace("Z", "+00:00"))
-                dt = (m - s).total_seconds() / 3600
-                if dt >= 0:
-                    times.append(dt)
-            except Exception:
-                pass
-    if not times:
-        return {"median_hours": None, "p90_hours": None}
-    times.sort()
-    mid = len(times) // 2
-    p90 = int(len(times) * 0.9)
+def _deploy_success_rate(outcomes):
+    """Fraction of completed tasks whose deploy succeeded (deploy_ok flag)."""
+    deployed = [r for r in outcomes if r.get("integrated") or r.get("deployed")]
+    if not deployed:
+        return {"rate": None, "succeeded": 0, "attempted": 0}
+    succeeded = sum(1 for r in deployed if r.get("deploy_ok", True))
     return {
-        "median_hours": round(times[mid], 2),
-        "p90_hours": round(times[min(p90, len(times) - 1)], 2),
+        "rate": round(succeeded / len(deployed), 4),
+        "succeeded": succeeded,
+        "attempted": len(deployed),
     }
 
 
-def _deploy_success_rate(rows):
-    """Fraction of merged tasks that deployed successfully (no post-merge revert)."""
-    merged = [r for r in rows if r.get("integrated")]
-    if not merged:
-        return None
-    reverted = sum(1 for r in merged if r.get("reverted") or r.get("deploy_failed"))
-    return round((len(merged) - reverted) / len(merged), 4)
+def _knowledge_reuse_rate(outcomes):
+    """Fraction of tasks that benefited from cross-project knowledge reuse."""
+    total = len(outcomes)
+    if not total:
+        return {"rate": None, "reused": 0, "total": 0}
+    reused = sum(1 for r in outcomes if r.get("context_reuse") or r.get("reuse_hit"))
+    return {
+        "rate": round(reused / total, 4),
+        "reused": reused,
+        "total": total,
+    }
 
 
 def compute_metrics(outcomes):
-    """Compute overall, by_model, by_project metrics from a list of outcome rows.
+    """Compute overall, by_model, by_project, and D1 metrics from outcome rows.
 
     Returns dict with keys: overall, by_model, by_project, lead_times,
-    deploy_rate, knowledge_reuse, objective_to_prompt_lead_time,
-    prompt_to_merged_lead_time, deploy_success_rate.
+    deploy_success_rate, knowledge_reuse_rate.
     """
     return {
         "overall": _outcome_metrics(outcomes),
         "by_model": _by_model(outcomes),
         "by_project": _by_project(outcomes),
         "lead_times": _lead_times(outcomes),
-        "deploy_rate": _deploy_rate(outcomes),
-        "knowledge_reuse": _knowledge_reuse(outcomes),
-        "objective_to_prompt_lead_time": _objective_to_prompt_lead_time(outcomes),
-        "prompt_to_merged_lead_time": _prompt_to_merged_lead_time(outcomes),
         "deploy_success_rate": _deploy_success_rate(outcomes),
+        "knowledge_reuse_rate": _knowledge_reuse_rate(outcomes),
     }
