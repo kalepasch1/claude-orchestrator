@@ -98,4 +98,255 @@ def _queue_recovery(task, proj):
         return _handle_missing_branch(task, proj)
     return False
 
-# Rest of the file remains unchanged
+def _age_seconds(ts):
+    if not ts:
+        return 0
+    raw = str(ts).replace("Z", "+00:00")
+    try:
+        dt = datetime.datetime.fromisoformat(raw)
+        if dt.tzinfo:
+            now = datetime.datetime.now(datetime.timezone.utc)
+        else:
+            now = datetime.datetime.utcnow()
+        return max(0, int((now - dt).total_seconds()))
+    except Exception:
+        return 0
+
+
+def pressure(limit=1000):
+    projects = {p["id"]: p for p in (db.select("projects") or [])}
+    rows = db.select("tasks", {"select": "id,slug,project_id,state,note,updated_at",
+                               "state": "in.(DONE,BLOCKED,RUNNING)",
+                               "order": "updated_at.asc",
+                               "limit": str(limit)}) or []
+    out = {}
+    for t in rows:
+        if not _looks_passed(t):
+            continue
+        proj = projects.get(t.get("project_id")) or {}
+        name = proj.get("name") or str(t.get("project_id"))
+        repo = proj.get("repo_path", "")
+        branch = f"agent/{t.get('slug')}"
+        bucket = out.setdefault(name, {"passed_waiting": 0, "missing_branch": 0,
+                                       "oldest_wait_age_s": 0})
+        if _branch_exists_anywhere(repo, branch):
+            bucket["passed_waiting"] += 1
+            bucket["oldest_wait_age_s"] = max(bucket["oldest_wait_age_s"], _age_seconds(t.get("updated_at")))
+        else:
+            bucket["missing_branch"] += 1
+    payload = {"generated_at": datetime.datetime.utcnow().isoformat(), "projects": out}
+    try:
+        db.insert("controls", {"key": PRESSURE_KEY, "value": json.dumps(payload),
+                               "updated_at": "now()"}, upsert=True)
+    except Exception:
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            ".runtime", "merge_train_pressure.json")
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                json.dump(payload, f, indent=2)
+        except OSError:
+            pass
+    return payload
+
+
+def sweep(limit=LIMIT, run_train=RUN_TRAIN):
+    dedup = recovery_dedup()
+    projects = {p["id"]: p for p in (db.select("projects") or [])}
+    rows = db.select("tasks", {"select": "id,slug,project_id,state,note,kind,prompt,base_branch,material,force_coder,model,updated_at",
+                               "state": "in.(DONE,BLOCKED,RUNNING)",
+                               "order": "updated_at.asc",
+                               "limit": str(limit)}) or []
+    recovery_index = _active_recovery_index()
+    queued = missing = skipped = recovery = 0
+    for t in rows:
+        if t.get("state") == "RUNNING" and "verify pass" not in (t.get("note") or "").lower():
+            skipped += 1
+            continue
+        if not _looks_passed(t):
+            skipped += 1
+            continue
+        slug = t.get("slug")
+        # NESTING GUARD: never file recovery for anything that already IS recovery work,
+        # including rework-* wrappers around recovery slugs — recovery-of-recovery churn
+        # ("rework-missing-branch-recover-missing-branch-...") burned lanes for days.
+        if RECOVERY_PREFIX in str(slug or ""):
+            skipped += 1
+            continue
+        proj = projects.get(t.get("project_id")) or {}
+        repo = proj.get("repo_path", "")
+        if not _branch_exists_anywhere(repo, f"agent/{slug}"):
+            # Branch gone. If the work already landed upstream, CLOSE it (no rebuild) — this is what
+            # kills the phantom missing_branch recount + endless recovery churn on merged work.
+            if _already_integrated(repo, slug):
+                if t.get("state") != "MERGED":
+                    db.update("tasks", {"id": t["id"]},
+                              {"state": "MERGED",
+                               "note": "integration_sweeper: work already in integration branch; closed (branch GC'd)"})
+                continue
+            if _queue_recovery(t, proj, recovery_index=recovery_index):
+                missing += 1
+                recovery += 1
+            elif _has_live_recovery(t.get("project_id"), slug):
+                missing += 1  # rebuild still in flight — leave the original open
+            else:
+                # branch gone, not integrated, and recovery is exhausted (quarantined/dead): stop
+                # re-counting + re-sweeping this forever. Close it so pressure reflects reality.
+                db.update("tasks", {"id": t["id"]},
+                          {"state": "QUARANTINED",
+                           "note": "integration_sweeper: branch lost and recovery exhausted; closed to stop phantom missing_branch churn"})
+            continue
+        created = merge_train.ensure_integration_card(
+            proj.get("name") or str(t.get("project_id")),
+            slug,
+            kind="integrate",
+            title=f"merge of {slug}",
+            why="integration sweeper found passed work with an agent branch",
+            detail=(t.get("note") or "")[-2000:],
+            status="approved",
+            decided_by="canonical-train:sweeper",
+        )
+        if created:
+            queued += 1
+        if t.get("state") != "DONE":
+            db.update("tasks", {"id": t["id"]},
+                      {"state": "DONE", "note": "integration_sweeper: queued for canonical merge train"})
+    train = merge_train.train_run() if run_train and queued else {}
+    press = pressure(limit=max(limit, 200))
+    out = {"queued": queued, "missing_branch": missing, "recovery_queued": recovery,
+           "recovery_dedup": dedup,
+           "skipped": skipped, "pressure": press, "train": train}
+    print(f"integration_sweeper: queued={queued} missing_branch={missing} "
+          f"recovery_queued={recovery} skipped={skipped} train={train}")
+    return out
+
+
+def local_branch_audit(repo, slugs=None, limit=200):
+    """Read-only audit of local agent/* branch state vs pending task slugs.
+
+    For each slug, classifies the branch as: local, remote_only, or missing.
+    Also lists stale worktrees (agent/* branches checked out but task not running).
+    Does not write to git or the DB. Fail-soft on unavailable repo or DB.
+
+    Returns:
+        {
+          "local": [{"slug": ..., "branch": ...}, ...],
+          "remote_only": [{"slug": ..., "branch": ...}, ...],
+          "missing": [{"slug": ..., "branch": ...}, ...],
+          "stale_worktrees": [{"branch": ..., "worktree": ...}, ...],
+          "reflog_hints": [{"slug": ..., "sha": ...}, ...],
+        }
+    """
+    local_set = set()
+    remote_set = set()
+    wt_map = {}
+
+    if repo and os.path.isdir(repo):
+        _fetch_agent_refs(repo)
+        try:
+            r = subprocess.run(
+                ["git", "branch", "--list", "agent/*", "--format=%(refname:short)"],
+                cwd=repo, capture_output=True, text=True, timeout=30,
+            )
+            local_set = {line.strip() for line in r.stdout.splitlines() if line.strip()}
+        except Exception:
+            pass
+        try:
+            r = subprocess.run(
+                ["git", "branch", "-r", "--list", "origin/agent/*", "--format=%(refname:short)"],
+                cwd=repo, capture_output=True, text=True, timeout=30,
+            )
+            for line in r.stdout.splitlines():
+                b = line.strip()
+                if b.startswith("origin/"):
+                    remote_set.add(b[len("origin/"):])
+        except Exception:
+            pass
+        try:
+            r = subprocess.run(
+                ["git", "worktree", "list", "--porcelain"],
+                cwd=repo, capture_output=True, text=True, timeout=30,
+            )
+            wt_path = None
+            for line in r.stdout.splitlines():
+                if line.startswith("worktree "):
+                    wt_path = line[len("worktree "):].strip()
+                elif line.startswith("branch refs/heads/"):
+                    b = line[len("branch refs/heads/"):].strip()
+                    if b.startswith("agent/"):
+                        wt_map[b] = wt_path
+                elif not line.strip():
+                    wt_path = None
+        except Exception:
+            pass
+
+    if slugs is None:
+        try:
+            rows = db.select("tasks", {
+                "select": "slug",
+                "state": "in.(QUEUED,RUNNING,DONE,BLOCKED)",
+                "order": "updated_at.desc",
+                "limit": str(limit),
+            }) or []
+            slugs = [row["slug"] for row in rows if row.get("slug")]
+        except Exception:
+            slugs = []
+
+    local_out = []
+    remote_only_out = []
+    missing_out = []
+    reflog_hints = []
+
+    for slug in slugs:
+        branch = f"agent/{slug}"
+        if branch in local_set:
+            local_out.append({"slug": slug, "branch": branch})
+        elif branch in remote_set:
+            remote_only_out.append({"slug": slug, "branch": branch})
+        else:
+            missing_out.append({"slug": slug, "branch": branch})
+            # Check reflog for hints about the missing branch
+            if repo and os.path.isdir(repo):
+                try:
+                    r = subprocess.run(
+                        ["git", "reflog", "show", branch, "--format=%H", "-1"],
+                        cwd=repo, capture_output=True, text=True, timeout=10,
+                    )
+                    sha = r.stdout.strip()
+                    if sha:
+                        reflog_hints.append({"slug": slug, "sha": sha})
+                except Exception:
+                    pass
+
+    # Stale worktrees: agent/* worktrees whose task is not RUNNING
+    running_slugs = set()
+    try:
+        rows = db.select("tasks", {
+            "select": "slug",
+            "state": "eq.RUNNING",
+        }) or []
+        running_slugs = {row["slug"] for row in rows if row.get("slug")}
+    except Exception:
+        pass
+
+    stale_worktrees = []
+    for branch, wt_path in wt_map.items():
+        slug = branch[len("agent/"):] if branch.startswith("agent/") else branch
+        if slug not in running_slugs:
+            stale_worktrees.append({"branch": branch, "worktree": wt_path})
+
+    return {
+        "local": local_out,
+        "remote_only": remote_only_out,
+        "missing": missing_out,
+        "stale_worktrees": stale_worktrees,
+        "reflog_hints": reflog_hints,
+    }
+
+
+run = sweep
+
+
+if __name__ == "__main__":
+    import json
+    print(json.dumps(sweep(), indent=2, default=str))
