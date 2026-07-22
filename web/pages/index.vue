@@ -90,7 +90,20 @@ async function loadAll() {
     supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(50),
     supabase.from('approvals').select('*').eq('status', 'pending').order('created_at'),
     supabase.from('projects').select('*').order('name'),
-    supabase.from('runner_heartbeats').select('*'),
+    supabase.from('budgets').select('*'),
+    supabase.from('runs').select('*').order('created_at', { ascending: false }).limit(100),
+    supabase.from('v_project_health').select('*'),
+    supabase.from('goals').select('*').eq('status', 'active').order('priority'),
+    supabase.from('v_action_inbox').select('*').limit(20),
+    supabase.from('txns').select('*').order('created_at', { ascending: false }).limit(50),
+    supabase.from('capabilities').select('*').order('maturity', { ascending: false }),
+    supabase.from('capability_instances').select('*').eq('status', 'active'),
+    supabase.from('capability_provenance').select('*'),
+    supabase.from('approvals').select('*').eq('kind', 'proposal').eq('status', 'pending').order('created_at', { ascending: false }).limit(20),
+    // autonomy layer
+    supabase.from('loops').select('*').order('project'),
+    supabase.from('session_actions').select('*').in('status', ['paused', 'finished']).order('created_at', { ascending: false }).limit(50),
+    supabase.from('orchestrator_feedback').select('id,created_at,source,category,severity,observation,suggestion,status').order('created_at', { ascending: false }).limit(200),
     supabase.from('v_provider_spend_mtd').select('*'),
     supabase.from('outcomes').select('model,usd,project,tests_passed,integrated,created_at,slug').order('created_at', { ascending: false }).limit(500),
     supabase.from('controls').select('*'),
@@ -154,8 +167,103 @@ onMounted(async () => {
     })
     .subscribe()
 })
-onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer); if (realtimeSub) supabase.removeChannel(realtimeSub); if (logSub) supabase.removeChannel(logSub) })
-watch(user, async value => { if (value) await loadAll() })
+
+const deployableTasks = computed(() =>
+  tasks.value.filter(t => !['BLOCKED', 'CONFLICT', 'TESTFAIL'].includes(String(t.state || '').toUpperCase()))
+)
+const exactState = (state: string) => Number(queueCounts.value.states?.[state] || 0)
+const exactQueued = computed(() => exactState('QUEUED'))
+const exactRunning = computed(() => exactState('RUNNING'))
+const exactRetry = computed(() => exactState('RETRY'))
+const exactBlockedLike = computed(() => BLOCKED_QUEUE_STATES.reduce((n, state) => n + exactState(state), 0))
+const exactBacklogCount = computed(() =>
+  ['QUEUED', 'RETRY', 'BLOCKED', 'CONFLICT', 'TESTFAIL', 'QUARANTINED', 'WAITING']
+    .reduce((n, state) => n + exactState(state), 0)
+)
+const exactTotalTasks = computed(() => Number(queueCounts.value.totalTasks || 0))
+const exactCountsLoaded = computed(() => Boolean(queueCounts.value.updatedAt && !queueCounts.value.error))
+const repairingTaskCount = computed(() => exactCountsLoaded.value
+  ? exactBlockedLike.value
+  : tasks.value.filter(t => ['BLOCKED', 'CONFLICT', 'TESTFAIL'].includes(String(t.state || '').toUpperCase())).length
+)
+const liveRunnerCount = computed(() => runners.value.filter(alive).length)
+const runnerFleetTarget = computed(() => Math.max(8, liveRunnerCount.value || 0))
+const hiddenBacklog = computed(() => exactTotalTasks.value > tasks.value.length)
+const queueCoveragePct = computed(() => exactTotalTasks.value
+  ? Math.min(100, Math.round((tasks.value.length / exactTotalTasks.value) * 100))
+  : 100
+)
+const queueSummaryTiles = computed(() => [
+  { label: 'Queued', value: exactQueued.value, tone: exactQueued.value ? 'text-amber-300' : 'text-slate-300' },
+  { label: 'Running', value: exactRunning.value, tone: exactRunning.value ? 'text-blue-300' : 'text-slate-300' },
+  { label: 'Retry', value: exactRetry.value, tone: exactRetry.value ? 'text-amber-300' : 'text-slate-300' },
+  { label: 'Blocked', value: exactBlockedLike.value, tone: exactBlockedLike.value ? 'text-red-300' : 'text-slate-300' },
+  { label: 'Done', value: exactState('DONE'), tone: exactState('DONE') ? 'text-green-300' : 'text-slate-300' },
+  { label: 'Merged', value: exactState('MERGED'), tone: exactState('MERGED') ? 'text-green-300' : 'text-slate-300' },
+])
+const priorityQueueTiles = computed(() => [
+  { label: 'Recovery', value: queueCounts.value.recoveryQueued, tone: queueCounts.value.recoveryQueued ? 'text-cyan-300' : 'text-slate-300' },
+  { label: 'Release fix', value: queueCounts.value.releaseFixQueued + queueCounts.value.releaseFixRunning, tone: (queueCounts.value.releaseFixQueued + queueCounts.value.releaseFixRunning) ? 'text-red-300' : 'text-slate-300' },
+  { label: 'Improvement', value: queueCounts.value.improvementsQueued, tone: queueCounts.value.improvementsQueued ? 'text-indigo-300' : 'text-slate-300' },
+  { label: 'Canary active', value: queueCounts.value.canariesActive, tone: queueCounts.value.canariesActive ? 'text-emerald-300' : 'text-slate-300' },
+])
+function fmtInt(n: any) {
+  return Number(n || 0).toLocaleString()
+}
+
+const stateColor: Record<string, string> = {
+  RUNNING: 'bg-blue-500/20 text-blue-300', DONE: 'bg-green-500/20 text-green-300',
+  MERGED: 'bg-green-500/20 text-green-300', QUEUED: 'bg-slate-500/20 text-slate-300',
+  WAITING: 'bg-slate-500/20 text-slate-300', RETRY: 'bg-amber-500/20 text-amber-300',
+  BLOCKED: 'bg-red-500/20 text-red-300', CONFLICT: 'bg-red-500/20 text-red-300',
+  TESTFAIL: 'bg-red-500/20 text-red-300',
+}
+const txnColor: Record<string, string> = {
+  pending: 'bg-amber-500/20 text-amber-300', merged: 'bg-green-500/20 text-green-300',
+  aborted: 'bg-red-500/20 text-red-300',
+}
+const capStatusColor: Record<string, string> = {
+  experimental: 'bg-slate-500/20 text-slate-300',
+  trusted: 'bg-blue-500/20 text-blue-300',
+  productizable: 'bg-green-500/20 text-green-300',
+  retired: 'bg-red-500/20 text-red-300',
+}
+function instancesFor(capId: string) {
+  return capInstances.value.filter((i: any) => i.capability_id === capId)
+}
+function provFor(capId: string) {
+  return capProvenance.value.find((p: any) => p.capability_id === capId)
+}
+// radar proposals keyed by capability slug parsed from detail JSON
+const radarBySlug = computed(() => {
+  const m: Record<string, any[]> = {}
+  for (const p of radarProposals.value) {
+    try {
+      const d = p.detail ? JSON.parse(p.detail) : {}
+      const key = d.capability || 'unknown'
+      ;(m[key] ??= []).push({ ...p, _detail: d })
+    } catch { /* ignore */ }
+  }
+  return m
+})
+
+// Wraps loadAll so every realtime event also stamps the Mission Control clock.
+function onRealtime() { lastEventAt.value = Date.now(); loadAll() }
+
+onMounted(() => {
+  if (user.value) {
+    loadAll()
+    supabase.channel('orch')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, onRealtime)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'approvals' }, onRealtime)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'runner_heartbeats' }, onRealtime)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'runs' }, onRealtime)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'txns' }, onRealtime)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orchestrator_feedback' }, onRealtime)
+      .subscribe()
+  }
+})
+watch(user, u => { if (u) loadAll() })
 </script>
 
 <template>
@@ -166,29 +274,59 @@ watch(user, async value => { if (value) await loadAll() })
       <button class="quiet-button" :class="{ danger: !globalPaused }" :disabled="stopLoading" @click="togglePause">{{ stopLoading ? 'Updating…' : globalPaused ? 'Resume fleet' : 'Pause fleet' }}</button>
     </header>
 
-    <main class="command-content">
-      <section class="intent-hero">
-        <div class="eyebrow">Madeus Orchestrator</div>
-        <h1>What should we accomplish?</h1>
-        <p>Describe the outcome. Madeus chooses the project context, research depth, specialists, models, worktrees, verification, and release path.</p>
-        <form class="intent-console" @submit.prevent="submitIntent">
-          <div class="intent-context-row">
-            <label for="intent-project">Project</label>
-            <select id="intent-project" v-model="selectedProject">
-              <option value="">Let Madeus detect it</option>
-              <option v-for="project in projects" :key="project.id" :value="project.id">{{ project.name }}</option>
-            </select>
-            <span>Optional — you can choose now or Madeus will ask only when the prompt is ambiguous.</span>
-          </div>
-          <textarea v-model="intent" rows="4" autofocus aria-label="Describe your objective" placeholder="Build, fix, research, or improve anything…" @keydown.meta.enter.prevent="submitIntent" @keydown.ctrl.enter.prevent="submitIntent" />
-          <div class="intent-footer">
-            <div class="autopilot-note"><span>✦</span><strong>Autopilot</strong> routes through triage, Colosseum, independent QA, and release verification</div>
-            <button class="primary-button" :disabled="queueLoading || !intent.trim()">{{ queueLoading ? 'Routing…' : 'Start' }} <span>↗</span></button>
-          </div>
-        </form>
-        <div v-if="projectChoice" class="project-choice" role="dialog" aria-label="Choose a project">
-          <div><span class="project-choice-icon">⌘</span><div><strong>{{ projectChoice.message }}</strong><p>Your objective is preserved. Choose the primary workspace; Madeus will still coordinate any dependent applications automatically.</p></div></div>
-          <div class="project-choice-options"><button v-for="project in projectChoice.projects" :key="project.id" type="button" :disabled="queueLoading" @click="selectedProject = project.id; submitIntent(project.id)">{{ project.name }} <span>↗</span></button></div>
+    <!-- sign in -->
+    <div v-if="!user" class="max-w-sm mx-auto pt-32 px-6">
+      <h1 class="text-xl font-semibold mb-1">Claude Orchestrator</h1>
+      <p class="text-slate-400 text-sm mb-6">Sign in to monitor builds and approve changes.</p>
+      <div v-if="!sent" class="space-y-3">
+        <input v-model="email" type="email" placeholder="you@team.com"
+               class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2" />
+        <button @click="signIn" class="w-full bg-blue-600 hover:bg-blue-500 rounded-lg py-2 font-semibold">
+          Send magic link</button>
+      </div>
+      <p v-else class="text-green-400 text-sm">Check your email for the sign-in link.</p>
+    </div>
+
+    <!-- dashboard -->
+    <div v-else class="max-w-5xl mx-auto px-5 py-6">
+
+      <!-- header -->
+      <header class="sticky top-0 z-30 -mx-5 px-5 py-3 mb-6 flex items-center gap-3
+                     bg-canvas/80 backdrop-blur border-b border-border-subtle">
+        <span class="relative flex w-2 h-2">
+          <span v-if="runners.some(alive)"
+                class="motion-safe:animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-60"></span>
+          <span class="relative inline-flex w-2 h-2 rounded-full"
+                :class="runners.some(alive) ? 'bg-green-400 dot-breathe' : 'bg-red-400'"></span>
+        </span>
+        <h1 class="text-lg font-semibold">Claude Orchestrator</h1>
+        <span class="text-slate-500 text-sm">
+          {{ liveRunnerCount }}/{{ runnerFleetTarget }} live lanes · <span class="font-mono" :class="exactBacklogCount ? 'text-amber-300' : 'text-emerald-400'" title="Exact full-table backlog count from SQL">{{ fmtInt(exactBacklogCount) }}</span> backlog · {{ approvals.length }} pending · <span class="font-mono text-slate-300" title="Token cost covered by your Claude Max plan — not cash">${{ coveredMtd.toFixed(2) }}</span> Max-covered · <span class="font-mono text-emerald-400" title="Real out-of-pocket API cash, month-to-date">${{ cashMtd.toFixed(2) }}</span> cash · <span class="font-mono text-cyan-300" title="Estimated prompt/result cache and patch-template savings from recent resource events">{{ Math.round(savingsKpi.tokens).toLocaleString() }}</span> tok avoided · <span class="font-mono" :class="integrateKpi.overall >= 1 ? 'text-emerald-400' : 'text-amber-400'" title="Post-QA merge-rate: passed/non-churn work that actually integrated. Target is 100%; failed drafting attempts are tracked separately as attempt yield.">{{ (integrateKpi.overall * 100).toFixed(0) }}%</span> merge-rate ({{ integrateKpi.integrated }}/{{ integrateKpi.completed }}) · <span class="font-mono" :class="(integrateKpi.usdPerMerge ?? 99) <= 2 ? 'text-emerald-400' : 'text-amber-400'" title="NORTH STAR: $ per merged change. Drive this DOWN.">{{ integrateKpi.usdPerMerge == null ? '—' : ('$' + integrateKpi.usdPerMerge.toFixed(2)) }}</span>/merge
+        </span>
+        <span class="flex-1"></span>
+        <button @click="signOut" class="text-slate-400 text-sm hover:text-white">Sign out</button>
+      </header>
+
+      <!-- ── Mission Control live strip ── -->
+      <MissionControl
+        :tasks="deployableTasks"
+        :runners="runners"
+        :approvals="approvals"
+        :outcomes="outcomes"
+        :spend="spend"
+        :last-event-at="lastEventAt" />
+
+      <!-- ── Configuration Feedback Panel ── -->
+      <ConfigurationFeedbackPanel :items="feedbackItems.slice(0, 20)" />
+
+      <!-- Shared proof packs -->
+      <section class="bg-slate-900 border border-slate-800 rounded-xl p-4 mb-6">
+        <div class="flex items-center gap-2 mb-3">
+          <h2 class="text-xs uppercase tracking-wider text-slate-500">Shared proof packs</h2>
+          <span class="text-xs text-slate-500">Common Brain - CADE - receipts</span>
+          <span class="flex-1"></span>
+          <span v-if="proofPacks.error" class="text-xs text-red-300">{{ proofPacks.error }}</span>
+          <span v-else class="text-xs text-slate-500">{{ commonBrainProofRows.length }} brain deployments - {{ recentProofReceipts.length }} receipts</span>
         </div>
         <p v-if="queueError" class="inline-error" role="alert">{{ queueError }}</p>
         <div v-if="lastRoute" class="route-receipt" role="status">
