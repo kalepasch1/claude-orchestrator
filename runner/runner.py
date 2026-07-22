@@ -374,8 +374,40 @@ def _detect_prod_branch(repo, proj):
 def _branch_exists(repo, branch):
     if not branch:
         return False
-    return subprocess.run(["git", "rev-parse", "--verify", branch], cwd=repo,
-                          capture_output=True).returncode == 0
+    try:
+        return subprocess.run(["git", "rev-parse", "--verify", branch], cwd=repo,
+                              capture_output=True).returncode == 0
+    except OSError:
+        return False
+
+
+def _localize_repo_path(proj, db_path):
+    """Translate a repo path stored in the DB to a path that exists on THIS machine.
+
+    The DB stores paths from the machine that originally registered the project
+    (e.g. /Users/kale/…).  On a second machine the path is different.  We look
+    up the local path by project name in resilience_mesh.json, which each
+    machine writes with its own local paths.  Returns a valid local path or None.
+    """
+    try:
+        mesh_file = os.path.join(_CANONICAL_RUNTIME_HOME, "resilience_mesh.json")
+        if not os.path.isfile(mesh_file):
+            return None
+        with open(mesh_file) as f:
+            mesh = json.load(f)
+        proj_name = (proj.get("name") or "").lower()
+        for repo_entry in mesh.get("repos") or []:
+            entry_name = (repo_entry.get("name") or "").lower()
+            entry_path = repo_entry.get("path") or ""
+            # Match by project name or by the basename of the registered path
+            if (entry_name and proj_name and entry_name == proj_name) or (
+                    entry_path and db_path and
+                    os.path.basename(entry_path) == os.path.basename(db_path)):
+                if entry_path and os.path.isdir(entry_path):
+                    return entry_path
+    except Exception:
+        pass
+    return None
 
 
 def _normalize_task_base(repo, proj, requested):
@@ -529,11 +561,18 @@ def run_task(t):
         proj = projects(t["project_id"]).get(t["project_id"], {})
         repo = proj.get("repo_path", os.getcwd())
         name = proj.get("name", "repo")
-        # data-locality guard: if this Mac doesn't hold the repo (race/removed after claim),
-        # re-queue rather than fail so another Mac that has it takes it.
-        if repo and repo != os.getcwd() and not os.path.isdir(repo):
-            set_state(t["id"], state="QUEUED", note=f"repo not on this host ({socket.gethostname()}): {repo}")
-            time.sleep(2); return
+        # If the DB-stored repo path doesn't exist on this machine, try to find a local
+        # equivalent via resilience_mesh.json.  If none is found, requeue rather than
+        # burning a runner exception (and a transient-retry counter increment) every poll.
+        if not os.path.isdir(repo):
+            local = _localize_repo_path(proj, repo)
+            if local:
+                repo = local
+            else:
+                set_state(t["id"], state="QUEUED",
+                          note=f"repo not accessible on this machine ({repo}); held for host with the clone")
+                time.sleep(5)
+                return
         # Fall back to the project's REAL default branch (master vs main), not a hardcoded
         # "main" — otherwise diff/rebase against a nonexistent branch returns empty.
         task_base = _normalize_task_base(repo, proj, t.get("base_branch") or proj.get("default_base") or "main")
