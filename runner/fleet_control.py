@@ -236,10 +236,8 @@ def process_controls():
                       {"handled_by": handled + [HOST], "done": (target != "all")})
             done += 1
             if action == "git_pull" and params.get("restart", True):
-                _mark_local_ack(r["id"])
                 _restart()
             if action == "restart":
-                _mark_local_ack(r["id"])
                 _restart()
         except Exception as e:
             print(f"fleet_control: action '{action}' failed on {HOST}: {e}")
