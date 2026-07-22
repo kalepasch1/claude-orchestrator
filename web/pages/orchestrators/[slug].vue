@@ -162,7 +162,7 @@ const selectedBranch = ref('dev')
 const showConfig = ref(false)
 function toggleAdvanced() { persistentContext.advanced = !persistentContext.advanced; recordConfigurationChurn(); if (persistentContext.advanced) recordProficiency('advanced'); trackExperience('guidance_followed', { action: 'toggle_advanced', enabled: persistentContext.advanced, stage: proficiency.value.stage }) }
 
-// Right panel — Quality insights
+// Right panel — portfolio insights
 const showInsights = ref(true)
 const activeInsight = ref('')
 type CadeInsight = {
@@ -369,7 +369,7 @@ watch(terminalPrompt, (val) => {
     routeInfo.value = r.reason
   } else { routeInfo.value = '' }
 })
-// --- Quality Insights engine (auto-running) ---
+// --- Portfolio Insights engine (auto-running) ---
 function refreshInsights() {
   const domain = cap.value.domain
   const app = selectedApp.value
@@ -906,10 +906,10 @@ watch(slug, () => { refreshInsights() })
         </div>
       </div>
     </main>
-    <!-- RIGHT PANEL — Quality Insights -->
+    <!-- RIGHT PANEL — Portfolio Insights -->
     <aside v-if="showInsights" class="w-72 bg-gray-50 border-l border-gray-200 flex flex-col flex-shrink-0 overflow-hidden">
       <div class="px-3 py-2 border-b border-gray-200 flex items-center justify-between">
-        <span class="text-[10px] text-gray-400 uppercase tracking-wider font-medium">Quality Intelligence</span>
+        <span class="text-[10px] text-gray-400 uppercase tracking-wider font-medium">Portfolio Intelligence</span>
         <div class="flex items-center gap-1.5">
           <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
           <span class="text-[9px] text-emerald-600">Auto-running</span>
