@@ -217,6 +217,14 @@ def set_state(task_id: str, **kw) -> None:
             _log.debug("set_state auto-integrate failed for %s: %s", task_id, _e)
 
 
+def emit_task_log(slug, level, message):
+    """Emit a structured log entry to run_logs (Supabase Realtime pushes it to the dashboard)."""
+    try:
+        db.insert("run_logs", {"source": slug, "level": level, "message": str(message)[:2000]})
+    except Exception:
+        pass
+
+
 def _next_non_claude_coder(task, exclude=()):
     """Pick the cheapest capable non-Claude coder, usually local Ollama, excluding failed backends."""
     excluded = set(exclude or ())
@@ -857,22 +865,12 @@ def run_task(t):
             if acct:
                 POOL.record_use(acct)
             set_state(t["id"], state="RUNNING", model=visible_model, attempt=attempt,
-                      account=(acct or {}).get("name") or f"agentic:{coder}",
-                      note=f"agentic coder: {coder}")
-            try:
-                wt = worktree_isolation.ensure_task_worktree(
-                    repo, slug, base,
-                    os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"),
-                    task_id=str(t["id"]), lease_token=_branch_lease["token"],
-                )
-            except worktree_isolation.WorktreeIsolationError as e:
-                set_state(t["id"], state="RETRY", note=f"git-isolation blocked execution: {e}")
-                record(t, name, slug, kind, visible_model, acct, attempt,
-                       False, False, f"worktree isolation: {e}", t0)
-                return
-            env = dict(os.environ)
-            if acct:
-                env.update(POOL.env_for(acct))
+                      account=(acct or {}).get("name"), note=f"agentic coder: {coder}")
+            emit_task_log(slug, "info", f"attempt {attempt} started ({visible_model})")
+            subprocess.run([os.path.join(os.path.dirname(__file__), "setup-worktrees.sh"), slug, base],
+                           cwd=repo, capture_output=True)
+            wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", slug)
+            env = dict(os.environ); env.update(POOL.env_for(acct))
             # inject this project's external-provider secrets (values never logged)
             try:
                 env.update(secrets_manager.inject_env(name))
@@ -1481,19 +1479,10 @@ def run_task(t):
             out = (r["text"] or "") + ("\n" + r["stderr"] if r.get("stderr") else "")
             low = out.lower()
             set_state(t["id"], log_tail=out[-2000:])
-            # ── WAVE PIPELINE: post-execution cross-task learning ──────────
-            try:
-                import wave_pipeline
-                _exec_provider = r.get("coder", coder).replace("swarm:", "") if "swarm:" in r.get("coder", "") else "claude"
-                _exec_model = r.get("model", model) or model
-                wave_pipeline.record_success(
-                    t, _exec_provider, _exec_model,
-                    success=(rc == 0),
-                    latency_s=time.time() - _wave_t0,
-                    cost_usd=r.get("cost_usd", 0),
-                )
-            except Exception as _wl_err:
-                _log.debug("wave record_success: %s", _wl_err)
+            _first_line = next((l.strip() for l in out.split('\n') if l.strip()), "")[:200]
+            if _first_line:
+                _log_level = "error" if any(s in low for s in EXHAUST + RATE) else "info"
+                emit_task_log(slug, _log_level, _first_line)
             # bidirectional learning: harvest the agent's feedback about the orchestration
             try:
                 feedback.extract_and_store(out, project=name, slug=slug, task_id=t["id"])

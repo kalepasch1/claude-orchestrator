@@ -357,11 +357,25 @@ const commonBrainProofRows = computed(() => proofPacks.value?.commonBrain || [])
 const recentProofReceipts = computed(() => proofPacks.value?.receipts || [])
 
 // ── live log lines for LogView ──────────────────────────────────────────────
-// Prefers run_logs realtime rows (slice-1 streaming); falls back to flattening
-// log_tail snapshots for tasks that pre-date the run_logs table.
-function _parseLogTailLines(tasks: any[]): LogLine[] {
-  const out: LogLine[] = []
-  const recent = [...tasks]
+// Live entries pushed from run_logs via Supabase Realtime (INSERT events).
+// Falls back to flattening tasks[].log_tail for historical lines.
+const recentRunLogs = ref<LogLine[]>([])
+
+function onRunLog(payload: any) {
+  const row = payload.new ?? payload
+  if (!row?.message) return
+  const level = (['debug', 'info', 'warn', 'error'].includes(row.level) ? row.level : 'info') as LogLine['level']
+  const entry: LogLine = { ts: row.ts, level, message: row.message, source: row.source }
+  recentRunLogs.value = [entry, ...recentRunLogs.value].slice(0, 200)
+}
+
+const logLines = computed(() => {
+  // Live run_logs entries come first (newest → oldest already reversed for display)
+  const live: LogLine[] = [...recentRunLogs.value].reverse()
+
+  // Fallback: flatten log_tail snapshots from recent tasks
+  const tail: LogLine[] = []
+  const recent = [...tasks.value]
     .filter(t => t.log_tail)
     .slice(0, 12)
     .reverse()
@@ -383,22 +397,12 @@ function _parseLogTailLines(tasks: any[]): LogLine[] {
       } else if (/\b(fail|failed|exception|traceback|429|rate.?limit)\b/i.test(line)) {
         level = 'error'
       }
-      out.push({ ts: baseMs, level, message, source: t.slug })
+      tail.push({ ts: baseMs, level, message, source: t.slug })
     }
   }
-  return out
-}
 
-const logLines = computed<LogLine[]>(() => {
-  if (runLogRows.value.length > 0) {
-    return runLogRows.value.map(r => ({
-      ts: r.created_at,
-      level: (r.level as LogLine['level']) || 'info',
-      message: r.message,
-      source: r.task_slug,
-    }))
-  }
-  return _parseLogTailLines(tasks.value)
+  // Prefer live stream; fall back to tail when no live entries yet
+  return live.length > 0 ? live : tail
 })
 
 const deployableTasks = computed(() =>
@@ -506,14 +510,7 @@ onMounted(() => {
       .on('postgres_changes', { event: '*', schema: 'public', table: 'runner_heartbeats' }, onRealtime)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'runs' }, onRealtime)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'txns' }, onRealtime)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orchestrator_feedback' }, onRealtime)
-      .subscribe()
-    supabase.channel('run-logs')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'run_logs' },
-        (payload: any) => {
-          lastEventAt.value = Date.now()
-          runLogRows.value = [...runLogRows.value, payload.new].slice(-RUN_LOGS_MAX)
-        })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'run_logs' }, onRunLog)
       .subscribe()
   }
 })
