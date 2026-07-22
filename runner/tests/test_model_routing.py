@@ -562,6 +562,64 @@ class ModelRoutingTest(unittest.TestCase):
                                      "ORCH_USE_PAID_AGENTIC_CREDITS": "true"}, clear=False):
             self.assertEqual(agentic_coders.pick(task), "ollama-2")
 
+    # --- _task_urgency tests ---
+
+    def test_task_urgency_high_from_priority(self):
+        self.assertEqual(agentic_coders._task_urgency({"priority": 80}), "high")
+        self.assertEqual(agentic_coders._task_urgency({"priority": 100}), "high")
+
+    def test_task_urgency_high_from_thermal(self):
+        self.assertEqual(agentic_coders._task_urgency({"thermal_score": 8}), "high")
+        self.assertEqual(agentic_coders._task_urgency({"thermal_score": 10}), "high")
+
+    def test_task_urgency_low(self):
+        self.assertEqual(agentic_coders._task_urgency({"priority": 20, "thermal_score": 2}), "low")
+        self.assertEqual(agentic_coders._task_urgency({"priority": 0, "thermal_score": 0}), "low")
+
+    def test_task_urgency_normal(self):
+        self.assertEqual(agentic_coders._task_urgency({"priority": 50}), "normal")
+        self.assertEqual(agentic_coders._task_urgency({}), "normal")
+
+    def test_task_urgency_clamps_priority(self):
+        # priority > 100 clamped to 100 -> high
+        self.assertEqual(agentic_coders._task_urgency({"priority": 200}), "high")
+        # priority < 0 clamped to 0 -> low (with default thermal 0)
+        self.assertEqual(agentic_coders._task_urgency({"priority": -50}), "low")
+
+    def test_task_urgency_clamps_thermal(self):
+        # thermal > 10 clamped to 10 -> high
+        self.assertEqual(agentic_coders._task_urgency({"thermal_score": 99}), "high")
+        # thermal < 0 clamped to 0
+        self.assertEqual(agentic_coders._task_urgency({"priority": 10, "thermal_score": -5}), "low")
+
+    def test_task_urgency_invalid_inputs_use_defaults(self):
+        # Non-numeric priority defaults to 50 -> normal
+        self.assertEqual(agentic_coders._task_urgency({"priority": "garbage"}), "normal")
+        # None thermal defaults to 0
+        self.assertEqual(agentic_coders._task_urgency({"priority": 50, "thermal_score": None}), "normal")
+
+    # --- _capacity_utilization tests ---
+
+    def test_capacity_utilization_returns_float(self):
+        result = agentic_coders._capacity_utilization()
+        self.assertIsInstance(result, float)
+        self.assertGreaterEqual(result, 0.0)
+        self.assertLessEqual(result, 1.0)
+
+    def test_capacity_utilization_failsoft_on_missing_module(self):
+        # Should return 0.0 even if capacity_pacer is not importable
+        import sys
+        original = sys.modules.get("capacity_pacer")
+        sys.modules["capacity_pacer"] = None
+        try:
+            result = agentic_coders._capacity_utilization()
+            self.assertEqual(result, 0.0)
+        finally:
+            if original is not None:
+                sys.modules["capacity_pacer"] = original
+            else:
+                sys.modules.pop("capacity_pacer", None)
+
 
     def test_judge_panel_uses_cheapest_providers_first(self):
         import judge

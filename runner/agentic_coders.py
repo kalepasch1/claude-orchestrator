@@ -453,26 +453,51 @@ def _task_difficulty(task):
 
 
 def _task_urgency(task):
-    """'high'/'normal'/'low' from scheduler-written priority and thermal_score fields.
+    """Determine task urgency from priority and thermal_score fields.
 
-    High-urgency tasks prefer Claude (reliability over cost); low-urgency tasks are
-    good offload candidates regardless of offload-share env knobs.
+    Urgency levels:
+      - "high":   priority >= 80 OR thermal_score >= 8
+      - "low":    priority <= 20 AND thermal_score <= 2
+      - "normal": everything else
+
+    Input validation:
+      - priority is clamped to [0, 100] (default 50 if missing/invalid).
+      - thermal_score is clamped to [0, 10] (default 0 if missing/invalid).
+      Non-numeric values are replaced with their respective defaults
+      rather than raising, following the fail-soft convention.
     """
-    priority = int(task.get("priority") or 0)
-    thermal = float(task.get("thermal_score") or 0.0)
-    if priority >= 80 or thermal >= 5.0:
+    # --- validate & clamp priority (0-100, default 50) ---
+    try:
+        raw_priority = task.get("priority", 50)
+        priority = max(0, min(100, int(raw_priority)))
+    except (TypeError, ValueError):
+        priority = 50
+
+    # --- validate & clamp thermal_score (0-10, default 0) ---
+    try:
+        raw_thermal = task.get("thermal_score", 0)
+        thermal = max(0, min(10, float(raw_thermal)))
+    except (TypeError, ValueError):
+        thermal = 0.0
+
+    if priority >= 80 or thermal >= 8:
         return "high"
-    if priority <= 10 and thermal < 0.1:
+    if priority <= 20 and thermal <= 2:
         return "low"
     return "normal"
 
 
 def _capacity_utilization():
-    """Fleet token budget utilization 0..1 from capacity_pacer. Fail-soft → 0."""
+    """Get fleet token budget utilization ratio (0.0 to 1.0).
+
+    Queries capacity_pacer.budget_status() for fleet-wide utilization.
+    Returns 0.0 on any error (fail-soft: missing module, DB errors, etc.).
+    """
     try:
         import capacity_pacer
-        status = capacity_pacer.should_claim()
-        return float(status.get("utilization_pct", 0)) / 100.0
+        status = capacity_pacer.budget_status()
+        pct = status.get("utilization_pct", 0.0)
+        return max(0.0, min(1.0, float(pct) / 100.0))
     except Exception:
         return 0.0
 
@@ -623,6 +648,21 @@ def pick(task, slot_index=0):
         except Exception:
             pass
 
+    # --- Urgency-aware routing: high-urgency tasks bypass cost optimization ---
+    urgency = _task_urgency(task)
+    if urgency == "high":
+        # High-urgency tasks go straight to the most capable coder available
+        ranked = sorted(usable, key=lambda c: (-c["cap"], adjusted_cost(c)))
+        return ranked[0]["name"] if ranked else "claude"
+
+    # --- Budget-pressure routing: near-budget increases offload share ---
+    util = _capacity_utilization()
+    budget_boost = 0.0
+    if util > 0.85:
+        budget_boost = 0.15  # near budget exhaustion -> offload more to cheaper coders
+    elif util > 0.70:
+        budget_boost = 0.05
+
     # NORMAL state: no task class is hard-coded to Claude. Pick the best capable coder
     # by learned $/merge when available, else by capability-adjusted cost. Critical work
     # may still choose Claude when it is the only cap>=9 backend.
@@ -645,7 +685,8 @@ def pick(task, slot_index=0):
                 share = float(os.environ.get("ORCH_HARD_OFFLOAD_SHARE", "0.45"))
             except ValueError:
                 share = 0.45
-            if _stable_share(task) < share:
+            effective_share = min(1.0, share + budget_boost)
+            if _stable_share(task) < effective_share:
                 return by_cost[0]["name"]
         ranked = sorted(usable, key=lambda c: (adjusted_cost(c), -c["cap"]))
         return ranked[0]["name"] if ranked else "claude"
@@ -656,10 +697,8 @@ def pick(task, slot_index=0):
             share = float(os.environ.get("ORCH_EASY_OFFLOAD_SHARE", "0.6"))
         except ValueError:
             share = 0.6
-        # Near-budget: offload more aggressively to non-Claude coders to preserve capacity.
-        if utilization > 0.75:
-            share = min(1.0, share + (utilization - 0.75) * 2.0)
-        if h < share:
+        effective_share = min(1.0, share + budget_boost)
+        if h < effective_share:
             return by_cost[0]["name"]      # cheapest capable coder (free/local first) does easy work
         return "claude"
     # harder-but-safe: keep the modest second-coder diversification for benchmarking/capacity
