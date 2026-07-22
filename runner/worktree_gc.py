@@ -62,13 +62,7 @@ def _protected_slugs():
         if rows is None:
             return None
         slugs.update(t["slug"] for t in rows)
-    try:
-        approvals = db.select("approvals", {"select": "slug,title,kind,status,decided_by", "status": "in.(pending,approved)"})
-    except Exception:
-        return None
-    if approvals is None:
-        return None
-    for a in approvals:
+    for a in db.select("approvals", {"select": "slug,title,kind,status,decided_by", "status": "in.(pending,approved)"}) or []:
         if a.get("kind") not in MERGE_KINDS:
             continue
         if str(a.get("decided_by") or "").startswith(("merge-handler", "train")):
@@ -127,9 +121,7 @@ def gc_repo(repo):
     main_worktree = os.path.abspath(repo)
     protected = _protected_slugs()
     if protected is None:
-        # FAIL CLOSED: DB unreachable — we cannot know which tasks are RUNNING.
-        # Deleting on an empty set is what wiped executors' worktrees mid-task.
-        print(f"worktree_gc: task DB unavailable — failing closed, skipping GC for {repo}")
+        # DB unreachable — fail closed rather than GC everything.
         return 0
     out = _run_git(["git", "worktree", "list", "--porcelain"], repo).stdout
     removed = 0
