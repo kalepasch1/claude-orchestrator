@@ -515,7 +515,8 @@ def _throttle_floor():
 
 
 def set_throttle(n):
-    n = max(_throttle_floor(), min(n, _ceiling()))
+    """Persist concurrency limit *n* (clamped to [1, ceiling]) and return the effective value."""
+    n = max(1, min(n, _ceiling()))
     with open(THROTTLE_FILE, "w") as f:
         f.write(str(n))
     return n
