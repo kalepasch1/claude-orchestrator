@@ -33,23 +33,23 @@ THROTTLE_FILE = os.path.join(HOME, "throttle")
 # tasks against a 16-lane ceiling because its resource_governor process never picked up a tuned
 # PER_TASK_GB/RAM_FLOOR_GB pushed centrally after it last started. Read all of these live from
 # env on every call instead of freezing them at import.
-def _ceiling():
-    """Max concurrent tasks allowed. Read live from env to support fleet-wide tuning."""
+def _ceiling() -> int:
+    """Max parallel task lanes (re-read from env each call for live tuning)."""
     return int(os.environ.get("MAX_PARALLEL_CEILING", "12"))
 
 
-def _disk_soft():
-    """Disk usage % above which proactive pruning kicks in (worktrees, logs, caches)."""
+def _disk_soft() -> float:
+    """Disk usage % above which proactive pruning starts."""
     return float(os.environ.get("DISK_SOFT_PCT", "80"))
 
 
-def _disk_hard():
-    """Disk usage % at which concurrency throttles to 1 lane and alerts fire."""
+def _disk_hard() -> float:
+    """Disk usage % above which concurrency is throttled to 1 + alert fires."""
     return float(os.environ.get("DISK_HARD_PCT", "90"))
 
 
-def _ram_hard():
-    """RAM usage % ceiling; above this the governor blocks new task claims."""
+def _ram_hard() -> float:
+    """RAM usage % above which new task claims are paused."""
     return float(os.environ.get("RAM_HARD_PCT", "82"))
 
 
