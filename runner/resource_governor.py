@@ -594,8 +594,9 @@ def govern():
     disk_soft = _disk_soft()
     disk_hard = _disk_hard()
     ram_hard = _ram_hard()
-    pressure_bad = pressure_should_block(free_ram, eff_floor)
-    if free_ram is not None:
+    _mem_gate_disabled = os.environ.get("ORCH_DISABLE_MEM_GATE", "").lower() in ("1", "true", "yes")
+    pressure_bad = False if _mem_gate_disabled else pressure_should_block(free_ram, eff_floor)
+    if free_ram is not None and not _mem_gate_disabled:
         cur_reason = _global_pause_reason()
         if free_ram < eff_floor or pressure_bad:
             try:
@@ -678,7 +679,7 @@ def govern():
         action = "hold (memory elevated)"
     # Memory-budget clamp: never allow more concurrent tasks than free RAM can hold,
     # regardless of what the disk/ram branches above decided.
-    if free_ram is not None:
+    if free_ram is not None and not _mem_gate_disabled:
         mem_budget = max(1, int((free_ram - eff_floor) / per_task))
         if current_limit() > mem_budget:
             set_throttle(mem_budget)
