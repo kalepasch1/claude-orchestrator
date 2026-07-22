@@ -76,11 +76,14 @@ def check_branch_count(repo_path, project_slug=""):
         return {"passed": True, "count": 0, "reason": "could not list remote branches"}
     branches = [b.strip() for b in out.splitlines() if b.strip()]
     count = len(branches)
-    if count > MAX_BRANCHES:
+    # Re-read from env each call so fleet_config updates take effect without restart
+    _mode = os.environ.get("ORCH_GUARDRAIL_MODE", "warn")
+    _max_br = int(os.environ.get("ORCH_MAX_BRANCHES_PER_PROJECT", "30"))
+    if count > _max_br:
         v = _violation("branch_count_cap",
-                       f"{project_slug or 'repo'}: {count} remote agent branches (limit {MAX_BRANCHES})",
-                       {"count": count, "limit": MAX_BRANCHES, "project": project_slug})
-        return {"passed": MODE != "block", "count": count, "violation": v}
+                       f"{project_slug or 'repo'}: {count} remote agent branches (limit {_max_br})",
+                       {"count": count, "limit": _max_br, "project": project_slug})
+        return {"passed": _mode != "block", "count": count, "violation": v}
     return {"passed": True, "count": count}
 
 # ── Guardrail 2: Branch creation rate limit ────────────────────────────────
