@@ -629,7 +629,7 @@ watch(user, u => { if (u) loadAll() })
           </div>
         </div>
         <div v-if="approvalError" class="px-5 py-2 text-xs text-red-600 bg-red-50 border-t border-red-200">{{ approvalError }}</div>
-      </div>
+      </section>
 
       <section v-if="operatorApprovals.length" class="section-block attention-block">
         <div class="section-heading"><div><span class="eyebrow">Your decision</span><h2>{{ operatorApprovals.length }} action{{ operatorApprovals.length === 1 ? '' : 's' }} only you can authorize</h2></div><NuxtLink to="/sign-offs">Review all ↗</NuxtLink></div>
@@ -658,6 +658,6 @@ watch(user, u => { if (u) loadAll() })
         <div class="section-heading"><div><span class="eyebrow">Fleet telemetry</span><h2>Live log stream</h2></div></div>
         <LogView :lines="logLines" title="Run logs" :max-lines="LOG_RING_MAX" height="24rem" />
       </section>
-    </main>
+    </div>
   </div>
 </template>
