@@ -135,6 +135,12 @@ def test_merge_is_global_but_release_is_project_isolated():
     assert 'global_lease("release_train"' not in release
 
 
+def test_merge_train_imports_its_runtime_dependency():
+    runner = Path(__file__).parents[1]
+    merge = (runner / "merge_train.py").read_text()
+    assert "import integration_runtime" in merge
+
+
 def test_free_branch_never_removes_primary_when_called_from_linked_worktree(
     repo, tmp_path
 ):
