@@ -47,7 +47,7 @@ def _rebuild():
     import datetime
     cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=WINDOW_H)).isoformat()
     try:
-        rows = db.select("outcomes", {"select": "id,task_id,model,project,kind,integrated,tests_passed,usd,wall_ms,attempts,created_at,slug,input_tokens,output_tokens,diff_bytes,review_failures,deployed,deploy_status,note",
+        rows = db.select("outcomes", {"select": "model,project,kind,integrated,tests_passed,usd,wall_ms,attempts,created_at,slug,input_tokens,output_tokens,diff_bytes,review_failures,deployed,deploy_status,note",
                                       "created_at": f"gte.{cutoff}", "order": "created_at.desc",
                                       "limit": "5000"}) or []
     except Exception:
@@ -71,6 +71,13 @@ def _rebuild():
             rows = release_attribution.apply(rows, authoritative=True)
         except Exception:
             pass
+    except Exception:
+        pass
+    try:
+        import route_value_optimizer
+        releases = db.select("releases", {"select": "project,deploy_status,deployed_at,created_at",
+                                           "order": "created_at.desc", "limit": "1000"}) or []
+        rows = route_value_optimizer.attach_release_evidence(rows, releases)
     except Exception:
         pass
     agg = collections.defaultdict(lambda: {"n": 0, "merged": 0, "tests": 0, "usd": 0.0,

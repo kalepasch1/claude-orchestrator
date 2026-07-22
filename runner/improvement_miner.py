@@ -205,9 +205,10 @@ def _draft_slots(capacity):
 def run():
     import improvement_scrutiny, improvement_optimizer
     capacity = improvement_optimizer.capacity(db)
-    proposal_only = bool(capacity["limited"])
-    if proposal_only:
-        print("improvement_miner: review capacity full; drafting bounded proposals without promotion")
+    if capacity["limited"]:
+        print("improvement_miner: capacity-limited; draining scrutiny/build backlog before drafting")
+        return {"queued": 0, "for_review": 0, "needs_revision": 0,
+                "capacity_limited": True, "capacity": capacity}
     pid = {p["name"]: p["id"] for p in (db.select("projects", {"select": "id,name"}) or [])}
     # don't re-propose the same title for the same app+surface
     existing = db.select("improvement_proposals", {
@@ -246,8 +247,7 @@ def run():
             seen.add((app, surface, title.lower()))
     cands.sort(key=lambda x: x[0], reverse=True)   # impact-ranked: biggest wins first
     queued = review = revision = 0
-    deferred = 0
-    for score, app, surface, it, title in cands[:_draft_slots(capacity)]:
+    for score, app, surface, it, title in cands[:capacity["slots"]]:
             divergent = bool(it.get("divergent"))
             row = {"app": app, "surface": surface, "title": title[:200],
                    "current_state": (it.get("current_state") or "")[:600],
@@ -282,9 +282,8 @@ def run():
                 review += int(not proposal_only)
                 deferred += int(proposal_only)
             seen.add((app, surface, title.lower()))
-    print(f"improvement_miner: queued 0 directly; {review} scrutiny-ready, {revision} need revision, {deferred} deferred")
+    print(f"improvement_miner: queued 0 directly; {review} scrutiny-ready, {revision} need revision")
     return {"queued": queued, "for_review": review, "needs_revision": revision,
-            "deferred": deferred, "capacity_limited": proposal_only,
             "novelty_rejected": novelty_rejected, "capacity": capacity}
 
 

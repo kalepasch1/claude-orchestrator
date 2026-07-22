@@ -37,17 +37,11 @@ def summarize():
         rows = route_value_optimizer.attach_release_evidence(rows, releases)
     except Exception:
         pass
-    # Project/time-window inference is useful as a fallback, but exact immutable
-    # release links are authoritative. Apply them before terminalizing retries so
-    # the strongest deployed evidence wins the task/coder observation.
     try:
-        import release_attribution
-        rows = release_attribution.apply(rows, authoritative=True)
-    except Exception:
-        pass
-    try:
-        import route_evidence
-        rows = route_evidence.terminal_task_rows(rows)
+        import route_value_optimizer
+        releases = db.select("releases", {"select": "project,deploy_status,deployed_at,created_at",
+                                           "order": "created_at.desc", "limit": "1000"}) or []
+        rows = route_value_optimizer.attach_release_evidence(rows, releases)
     except Exception:
         pass
     agg = collections.defaultdict(lambda: {"n": 0, "tests": 0, "merged": 0.0,

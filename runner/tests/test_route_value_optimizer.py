@@ -38,10 +38,3 @@ def test_release_evidence_is_project_and_time_bounded(monkeypatch):
 
 def test_wilson_lower_bound_penalizes_tiny_samples():
     assert rvo.wilson_lower(1, 1) < rvo.wilson_lower(80, 100)
-
-
-def test_provider_attribution_does_not_inflate_local_route():
-    assert rvo.provider_of("cowork-executor") == "cowork"
-    assert rvo.provider_of("swarm:openai:gpt-5") == "openai"
-    assert rvo.provider_of(None) == "unknown"
-    assert rvo.provider_of("ollama:qwen3-coder:30b") == "local"

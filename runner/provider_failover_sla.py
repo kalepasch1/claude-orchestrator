@@ -24,6 +24,12 @@ def _local_path():
     return os.path.join(home, "provider_sla_state.json")
 
 
+def _local_path():
+    home = os.environ.get("CLAUDE_ORCH_HOME",
+                          os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".runtime"))
+    return os.path.join(home, "provider_sla_state.json")
+
+
 def _recent_ops():
     since = (datetime.datetime.utcnow() - datetime.timedelta(hours=WINDOW_H)).isoformat()
     try:
@@ -52,12 +58,6 @@ def _compute_sla(ops):
 
 
 def _load():
-    path = _local_path()
-    ttl = float(os.environ.get("ORCH_PROVIDER_SLA_CACHE_SEC", "10"))
-    with _LOAD_LOCK:
-        if (_LOAD_CACHE["state"] is not None and _LOAD_CACHE["path"] == path
-                and time.time() - _LOAD_CACHE["at"] < ttl):
-            return json.loads(json.dumps(_LOAD_CACHE["state"]))
     local = {"demoted": {}, "history": []}
     try:
         with open(_local_path()) as f:
@@ -72,15 +72,10 @@ def _load():
             # was unavailable; remote state adds fleet-wide demotions.
             remote["demoted"] = {**(remote.get("demoted") or {}),
                                  **(local.get("demoted") or {})}
-            result = remote
-            with _LOAD_LOCK:
-                _LOAD_CACHE.update({"at": time.time(), "path": path, "state": result})
-            return json.loads(json.dumps(result))
+            return remote
     except Exception:
         pass
-    with _LOAD_LOCK:
-        _LOAD_CACHE.update({"at": time.time(), "path": path, "state": local})
-    return json.loads(json.dumps(local))
+    return local
 
 
 def _save(s):
@@ -213,22 +208,6 @@ def is_demoted(provider):
                 return False
         except Exception:
             pass
-    return True
-
-
-def record_probe_success(provider):
-    """Re-admit a provider after a real successful inference, even if credits changed under the same key."""
-    state = _load(); demoted = state.get("demoted") or {}
-    if provider not in demoted:
-        return False
-    del demoted[provider]
-    state["demoted"] = demoted
-    _save(state)
-    _notify_bandit_promote(provider)
-    try:
-        db.upsert("fleet_config", {"key": f"ORCH_PROVIDER_DEMOTED_{provider.upper()}", "value": "false"})
-    except Exception:
-        pass
     return True
 
 

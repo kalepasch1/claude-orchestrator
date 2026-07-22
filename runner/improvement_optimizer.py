@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 """Novelty and downstream-capacity controls for self-improvement drafting."""
 import os
 import re
@@ -57,13 +56,7 @@ def capacity(database):
         builds = []
     review_slots = max(0, REVIEW_CAP - len(review))
     build_slots = max(0, BUILD_CAP - len(builds))
-    # The miner creates review proposals only; it does not directly enqueue a
-    # build.  A full build lane must therefore not silence new, bounded
-    # improvement intake.  The committee remains the gate that promotes a
-    # reviewed proposal into build work.
-    slots = review_slots
+    slots = min(review_slots, build_slots)
     return {"slots": slots, "review_backlog": len(review), "build_backlog": len(builds),
             "review_cap": REVIEW_CAP, "build_cap": BUILD_CAP,
-            "review_slots": review_slots, "build_slots": build_slots,
-            "build_limited": build_slots <= 0,
             "limited": slots <= 0}
