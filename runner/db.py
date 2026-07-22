@@ -404,11 +404,7 @@ def upsert(table, row):
 
 
 def update(table, match, patch):
-    # SECRET HYGIENE: redact secrets from sensitive task fields before DB write.
-    if table == "tasks" and isinstance(patch, dict):
-        for field in _TASK_SENSITIVE_FIELDS:
-            if field in patch and isinstance(patch[field], str):
-                patch[field] = redact_secrets(patch[field])
+    """PATCH rows in *table* matching *match* dict with *patch* fields.  Tolerates 409 (concurrent write)."""
     params = {k: f"eq.{v}" for k, v in match.items()}
     try:
         return _req("PATCH", f"/rest/v1/{table}", body=patch,
