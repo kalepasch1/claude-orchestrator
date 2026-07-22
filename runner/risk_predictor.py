@@ -47,6 +47,8 @@ class RiskPredictor:
         """Train on list of (features_dict, passed_bool). Mutates weights/bias in place."""
         if not examples:
             return
+        lr = max(1e-6, min(1.0, lr)) if lr is not None else 0.01
+        epochs = max(1, min(10000, epochs)) if epochs is not None else 100
         for _ in range(epochs):
             for feat, passed in examples:
                 score = self.predict_risk(**feat)
