@@ -17,7 +17,7 @@ cd /Users/kpasch/Documents/beethoven/claude-orchestrator/web
 npm install
 # push the repo to GitHub (or use `vercel` directly):
 #   create a repo, then from the project root:
-#   git remote add origin git@github.com:<you>/claude-orchestrator.git && git push -u origin main
+#   git remote add origin git@github.com:<you>/claude-orchestrator.git && git push -u origin master
 npx vercel --prod        # set Root Directory = web/ , add env SUPABASE_URL + SUPABASE_KEY (from web/.env)
 ```
 In the Vercel project: **Settings → Environment Variables** →
