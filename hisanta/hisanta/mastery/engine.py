@@ -1,108 +1,59 @@
-"""Mastery engine with spaced-repetition, adaptive difficulty, and reward scheduling."""
+"""H1 Mastery Engine - quest execution and progress tracking."""
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict
 
-from __future__ import annotations
 
-from hisanta.contracts.family import (
-    ConstitutionVerdict,
-    MasteryEfficacyMetric,
-    Quest,
-    RewardSchedule,
-    constitution_check,
-)
+@dataclass
+class Quest:
+    quest_id: str
+    title: str
+    description: str = ""
+    difficulty: int = 1
+    completed: bool = False
+
+
+@dataclass
+class Progress:
+    student_id: str
+    quests_completed: List[str] = field(default_factory=list)
+    total_points: int = 0
+
+    def record(self, quest_id: str, points: int = 10):
+        if quest_id not in self.quests_completed:
+            self.quests_completed.append(quest_id)
+            self.total_points += points
 
 
 class MasteryEngine:
-    """Engine for mastery-based learning progression."""
+    """Core mastery engine for quest execution."""
 
-    def __init__(self) -> None:
-        self._history: list[dict] = []
+    def __init__(self):
+        self._quests: Dict[str, Quest] = {}
+        self._progress: Dict[str, Progress] = {}
 
-    def schedule_review(
-        self, quest: Quest, last_interval: int = 1, success: bool = True
-    ) -> int:
-        """Spaced-repetition scheduler.
+    def register_quest(self, quest: Quest):
+        self._quests[quest.quest_id] = quest
 
-        If success, multiply interval by 2.5 (min 1).
-        If fail, reset to 1.
-        Returns next interval in days.
-        """
-        try:
-            if not isinstance(last_interval, (int, float)) or last_interval < 1:
-                last_interval = 1
-            if success:
-                return max(1, int(last_interval * 2.5))
-            return 1
-        except Exception:
-            return 1
+    def run_quest(self, student_id: str, quest_id: str) -> Optional[Quest]:
+        """Run a quest for a student. Returns completed quest or None."""
+        quest = self._quests.get(quest_id)
+        if not quest:
+            return None
+        if student_id not in self._progress:
+            self._progress[student_id] = Progress(student_id=student_id)
+        progress = self._progress[student_id]
+        progress.record(quest_id)
+        quest_copy = Quest(
+            quest_id=quest.quest_id,
+            title=quest.title,
+            description=quest.description,
+            difficulty=quest.difficulty,
+            completed=True,
+        )
+        return quest_copy
 
-    def adaptive_difficulty(
-        self, current_level: int, recent_scores: list[float]
-    ) -> int:
-        """Adjust difficulty based on recent performance.
+    def get_progress(self, student_id: str) -> Optional[Progress]:
+        return self._progress.get(student_id)
 
-        If avg > 0.8 increase, if avg < 0.4 decrease, else keep. Clamp 1-10.
-        """
-        try:
-            if not isinstance(current_level, (int, float)):
-                current_level = 1
-            current_level = int(current_level)
-            if not recent_scores:
-                return max(1, min(10, current_level))
-            avg = sum(recent_scores) / len(recent_scores)
-            if avg > 0.8:
-                current_level += 1
-            elif avg < 0.4:
-                current_level -= 1
-            return max(1, min(10, current_level))
-        except Exception:
-            return max(1, min(10, current_level if isinstance(current_level, int) else 1))
-
-    def complete_weekly_quests(self, quests: list[Quest]) -> dict:
-        """Check weekly quest completion. Opens exactly one advent door if all complete."""
-        try:
-            if not quests:
-                return {"advent_door_opened": False, "doors_opened": 0}
-            all_done = all(q.completed for q in quests)
-            if all_done:
-                return {"advent_door_opened": True, "doors_opened": 1}
-            return {"advent_door_opened": False, "doors_opened": 0}
-        except Exception:
-            return {"advent_door_opened": False, "doors_opened": 0}
-
-    def create_reward_schedule(
-        self,
-        schedule_type: str = "fixed",
-        coupled_to_purchase: bool = False,
-    ) -> RewardSchedule | None:
-        """Create a reward schedule.
-
-        Refuses (returns None) if coupled_to_purchase is True AND
-        schedule_type contains 'variable_ratio'.
-        """
-        try:
-            if coupled_to_purchase and "variable_ratio" in schedule_type:
-                verdict = constitution_check("charge_child")
-                if verdict == ConstitutionVerdict.DENY:
-                    return None
-            return RewardSchedule(
-                schedule_type=schedule_type,
-                variable_ratio_coupled_to_purchase=coupled_to_purchase,
-            )
-        except Exception:
-            return RewardSchedule()
-
-    def get_efficacy_metrics(
-        self, subject: str, scores: list[float]
-    ) -> MasteryEfficacyMetric:
-        """Compute efficacy metrics for a subject."""
-        try:
-            if not scores:
-                return MasteryEfficacyMetric(subject=subject or "")
-            avg_score = sum(scores) / len(scores)
-            return MasteryEfficacyMetric(
-                subject=subject or "",
-                score=round(avg_score, 4),
-                attempts=len(scores),
-            )
-        except Exception:
-            return MasteryEfficacyMetric(subject=subject or "")
+    def get_all_progress(self) -> Dict[str, Progress]:
+        return dict(self._progress)
