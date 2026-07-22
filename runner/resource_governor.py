@@ -39,11 +39,13 @@ def _ceiling():
 
 
 def _disk_soft():
-    return float(os.environ.get("DISK_SOFT_PCT", "80"))   # prune above this
+    """Disk-usage percentage above which automatic pruning triggers."""
+    return float(os.environ.get("DISK_SOFT_PCT", "80"))
 
 
 def _disk_hard():
-    return float(os.environ.get("DISK_HARD_PCT", "90"))   # throttle to 1 + alert
+    """Disk-usage percentage above which task concurrency throttles to 1 and an alert fires."""
+    return float(os.environ.get("DISK_HARD_PCT", "90"))
 
 
 def _ram_hard():
