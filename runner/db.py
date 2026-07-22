@@ -208,14 +208,7 @@ PROJECT_PRIORITY_ORDER = {
 
 
 def _project_rank_name(name):
-    """Map project name to priority rank (lower = higher priority).
-
-    Args:
-        name: Project name or None.
-
-    Returns:
-        int: Priority rank (1-9); unknown projects default to 9 (lowest).
-    """
+    """Map a project name to its numeric priority (1 = highest). Unknown projects default to 9."""
     return PROJECT_PRIORITY_ORDER.get(str(name or "").strip().lower(), 9)
 
 
