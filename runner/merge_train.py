@@ -27,13 +27,16 @@ MERGE_CONFLICT_REDO_CAP). Test failures mark the task TESTFAIL — the train NEV
 Idempotent: handled cards get decided_by='train:*'; cards already handled by this train or by
 the legacy merge-handler are skipped.
 """
-import concurrent.futures, datetime, json, os, re, sys, subprocess, time
+import datetime, json, os, re, sys, subprocess, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import events
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
 import agentic_repair
-import repo_lock         # per-repo mutex: concurrent train_run() calls must not race git refs
+try:
+    import pipeline_metrics as _pm
+except Exception:
+    _pm = None
 
 MARK = "train"                                   # decided_by prefix => handled by the train
 # Non-code policy decisions are terminal approval artifacts, not merge work.  If
@@ -749,8 +752,17 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         _log(pname, slug, "CONFLICT", f"redo cap {cap} exhausted{files_hint}")
         return "conflict"
 
-    ok, tail = _run_tests(repo, _test_cmd_for(proj, repo), task=task)  # (3)
+    _t0 = time.monotonic()
+    ok, tail = _run_tests(repo, _test_cmd_for(proj, repo))  # (3)
+    _dur_ms = int((time.monotonic() - _t0) * 1000)
     if not ok:
+        if _pm:
+            try:
+                _pm.record(slug, task.get("kind") or "unknown",
+                           ok=False, duration_ms=_dur_ms, gate_decision="TESTFAIL",
+                           gate_reason=tail[:200])
+            except Exception:
+                pass
         # NEVER force-merge red work.
         _task_patch(task, {"state": "TESTFAIL", "note": f"train: tests failed on rebased {branch}: {tail[:200]}"})
         db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:TESTFAIL"})
@@ -796,6 +808,12 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
     db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:MERGED"})
     _attribute_merge_outcome(slug, task)
     _attribute_train_outcome(slug, task, "merged", integrated=True)
+    if _pm:
+        try:
+            _pm.record(slug, task.get("kind") or "unknown",
+                       ok=True, duration_ms=_dur_ms, gate_decision="MERGED")
+        except Exception:
+            pass
     approval_merge._free_branch(repo, branch)   # cleanup so worktrees never accumulate
     _log(pname, slug, "MERGED", f"-> {base}")
     return "merged"
@@ -859,41 +877,24 @@ def train_run():
     for pid, group in by_project.items():
         proj = projects.get(pid, {})
         summary["projects"] += 1
-        used = {"low": 0, "standard": 0, "sensitive": 0}
-        scanned = 0
-        # CONCURRENCY FIX (2026-07-08 merge-stall root cause): train_run() can be invoked
-        # concurrently for the SAME project -- the 60s scheduler AND, inline, one call per
-        # worker thread the instant its task finishes (runner.py integrate() -> train_run()).
-        # Without this lock, two concurrent passes over the same project raced on the shared
-        # repo's git refs (rebase/branch -f/fast-forward), producing spurious rebase conflicts
-        # that were not real content conflicts. Serialize per-repo so only one train ever
-        # touches a given project's working copy at a time. On a busy repo where another
-        # thread is mid-train, skip this cycle rather than block indefinitely -- the next
-        # scheduled pass (or the next task completion) will pick it back up.
-        repo_path = proj.get("repo_path", "")
-        with repo_lock.hold(repo_path, timeout=120) as got_lock:
-            if not got_lock:
-                summary["skipped"] += len(group)
-                print(f"merge_train: {proj.get('name') or pid} busy (another train holds the repo lock) — skipping this cycle")
-                continue
-            for card, slug, task, risk in _select_batch(group):
-                if used[risk] >= caps[risk] or scanned >= scan_cap:
-                    continue
-                scanned += 1
-                summary["risk"][risk] += 1
-                outcome = _integrate_card(card, slug, task, proj)
-                if outcome in ATTEMPT_OUTCOMES:
-                    used[risk] += 1
-                if outcome == "merged":
-                    summary["merged"] += 1
-                elif outcome == "redo":
-                    summary["redo"] += 1
-                elif outcome == "testfail":
-                    summary["testfail"] += 1
-                elif outcome == "conflict":
-                    summary["conflict"] += 1
-                else:
-                    summary["skipped"] += 1
+        for card, slug, task, risk in _select_batch(group):
+            summary["risk"][risk] += 1
+            outcome = _integrate_card(card, slug, task, proj)
+            if outcome == "merged":
+                summary["merged"] += 1
+            elif outcome == "redo":
+                summary["redo"] += 1
+            elif outcome == "testfail":
+                summary["testfail"] += 1
+            elif outcome == "conflict":
+                summary["conflict"] += 1
+            else:
+                summary["skipped"] += 1
+    if _pm:
+        try:
+            summary["test_pipeline"] = _pm.get_health(lookback_minutes=60)
+        except Exception:
+            pass
     print(f"merge_train: {summary['merged']} merged, {summary['redo']} redo, "
           f"{summary['testfail']} testfail, {summary['conflict']} conflict, "
           f"{summary['skipped']} skipped, {summary['project_errors']} project errors "
