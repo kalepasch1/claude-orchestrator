@@ -504,6 +504,44 @@ class ModelRoutingTest(unittest.TestCase):
             self.assertEqual(runner_entrypoint._next_non_claude_coder({"prompt": "x"}), "ollama")
             self.assertEqual(runner_entrypoint._next_non_claude_coder({"prompt": "x"}, exclude={"ollama"}), "codex")
 
+    def test_high_urgency_task_stays_on_claude_despite_offload_share(self):
+        """High-priority tasks prefer Claude even when ORCH_EASY_OFFLOAD_SHARE is 1.0."""
+        coders = [
+            {"name": "claude", "cost": 1, "cap": 10},
+            {"name": "ollama", "cmd": "aider --model ollama/llama3.1 --message {prompt}",
+             "cost": 0, "cap": 6, "daily_usd": 0},
+        ]
+        task = {"slug": "urgent-fix", "kind": "docs", "prompt": "update readme",
+                "deps": [], "priority": 90, "thermal_score": 0.0}
+        with patch.object(agentic_coders, "_pool", return_value=coders), \
+             patch.object(agentic_coders, "_within_cap", return_value=True), \
+             patch.object(agentic_coders, "_allowed_by_terms", return_value=True), \
+             patch.object(agentic_coders, "_heavy_ollama_saturated", return_value=False), \
+             patch.object(agentic_coders, "_capacity_utilization", return_value=0.0), \
+             patch.dict(os.environ, {"ORCH_EASY_OFFLOAD_SHARE": "1.0"}, clear=False):
+            self.assertEqual(agentic_coders.pick(task), "claude")
+
+    def test_capacity_pressure_boosts_easy_offload_share(self):
+        """Near-budget (>75% utilization) increases easy-task offload to spare Claude capacity."""
+        coders = [
+            {"name": "claude", "cost": 1, "cap": 10},
+            {"name": "ollama", "cmd": "aider --model ollama/llama3.1 --message {prompt}",
+             "cost": 0, "cap": 6, "daily_usd": 0},
+        ]
+        # slug chosen so _stable_share lands around 0.75 (just above normal 0.6 share but inside boosted share)
+        task = {"slug": "easy-chore-abc", "kind": "chore", "prompt": "minor cleanup",
+                "deps": [], "priority": 30, "thermal_score": 0.5}
+        with patch.object(agentic_coders, "_pool", return_value=coders), \
+             patch.object(agentic_coders, "_within_cap", return_value=True), \
+             patch.object(agentic_coders, "_allowed_by_terms", return_value=True), \
+             patch.object(agentic_coders, "_heavy_ollama_saturated", return_value=False), \
+             patch.object(agentic_coders, "_stable_share", return_value=0.70), \
+             patch.object(agentic_coders, "_task_urgency", return_value="normal"), \
+             patch.object(agentic_coders, "_capacity_utilization", return_value=0.90), \
+             patch.dict(os.environ, {"ORCH_EASY_OFFLOAD_SHARE": "0.6"}, clear=False):
+            # At 90% utilization: share = 0.6 + (0.90-0.75)*2 = 0.6 + 0.30 = 0.90; h=0.70 < 0.90 → offload
+            self.assertEqual(agentic_coders.pick(task), "ollama")
+
     def test_pick_skips_saturated_heavy_ollama_model(self):
         coders = [
             {"name": "claude", "cost": 1, "cap": 10},
