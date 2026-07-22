@@ -7,52 +7,33 @@ rebase the patch, but it can never overwrite the source artifact identity.
 """
 from __future__ import annotations
 import hashlib
-import os
 import re
 import subprocess
-
-_auth_applied: set[str] = set()   # repos whose origin URL already has the PAT
 
 
 def _git(repo, *args, input_text=None, timeout=180):
     return subprocess.run(["git", *args], cwd=repo, input=input_text,
-                          capture_output=True, encoding="utf-8", errors="replace",
-                          timeout=timeout)
+                          capture_output=True, text=True, timeout=timeout)
 
 
-def _ensure_auth(repo):
-    """Inject GITHUB_PAT into the origin URL if it lacks credentials.
+def _git_authed(repo, *args, timeout=180):
+    """Run a git command with PAT authentication via git_auth.
 
-    Idempotent: skips repos already patched this process and URLs that already
-    contain an access token.  Does nothing when GITHUB_PAT is unset.
+    Falls back to unauthenticated _git if git_auth is unavailable or
+    PAT is not configured.
     """
-    repo_key = os.path.realpath(repo)
-    if repo_key in _auth_applied:
-        return
-    pat = os.environ.get("GITHUB_PAT", "").strip()
-    if not pat:
-        return
-    result = _git(repo, "remote", "get-url", "origin")
-    if result.returncode:
-        return
-    url = result.stdout.strip()
-    # Already has a token or is SSH — leave it alone
-    if "@github.com" in url and "x-access-token" in url:
-        _auth_applied.add(repo_key)
-        return
-    if url.startswith("git@"):
-        return
-    # Convert https://github.com/... → https://x-access-token:PAT@github.com/...
-    if url.startswith("https://github.com/"):
-        authed = url.replace("https://github.com/", f"https://x-access-token:{pat}@github.com/", 1)
-        _git(repo, "remote", "set-url", "origin", authed)
-        _auth_applied.add(repo_key)
-    elif "github.com" in url and "x-access-token" not in url:
-        # Other https variants (e.g. https://user@github.com/...)
-        authed = re.sub(r"https://[^@]*@?github\.com/", f"https://x-access-token:{pat}@github.com/", url, count=1)
-        if authed != url:
-            _git(repo, "remote", "set-url", "origin", authed)
-            _auth_applied.add(repo_key)
+    try:
+        import git_auth
+        if git_auth.pat_available():
+            rc, out, err = git_auth.run_git(list(args), repo, timeout=timeout)
+            # Return a subprocess.CompletedProcess-like object for compatibility
+            result = subprocess.CompletedProcess(
+                args=["git"] + list(args), returncode=rc,
+                stdout=out or "", stderr=err or "")
+            return result
+    except ImportError:
+        pass
+    return _git(repo, *args, timeout=timeout)
 
 
 def _safe(value):
@@ -66,6 +47,11 @@ def patch_id(repo, commit):
         return ""
     identified = _git(repo, "patch-id", "--stable", input_text=shown.stdout)
     return identified.stdout.split()[0] if identified.returncode == 0 and identified.stdout.split() else ""
+
+
+def _push_ref(repo, ref, timeout=240):
+    """Push a ref to origin using authenticated git if available."""
+    return _git_authed(repo, "push", "origin", f"{ref}:{ref}", timeout=timeout)
 
 
 def publish(repo, task_id, attempt, commit, *, push=True, namespace="tasks"):
@@ -82,14 +68,12 @@ def publish(repo, task_id, attempt, commit, *, push=True, namespace="tasks"):
     digest = patch_id(repo, sha) or hashlib.sha256(sha.encode()).hexdigest()
     ref = f"refs/orchestrator/{_safe(namespace)}/{_safe(task_id)}/{int(attempt or 1):04d}/{digest[:20]}"
     has_origin = _git(repo, "remote", "get-url", "origin").returncode == 0
-    if has_origin and push:
-        _ensure_auth(repo)
     current = _git(repo, "rev-parse", "--verify", ref)
     if current.returncode == 0:
         ok = current.stdout.strip() == sha
         pushed = False
         if ok and push and has_origin:
-            sent = _git(repo, "push", "origin", f"{ref}:{ref}", timeout=240)
+            sent = _push_ref(repo, ref)
             pushed = sent.returncode == 0
             if not pushed:
                 return {"ok": False, "ref": ref, "commit": sha, "patch_id": digest,
@@ -102,7 +86,7 @@ def publish(repo, task_id, attempt, commit, *, push=True, namespace="tasks"):
                 "reason": "create-failed", "detail": created.stderr[-300:]}
     pushed = False
     if push and has_origin:
-        sent = _git(repo, "push", "origin", f"{ref}:{ref}", timeout=240)
+        sent = _push_ref(repo, ref)
         pushed = sent.returncode == 0
         if not pushed:
             return {"ok": False, "ref": ref, "commit": sha, "patch_id": digest,
