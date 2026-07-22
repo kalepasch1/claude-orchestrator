@@ -113,13 +113,6 @@ def _materialize_branch(repo, branch):
         return _git(repo, "branch", branch, f"refs/remotes/origin/{branch}").returncode == 0 \
             or _branch_exists(repo, branch)
     except Exception:
-        pass
-    try:
-        if _git(repo, "rev-parse", "--verify", f"refs/remotes/origin/{branch}").returncode != 0:
-            return False
-        return _git(repo, "branch", branch, f"refs/remotes/origin/{branch}").returncode == 0 \
-            or _branch_exists(repo, branch)
-    except Exception:
         return False
 
 
@@ -872,14 +865,21 @@ def train_run():
                "risk": {"low": 0, "standard": 0, "sensitive": 0},
                "pressure": pressure}
     caps = {"low": LOW_RISK_BATCH, "standard": STANDARD_BATCH, "sensitive": SENSITIVE_BATCH}
-    ATTEMPT_OUTCOMES = ("merged", "testfail", "conflict", "push-pending")  # real attempts (tests ran) consume the cap
+    ATTEMPT_OUTCOMES = ("merged", "testfail", "conflict")  # only real attempts consume the cap
     scan_cap = int(os.environ.get("MERGE_TRAIN_SCAN_PER_PROJECT", "200"))
     for pid, group in by_project.items():
         proj = projects.get(pid, {})
         summary["projects"] += 1
+        used = {"low": 0, "standard": 0, "sensitive": 0}
+        scanned = 0
         for card, slug, task, risk in _select_batch(group):
+            if used[risk] >= caps[risk] or scanned >= scan_cap:
+                continue
+            scanned += 1
             summary["risk"][risk] += 1
             outcome = _integrate_card(card, slug, task, proj)
+            if outcome in ATTEMPT_OUTCOMES:
+                used[risk] += 1
             if outcome == "merged":
                 summary["merged"] += 1
             elif outcome == "redo":
