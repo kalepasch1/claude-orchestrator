@@ -47,29 +47,22 @@ def store(sig: str, project: str, slug: str, branch: str, summary: str) -> None:
         pass
 
 
-def invalidate(sig):
-    """Remove a cached result by signature."""
+def invalidate(sig=None, project=None):
+    """Remove cache entries by signature or project. Useful after schema changes or
+    force-rebuilds where stale cached results would cause silent regressions."""
     try:
-        db.delete("result_cache", {"signature": f"eq.{sig}"})
-        return True
+        if sig:
+            db.delete("result_cache", {"signature": f"eq.{sig}"})
+        elif project:
+            db.delete("result_cache", {"project": f"eq.{project}"})
     except Exception:
-        return False
+        pass
 
 
 def stats():
-    """Return cache statistics for operator observability."""
+    """Return cache size and total hits for diagnostics."""
     try:
-        rows = db.select("result_cache", {"select": "*", "limit": "10000"}) or []
+        rows = db.select("result_cache", {"select": "signature,hits"}) or []
+        return {"entries": len(rows), "total_hits": sum(r.get("hits", 0) or 0 for r in rows)}
     except Exception:
-        rows = []
-    projects = {}
-    total_hits = 0
-    for r in rows:
-        p = r.get("project") or "unknown"
-        projects[p] = projects.get(p, 0) + 1
-        total_hits += r.get("hits", 0) or 0
-    return {
-        "total_entries": len(rows),
-        "total_hits": total_hits,
-        "by_project": projects,
-    }
+        return {"entries": 0, "total_hits": 0}
