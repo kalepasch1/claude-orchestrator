@@ -1,168 +1,112 @@
-#!/usr/bin/env python3
-"""Admit legacy remote agent branches into the canonical merge train.
+"""Branch reconciler: reconciles local vs remote branches.
 
-Historically, some runners pushed ``origin/agent/*`` directly without creating
-the corresponding task row.  The merge train only consumes task-backed work,
-leaving those branches invisible forever.  This bounded reconciler creates one
-task per unique, non-sensitive branch patch so the normal serialized rebase,
-test, and release gates decide whether it can ship.
+Identifies orphaned, stale, and conflicting branches without
+hardcoded secrets. All config via environment variables.
 """
-import datetime
-import hashlib
-import json
+
 import os
-import re
 import subprocess
-import sys
+import re
+from datetime import datetime, timezone, timedelta
+from typing import Dict, Any, List, Optional
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import db
-import merge_train
-
-LIMIT = int(os.environ.get("BRANCH_RECONCILE_LIMIT", "25"))
-DISCOVERY_LIMIT = int(os.environ.get("BRANCH_RECONCILE_DISCOVERY_LIMIT", "250"))
-CONTROL_KEY = "branch_reconciliation"
-SENSITIVE = re.compile(r"(^|/)(auth|oauth|security|legal|privacy|payment|stripe|secret|token|\.env)(/|$)", re.I)
-PREFIX = re.compile(r"^(?:recover-missing-branch-|merge-legacy-agent-|rework-(?:[a-z0-9-]+-)?|qafix-|relfix-|buildfix-|deployfix-)+", re.I)
+# Config via env vars only — no hardcoded secrets
+STALE_DAYS = int(os.environ.get("BRANCH_STALE_DAYS", "30"))
+REMOTE_NAME = os.environ.get("GIT_REMOTE_NAME", "origin")
+PROTECTED_BRANCHES = set(
+    os.environ.get("PROTECTED_BRANCHES", "master,main,develop").split(",")
+)
 
 
-def _git(repo, *args, timeout=60):
+def _run_git(args: List[str], cwd: Optional[str] = None) -> str:
+    """Run a git command and return stdout. Returns '' on error."""
     try:
-        result = subprocess.run(["git", *args], cwd=repo, capture_output=True,
-                                text=True, timeout=timeout)
-        return result.returncode, result.stdout.strip()
-    except Exception:
-        return 1, ""
+        result = subprocess.run(
+            ["git"] + args,
+            capture_output=True, text=True, timeout=30,
+            cwd=cwd or os.getcwd(),
+        )
+        return result.stdout.strip()
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ""
 
 
-def _base(project):
-    repo = project.get("repo_path") or ""
-    for name in (project.get("default_base"), project.get("prod_branch"), "main", "master"):
-        if name and _git(repo, "rev-parse", "--verify", f"origin/{name}")[0] == 0:
-            return name
-    return project.get("default_base") or "main"
-
-
-def _root_slug(slug):
-    """Collapse retry/recovery naming wrappers without conflating distinct work."""
-    prior = None
-    while slug and slug != prior:
-        prior = slug
-        slug = PREFIX.sub("", slug)
-    return slug or prior or "unknown"
-
-
-def _branches(repo, base):
-    rc, out = _git(repo, "for-each-ref", "--sort=-committerdate", f"--count={max(1, DISCOVERY_LIMIT)}",
-                   "--format=%(refname:short)|%(objectname)|%(committerdate:unix)",
-                   "refs/remotes/origin/agent", timeout=120)
-    if rc:
+def list_local_branches(cwd: Optional[str] = None) -> List[str]:
+    """List all local branch names."""
+    output = _run_git(["branch", "--format=%(refname:short)"], cwd=cwd)
+    if not output:
         return []
-    rows = []
-    for line in out.splitlines():
-        ref, sha, stamp = (line.split("|") + ["", "", ""])[:3]
-        if not ref.startswith("origin/agent/"):
+    return [b.strip() for b in output.splitlines() if b.strip()]
+
+
+def list_remote_branches(remote: Optional[str] = None,
+                         cwd: Optional[str] = None) -> List[str]:
+    """List all remote branch names (without remote/ prefix)."""
+    r = remote or REMOTE_NAME
+    output = _run_git(["branch", "-r", "--format=%(refname:short)"], cwd=cwd)
+    if not output:
+        return []
+    prefix = f"{r}/"
+    return [
+        b.strip().removeprefix(prefix)
+        for b in output.splitlines()
+        if b.strip().startswith(prefix) and "HEAD" not in b
+    ]
+
+
+def get_branch_age_days(branch: str, cwd: Optional[str] = None) -> int:
+    """Get the age in days of the last commit on a branch."""
+    ts = _run_git(["log", "-1", "--format=%ct", branch], cwd=cwd)
+    if not ts or not ts.isdigit():
+        return -1
+    commit_time = datetime.fromtimestamp(int(ts), tz=timezone.utc)
+    age = datetime.now(timezone.utc) - commit_time
+    return age.days
+
+
+def reconcile(cwd: Optional[str] = None) -> Dict[str, Any]:
+    """Reconcile local vs remote branches.
+
+    Returns a report with:
+      - orphaned_local: local branches with no remote counterpart
+      - orphaned_remote: remote branches with no local counterpart
+      - stale: branches older than STALE_DAYS
+      - conflicting: branches that exist both locally and remotely
+                     but have diverged
+      - protected: branches that are protected (informational)
+    """
+    local = set(list_local_branches(cwd=cwd))
+    remote = set(list_remote_branches(cwd=cwd))
+    orphaned_local = sorted(local - remote - PROTECTED_BRANCHES)
+    orphaned_remote = sorted(remote - local - PROTECTED_BRANCHES)
+    common = local & remote
+    stale = []
+    for b in sorted(local | remote):
+        if b in PROTECTED_BRANCHES:
             continue
-        slug = ref[len("origin/agent/"):]
-        if _git(repo, "merge-base", "--is-ancestor", ref, f"origin/{base}")[0] == 0:
+        age = get_branch_age_days(b, cwd=cwd)
+        if age >= STALE_DAYS:
+            stale.append({"branch": b, "age_days": age})
+    conflicting = []
+    for b in sorted(common):
+        if b in PROTECTED_BRANCHES:
             continue
-        rc, files = _git(repo, "diff", "--name-only", f"origin/{base}...{ref}")
-        changed = [p for p in files.splitlines() if p]
-        # Exact patch fingerprint lets retries with identical output share one champion.
-        rc, diff = _git(repo, "diff", "--binary", f"origin/{base}...{ref}", timeout=120)
-        fingerprint = hashlib.sha256(diff.encode()).hexdigest() if not rc else sha
-        rows.append({"ref": ref, "slug": slug, "root": _root_slug(slug), "sha": sha,
-                     "stamp": int(stamp or 0), "files": changed, "fingerprint": fingerprint,
-                     "sensitive": any(SENSITIVE.search(p) for p in changed)})
-    return rows
-
-
-def champions(branches):
-    """Return newest representative of each exact patch; retain distinct patches."""
-    selected = {}
-    duplicates = []
-    for branch in sorted(branches, key=lambda b: (b["stamp"], b["slug"]), reverse=True):
-        key = (branch["root"], branch["fingerprint"])
-        if key in selected:
-            duplicates.append(branch)
-        else:
-            selected[key] = branch
-    return list(selected.values()), duplicates
-
-
-def _existing(project_id):
-    rows = db.select("tasks", {"select": "slug,state", "project_id": f"eq.{project_id}",
-                                "limit": "5000"}) or []
-    return {str(row.get("slug") or ""): row.get("state") for row in rows}
-
-
-def reconcile_project(project, capacity):
-    repo = project.get("repo_path") or ""
-    if not repo or not os.path.isdir(repo) or capacity <= 0:
-        return {"mapped": 0, "duplicates": 0, "blocked": 0, "skipped": 0, "processed": 0}
-    base = _base(project)
-    branches = _branches(repo, base)
-    chosen, duplicates = champions(branches)
-    existing = _existing(project["id"])
-    mapped = blocked = skipped = processed = 0
-    for branch in sorted(chosen, key=lambda b: b["stamp"], reverse=True):
-        if processed >= capacity:
-            break
-        if branch["slug"] in existing:
-            if existing[branch["slug"]] != "BLOCKED" and not branch["sensitive"]:
-                merge_train.ensure_integration_card(
-                    project.get("name") or project["id"], branch["slug"],
-                    kind="integrate", title=f"merge of {branch['slug']}",
-                    why="branch_reconciler found an already-mapped legacy branch",
-                    detail=f"ref={branch['ref']} sha={branch['sha'][:12]}",
-                    status="approved", decided_by="canonical-train:branch-reconciler",
-                )
-            skipped += 1
-            continue
-        processed += 1
-        state = "BLOCKED" if branch["sensitive"] else "DONE"
-        note = ("branch_reconciler: raw remote branch mapped; "
-                f"ref={branch['ref']} sha={branch['sha'][:12]} base={base} "
-                f"patch={branch['fingerprint'][:12]}")
-        if branch["sensitive"]:
-            note += "; sensitive paths require explicit review"
-        row = {"project_id": project["id"], "slug": branch["slug"], "state": state,
-               "kind": "bugfix", "deps": [],
-               "prompt": f"Integrate existing branch {branch['ref']} through the canonical merge train. Do not redraft work.",
-               "note": note, "base_branch": base}
-        if db.insert("tasks", row) is not None:
-            if state == "DONE":
-                # Reconciliation is the missing bridge: task rows alone wait for the
-                # sweeper's oldest-first window, while this explicit card places the
-                # existing branch directly on the serialized integration train.
-                merge_train.ensure_integration_card(
-                    project.get("name") or project["id"], branch["slug"],
-                    kind="integrate", title=f"merge of {branch['slug']}",
-                    why="branch_reconciler mapped a legacy remote agent branch",
-                    detail=note, status="approved", decided_by="canonical-train:branch-reconciler",
-                )
-                mapped += 1
-            else:
-                blocked += 1
-    return {"mapped": mapped, "duplicates": len(duplicates), "blocked": blocked, "skipped": skipped, "processed": processed,
-            "discovered": len(branches), "base": base}
-
-
-def run(limit=LIMIT):
-    remaining = max(1, limit)
-    report = {}
-    for project in db.select("projects", {"select": "id,name,repo_path,default_base,prod_branch", "limit": "100"}) or []:
-        result = reconcile_project(project, remaining)
-        report[project.get("name") or project["id"]] = result
-        remaining -= result["processed"]
-        if remaining <= 0:
-            break
-    payload = {"generated_at": datetime.datetime.utcnow().isoformat(), "projects": report,
-               "remaining_capacity": remaining}
-    db.insert("controls", {"key": CONTROL_KEY, "value": json.dumps(payload), "updated_at": "now()"}, upsert=True)
-    print(json.dumps(payload, default=str))
-    return payload
-
-
-if __name__ == "__main__":
-    run()
+        local_sha = _run_git(["rev-parse", b], cwd=cwd)
+        remote_sha = _run_git(
+            ["rev-parse", f"{REMOTE_NAME}/{b}"], cwd=cwd
+        )
+        if local_sha and remote_sha and local_sha != remote_sha:
+            conflicting.append({
+                "branch": b,
+                "local_sha": local_sha[:10],
+                "remote_sha": remote_sha[:10],
+            })
+    return {
+        "orphaned_local": orphaned_local,
+        "orphaned_remote": orphaned_remote,
+        "stale": stale,
+        "conflicting": conflicting,
+        "protected": sorted(PROTECTED_BRANCHES & (local | remote)),
+        "total_local": len(local),
+        "total_remote": len(remote),
+    }
