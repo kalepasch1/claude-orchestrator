@@ -38,6 +38,7 @@ STAGING = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
 RELEASE_FIX_PREFIXES = ("relfix-", "buildfix-", "deployfix-")
 QA_FIX_PREFIXES = ("qafix-",)
 RED_GATE_COOLDOWN_MIN = float(os.environ.get("ORCH_RELEASE_RED_GATE_COOLDOWN_MIN", "180"))
+QA_EVIDENCE_CHARS_PER_STREAM = 12000
 
 # release_kpi writes this: the set of apps whose recent prod deploys keep failing, so we promote their
 # tests to a HARD release gate until they recover (self-tuning loop). Read fail-soft.
@@ -341,6 +342,63 @@ def _link_shared_runtime(repo, worktree):
                     pass
 
 
+def _prepare_generated_types(worktree):
+    """Generate checkout-local framework types for every typed Nuxt package root."""
+    roots = [worktree]
+    try:
+        import dependency_prewarm
+        roots.extend(dependency_prewarm.package_roots(worktree))
+    except Exception:
+        pass
+    logs = []
+    prepared = 0
+    for root in dict.fromkeys(os.path.abspath(path) for path in roots):
+        package = os.path.join(root, "package.json")
+        tsconfig = os.path.join(root, "tsconfig.json")
+        if not os.path.isfile(package) or not os.path.isfile(tsconfig):
+            continue
+        try:
+            with open(package, encoding="utf-8") as package_file:
+                package_text = package_file.read()
+            with open(tsconfig, encoding="utf-8") as tsconfig_file:
+                tsconfig_text = tsconfig_file.read()
+        except OSError as e:
+            return False, str(e)
+        if '"nuxt"' not in package_text or ".nuxt/tsconfig" not in tsconfig_text:
+            continue
+        proc = subprocess.run(["bash", "-lc", "npx nuxi prepare"], cwd=root,
+                              capture_output=True, text=True, timeout=180)
+        log = ((proc.stdout or "") + "\n" + (proc.stderr or ""))[-4000:]
+        logs.append(f"[{os.path.relpath(root, worktree)}]\n{log}")
+        generated = os.path.join(root, ".nuxt", "tsconfig.json")
+        if proc.returncode != 0 or not os.path.exists(generated):
+            return False, "\n".join(logs)
+        prepared += 1
+    return True, "\n".join(logs) if prepared else "framework generation not required"
+
+
+def _qa_ref(repo, ref, command, timeout=1800):
+    """Run QA against an exact Git tree; used for production-baseline comparison."""
+    import commit_overlay
+    try:
+        with commit_overlay.checkout(repo, ref, prefix="baseline-qa-overlay-") as overlay:
+            worktree = overlay["path"]
+            _link_shared_runtime(repo, worktree)
+            prepared, prepare_log = _prepare_generated_types(worktree)
+            if not prepared:
+                return False, "Nuxt type preparation failed:\n" + prepare_log
+            result = subprocess.run(["bash", "-lc", command], cwd=worktree, capture_output=True,
+                                    text=True, timeout=timeout)
+            log = (
+                (result.stdout or "")[-QA_EVIDENCE_CHARS_PER_STREAM:]
+                + "\n"
+                + (result.stderr or "")[-QA_EVIDENCE_CHARS_PER_STREAM:]
+            ).strip()
+            return result.returncode == 0, f"overlay:{overlay['commit'][:12]} {log}"
+    except subprocess.TimeoutExpired:
+        return False, f"tests timed out after {timeout}s"
+
+
 def prod_branch(repo):
     """Auto-detect the production branch: origin/HEAD target, else main, else master."""
     r = _git(repo, "symbolic-ref", "refs/remotes/origin/HEAD")
@@ -571,14 +629,46 @@ def _run_for_unlocked(project, repo_override=None):
                     return {"project": project, "qa": "FAILED", "note": "dependency prewarm failed; held"}
             except Exception:
                 pass
-            _git(repo, "worktree", "add", "-f", tmp, STAGING)
-            _link_shared_runtime(repo, tmp)
-            qa = subprocess.run(["bash", "-lc", test_cmd], cwd=tmp, capture_output=True, text=True, timeout=1800)
-            ok = qa.returncode == 0
-        finally:
-            _git(repo, "worktree", "remove", "--force", tmp); shutil.rmtree(tmp, ignore_errors=True)
+            with commit_overlay.checkout(repo, staging_sha, prefix="release-qa-overlay-") as overlay:
+                tmp = overlay["path"]
+                _link_shared_runtime(repo, tmp)
+                prepared, prepare_log = _prepare_generated_types(tmp)
+                if prepared:
+                    qa = subprocess.run(["bash", "-lc", qa_cmd], cwd=tmp, capture_output=True, text=True, timeout=1800)
+                    ok = qa.returncode == 0
+                else:
+                    qa = subprocess.CompletedProcess(qa_cmd, 1, "", "Nuxt type preparation failed:\n" + prepare_log)
+                    ok = False
+        except Exception as exc:
+            qa = subprocess.CompletedProcess(qa_cmd, 1, "", f"QA overlay failed: {exc}")
+            ok = False
         if not ok:
-            qlog = ((qa.stdout or "")[-5000:] + "\n" + (qa.stderr or "")[-5000:]).strip()
+            qlog = (
+                (qa.stdout or "")[-QA_EVIDENCE_CHARS_PER_STREAM:]
+                + "\n"
+                + (qa.stderr or "")[-QA_EVIDENCE_CHARS_PER_STREAM:]
+            ).strip()
+            if _truthy("ORCH_DIFFERENTIAL_QA", True):
+                try:
+                    import differential_qa
+                    baseline = differential_qa.cached(repo, release_base_sha, qa_cmd)
+                    if baseline is None:
+                        baseline_ok, baseline_log = _qa_ref(repo, release_base_sha, qa_cmd)
+                        differential_qa.store(repo, release_base_sha, qa_cmd, baseline_ok, baseline_log)
+                    else:
+                        baseline_ok, baseline_log = baseline.get("ok"), baseline.get("log", "")
+                    comparison = differential_qa.compare(qlog, baseline_log)
+                    if not baseline_ok and comparison.get("allowed"):
+                        ok = True
+                        qa_plan["reason"] = "differential QA: unchanged production-baseline failures"
+                except Exception:
+                    pass
+        if not ok:
+            qlog = (
+                (qa.stdout or "")[-QA_EVIDENCE_CHARS_PER_STREAM:]
+                + "\n"
+                + (qa.stderr or "")[-QA_EVIDENCE_CHARS_PER_STREAM:]
+            ).strip()
             _self_heal_qa(p, project, repo, STAGING, qlog)
             _insert_failed_release(project, "qa", ahead, release_base_sha, staging_sha,
                                    f"staging QA failed (tests required) — self-heal queued: {qlog[-160:]}")
