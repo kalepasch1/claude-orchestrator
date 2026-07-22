@@ -102,7 +102,13 @@ def run(limit=120):
             if not _already_decomposed(t, note) and decomposition_backpressure.gate(task=t):
                 subs = _decompose(t, signal)
                 if subs:
-                    n, child_ids = _spawn_subtasks(t, subs, return_ids=True)
+                    spawned = _spawn_subtasks(t, subs, return_ids=True)
+                    # Keep the recovery path compatible with older injectors
+                    # that return just a count rather than ``(count, ids)``.
+                    if isinstance(spawned, tuple):
+                        n, child_ids = spawned
+                    else:
+                        n, child_ids = int(spawned or 0), []
                     if n:
                         db.update("tasks", {"id": t["id"]},
                                   {"state": "DECOMPOSED", "account": None, "updated_at": "now()",

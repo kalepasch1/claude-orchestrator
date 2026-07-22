@@ -28,9 +28,12 @@ def _token_similarity(a: str, b: str) -> float:
 def is_duplicate(candidate: str, existing_slugs: Set[str],
                  similarity_threshold: float = 0.85) -> bool:
     norm_candidate = normalize_slug(candidate)
+    candidate_base = re.sub(r"-v\d+$", "", norm_candidate)
     for existing in existing_slugs:
         norm_existing = normalize_slug(existing)
         if norm_candidate == norm_existing:
+            return True
+        if candidate_base and candidate_base == re.sub(r"-v\d+$", "", norm_existing):
             return True
         if _token_similarity(norm_candidate, norm_existing) >= similarity_threshold:
             return True

@@ -73,7 +73,13 @@ class AgentMarketTest(unittest.TestCase):
 
         task_rows = [r for table, r in inserted if table == "tasks"]
         self.assertEqual(len(task_rows), 4)
-        self.assertEqual(set(res["queued"]), {spec["slug"] for spec in agent_market.APP_BATCHES.values()})
+        self.assertEqual(set(res["queued"]), {
+            agent_market.APP_BATCHES[name]["slug"]
+            for name in ("beethoven", "tomorrow", "apparently", "smarter")
+        })
+        self.assertEqual(set(res["missing_projects"]), {
+            "vigil", "hisanta", "galop", "pareto", "darwn", "sustainable-barks",
+        })
         prompts = "\n".join(r["prompt"] for r in task_rows).lower()
         self.assertIn("regulatory", prompts)
         self.assertIn("legal work-product", prompts)

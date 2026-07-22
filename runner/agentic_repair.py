@@ -18,6 +18,11 @@ _DEFAULT_DIRECTIVE = (
 )
 
 
+TECHNICAL_CATEGORIES = frozenset({"build", "capacity", "dependency", "noop", "rework", "retry", "transient"})
+REPLACEMENT_ONLY_CATEGORIES = frozenset({"legal", "secret", "security"})
+_REPAIR_CODER_FALLBACK = "claude"
+
+
 def is_technical(category):
     """Return True if the failure category is a technical (auto-repairable) issue."""
     return str(category or "rework") in TECHNICAL_CATEGORIES
@@ -27,10 +32,9 @@ def replacement_required(category):
     """Return True if the category requires full prompt replacement (legal/secret/security)."""
     return str(category or "") in REPLACEMENT_ONLY_CATEGORIES
 
-    Priority: ORCH_AGENTIC_REPAIR_DEFAULT_CODER > agentic_coders.pick() >
-    ORCH_REPAIR_CODER_FALLBACK (default: "claude").  Never hardcodes "ollama"
-    so a missing local Ollama server cannot wedge the repair queue.
-    """
+
+def choose_coder(task):
+    """Choose a repair coder without allowing routing errors to block recovery."""
     default = os.environ.get("ORCH_AGENTIC_REPAIR_DEFAULT_CODER")
     if default:
         return default
@@ -80,7 +84,11 @@ def repair_patch(task, signal, category="rework", directive=None, prefer_non_cla
     """
     prompt = in_session_prompt(task, signal, category=category, directive=directive)
     rc = int(task.get("remediation_count") or 0)
-    coder = choose_coder(task)
+    # Reuse an already selected coder for ordinary recovery.  That keeps queue
+    # repair bounded when the live routing stack cannot reach its telemetry DB.
+    coder = choose_coder(task) if prefer_non_claude else (
+        task.get("force_coder") or task.get("model") or choose_coder(task)
+    )
     patch = {
         "state": "QUEUED",
         "prompt": prompt,

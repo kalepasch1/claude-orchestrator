@@ -20,12 +20,25 @@ ORCH_SB_QUARTER_MONTHS = int(os.environ.get("ORCH_SB_QUARTER_MONTHS", "3"))
 # ---------------------------------------------------------------------------
 # Fail-soft Result wrapper
 # ---------------------------------------------------------------------------
-@dataclass
+@dataclass(init=False)
 class Result:
-    """Fail-soft wrapper. Defaults to failure (ok=False)."""
-    ok: bool = False
-    value: Any = None
-    error: str = ""
+    """Fail-soft wrapper with ``value`` and legacy ``data`` compatibility."""
+    ok: bool
+    value: Any
+    error: str
+
+    def __init__(self, ok: bool = False, value: Any = None, error: str = "", data: Any = None):
+        self.ok = ok
+        self.value = value if data is None else data
+        self.error = error
+
+    @property
+    def data(self) -> Any:
+        return self.value
+
+    @data.setter
+    def data(self, value: Any) -> None:
+        self.value = value
 
 # ---------------------------------------------------------------------------
 # Human gate enum — fail-CLOSED default of PENDING
@@ -89,6 +102,12 @@ class OutreachDraft:
     recipient: str = ""
     subject: str = ""
     body: str = ""
+    claims: List["Claim"] = field(default_factory=list)
+
+@dataclass
+class Claim:
+    text: str = ""
+    source_span: tuple[int, int] = (0, 0)
 
 @dataclass
 class GrantApplication:
@@ -96,12 +115,24 @@ class GrantApplication:
     organization: str = ""
     amount_requested_cents: int = 0
     status: str = "draft"
+    opportunity_name: str = ""
+    deadline: Any = None
+    draft_text: str = ""
+    gates: List["HumanGateTask"] = field(default_factory=list)
+    submittable: bool = False
+
+@dataclass
+class GiftOpportunity:
+    name: str = ""
+    deadline: Any = None
+    requirements: List[str] = field(default_factory=list)
 
 @dataclass
 class HumanGateTask:
     id: str = ""
     description: str = ""
     gate: HumanGate = HumanGate.PENDING
+    status: str = "PENDING"
 
 # ---------------------------------------------------------------------------
 # Engine protocols
