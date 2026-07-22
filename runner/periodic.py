@@ -623,6 +623,11 @@ def run_commonbrain():
     import common_brain
     common_brain.run()
 
+def run_relationshipcrm():
+    """Prepare CRM facts/recommendations. Provider delivery is never called here."""
+    import relationship_crm
+    relationship_crm.run()
+
 
 def run_priority_scorer():
     """Score QUEUED tasks with default priority=1000 based on kind, slug, deps, and age."""
@@ -770,6 +775,7 @@ JOBS = {
     "modelportfolios": run_modelportfolios,
     "modelslashing": run_modelslashing,
     "commonbrain": run_commonbrain,
+    "relationshipcrm": run_relationshipcrm,
     "priority_scorer": run_priority_scorer,
     "quarantine_gc": run_quarantine_gc,
     "portfolioautopilot": run_portfolio_autopilot,
@@ -791,7 +797,19 @@ if __name__ == "__main__":
         print(f"periodic {job}: drain policy unavailable ({e})")
     # honor the kill switch: model-spending jobs don't run while paused.
     # these only read outcomes / move task state / edit thresholds — they never spend tokens
-    _SAFE_WHEN_PAUSED = {"roi", "txn", "unstick", "dagfix", "dagspecunblock", "selftune", "batchmech"}
+    _SAFE_WHEN_PAUSED = {
+        "resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn",
+        "approval_policy.py", "queue_janitor.py", "unstick", "dagfix", "batchmech",
+        "selftune", "cluster", "governor", "costslo", "promote", "prewarm",
+        "billingguard", "dedup", "conflictresolve", "canaryecon", "forecast", "arbitrage", "autoscale",
+        "contcompact", "backlogcompact",
+        "bizradar", "pushdecisions", "selfheal", "newapp", "autopilot", "abedge",
+        "stripe", "ownerreport", "worktreegc", "stuck_reaper", "remediate", "selfcheck",
+        "quarantine", "credresolver", "agentmarket", "promptbankruptcy", "modelportfolios", "modelslashing", "commonbrain",
+        "priority_scorer", "quarantine_gc",
+        "relationshipcrm",
+        "release_kpi.py", "integrate_kpi.py", "fleet_control.py",
+    }
     if job not in _SAFE_WHEN_PAUSED:
         try:
             import kill_switch
