@@ -14,7 +14,8 @@
     "./cade": "./src/cade/index.ts",
     "./commonBrain": "./src/commonBrain/index.ts",
     "./fleetAdmin": "./src/fleetAdmin/index.ts",
-    "./resolution": "./src/resolution/index.ts"
+    "./resolution": "./src/resolution/index.ts",
+    "./hivemindV15": "./src/hivemindV15/index.ts"
   },
   "scripts": {
     "test": "node --test --experimental-strip-types test/*.test.ts",

@@ -558,6 +558,13 @@ def _agentic_repair_continue(t, category, failure, attempt, directive=None):
 
 
 def run_task(t):
+    # V15 fleet runtime: learn repeat-query topology at intake.  This hook is
+    # deliberately fail-soft and performs no model/network calls.
+    try:
+        import hivemind_v15
+        hivemind_v15.observe_task(t)
+    except Exception as e:
+        _log.debug("hook hivemind_v15 failed: %s", e)
     with _sem:
         # Do not turn an incompatible long-lived daemon into a stream of
         # zero-diff model failures.  A fresh daemon publishes its contract in
@@ -2559,6 +2566,7 @@ _SCHEDULE = [
     ("improve-roadmap-86400", "improvement_roadmap.py", "interval", 86400), # daily: 50x-500x claim, disclosed-assumption staged model
     ("tier-stats-300",     "tier_router_tick.py",      "interval", 300),   # tier routing stats + subscription capacity report
     ("fleet-topo-600",     "fleet_topology_tick.py",    "interval", 600),   # fleet topology optimization recommendations
+    ("hivemind-v15-300",   "hivemind_v15_tick.py",      "interval", 300),   # memory consolidation + metabolic/topology lifecycle
     ("sub-recommend-3600", "sub_recommend_tick.py",     "interval", 3600),  # hourly subscription cost/value analysis
     ("serviceagent-120",   "service_agent.py",          "interval", 120),   # proactive health fixer (throttle drift, merge starvation)
     ("portfolioautopilot-night","portfolioautopilot",    "daily",    (1, 0)),  # nightly: cold-start idle apps, auto-tune distribution, digest

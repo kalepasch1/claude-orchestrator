@@ -45,6 +45,32 @@ APP_RECIPES = {
             "proof": "deployed-diff proof pack",
         },
     },
+    "predictions": {
+        "aliases": ("prediction-markets",),
+        "surface": "cross-app-temporal-prediction-engine",
+        "domain": "causal forecasting and prediction consensus",
+        "settlement": "calibrated verified forecast per dollar-minute",
+        "cade": {
+            "target": "forecast horizon, causal driver, calibration, consensus, and anomaly response",
+            "roster": "causal analyst, calibration auditor, market forecaster, adversarial scenario generator, verifier",
+            "adversary": "regime shift, leakage, spurious correlation, stale prior, consensus cascade",
+            "reviewer": "forecast scoring ledger, outcome reconciler, and calibration audit",
+            "proof": "forecast-calibration proof pack",
+        },
+    },
+    "illuminati": {
+        "aliases": ("cross-app-intelligence",),
+        "surface": "federated-holographic-intelligence-mesh",
+        "domain": "privacy-aware cross-application intelligence federation",
+        "settlement": "reused verified cross-app insight per dollar-minute",
+        "cade": {
+            "target": "memory federation, provenance, access policy, cross-app retrieval, and consensus",
+            "roster": "memory curator, privacy guard, provenance verifier, federation operator, anomaly auditor",
+            "adversary": "cross-tenant leak, poisoned memory, stale correlation, provenance loss, access bypass",
+            "reviewer": "federation policy, retrieval audit, and downstream outcome ledger",
+            "proof": "federated-memory proof pack",
+        },
+    },
     "tomorrow": {
         "aliases": ("tomorrow-otc",),
         "surface": "negotiation-execution-risk-router",
