@@ -610,6 +610,7 @@ def _run_for_unlocked(project, repo_override=None):
     require_tests = (has_real_tests
                      or os.environ.get("ORCH_RELEASE_REQUIRE_TESTS", "false").lower() == "true"
                      or _kpi_requires_tests(project))
+    qa_plan = {"reason": ""}
     if test_cmd and require_tests:
         qa_cmd = test_cmd
         held = _hold_for_open_fix(p, project, "qa")
