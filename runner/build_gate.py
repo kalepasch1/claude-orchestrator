@@ -83,8 +83,6 @@ def detect_build_cmd(repo):
             return _npx_cmd(repo, root, "nuxi typecheck")
         if os.path.isfile(os.path.join(root, "next.config.js")) or os.path.isfile(os.path.join(root, "next.config.mjs")):
             return _npx_cmd(repo, root, "next build")
-        if scripts:
-            return script_cmd(repo, root, "build")
     return ""
 
 

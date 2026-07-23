@@ -34,6 +34,17 @@ def test_detect_build_cmd_no_package():
         # No package.json → fallback to env default or empty
         assert isinstance(cmd, str)
 
+def test_detect_build_cmd_skips_root_without_build_script():
+    with tempfile.TemporaryDirectory() as d:
+        with open(os.path.join(d, "package.json"), "w") as f:
+            json.dump({"scripts": {"test": "node --test"}}, f)
+        web = os.path.join(d, "web")
+        os.makedirs(web)
+        with open(os.path.join(web, "package.json"), "w") as f:
+            json.dump({"scripts": {"build": "nuxt build"}}, f)
+        cmd = build_gate.detect_build_cmd(d)
+        assert cmd == "npm --prefix web run build"
+
 def test_script_cmd_root():
     cmd = build_gate.script_cmd("/repo", "/repo", "build")
     assert "build" in cmd
