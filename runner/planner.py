@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import claude_cli
 import tdd_gate
 import tests_first_gate
+import design_sources
 
 PLAN_MODEL = os.environ.get("PLAN_MODEL", "claude-opus-4-8")
 
@@ -124,11 +125,12 @@ def _apply_tdd_gating(tasks):
 def plan(master: str, repo: str = None) -> list:
     spec = ""
     if repo:
-        spec_path = os.path.join(repo, "SPEC.md")
-        if os.path.isfile(spec_path):
-            with open(spec_path) as f:
-                spec_content = f.read()[:12000]
-            spec = f"\n\n# Project Specification (SPEC.md — every task MUST satisfy these invariants):\n{spec_content}\n\n"
+        try:
+            design = design_sources.contract(repo)
+            if design["text"]:
+                spec = "\n\n" + design["text"]
+        except Exception as e:
+            sys.stderr.write(f"[planner] design-source discovery failed ({e}); continuing\n")
         # OUTCOME-WEIGHTED PLANNING: fold in what ACTUALLY merged before (conventions distilled by
         # learn_from_merges into CLAUDE.md) so the decomposition mirrors past first-pass successes.
         cmd_path = os.path.join(repo, "CLAUDE.md")

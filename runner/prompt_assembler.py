@@ -15,19 +15,21 @@ Layer order (each best-effort — a missing/erroring module just contributes not
 raises):
   1. distilled task template   (prompt_distillation.find_distilled/apply_distilled) - if a
      similar task has a proven minimal template, start from that instead of the full body.
-  2. stable cached prefix      (caching.load_prefix) - CLAUDE.md/CONVENTIONS.md, byte-identical
+  2. Markdown design contract  (design_sources.contract) - every tracked active SPEC/DESIGN/
+     BLUEPRINT/ARCHITECTURE/REQUIREMENTS/ADR source, with proposed sources marked advisory.
+  3. stable cached prefix      (caching.load_prefix) - CLAUDE.md/CONVENTIONS.md, byte-identical
      across tasks in a repo so Claude Code's automatic prompt caching hits.
-  3. distilled per-project brief (_project_brief, <=4KB) - a few recent CLAUDE.md convention
+  4. distilled per-project brief (_project_brief, <=4KB) - a few recent CLAUDE.md convention
      bullets + a one-line recent-outcomes signal. Note: the mission spec that requested this
      layer named prompt_distillation.py as its home, but that module already does something
      different (per-task template distillation, not a per-project brief) — extending it to also
      mean "project brief" would have overloaded one name with two concepts, so this small
      brief lives here instead, right next to the thing that assembles it.
-  4. scoped file focus / blast radius / cross-project capability reuse notes
-  5. pipeline_contract wrap (routing/QA metadata)
-  6. knowledge_embed + regression injection (top-k prior solutions, do/avoid rules)
-  7. reuse-first instruction tail
-  8. final char cap (_cap) so the whole thing stays under the model's practical context budget
+  5. scoped file focus / blast radius / cross-project capability reuse notes
+  6. pipeline_contract wrap (routing/QA metadata)
+  7. knowledge_embed + regression injection (top-k prior solutions, do/avoid rules)
+  8. reuse-first instruction tail
+  9. final char cap (_cap) so the whole thing stays under the model's practical context budget
 
 assemble() returns {"prompt", "token_estimate", "layers"} — layers lists which stages actually
 contributed, and token_estimate (len//4, a standard rough estimate) gets logged so per-task
@@ -139,6 +141,15 @@ def assemble(task_body, *, project="", repo="", kind="build", source="unknown", 
     if used_distilled:
         layers.append("distilled_template")
 
+    design = {"text": "", "paths": [], "all_paths": [], "fingerprint": ""}
+    try:
+        import design_sources
+        design = design_sources.contract(repo)
+        if design["text"]:
+            layers.append("design_sources")
+    except Exception:
+        pass
+
     prefix = ""
     try:
         import caching
@@ -213,11 +224,17 @@ def assemble(task_body, *, project="", repo="", kind="build", source="unknown", 
     except Exception:
         pass
 
-    prompt = prefix + brief + focus + blast + reuse + injected + tail + REUSE_FIRST
+    prompt = design["text"] + prefix + brief + focus + blast + reuse + injected + tail + REUSE_FIRST
     prompt = _cap(prompt)
     token_estimate = len(prompt) // 4
     _log_assembly(project, slug, token_estimate, layers)
-    return {"prompt": prompt, "token_estimate": token_estimate, "layers": layers}
+    return {
+        "prompt": prompt,
+        "token_estimate": token_estimate,
+        "layers": layers,
+        "design_sources": design["paths"],
+        "design_fingerprint": design["fingerprint"],
+    }
 
 
 def stats(limit=200):

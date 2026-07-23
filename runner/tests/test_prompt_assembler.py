@@ -191,6 +191,20 @@ class AssembleTest(unittest.TestCase):
         self.assertIn("pipeline_contract", result["layers"])
         self.assertIn("WRAPPED:task", result["prompt"])
 
+    def test_design_sources_are_injected_and_reported(self):
+        design = _blank_module(contract=lambda repo: {
+            "text": "# DESIGN CONTRACT\n- Runtime must stay green.\n\n",
+            "paths": ["SPEC.md"],
+            "all_paths": ["SPEC.md"],
+            "fingerprint": "abc123",
+        })
+        with patch.dict(sys.modules, {"design_sources": design}):
+            result = pa.assemble("task", project="proj", repo="/tmp")
+        self.assertIn("design_sources", result["layers"])
+        self.assertIn("Runtime must stay green", result["prompt"])
+        self.assertEqual(result["design_sources"], ["SPEC.md"])
+        self.assertEqual(result["design_fingerprint"], "abc123")
+
     def test_knowledge_inject_layer_recorded(self):
         inj = lambda p: "KNOWLEDGE:" + p
         with patch.dict(sys.modules, {"knowledge_embed": _blank_module(inject=inj)}):

@@ -5,6 +5,7 @@ Serves a JSON snapshot of the current task queue, running tasks, and key metrics
 Designed to be polled by a simple dashboard or browser tab.
 """
 import os, sys, json, logging, http.server, threading, time
+from urllib.parse import parse_qs, urlparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 log = logging.getLogger(__name__)
@@ -70,30 +71,44 @@ def _build_snapshot():
 
 
 class ConsoleHandler(http.server.BaseHTTPRequestHandler):
+    def _send_json(self, status, payload):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(json.dumps(payload, indent=2, default=str).encode())
+
     def do_GET(self):
+        if self.path.startswith("/compliance/v1/"):
+            from compliance_api_gateway import gateway
+            params = {key: values[-1] for key, values in parse_qs(urlparse(self.path).query).items()}
+            status, payload = gateway.dispatch("GET", self.path, params)
+            return self._send_json(status, payload)
         if self.path == "/health":
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"status": "ok"}).encode())
-            return
+            return self._send_json(200, {"status": "ok"})
 
         if self.path in ("/", "/snapshot"):
             try:
                 snapshot = _build_snapshot()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.end_headers()
-                self.wfile.write(json.dumps(snapshot, indent=2, default=str).encode())
+                self._send_json(200, snapshot)
             except Exception as e:
-                self.send_response(500)
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": str(e)}).encode())
+                self._send_json(500, {"error": str(e)})
             return
 
-        self.send_response(404)
-        self.end_headers()
+        self._send_json(404, {"error": "not found"})
+
+    def do_POST(self):
+        if not self.path.startswith("/compliance/v1/"):
+            return self._send_json(404, {"error": "not found"})
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(length) or b"{}")
+            if not isinstance(body, dict): raise ValueError("JSON object required")
+        except (ValueError, json.JSONDecodeError) as exc:
+            return self._send_json(400, {"error": str(exc)})
+        from compliance_api_gateway import gateway
+        status, payload = gateway.dispatch("POST", self.path, body)
+        self._send_json(status, payload)
 
     def log_message(self, format, *args):
         pass  # suppress request logging

@@ -714,7 +714,14 @@ def run_task(t):
             _log.warning("native admission refresh failed for %s: %s", slug, e)
 
         # result cache: identical (repo+prompt+commit) work is reused, not re-run
-        sig = result_cache.signature(name, task_body, repo, base) if USE_CACHE else None
+        try:
+            import design_sources
+            _design_fingerprint = design_sources.fingerprint(repo)
+        except Exception:
+            _design_fingerprint = ""
+        sig = result_cache.signature(
+            name, task_body, repo, base, design_fingerprint=_design_fingerprint
+        ) if USE_CACHE else None
         if sig:
             hit = result_cache.lookup(sig)
             if hit:
@@ -732,6 +739,8 @@ def run_task(t):
             material=bool(t.get("material")), task=t, use_retrieval=USE_RETRIEVAL,
         )
         prompt = assembled["prompt"]
+        t["_design_sources"] = assembled.get("design_sources", [])
+        t["_design_fingerprint"] = assembled.get("design_fingerprint", "")
         # WARM POOL: prepend pre-loaded CLAUDE.md context prefix (avoids cold-start rediscovery)
         try:
             if warm_pool:
@@ -1763,6 +1772,41 @@ def run_task(t):
                         continue
                 except Exception as e:
                     _log.debug("hook session_proof_verify failed: %s", e)
+
+            # DESIGN-SOURCE GATE: every active Markdown design source was injected by
+            # prompt_assembler, and documentation changes must carry implementation.
+            # This is deliberately before every review/autonomy shortcut so a trusted
+            # model or cached gate result cannot bypass the source-of-truth contract.
+            try:
+                import design_sources
+                _design_changed = design_sources.changed_files(wt, base)
+                _design_gate = design_sources.completion_check(
+                    wt, _design_changed, t.get("_design_sources")
+                )
+                if not _design_gate["pass"]:
+                    if _agentic_repair_continue(
+                        t, "design-source", _design_gate["notes"], attempt,
+                        "Reconcile every active Markdown design source with the implementation. "
+                        "A design-document edit must include the corresponding runtime code and tests.",
+                    ):
+                        # A task may introduce a new design source in its own diff. Refresh
+                        # the contract for the repair attempt so it is not repeatedly judged
+                        # against the pre-edit source inventory.
+                        _refreshed_design = design_sources.contract(wt)
+                        t["_design_sources"] = _refreshed_design["paths"]
+                        t["_design_fingerprint"] = _refreshed_design["fingerprint"]
+                        t["prompt"] = _refreshed_design["text"] + t["prompt"]
+                        continue
+                    set_state(t["id"], state="BLOCKED",
+                              note="design-source gate: " + _design_gate["notes"][:1500])
+                    record(t, name, slug, kind, visible_model, acct, attempt, True, False,
+                           out, t0, cost=run_cost)
+                    return
+                set_state(t["id"], note="design-source gate: " + _design_gate["notes"])
+            except Exception as e:
+                # Discovery is local and deterministic; retain fail-soft behavior only
+                # for unexpected filesystem/tooling failures.
+                _log.warning("design-source gate unavailable for %s: %s", slug, e)
 
             # blast radius: find dependents of changed files, pass to verifier
             radius = blast_radius.radius_after(wt, base)

@@ -160,6 +160,13 @@ def execute_task(task):
     slug = task["slug"]
     base = _real_default_branch(repo)
     prompt = task.get("prompt") or task.get("note") or f"Implement improvement: {slug}"
+    design_contract = {"text": "", "paths": [], "fingerprint": ""}
+    try:
+        import design_sources
+        design_contract = design_sources.contract(repo)
+        prompt = design_contract["text"] + prompt
+    except Exception as e:
+        print(f"[design-sources] discovery failed: {e}")
 
     print(f"\n{'=' * 70}")
     print(f"EXECUTING: {slug}")
@@ -228,6 +235,20 @@ def execute_task(task):
             has_diff = bool(diff_check.stdout.strip())
 
             if has_diff:
+                try:
+                    import design_sources
+                    changed = design_sources.changed_files(wt_path, base)
+                    design_gate = design_sources.completion_check(
+                        wt_path, changed, design_contract.get("paths") or ()
+                    )
+                    if not design_gate["pass"]:
+                        db.update("tasks", {"id": task["id"]},
+                                  {"state": "QUEUED",
+                                   "note": f"design-source gate: {design_gate['notes'][:220]}"})
+                        print(f"[REQUEUE] {slug} -> design-source gate: {design_gate['notes']}")
+                        return False
+                except Exception as e:
+                    print(f"[design-sources] completion gate unavailable: {e}")
                 db.update("tasks",
                           {"id": task['id']},
                           {"state": "DONE",

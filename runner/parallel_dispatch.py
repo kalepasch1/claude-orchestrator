@@ -274,6 +274,7 @@ def _dispatch_one_api(task: dict) -> dict:
         import swarm_executor
 
         prompt = task.get("prompt", "")
+        design_contract = {"text": "", "paths": [], "fingerprint": ""}
         model = task.get("model") or task.get("_force_model") or "claude-haiku-4-5-20251001"
 
         # Determine provider from force_coder if set
@@ -302,6 +303,13 @@ def _dispatch_one_api(task: dict) -> dict:
             cwd = db.localize_repo_path(proj.get("repo_path", "")) if hasattr(db, "localize_repo_path") else ""
         except Exception:
             pass
+        if cwd and os.path.isdir(cwd):
+            try:
+                import design_sources
+                design_contract = design_sources.contract(cwd)
+                prompt = design_contract["text"] + prompt
+            except Exception as e:
+                log.warning("parallel_dispatch: design-source assembly failed for %s: %s", slug, e)
 
         tournament_on = os.environ.get("ORCH_PATCH_TOURNAMENT", "true").lower() in ("1", "true", "yes", "on")
         release_fix = str(task.get("slug") or "").startswith(("qafix-", "buildfix-", "relfix-", "deployfix-", "toolchain-repair-"))
@@ -341,6 +349,26 @@ def _dispatch_one_api(task: dict) -> dict:
                 db.update("tasks", {"id": task_id}, {"state": "QUEUED", "account": None,
                     "note": f"native-proof-{proof.get('stage')}: {proof.get('detail','')[:220]}", "updated_at": "now()"})
                 return {"task_id": task_id, "slug": slug, "status": "requeued", "cost_usd": cost}
+            try:
+                import design_sources
+                design_gate = design_sources.completion_check(
+                    cwd, proof.get("files") or (), design_contract.get("paths") or ()
+                )
+                if not design_gate["pass"]:
+                    db.update("tasks", {"id": task_id}, {
+                        "state": "QUEUED",
+                        "account": None,
+                        "note": f"design-source gate: {design_gate['notes'][:220]}",
+                        "updated_at": "now()",
+                    })
+                    return {
+                        "task_id": task_id,
+                        "slug": slug,
+                        "status": "requeued",
+                        "cost_usd": cost,
+                    }
+            except Exception as e:
+                log.warning("parallel_dispatch: design-source gate unavailable for %s: %s", slug, e)
             if task.get("shadow_only"):
                 try:
                     import paired_trial_controller

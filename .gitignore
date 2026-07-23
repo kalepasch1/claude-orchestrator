@@ -17,6 +17,7 @@ runner/.env.bak*
 
 # runner log (huge, machine-local — never commit)
 runner/runner.log
+runner/.preopt_cache/
 
 # ── Agent noise files (orchestrator/aider/bot artifacts) ──────────────
 .aider*

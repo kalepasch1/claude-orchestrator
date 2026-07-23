@@ -14,13 +14,14 @@ def _norm(prompt: typing.Optional[str]) -> str:
     return re.sub(r"\s+", " ", (prompt or "").strip().lower())
 
 
-def signature(project: str, prompt: str, repo: str, base: str = "main") -> str:
-    """SHA-256 cache key from (project, base-commit, normalised prompt)."""
+def signature(project: str, prompt: str, repo: str, base: str = "main",
+              design_fingerprint: str = "") -> str:
+    """SHA-256 cache key from project, base, prompt, and Markdown design corpus."""
     try:
         commit = subprocess.check_output(["git", "rev-parse", base], cwd=repo, text=True).strip()
     except Exception:
         commit = base
-    raw = f"{project}|{commit}|{_norm(prompt)}"
+    raw = f"{project}|{commit}|{_norm(prompt)}|{design_fingerprint}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
