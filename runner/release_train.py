@@ -23,6 +23,7 @@ RUNTIME_DIR = os.environ.get("CLAUDE_ORCH_HOME", os.path.join(REPO_ROOT, ".runti
 RELEASE_FLOW_FILE = os.path.join(RUNTIME_DIR, "release_flow.json")
 sys.path.insert(0, RUNNER_DIR)
 import db
+import commit_overlay
 import integration_runtime
 
 # BATCH-DEV defaults: ship agent work to the unified staging branch quickly, but promote
@@ -610,6 +611,7 @@ def _run_for_unlocked(project, repo_override=None):
                      or os.environ.get("ORCH_RELEASE_REQUIRE_TESTS", "false").lower() == "true"
                      or _kpi_requires_tests(project))
     if test_cmd and require_tests:
+        qa_cmd = test_cmd
         held = _hold_for_open_fix(p, project, "qa")
         if held:
             return held
