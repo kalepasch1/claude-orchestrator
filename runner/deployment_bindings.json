@@ -25,6 +25,14 @@
       "supabase_project_ref": "xnzrxkjixouzcizjemjg"
     },
     {
+      "app": "illuminati",
+      "repo_path": "/Users/kpasch/Documents/illuminati",
+      "github_repo": "kalepasch1/illuminati",
+      "branch": "master",
+      "vercel_project": "illuminati",
+      "supabase_project_ref": "tsefmbiprirwcgqefemb"
+    },
+    {
       "app": "kalepasch-com",
       "repo_path": "/Users/kpasch/Documents/smarter/pasch",
       "github_repo": "kalepasch1/pasch",
