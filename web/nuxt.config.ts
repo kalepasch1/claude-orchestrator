@@ -30,7 +30,15 @@ export default defineNuxtConfig({
   // SUPABASE_URL + SUPABASE_KEY (anon) come from env vars on Vercel.
   supabase: {
     // we gate auth inside index.vue, so don't force a global redirect
-    redirect: false
+    redirect: false,
+    // OAuth is completed explicitly in app.vue so the landing page cannot win
+    // a race against automatic PKCE exchange and render after a valid callback.
+    clientOptions: { auth: { flowType: 'pkce', detectSessionInUrl: false } }
+  },
+  routeRules: {
+    // The PKCE verifier lives in the browser; keep the callback entirely
+    // client-rendered so no unauthenticated landing state can flash first.
+    '/auth/callback': { ssr: false }
   },
   css: ['~/assets/main.css'],
   app: {
