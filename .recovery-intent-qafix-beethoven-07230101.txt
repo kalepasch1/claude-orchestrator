@@ -1,0 +1,4 @@
+recovery-intent: qafix-beethoven-07230101
+template: 2c0526f200de
+intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 448792ms 4pbjwpmj431__2jrjyb3bq7w0000gn 52975ms 548375ms 6f940a79484e 7f21d02 815e10b4219dc35d47d5513a4d30ee381f3dd528 ability acceptance active adapt advice affecting after agentic aider allowlist anonymous appears application async author batch beethoven before behavior blocked blocker blocking bottleneck bottlenecks broad_change build buildfail buildreviewermodel causing ce2e8dcd7954 change changed claim class claude coder codestral commit consistency context contract coordination cowork cross current custody darwin deepseek default defined delays delete deployfix deployment diffs disruptions drafting effectively efficiency engine error excerpt execution existing
+base: master
