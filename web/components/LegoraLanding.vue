@@ -17,7 +17,7 @@ const layers = [
 
 const innovations = [
   { index: '01', name: 'Illuminati', label: 'Development optimization', title: 'Every release makes the next one sharper.', body: 'Illuminati finds the constraint, selects the smallest high-leverage improvement, and independently proves the result before the learning compounds.', glyph: '✦', tags: ['Route', 'Build', 'Verify', 'Learn'] },
-  { index: '02', name: 'Hivemind', label: 'Portfolio intelligence', title: 'One company learns. Every company improves.', body: 'Qualified patterns move across your portfolio while private source code, customer information, and company context remain isolated.', glyph: '◎', tags: ['Private precedent', 'Cross-company signal', 'Proven context'] },
+  { index: '02', name: 'Portfolio network', label: 'Shared intelligence', title: 'One company learns. Every company improves.', body: 'Turn proven experience into reusable guidance across the portfolio—without compromising the independence or privacy of any company.', glyph: '◎', tags: ['Private precedent', 'Cross-company signal', 'Proven context'] },
   { index: '03', name: 'Company OS', label: 'Full management suite', title: 'Every function moves through one operating surface.', body: 'Legal, compliance, finance, marketing, people, security, revenue, and operations share context without losing ownership or authority.', glyph: '◇', tags: ['Legal', 'Growth', 'Finance', 'Operations'] },
 ]
 
