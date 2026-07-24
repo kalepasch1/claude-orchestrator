@@ -25,6 +25,8 @@ const PUBLIC_ACCESS_PATHS = new Set([
   // HMAC in the route; requiring a Supabase user token would make them inert.
   '/api/webhooks/github',
   '/api/webhooks/vercel',
+  // VIGIL receiver performs bearer-key and HMAC verification in-handler.
+  '/api/integrations/vigil',
 ])
 
 const DEFAULT_OPS_EMAILS = 'kalepasch@gmail.com,kale@smrter.us,kale@heretomorrow.us'
