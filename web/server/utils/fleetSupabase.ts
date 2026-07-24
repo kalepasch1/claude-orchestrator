@@ -14,7 +14,15 @@ import type {
 import type { PlanePorts } from './fleetPlane';
 
 export function serviceClient(): SupabaseClient {
-  return createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY!);
+  const url = process.env.SUPABASE_URL || process.env.NUXT_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NUXT_SUPABASE_SERVICE_KEY;
+  if (!url || !key) {
+    throw new Error(
+      `[fleetSupabase] Missing Supabase credentials — SUPABASE_URL=${url ? 'set' : 'MISSING'}, SERVICE_KEY=${key ? 'set' : 'MISSING'}. ` +
+      'Ensure these environment variables are configured in Vercel project settings.'
+    );
+  }
+  return createClient(url, key);
 }
 
 /** Per-product base URL for execute delegation + deep links (env: FLEET_URL_APPARENTLY, ...). */

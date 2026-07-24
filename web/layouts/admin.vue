@@ -2,7 +2,7 @@
 const route = useRoute()
 const open = ref(false)
 const sections = [
-  { label: 'Command', items: [['Overview','/admin','◉'],['Events','/admin/events','⌁'],['Chat','/admin/chat','↗'],['Playbooks','/admin/playbooks','▷']] },
+  { label: 'Command', items: [['Overview','/admin','◉'],['Terminal','/admin/terminal','⌬'],['Events','/admin/events','⌁'],['Chat','/admin/chat','↗'],['Playbooks','/admin/playbooks','▷']] },
   { label: 'Intelligence', items: [['Predictions','/admin/predictions','◌'],['Knowledge graph','/admin/knowledge-graph','⌘'],['Anomalies','/admin/anomalies','△'],['Shadow decisions','/admin/shadow','◐']] },
   { label: 'Assurance', items: [['Capability passport','/admin/capability-passport','◇'],['Compliance','/admin/compliance','✓'],['Regulatory','/admin/regulatory','§'],['Policies','/admin/policies','≡'],['Gateway','/admin/gateway','↔']] },
   { label: 'Operations', items: [['Deploys','/admin/deploys','↑'],['Telemetry','/admin/telemetry','∿'],['Costs','/admin/costs','$'],['Revenue','/admin/revenue','↗'],['Prompt ops','/admin/prompt-ops','✦'],['Temporal','/admin/temporal','↶'],['Replay','/admin/replay','▶'],['Sessions','/admin/session-replay','◎'],['Chaos lab','/admin/chaos','⚡']] },
