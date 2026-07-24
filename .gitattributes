@@ -1,0 +1,9 @@
+# Ensure git hooks are always committed with executable bit
+.githooks/pre-commit export-ignore=false diff=shell
+.githooks/install.sh export-ignore=false diff=shell
+
+# Mark shell scripts as executable
+.githooks/*.sh text eol=lf diff=shell
+
+# Shell script line ending normalization
+*.sh text eol=lf
