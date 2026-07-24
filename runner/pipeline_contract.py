@@ -16,6 +16,7 @@ still returns a deterministic contract rather than blocking task execution.
 from __future__ import annotations
 
 import os
+import json
 import re
 import sys
 from typing import Any, Dict, List, Optional
@@ -244,6 +245,19 @@ def wrap_prompt(prompt: str, project: str = "", kind: str = "build", source: str
         return text
     plan = build_plan(text, project=project, kind=kind, source=source, slug=slug, material=material)
     return render_plan(plan) + "\n\n" + ORIGINAL_HEADER + "\n" + text
+
+
+def artifact(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
+             slug: str = "", material: bool = False) -> str:
+    """Return the shared pipeline contract as stable JSON for non-prompt consumers."""
+    try:
+        return json.dumps(
+            build_plan(prompt, project=project, kind=kind, source=source,
+                       slug=slug, material=material),
+            sort_keys=True,
+        )
+    except Exception:
+        return "{}"
 
 
 def note(existing: str = "", source: str = "unknown") -> str:

@@ -78,7 +78,10 @@ def _project_brief(project, repo):
         return ""
     bullets = []
     try:
-        text = open(os.path.join(repo, "CLAUDE.md"), encoding="utf-8", errors="replace").read()
+        with open(
+            os.path.join(repo, "CLAUDE.md"), encoding="utf-8", errors="replace"
+        ) as handle:
+            text = handle.read()
         bullets = [b.strip() for b in re.findall(r"^\s*[-*]\s+.+$", text, re.M)[-8:]]
     except Exception:
         pass

@@ -613,6 +613,12 @@ def _run_for_unlocked(project, repo_override=None):
     qa_plan = {"reason": ""}
     if test_cmd and require_tests:
         qa_cmd = test_cmd
+        try:
+            import selective_qa
+            qa_plan = selective_qa.plan(repo, release_base_sha, staging_sha, test_cmd)
+            qa_cmd = qa_plan.get("command") or test_cmd
+        except Exception as exc:
+            qa_plan = {"reason": f"selective QA unavailable: {exc}"}
         held = _hold_for_open_fix(p, project, "qa")
         if held:
             return held

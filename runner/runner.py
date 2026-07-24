@@ -527,14 +527,18 @@ def _cap_agent_prompt(prompt):
     text = prompt or ""
     if len(text) <= MAX_AGENT_PROMPT_CHARS:
         return text
-    head = min(20000, MAX_AGENT_PROMPT_CHARS // 3)
-    tail = MAX_AGENT_PROMPT_CHARS - head
-    return (
-        text[:head].rstrip() +
+    marker = (
         "\n\n[ORCHESTRATOR COMPACTION: middle context removed to stay below model limits. "
         "Use the focus files, task contract, and final request below; inspect repo files directly "
-        "instead of relying on omitted transcript bulk.]\n\n" +
-        text[-tail:].lstrip()
+        "instead of relying on omitted transcript bulk.]\n\n"
+    )
+    head = min(20000, MAX_AGENT_PROMPT_CHARS // 3)
+    tail = max(0, MAX_AGENT_PROMPT_CHARS - head - len(marker))
+    tail_text = text[-tail:].lstrip() if tail else ""
+    return (
+        text[:head].rstrip() +
+        marker +
+        tail_text
     )
 
 
