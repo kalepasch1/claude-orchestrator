@@ -1,0 +1,39 @@
+name: Auto-sync orchestrator/dev → production branch
+
+on:
+  push:
+    branches:
+      - orchestrator/dev
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-sync-production
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fast-forward master from orchestrator/dev
+        run: |
+          git checkout master
+          if git merge --ff-only origin/orchestrator/dev; then
+            echo "Fast-forward succeeded"
+            git push origin master
+          else
+            echo "::warning::Cannot fast-forward master from orchestrator/dev — manual merge required"
+            exit 0
+          fi
