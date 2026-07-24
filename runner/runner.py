@@ -239,6 +239,18 @@ def set_state(task_id: str, **kw) -> None:
             _log.debug("continuous_merger hook failed: %s", _e)
 
 
+def emit_task_log(source: str, level: str, message: str) -> None:
+    """Write a structured log row to the run_logs table (fail-soft)."""
+    try:
+        db.insert("run_logs", {
+            "source": source,
+            "level": level,
+            "message": message[:2000],
+        })
+    except Exception:
+        pass
+
+
 def _next_non_claude_coder(task, exclude=()):
     """Pick the cheapest capable non-Claude coder, usually local Ollama, excluding failed backends."""
     excluded = set(exclude or ())
