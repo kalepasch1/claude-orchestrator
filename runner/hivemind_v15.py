@@ -25,7 +25,7 @@ from typing import Any, Callable, Deque, Dict, Iterable, List, Mapping, Optional
 
 FLEET_APPS: Tuple[str, ...] = (
     "galop", "tomorrow", "smarter", "pareto", "apparently",
-    "orchestrator", "vigil", "hisanta", "predictions", "illuminati",
+    "orchestrator", "vigil", "hisanta", "predictions", "trojun",
 )
 
 
@@ -33,7 +33,7 @@ def canonical_app(value: str) -> str:
     value = (value or "orchestrator").strip().lower()
     aliases = {"beethoven": "orchestrator", "claude-orchestrator": "orchestrator",
                "racefeed": "galop", "pareto-2080": "pareto", "2080": "pareto",
-               "santas-secret-workshop": "hisanta"}
+               "santas-secret-workshop": "hisanta", "illuminati": "trojun"}
     value = aliases.get(value, value)
     return value if value in FLEET_APPS else "orchestrator"
 

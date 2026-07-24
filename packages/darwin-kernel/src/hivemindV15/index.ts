@@ -6,7 +6,7 @@
 
 export const HIVEMIND_APPS = [
   'galop', 'tomorrow', 'smarter', 'pareto', 'apparently',
-  'orchestrator', 'vigil', 'hisanta', 'predictions', 'illuminati',
+  'orchestrator', 'vigil', 'hisanta', 'predictions', 'trojun',
 ] as const;
 export type HivemindApp = (typeof HIVEMIND_APPS)[number];
 export type Path<T, R> = (query: T) => R | Promise<R>;
@@ -14,6 +14,7 @@ export type Path<T, R> = (query: T) => R | Promise<R>;
 const aliases: Record<string, HivemindApp> = {
   beethoven: 'orchestrator', 'claude-orchestrator': 'orchestrator', racefeed: 'galop',
   'pareto-2080': 'pareto', '2080': 'pareto', 'santas-secret-workshop': 'hisanta',
+  illuminati: 'trojun',
 };
 
 export function canonicalApp(value: string): HivemindApp {

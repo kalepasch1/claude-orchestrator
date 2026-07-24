@@ -3,7 +3,7 @@ import { PREVIEW_TARGETS, isDurablePreviewUrl, previewEnvironmentKey, resolvePre
 
 describe('embedded preview targets', () => {
   it('covers every application workspace with a durable HTTPS alias', () => {
-    expect(Object.keys(PREVIEW_TARGETS).sort()).toEqual(['apparently', 'beethoven', 'darwn', 'illuminati', 'pareto-2080', 'racefeed', 'santas-secret-workshop', 'smarter', 'sustainable-barks', 'tomorrow'])
+    expect(Object.keys(PREVIEW_TARGETS).sort()).toEqual(['apparently', 'beethoven', 'darwn', 'pareto-2080', 'racefeed', 'santas-secret-workshop', 'smarter', 'sustainable-barks', 'tomorrow', 'trojun'])
     for (const target of Object.values(PREVIEW_TARGETS)) expect(isDurablePreviewUrl(target.url)).toBe(true)
   })
 
