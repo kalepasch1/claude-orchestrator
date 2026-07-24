@@ -64,3 +64,25 @@ Run this immediately after cloning, before your first commit. Vercel blocks
 production deployments whose commit author is anyone else — commits authored
 as e.g. mandyjustinepasch@gmail.com or kale@heretomorrow.us end up in BLOCKED
 state and never deploy. Do not use your platform account identity.
+
+
+## Learned from merged work (auto)
+Here are the concise conventions and DO/AVOID rules extracted from the codebase:
+
+**CONVENTIONS:**
+
+* Consistent use of spaces around operators and inside comments.
+* Use of descriptive variable names, e.g., `HIVEMIND_APPS` instead of `apps`.
+* Consistent naming conventions for types, functions, and interfaces.
+* Use of `as const` to assert the type of an array.
+
+**DO/AVOID RULES:**
+
+* DO:
+	+ Avoid using magic numbers; use constants or enums instead.
+	+ Use meaningful variable names that indicate their purpose.
+	+ Ensure consistent coding style throughout the codebase.
+* AVOID:
+	+ Deep nesting in functions; refactor to reduce complexity.
+	+ Unnecessary checks and conditions; simplify logic where possible.
+	+ Excessive use of nested loops; consider alternative algorithms.

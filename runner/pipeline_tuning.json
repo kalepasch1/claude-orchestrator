@@ -1,0 +1,19 @@
+{
+  "decisions": [
+    {
+      "ts": 1784798426.423407,
+      "metric": "cycle_time",
+      "value": 789787.3,
+      "threshold": 14400,
+      "kind": "build",
+      "action": "suggest_batching",
+      "rationale": "avg cycle for kind=build is 219.4h \u2014 consider batching smaller tasks or enabling parallel worktrees"
+    }
+  ],
+  "last_tuned_at": 1784798426.423407,
+  "guardrails": {
+    "min_sample_size": 5,
+    "cooldown_s": 86400,
+    "max_per_run": 1
+  }
+}

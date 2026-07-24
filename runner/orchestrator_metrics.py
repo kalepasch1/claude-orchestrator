@@ -16,6 +16,10 @@ Fail-soft: every data-loading function returns a sensible empty default on error
 so callers always get a usable dict.
 """
 
+# PEP 604 (`X | None`) in a signature is evaluated at definition time -> TypeError on
+# Python 3.9, this fleet's interpreter. Without this the module cannot be imported.
+from __future__ import annotations
+
 import os, sys, json, time, datetime, statistics
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

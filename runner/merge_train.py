@@ -321,22 +321,21 @@ def _run_tests(repo, test_cmd, ref=None):
     if not test_cmd:
         return True, "no test_cmd configured"
     if ref:
-        import shutil, tempfile
-        root = tempfile.mkdtemp(prefix="merge-qa-")
-        worktree = os.path.join(root, "candidate")
         try:
-            added = _git(repo, "worktree", "add", "--detach", worktree, ref)
-            if added.returncode != 0:
-                return False, "could not create branch-exact QA worktree: " + (added.stderr or "")[-500:]
-            for shared in ("node_modules", ".env", ".env.local"):
-                src, dst = os.path.join(repo, shared), os.path.join(worktree, shared)
-                if os.path.exists(src) and not os.path.exists(dst):
-                    try: os.symlink(src, dst)
-                    except OSError: pass
-            return _run_tests(worktree, test_cmd)
-        finally:
-            _git(repo, "worktree", "remove", "--force", worktree)
-            shutil.rmtree(root, ignore_errors=True)
+            import commit_overlay
+            with commit_overlay.checkout(repo, ref, prefix="merge-qa-overlay-") as overlay:
+                candidate = overlay["path"]
+                for shared in ("node_modules",):
+                    src, dst = os.path.join(repo, shared), os.path.join(candidate, shared)
+                    if os.path.exists(src) and not os.path.exists(dst):
+                        try:
+                            os.symlink(src, dst)
+                        except OSError:
+                            pass
+                ok, detail = _run_tests(candidate, test_cmd)
+                return ok, f"overlay:{overlay['commit'][:12]} {detail}"
+        except Exception as exc:
+            return False, f"could not create branch-exact QA overlay: {exc}"
     timeout = _test_timeout()
     if "npm" in test_cmd or "vitest" in test_cmd or "vue-tsc" in test_cmd or "tsc" in test_cmd or "jest" in test_cmd:
         # 2026-07-10: a leftover untracked compiled .js shadowing its .ts source (local build

@@ -317,6 +317,13 @@ def count(table, params=None):
 
 def insert(table, row, upsert=False):
     """Insert a single row into *table* via PostgREST POST.  Returns the created row or None on 409 dedup."""
+    if table == "tasks" and isinstance(row, dict):
+        # Keep the persisted DAG shape deterministic for every insertion route,
+        # including upserts. A SQL NULL here makes independent tasks disappear
+        # from dependency-aware queue queries.
+        import execution_assurance
+        row = dict(row)
+        row["deps"] = execution_assurance.normalize_deps(row.get("deps"))
     # IDEMPOTENT TASK ENQUEUE (2026-07-10): the queue has no UNIQUE(project_id, slug) constraint,
     # so ~20 different generators that db.insert("tasks", ...) directly kept creating duplicate
     # QUEUED rows (5-at-a-time, recurring — the sentinel dedupe was firing 45x/24h just cleaning up

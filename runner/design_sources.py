@@ -202,7 +202,10 @@ def audit(repo: str) -> dict:
         if not source.active:
             continue
         try:
-            text = open(os.path.join(repo, source.path), encoding="utf-8", errors="replace").read()
+            with open(
+                os.path.join(repo, source.path), encoding="utf-8", errors="replace"
+            ) as handle:
+                text = handle.read()
         except OSError:
             continue
         if PENDING_MARKERS.search(text):
