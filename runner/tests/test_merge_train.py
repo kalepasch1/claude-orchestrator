@@ -31,7 +31,7 @@ def _task(tid, slug, project_id="p1", state="BLOCKED", retries=0):
 
 
 PROJECTS = [{"id": "p1", "name": "alpha", "repo_path": "/tmp/fake-repo-alpha",
-             "default_base": "main", "test_cmd": "true"},
+             "default_base": "main", "test_cmd": "true"},  # shell builtin — always exits 0
             {"id": "p2", "name": "beta", "repo_path": "/tmp/fake-repo-beta",
              "default_base": "main", "test_cmd": "true"}]
 
