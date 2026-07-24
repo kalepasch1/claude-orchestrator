@@ -25,8 +25,8 @@ def _git_commit_env():
     Reads fleet-wide identity vars (non-sensitive: name/email for commits only).
     Does not spread os.environ — only passes what git needs to commit.
     """
-    _name = os.environ.get("FLEET_GIT_AUTHOR_NAME", "Claude Agent")
-    _email = os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "agent@recovery.local")
+    _name = os.environ.get("FLEET_GIT_AUTHOR_NAME", "kalepasch1")
+    _email = os.environ.get("FLEET_GIT_AUTHOR_EMAIL", "kalepasch@gmail.com")
     return {
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         "HOME": os.environ.get("HOME", ""),

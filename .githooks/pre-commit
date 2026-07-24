@@ -20,4 +20,16 @@ for pattern in ".env.local" "settings.local.json"; do
     fi
 done
 
+# Enforce canonical git author to prevent Vercel BLOCKED deployments
+AUTHOR_EMAIL=$(git config user.email)
+CANONICAL_EMAIL="kalepasch@gmail.com"
+if [ "$AUTHOR_EMAIL" != "$CANONICAL_EMAIL" ]; then
+    echo "ERROR: Git author email is '$AUTHOR_EMAIL' but must be '$CANONICAL_EMAIL'"
+    echo "Vercel will BLOCK deployments from non-canonical authors."
+    echo ""
+    echo "Fix with: git config user.email \"$CANONICAL_EMAIL\""
+    echo "          git config user.name \"kalepasch1\""
+    exit 1
+fi
+
 exit 0
