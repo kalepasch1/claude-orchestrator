@@ -114,6 +114,8 @@ watch(user, u => { if (u) loadAll() })
         <button @click="loadAll" class="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-500 text-sm rounded-lg">↻ Refresh</button>
       </div>
 
+      <CompoundingIntelligence compact />
+
       <!-- Loop summary by type -->
       <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <div v-for="(loopList, type) in loopsByType" :key="type" class="bg-gray-50 border border-gray-200 rounded-xl p-4">

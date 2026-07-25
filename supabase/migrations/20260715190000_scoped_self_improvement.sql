@@ -19,6 +19,7 @@ create table if not exists scoped_improvement_loops (
   updated_at timestamptz not null default now(),
   unique(owner_id, scope_type, scope_ref)
 );
+
 create table if not exists hivemind_contributions (
   id uuid primary key default gen_random_uuid(),
   owner_id uuid references auth.users(id) on delete cascade,
@@ -33,6 +34,7 @@ create table if not exists hivemind_contributions (
   created_at timestamptz not null default now(),
   decided_at timestamptz
 );
+
 create index if not exists scoped_improvement_status_idx on scoped_improvement_loops(status, scope_type, updated_at desc);
 create index if not exists hivemind_contribution_owner_idx on hivemind_contributions(owner_id, status, created_at desc);
 alter table scoped_improvement_loops enable row level security;
@@ -40,3 +42,4 @@ alter table hivemind_contributions enable row level security;
 create policy "owners manage improvement loops" on scoped_improvement_loops for all to authenticated using (owner_id = auth.uid()) with check (owner_id = auth.uid());
 create policy "owners read contributions" on hivemind_contributions for select to authenticated using (owner_id = auth.uid());
 create policy "owners propose contributions" on hivemind_contributions for insert to authenticated with check (owner_id = auth.uid());
+

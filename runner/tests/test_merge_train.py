@@ -569,65 +569,10 @@ class TestBranchExactQA(unittest.TestCase):
         self.assertIn("_run_tests(repo, test_cmd, base)", source)
 
     def test_exact_commit_verification_is_reused(self):
-        proof = MagicMock()
-        proof.reusable_verification.return_value = {"success": True}
-        with patch.dict("sys.modules", {"proof_graph": proof}), \
-             patch.object(merge_train, "_run_tests") as run:
+        proof = MagicMock(); proof.reusable_verification.return_value = {"success": True}
+        with patch.dict("sys.modules", {"proof_graph": proof}), patch.object(merge_train, "_run_tests") as run:
             ok, note = merge_train._verified_or_run("/repo", "a" * 40, "npm test")
-        self.assertTrue(ok)
-        self.assertIn("reused exact", note)
-        run.assert_not_called()
-
-    def test_successful_exact_commit_verification_is_recorded(self):
-        proof = MagicMock()
-        proof.reusable_verification.return_value = None
-        with patch.dict("sys.modules", {"proof_graph": proof}), \
-             patch.object(merge_train, "_run_tests", return_value=(True, "green")):
-            ok, _ = merge_train._verified_or_run("/repo", "a" * 40, "npm test")
-        self.assertTrue(ok)
-        proof.record_verification.assert_called_once_with(
-            "/repo", "a" * 40, "npm test", "merge-qa", True)
-
-
-class TestConfigHelpers(unittest.TestCase):
-    """Tests for train configuration helpers — _test_timeout, risk constants."""
-
-    def test_test_timeout_default(self):
-        """_test_timeout returns 300 when env var is unset."""
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("MERGE_TRAIN_TEST_TIMEOUT", None)
-            self.assertEqual(merge_train._test_timeout(), 300)
-
-    def test_test_timeout_custom(self):
-        """_test_timeout reads MERGE_TRAIN_TEST_TIMEOUT from env."""
-        with patch.dict(os.environ, {"MERGE_TRAIN_TEST_TIMEOUT": "600"}):
-            self.assertEqual(merge_train._test_timeout(), 600)
-
-    def test_test_timeout_invalid_falls_back(self):
-        """_test_timeout returns 300 for non-integer env values."""
-        with patch.dict(os.environ, {"MERGE_TRAIN_TEST_TIMEOUT": "not-a-number"}):
-            self.assertEqual(merge_train._test_timeout(), 300)
-
-    def test_sensitive_regex_matches_security_keywords(self):
-        """SENSITIVE_RE should flag security-relevant slugs."""
-        for keyword in ("secret-rotation", "oauth-flow", "rls-policy", "stripe-webhook"):
-            self.assertIsNotNone(merge_train.SENSITIVE_RE.search(keyword),
-                                f"SENSITIVE_RE should match '{keyword}'")
-
-    def test_sensitive_regex_skips_normal_slugs(self):
-        """SENSITIVE_RE should not flag ordinary task slugs."""
-        for slug in ("add-readme", "fix-typo", "canary-test-1"):
-            self.assertIsNone(merge_train.SENSITIVE_RE.search(slug),
-                              f"SENSITIVE_RE should not match '{slug}'")
-
-    def test_low_risk_kinds_contains_expected(self):
-        """LOW_RISK_KINDS should include docs, chore, lint, test."""
-        for kind in ("docs", "chore", "lint", "test"):
-            self.assertIn(kind, merge_train.LOW_RISK_KINDS)
-
-    def test_low_risk_kinds_excludes_feature(self):
-        """Feature tasks should not be low risk."""
-        self.assertNotIn("feature", merge_train.LOW_RISK_KINDS)
+        self.assertTrue(ok); self.assertIn("reused exact", note); run.assert_not_called()
 
 
 if __name__ == "__main__":

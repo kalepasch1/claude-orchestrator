@@ -1059,6 +1059,45 @@ watch(slug, () => { refreshInsights() })
               </div>
             </div>
           </div>
+        </template>
+        <!-- ===== CONFIG TAB ===== -->
+        <div v-else-if="activeTab === 'config'" class="flex-1 overflow-y-auto p-6">
+          <div class="max-w-6xl mx-auto space-y-5">
+            <h3 class="text-lg font-semibold text-gray-900" style="font-family: 'Fraunces', serif;">Configuration — {{ APPS.find(a => a.id === selectedApp)?.name }}</h3>
+            <CompoundingIntelligence compact initial-scope="orchestrator" :initial-ref="slug" :initial-label="cap.name" :project-id="selectedProject" />
+            <div class="bg-white border border-gray-200 rounded-xl p-5 space-y-4">
+              <div v-for="s in domainSliders" :key="s.label">
+                <div class="flex justify-between text-sm mb-1"><span class="text-gray-600">{{ s.label }}</span><span class="font-mono text-gray-900 font-medium">{{ sliders[s.label] ?? s.default }}{{ s.unit }}</span></div>
+                <input type="range" :min="s.min" :max="s.max" v-model.number="sliders[s.label]" class="w-full h-1.5 bg-gray-200 rounded-full appearance-none cursor-pointer accent-blue-600" />
+              </div>
+            </div>
+            <div class="bg-white border border-gray-200 rounded-xl p-5">
+              <div class="text-xs font-semibold text-gray-700 mb-3">CADE Bots — {{ cap.domain }}</div>
+              <div class="space-y-1.5">
+                <div v-for="b in bots" :key="b" class="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-lg">
+                  <div class="flex items-center gap-2"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span><span class="text-sm text-gray-700">{{ b }}</span></div>
+                  <span class="text-[10px] text-emerald-600 font-medium">Active</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== HISTORY TAB ===== -->
+        <div v-else-if="activeTab === 'history'" class="flex-1 overflow-y-auto p-6">
+          <div class="max-w-3xl mx-auto space-y-5">
+            <h3 class="text-lg font-semibold text-gray-900" style="font-family: 'Fraunces', serif;">Task History</h3>
+            <div class="space-y-1.5">
+              <div v-for="t in recentTasks" :key="t.id" class="bg-white border border-gray-200 rounded-lg px-4 py-3 flex items-center gap-3 text-sm">
+                <span class="font-mono text-base" :class="stateClass(t.state)">{{ stateIcon(t.state) }}</span>
+                <span class="text-gray-900 flex-1 truncate">{{ t.slug }}</span>
+                <span class="text-xs text-gray-400 px-2 py-0.5 bg-gray-50 rounded">{{ t.kind || '—' }}</span>
+                <span class="text-xs text-gray-400">{{ timeAgo(t.created_at) }}</span>
+              </div>
+              <div v-if="!recentTasks.length" class="text-center py-8 text-gray-400 text-sm">No tasks yet</div>
+            </div>
+          </div>
+        </div>
       </div>
 
     </div>
