@@ -761,6 +761,7 @@ watch(slug, () => { refreshInsights() })
                 />
               </div>
             </div>
+            </div>
 
             <!-- CADE ACTION RAIL + TERMINAL -->
             <aside v-if="showInsights" class="flex min-h-[420px] flex-col overflow-hidden bg-gray-50">
