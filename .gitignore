@@ -29,3 +29,10 @@ runner/.preopt_cache/
 .ssw-bot-log.md
 .claude/settings.json
 .vercel
+.env*
+
+# machine-local settings with PIDs, credentials, hardcoded paths
+.claude/settings.local.json
+
+runner/*.bak.wedgefix
+intake/*.md
