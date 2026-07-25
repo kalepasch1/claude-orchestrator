@@ -29,6 +29,10 @@ independently-shippable tasks. Output ONLY a JSON array. Each item:
 {"slug":"kebab-case","prompt":"a SELF-CONTAINED instruction incl. an explicit file
 scope and an acceptance test to run","deps":["slugs that must complete first"],
 "model_hint":"haiku|sonnet|opus"}
+Model hint guide: use "haiku" for self-contained Python/TS implementation with a defined
+interface and <800 estimated output lines; use "sonnet" when output likely exceeds 800 lines
+OR the task requires cross-file reasoning/ambiguous requirements; reserve "opus" for
+open-ended architecture or tasks with no clear acceptance criteria.
 Rules: tasks that touch DIFFERENT files must NOT list each other in deps (so they run
 in parallel). Tasks editing the SAME files MUST be chained via deps to prevent merge
 conflicts. Keep each prompt small enough to avoid context compaction.

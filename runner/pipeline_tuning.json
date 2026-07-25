@@ -8,9 +8,18 @@
       "kind": "build",
       "action": "suggest_batching",
       "rationale": "avg cycle for kind=build is 219.4h \u2014 consider batching smaller tasks or enabling parallel worktrees"
+    },
+    {
+      "ts": 1784974825.625907,
+      "metric": "cycle_time",
+      "value": 486941.8,
+      "threshold": 14400,
+      "kind": "bugfix",
+      "action": "suggest_batching",
+      "rationale": "avg cycle for kind=bugfix is 135.3h \u2014 consider batching smaller tasks or enabling parallel worktrees"
     }
   ],
-  "last_tuned_at": 1784798426.423407,
+  "last_tuned_at": 1784974825.625907,
   "guardrails": {
     "min_sample_size": 5,
     "cooldown_s": 86400,

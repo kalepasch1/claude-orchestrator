@@ -86,3 +86,21 @@ Here are the concise conventions and DO/AVOID rules extracted from the codebase:
 	+ Deep nesting in functions; refactor to reduce complexity.
 	+ Unnecessary checks and conditions; simplify logic where possible.
 	+ Excessive use of nested loops; consider alternative algorithms.
+
+
+## Learned from merged work (auto)
+Here are the extracted conventions and DO/AVOID rules:
+
+**CONVENTIONS:**
+
+* Use clear and concise language in decision-making documents.
+* Include a date, status, and proof hash for each decision.
+* Define key terms and acronyms used throughout the document.
+* Organize content in a logical and consistent manner.
+
+**DO/AVOID RULES:**
+
+* Avoid using ambiguous or unclear language that may lead to misinterpretation.
+* Do not introduce new risks or uncertainties without proper mitigation strategies.
+* Use conditional language (e.g., "we conditionally support this proposal") instead of absolute statements.
+* Refrain from including confidential information in publicly accessible documents.
