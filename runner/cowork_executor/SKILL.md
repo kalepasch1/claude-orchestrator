@@ -196,9 +196,7 @@ If `nothing to commit` → SHELVE the task with reason "no actionable code chang
 ```bash
 git push origin HEAD:agent/{slug} 2>&1 | tail -3
 ```
-Push failure is not delivery success: record a failed `branch_delivery` outcome and
-return the task to `QUEUED` for branch-share recovery. Never solve a non-fast-forward push with
-`--force`; preserve both sides and route the conflict through integration.
+Capture the committed SHA with `git rev-parse HEAD` before removing the worktree. A push is part of delivery: on push failure, mark the task `RETRY` with the concrete error and do **not** mark it `DONE`. Always remove the worktree so `-wt` dirs don't accumulate; a successfully pushed agent branch keeps the work.
 
 After a successful push, or after the worktree has been safely removed on failure, release ownership:
 
@@ -211,10 +209,15 @@ SELECT release_branch_execution_lease(
 ### 3g. Mark DONE
 ```sql
 UPDATE tasks SET state='DONE',
-  artifact_branch='agent/{slug}',
-  note='cowork-executor-v6: implemented and pushed'
+  note='cowork-executor-v6.5: implemented, committed, and pushed (isolated worktree)',
+  artifact_branch='agent/{slug}', artifact_commit='{committed_sha}'
 WHERE id='{id}';
 ```
+
+`DONE` therefore means a remotely addressable artifact exists. Never write `DONE` when the
+commit SHA is unknown, the branch is only local, or `git push` returned non-zero. Those cases stay
+`RETRY`, which prevents the dashboard and integration sweeper from reporting undelivered work as
+completed.
 
 **→ Start next task immediately. No pausing. No summaries.**
 
