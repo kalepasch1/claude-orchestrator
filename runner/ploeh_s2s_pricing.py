@@ -16,7 +16,11 @@ import threading
 import time
 from typing import Optional, Dict, Any
 import logging
-import requests
+
+try:
+    import requests
+except ImportError:
+    requests = None
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +63,9 @@ def _make_s2s_request(secret: str) -> Dict[str, Any]:
         ValueError: If authentication fails
         TimeoutError: If request times out
     """
-    # In a real implementation, this would call the actual PLOEH_S2S endpoint
-    # For now, we'll implement a basic structure that can be mocked
+    if requests is None:
+        raise RuntimeError("requests module is required for _make_s2s_request")
+
     endpoint = os.environ.get("PLOEH_S2S_ENDPOINT", "https://ploeh.service.local/pricing")
     headers = {
         "Authorization": f"Bearer {secret}",

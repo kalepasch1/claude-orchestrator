@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from datetime import date
 from enum import Enum
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
@@ -26,6 +27,16 @@ class Result:
     ok: bool = False
     value: Any = None
     error: str = ""
+    data: Any = None
+
+# ---------------------------------------------------------------------------
+# ESG claim extraction
+# ---------------------------------------------------------------------------
+@dataclass
+class Claim:
+    """Extracted ESG commitment claim with source span."""
+    text: str = ""
+    source_span: tuple = field(default_factory=lambda: (0, 0))
 
 # ---------------------------------------------------------------------------
 # Human gate enum — fail-CLOSED default of PENDING
@@ -89,6 +100,13 @@ class OutreachDraft:
     recipient: str = ""
     subject: str = ""
     body: str = ""
+    claims: List[Claim] = field(default_factory=list)
+
+@dataclass
+class GiftOpportunity:
+    name: str = ""
+    deadline: date = field(default_factory=lambda: date.today())
+    requirements: List[str] = field(default_factory=list)
 
 @dataclass
 class GrantApplication:
@@ -96,12 +114,18 @@ class GrantApplication:
     organization: str = ""
     amount_requested_cents: int = 0
     status: str = "draft"
+    opportunity_name: str = ""
+    deadline: date = field(default_factory=lambda: date.today())
+    draft_text: str = ""
+    submittable: bool = False
+    gates: List[HumanGateTask] = field(default_factory=list)
 
 @dataclass
 class HumanGateTask:
     id: str = ""
     description: str = ""
     gate: HumanGate = HumanGate.PENDING
+    status: str = "PENDING"
 
 # ---------------------------------------------------------------------------
 # Engine protocols

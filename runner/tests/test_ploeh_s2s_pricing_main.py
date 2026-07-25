@@ -18,11 +18,19 @@ import sys
 import json
 import time
 import threading
-from unittest.mock import patch, MagicMock, Mock
+from unittest.mock import patch, MagicMock, Mock, create_autospec
 import logging
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Mock requests module for tests if not installed
+if "requests" not in sys.modules:
+    mock_requests = MagicMock()
+    mock_requests.exceptions.ConnectionError = ConnectionError
+    mock_requests.exceptions.Timeout = TimeoutError
+    mock_requests.exceptions.HTTPError = Exception
+    sys.modules["requests"] = mock_requests
 
 from ploeh_s2s_pricing import (
     is_secret_configured,
@@ -85,8 +93,7 @@ class TestMakeS2SRequest:
     def test_make_s2s_request_connection_error(self):
         """_make_s2s_request raises ConnectionError on connection failure."""
         with patch("ploeh_s2s_pricing.requests.get") as mock_get:
-            import requests
-            mock_get.side_effect = requests.exceptions.ConnectionError("Connection failed")
+            mock_get.side_effect = ConnectionError("Connection failed")
 
             with pytest.raises(ConnectionError):
                 _make_s2s_request("test-secret")
@@ -94,8 +101,7 @@ class TestMakeS2SRequest:
     def test_make_s2s_request_timeout(self):
         """_make_s2s_request raises TimeoutError on timeout."""
         with patch("ploeh_s2s_pricing.requests.get") as mock_get:
-            import requests
-            mock_get.side_effect = requests.exceptions.Timeout("Request timed out")
+            mock_get.side_effect = TimeoutError("Request timed out")
 
             with pytest.raises(TimeoutError):
                 _make_s2s_request("test-secret")

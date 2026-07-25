@@ -58,6 +58,32 @@ def _ask_provider(question, model):
         return None
 
 
+def _extract_verdict(text):
+    """Extract a structured verdict from text, parsing JSON if present.
+
+    Returns a dict with verdict structure if JSON is found, empty dict otherwise.
+    Handles both plain JSON and JSON embedded in other text.
+    """
+    if not text:
+        return {}
+
+    text_str = str(text).strip()
+
+    import json
+    import re
+
+    # Try to find and parse JSON in the text
+    json_match = re.search(r'\{[^{}]*"verdict"[^{}]*\}', text_str)
+    if json_match:
+        try:
+            return json.loads(json_match.group())
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # If no JSON found, return empty dict
+    return {}
+
+
 def _verdicts_diverge(answer_a, answer_b):
     """Check if two answers meaningfully diverge.
 
@@ -67,7 +93,7 @@ def _verdicts_diverge(answer_a, answer_b):
     if not answer_a or not answer_b:
         return True
 
-    def _extract_verdict(text):
+    def _extract_verdict_keyword(text):
         text = text.lower().strip()
         for keyword in ("yes", "no", "approve", "deny", "pass", "fail",
                         "accept", "reject", "compliant", "non-compliant",
@@ -76,7 +102,7 @@ def _verdicts_diverge(answer_a, answer_b):
                 return keyword
         return text[:50]
 
-    return _extract_verdict(answer_a) != _extract_verdict(answer_b)
+    return _extract_verdict_keyword(answer_a) != _extract_verdict_keyword(answer_b)
 
 
 def _insert_divergence_note(determination, original_answer, alt_model, alt_answer):
