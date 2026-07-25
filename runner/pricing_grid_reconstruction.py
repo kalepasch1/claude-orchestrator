@@ -33,6 +33,18 @@ class PricingTier:
     def is_unlimited(self) -> bool:
         return self.max_units is None
 
+    @staticmethod
+    def _tier_capacity(tier: "PricingTier") -> int:
+        """Calculate the capacity (max - min + 1) of a tier.
+
+        Returns 0 for unlimited tiers or invalid tiers (max < min).
+        """
+        if tier.max_units is None:
+            return 0
+        if tier.max_units < tier.min_units:
+            return 0
+        return tier.max_units - tier.min_units + 1
+
     def cost_for_units(self, units: int) -> float:
         """Calculate cost for a given number of units within this tier.
 
@@ -40,6 +52,8 @@ class PricingTier:
         Returns flat_fee + (applicable_units * unit_price).
         """
         if units < self.min_units:
+            return 0.0
+        if self.max_units is not None and units > self.max_units:
             return 0.0
         upper = self.max_units if self.max_units is not None else units
         applicable = min(units, upper) - self.min_units + 1

@@ -2875,11 +2875,13 @@ def _reap_zombie_tasks():
         heartbeat_cutoff = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(
             seconds=int(os.environ.get("FLEET_TTL_S", "180")))).isoformat()
         live_runner_ids = set()
+        heartbeat_query_succeeded = False
         try:
             heartbeats = db.select("runner_heartbeats", {
                 "select": "runner_id,hostname,last_seen", "last_seen": f"gte.{heartbeat_cutoff}",
                 "order": "last_seen.desc", "limit": "500",
             }) or []
+            heartbeat_query_succeeded = True
             live_runner_ids = {str(h.get("runner_id") or "") for h in heartbeats
                                if " lane " not in str(h.get("hostname") or "")
                                and not str(h.get("runner_id") or "").endswith("-scheduler")}
@@ -2892,10 +2894,9 @@ def _reap_zombie_tasks():
             if (t.get("account") or "").startswith("cowork-"):
                 continue
             account = str(t.get("account") or "")
-            dead_runner_claim = (bool(live_runner_ids)
+            dead_runner_claim = (heartbeat_query_succeeded
                                  and bool(re.match(r"^(Mac[.]lan|Mandys-MacBook-Pro[.]local)-[0-9]+$", account))
-                                 and account not in live_runner_ids
-                                 and (t.get("updated_at") or "") < dead_cutoff)
+                                 and account not in live_runner_ids)
             if dead_runner_claim or (t.get("updated_at") or "") < cutoff:
                 patch = agentic_repair.repair_patch(
                     t, ("zombie-reaper: expired runner heartbeat" if dead_runner_claim
