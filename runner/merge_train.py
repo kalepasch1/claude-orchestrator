@@ -456,6 +456,32 @@ def _push_base(repo, base):
     return "PUSHFAIL:" + err[-120:]
 
 
+def _verify_push(repo, base):
+    """Contract guarantee: verify origin/{base} matches local {base} after push.
+
+    Returns '' on success, error string if the remote ref does not match.
+    This prevents the DB/GitHub desync observed 2026-07-09 where a task was
+    marked MERGED but the push silently failed to advance origin."""
+    try:
+        local = _git(repo, "rev-parse", base)
+        remote = _git(repo, "rev-parse", f"origin/{base}")
+        if local.returncode != 0 or remote.returncode != 0:
+            return "VERIFY:rev-parse-failed"
+        local_sha = (local.stdout or "").strip()
+        remote_sha = (remote.stdout or "").strip()
+        if local_sha and remote_sha and local_sha == remote_sha:
+            return ""
+        # Stale fetch cache — refetch and recheck once
+        _git(repo, "fetch", "origin", base, timeout=60)
+        remote2 = _git(repo, "rev-parse", f"origin/{base}")
+        remote2_sha = (remote2.stdout or "").strip()
+        if local_sha == remote2_sha:
+            return ""
+        return f"VERIFY:sha-mismatch local={local_sha[:10]} remote={remote2_sha[:10]}"
+    except Exception as e:
+        return f"VERIFY:exception:{e}"
+
+
 def _detect_prod_branch(repo, proj):
     for b in (proj.get("prod_branch"), proj.get("default_base"), "main", "master"):
         if b and _git(repo, "rev-parse", "--verify", b).returncode == 0:
@@ -966,6 +992,17 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
                            "note": f"train: merged into local {base}; PUSH PENDING ({push_err})"})
         _attribute_train_outcome(slug, task, "push-pending", integrated=False)
         _log(pname, slug, "PUSH-PENDING", push_err[:120])
+        return "push-pending"
+
+    # (5b) CONTRACT GUARANTEE: verify origin actually advanced before marking MERGED.
+    # Prevents DB/GitHub desync where push returned 0 but origin didn't move
+    # (e.g. partial network failure, auth token expiry mid-push).
+    verify_err = _verify_push(repo, base)
+    if verify_err:
+        _task_patch(task, {"state": "DONE",
+                           "note": f"train: push returned ok but verify failed ({verify_err})"})
+        _attribute_train_outcome(slug, task, "push-verify-failed", integrated=False)
+        _log(pname, slug, "PUSH-VERIFY-FAILED", verify_err[:120])
         return "push-pending"
 
     _task_patch(task, {"state": "MERGED", "note": f"train: MERGED into {base}"})  # (6)
