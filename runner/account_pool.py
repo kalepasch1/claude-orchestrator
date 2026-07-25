@@ -313,31 +313,6 @@ class AccountPool:
             self._save()
             self._write_exhausted_flag()   # a Claude account recovered -> clear the fail-over signal
 
-    def stats(self):
-        """Return observable pool state for operators and tests (per CLAUDE.md conventions)."""
-        self._maybe_reload()
-        now = time.time()
-        acct_stats = []
-        for a in self.accts:
-            st = self.state.get(a["name"], {})
-            cd_until = st.get("cooldown_until", 0)
-            acct_stats.append({
-                "name": a["name"],
-                "type": a.get("type", "login"),
-                "healthy": now >= cd_until,
-                "use_count": int(st.get("use_count", 0)),
-                "exh_hits": int(st.get("exh_hits", 0)),
-                "cooldown_remaining_s": max(0, round(cd_until - now, 1)) if cd_until > now else 0,
-            })
-        cur = self.current()
-        return {
-            "total_accounts": len(self.accts),
-            "healthy_count": sum(1 for s in acct_stats if s["healthy"]),
-            "all_exhausted": self.all_exhausted(),
-            "current": cur["name"] if cur else None,
-            "accounts": acct_stats,
-        }
-
     def invalidate(self, name=None):
         """Force-reload config and state from DB/disk (per CLAUDE.md conventions).
         If name is given, clear cooldown for that specific account."""
@@ -361,6 +336,14 @@ def _get_pool():
         _pool = AccountPool()
     return _pool
 
+def _cooldown():
+    """Return the base cooldown interval in seconds."""
+    return COOLDOWN
+
+def _cooldown_max():
+    """Return the maximum cooldown interval in seconds."""
+    return COOLDOWN_MAX
+
 def stats():
     """Module-level stats() delegating to singleton (per CLAUDE.md conventions)."""
     return _get_pool().stats()
@@ -368,31 +351,6 @@ def stats():
 def invalidate(name=None):
     """Module-level invalidate() delegating to singleton (per CLAUDE.md conventions)."""
     return _get_pool().invalidate(name)
-
-
-    def stats(self):
-        """Return a dict summarizing pool health for diagnostics and monitoring."""
-        self._maybe_reload()
-        now = time.time()
-        entries = []
-        for a in self.accts:
-            s = self.state.get(a["name"], {})
-            cd = float(s.get("cooldown_until", 0))
-            entries.append({
-                "name": a["name"],
-                "type": a.get("type", "login"),
-                "cooling": now < cd,
-                "cooldown_remaining_s": max(0, int(cd - now)) if now < cd else 0,
-                "use_count": s.get("use_count", 0),
-                "exh_hits": s.get("exh_hits", 0),
-            })
-        return {
-            "total": len(entries),
-            "healthy": sum(1 for e in entries if not e["cooling"]),
-            "cooling": sum(1 for e in entries if e["cooling"]),
-            "all_exhausted": self.all_exhausted(),
-            "accounts": entries,
-        }
 
 
 if __name__ == "__main__":

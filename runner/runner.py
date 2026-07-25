@@ -239,6 +239,18 @@ def set_state(task_id: str, **kw) -> None:
             _log.debug("continuous_merger hook failed: %s", _e)
 
 
+def emit_task_log(source: str, level: str, message: str) -> None:
+    """Write a structured log row to the run_logs table (fail-soft)."""
+    try:
+        db.insert("run_logs", {
+            "source": source,
+            "level": level,
+            "message": message[:2000],
+        })
+    except Exception:
+        pass
+
+
 def _next_non_claude_coder(task, exclude=()):
     """Pick the cheapest capable non-Claude coder, usually local Ollama, excluding failed backends."""
     excluded = set(exclude or ())
@@ -2892,10 +2904,9 @@ def _reap_zombie_tasks():
             if (t.get("account") or "").startswith("cowork-"):
                 continue
             account = str(t.get("account") or "")
-            dead_runner_claim = (bool(live_runner_ids)
-                                 and bool(re.match(r"^(Mac[.]lan|Mandys-MacBook-Pro[.]local)-[0-9]+$", account))
-                                 and account not in live_runner_ids
-                                 and (t.get("updated_at") or "") < dead_cutoff)
+            dead_runner_claim = (bool(re.match(r"^(Mac[.]lan|Mandys-MacBook-Pro[.]local)-[0-9]+$", account))
+                                 and (not live_runner_ids or account not in live_runner_ids)
+                                 and (not live_runner_ids or (t.get("updated_at") or "") < dead_cutoff))
             if dead_runner_claim or (t.get("updated_at") or "") < cutoff:
                 patch = agentic_repair.repair_patch(
                     t, ("zombie-reaper: expired runner heartbeat" if dead_runner_claim

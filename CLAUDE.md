@@ -86,3 +86,19 @@ Here are the concise conventions and DO/AVOID rules extracted from the codebase:
 	+ Deep nesting in functions; refactor to reduce complexity.
 	+ Unnecessary checks and conditions; simplify logic where possible.
 	+ Excessive use of nested loops; consider alternative algorithms.
+
+
+## Learned from merged work (auto)
+Here are the conventions that this codebase follows and the DO/AVOID rules a future agent should respect:
+
+**CONVENTIONS:**
+
+* Use of `.github/workflows/auto-sync.yml` as a single source of truth for automating workflows.
+* Consistent use of `actions/checkout@v4` and `actions/checkout` in GitHub Actions workflows.
+* Use of `fetch-depth: 0` to fetch all branches, making it easier to manage dependencies.
+
+**DO/AVOID RULES:**
+
+* Avoid duplicating code in multiple commits. This can be achieved by extracting common functionality into separate files or functions.
+* Refactor the `auto-sync.yml` file to improve readability and maintainability. For example, consider breaking up long lines into shorter ones or using a consistent naming convention for variables and functions.
+* Consider implementing additional checks or validations in the GitHub Actions workflow to ensure that all necessary dependencies are met before proceeding with the automation process.

@@ -13,8 +13,52 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  legal-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Check legal gates before sync
+        run: |
+          cd runner
+          python3 -c "
+          import orchestration_pipeline_config as opc
+          import contract_validator as cv
+          import subprocess
+
+          # Get diff from orchestrator/dev to master
+          result = subprocess.run(
+              ['git', 'diff', 'origin/master...origin/orchestrator/dev'],
+              capture_output=True, text=True
+          )
+          diff_content = result.stdout
+
+          # Check legal gates
+          validator = cv.PipelineContractValidator()
+          all_clear, results = validator.check_legal_gates(diff_content)
+
+          triggered = [r.gate_name for r in results if r.triggered]
+          if triggered:
+              print(f'::error::Legal gates triggered: {triggered}')
+              print('Legal gate check FAILED: manual owner approval required')
+              exit(1)
+          else:
+              print('Legal gate check PASSED: safe to sync')
+              exit(0)
+          "
+
   sync:
     runs-on: ubuntu-latest
+    needs: legal-gate
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4

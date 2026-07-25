@@ -12,6 +12,16 @@ Returns {"pass": bool, "notes": "..."}; skips gracefully if nothing configured.
 import os, sys, subprocess, re, shlex
 
 
+def _validate_repo_path(repo):
+    """Validate and normalize a repo path. Raise if doesn't exist or isn't a directory."""
+    if not repo:
+        raise ValueError("repo path cannot be empty")
+    repo = os.path.abspath(os.path.expanduser(repo))
+    if not os.path.isdir(repo):
+        raise FileNotFoundError(f"repo path not a directory: {repo}")
+    return repo
+
+
 def _run_cmd(cmd_str, cwd):
     """Run a command string safely using shlex tokenisation instead of shell=True."""
     try:
