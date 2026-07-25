@@ -14,7 +14,7 @@ export const PREVIEW_TARGETS: Readonly<Record<string, PreviewTarget>> = Object.f
   'santas-secret-workshop': { url: 'https://santas-workshop.vercel.app', label: "Santa's Secret Workshop" },
   smarter: { url: 'https://www.smrter.us', label: 'Smarter' },
   'sustainable-barks': { url: 'https://sustainablebarks.com', label: 'Sustainable Barks' },
-  illuminati: { url: 'https://illuminati-kalepasch1s-projects.vercel.app', label: 'Illuminati' },
+  trojun: { url: 'https://illuminati-kalepasch1s-projects.vercel.app', label: 'Trojun' },
   tomorrow: { url: 'https://www.heretomorrow.us', label: 'Tomorrow' },
 })
 

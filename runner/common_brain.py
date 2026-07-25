@@ -58,8 +58,8 @@ APP_RECIPES = {
             "proof": "forecast-calibration proof pack",
         },
     },
-    "illuminati": {
-        "aliases": ("cross-app-intelligence",),
+    "trojun": {
+        "aliases": ("illuminati", "cross-app-intelligence"),
         "surface": "federated-holographic-intelligence-mesh",
         "domain": "privacy-aware cross-application intelligence federation",
         "settlement": "reused verified cross-app insight per dollar-minute",

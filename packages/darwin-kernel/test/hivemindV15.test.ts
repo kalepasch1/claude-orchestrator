@@ -6,6 +6,7 @@ test('exports adapters for all ten applications', async () => {
   const runtime = new HivemindV15();
   assert.equal(HIVEMIND_APPS.length, 10);
   assert.equal(canonicalApp('beethoven'), 'orchestrator');
+  assert.equal(canonicalApp('illuminati'), 'trojun');
   for (const app of HIVEMIND_APPS) {
     const result = await runtime.adapter(app).query({ app }, { default: query => query.app });
     assert.equal(result.result, app);

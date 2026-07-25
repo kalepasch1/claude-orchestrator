@@ -11,10 +11,11 @@ import hivemind_v15 as v15
 class TestFleetAdapters(unittest.TestCase):
     def test_all_requested_apps_are_canonical(self):
         expected = {"galop", "tomorrow", "smarter", "pareto", "apparently", "orchestrator",
-                    "vigil", "hisanta", "predictions", "illuminati"}
+                    "vigil", "hisanta", "predictions", "trojun"}
         self.assertEqual(set(v15.FLEET_APPS), expected)
         self.assertEqual(v15.canonical_app("beethoven"), "orchestrator")
         self.assertEqual(v15.canonical_app("racefeed"), "galop")
+        self.assertEqual(v15.canonical_app("illuminati"), "trojun")
 
     def test_every_app_has_end_to_end_adapter(self):
         rt = v15.HivemindV15()
@@ -91,7 +92,7 @@ class TestExecutionTopology(unittest.TestCase):
     def test_runtime_memory_short_circuit(self):
         rt = v15.HivemindV15()
         paths = {"fast": lambda q: q["x"] + 1}
-        first = rt.execute_query("illuminati", {"x": 1}, paths)
+        first = rt.execute_query("trojun", {"x": 1}, paths)
         second = rt.execute_query("predictions", {"x": 1}, paths)
         self.assertEqual(first["result"], 2)
         self.assertEqual(second["source"], "federated_memory")

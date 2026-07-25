@@ -52,7 +52,7 @@ def extract(repo, branch, base, task, *, max_files=40):
             return {"ok": False, "reason": "minimal patch does not apply", "files": files}
         _git(tmp, "add", "--", *files)
         message = f"task: {task.get('slug') or task.get('id') or 'minimal-extract'}"
-        committed = _git(tmp, "-c", "user.name=orchestrator", "-c", "user.email=orchestrator@local",
+        committed = _git(tmp, "-c", "user.name=kalepasch1", "-c", "user.email=kalepasch@gmail.com",
                          "commit", "-m", message)
         if committed.returncode != 0:
             return {"ok": False, "reason": "minimal commit failed", "files": files}
