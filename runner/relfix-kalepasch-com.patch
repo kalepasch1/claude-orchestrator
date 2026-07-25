@@ -1,0 +1,3442 @@
+diff --git a/app/pages/index.vue b/app/pages/index.vue
+index fde03a3d..b4861bf7 100644
+--- a/app/pages/index.vue
++++ b/app/pages/index.vue
+@@ -1,2147 +1,1357 @@
++<script setup lang="ts">
++definePageMeta({ layout: false })
++
++useHead({
++  title: 'Apparently — Legal work, from prompt to done.',
++  meta: [
++    { name: 'description', content: 'Self-service legal AI for documents, filings, and compliance across every regulated industry.' }
++  ],
++  link: [
++    { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
++    { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' },
++    { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap' }
++  ]
++})
++
++const promptInput = ref('')
++const promptPhase = ref<'idle' | 'analyzing' | 'generating' | 'complete'>('idle')
++const promptResult = ref('')
++const typingIndex = ref(0)
++let typingTimer: ReturnType<typeof setInterval> | null = null
++
++const exampleChips = [
++  'Form an LLC in Delaware',
++  'Draft an NDA for my startup',
++  'Get a gaming supplier license in PA',
++  'File a money transmitter license in TX'
++]
++
++function selectChip(chip: string) {
++  if (promptPhase.value !== 'idle') return
++  promptInput.value = ''
++  typingIndex.value = 0
++  if (typingTimer) clearInterval(typingTimer)
++  typingTimer = setInterval(() => {
++    if (typingIndex.value < chip.length) {
++      promptInput.value += chip[typingIndex.value]
++      typingIndex.value++
++    } else {
++      if (typingTimer) clearInterval(typingTimer)
++      typingTimer = null
++      simulateResponse()
++    }
++  }, 35)
++}
++
++function handlePromptSubmit() {
++  if (!promptInput.value.trim() || promptPhase.value !== 'idle') return
++  simulateResponse()
++}
++
++function simulateResponse() {
++  promptPhase.value = 'analyzing'
++  setTimeout(() => {
++    promptPhase.value = 'generating'
++    setTimeout(() => {
++      promptPhase.value = 'complete'
++      promptResult.value = promptInput.value
++    }, 1800)
++  }, 1200)
++}
++
++function resetPrompt() {
++  promptPhase.value = 'idle'
++  promptInput.value = ''
++  promptResult.value = ''
++}
++
++const verticals = [
++  { title: 'Gaming & Prediction Markets', desc: 'Licenses, compliance filings, and legal opinions for gaming operators and suppliers.', to: '/gaming', accent: '#22c55e' },
++  { title: 'Cannabis & Hemp', desc: 'State licensing, compliance programs, and regulatory filings for cannabis operators.', to: '/cannabis', accent: '#10b981' },
++  { title: 'Financial Services', desc: 'Money transmitter licenses, fintech charters, and regulatory compliance documents.', to: '/fintech', accent: '#3b82f6' },
++  { title: 'Healthcare', desc: 'HIPAA compliance, telemedicine licensing, and healthcare regulatory filings.', to: '/healthcare', accent: '#8b5cf6' },
++  { title: 'Real Estate', desc: 'Entity formation, property contracts, and real estate regulatory compliance.', to: '/real-estate', accent: '#f59e0b' },
++  { title: 'Startups & Venture', desc: 'Incorporation, SAFEs, operating agreements, and venture financing documents.', to: '/startups', accent: '#06b6d4' }
++]
++
++const steps = [
++  { num: '01', title: 'Describe', desc: 'Tell us what you need in plain language.' },
++  { num: '02', title: 'Generate', desc: 'AI drafts your document in seconds.' },
++  { num: '03', title: 'Review', desc: 'Edit, refine, and verify every detail.' },
++  { num: '04', title: 'File', desc: 'Submit directly to the relevant authority.' }
++]
++
++const stats = [
++  { value: '1,000+', label: 'Filing types' },
++  { value: 'Minutes', label: 'Average generation' },
++  { value: '50 States + DC', label: '+ tribal jurisdictions' },
++  { value: '90% less', label: 'Than law firms' }
++]
++
++// Scroll-reveal observer
++const observedEls = ref<Set<Element>>(new Set())
++
++onMounted(() => {
++  const observer = new IntersectionObserver(
++    (entries) => {
++      entries.forEach((entry) => {
++        if (entry.isIntersecting) {
++          entry.target.classList.add('revealed')
++          observer.unobserve(entry.target)
++        }
++      })
++    },
++    { threshold: 0.12, rootMargin: '0px 0px -40px 0px' }
++  )
++
++  nextTick(() => {
++    document.querySelectorAll('.reveal').forEach((el) => {
++      observer.observe(el)
++      observedEls.value.add(el)
++    })
++  })
++
++  onUnmounted(() => observer.disconnect())
++})
++
++const mobileNavOpen = ref(false)
++</script>
++
+ <template>
+   <div class="page-root">
+-    <!-- Skip-to-content navigation -->
+     <SkipLinks />
+ 
+-    <!-- ====== NAV ====== -->
+-    <PublicTopNav light />
++    <!-- Background grid -->
++    <div class="bg-grid" aria-hidden="true"></div>
+ 
+-    <main id="main-content" role="main" tabindex="-1">
+-    <!-- ====== HERO ====== -->
+-    <section class="hero">
+-      <div class="hero-bg">
+-        <div class="hero-grid"></div>
+-        <!-- Luminous radiance behind headline -->
+-        <div class="hero-glow"></div>
+-        <div class="hero-glow-accent hero-glow-accent-1"></div>
+-        <div class="hero-glow-accent hero-glow-accent-2"></div>
+-        <div class="hero-glow-accent hero-glow-accent-3"></div>
+-        <!-- Horizontal light beam across center -->
+-        <div class="hero-beam"></div>
+-      </div>
+-      <div class="hero-content anim-fade-up">
+-        <div class="hero-badge">
+-          <span class="hero-badge-dot"></span>
+-          Legal documents + licensing + CADE intelligence
++    <!-- Navbar -->
++    <nav class="navbar">
++      <div class="navbar-inner">
++        <NuxtLink to="/" class="nav-brand">
++          <img src="/A2.png" width="32" height="32" alt="Apparently logo" class="nav-logo" />
++          <span class="nav-wordmark">Apparently</span>
++        </NuxtLink>
++
++        <button class="mobile-toggle" :class="{ open: mobileNavOpen }" @click="mobileNavOpen = !mobileNavOpen" aria-label="Toggle navigation">
++          <span></span><span></span><span></span>
++        </button>
++
++        <div class="nav-links" :class="{ open: mobileNavOpen }">
++          <NuxtLink to="/#verticals" class="nav-link" @click="mobileNavOpen = false">Platform</NuxtLink>
++          <NuxtLink to="/#verticals" class="nav-link" @click="mobileNavOpen = false">Verticals</NuxtLink>
++          <NuxtLink to="/legal-opinions" class="nav-link" @click="mobileNavOpen = false">Legal Documents</NuxtLink>
++          <NuxtLink to="/pricing" class="nav-link" @click="mobileNavOpen = false">Pricing</NuxtLink>
++          <NuxtLink to="/blog" class="nav-link" @click="mobileNavOpen = false">Blog</NuxtLink>
+         </div>
+-        <h1 class="hero-h1" id="tw-hero" aria-label="Move legal work from question to done.">
+-          Move legal work<br><span class="hero-h1-gradient">from question to done.</span>
+-        </h1>
+-        <p class="hero-sub">
+-          Draft legal documents, complete licenses and regulatory filings,<br class="hide-mobile">
+-          and keep everything current — across every US jurisdiction,<br class="hide-mobile">
+-          powered by adversarial legal intelligence.
+-        </p>
+-        <div class="hero-actions">
+-          <NuxtLink to="/auth/signup" class="btn-primary-lg">Start Legal Work<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3l5 5-5 5"/></svg></NuxtLink>
+-          <NuxtLink to="/legal-opinions" class="btn-secondary-lg">Draft with CADE</NuxtLink>
++
++        <div class="nav-actions">
++          <NuxtLink to="/auth/login" class="btn-login">Log in</NuxtLink>
++          <NuxtLink to="/auth/signup" class="btn-signup">Sign up</NuxtLink>
+         </div>
+-        <p class="hero-urgency">Self-service or expert review. One reusable company profile. Every jurisdiction.</p>
+       </div>
+-    </section>
++    </nav>
+ 
+-    <!-- ====== PRODUCT DEMO (premium dashboard mockup) ====== -->
+-    <section class="demo-section">
+-      <div class="demo-container anim-fade-up-delay">
+-        <div class="demo-browser">
+-          <div class="demo-chrome">
+-            <div class="demo-dots"><span/><span/><span/></div>
+-            <div class="demo-url">app.apparently.cc/client/dashboard</div>
+-            <div class="demo-dots-spacer"></div>
++    <!-- Hero -->
++    <section class="hero">
++      <div class="hero-glow" aria-hidden="true"></div>
++      <div class="container">
++        <div class="hero-content reveal">
++          <h1 class="hero-headline">Legal work, from prompt to done.</h1>
++          <p class="hero-sub">Self-service legal AI that drafts documents, prepares filings, and navigates compliance — so you can move fast without a retainer.</p>
++          <div class="hero-ctas">
++            <NuxtLink to="/auth/signup" class="btn-primary">Start drafting now</NuxtLink>
++            <a href="#how" class="btn-secondary">See how it works</a>
+           </div>
+-          <div class="demo-body">
+-            <!-- Welcome bar -->
+-            <div class="demo-welcome">
+-              <div><span class="demo-welcome-name">Welcome back, Jordan</span><span class="demo-welcome-org">Apex Ventures Inc.</span></div>
+-              <div class="demo-welcome-actions">
+-                <span class="demo-notif-bell" :class="{ 'demo-bell-ping': bellPing }">
+-                  <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" /></svg>
+-                  <span class="demo-notif-dot"></span>
+-                </span>
+-              </div>
+-            </div>
+-
+-            <!-- Stats row — enhanced -->
+-            <div class="demo-stats">
+-              <div v-for="s in demoStats" :key="s.label" class="demo-stat">
+-                <div class="demo-stat-top">
+-                  <span class="demo-stat-label">{{ s.label }}</span>
+-                  <span class="demo-stat-trend" :class="s.trendClass">{{ s.trend }}</span>
+-                </div>
+-                <span class="demo-stat-value">{{ s.display }}</span>
+-                <div v-if="s.bar != null" class="demo-stat-bar"><div class="demo-stat-bar-fill" :style="{ width: s.bar + '%' }" :class="s.barClass"></div></div>
+-              </div>
+-            </div>
++        </div>
++      </div>
++    </section>
+ 
+-            <!-- Active filings table — premium with full detail -->
+-            <div class="demo-table-header">
+-              <div class="demo-table-title-row">
+-                <span class="demo-table-title">Active Matters</span>
+-                <span class="demo-live-badge"><span class="demo-live-dot"></span>Live</span>
+-              </div>
+-              <div class="demo-table-tabs">
+-                <span class="demo-tab demo-tab-active">All</span>
+-                <span class="demo-tab">In Progress</span>
+-                <span class="demo-tab">Filed</span>
+-                <span class="demo-tab">Complete</span>
+-              </div>
++    <!-- Interactive Prompt -->
++    <section class="prompt-section" id="prompt">
++      <div class="container">
++        <div class="prompt-box reveal">
++          <div class="prompt-header">
++            <div class="prompt-dots" aria-hidden="true">
++              <span></span><span></span><span></span>
+             </div>
+-            <div class="demo-table">
+-              <div class="demo-table-head">
+-                <span class="demo-th" style="flex:2">Matter</span>
+-                <span class="demo-th" style="flex:1">Jurisdiction</span>
+-                <span class="demo-th" style="flex:1.2">Status</span>
+-                <span class="demo-th" style="flex:1">Progress</span>
+-                <span class="demo-th" style="flex:1">Timeline</span>
+-                <span class="demo-th" style="flex:0.8">Assigned</span>
+-              </div>
+-              <div v-for="(f, fi) in demoFilings" :key="f.name" class="demo-table-row" :class="{ 'demo-row-flash': f.flash, 'demo-row-active': activeFilingIdx === fi }">
+-                <div class="demo-td" style="flex:2">
+-                  <div class="demo-filing-icon" :class="f.iconClass"><div v-html="f.icon"></div></div>
+-                  <div class="demo-filing-text">
+-                    <div class="demo-filing-name">{{ f.name }}</div>
+-                    <div class="demo-filing-ref">{{ f.ref }}</div>
+-                  </div>
+-                </div>
+-                <div class="demo-td demo-td-dim" style="flex:1">{{ f.jurisdiction }}</div>
+-                <div class="demo-td" style="flex:1.2">
+-                  <span class="demo-status-pill" :class="f.statusClass">
+-                    <span class="demo-status-dot" :class="f.dotClass"></span>
+-                    {{ f.status }}
+-                  </span>
+-                </div>
+-                <div class="demo-td" style="flex:1">
+-                  <div class="demo-progress-wrap">
+-                    <div class="demo-bar"><div class="demo-bar-fill" :class="[f.barClass, f.pct < 100 ? 'bar-shimmer' : '']" :style="{ '--w': f.pct + '%' }"></div></div>
+-                    <span class="demo-pct">{{ f.pct }}%</span>
+-                  </div>
+-                </div>
+-                <div class="demo-td demo-td-dim demo-td-timeline" style="flex:1">
+-                  <span v-if="activeFilingIdx === fi" class="demo-processing"><span class="demo-processing-dot"></span>Processing…</span>
+-                  <span v-else>{{ f.timeline }}</span>
+-                </div>
+-                <div class="demo-td" style="flex:0.8">
+-                  <div class="demo-avatar" :title="f.assignee">{{ f.assigneeInit }}</div>
+-                </div>
+-              </div>
++            <span class="prompt-title">apparently-cli</span>
++          </div>
++          <div class="prompt-body">
++            <div v-if="promptPhase === 'idle'" class="prompt-input-row">
++              <span class="prompt-caret">$</span>
++              <input
++                v-model="promptInput"
++                type="text"
++                class="prompt-input"
++                placeholder="Describe the legal document or filing you need..."
++                @keydown.enter="handlePromptSubmit"
++              />
+             </div>
+ 
+-            <!-- Bottom row: next actions + recent activity -->
+-            <div class="demo-bottom-row">
+-              <div class="demo-bottom-card">
+-                <div class="demo-bottom-title">Next Actions</div>
+-                <div class="demo-action-item" v-for="a in demoActions" :key="a.text">
+-                  <span class="demo-action-dot" :class="a.dotClass"></span>
+-                  <span class="demo-action-text">{{ a.text }}</span>
+-                  <span class="demo-action-badge" :class="a.urgencyClass">{{ a.urgency }}</span>
+-                </div>
++            <div v-else class="prompt-output">
++              <div class="prompt-echo">
++                <span class="prompt-caret">$</span>
++                <span>{{ promptInput }}</span>
+               </div>
+-              <div class="demo-bottom-card">
+-                <div class="demo-bottom-title">Recent Activity</div>
+-                <div class="demo-activity-item" :class="{ 'demo-activity-new': a.isNew }" v-for="a in demoActivity" :key="a.text">
+-                  <span class="demo-activity-time">{{ a.time }}</span>
+-                  <span class="demo-activity-text">{{ a.text }}</span>
++              <div class="prompt-status-lines">
++                <div class="status-line" :class="{ done: promptPhase === 'generating' || promptPhase === 'complete' }">
++                  <span class="status-indicator" :class="{ spinning: promptPhase === 'analyzing' }"></span>
++                  Analyzing request and identifying jurisdiction requirements...
+                 </div>
+-              </div>
+-            </div>
+-
+-            <!-- Services panels: Legal Documents + Compliance Monitor -->
+-            <div class="demo-services-row">
+-              <!-- Legal Documents -->
+-              <div class="demo-svc-panel">
+-                <div class="demo-svc-panel-header">
+-                  <span class="demo-svc-panel-title">Legal Documents</span>
+-                  <span class="demo-status-pill status-emerald" style="font-size:9px;padding:2px 8px">
+-                    <span class="demo-status-dot sdot-emerald" style="animation:none"></span>3 Active
+-                  </span>
++                <div v-if="promptPhase === 'generating' || promptPhase === 'complete'" class="status-line" :class="{ done: promptPhase === 'complete' }">
++                  <span class="status-indicator" :class="{ spinning: promptPhase === 'generating' }"></span>
++                  Generating document with applicable regulatory framework...
+                 </div>
+-                <div class="demo-svc-item" v-for="p in demoDocs" :key="p.name">
+-                  <div class="demo-svc-item-header">
+-                    <div class="demo-svc-item-meta">
+-                      <div class="demo-svc-item-name">{{ p.name }}</div>
+-                      <div class="demo-svc-item-sub">{{ p.sub }}</div>
+-                    </div>
+-                    <span class="demo-status-pill" :class="p.statusClass" style="font-size:9px;padding:2px 8px;flex-shrink:0">
+-                      <span class="demo-status-dot" :class="p.dotClass"></span>{{ p.status }}
+-                    </span>
+-                  </div>
+-                  <div class="demo-progress-wrap" style="margin-bottom:5px">
+-                    <div class="demo-bar"><div class="demo-bar-fill bar-shimmer" :class="p.barClass" :style="{ '--w': p.pct + '%' }"></div></div>
+-                    <span class="demo-pct">{{ p.pct }}%</span>
+-                  </div>
+-                  <div class="demo-svc-item-tags">
+-                    <span v-for="t in p.tags" :key="t" class="demo-svc-tag">{{ t }}</span>
+-                  </div>
++                <div v-if="promptPhase === 'complete'" class="status-line done complete-line">
++                  <span class="status-indicator check"></span>
++                  Document ready for review.
+                 </div>
+               </div>
+-              <!-- Compliance Monitor -->
+-              <div class="demo-svc-panel">
+-                <div class="demo-svc-panel-header">
+-                  <span class="demo-svc-panel-title">Compliance Monitor</span>
+-                  <span class="demo-status-pill status-blue" style="font-size:9px;padding:2px 8px">
+-                    <span class="demo-status-dot sdot-blue" style="animation:none"></span>4 Tracked
+-                  </span>
+-                </div>
+-                <div class="demo-svc-item" v-for="m in demoMonitor" :key="m.name">
+-                  <div class="demo-svc-item-header">
+-                    <div class="demo-svc-item-meta">
+-                      <div class="demo-svc-item-name">{{ m.name }}</div>
+-                      <div class="demo-svc-item-sub">{{ m.sub }}</div>
+-                    </div>
+-                    <span class="demo-svc-deadline" :class="m.deadlineClass">{{ m.deadline }}</span>
+-                  </div>
+-                  <div class="demo-svc-item-tags">
+-                    <span v-for="t in m.tags" :key="t" class="demo-svc-tag">{{ t }}</span>
+-                  </div>
+-                </div>
+-                <div class="demo-svc-intel-row">
+-                  <svg width="9" height="9" fill="none" stroke="#a78bfa" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+-                  <span>Intel: CFPB proposed rule on fintech lending disclosures</span>
++              <div v-if="promptPhase === 'complete'" class="prompt-complete">
++                <p class="prompt-complete-msg">Your document is ready. Sign up to access the full draft, make edits, and file directly.</p>
++                <div class="prompt-complete-actions">
++                  <NuxtLink to="/auth/signup" class="btn-primary btn-sm">Sign up to continue</NuxtLink>
++                  <button class="btn-secondary btn-sm" @click="resetPrompt">Try another</button>
+                 </div>
+               </div>
+             </div>
++          </div>
+ 
+-            <!-- Services panels: Verticals + Partner Matching -->
+-            <div class="demo-services-row">
+-              <!-- Verticals -->
+-              <div class="demo-svc-panel">
+-                <div class="demo-svc-panel-header">
+-                  <span class="demo-svc-panel-title">Active Verticals</span>
+-                  <span class="demo-status-pill status-purple" style="font-size:9px;padding:2px 8px">
+-                    <span class="demo-status-dot sdot-purple" style="animation:none"></span>3 Verticals
+-                  </span>
+-                </div>
+-                <div class="demo-svc-item" v-for="v in demoVerticals" :key="v.name">
+-                  <div class="demo-svc-item-header">
+-                    <div class="demo-svc-item-meta">
+-                      <div class="demo-svc-item-name">{{ v.name }}</div>
+-                      <div class="demo-svc-item-sub">{{ v.sub }}</div>
+-                    </div>
+-                    <span class="demo-status-pill" :class="v.statusClass" style="font-size:9px;padding:2px 8px;flex-shrink:0">
+-                      <span class="demo-status-dot" :class="v.dotClass"></span>{{ v.status }}
+-                    </span>
+-                  </div>
+-                  <div class="demo-svc-item-tags">
+-                    <span v-for="t in v.tags" :key="t" class="demo-svc-tag">{{ t }}</span>
+-                  </div>
+-                </div>
+-              </div>
+-              <!-- Partner Match -->
+-              <div class="demo-svc-panel">
+-                <div class="demo-svc-panel-header">
+-                  <span class="demo-svc-panel-title">Partner Match</span>
+-                  <span class="demo-status-pill status-amber" style="font-size:9px;padding:2px 8px">
+-                    <span class="demo-status-dot sdot-amber" style="animation:none"></span>2 Intros
+-                  </span>
+-                </div>
+-                <div class="demo-svc-item" v-for="s in demoMatches" :key="s.name">
+-                  <div class="demo-svc-item-header">
+-                    <div class="demo-svc-item-meta">
+-                      <div class="demo-svc-item-name">{{ s.name }}</div>
+-                      <div class="demo-svc-item-sub">{{ s.sub }}</div>
+-                    </div>
+-                    <span class="demo-status-pill" :class="s.statusClass" style="font-size:9px;padding:2px 8px;flex-shrink:0">
+-                      <span class="demo-status-dot" :class="s.dotClass"></span>{{ s.status }}
+-                    </span>
+-                  </div>
+-                  <div class="demo-progress-wrap" style="margin-bottom:5px">
+-                    <div class="demo-bar"><div class="demo-bar-fill bar-shimmer" :class="s.barClass" :style="{ '--w': s.pct + '%' }"></div></div>
+-                    <span class="demo-pct">{{ s.pct }}%</span>
+-                  </div>
+-                  <div class="demo-svc-item-tags">
+-                    <span v-for="t in s.tags" :key="t" class="demo-svc-tag">{{ t }}</span>
+-                  </div>
+-                </div>
+-              </div>
+-            </div>
++          <div v-if="promptPhase === 'idle'" class="prompt-chips">
++            <button v-for="chip in exampleChips" :key="chip" class="chip" @click="selectChip(chip)">{{ chip }}</button>
+           </div>
+         </div>
+       </div>
+     </section>
+ 
+-    <!-- ====== WHO WE SERVE ====== -->
+-    <section id="who" class="section-dark">
+-      <div class="section-inner">
+-        <p class="section-eyebrow">Who We Serve</p>
+-        <h2 class="section-h2-dark" id="tw-who">Every regulated business needs a <span class="power-text">legal operating layer</span></h2>
+-        <p class="who-sub">Companies across gaming, cannabis, healthcare, fintech, real estate, and startups — anyone who needs legal documents, licenses, or regulatory filings.</p>
+-
+-        <!-- Scrolling ticker of all service types -->
+-        <div class="ticker-wrap">
+-          <div class="ticker-fade ticker-fade-left" />
+-          <div class="ticker-track">
+-            <span v-for="(item, i) in tickerItems" :key="'a'+i" class="ticker-pill">{{ item }}</span>
+-            <span v-for="(item, i) in tickerItems" :key="'b'+i" class="ticker-pill">{{ item }}</span>
+-          </div>
+-          <div class="ticker-fade ticker-fade-right" />
++    <!-- Verticals Grid -->
++    <section class="verticals" id="verticals">
++      <div class="container">
++        <div class="section-header reveal">
++          <h2 class="section-title">Built for regulated industries</h2>
++          <p class="section-sub">Purpose-built legal intelligence for the industries that need it most.</p>
+         </div>
+-        <div class="ticker-wrap ticker-wrap-reverse">
+-          <div class="ticker-fade ticker-fade-left" />
+-          <div class="ticker-track ticker-track-reverse">
+-            <span v-for="(item, i) in tickerItemsRow2" :key="'c'+i" class="ticker-pill">{{ item }}</span>
+-            <span v-for="(item, i) in tickerItemsRow2" :key="'d'+i" class="ticker-pill">{{ item }}</span>
+-          </div>
+-          <div class="ticker-fade ticker-fade-right" />
+-        </div>
+-
+-        <!-- Six vertical cards -->
+-        <div class="persona-grid">
+-          <div v-for="p in personas" :key="p.title" class="persona-card">
+-            <div class="persona-icon" :class="p.iconClass"><div v-html="p.icon"></div></div>
+-            <h3 class="persona-title">{{ p.title }}</h3>
+-            <p class="persona-desc">{{ p.description }}</p>
+-            <div class="persona-tags">
+-              <span v-for="t in p.tags" :key="t">{{ t }}</span>
++        <div class="verticals-grid">
++          <NuxtLink
++            v-for="v in verticals"
++            :key="v.to"
++            :to="v.to"
++            class="vertical-card reveal"
++            :style="{ '--card-accent': v.accent }"
++          >
++            <div class="vertical-card-inner">
++              <h3 class="vertical-title">{{ v.title }}</h3>
++              <p class="vertical-desc">{{ v.desc }}</p>
++              <span class="vertical-arrow">&rarr;</span>
+             </div>
+-          </div>
++          </NuxtLink>
+         </div>
+       </div>
+     </section>
+ 
+-    <!-- ====== CADE — THE DETERMINATION ENGINE ====== -->
+-    <section class="cade-section">
+-      <div class="cade-inner">
+-        <p class="cade-eyebrow">CADE · Consensus &amp; Adversarial Determination Engine</p>
+-        <h2 class="cade-h2" id="tw-cade">Other AI legal tools guess.<br><span class="cade-h2-gradient">CADE proves it.</span></h2>
+-        <p class="cade-sub">Harvey, Legora, and Norm AI use a single AI model to generate legal text. CADE assembles a panel of history's greatest legal minds, forces them to argue against each other, and delivers the answer only after every attack has been rebutted — with cryptographic proof that no stronger panel exists.</p>
+-
+-        <!-- 8-stage pipeline viewer -->
+-        <div class="cade-stage">
+-          <div class="cade-rail">
+-            <button
+-              v-for="(stage, si) in cadeStages"
+-              :key="stage.n"
+-              class="cade-rail-btn"
+-              :class="{ 'cade-rail-on': cadeStep === si }"
+-              @click="cadeGoTo(si)"
+-            >
+-              <span class="cade-rail-n">{{ stage.n }}</span>{{ stage.t }}
+-            </button>
+-          </div>
+-          <div class="cade-canvas">
+-            <div
+-              v-for="(stage, si) in cadeStages"
+-              :key="'layer'+si"
+-              class="cade-layer"
+-              :class="{ 'cade-layer-show': cadeStep === si }"
+-              v-html="cadeSvgs[si]"
+-            ></div>
+-          </div>
+-          <div class="cade-cap">
+-            <h3 class="cade-cap-title">{{ cadeStages[cadeStep].n }} · {{ cadeStages[cadeStep].title }}</h3>
+-            <p class="cade-cap-text">{{ cadeStages[cadeStep].text }}</p>
+-          </div>
+-          <div class="cade-controls">
+-            <button class="cade-btn cade-btn-primary" @click="cadePlay">▶ Replay the determination</button>
+-            <div class="cade-scrub"><div class="cade-scrub-fill" :style="{ width: ((cadeStep + 1) / cadeStages.length * 100) + '%' }"></div></div>
+-            <span class="cade-step-label">{{ cadeStep + 1 }} / {{ cadeStages.length }}</span>
+-          </div>
+-        </div>
+-
+-        <!-- CADE metrics -->
+-        <div class="cade-metrics">
+-          <div class="cade-metric" v-for="m in cadeMetrics" :key="m.k">
+-            <div class="cade-metric-v">{{ m.v }}</div>
+-            <div class="cade-metric-k">{{ m.k }}</div>
+-          </div>
+-        </div>
+-
+-        <!-- Why CADE vs competitors -->
+-        <div class="cade-compare">
+-          <div class="cade-compare-card" v-for="c in cadeFeats" :key="c.h">
+-            <span class="cade-compare-ic">{{ c.ic }}</span>
+-            <h4 class="cade-compare-h">{{ c.h }}</h4>
+-            <p class="cade-compare-p">{{ c.p }}</p>
+-          </div>
++    <!-- How It Works -->
++    <section class="how" id="how">
++      <div class="container">
++        <div class="section-header reveal">
++          <h2 class="section-title">How it works</h2>
++          <p class="section-sub">From plain language to filed document in four steps.</p>
+         </div>
+-
+-        <!-- Proof pack callout -->
+-        <div class="cade-proof">
+-          <svg class="cade-seal" viewBox="0 0 64 64"><circle cx="32" cy="32" r="28" fill="none" stroke="#c9a24a" stroke-width="2"/><path d="M20 33 l8 8 l16 -18" fill="none" stroke="#37d39a" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+-          <div class="cade-proof-text">
+-            <h4>Every determination ships with a signed proof pack</h4>
+-            <p>Content-addressed, Ed25519-signed record: the full bench that opined, every citation, every adversarial challenge and its resolution, and the Optimality Certificate — the auditable bound that no excluded mind could have changed the answer.</p>
+-            <span class="cade-proof-mono">cade_3f9a…&nbsp;·&nbsp;considered: 1,184 minds&nbsp;·&nbsp;seated: 21&nbsp;·&nbsp;ε &lt; 0.03&nbsp;·&nbsp;adversarially-complete: ✓&nbsp;·&nbsp;ed25519 ✓</span>
++        <div class="steps-row">
++          <div v-for="(step, i) in steps" :key="step.num" class="step-card reveal">
++            <span class="step-num">{{ step.num }}</span>
++            <h3 class="step-title">{{ step.title }}</h3>
++            <p class="step-desc">{{ step.desc }}</p>
++            <div v-if="i < steps.length - 1" class="step-beam" aria-hidden="true"></div>
+           </div>
+         </div>
+       </div>
+     </section>
+ 
+-    <!-- ====== ECOSYSTEM ====== -->
+-    <section class="platform-section">
+-      <div class="platform-text">
+-        <p class="platform-eyebrow">Ecosystem</p>
+-        <h2 class="platform-h2" id="tw-platform">Your regulators. Your partners. Your filings. One platform.</h2>
+-        <p class="platform-sub">From state licensing boards and federal agencies to industry partners and compliance databases — we sit at the center of the entire regulatory ecosystem across every vertical we serve.</p>
+-      </div>
+-      <div class="platform-visual">
+-        <LazyPlatformOrbits />
+-      </div>
+-    </section>
+-
+-    <!-- ====== HOW IT WORKS (animated pulse-through) ====== -->
+-    <section id="how" class="process-section">
+-      <div class="process-inner">
+-        <p class="process-eyebrow">Process</p>
+-        <h2 class="process-h2" id="tw-process">Describe the outcome.<br><span class="process-h2-gradient">We handle the rest.</span></h2>
+-        <p class="process-sub">Tell us what needs to be true. We route it to the right workflow.</p>
+-
+-        <!-- Active step context bar -->
+-        <div class="process-context">
+-          <span class="process-context-you" :class="{ 'process-context-active': activeStep === 0 }">
+-            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg>
+-            You
+-          </span>
+-          <svg class="process-context-arrow" width="20" height="12" viewBox="0 0 20 12" fill="none"><path d="M1 6h16M13 1l5 5-5 5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+-          <span class="process-context-us" :class="{ 'process-context-active': activeStep > 0 }">
+-            <svg width="14" height="14" viewBox="0 0 22 22" fill="none"><rect width="22" height="22" rx="5" fill="currentColor"/><text x="11" y="15.5" text-anchor="middle" fill="#000" font-size="11" font-weight="700" font-family="system-ui">A</text></svg>
+-            Apparently
+-          </span>
+-        </div>
+-
+-        <div class="process-grid">
+-          <!-- Pulse beam connecting cards -->
+-          <div class="process-beam">
+-            <div class="process-beam-track"></div>
+-            <div class="process-beam-pulse" :style="{ left: `${activeStep * 25}%`, width: '25%' }"></div>
+-          </div>
+-
+-          <div
+-            v-for="(step, i) in steps"
+-            :key="i"
+-            class="process-card"
+-            :class="{ 'process-card-active': activeStep === i, 'process-card-done': activeStep > i }"
+-            :style="{ '--delay': `${i * 0.15}s`, '--color': step.color }"
+-          >
+-            <div class="process-card-glow" v-if="activeStep === i"></div>
+-            <div class="process-card-inner">
+-              <!-- Who handles this step -->
+-              <div class="process-who">
+-                <span class="process-who-badge" :class="step.who === 'you' ? 'process-who-you' : 'process-who-us'">
+-                  {{ step.who === 'you' ? 'You' : 'We handle this' }}
+-                </span>
+-              </div>
+-
+-              <!-- Step ring -->
+-              <div class="process-step-ring" :class="{ 'process-ring-active': activeStep === i, 'process-ring-done': activeStep > i }">
+-                <svg v-if="activeStep > i" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path stroke-linecap="round" d="M5 13l4 4L19 7"/></svg>
+-                <span v-else>{{ i + 1 }}</span>
+-              </div>
+-
+-              <h3 class="process-card-title">{{ step.title }}</h3>
+-              <p class="process-card-desc">{{ step.desc }}</p>
+-
+-              <!-- Animated detail chips -->
+-              <div class="process-card-chips">
+-                <span
+-                  v-for="(chip, ci) in step.chips"
+-                  :key="chip"
+-                  class="process-chip"
+-                  :class="{ 'process-chip-active': activeStep === i }"
+-                  :style="{ transitionDelay: `${ci * 80}ms` }"
+-                >{{ chip }}</span>
+-              </div>
+-            </div>
++    <!-- Stats Bar -->
++    <section class="stats-bar">
++      <div class="container">
++        <div class="stats-row reveal">
++          <div v-for="stat in stats" :key="stat.label" class="stat-item">
++            <span class="stat-value">{{ stat.value }}</span>
++            <span class="stat-label">{{ stat.label }}</span>
+           </div>
+         </div>
+-
+-        <!-- Dot indicators -->
+-        <div class="process-dots">
+-          <button
+-            v-for="i in 4" :key="i"
+-            class="process-dot"
+-            :class="{ 'process-dot-active': activeStep === i - 1 }"
+-            @click="activeStep = i - 1; resetTimer()"
+-          ></button>
+-        </div>
+       </div>
+     </section>
+ 
+-    <!-- ====== CLIENT DASHBOARD (split: text + notifs) ====== -->
+-    <section class="section-gray">
+-      <div class="section-inner split-grid">
+-        <div class="split-text">
+-          <p class="section-eyebrow-dark">Your Dashboard</p>
+-          <h2 class="section-h2" style="text-align:left" id="tw-dashboard">Every matter, every<br>jurisdiction, one view</h2>
+-          <p class="split-body">Real-time status across every filing, document, and license. Plain-language updates — no regulatory jargon.</p>
+-          <div class="check-list">
+-            <div v-for="item in checkItems" :key="item" class="check-item">
+-              <span class="check-icon"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="black" stroke-width="2.5" stroke-linecap="round"><path d="M3 7.5l3 3 5-6"/></svg></span>
+-              <span>{{ item }}</span>
+-            </div>
+-          </div>
++    <!-- Platform Capabilities -->
++    <section class="capabilities">
++      <div class="container">
++        <div class="section-header reveal">
++          <h2 class="section-title">The platform</h2>
++          <p class="section-sub">Two integrated systems that cover the full lifecycle of legal work.</p>
+         </div>
+-        <div class="split-visual">
+-          <div class="notif-stack">
+-            <TransitionGroup name="notif-slide" tag="div">
+-              <div
+-                v-for="n in visibleNotifs"
+-                :key="n.id"
+-                class="notif-card"
+-                :class="{ 'notif-card-new': n.isNew }"
+-              >
+-                <div class="notif-dot" :class="n.dotClass"></div>
+-                <div class="notif-content">
+-                  <div class="notif-text">{{ n.text }}</div>
+-                  <div class="notif-time">{{ n.time }}</div>
+-                </div>
+-                <div v-if="n.isNew" class="notif-new-badge">NEW</div>
+-              </div>
+-            </TransitionGroup>
++        <div class="capabilities-grid">
++          <div class="capability-card reveal">
++            <div class="capability-accent" style="background: linear-gradient(135deg, #22c55e33, transparent)"></div>
++            <h3 class="capability-title">Legal Document Studio</h3>
++            <p class="capability-desc">Draft legal memos, opinions, contracts, and compliance documents with AI that understands regulatory context. Every document is sourced and citation-ready.</p>
++            <ul class="capability-list">
++              <li>Legal memos and opinions</li>
++              <li>Contracts and agreements</li>
++              <li>Compliance programs</li>
++              <li>Corporate governance docs</li>
++            </ul>
++          </div>
++          <div class="capability-card reveal">
++            <div class="capability-accent" style="background: linear-gradient(135deg, #3b82f633, transparent)"></div>
++            <h3 class="capability-title">Filing OS</h3>
++            <p class="capability-desc">Prepare and submit regulatory filings across all 50 states, DC, and tribal jurisdictions. Automated form generation with jurisdiction-specific requirements.</p>
++            <ul class="capability-list">
++              <li>State license applications</li>
++              <li>Regulatory renewals</li>
++              <li>Entity formations</li>
++              <li>Multi-jurisdiction filings</li>
++            </ul>
+           </div>
+         </div>
+       </div>
+     </section>
+ 
+-    <!-- ====== VERTICALS GRID ====== -->
+-    <section id="verticals" class="section-dark">
+-      <div class="section-inner">
+-        <p class="section-eyebrow">Industry Verticals</p>
+-        <h2 class="section-h2-dark" id="tw-vert">A distinct workspace<br>for every industry</h2>
+-        <p class="jur-sub">The platform stays consistent. The questions, authorities, documents, filings, and controls change by vertical.</p>
+-        <div class="verticals-grid">
+-          <NuxtLink v-for="v in verticalCards" :key="v.name" :to="v.to" class="vertical-card-link">
+-            <div class="vertical-card-icon" :class="v.iconClass"><div v-html="v.icon"></div></div>
+-            <h3 class="vertical-card-title">{{ v.name }}</h3>
+-            <p class="vertical-card-desc">{{ v.desc }}</p>
+-            <div class="vertical-card-tags">
+-              <span v-for="t in v.tags" :key="t">{{ t }}</span>
+-            </div>
+-            <span class="vertical-card-cta">Explore {{ v.short }} →</span>
+-          </NuxtLink>
++    <!-- CTA -->
++    <section class="cta-section">
++      <div class="container">
++        <div class="cta-box reveal">
++          <h2 class="cta-title">Ready to get started?</h2>
++          <p class="cta-sub">Join thousands of operators using Apparently to move faster on legal work.</p>
++          <NuxtLink to="/auth/signup" class="btn-primary btn-lg">Create your free account</NuxtLink>
+         </div>
+       </div>
+     </section>
+ 
+-    <!-- ====== JURISDICTIONS ====== -->
+-    <section class="section-dark" style="padding-top:0">
+-      <div class="section-inner">
+-        <p class="section-eyebrow">Coverage</p>
+-        <h2 class="section-h2-dark" id="tw-jur">Every jurisdiction that matters</h2>
+-        <p class="jur-sub">Federal agencies, {{ allJurisdictions.filter(j => j.tier === 'tier1').length }} major regulatory bodies, and {{ allJurisdictions.filter(j => j.tier === 'tier2').length }}+ state and territory authorities.</p>
+-        <div class="jur-grid" :class="{ 'jur-grid-expanded': jurExpanded }">
+-          <div
+-            v-for="j in visibleJurisdictions"
+-            :key="j.code"
+-            class="jur-tile"
+-            :class="{ 'jur-tile-federal': j.tier === 'federal', 'jur-tile-tier1': j.tier === 'tier1' }"
+-          >
+-            <span class="jur-code">{{ j.code }}</span>
+-            <span class="jur-label">{{ j.label }}</span>
+-            <span class="jur-body">{{ j.body }}</span>
++    <!-- Footer -->
++    <footer class="site-footer">
++      <div class="container">
++        <div class="footer-top">
++          <div class="footer-brand">
++            <div class="footer-logo-row">
++              <img src="/A2.png" width="24" height="24" alt="" class="footer-logo" />
++              <span class="footer-wordmark">Apparently</span>
++            </div>
++            <p class="footer-disclaimer">Apparently is not a law firm and does not provide legal advice. Documents generated by this platform are for informational purposes and should be reviewed by a licensed attorney before use.</p>
+           </div>
+-          <!-- Expand button tile -->
+-          <div v-if="!jurExpanded" class="jur-tile jur-tile-expand" @click="jurExpanded = true">
+-            <span class="jur-expand-icon">
+-              <svg width="24" height="24" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+-            </span>
+-            <span class="jur-label">{{ allJurisdictions.length - initialJurisdictions.length }} more</span>
+-            <span class="jur-body">Show all jurisdictions</span>
++          <div class="footer-columns">
++            <div class="footer-col">
++              <h4 class="footer-col-title">Product</h4>
++              <NuxtLink to="/pricing" class="footer-link">Pricing</NuxtLink>
++              <NuxtLink to="/legal-opinions" class="footer-link">Legal Documents</NuxtLink>
++              <NuxtLink to="/blog" class="footer-link">Blog</NuxtLink>
++            </div>
++            <div class="footer-col">
++              <h4 class="footer-col-title">Verticals</h4>
++              <NuxtLink v-for="v in verticals" :key="v.to" :to="v.to" class="footer-link">{{ v.title }}</NuxtLink>
++            </div>
++            <div class="footer-col">
++              <h4 class="footer-col-title">Company</h4>
++              <NuxtLink to="/privacy" class="footer-link">Privacy</NuxtLink>
++              <NuxtLink to="/terms" class="footer-link">Terms</NuxtLink>
++              <NuxtLink to="/contact" class="footer-link">Contact</NuxtLink>
++            </div>
+           </div>
+         </div>
+-        <button v-if="jurExpanded" @click="jurExpanded = false" class="jur-collapse-btn">
+-          Show fewer
+-          <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M5 15l7-7 7 7"/></svg>
+-        </button>
+-      </div>
+-    </section>
+-
+-    <!-- ====== STATS ====== -->
+-    <section class="section-light numbers-section">
+-      <div class="section-inner">
+-        <div class="numbers-grid">
+-          <div v-for="n in bigNums" :key="n.label" class="number-item">
+-            <span class="number-value">{{ n.value }}</span>
+-            <span class="number-label">{{ n.label }}</span>
+-            <span class="number-versus">{{ n.versus }}</span>
+-          </div>
++        <div class="footer-bottom">
++          <span class="footer-copy">&copy; {{ new Date().getFullYear() }} Apparently. All rights reserved.</span>
+         </div>
+       </div>
+-    </section>
++    </footer>
++  </div>
++</template>
+ 
+-    <!-- ====== OTHER SERVICES ====== -->
+-    <section class="services-strip">
+-      <div class="services-strip-inner">
+-        <p class="services-strip-label">Core Services</p>
+-        <div class="services-strip-grid">
+-
+-          <!-- CADE Legal Documents — gold -->
+-          <NuxtLink to="/legal-opinions" class="svc-card svc-card--gold">
+-            <div class="svc-card-head">
+-              <div class="svc-card-icon svc-icon--gold">
+-                <svg width="18" height="18" fill="none" stroke="#fbbf24" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+-              </div>
+-              <span class="svc-card-badge svc-badge--gold">Self-Service CADE Terminal</span>
+-            </div>
+-            <h3 class="svc-card-title">CADE Legal Documents &amp; Analysis</h3>
+-            <p class="svc-card-desc">Draft or review any legal work product. CADE plans, researches, drafts, challenges, assembles, and securely delivers durable work product — with adversarial review and signed proof packs.</p>
+-            <div class="svc-stats svc-stats--gold">
+-              <div class="svc-stat">
+-                <span class="svc-stat-num">Any</span>
+-                <span class="svc-stat-lbl">Work Product</span>
+-              </div>
+-              <div class="svc-stat-div"></div>
+-              <div class="svc-stat">
+-                <span class="svc-stat-num">50 + DC</span>
+-                <span class="svc-stat-lbl">Jurisdictions</span>
+-              </div>
+-              <div class="svc-stat-div"></div>
+-              <div class="svc-stat">
+-                <span class="svc-stat-num">Live</span>
+-                <span class="svc-stat-lbl">Progress</span>
+-              </div>
+-            </div>
+-            <div class="svc-chips">
+-              <span class="svc-chip svc-chip--gold">Durable Queue</span>
+-              <span class="svc-chip svc-chip--gold">Adversarial Review</span>
+-              <span class="svc-chip svc-chip--gold">Secure PDF</span>
+-            </div>
+-            <span class="svc-card-cta svc-cta--gold">Open the Legal Document Studio &rarr;</span>
+-            <span class="svc-savings">Choose the document and outcome · upload sources · follow issue-by-issue progress</span>
+-          </NuxtLink>
++<style scoped>
++/* ─── Reset & Variables ─── */
++*,
++*::before,
++*::after {
++  box-sizing: border-box;
++  margin: 0;
++  padding: 0;
++}
+ 
+-          <!-- Licensing & Filings — emerald -->
+-          <NuxtLink to="/licenses" class="svc-card svc-card--emerald">
+-            <div class="svc-card-head">
+-              <div class="svc-card-icon svc-icon--emerald">
+-                <svg width="18" height="18" fill="none" stroke="#34d399" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+-              </div>
+-              <span class="svc-card-badge svc-badge--emerald">End-to-End Filing</span>
+-            </div>
+-            <h3 class="svc-card-title">Licenses &amp; Regulatory Filings</h3>
+-            <p class="svc-card-desc">Determine what applies, collect each fact once, prepare the right packet, coordinate signers, and track the matter after submission — across every vertical and jurisdiction.</p>
+-            <div class="svc-stats svc-stats--emerald">
+-              <div class="svc-stat">
+-                <span class="svc-stat-num">50+</span>
+-                <span class="svc-stat-lbl">Jurisdictions</span>
+-              </div>
+-              <div class="svc-stat-div"></div>
+-              <div class="svc-stat">
+-                <span class="svc-stat-num">48h</span>
+-                <span class="svc-stat-lbl">Intake to Filing</span>
+-              </div>
+-              <div class="svc-stat-div"></div>
+-              <div class="svc-stat">
+-                <span class="svc-stat-num">6</span>
+-                <span class="svc-stat-lbl">Verticals</span>
+-              </div>
+-            </div>
+-            <span class="svc-card-cta svc-cta--emerald">Find my filings &rarr;</span>
+-            <span class="svc-savings">~90% less than consultant rates</span>
+-          </NuxtLink>
++.page-root {
++  --bg: #0a0b0d;
++  --bg-card: #111;
++  --bg-card-hover: #151515;
++  --border: rgba(255, 255, 255, 0.06);
++  --border-hover: rgba(255, 255, 255, 0.12);
++  --text: #fff;
++  --text-secondary: #999;
++  --text-muted: #666;
++  --accent: #22c55e;
++  --radius: 12px;
++  --radius-sm: 8px;
++
++  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
++  background: var(--bg);
++  color: var(--text);
++  min-height: 100vh;
++  overflow-x: hidden;
++  position: relative;
++  -webkit-font-smoothing: antialiased;
++  -moz-osx-font-smoothing: grayscale;
++}
+ 
+-          <!-- Contests & Sweepstakes — blue -->
+-          <NuxtLink to="/promotions" class="svc-card svc-card--blue">
+-            <div class="svc-card-head">
+-              <div class="svc-card-icon svc-icon--blue">
+-                <svg width="18" height="18" fill="none" stroke="#63b3ed" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/></svg>
+-              </div>
+-              <span class="svc-card-badge svc-badge--blue">No License Required</span>
+-            </div>
+-            <h3 class="svc-card-title">Contests &amp; Sweepstakes</h3>
+-            <p class="svc-card-desc">We design the legal structure, draft official rules, register with every state that requires it, and procure prize bonding — so your promotion launches clean.</p>
+-            <div class="svc-chips">
+-              <span class="svc-chip svc-chip--blue">Skill Contests</span>
+-              <span class="svc-chip svc-chip--blue">Sweepstakes</span>
+-              <span class="svc-chip svc-chip--blue">Rules Drafting</span>
+-              <span class="svc-chip svc-chip--blue">State Filings</span>
+-              <span class="svc-chip svc-chip--blue">Prize Bonding</span>
+-            </div>
+-            <span class="svc-card-cta svc-cta--blue">Learn more &rarr;</span>
+-            <span class="svc-savings">~90% less than law firm rates</span>
+-          </NuxtLink>
++.container {
++  max-width: 1140px;
++  margin: 0 auto;
++  padding: 0 24px;
++}
+ 
+-          <!-- Compliance-as-a-Service — teal -->
+-          <NuxtLink to="/auth/signup" class="svc-card svc-card--teal">
+-            <div class="svc-card-head">
+-              <div class="svc-card-icon svc-icon--teal">
+-                <svg width="18" height="18" fill="none" stroke="#22d3ee" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/></svg>
+-              </div>
+-              <span class="svc-card-badge svc-badge--teal">Managed Compliance</span>
+-            </div>
+-            <h3 class="svc-card-title">Compliance-as-a-Service</h3>
+-            <p class="svc-card-desc">Monthly managed compliance: monitoring retainers, enforcement alerts, renewal calendars, regulatory intelligence feeds, and a dedicated compliance contact. One flat fee replaces a patchwork of consultants.</p>
+-            <div class="svc-chips">
+-              <span class="svc-chip svc-chip--teal">Monitoring</span>
+-              <span class="svc-chip svc-chip--teal">Enforcement Alerts</span>
+-              <span class="svc-chip svc-chip--teal">Renewal Calendar</span>
+-              <span class="svc-chip svc-chip--teal">Intel Feeds</span>
+-            </div>
+-            <span class="svc-card-cta svc-cta--teal">Start managed compliance &rarr;</span>
+-            <span class="svc-savings">From $2,500/mo · replaces ad-hoc consultants</span>
+-          </NuxtLink>
++/* ─── Background Grid ─── */
++.bg-grid {
++  position: fixed;
++  inset: 0;
++  background-image:
++    linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
++    linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
++  background-size: 60px 60px;
++  pointer-events: none;
++  z-index: 0;
++}
+ 
+-          <!-- Partner Matching — purple -->
+-          <NuxtLink to="/auth/signup" class="svc-card svc-card--purple">
+-            <div class="svc-card-head">
+-              <div class="svc-card-icon svc-icon--purple">
+-                <svg width="18" height="18" fill="none" stroke="#a78bfa" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+-              </div>
+-              <span class="svc-card-badge svc-badge--purple">Network Access</span>
+-            </div>
+-            <h3 class="svc-card-title">Partner &amp; Sponsor Matching</h3>
+-            <p class="svc-card-desc">Need a licensed operator, investor, or institutional partner? We find, vet, and introduce you to the right counterparty in each target jurisdiction — so your application or business relationship can move forward.</p>
+-            <div class="svc-chips">
+-              <span class="svc-chip svc-chip--purple">Operators</span>
+-              <span class="svc-chip svc-chip--purple">Investors</span>
+-              <span class="svc-chip svc-chip--purple">Institutional</span>
+-              <span class="svc-chip svc-chip--purple">48h Match</span>
+-            </div>
+-            <span class="svc-card-cta svc-cta--purple">Get matched &rarr;</span>
+-            <span class="svc-savings">$1,500 per introduction · $750 for active customers</span>
+-          </NuxtLink>
++/* ─── Reveal Animation ─── */
++.reveal {
++  opacity: 0;
++  transform: translateY(24px);
++  transition: opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1), transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
++}
+ 
+-          <!-- Company Formation — rose -->
+-          <NuxtLink to="/formation" class="svc-card svc-card--rose">
+-            <div class="svc-card-head">
+-              <div class="svc-card-icon svc-icon--rose">
+-                <svg width="18" height="18" fill="none" stroke="#fb7185" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
+-              </div>
+-              <span class="svc-card-badge svc-badge--rose">Start Here</span>
+-            </div>
+-            <h3 class="svc-card-title">Company Formation</h3>
+-            <p class="svc-card-desc">Form the right entity structure before you apply. We incorporate in the optimal state, draft operating agreements that satisfy regulatory disclosure requirements, and wire your cap table directly to your license applications.</p>
+-            <div class="svc-chips">
+-              <span class="svc-chip svc-chip--rose">LLC or Corp</span>
+-              <span class="svc-chip svc-chip--rose">Compliance-Ready Docs</span>
+-              <span class="svc-chip svc-chip--rose">Cap Table Prep</span>
+-              <span class="svc-chip svc-chip--rose">All States</span>
+-            </div>
+-            <span class="svc-card-cta svc-cta--rose">Form your company &rarr;</span>
+-            <span class="svc-savings">$499 + state fees · licensing-optimized structure</span>
+-          </NuxtLink>
++.reveal.revealed {
++  opacity: 1;
++  transform: translateY(0);
++}
+ 
+-        </div>
+-      </div>
+-    </section>
++/* ─── Navbar ─── */
++.navbar {
++  position: fixed;
++  top: 0;
++  left: 0;
++  right: 0;
++  z-index: 100;
++  background: rgba(10, 11, 13, 0.8);
++  backdrop-filter: blur(20px) saturate(1.2);
++  -webkit-backdrop-filter: blur(20px) saturate(1.2);
++  border-bottom: 1px solid var(--border);
++}
+ 
++.navbar-inner {
++  max-width: 1140px;
++  margin: 0 auto;
++  padding: 0 24px;
++  height: 64px;
++  display: flex;
++  align-items: center;
++  justify-content: space-between;
++  gap: 32px;
++}
+ 
+-    <!-- ====== FAQ (SEO) ====== -->
+-    <section class="faq-section">
+-      <div class="faq-inner">
+-        <h2 class="faq-h2" id="tw-faq">Frequently asked questions</h2>
+-        <div class="faq-grid">
+-          <details v-for="faq in visibleFaqs" :key="faq.q" class="faq-item">
+-            <summary class="faq-q">{{ faq.q }}</summary>
+-            <p class="faq-a">{{ faq.a }}</p>
+-          </details>
+-        </div>
+-        <div v-if="!faqExpanded" class="faq-more-wrap">
+-          <button class="faq-more-btn" @click="faqExpanded = true">
+-            View more questions
+-            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 9l-7 7-7-7"/></svg>
+-          </button>
+-        </div>
+-      </div>
+-    </section>
++.nav-brand {
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  text-decoration: none;
++  flex-shrink: 0;
++}
+ 
+-    <!-- ====== WRITING / BLOG ====== -->
+-    <section v-if="visibleBlogPosts.length" class="blog-section">
+-      <div class="blog-inner">
+-        <p class="blog-eyebrow">From our writing</p>
+-        <h2 class="blog-h2" id="tw-blog">Dispatches on regulation <span class="tw-accent">&amp; compliance</span></h2>
+-        <p class="blog-sub">Long-form posts, analysis, and field notes — published on Medium.</p>
+-
+-        <div class="blog-grid">
+-          <a
+-            v-for="post in visibleBlogPosts"
+-            :key="post.url"
+-            :href="post.url"
+-            target="_blank"
+-            rel="noopener noreferrer"
+-            class="blog-card"
+-          >
+-            <div class="blog-card-head">
+-              <span class="blog-source blog-source-medium">Medium</span>
+-              <span v-if="post.publishedAt" class="blog-date">{{ formatBlogDate(post.publishedAt) }}</span>
+-            </div>
+-            <h3 class="blog-title">{{ post.title }}</h3>
+-            <p v-if="post.excerpt" class="blog-excerpt">{{ post.excerpt }}</p>
+-            <span class="blog-read">Read article<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3l5 5-5 5"/></svg></span>
+-          </a>
+-        </div>
++.nav-logo {
++  border-radius: 6px;
++}
+ 
+-        <div class="blog-follow">
+-          <a v-if="mediumProfileUrl" :href="mediumProfileUrl" target="_blank" rel="noopener noreferrer" class="blog-follow-link">Follow on Medium<svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12l8-8m0 0H5m7 0v7"/></svg></a>
+-        </div>
+-      </div>
+-    </section>
++.nav-wordmark {
++  font-size: 18px;
++  font-weight: 700;
++  color: var(--text);
++  letter-spacing: -0.02em;
++}
+ 
+-    <!-- ====== CTA (dark) ====== -->
+-    <section class="cta-section">
+-      <div class="cta-grid-bg"></div>
+-      <div class="cta-inner">
+-        <h2 class="cta-h2">What needs to be true next<span class="cta-blink">?</span></h2>
+-        <p class="cta-sub">A document drafted, a license filed, a filing renewed, a legal question answered — describe the outcome and let the platform handle the rest.</p>
+-        <NuxtLink to="/auth/signup" class="cta-btn">Start a Matter<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 3l5 5-5 5"/></svg></NuxtLink>
+-        <p class="cta-queue-note">Self-service or expert review. One company profile. Every jurisdiction.</p>
+-      </div>
+-    </section>
++.nav-links {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  flex: 1;
++  justify-content: center;
++}
+ 
+-    </main>
+-
+-
+-    <!-- ====== NEWSLETTER ====== -->
+-    <section class="newsletter-section">
+-      <div class="newsletter-inner">
+-        <h2 class="newsletter-title">Regulatory updates in your inbox</h2>
+-        <p class="newsletter-sub">Enforcement alerts, new license types, fee changes, and regulatory intelligence — free headlines, no spam.</p>
+-        <form class="newsletter-form" @submit.prevent="subscribeNewsletter">
+-          <input
+-            v-model="newsletterEmail"
+-            type="email"
+-            required
+-            placeholder="you@company.com"
+-            class="newsletter-input"
+-            :disabled="newsletterLoading"
+-          />
+-          <button type="submit" class="newsletter-btn" :disabled="newsletterLoading">
+-            {{ newsletterLoading ? 'Subscribing…' : 'Subscribe' }}
+-          </button>
+-        </form>
+-        <p v-if="newsletterMsg" class="newsletter-msg">{{ newsletterMsg }}</p>
+-      </div>
+-    </section>
++.nav-link {
++  text-decoration: none;
++  color: var(--text-secondary);
++  font-size: 14px;
++  font-weight: 500;
++  padding: 6px 14px;
++  border-radius: 6px;
++  transition: color 0.2s, background 0.2s;
++}
+ 
+-    <!-- ====== FOOTER ====== -->
+-    <footer class="site-footer">
+-      <div class="footer-inner">
+-        <div class="footer-disclaimer">
+-          Apparently, Inc. is not a law firm. Nothing on this site constitutes legal advice or creates an attorney-client relationship. Attorney services, where applicable, are provided by affiliated licensed attorneys under separate engagement agreements. Regulatory filing outcomes are not guaranteed. Compliance API outputs and newsletter content are informational only. Service availability varies by jurisdiction.
+-        </div>
+-        <div class="footer-bottom">
+-          <div class="footer-left">
+-            <BrandGlyph :size="18" class="brand-mark" />
+-            <span>&copy; {{ new Date().getFullYear() }} Apparently</span>
+-          </div>
+-          <div class="footer-links">
+-            <NuxtLink to="/privacy">Privacy</NuxtLink>
+-            <NuxtLink to="/terms">Terms</NuxtLink>
+-            <a href="mailto:team@apparently.cc">Contact</a>
+-          </div>
+-        </div>
+-      </div>
+-    </footer>
+-  </div>
+-</template>
++.nav-link:hover {
++  color: var(--text);
++  background: rgba(255, 255, 255, 0.05);
++}
+ 
+-<script setup lang="ts">
+-definePageMeta({ layout: false })
++.nav-actions {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  flex-shrink: 0;
++}
+ 
+-useHead({
+-  title: 'Apparently — Self-Service Legal Documents, Licenses & Regulatory Filings',
+-  meta: [
+-    { name: 'description', content: 'Draft legal documents and complete licenses, applications, permits, registrations, and recurring filings with CADE adversarial legal intelligence, verified sources, and expert review when needed. Gaming, cannabis, healthcare, fintech, real estate, and startups.' },
+-    { name: 'keywords', content: 'legal documents, regulatory filings, licensing platform, CADE legal AI, adversarial legal intelligence, gaming license, cannabis license, healthcare license, fintech compliance, real estate license, startup formation, compliance as a service, legal opinion, regulatory compliance, multi-jurisdiction filing' },
+-    { property: 'og:title', content: 'Apparently — Move legal work from question to done' },
+-    { property: 'og:description', content: 'Self-service legal documents and regulatory filings across gaming, cannabis, healthcare, fintech, real estate, and startups. Powered by CADE adversarial legal intelligence.' },
+-    { property: 'og:url', content: 'https://apparently.cc' },
+-    { property: 'og:image', content: 'https://apparently.cc/A.png' },
+-    { property: 'og:type', content: 'website' },
+-    { property: 'og:site_name', content: 'Apparently' },
+-    { name: 'twitter:card', content: 'summary_large_image' },
+-    { name: 'twitter:title', content: 'Apparently — Move legal work from question to done' },
+-    { name: 'twitter:description', content: 'Self-service legal documents and regulatory filings. CADE adversarial legal intelligence. 50+ jurisdictions, 6 industry verticals.' },
+-    { name: 'twitter:image', content: 'https://apparently.cc/A.png' },
+-    { name: 'robots', content: 'index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1' },
+-  ],
+-  link: [{ rel: 'canonical', href: 'https://apparently.cc' }],
+-  script: [
+-    {
+-      type: 'application/ld+json',
+-      innerHTML: JSON.stringify({
+-        '@context': 'https://schema.org',
+-        '@type': ['Organization', 'ProfessionalService'],
+-        '@id': 'https://apparently.cc/#organization',
+-        name: 'Apparently',
+-        url: 'https://apparently.cc',
+-        description: 'Legal documents, licensing, and regulatory compliance platform powered by CADE adversarial legal intelligence. Serves gaming, cannabis, healthcare, fintech, real estate, and startup verticals across all US jurisdictions.',
+-        logo: { '@type': 'ImageObject', url: 'https://apparently.cc/favicon.png' },
+-        priceRange: '$299–$15,000/mo',
+-        areaServed: { '@type': 'Country', name: 'United States' },
+-        knowsAbout: [
+-          'Legal document drafting with adversarial AI review',
+-          'Regulatory licensing and filing across 50+ jurisdictions',
+-          'Gaming supplier licensing and NFA/CFTC registration',
+-          'Cannabis and hemp licensing across state programs',
+-          'Healthcare licensing — telehealth, DEA, state medical boards',
+-          'Fintech compliance — money transmission, lending, securities',
+-          'Real estate licensing — broker, agent, appraiser, property manager',
+-          'Startup formation and corporate compliance',
+-          'CADE — Consensus & Adversarial Determination Engine',
+-          'Compliance-as-a-Service subscriptions',
+-          'Contests and sweepstakes compliance',
+-          'Company formation for regulated industries',
+-          'Partner and sponsor matching',
+-        ],
+-        sameAs: [],
+-      }),
+-    },
+-    {
+-      type: 'application/ld+json',
+-      innerHTML: JSON.stringify({
+-        '@context': 'https://schema.org',
+-        '@type': 'WebSite',
+-        name: 'Apparently',
+-        url: 'https://apparently.cc',
+-        description: 'Legal documents, licensing, and regulatory compliance platform.',
+-        potentialAction: {
+-          '@type': 'SearchAction',
+-          target: { '@type': 'EntryPoint', urlTemplate: 'https://apparently.cc/blog?q={search_term_string}' },
+-          'query-input': 'required name=search_term_string',
+-        },
+-      }),
+-    },
+-  ],
+-})
++.btn-login {
++  text-decoration: none;
++  color: var(--text-secondary);
++  font-size: 14px;
++  font-weight: 500;
++  padding: 8px 16px;
++  border-radius: var(--radius-sm);
++  transition: color 0.2s;
++}
+ 
+-// ---- Demo Dashboard Data ----
+-const demoStatsTarget = [
+-  { label: 'Active Matters', value: 7, display: '7', trend: '+2 this month', trendClass: 'trend-up', bar: 70, barClass: 'bar-emerald' },
+-  { label: 'Jurisdictions', value: 12, display: '12', trend: '3 verticals', trendClass: 'trend-neutral', bar: null, barClass: '' },
+-  { label: 'Next Deadline', value: 14, display: '14d', trend: 'MTL Renewal — Aug 8', trendClass: 'trend-neutral', bar: null, barClass: '' },
+-  { label: 'Action Needed', value: 0, display: '0', trend: 'All handled by us', trendClass: 'trend-up', bar: null, barClass: '' },
+-]
+-const demoStats = ref(demoStatsTarget.map(s => ({ ...s, display: '0', bar: s.bar ? 0 : null })))
+-
+-const demoFilingsData = [
+-  { name: 'Cannabis Cultivation License', ref: 'CA-DCC-2026-0412', jurisdiction: 'CA DCC', status: 'Approved', pct: 100, targetPct: 100, timeline: 'Completed Jun 18', assignee: 'Sarah K.', assigneeInit: 'SK', iconClass: 'icon-emerald', barClass: 'bar-emerald', statusClass: 'status-emerald', dotClass: 'sdot-emerald', icon: '<svg width="16" height="16" fill="none" stroke="#059669" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>', flash: false },
+-  { name: 'NJ Money Transmitter License', ref: 'NJ-DOBI-2026-1893', jurisdiction: 'NJ DOBI', status: 'Under Review', pct: 72, targetPct: 80, timeline: 'Filed May 15 · Est. 8 wk', assignee: 'James R.', assigneeInit: 'JR', iconClass: 'icon-blue', barClass: 'bar-blue', statusClass: 'status-blue', dotClass: 'sdot-blue', icon: '<svg width="16" height="16" fill="none" stroke="#2563eb" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>', flash: false },
+-  { name: 'Telehealth Practice Registration', ref: 'TX-TMB-2026-0093', jurisdiction: 'TX TMB', status: 'Filing', pct: 48, targetPct: 60, timeline: 'Assembly complete · Filing this week', assignee: 'Sarah K.', assigneeInit: 'SK', iconClass: 'icon-amber', barClass: 'bar-amber', statusClass: 'status-amber', dotClass: 'sdot-amber', icon: '<svg width="16" height="16" fill="none" stroke="#d97706" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>', flash: false },
+-  { name: 'Real Estate Broker License', ref: 'NY-DOS-2026-2741', jurisdiction: 'NY DOS', status: 'Preparing', pct: 22, targetPct: 30, timeline: 'Doc collection in progress', assignee: 'Unassigned', assigneeInit: '—', iconClass: 'icon-gray', barClass: 'bar-gray', statusClass: 'status-gray', dotClass: 'sdot-gray', icon: '<svg width="16" height="16" fill="none" stroke="#6b7280" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>', flash: false },
+-  { name: 'DE Series LLC Formation', ref: 'DE-SOS-2026-0019', jurisdiction: 'DE SOS', status: 'Intake', pct: 5, targetPct: 15, timeline: 'Starting next week', assignee: 'James R.', assigneeInit: 'JR', iconClass: 'icon-purple', barClass: 'bar-purple', statusClass: 'status-purple', dotClass: 'sdot-purple', icon: '<svg width="16" height="16" fill="none" stroke="#8b5cf6" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/></svg>', flash: false },
+-]
+-const demoFilings = ref(demoFilingsData.map(f => ({ ...f, pct: 0 })))
++.btn-login:hover {
++  color: var(--text);
++}
+ 
+-const demoActions = [
+-  { text: 'Upload audited financials for NJ MTL application', dotClass: 'dot-amber', urgency: 'This week', urgencyClass: 'urgency-med' },
+-  { text: 'Review CADE-drafted telehealth compliance memo', dotClass: 'dot-blue', urgency: 'Optional', urgencyClass: 'urgency-low' },
+-]
++.btn-signup {
++  text-decoration: none;
++  color: var(--bg);
++  background: var(--text);
++  font-size: 14px;
++  font-weight: 600;
++  padding: 8px 18px;
++  border-radius: var(--radius-sm);
++  transition: opacity 0.2s;
++}
+ 
+-const demoDocs = [
+-  {
+-    name: '50-State Cannabis Legality Analysis',
+-    sub: 'Hemp-derived products · All 50 states + DC',
+-    status: 'Drafting',
+-    statusClass: 'status-purple',
+-    dotClass: 'sdot-purple',
+-    barClass: 'bar-purple',
+-    pct: 55,
+-    tags: ['CADE Review', 'Reasoned Standard', 'Est. 4 days'],
+-  },
+-  {
+-    name: 'Fintech Partnership Agreement Review',
+-    sub: 'Lending platform · Multi-state compliance',
+-    status: 'Under Review',
+-    statusClass: 'status-blue',
+-    dotClass: 'sdot-blue',
+-    barClass: 'bar-blue',
+-    pct: 82,
+-    tags: ['Redline Draft', 'CFPB Alignment'],
+-  },
+-  {
+-    name: 'Official Rules — Summer Sweepstakes',
+-    sub: 'Nationwide · $25K prize pool · AMOE',
+-    status: 'Active',
+-    statusClass: 'status-emerald',
+-    dotClass: 'sdot-emerald',
+-    barClass: 'bar-emerald',
+-    pct: 95,
+-    tags: ['Rules Drafted', 'NY Filed', 'FL Filed'],
+-  },
+-]
++.btn-signup:hover {
++  opacity: 0.9;
++}
+ 
+-const demoMonitor = [
+-  {
+-    name: 'NJ MTL Annual Renewal',
+-    sub: 'Money Transmitter · Due Aug 8',
+-    deadline: '14d',
+-    deadlineClass: 'demo-deadline-warn',
+-    tags: ['Auto-reminder set', 'Draft prepared'],
+-  },
+-  {
+-    name: 'CA Cannabis License Renewal',
+-    sub: 'Cultivation · Due Nov 30',
+-    deadline: '129d',
+-    deadlineClass: 'demo-deadline-ok',
+-    tags: ['Renewal queued', 'Docs on file'],
+-  },
+-  {
+-    name: 'TX Medical Board Registration',
+-    sub: 'Annual renewal · Due Jan 31',
+-    deadline: 'Filed early',
+-    deadlineClass: 'demo-deadline-done',
+-    tags: ['Submitted', 'Confirmed'],
+-  },
+-]
++.mobile-toggle {
++  display: none;
++  background: none;
++  border: none;
++  cursor: pointer;
++  padding: 8px;
++  flex-direction: column;
++  gap: 5px;
++}
+ 
+-const demoVerticals = [
+-  {
+-    name: 'Gaming & Prediction Markets',
+-    sub: '4 active filings · NV, NJ, PA, MI',
+-    status: '4 States',
+-    statusClass: 'status-emerald',
+-    dotClass: 'sdot-emerald',
+-    tags: ['Supplier Licenses', 'NFA Registration', 'Operator Matching'],
+-  },
+-  {
+-    name: 'Cannabis & Hemp',
+-    sub: '2 active filings · CA, CO',
+-    status: '2 States',
+-    statusClass: 'status-purple',
+-    dotClass: 'sdot-purple',
+-    tags: ['Cultivation', 'Distribution', 'Testing Lab'],
+-  },
+-  {
+-    name: 'Fintech & Payments',
+-    sub: '3 active filings · NJ, NY, TX',
+-    status: '3 States',
+-    statusClass: 'status-blue',
+-    dotClass: 'sdot-blue',
+-    tags: ['MTL', 'Lending', 'Securities'],
+-  },
+-]
++.mobile-toggle span {
++  display: block;
++  width: 20px;
++  height: 2px;
++  background: var(--text-secondary);
++  border-radius: 2px;
++  transition: transform 0.3s, opacity 0.3s;
++}
+ 
+-const demoMatches = [
+-  {
+-    name: 'Series A Healthcare VC Fund',
+-    sub: 'Digital health · Telehealth infrastructure',
+-    status: 'Intro Sent',
+-    statusClass: 'status-blue',
+-    dotClass: 'sdot-blue',
+-    barClass: 'bar-blue',
+-    pct: 60,
+-    tags: ['Investor Match', 'Due diligence complete'],
+-  },
+-  {
+-    name: 'Licensed Gaming Operator — NV',
+-    sub: 'Tier 1 Operator · NV · MI · PA',
+-    status: 'Qualifying',
+-    statusClass: 'status-purple',
+-    dotClass: 'sdot-purple',
+-    barClass: 'bar-purple',
+-    pct: 25,
+-    tags: ['Sponsor Match', 'Profile review'],
+-  },
+-]
++.mobile-toggle.open span:nth-child(1) {
++  transform: translateY(7px) rotate(45deg);
++}
+ 
+-const activityPool = [
+-  { time: 'Just now', text: 'CA DCC cultivation license approved' },
+-  { time: '2h ago', text: 'NJ DOBI supplemental response filed by your team' },
+-  { time: '3d ago', text: 'TX telehealth registration assembly completed' },
+-  { time: '1w ago', text: 'NY real estate broker engagement created' },
+-  { time: 'Just now', text: 'CADE cannabis analysis: 28 of 51 jurisdictions complete' },
+-  { time: 'Just now', text: 'Fintech partnership review — adversarial pass complete' },
+-  { time: 'Just now', text: 'DE series LLC formation documents drafted' },
+-  { time: 'Just now', text: 'Summer sweepstakes — FL registration confirmed' },
+-  { time: 'Just now', text: 'Healthcare investor intro sent to Series A fund' },
+-  { time: 'Just now', text: 'CFPB lending disclosure rule — compliance alert issued' },
+-  { time: 'Just now', text: 'NJ MTL renewal queued — 14 days out' },
+-]
+-const demoActivity = ref(activityPool.slice(0, 4).map(a => ({ ...a, isNew: false })))
+-const bellPing = ref(false)
+-const activeFilingIdx = ref(-1)
+-
+-let demoTimers: ReturnType<typeof setInterval>[] = []
+-
+-function animateDemoOnMount() {
+-  const startTime = Date.now()
+-  const dur = 1400
+-  function tick() {
+-    const t = Math.min(1, (Date.now() - startTime) / dur)
+-    const ease = t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
+-    demoStats.value = demoStatsTarget.map((s, i) => {
+-      const cur = Math.round(ease * s.value)
+-      const display = s.label === 'Next Deadline' ? `${cur}d` : `${cur}`
+-      return { ...demoStats.value[i]!, display, bar: s.bar ? Math.round(ease * s.bar) : null }
+-    }) as typeof demoStats.value
+-    demoFilings.value = demoFilings.value.map((f, i) => ({
+-      ...f,
+-      pct: Math.round(ease * demoFilingsData[i]!.pct),
+-    }))
+-    if (t < 1) requestAnimationFrame(tick)
+-  }
+-  requestAnimationFrame(tick)
+-
+-  let actIdx = 4
+-  demoTimers.push(setInterval(() => {
+-    const idx = demoFilings.value.findIndex(f => f.pct < f.targetPct)
+-    if (idx >= 0) {
+-      activeFilingIdx.value = idx
+-      const f = demoFilings.value[idx]!
+-      f.pct = Math.min(f.targetPct, f.pct + (1 + Math.floor(Math.random() * 2)))
+-      f.flash = true
+-      setTimeout(() => {
+-        f.flash = false
+-        activeFilingIdx.value = -1
+-      }, 1200)
+-    }
+-  }, 2200))
+-
+-  demoTimers.push(setInterval(() => {
+-    const item = activityPool[actIdx % activityPool.length]
+-    actIdx++
+-    if (!item) return
+-    demoActivity.value = [
+-      { ...item, time: 'Just now', isNew: true as boolean, text: item.text ?? '' },
+-      ...demoActivity.value.slice(0, 3).map(a => ({ ...a, isNew: false })),
+-    ]
+-    bellPing.value = true
+-    setTimeout(() => { bellPing.value = false }, 600)
+-  }, 3800))
+-}
+-
+-// ---- Ticker items (cross-vertical) ----
+-const tickerItems = [
+-  'Gaming Suppliers', 'Cannabis Cultivators', 'Telehealth Providers', 'Money Transmitters',
+-  'Real Estate Brokers', 'Startup Formation', 'Lending Platforms', 'Payment Gateways',
+-  'Dispensaries', 'Medical Devices', 'Securities Advisers', 'Insurance Agents',
+-  'Prediction Markets', 'Hemp Products', 'Digital Health', 'Mortgage Lenders',
+-  'Property Managers', 'SaaS Compliance', 'FinCEN Registration', 'DEA Licensing',
+-]
+-const tickerItemsRow2 = [
+-  'State Filings', 'Federal Registration', 'Renewals', 'Amendments',
+-  'Background Checks', 'Surety Bonds', 'Compliance Programs', 'Legal Opinions',
+-  'Official Rules', 'Cap Table Prep', 'Entity Formation', 'Operating Agreements',
+-  'Disclosure Docs', 'Regulatory Intel', 'Enforcement Alerts', 'Deficiency Responses',
+-  'Annual Reports', 'Change of Control', 'Multi-State Filing', 'Continuing Education',
+-]
++.mobile-toggle.open span:nth-child(2) {
++  opacity: 0;
++}
+ 
+-// ---- Persona cards (6 verticals) ----
+-const personas = [
+-  {
+-    title: 'Gaming & Prediction Markets',
+-    description: 'Supplier licenses across 60+ state, tribal, and federal jurisdictions. NFA/CFTC registration. Operator sponsor matching. iGaming compliance.',
+-    iconClass: 'picon-emerald',
+-    icon: '<svg width="22" height="22" fill="none" stroke="#34d399" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>',
+-    tags: ['60+ Jurisdictions', 'NFA/CFTC', 'Tribal Licensing', 'Operator Matching'],
+-  },
+-  {
+-    title: 'Cannabis & Hemp',
+-    description: 'Cultivation, manufacturing, distribution, retail, and testing lab licenses. Hemp-derived product compliance. Multi-state expansion.',
+-    iconClass: 'picon-green',
+-    icon: '<svg width="22" height="22" fill="none" stroke="#22c55e" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>',
+-    tags: ['Cultivation', 'Manufacturing', 'Distribution', 'Testing Labs'],
+-  },
+-  {
+-    title: 'Healthcare',
+-    description: 'Medical practice licensing, telehealth registration, DEA scheduling, HIPAA compliance, facility accreditation, and continuing education tracking.',
+-    iconClass: 'picon-blue',
+-    icon: '<svg width="22" height="22" fill="none" stroke="#60a5fa" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/></svg>',
+-    tags: ['Medical Boards', 'Telehealth', 'DEA', 'HIPAA'],
+-  },
+-  {
+-    title: 'Fintech & Payments',
+-    description: 'Money transmitter licenses, lending and mortgage licensing, securities registration, payment institution compliance, and digital asset regulation.',
+-    iconClass: 'picon-purple',
+-    icon: '<svg width="22" height="22" fill="none" stroke="#a78bfa" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>',
+-    tags: ['MTL / MSB', 'NMLS', 'Securities', 'Digital Assets'],
+-  },
+-  {
+-    title: 'Real Estate',
+-    description: 'Broker, agent, appraiser, and property manager licensing. RESPA/TILA compliance. Multi-state expansion for brokerages and proptech platforms.',
+-    iconClass: 'picon-amber',
+-    icon: '<svg width="22" height="22" fill="none" stroke="#fbbf24" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>',
+-    tags: ['Broker License', 'Appraiser', 'Property Mgr', 'RESPA/TILA'],
+-  },
+-  {
+-    title: 'Startups & Corporate',
+-    description: 'Company formation, corporate registrations, governance documents, cap table structuring, annual reports, and ongoing compliance for new and growing businesses.',
+-    iconClass: 'picon-rose',
+-    icon: '<svg width="22" height="22" fill="none" stroke="#fb7185" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>',
+-    tags: ['Formation', 'Governance', 'Cap Table', 'Annual Filings'],
+-  },
+-]
++.mobile-toggle.open span:nth-child(3) {
++  transform: translateY(-7px) rotate(-45deg);
++}
+ 
+-// ---- Process steps ----
+-const steps = [
+-  { title: 'Describe the outcome', desc: 'Choose the document, license, filing, or legal question you need resolved. Upload any supporting materials.', chips: ['Any Work Product', 'Any Jurisdiction', 'Any Vertical'], who: 'you', color: '#34d399' },
+-  { title: 'Research & preparation', desc: 'CADE researches authorities and requirements. We assemble applications, collect stakeholder disclosures, and prepare every filing.', chips: ['CADE Intelligence', 'Authority Mapping', 'Gap Analysis'], who: 'us', color: '#60a5fa' },
+-  { title: 'Draft & file', desc: 'Legal documents are drafted with adversarial review. Applications are filed through required portals and channels across every jurisdiction.', chips: ['Adversarial Review', 'Multi-Jurisdiction', 'Portal Submission'], who: 'us', color: '#a78bfa' },
+-  { title: 'Monitor & renew', desc: 'Renewals, amendments, regulatory changes, and ongoing compliance — tracked and managed on autopilot with signed proof packs.', chips: ['Auto-Renewals', 'Regulatory Alerts', 'Proof Packs'], who: 'us', color: '#fbbf24' },
+-]
++/* ─── Hero ─── */
++.hero {
++  position: relative;
++  padding: 180px 0 100px;
++  text-align: center;
++  overflow: hidden;
++}
+ 
+-// Auto-advancing step animation
+-const activeStep = ref(0)
+-let stepTimer: ReturnType<typeof setInterval> | null = null
+-function resetTimer() {
+-  if (stepTimer) clearInterval(stepTimer)
+-  stepTimer = setInterval(() => { activeStep.value = (activeStep.value + 1) % 4 }, 3500)
+-}
+-onMounted(() => { resetTimer(); animateDemoOnMount() })
+-onUnmounted(() => { if (stepTimer) clearInterval(stepTimer); demoTimers.forEach(t => clearInterval(t)) })
+-
+-const checkItems = [
+-  'Real-time status per jurisdiction',
+-  'Plain-language regulatory updates',
+-  'Deadline tracking on auto-pilot',
+-  'Deficiency responses handled for you',
+-]
++.hero-glow {
++  position: absolute;
++  top: -200px;
++  left: 50%;
++  transform: translateX(-50%);
++  width: 800px;
++  height: 600px;
++  background: radial-gradient(ellipse, rgba(34, 197, 94, 0.08) 0%, transparent 70%);
++  pointer-events: none;
++}
+ 
+-const allNotifs = [
+-  { id: 1, text: 'CA DCC cultivation license approved', time: 'Just now', dotClass: 'dot-emerald', isNew: true },
+-  { id: 2, text: 'NJ money transmitter application filed — ref #NJ-2026-1893', time: '2 hours ago', dotClass: 'dot-blue', isNew: false },
+-  { id: 3, text: 'TX telehealth registration assembly complete', time: 'Yesterday', dotClass: 'dot-amber', isNew: false },
+-  { id: 4, text: 'CADE cannabis analysis — adversarial pass complete', time: '3 days ago', dotClass: 'dot-gray', isNew: false },
+-  { id: 5, text: 'NY real estate broker checklist generated', time: '1 week ago', dotClass: 'dot-purple', isNew: false },
+-  { id: 6, text: 'Fintech partnership agreement — redline delivered', time: 'Just now', dotClass: 'dot-emerald', isNew: true },
+-  { id: 7, text: 'Summer sweepstakes official rules filed in FL', time: '1 hour ago', dotClass: 'dot-blue', isNew: false },
+-  { id: 8, text: 'DE series LLC formation documents signed', time: 'Just now', dotClass: 'dot-emerald', isNew: true },
+-  { id: 9, text: 'NJ MTL renewal reminder — 14 days remaining', time: '2 hours ago', dotClass: 'dot-amber', isNew: false },
+-  { id: 10, text: 'Healthcare investor intro confirmed — meeting set', time: 'Just now', dotClass: 'dot-emerald', isNew: true },
+-  { id: 11, text: 'CFPB lending disclosure — compliance alert issued', time: '4 hours ago', dotClass: 'dot-purple', isNew: false },
+-  { id: 12, text: 'CO cannabis distribution license renewal submitted', time: 'Just now', dotClass: 'dot-blue', isNew: true },
+-]
+-const notifIndex = ref(0)
+-const visibleNotifs = computed(() => {
+-  const start = notifIndex.value % allNotifs.length
+-  const items = []
+-  for (let i = 0; i < 5; i++) {
+-    const n = allNotifs[(start + i) % allNotifs.length]!
+-    items.push({ ...n, isNew: i === 0 })
+-  }
+-  return items
+-})
+-let notifTimer: ReturnType<typeof setInterval> | null = null
+-onMounted(() => {
+-  notifTimer = setInterval(() => { notifIndex.value++ }, 4000)
+-})
+-onUnmounted(() => { if (notifTimer) clearInterval(notifTimer) })
+-
+-// ---- Vertical cards ----
+-const verticalCards = [
+-  { name: 'Gaming & Prediction Markets', short: 'Gaming', to: '/gaming', desc: 'Supplier licenses, NFA/CFTC registration, operator matching, and prediction market compliance across 60+ jurisdictions.', tags: ['Supplier Licenses', 'NFA/CFTC', 'Operator Matching'], iconClass: 'vc-emerald', icon: '<svg width="20" height="20" fill="none" stroke="#34d399" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>' },
+-  { name: 'Cannabis & Hemp', short: 'Cannabis', to: '/cannabis', desc: 'Cultivation, manufacturing, distribution, retail, and testing lab licenses across every regulated state.', tags: ['Cultivation', 'Distribution', 'Testing Labs'], iconClass: 'vc-green', icon: '<svg width="20" height="20" fill="none" stroke="#22c55e" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>' },
+-  { name: 'Healthcare', short: 'Healthcare', to: '/healthcare', desc: 'Medical practice licensing, telehealth, DEA scheduling, HIPAA compliance, and facility accreditation.', tags: ['Medical Boards', 'Telehealth', 'DEA'], iconClass: 'vc-blue', icon: '<svg width="20" height="20" fill="none" stroke="#60a5fa" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/></svg>' },
+-  { name: 'Fintech & Payments', short: 'Fintech', to: '/fintech', desc: 'Money transmitter, lending, securities, and digital asset licensing and compliance across all US states.', tags: ['MTL / MSB', 'NMLS', 'Securities'], iconClass: 'vc-purple', icon: '<svg width="20" height="20" fill="none" stroke="#a78bfa" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>' },
+-  { name: 'Real Estate', short: 'Real Estate', to: '/real-estate', desc: 'Broker, agent, appraiser, and property manager licensing. RESPA/TILA compliance and multi-state expansion.', tags: ['Broker License', 'Appraiser', 'RESPA/TILA'], iconClass: 'vc-amber', icon: '<svg width="20" height="20" fill="none" stroke="#fbbf24" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"/></svg>' },
+-  { name: 'Startups & Corporate', short: 'Startups', to: '/startups', desc: 'Company formation, governance docs, cap table structuring, annual reports, and ongoing corporate compliance.', tags: ['Formation', 'Governance', 'Cap Table'], iconClass: 'vc-rose', icon: '<svg width="20" height="20" fill="none" stroke="#fb7185" stroke-width="1.8" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>' },
+-]
++.hero-content {
++  position: relative;
++  z-index: 1;
++}
+ 
+-// ---- CADE Pipeline ----
+-const cadeStages = [
+-  { n: '01', t: 'Decompose', title: 'Every clause is its own trial.', text: 'Your document is broken into atomic contestable units — each clause, each defined term, each legal conclusion — and each is analyzed independently by the full panel.' },
+-  { n: '02', t: 'Assemble', title: 'History\'s greatest legal minds are seated.', text: 'Every relevant legal authority weighs in. A diversity optimizer pulls the sharpest disagreements into deep deliberation, guaranteeing every position has its strongest opponent seated on the panel.' },
+-  { n: '03', t: 'Councils', title: 'Specialists are called for technical questions.', text: 'When a legal question hinges on something technical — medical science, financial engineering, real estate valuation — the panel convenes a recursive council of domain experts so the law rests on real, tested facts.' },
+-  { n: '04', t: 'Weigh', title: 'Outdated law is filtered before debate begins.', text: 'The Anachronism Sentinel identifies overruled cases, superseded statutes, and withdrawn guidance — filtering them out before they can pollute the analysis. Only current, live authority proceeds.' },
+-  { n: '05', t: 'Debate', title: 'Blinded rounds, harsh and cited.', text: 'Minds commit positions before seeing a lead opinion, then argue across rounds — each seeing only the prior round\'s strongest counterarguments. No anchoring, no deference — only grounded persuasion with citations.' },
+-  { n: '06', t: 'Factions', title: 'Schools of thought emerge and evolve.', text: 'Arguments cluster into factions that merge into syntheses. The winning position can be one no single mind held at the start — an evolved, stronger answer that emerges from genuine adversarial pressure.' },
+-  { n: '07', t: 'Red team', title: 'Opposing counsel attacks with full firepower.', text: 'A dedicated red team — simulating opposing counsel and skeptical regulators — attacks every conclusion. Every surviving hit forces a revision and re-run. Nothing ships until all material attacks are rebutted.' },
+-  { n: '08', t: 'Proof', title: 'Optimized, sealed, and signed.', text: 'The final output is optimized for whoever will read it — a judge, a regulator, an investor. A signed proof pack and Optimality Certificate certify it\'s the strongest assemblable answer. You own the proof.' },
+-]
++.hero-headline {
++  font-size: clamp(40px, 6vw, 72px);
++  font-weight: 800;
++  letter-spacing: -0.03em;
++  line-height: 1.05;
++  margin-bottom: 20px;
++  background: linear-gradient(180deg, #fff 40%, rgba(255, 255, 255, 0.6) 100%);
++  -webkit-background-clip: text;
++  -webkit-text-fill-color: transparent;
++  background-clip: text;
++}
+ 
+-const cadeSvgs = [
+-  // 01 decompose
+-  '<svg viewBox="0 0 760 360"><rect x="320" y="70" width="120" height="220" rx="8" fill="none" stroke="#c9a24a" stroke-width="1.5"/>' + Array.from({length:6}).map((_,i)=>`<rect x="338" y="${92+i*30}" width="84" height="8" rx="3" fill="#7b6cff" opacity="${.3+i*.1}"><animate attributeName="x" values="338;${520+i*10};338" dur="4s" begin="${i*.2}s" repeatCount="indefinite"/></rect>`).join('') + '</svg>',
+-  // 02 assemble
+-  '<svg viewBox="0 0 760 360">' + Array.from({length:28}).map((_,i)=>{const a=(i/28)*Math.PI*2-Math.PI/2;const x=380+Math.cos(a)*150,y=180+Math.sin(a)*150;return `<circle class="node" cx="${x}" cy="${y}" r="4" fill="#7b6cff" opacity=".85"><animate attributeName="r" values="4;6;4" dur="${2+i%3}s" repeatCount="indefinite"/></circle>`;}).join('') + Array.from({length:10}).map((_,i)=>{const a=(i/10)*Math.PI*2-Math.PI/2;const x=380+Math.cos(a)*80,y=180+Math.sin(a)*80;return `<circle class="node lead" cx="${x}" cy="${y}" r="4" fill="#c9a24a"><animate attributeName="r" values="4;6;4" dur="${2+i%3}s" repeatCount="indefinite"/></circle>`;}).join('') + '<circle cx="380" cy="180" r="30" fill="none" stroke="#c9a24a" stroke-width="1.5"/><text x="380" y="185" text-anchor="middle" fill="#9aa0c8" font-size="11">panel</text></svg>',
+-  // 03 councils
+-  '<svg viewBox="0 0 760 360"><circle cx="260" cy="180" r="10" fill="#c9a24a"/>' + Array.from({length:8}).map((_,i)=>{const a=(i/8)*Math.PI*2-Math.PI/2;const x=540+Math.cos(a)*70,y=160+Math.sin(a)*70;return `<circle cx="${x}" cy="${y}" r="4" fill="#7b6cff" opacity=".85"><animate attributeName="r" values="4;6;4" dur="${2+i%3}s" repeatCount="indefinite"/></circle>`;}).join('') + '<line x1="270" y1="180" x2="470" y2="160" stroke="#262a4d" stroke-width="1"/><text x="540" y="250" text-anchor="middle" fill="#9aa0c8" font-size="11">recursive expert council</text></svg>',
+-  // 04 weigh
+-  '<svg viewBox="0 0 760 360">' + Array.from({length:18}).map((_,i)=>{const h=20+Math.abs(Math.sin(i*.6))*180;return `<rect x="${110+i*32}" y="${300-h}" width="22" height="${h}" rx="3" fill="${i>13?'#ff6b6b':'#7b6cff'}" opacity=".7"><animate attributeName="height" values="0;${h}" dur="1.2s" begin="${i*.05}s" fill="freeze"/><animate attributeName="y" values="300;${300-h}" dur="1.2s" begin="${i*.05}s" fill="freeze"/></rect>`;}).join('') + '<line x1="90" y1="300" x2="690" y2="300" stroke="#262a4d"/></svg>',
+-  // 05 debate
+-  '<svg viewBox="0 0 760 360">' + Array.from({length:7}).map((_,i)=>{const a=(i/7)*Math.PI*2-Math.PI/2;const x=220+Math.cos(a)*60,y=180+Math.sin(a)*60;return `<circle cx="${x}" cy="${y}" r="4" fill="#7b6cff" opacity=".85"/>`;}).join('') + Array.from({length:7}).map((_,i)=>{const a=(i/7)*Math.PI*2-Math.PI/2;const x=540+Math.cos(a)*60,y=180+Math.sin(a)*60;return `<circle cx="${x}" cy="${y}" r="4" fill="#7b6cff" opacity=".85"/>`;}).join('') + Array.from({length:4}).map((_,i)=>`<line x1="290" y1="${150+i*20}" x2="470" y2="${150+i*20}" stroke="#7b6cff" stroke-width="1.5" opacity=".5"><animate attributeName="opacity" values="0;.8;0" dur="1.6s" begin="${i*.3}s" repeatCount="indefinite"/></line>`).join('') + '</svg>',
+-  // 06 factions
+-  '<svg viewBox="0 0 760 360"><ellipse cx="230" cy="170" rx="70" ry="55" fill="#7b6cff" opacity=".18"/><ellipse cx="360" cy="200" rx="70" ry="55" fill="#7b6cff" opacity=".18"><animate attributeName="cx" values="360;300" dur="3s" fill="freeze"/></ellipse><ellipse cx="540" cy="160" rx="80" ry="60" fill="#c9a24a" opacity=".22"/>' + Array.from({length:6}).map((_,i)=>{const a=(i/6)*Math.PI*2-Math.PI/2;const x=540+Math.cos(a)*40,y=160+Math.sin(a)*40;return `<circle cx="${x}" cy="${y}" r="4" fill="#c9a24a"/>`;}).join('') + '<text x="540" y="250" text-anchor="middle" fill="#c9a24a" font-size="11">evolved synthesis</text></svg>',
+-  // 07 red team
+-  '<svg viewBox="0 0 760 360">' + Array.from({length:12}).map((_,i)=>{const a=(i/12)*Math.PI*2-Math.PI/2;const x=400+Math.cos(a)*90,y=180+Math.sin(a)*90;return `<circle cx="${x}" cy="${y}" r="4" fill="#7b6cff" opacity=".85"/>`;}).join('') + '<polyline points="120,40 200,150 160,150 250,290" fill="none" stroke="#ff6b6b" stroke-width="3"><animate attributeName="opacity" values="1;0;1" dur="1s" repeatCount="indefinite"/></polyline><circle cx="400" cy="180" r="120" fill="none" stroke="#37d39a" stroke-width="1.5" stroke-dasharray="6 6"><animate attributeName="r" values="118;124;118" dur="2s" repeatCount="indefinite"/></circle><text x="400" y="320" text-anchor="middle" fill="#37d39a" font-size="11">all material hits rebutted</text></svg>',
+-  // 08 proof
+-  '<svg viewBox="0 0 760 360"><rect x="250" y="80" width="260" height="200" rx="14" fill="#13152e" stroke="#c9a24a" stroke-width="1.5"/><circle cx="380" cy="150" r="34" fill="none" stroke="#37d39a" stroke-width="3"/><path d="M364 150 l12 12 l22 -26" fill="none" stroke="#37d39a" stroke-width="4" stroke-linecap="round"/><text x="380" y="215" text-anchor="middle" fill="#9aa0c8" font-size="12">Optimality Certificate</text><text x="380" y="238" text-anchor="middle" fill="#c9a24a" font-size="11" font-family="monospace">ε &lt; 0.03 · signed ✓</text></svg>',
+-]
++.hero-sub {
++  font-size: clamp(16px, 2vw, 20px);
++  color: var(--text-secondary);
++  max-width: 580px;
++  margin: 0 auto 40px;
++  line-height: 1.6;
++}
+ 
+-const cadeMetrics = [
+-  { v: '1,000+', k: 'legal minds on every determination — every Justice in history' },
+-  { v: '10k+', k: 'adversarial challenges simulated per high-stakes output' },
+-  { v: 'ε < 0.03', k: 'bound on what the best excluded mind could change' },
+-  { v: '100%', k: 'of outputs ship with a signed, replayable proof pack' },
+-]
++.hero-ctas {
++  display: flex;
++  align-items: center;
++  justify-content: center;
++  gap: 16px;
++  flex-wrap: wrap;
++}
+ 
+-const cadeFeats = [
+-  { ic: '⚖️', h: 'Total coverage', p: 'Every Supreme Court Justice in history, sitting courts, appellate giants, and state high courts — plus cross-disciplinary specialists — opine on your work. No firm can seat that bench.' },
+-  { ic: '🥊', h: 'Paid to break it', p: 'A symmetric red team of opposing-counsel and regulator minds is rewarded only for landing a fatal hit. Nothing ships until their attacks are rebutted with citation.' },
+-  { ic: '🎯', h: 'Optimized for your reader', p: 'The output is adapted for whoever will actually read it — a specific judge, regulator, investor, or counterparty — without becoming fragile on review.' },
+-  { ic: '🔏', h: 'Provably optimal', p: 'The Optimality Certificate states — and cryptographically signs — that no stronger assemblable panel exists, within a measured bound. Hand it to any regulator, court, or counterparty.' },
+-]
++/* ─── Buttons ─── */
++.btn-primary {
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++  text-decoration: none;
++  background: var(--accent);
++  color: #000;
++  font-size: 15px;
++  font-weight: 600;
++  padding: 12px 28px;
++  border-radius: var(--radius-sm);
++  border: none;
++  cursor: pointer;
++  transition: background 0.2s, transform 0.15s;
++}
+ 
+-const cadeStep = ref(0)
+-let cadeTimer: ReturnType<typeof setInterval> | null = null
++.btn-primary:hover {
++  background: #1eab52;
++  transform: translateY(-1px);
++}
+ 
+-function cadeGoTo(idx: number) {
+-  if (cadeTimer) clearInterval(cadeTimer)
+-  cadeTimer = null
+-  cadeStep.value = idx
++.btn-secondary {
++  display: inline-flex;
++  align-items: center;
++  justify-content: center;
++  text-decoration: none;
++  background: transparent;
++  color: var(--text-secondary);
++  font-size: 15px;
++  font-weight: 500;
++  padding: 12px 28px;
++  border-radius: var(--radius-sm);
++  border: 1px solid var(--border-hover);
++  cursor: pointer;
++  transition: color 0.2s, border-color 0.2s;
+ }
+ 
+-function cadePlay() {
+-  if (cadeTimer) clearInterval(cadeTimer)
+-  cadeStep.value = 0
+-  cadeTimer = setInterval(() => {
+-    if (cadeStep.value >= cadeStages.length - 1) {
+-      if (cadeTimer) clearInterval(cadeTimer)
+-      cadeTimer = null
+-      return
+-    }
+-    cadeStep.value++
+-  }, 2600)
++.btn-secondary:hover {
++  color: var(--text);
++  border-color: rgba(255, 255, 255, 0.25);
+ }
+ 
+-// Auto-play CADE when scrolled into view
+-onMounted(() => {
+-  if (typeof window === 'undefined') return
+-  const el = document.querySelector('.cade-stage')
+-  if (!el) return
+-  const io = new IntersectionObserver(entries => {
+-    entries.forEach(entry => {
+-      if (entry.isIntersecting) { cadePlay(); io.disconnect() }
+-    })
+-  }, { threshold: 0.3 })
+-  io.observe(el)
+-})
+-onUnmounted(() => { if (cadeTimer) clearInterval(cadeTimer) })
+-
+-// ---- Jurisdictions (cross-vertical) ----
+-const jurExpanded = ref(false)
+-
+-const allJurisdictions = [
+-  // Federal
+-  { code: 'FED', label: 'Federal', body: 'FinCEN · SEC · CFTC · NFA · DEA · CMS · CFPB', tier: 'federal' },
+-  // Tier 1 (major multi-vertical markets)
+-  { code: 'CA', label: 'California', body: 'DCC · DFPI · DRE · Medical Board · DCA', tier: 'tier1' },
+-  { code: 'NY', label: 'New York', body: 'DFS · DOS · SED · DOH · Gaming Commission', tier: 'tier1' },
+-  { code: 'TX', label: 'Texas', body: 'TDLR · TREC · TMB · SOS · OCCC', tier: 'tier1' },
+-  { code: 'FL', label: 'Florida', body: 'OFR · DBPR · DOH · OMMU · FCCPC', tier: 'tier1' },
+-  { code: 'NJ', label: 'New Jersey', body: 'DOBI · DGE · DCA · BME · CRC', tier: 'tier1' },
+-  { code: 'IL', label: 'Illinois', body: 'IDFPR · IGB · IDFPR-RE · DPH', tier: 'tier1' },
+-  // Tier 2 (all remaining)
+-  { code: 'PA', label: 'Pennsylvania', body: 'PGCB · DBS · DOS · DOH', tier: 'tier2' },
+-  { code: 'MI', label: 'Michigan', body: 'MGCB · DIFS · LARA · CRA', tier: 'tier2' },
+-  { code: 'CO', label: 'Colorado', body: 'MED · DORA · DRE · CDPHE', tier: 'tier2' },
+-  { code: 'MA', label: 'Massachusetts', body: 'CCC · DOB · BRM · DPH', tier: 'tier2' },
+-  { code: 'WA', label: 'Washington', body: 'LCB · DFI · DOL · DOH', tier: 'tier2' },
+-  { code: 'VA', label: 'Virginia', body: 'SCC · DPOR · BOM · ABC', tier: 'tier2' },
+-  { code: 'MD', label: 'Maryland', body: 'MMCC · OFR · DLLR · SDAT', tier: 'tier2' },
+-  { code: 'OH', label: 'Ohio', body: 'OCCC · DRE · OMMCP · DFI', tier: 'tier2' },
+-  { code: 'AZ', label: 'Arizona', body: 'ADHS · ADRE · DFI · DOI', tier: 'tier2' },
+-  { code: 'NV', label: 'Nevada', body: 'GCB · FID · RED · BME', tier: 'tier2' },
+-  { code: 'OR', label: 'Oregon', body: 'OLCC · DRE · DCBS · OMB', tier: 'tier2' },
+-  { code: 'CT', label: 'Connecticut', body: 'DCP · DOB · DPH · SOS', tier: 'tier2' },
+-  { code: 'MO', label: 'Missouri', body: 'DHSS · DFI · DREC · SOS', tier: 'tier2' },
+-  { code: 'MN', label: 'Minnesota', body: 'OCM · DOC · DRE · BOM', tier: 'tier2' },
+-  { code: 'GA', label: 'Georgia', body: 'GREC · DBS · SOS · DOI', tier: 'tier2' },
+-  { code: 'NC', label: 'North Carolina', body: 'NCREC · OCOB · SOS · MBE', tier: 'tier2' },
+-  { code: 'IN', label: 'Indiana', body: 'IGC · DFI · PLA · SOS', tier: 'tier2' },
+-  { code: 'TN', label: 'Tennessee', body: 'TREC · TDFI · SOS · DOH', tier: 'tier2' },
+-  { code: 'SC', label: 'South Carolina', body: 'LLR · SOS · DFS · DHEC', tier: 'tier2' },
+-  { code: 'LA', label: 'Louisiana', body: 'OFI · LREC · SOS · LDH', tier: 'tier2' },
+-  { code: 'KY', label: 'Kentucky', body: 'DFI · KREC · SOS · BOM', tier: 'tier2' },
+-  { code: 'OK', label: 'Oklahoma', body: 'OMMA · SOS · OBD · DFS', tier: 'tier2' },
+-  { code: 'AL', label: 'Alabama', body: 'AREC · SOS · DFS · BME', tier: 'tier2' },
+-  { code: 'IA', label: 'Iowa', body: 'IRGC · IDOB · DFS · IREC', tier: 'tier2' },
+-  { code: 'MS', label: 'Mississippi', body: 'MGC · SOS · DFS · MREC', tier: 'tier2' },
+-  { code: 'KS', label: 'Kansas', body: 'KREC · SOS · OSBC · KBHA', tier: 'tier2' },
+-  { code: 'NE', label: 'Nebraska', body: 'NREC · SOS · DFS · DHHS', tier: 'tier2' },
+-  { code: 'UT', label: 'Utah', body: 'UDRE · DFI · SOS · DOPL', tier: 'tier2' },
+-  { code: 'NM', label: 'New Mexico', body: 'RLD · SOS · FID · MBE', tier: 'tier2' },
+-  { code: 'WI', label: 'Wisconsin', body: 'DFI · DSPS · WRGC · SOS', tier: 'tier2' },
+-  { code: 'DE', label: 'Delaware', body: 'DOS · OBC · DFS · REC', tier: 'tier2' },
+-  { code: 'DC', label: 'Washington DC', body: 'DCRA · DISB · DOH · ABC', tier: 'tier2' },
+-  { code: 'HI', label: 'Hawaii', body: 'DCCA · DFI · REC · DOH', tier: 'tier2' },
+-  { code: 'PR', label: 'Puerto Rico', body: 'OCIF · DACO · SOS · DS', tier: 'tier2' },
+-]
++.btn-sm {
++  font-size: 13px;
++  padding: 8px 20px;
++}
+ 
+-const initialJurisdictions = allJurisdictions.slice(0, 9)
++.btn-lg {
++  font-size: 16px;
++  padding: 14px 36px;
++}
+ 
+-const visibleJurisdictions = computed(() => {
+-  return jurExpanded.value ? allJurisdictions : initialJurisdictions
+-})
++/* ─── Prompt Section ─── */
++.prompt-section {
++  padding: 0 0 100px;
++  position: relative;
++}
+ 
+-// ---- FAQs ----
+-const faqs = [
+-  { q: 'What is Apparently?', a: 'Apparently is a legal operating platform where businesses draft legal documents, complete licenses and regulatory filings, and keep everything current — across every US jurisdiction. We serve six industry verticals: gaming & prediction markets, cannabis & hemp, healthcare, fintech & payments, real estate, and startups & corporate. Every document and determination is powered by CADE, our adversarial legal intelligence engine.' },
+-  { q: 'What is CADE?', a: 'CADE stands for Consensus & Adversarial Determination Engine. Unlike other AI legal tools that use a single model to generate text, CADE assembles a panel of history\'s greatest legal minds, forces them to argue against each other across multiple rounds, runs a red team attack, and delivers the answer only after every material challenge has been rebutted — with a cryptographic proof pack certifying the result is the strongest assemblable answer.' },
+-  { q: 'How is CADE different from Harvey, Legora, or Norm AI?', a: 'Harvey, Legora, and Norm AI use a single AI model to generate legal text based on prompts. CADE takes a fundamentally different approach: it decomposes your question into atomic contestable units, assembles a diverse panel of legal authorities, runs blinded adversarial debate rounds, filters outdated law with an Anachronism Sentinel, and certifies the result with a signed Optimality Certificate proving no stronger panel could have changed the answer. The output isn\'t just text — it\'s a proven determination with full provenance.' },
+-  { q: 'What verticals does Apparently support?', a: 'We currently operate in six verticals: Gaming & Prediction Markets (supplier licenses, NFA/CFTC, operator matching), Cannabis & Hemp (cultivation, manufacturing, distribution, testing), Healthcare (medical practice, telehealth, DEA, HIPAA), Fintech & Payments (MTL, lending, securities, digital assets), Real Estate (broker, agent, appraiser, property management), and Startups & Corporate (formation, governance, cap table, annual filings). Each vertical has its own workspace with industry-specific questions, authorities, and filing requirements.' },
+-  { q: 'How much does it cost compared to a law firm?', a: 'Approximately 90% less. Traditional law firms charge $25,000–$150,000+ per licensing engagement. Apparently starts at $5,000 per jurisdiction for licensing, $299 for self-service document work, and $2,500/month for managed compliance subscriptions. The cost savings come from CADE\'s ability to research, draft, and adversarially review at scale, while expert attorneys handle the final review and material decisions.' },
+-  { q: 'Can I use Apparently for just one service?', a: 'Yes. Our two core systems — the Legal Document Studio and the License & Filing OS — work independently or together. You can draft a single legal memo, file one license application, or run a full multi-jurisdiction compliance program. The platform adapts to whatever you need.' },
+-  { q: 'What is a proof pack?', a: 'Every CADE determination ships with a content-addressed, Ed25519-signed proof pack containing: the full panel that opined, every citation used, every adversarial challenge and its resolution, the factions that formed during debate, and the Optimality Certificate — an auditable bound (ε < 0.03) proving no excluded mind could have materially changed the answer. You can hand the proof pack to any regulator, court, investor, or counterparty.' },
+-  { q: 'Do I still need a lawyer?', a: 'For material legal conclusions — yes, and we make that easy. CADE handles research, drafting, and adversarial review at superhuman scale. Your attorney layers the final human judgment, adapts delivery for the specific audience, and — for genuinely novel questions — collaborates with the engine to build and stress-test a theory no precedent yet covers. We surface exactly when expert review is required so nothing material proceeds without it.' },
+-  { q: 'What is Compliance-as-a-Service?', a: 'CaaS is a monthly subscription that replaces ad hoc compliance consultants with continuous managed compliance. It covers: ongoing regulatory monitoring across your licensed jurisdictions, enforcement alerts, renewal calendars, regulatory intelligence feeds, and a dedicated compliance contact. Starter plans begin at $2,500/month covering up to 5 jurisdictions; Growth and Enterprise plans scale to full coverage.' },
+-  { q: 'How long does a typical filing take?', a: 'Our part — collecting documents, drafting applications, and submitting — takes 48–72 hours from when documents are received. Regulator review timelines vary by jurisdiction and type: some states approve in weeks, others take months. We file all tracks in parallel so the regulatory clocks start running as fast as possible.' },
+-]
++.prompt-box {
++  background: var(--bg-card);
++  border: 1px solid var(--border);
++  border-radius: var(--radius);
++  overflow: hidden;
++  max-width: 720px;
++  margin: 0 auto;
++}
+ 
+-const faqExpanded = ref(false)
+-const visibleFaqs = computed(() => faqExpanded.value ? faqs : faqs.slice(0, 4))
++.prompt-header {
++  display: flex;
++  align-items: center;
++  gap: 12px;
++  padding: 12px 16px;
++  border-bottom: 1px solid var(--border);
++  background: rgba(255, 255, 255, 0.02);
++}
+ 
+-useHead({
+-  script: [{
+-    type: 'application/ld+json',
+-    innerHTML: JSON.stringify({
+-      '@context': 'https://schema.org',
+-      '@type': 'FAQPage',
+-      mainEntity: faqs.map(f => ({
+-        '@type': 'Question',
+-        name: f.q,
+-        acceptedAnswer: { '@type': 'Answer', text: f.a },
+-      })),
+-    }),
+-  }],
+-})
++.prompt-dots {
++  display: flex;
++  gap: 6px;
++}
+ 
+-// ---- Blog ----
+-interface BlogPost {
+-  source: 'medium'
+-  title: string
+-  url: string
+-  excerpt: string
+-  publishedAt: string | null
+-  author: string | null
+-}
+-
+-const blogPosts = ref<BlogPost[]>([])
+-const visibleBlogPosts = computed(() => blogPosts.value.slice(0, 3))
+-const mediumProfileUrl = useRuntimeConfig().public.mediumProfileUrl as string | undefined
+-
+-onMounted(async () => {
+-  try {
+-    const { posts } = await ($fetch as any)('/api/blog/posts')
+-    blogPosts.value = posts || []
+-  } catch (e) {
+-    console.warn('[blog] failed to load posts', e)
+-  }
+-})
++.prompt-dots span {
++  width: 10px;
++  height: 10px;
++  border-radius: 50%;
++  background: rgba(255, 255, 255, 0.08);
++}
+ 
+-function formatBlogDate(iso: string): string {
+-  try {
+-    return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+-  } catch {
+-    return ''
+-  }
++.prompt-title {
++  font-size: 12px;
++  color: var(--text-muted);
++  font-weight: 500;
++  letter-spacing: 0.02em;
+ }
+ 
+-// ---- Stats ----
+-const bigNums = [
+-  { value: '~90% less', label: 'vs. consultants & law firms', versus: 'Across licensing, documents, compliance, and legal opinions' },
+-  { value: '48–72 hrs', label: 'Intake to filing ready', versus: 'vs. 4–8 weeks at a law firm' },
+-  { value: '100%', label: 'Adversarially reviewed', versus: 'Every output challenged by opposing counsel before delivery' },
+-]
++.prompt-body {
++  padding: 20px;
++  min-height: 120px;
++  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', Menlo, Consolas, monospace;
++  font-size: 14px;
++}
+ 
+-// ---- Typewriter / scroll-reveal headings ----
+-const twIds = ['tw-who','tw-cade','tw-platform','tw-process','tw-dashboard','tw-vert','tw-jur','tw-faq','tw-blog']
+-const twScrollIds = twIds
+-const twHeroId = 'tw-hero'
+-
+-const typoMap: Record<string, string> = {
+-  a:'sq',b:'vn',c:'xv',d:'sf',e:'rw',f:'dg',g:'fh',h:'gj',i:'uo',j:'hk',
+-  k:'jl',l:'k',m:'n',n:'bm',o:'ip',p:'ol',q:'wa',r:'et',s:'ad',t:'ry',
+-  u:'yi',v:'cb',w:'qe',x:'zc',y:'tu',z:'xa',
+-}
+-
+-function buildSteps(text: string) {
+-  const steps: { type: 'add' | 'del' | 'pause'; ch?: string; ms?: number }[] = []
+-  for (const ch of text) {
+-    if (Math.random() < 0.02) {
+-      const pool = typoMap[ch.toLowerCase()]
+-      if (pool) {
+-        const typo = pool[Math.floor(Math.random() * pool.length)]
+-        steps.push({ type: 'add', ch: typo })
+-        steps.push({ type: 'pause', ms: 180 + Math.random() * 200 })
+-        steps.push({ type: 'del' })
+-      }
+-    }
+-    steps.push({ type: 'add', ch })
+-    if (Math.random() < 0.10) steps.push({ type: 'pause', ms: 160 })
+-  }
+-  return steps
+-}
+-
+-function typewriterOn(el: HTMLElement, text: string, onDone?: () => void) {
+-  const textNode = document.createTextNode('')
+-  const cursor = document.createElement('span')
+-  cursor.style.cssText = 'display:inline-block;width:0.08em;height:0.9em;background:currentColor;margin-left:2px;vertical-align:middle;'
+-  el.innerHTML = ''
+-  el.appendChild(textNode)
+-  el.appendChild(cursor)
+-
+-  let blink = true
+-  const blinkTimer = setInterval(() => {
+-    cursor.style.opacity = (blink = !blink) ? '1' : '0'
+-  }, 530)
+-
+-  const steps = buildSteps(text)
+-  let i = 0
+-  function next() {
+-    if (i >= steps.length) {
+-      setTimeout(() => {
+-        clearInterval(blinkTimer)
+-        cursor.remove()
+-        onDone?.()
+-      }, 3500)
+-      return
+-    }
+-    const s = steps[i++]
+-    if (!s) return
+-    if (s.type === 'add') {
+-      textNode.textContent += s.ch!
+-      setTimeout(next, 32 + Math.random() * 34)
+-    } else if (s.type === 'del') {
+-      textNode.textContent = textNode.textContent!.slice(0, -1)
+-      setTimeout(next, 45 + Math.random() * 35)
+-    } else {
+-      setTimeout(next, (s.ms ?? 0) * 0.6)
+-    }
+-  }
+-  next()
++.prompt-input-row {
++  display: flex;
++  align-items: center;
++  gap: 10px;
+ }
+ 
+-const typedIds = new Set<string>()
++.prompt-caret {
++  color: var(--accent);
++  font-weight: 700;
++  flex-shrink: 0;
++}
+ 
+-function captureText(el: HTMLElement): string {
+-  let out = ''
+-  el.childNodes.forEach(node => {
+-    if (node.nodeType === Node.TEXT_NODE) out += node.textContent || ''
+-    else if ((node as Element).tagName === 'BR') out += ' '
+-    else out += (node as HTMLElement).textContent || ''
+-  })
+-  return out.replace(/\s+/g, ' ').trim()
++.prompt-input {
++  flex: 1;
++  background: none;
++  border: none;
++  outline: none;
++  color: var(--text);
++  font-family: inherit;
++  font-size: inherit;
++  caret-color: var(--accent);
+ }
+ 
+-function runTypewriter(el: HTMLElement) {
+-  const text = el.dataset.twText || ''
+-  const html = el.dataset.twHtml || ''
+-  if (!text || typedIds.has(el.id)) return
+-  typedIds.add(el.id)
+-  typewriterOn(el, text, () => { if (html) el.innerHTML = html })
++.prompt-input::placeholder {
++  color: var(--text-muted);
+ }
+ 
+-onMounted(() => {
+-  if (typeof window === 'undefined') return
+-  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+-
+-  const allIds = [twHeroId, ...twScrollIds]
+-  allIds.forEach(id => {
+-    const el = document.getElementById(id)
+-    if (!el) return
+-    const stableText = captureText(el)
+-    el.dataset.twText = stableText
+-    el.dataset.twHtml = el.innerHTML
+-    el.setAttribute('aria-label', stableText)
+-    el.innerHTML = ''
+-  })
++.prompt-output {
++  display: flex;
++  flex-direction: column;
++  gap: 16px;
++}
++
++.prompt-echo {
++  display: flex;
++  gap: 10px;
++  color: var(--text-secondary);
++}
+ 
+-  const heroEl = document.getElementById(twHeroId)
+-  if (heroEl) setTimeout(() => runTypewriter(heroEl), 500)
++.prompt-status-lines {
++  display: flex;
++  flex-direction: column;
++  gap: 8px;
++  padding-left: 20px;
++}
+ 
+-  const io = new IntersectionObserver(entries => {
+-    entries.forEach(entry => {
+-      if (!entry.isIntersecting) return
+-      runTypewriter(entry.target as HTMLElement)
+-      io.unobserve(entry.target)
+-    })
+-  }, { threshold: 0.15 })
+-
+-  twScrollIds.forEach(id => {
+-    const el = document.getElementById(id)
+-    if (!el) return
+-    const rect = el.getBoundingClientRect()
+-    if (rect.top < window.innerHeight) {
+-      setTimeout(() => runTypewriter(el), 300)
+-    } else {
+-      io.observe(el)
+-    }
+-  })
+-})
++.status-line {
++  display: flex;
++  align-items: center;
++  gap: 10px;
++  color: var(--text-muted);
++  font-size: 13px;
++  transition: color 0.3s;
++}
+ 
+-// ---- Newsletter ----
+-const newsletterEmail = ref('')
+-const newsletterLoading = ref(false)
+-const newsletterMsg = ref('')
+-
+-async function subscribeNewsletter() {
+-  newsletterLoading.value = true
+-  newsletterMsg.value = ''
+-  try {
+-    await ($fetch as any)('/api/email/subscribe', {
+-      method: 'POST',
+-      body: { email: newsletterEmail.value, source: 'landing_page' },
+-    })
+-    newsletterMsg.value = 'Thanks — check your inbox to confirm.'
+-    newsletterEmail.value = ''
+-  } catch (e: any) {
+-    newsletterMsg.value = e?.data?.statusMessage || 'Could not subscribe.'
+-  } finally {
+-    newsletterLoading.value = false
+-  }
++.status-line.done {
++  color: var(--text-secondary);
+ }
+-</script>
+ 
+-<!-- Global styles for heading spans restored via innerHTML after typewriter -->
+-<style>
+-.power-text {
+-  background: linear-gradient(90deg, #34d399, #60a5fa, #a78bfa, #fbbf24, #34d399);
+-  background-size: 300% 100%;
+-  -webkit-background-clip: text; background-clip: text;
+-  -webkit-text-fill-color: transparent;
+-  animation: power-shimmer 6s linear infinite;
++.status-line.complete-line {
++  color: var(--accent);
++}
++
++.status-indicator {
++  width: 14px;
++  height: 14px;
++  border-radius: 50%;
++  border: 2px solid var(--text-muted);
++  flex-shrink: 0;
++  position: relative;
++}
++
++.status-indicator.spinning {
++  border-color: var(--accent) transparent transparent transparent;
++  animation: spin 0.8s linear infinite;
++}
++
++.status-indicator.check {
++  border-color: var(--accent);
++  background: var(--accent);
++}
++
++.status-indicator.check::after {
++  content: '';
++  position: absolute;
++  top: 1px;
++  left: 3px;
++  width: 4px;
++  height: 7px;
++  border: solid #000;
++  border-width: 0 2px 2px 0;
++  transform: rotate(45deg);
++}
++
++@keyframes spin {
++  to { transform: rotate(360deg); }
++}
++
++.prompt-complete {
++  padding-top: 12px;
++  border-top: 1px solid var(--border);
++}
++
++.prompt-complete-msg {
++  font-family: 'Inter', system-ui, sans-serif;
++  font-size: 14px;
++  color: var(--text-secondary);
++  margin-bottom: 16px;
++  line-height: 1.5;
++}
++
++.prompt-complete-actions {
++  display: flex;
++  gap: 10px;
++  flex-wrap: wrap;
++}
++
++.prompt-chips {
++  display: flex;
++  flex-wrap: wrap;
++  gap: 8px;
++  padding: 0 20px 20px;
++}
++
++.chip {
++  background: rgba(255, 255, 255, 0.04);
++  border: 1px solid var(--border);
++  color: var(--text-secondary);
++  font-size: 13px;
++  font-family: 'Inter', system-ui, sans-serif;
++  padding: 6px 14px;
++  border-radius: 20px;
++  cursor: pointer;
++  transition: background 0.2s, border-color 0.2s, color 0.2s;
++}
++
++.chip:hover {
++  background: rgba(255, 255, 255, 0.08);
++  border-color: var(--border-hover);
++  color: var(--text);
++}
++
++/* ─── Section Headers ─── */
++.section-header {
++  text-align: center;
++  margin-bottom: 56px;
++}
++
++.section-title {
++  font-size: clamp(28px, 4vw, 40px);
++  font-weight: 700;
++  letter-spacing: -0.02em;
++  margin-bottom: 12px;
++}
++
++.section-sub {
++  font-size: 17px;
++  color: var(--text-secondary);
++  max-width: 500px;
++  margin: 0 auto;
++  line-height: 1.6;
++}
++
++/* ─── Verticals ─── */
++.verticals {
++  padding: 100px 0;
++  position: relative;
++}
++
++.verticals-grid {
++  display: grid;
++  grid-template-columns: repeat(3, 1fr);
++  gap: 16px;
++}
++
++.vertical-card {
++  text-decoration: none;
++  color: var(--text);
++  background: var(--bg-card);
++  border: 1px solid var(--border);
++  border-radius: var(--radius);
++  padding: 28px;
++  position: relative;
++  overflow: hidden;
++  transition: background 0.3s, border-color 0.3s, box-shadow 0.3s, transform 0.2s;
++}
++
++.vertical-card::before {
++  content: '';
++  position: absolute;
++  top: 0;
++  left: 0;
++  right: 0;
++  height: 2px;
++  background: var(--card-accent);
++  opacity: 0;
++  transition: opacity 0.3s;
++}
++
++.vertical-card:hover {
++  background: var(--bg-card-hover);
++  border-color: var(--card-accent);
++  box-shadow: 0 0 40px color-mix(in srgb, var(--card-accent) 15%, transparent);
++  transform: translateY(-2px);
++}
++
++.vertical-card:hover::before {
++  opacity: 1;
++}
++
++.vertical-card-inner {
++  position: relative;
++  z-index: 1;
++}
++
++.vertical-title {
++  font-size: 17px;
++  font-weight: 600;
++  margin-bottom: 8px;
++  letter-spacing: -0.01em;
++}
++
++.vertical-desc {
++  font-size: 14px;
++  color: var(--text-secondary);
++  line-height: 1.5;
++  margin-bottom: 16px;
++}
++
++.vertical-arrow {
++  font-size: 18px;
++  color: var(--text-muted);
++  transition: color 0.2s, transform 0.2s;
++  display: inline-block;
+ }
+-@keyframes power-shimmer { 0% { background-position: 0% 50%; } 100% { background-position: 300% 50%; } }
+ 
+-.process-h2-gradient {
+-  background: linear-gradient(135deg, #fff 0%, #888 100%);
+-  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
++.vertical-card:hover .vertical-arrow {
++  color: var(--card-accent);
++  transform: translateX(4px);
+ }
+ 
+-.hero-h1-gradient {
+-  background: linear-gradient(135deg, #fff 0%, #888 60%, #555 100%);
+-  background-size: 200% 200%;
+-  -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;
+-  animation: grad-shift 8s ease-in-out infinite;
++/* ─── How It Works ─── */
++.how {
++  padding: 100px 0;
+ }
+ 
+-.tw-accent {
+-  background: linear-gradient(90deg, #60a5fa, #a78bfa);
+-  -webkit-background-clip: text; background-clip: text;
++.steps-row {
++  display: grid;
++  grid-template-columns: repeat(4, 1fr);
++  gap: 0;
++  position: relative;
++}
++
++.step-card {
++  position: relative;
++  padding: 32px 24px;
++  text-align: center;
++}
++
++.step-num {
++  display: inline-block;
++  font-size: 13px;
++  font-weight: 700;
++  color: var(--accent);
++  letter-spacing: 0.05em;
++  margin-bottom: 16px;
++  padding: 4px 12px;
++  border: 1px solid rgba(34, 197, 94, 0.2);
++  border-radius: 20px;
++  background: rgba(34, 197, 94, 0.06);
++}
++
++.step-title {
++  font-size: 20px;
++  font-weight: 600;
++  margin-bottom: 8px;
++  letter-spacing: -0.01em;
++}
++
++.step-desc {
++  font-size: 14px;
++  color: var(--text-secondary);
++  line-height: 1.5;
++}
++
++.step-beam {
++  position: absolute;
++  top: 48px;
++  right: -16px;
++  width: 32px;
++  height: 2px;
++  background: linear-gradient(90deg, var(--accent), transparent);
++  opacity: 0.3;
++}
++
++/* ─── Stats ─── */
++.stats-bar {
++  padding: 60px 0;
++  border-top: 1px solid var(--border);
++  border-bottom: 1px solid var(--border);
++}
++
++.stats-row {
++  display: grid;
++  grid-template-columns: repeat(4, 1fr);
++  gap: 24px;
++  text-align: center;
++}
++
++.stat-item {
++  display: flex;
++  flex-direction: column;
++  gap: 4px;
++}
++
++.stat-value {
++  font-size: clamp(24px, 3vw, 32px);
++  font-weight: 700;
++  letter-spacing: -0.02em;
++  background: linear-gradient(180deg, #fff, rgba(255, 255, 255, 0.7));
++  -webkit-background-clip: text;
+   -webkit-text-fill-color: transparent;
++  background-clip: text;
++}
++
++.stat-label {
++  font-size: 14px;
++  color: var(--text-muted);
++  font-weight: 500;
+ }
+ 
+-.cta-blink { animation: cta-blink-pulse 1.2s ease-in-out infinite; }
+-@keyframes cta-blink-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
++/* ─── Capabilities ─── */
++.capabilities {
++  padding: 100px 0;
++}
+ 
+-.cade-h2-gradient {
+-  background: linear-gradient(135deg, #c9a24a 0%, #7b6cff 100%);
+-  -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
++.capabilities-grid {
++  display: grid;
++  grid-template-columns: repeat(2, 1fr);
++  gap: 20px;
+ }
+-</style>
+ 
+-<style scoped>
+-/* ======================================================
+-   DESIGN SYSTEM — matches gaming.vue exactly
+-   ====================================================== */
+-
+-/* -- BASE -- */
+-.page-root { font-family: 'Inter', system-ui, -apple-system, sans-serif; color: #ededed; background: #000; overflow-x: hidden; }
+-.hide-mobile { display: inline; }
+-@media (max-width: 768px) { .hide-mobile { display: none; } }
+-
+-/* -- HERO -- */
+-.hero { position: relative; padding: 160px 24px 80px; text-align: center; }
+-.hero-bg { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+-.hero-grid {
+-  position: absolute; inset: 0;
+-  background-image: linear-gradient(rgba(255,255,255,0.14) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.14) 1px, transparent 1px);
+-  background-size: 80px 80px;
+-  mask-image: linear-gradient(to bottom, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.5) 50%, transparent 80%);
+-  -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,0.85) 0%, rgba(0,0,0,0.5) 50%, transparent 80%);
+-}
+-.hero-glow { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -55%); width: 900px; height: 500px; background: radial-gradient(ellipse 100% 80% at 50% 50%, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.02) 40%, transparent 70%); animation: glow-breathe 8s ease-in-out infinite; }
+-@keyframes glow-breathe { 0%,100% { opacity: 1; transform: translate(-50%, -55%) scale(1); } 50% { opacity: 0.7; transform: translate(-50%, -55%) scale(1.05); } }
+-.hero-glow-accent { position: absolute; border-radius: 50%; filter: blur(120px); pointer-events: none; }
+-.hero-glow-accent-1 { width: 500px; height: 350px; top: 15%; left: 15%; background: rgba(16, 185, 129, 0.07); animation: accent-drift-1 20s ease-in-out infinite; }
+-.hero-glow-accent-2 { width: 450px; height: 300px; top: 20%; right: 10%; background: rgba(99, 102, 241, 0.06); animation: accent-drift-2 25s ease-in-out infinite; }
+-.hero-glow-accent-3 { width: 350px; height: 250px; bottom: 10%; left: 35%; background: rgba(139, 92, 246, 0.05); animation: accent-drift-3 22s ease-in-out infinite; }
+-@keyframes accent-drift-1 { 0%,100%{transform:translate(0,0)} 33%{transform:translate(40px,-20px)} 66%{transform:translate(-20px,15px)} }
+-@keyframes accent-drift-2 { 0%,100%{transform:translate(0,0)} 33%{transform:translate(-30px,25px)} 66%{transform:translate(25px,-15px)} }
+-@keyframes accent-drift-3 { 0%,100%{transform:translate(0,0)} 50%{transform:translate(20px,-20px)} }
+-.hero-beam { position: absolute; top: 52%; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, transparent 5%, rgba(255,255,255,0.04) 20%, rgba(255,255,255,0.08) 45%, rgba(255,255,255,0.12) 50%, rgba(255,255,255,0.08) 55%, rgba(255,255,255,0.04) 80%, transparent 95%); }
+-.hero-beam::after { content: ''; position: absolute; top: -20px; left: 0; right: 0; height: 40px; background: linear-gradient(90deg, transparent 10%, rgba(255,255,255,0.01) 30%, rgba(255,255,255,0.03) 50%, rgba(255,255,255,0.01) 70%, transparent 90%); }
+-.hero-content { position: relative; max-width: 800px; margin: 0 auto; }
+-.hero-badge { display: inline-flex; align-items: center; gap: 8px; padding: 4px 14px; border-radius: 999px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08); font-size: 12px; color: var(--text-muted); font-weight: 500; margin-bottom: 24px; }
+-.hero-badge-dot { width: 6px; height: 6px; border-radius: 50%; background: #10b981; animation: pulse-dot 2s ease-in-out infinite; }
+-@keyframes pulse-dot { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.5;transform:scale(1.5)} }
+-.hero-h1 { font-size: clamp(44px, 7.5vw, 80px); font-weight: 700; letter-spacing: -0.035em; line-height: 1.05; margin: 0 0 20px; }
+-@keyframes grad-shift { 0%,100%{background-position:0% 50%} 50%{background-position:100% 50%} }
+-.hero-sub { font-size: 18px; line-height: 1.6; color: var(--text-muted); margin: 0 0 36px; }
+-.hero-urgency { font-size: 12px; color: rgba(255,255,255,0.45); margin-top: 16px; font-style: italic; }
+-.hero-actions { display: flex; justify-content: center; gap: 12px; flex-wrap: wrap; }
+-.btn-primary-lg { display: inline-flex; align-items: center; gap: 6px; padding: 12px 24px; background: #fff; color: #000; font-size: 14px; font-weight: 500; border-radius: 8px; text-decoration: none; transition: all 0.2s; border: 1px solid #fff; }
+-.btn-primary-lg:hover { background: #ddd; transform: translateY(-1px); box-shadow: 0 4px 20px rgba(255,255,255,0.1); }
+-.btn-secondary-lg { display: inline-flex; align-items: center; gap: 6px; padding: 12px 24px; background: transparent; color: #aaa; font-size: 14px; font-weight: 500; border-radius: 8px; text-decoration: none; border: 1px solid rgba(255,255,255,0.15); transition: all 0.2s; }
+-.btn-secondary-lg:hover { border-color: rgba(255,255,255,0.3); color: #fff; background: rgba(255,255,255,0.05); }
+-
+-/* -- DEMO BROWSER -- */
+-.demo-section { padding: 0 24px 100px; }
+-.demo-container { max-width: 1100px; margin: 0 auto; position: relative; }
+-.demo-browser { border: 1px solid rgba(255,255,255,0.08); border-radius: 16px; overflow: hidden; background: #0a0a0a; box-shadow: 0 20px 60px -15px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04); }
+-.demo-chrome { display: flex; align-items: center; padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,0.06); background: #0f0f0f; }
+-.demo-dots { display: flex; gap: 6px; }
+-.demo-dots span { width: 10px; height: 10px; border-radius: 50%; background: #333; }
+-.demo-dots-spacer { width: 52px; }
+-.demo-url { flex: 1; text-align: center; font-size: 11px; color: #666; font-family: 'SF Mono', 'Fira Code', monospace; padding: 4px 16px; background: rgba(255,255,255,0.05); border-radius: 6px; margin: 0 16px; }
+-.demo-body { padding: 20px; }
+-.demo-welcome { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+-.demo-welcome-name { font-size: 14px; font-weight: 600; color: #fff; }
+-.demo-welcome-org { font-size: 12px; color: #555; margin-left: 8px; }
+-.demo-welcome-actions { display: flex; gap: 8px; }
+-.demo-notif-bell { position: relative; color: #555; cursor: pointer; }
+-.demo-notif-dot { position: absolute; top: -2px; right: -2px; width: 6px; height: 6px; border-radius: 50%; background: #ef4444; }
+-.demo-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px; }
+-.demo-stat { padding: 14px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.02); }
+-.demo-stat-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+-.demo-stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: #555; }
+-.demo-stat-trend { font-size: 9px; font-weight: 500; }
+-.trend-up { color: #34d399; }
+-.trend-neutral { color: #666; }
+-.demo-stat-value { display: block; font-size: 22px; font-weight: 700; color: #fff; line-height: 1; }
+-.demo-stat-bar { height: 3px; background: rgba(255,255,255,0.06); border-radius: 2px; margin-top: 8px; overflow: hidden; }
+-.demo-stat-bar-fill { height: 100%; border-radius: 2px; transition: width 1.5s ease-out; }
+-.demo-table-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+-.demo-table-title-row { display: flex; align-items: center; gap: 8px; }
+-.demo-table-title { font-size: 13px; font-weight: 600; color: #ddd; }
+-.demo-live-badge { display: inline-flex; align-items: center; gap: 4px; font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #4ade80; background: rgba(74,222,128,0.08); border: 1px solid rgba(74,222,128,0.18); padding: 2px 8px; border-radius: 999px; }
+-.demo-live-dot { width: 5px; height: 5px; background: #4ade80; border-radius: 50%; animation: live-pulse 1.4s ease-in-out infinite; }
+-@keyframes live-pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.3; transform: scale(0.65); } }
+-.demo-table-tabs { display: flex; gap: 2px; }
+-.demo-tab { font-size: 10px; padding: 4px 10px; border-radius: 6px; color: #555; cursor: pointer; transition: all 0.15s; }
+-.demo-tab-active { background: rgba(255,255,255,0.08); color: #ccc; }
+-.demo-table { border: 1px solid rgba(255,255,255,0.06); border-radius: 10px; overflow: hidden; min-width: 0; }
+-.demo-table-head { display: flex; padding: 8px 14px; border-bottom: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.02); gap: 8px; }
+-.demo-th { font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; color: #555; font-weight: 600; min-width: 0; }
+-.demo-table-row { display: flex; align-items: center; padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.03); transition: background 0.2s, box-shadow 0.2s; gap: 8px; }
+-.demo-table-row:last-child { border-bottom: none; }
+-.demo-table-row:hover { background: rgba(255,255,255,0.02); }
+-.demo-row-flash { animation: row-highlight 1.1s ease-out; }
+-@keyframes row-highlight { 0% { background: rgba(52,211,153,0.07); } 100% { background: transparent; } }
+-.demo-row-active { background: rgba(99,179,237,0.03) !important; box-shadow: inset 2px 0 0 rgba(99,179,237,0.5); }
+-.demo-bell-ping { animation: bell-ring 0.6s ease-out; }
+-@keyframes bell-ring { 0%,100% { transform: rotate(0); } 20% { transform: rotate(12deg); } 40% { transform: rotate(-10deg); } 60% { transform: rotate(6deg); } 80% { transform: rotate(-3deg); } }
+-.demo-activity-item { transition: all 0.35s ease-out; }
+-.demo-activity-new { animation: activity-slide 0.35s ease-out; }
+-@keyframes activity-slide { 0% { opacity: 0; transform: translateY(-7px); } 100% { opacity: 1; transform: translateY(0); } }
+-.demo-processing { display: inline-flex; align-items: center; gap: 4px; color: #60a5fa; font-size: 10px; font-style: italic; }
+-.demo-processing-dot { width: 4px; height: 4px; background: #60a5fa; border-radius: 50%; animation: live-pulse 0.9s ease-in-out infinite; flex-shrink: 0; }
+-.demo-td { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #ccc; min-width: 0; overflow: hidden; }
+-.demo-td-dim { color: #555; font-size: 11px; }
+-.demo-td-timeline span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+-.demo-filing-icon { width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+-.icon-emerald { background: rgba(16,185,129,0.1); } .icon-blue { background: rgba(59,130,246,0.1); } .icon-amber { background: rgba(245,158,11,0.1); } .icon-gray { background: rgba(255,255,255,0.04); } .icon-purple { background: rgba(139,92,246,0.1); }
+-.demo-filing-text { min-width: 0; overflow: hidden; }
+-.demo-filing-name { font-size: 12px; font-weight: 500; color: #eee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+-.demo-filing-ref { font-size: 9px; color: #444; font-family: 'SF Mono', monospace; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+-.demo-status-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 500; padding: 3px 10px; border-radius: 999px; }
+-.demo-status-dot { width: 5px; height: 5px; border-radius: 50%; }
+-.status-emerald { background: rgba(16,185,129,0.1); color: #34d399; } .sdot-emerald { background: #10b981; }
+-.status-blue { background: rgba(59,130,246,0.1); color: #60a5fa; } .sdot-blue { background: #3b82f6; animation: sdot-pulse-blue 2s ease-in-out infinite; }
+-.status-amber { background: rgba(245,158,11,0.1); color: #fbbf24; } .sdot-amber { background: #f59e0b; animation: sdot-pulse-amber 1.8s ease-in-out infinite; }
+-.status-gray { background: rgba(255,255,255,0.04); color: #888; } .sdot-gray { background: #6b7280; }
+-.status-purple { background: rgba(139,92,246,0.1); color: #a78bfa; } .sdot-purple { background: #8b5cf6; animation: sdot-pulse-purple 2.2s ease-in-out infinite; }
+-@keyframes sdot-pulse-blue { 0%,100% { box-shadow: 0 0 0 0 rgba(59,130,246,0); } 50% { box-shadow: 0 0 0 3px rgba(59,130,246,0.25); } }
+-@keyframes sdot-pulse-amber { 0%,100% { box-shadow: 0 0 0 0 rgba(245,158,11,0); } 50% { box-shadow: 0 0 0 3px rgba(245,158,11,0.25); } }
+-@keyframes sdot-pulse-purple { 0%,100% { box-shadow: 0 0 0 0 rgba(139,92,246,0); } 50% { box-shadow: 0 0 0 3px rgba(139,92,246,0.2); } }
+-.demo-progress-wrap { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; }
+-.demo-bar { flex: 1; height: 4px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden; }
+-.demo-bar-fill { height: 100%; border-radius: 2px; width: var(--w); transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1); position: relative; overflow: hidden; }
+-.bar-shimmer::after { content: ''; position: absolute; top: 0; left: -80%; width: 60%; height: 100%; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.35), transparent); animation: bar-sweep 2.4s ease-in-out infinite; }
+-@keyframes bar-sweep { 0% { left: -80%; } 100% { left: 160%; } }
+-.bar-emerald { background: #10b981; } .bar-blue { background: #3b82f6; } .bar-amber { background: #f59e0b; } .bar-gray { background: #4b5563; } .bar-purple { background: #8b5cf6; }
+-.demo-pct { font-size: 9px; color: #555; font-weight: 600; width: 24px; text-align: right; }
+-.demo-avatar { width: 24px; height: 24px; border-radius: 50%; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08); display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: 600; color: #888; }
+-.demo-bottom-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 16px; }
+-.demo-bottom-card { padding: 14px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.015); }
+-.demo-bottom-title { font-size: 11px; font-weight: 600; color: var(--text-muted); margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+-.demo-action-item { display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+-.demo-action-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+-.demo-action-text { font-size: 11px; color: #bbb; flex: 1; }
+-.demo-action-badge { font-size: 9px; padding: 2px 8px; border-radius: 999px; font-weight: 500; }
+-.urgency-med { background: rgba(245,158,11,0.1); color: #fbbf24; }
+-.urgency-low { background: rgba(255,255,255,0.04); color: #666; }
+-.demo-activity-item { display: flex; gap: 8px; padding: 5px 0; font-size: 11px; }
+-.demo-activity-time { color: #444; min-width: 48px; font-weight: 500; }
+-.demo-activity-text { color: var(--text-muted); }
+-.demo-services-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
+-.demo-svc-panel { padding: 14px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,0.015); }
+-.demo-svc-panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+-.demo-svc-panel-title { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+-.demo-svc-item { padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,0.04); }
+-.demo-svc-item:last-child { border-bottom: none; padding-bottom: 0; }
+-.demo-svc-item-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin-bottom: 5px; }
+-.demo-svc-item-meta { min-width: 0; overflow: hidden; }
+-.demo-svc-item-name { font-size: 11px; font-weight: 500; color: #ccc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+-.demo-svc-item-sub { font-size: 9px; color: #444; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+-.demo-svc-item-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+-.demo-svc-tag { font-size: 9px; padding: 2px 7px; border-radius: 4px; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.06); color: #555; white-space: nowrap; }
+-.demo-svc-deadline { font-size: 10px; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+-.demo-deadline-warn { color: #f59e0b; }
+-.demo-deadline-ok  { color: #60a5fa; }
+-.demo-deadline-done { color: #34d399; }
+-.demo-svc-intel-row { display: flex; align-items: center; gap: 5px; margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.04); font-size: 9px; color: #555; }
+-@media (max-width: 768px) {
+-  .demo-stats { grid-template-columns: repeat(2, 1fr); }
+-  .demo-bar { display: none; }
+-  .demo-bottom-row { grid-template-columns: 1fr; }
+-  .demo-services-row { grid-template-columns: 1fr; }
+-  .demo-table { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+-  .demo-table-head { min-width: 480px; }
+-  .demo-table-row { min-width: 480px; flex-wrap: nowrap; }
+-  .demo-td { flex: none !important; }
+-  .demo-body { padding: 12px; }
+-  .demo-section { padding: 0 12px 60px; }
+-  .hero { padding: 120px 16px 60px; }
+-  .hero-sub { font-size: 15px; }
+-  .hero-actions { flex-direction: column; align-items: center; }
+-  .btn-primary-lg, .btn-secondary-lg { width: 100%; justify-content: center; }
+-}
+-
+-/* -- SECTIONS -- */
+-.section-dark { background: #0a0a0a; color: #fff; padding: 100px 24px; }
+-.section-light { background: #000; padding: 100px 24px; }
+-.section-gray { background: #0a0a0a; padding: 100px 24px; border-top: 1px solid rgba(255,255,255,0.06); border-bottom: 1px solid rgba(255,255,255,0.06); }
+-.section-inner { max-width: 1100px; margin: 0 auto; }
+-.section-eyebrow { font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em; color: #555; font-weight: 500; margin-bottom: 12px; text-align: center; }
+-.section-eyebrow-dark { font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--text-muted); font-weight: 500; margin-bottom: 12px; text-align: center; }
+-.section-h2 { font-size: clamp(28px, 4vw, 42px); font-weight: 700; letter-spacing: -0.03em; line-height: 1.15; text-align: center; margin: 0 0 48px; color: #fff; }
+-.section-h2-dark { font-size: clamp(28px, 4vw, 42px); font-weight: 700; letter-spacing: -0.03em; line-height: 1.15; text-align: center; margin: 0 0 48px; color: #fff; }
+-
+-/* -- PERSONA GRID -- */
+-.who-sub { color: var(--text-muted); font-size: 16px; line-height: 1.6; max-width: 560px; margin: 0 auto 48px; text-align: center; }
+-.ticker-wrap { position: relative; overflow: hidden; margin-bottom: 12px; }
+-.ticker-fade { position: absolute; top: 0; bottom: 0; width: 120px; z-index: 2; pointer-events: none; }
+-.ticker-fade-left { left: 0; background: linear-gradient(to right, #0a0a0a, transparent); }
+-.ticker-fade-right { right: 0; background: linear-gradient(to left, #0a0a0a, transparent); }
+-.ticker-track { display: flex; gap: 10px; width: max-content; animation: ticker-scroll 40s linear infinite; }
+-.ticker-track-reverse { animation: ticker-scroll-reverse 45s linear infinite; }
+-.ticker-wrap:last-of-type { margin-bottom: 56px; }
+-.ticker-pill { flex-shrink: 0; font-size: 12px; padding: 6px 14px; border-radius: 999px; border: 1px solid rgba(255,255,255,0.08); color: #666; font-weight: 500; white-space: nowrap; transition: all 0.3s; }
+-.ticker-pill:hover { border-color: rgba(255,255,255,0.2); color: #ccc; background: rgba(255,255,255,0.05); }
+-@keyframes ticker-scroll { 0% { transform: translateX(0); } 100% { transform: translateX(-50%); } }
+-@keyframes ticker-scroll-reverse { 0% { transform: translateX(-50%); } 100% { transform: translateX(0); } }
+-.persona-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: #222; border-radius: 16px; overflow: hidden; }
+-.persona-card { padding: 32px; background: #0a0a0a; transition: background 0.3s; }
+-.persona-card:hover { background: #111; }
+-.persona-icon { width: 44px; height: 44px; border-radius: 12px; display: flex; align-items: center; justify-content: center; margin-bottom: 18px; transition: transform 0.3s; }
+-.persona-card:hover .persona-icon { transform: scale(1.1); }
+-.picon-emerald { background: rgba(16,185,129,0.1); } .picon-purple { background: rgba(139,92,246,0.1); } .picon-blue { background: rgba(59,130,246,0.1); } .picon-amber { background: rgba(251,191,36,0.1); } .picon-green { background: rgba(34,197,94,0.1); } .picon-rose { background: rgba(251,113,133,0.1); }
+-.persona-title { font-size: 17px; font-weight: 600; margin-bottom: 8px; }
+-.persona-desc { font-size: 13px; color: var(--text-muted); line-height: 1.6; margin-bottom: 16px; }
+-.persona-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+-.persona-tags span { font-size: 11px; padding: 4px 10px; border-radius: 999px; border: 1px solid #333; color: #777; font-weight: 500; transition: all 0.2s; }
+-.persona-card:hover .persona-tags span { border-color: #555; color: #aaa; }
+-@media (max-width: 768px) { .persona-grid { grid-template-columns: 1fr; } }
+-
+-/* -- CADE SECTION -- */
+-.cade-section { background: radial-gradient(1200px 700px at 70% -10%, #1c1d3e 0, #0a0a14 60%); padding: 120px 24px; border-top: 1px solid rgba(255,255,255,0.06); }
+-.cade-inner { max-width: 1100px; margin: 0 auto; }
+-.cade-eyebrow { font-size: 12px; text-transform: uppercase; letter-spacing: 0.22em; color: #c9a24a; font-weight: 700; text-align: center; margin-bottom: 16px; }
+-.cade-h2 { font-size: clamp(32px, 5vw, 52px); font-weight: 700; line-height: 1.1; letter-spacing: -0.03em; text-align: center; color: #fff; margin-bottom: 16px; }
+-.cade-sub { font-size: 16px; color: #9aa0c8; text-align: center; max-width: 720px; margin: 0 auto 48px; line-height: 1.65; }
+-.cade-stage { border: 1px solid #262a4d; border-radius: 20px; background: linear-gradient(180deg, #13152e, #0c0e22); box-shadow: 0 30px 80px -40px #000; overflow: hidden; margin-bottom: 40px; }
+-.cade-rail { display: flex; gap: 0; border-bottom: 1px solid #262a4d; overflow-x: auto; scrollbar-width: none; }
+-.cade-rail::-webkit-scrollbar { display: none; }
+-.cade-rail-btn { flex: 1; min-width: 104px; text-align: center; font-size: 11.5px; font-weight: 600; color: #9aa0c8; padding: 14px 8px; border: none; border-right: 1px solid #262a4d; position: relative; cursor: pointer; transition: .4s; white-space: nowrap; background: transparent; }
+-.cade-rail-btn:last-child { border-right: 0; }
+-.cade-rail-on { color: #fff; background: linear-gradient(180deg, rgba(123,108,255,.18), transparent); }
+-.cade-rail-on::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: #7b6cff; box-shadow: 0 0 12px rgba(123,108,255,.5); }
+-.cade-rail-n { display: block; font-size: 9px; color: #c9a24a; letter-spacing: .12em; }
+-.cade-canvas { position: relative; height: 360px; display: flex; align-items: center; justify-content: center; }
+-.cade-layer { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; opacity: 0; transition: opacity .5s; pointer-events: none; }
+-.cade-layer :deep(svg) { max-width: 100%; height: 100%; }
+-.cade-layer-show { opacity: 1; }
+-.cade-cap { padding: 16px 22px 22px; border-top: 1px solid #262a4d; min-height: 96px; background: #0b0d20; }
+-.cade-cap-title { font-size: 15px; color: #c9a24a; letter-spacing: .04em; margin-bottom: 6px; }
+-.cade-cap-text { color: #9aa0c8; font-size: 15px; max-width: 760px; }
+-.cade-controls { display: flex; gap: 10px; align-items: center; padding: 0 22px 18px; }
+-.cade-btn { border: 1px solid #262a4d; background: rgba(255,255,255,.03); color: #eef0ff; border-radius: 10px; padding: 9px 16px; font-size: 14px; cursor: pointer; transition: .2s; font-family: inherit; }
+-.cade-btn:hover { border-color: #7b6cff; color: #fff; }
+-.cade-btn-primary { background: linear-gradient(120deg, #7b6cff, #a855f7); border: 0; font-weight: 600; }
+-.cade-scrub { flex: 1; height: 4px; border-radius: 4px; background: #262a4d; position: relative; overflow: hidden; }
+-.cade-scrub-fill { position: absolute; left: 0; top: 0; bottom: 0; background: linear-gradient(90deg, #c9a24a, #7b6cff); transition: width .5s; border-radius: 4px; }
+-.cade-step-label { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; color: #9aa0c8; }
+-.cade-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 40px; }
+-.cade-metric { border: 1px solid #262a4d; border-radius: 16px; padding: 20px; background: #13152e; }
+-.cade-metric-v { font-size: 30px; font-weight: 800; background: linear-gradient(120deg, #fff, #c9a24a); -webkit-background-clip: text; background-clip: text; color: transparent; }
+-.cade-metric-k { color: #9aa0c8; font-size: 13px; margin-top: 4px; }
+-@media (max-width: 720px) { .cade-metrics { grid-template-columns: repeat(2, 1fr); } }
+-.cade-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 40px; }
+-@media (max-width: 760px) { .cade-compare { grid-template-columns: 1fr; } }
+-.cade-compare-card { border: 1px solid #262a4d; border-radius: 16px; padding: 22px; background: #13152e; }
+-.cade-compare-ic { font-size: 22px; display: block; margin-bottom: 10px; }
+-.cade-compare-h { font-size: 17px; margin-bottom: 8px; color: #fff; }
+-.cade-compare-p { color: #9aa0c8; font-size: 14.5px; line-height: 1.55; }
+-.cade-proof { border: 1px solid #262a4d; border-radius: 18px; padding: 26px; background: linear-gradient(135deg, rgba(201,162,74,.08), rgba(123,108,255,.06)); position: relative; display: flex; gap: 20px; align-items: flex-start; }
+-.cade-seal { width: 64px; height: 64px; flex-shrink: 0; }
+-.cade-proof-text h4 { font-size: 16px; color: #eef0ff; margin: 0 0 8px; }
+-.cade-proof-text p { color: #9aa0c8; font-size: 14px; line-height: 1.6; margin: 0 0 12px; }
+-.cade-proof-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: #9aa0c8; word-break: break-all; }
+-@media (max-width: 640px) { .cade-proof { flex-direction: column; } .cade-canvas { height: 260px; } }
+-
+-/* -- PLATFORM ECOSYSTEM -- */
+-.platform-section { background: #0a0a0a; position: relative; }
+-.platform-text { position: relative; z-index: 1; text-align: center; padding: 80px 24px 0; }
+-.platform-eyebrow { font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em; color: #555; font-weight: 500; margin-bottom: 12px; }
+-.platform-h2 { font-size: clamp(26px, 3.5vw, 40px); font-weight: 700; letter-spacing: -0.03em; line-height: 1.15; color: #fff; margin: 0 0 12px; }
+-.platform-sub { font-size: 14px; color: #666; max-width: 600px; margin: 0 auto; line-height: 1.6; }
+-.platform-visual { width: 100%; height: 800px; max-width: 1400px; margin: 0 auto; position: relative; }
+-.platform-visual::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 80px; background: linear-gradient(to bottom, #0a0a0a, transparent); z-index: 1; pointer-events: none; }
+-.platform-visual::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 120px; background: linear-gradient(to top, #000, transparent); z-index: 1; pointer-events: none; }
+-@media (max-width: 768px) { .platform-visual { height: 500px; } }
+-
+-/* -- PROCESS SECTION -- */
+-.process-section { background: #000; padding: 120px 0; position: relative; overflow: hidden; }
+-.process-section::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1) 30%, rgba(255,255,255,0.1) 70%, transparent); }
+-.process-section::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1) 30%, rgba(255,255,255,0.1) 70%, transparent); }
+-.process-inner { max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+-.process-eyebrow { text-transform: uppercase; letter-spacing: 0.2em; font-size: 11px; font-weight: 600; color: #555; margin-bottom: 16px; text-align: center; }
+-.process-h2 { font-size: clamp(32px, 5vw, 52px); font-weight: 700; line-height: 1.1; letter-spacing: -0.03em; text-align: center; color: #fff; margin-bottom: 12px; }
+-.process-sub { font-size: 16px; color: #666; text-align: center; margin-bottom: 72px; }
+-.process-grid { position: relative; display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; }
+-.process-beam { display: none; }
+-@media (min-width: 769px) { .process-beam { display: block; position: absolute; top: 40px; left: 60px; right: 60px; height: 1px; z-index: 0; } }
+-.process-card { position: relative; padding: 1px; border-radius: 16px; animation: process-card-enter 0.6s ease-out var(--delay) both; }
+-@keyframes process-card-enter { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+-.process-card-inner { background: #0a0a0a; border-radius: 15px; padding: 32px 24px; border: 1px solid rgba(255,255,255,0.06); transition: border-color 0.4s, background 0.4s; height: 100%; }
+-.process-card:hover .process-card-inner { border-color: rgba(255,255,255,0.12); background: #0d0d0d; }
+-.process-step-ring { width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 700; color: #555; position: relative; border: 2px solid rgba(255,255,255,0.08); background: #050505; transition: all 0.4s; }
+-.process-context { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 48px; }
+-.process-context-you, .process-context-us { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: #444; padding: 8px 16px; border-radius: 999px; border: 1px solid #222; transition: all 0.5s; }
+-.process-context-active { color: #fff; border-color: rgba(255,255,255,0.2); background: rgba(255,255,255,0.04); }
+-.process-context-arrow { color: #333; transition: color 0.5s; }
+-.process-who { margin-bottom: 12px; }
+-.process-who-badge { font-size: 9px; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 600; padding: 3px 10px; border-radius: 999px; }
+-.process-who-you { background: rgba(16,185,129,0.1); color: #34d399; border: 1px solid rgba(16,185,129,0.2); }
+-.process-who-us { background: rgba(59,130,246,0.06); color: #60a5fa; border: 1px solid rgba(59,130,246,0.15); }
+-.process-card-glow { position: absolute; inset: -1px; border-radius: 16px; background: linear-gradient(135deg, rgba(255,255,255,0.08), var(--color, rgba(255,255,255,0.04)), transparent); z-index: -1; animation: card-glow-pulse 2s ease-in-out infinite; }
+-@keyframes card-glow-pulse { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
+-.process-card-active .process-card-inner { border-color: rgba(255,255,255,0.15); background: #0f0f0f; }
+-.process-card-active .process-card-title { color: #fff; }
+-.process-card-active .process-card-desc { color: var(--text-muted); }
+-.process-card-done .process-card-inner { border-color: rgba(255,255,255,0.06); }
+-.process-card-done .process-step-ring { border-color: rgba(16,185,129,0.4); background: rgba(16,185,129,0.08); color: #34d399; }
+-.process-ring-active { border-color: rgba(255,255,255,0.4) !important; color: #fff !important; box-shadow: 0 0 20px rgba(255,255,255,0.1); animation: ring-pulse 2s ease-in-out infinite; }
+-@keyframes ring-pulse { 0%, 100% { box-shadow: 0 0 20px rgba(255,255,255,0.08); } 50% { box-shadow: 0 0 30px rgba(255,255,255,0.15); } }
+-.process-ring-done { border-color: rgba(16,185,129,0.5) !important; color: #34d399 !important; }
+-.process-card-title { font-size: 18px; font-weight: 600; color: #eee; margin-bottom: 10px; letter-spacing: -0.01em; }
+-.process-card-desc { font-size: 13px; color: #666; line-height: 1.65; margin-bottom: 20px; }
+-.process-card-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+-.process-chip { font-size: 10px; padding: 4px 10px; border-radius: 999px; font-weight: 500; border: 1px solid rgba(255,255,255,0.06); color: #555; transition: all 0.3s; background: transparent; }
+-.process-card:hover .process-chip { border-color: rgba(255,255,255,0.12); color: #888; }
+-.process-chip-active { border-color: rgba(255,255,255,0.15) !important; color: #fff !important; }
+-.process-beam-track { position: absolute; inset: 0; height: 1px; background: rgba(255,255,255,0.06); }
+-.process-beam-pulse { position: absolute; top: -2px; height: 5px; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent); border-radius: 4px; transition: left 0.8s ease, width 0.8s ease; }
+-.process-dots { display: flex; justify-content: center; gap: 8px; margin-top: 32px; }
+-.process-dot { width: 8px; height: 8px; border-radius: 50%; border: 1px solid #333; background: transparent; cursor: pointer; transition: all 0.3s; padding: 0; }
+-.process-dot-active { background: #fff; border-color: #fff; box-shadow: 0 0 8px rgba(255,255,255,0.3); }
+-.process-dot:hover { border-color: #888; }
+-@media (max-width: 768px) {
+-  .process-grid { grid-template-columns: 1fr; gap: 12px; }
+-  .process-card-inner { padding: 24px 20px; }
+-  .process-section { padding: 80px 0; }
+-  .process-sub { margin-bottom: 32px; }
+-  .process-context { margin-bottom: 32px; }
+-}
+-
+-/* -- SPLIT -- */
+-.split-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 64px; align-items: center; }
+-.split-body { font-size: 15px; color: var(--text-muted); line-height: 1.7; margin-bottom: 28px; }
+-.check-list { display: flex; flex-direction: column; gap: 12px; }
+-.check-item { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 500; color: #ccc; }
+-.check-icon { width: 22px; height: 22px; border-radius: 50%; background: #fff; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; }
+-.check-icon svg { stroke: #000; }
+-.notif-stack { position: relative; display: flex; flex-direction: column; gap: 10px; overflow: hidden; }
+-.notif-card { display: flex; align-items: center; gap: 12px; padding: 16px 18px; background: #111; border: 1px solid rgba(255,255,255,0.06); border-radius: 14px; transition: all 0.3s ease; position: relative; }
+-.notif-card:hover { border-color: rgba(255,255,255,0.12); transform: translateX(-4px); }
+-.notif-card-new { border-color: rgba(16,185,129,0.25); background: rgba(16,185,129,0.04); }
+-.notif-new-badge { font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; color: #10b981; padding: 2px 8px; border-radius: 999px; background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.2); flex-shrink: 0; animation: new-pulse 2s ease-in-out infinite; }
+-@keyframes new-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+-.notif-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+-.dot-emerald { background: #10b981; box-shadow: 0 0 6px rgba(16,185,129,0.4); } .dot-blue { background: #3b82f6; } .dot-amber { background: #f59e0b; } .dot-gray { background: #9ca3af; } .dot-purple { background: #8b5cf6; }
+-.notif-text { font-size: 13px; font-weight: 500; color: #eee; flex: 1; }
+-.notif-time { font-size: 11px; color: #555; margin-top: 2px; }
+-.notif-slide-enter-active { transition: all 0.5s ease; }
+-.notif-slide-leave-active { transition: all 0.3s ease; position: absolute; }
+-.notif-slide-enter-from { opacity: 0; transform: translateX(40px); }
+-.notif-slide-leave-to { opacity: 0; transform: translateX(-20px); }
+-.notif-slide-move { transition: transform 0.4s ease; }
+-@media (max-width: 768px) { .split-grid { grid-template-columns: 1fr; gap: 40px; } }
+-
+-/* -- VERTICALS GRID -- */
+-.verticals-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: #222; border-radius: 16px; overflow: hidden; }
+-.vertical-card-link { display: flex; flex-direction: column; padding: 28px; background: #0a0a0a; text-decoration: none; color: inherit; transition: background 0.3s; }
+-.vertical-card-link:hover { background: #111; }
+-.vertical-card-icon { width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; margin-bottom: 16px; transition: transform 0.3s; }
+-.vertical-card-link:hover .vertical-card-icon { transform: scale(1.1); }
+-.vc-emerald { background: rgba(16,185,129,0.1); } .vc-green { background: rgba(34,197,94,0.1); } .vc-blue { background: rgba(59,130,246,0.1); } .vc-purple { background: rgba(139,92,246,0.1); } .vc-amber { background: rgba(251,191,36,0.1); } .vc-rose { background: rgba(251,113,133,0.1); }
+-.vertical-card-title { font-size: 16px; font-weight: 600; margin-bottom: 8px; color: #eee; }
+-.vertical-card-desc { font-size: 12px; color: #666; line-height: 1.55; margin-bottom: 14px; flex: 1; }
+-.vertical-card-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 14px; }
+-.vertical-card-tags span { font-size: 10px; padding: 3px 8px; border-radius: 999px; border: 1px solid #333; color: #777; font-weight: 500; transition: all 0.2s; }
+-.vertical-card-link:hover .vertical-card-tags span { border-color: #555; color: #aaa; }
+-.vertical-card-cta { font-size: 12px; font-weight: 600; color: #555; transition: color 0.2s; }
+-.vertical-card-link:hover .vertical-card-cta { color: #fff; }
+-@media (max-width: 900px) { .verticals-grid { grid-template-columns: repeat(2, 1fr); } }
+-@media (max-width: 640px) { .verticals-grid { grid-template-columns: 1fr; } }
+-
+-/* -- JURISDICTIONS -- */
+-.jur-sub { font-size: 15px; color: #666; text-align: center; margin-bottom: 40px; margin-top: -8px; }
+-.jur-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; transition: all 0.5s ease; }
+-.jur-grid-expanded { grid-template-columns: repeat(5, 1fr); gap: 6px; }
+-.jur-tile { padding: 24px 16px; border-radius: 12px; background: #111; border: 1px solid #222; text-align: center; transition: all 0.35s ease; cursor: default; animation: jur-enter 0.4s ease-out both; }
+-.jur-grid-expanded .jur-tile { padding: 18px 12px; }
+-.jur-tile:hover { border-color: #444; background: #181818; transform: translateY(-2px); }
+-.jur-tile-federal { border-color: rgba(59,130,246,0.2); background: rgba(59,130,246,0.04); }
+-.jur-tile-federal:hover { border-color: rgba(59,130,246,0.4); background: rgba(59,130,246,0.08); }
+-.jur-tile-federal .jur-code { color: #60a5fa; }
+-.jur-tile-tier1 { border-color: rgba(255,255,255,0.08); }
+-.jur-tile-tier1:hover { border-color: rgba(255,255,255,0.2); }
+-.jur-code { display: block; font-size: 28px; font-weight: 700; color: #fff; margin-bottom: 4px; transition: transform 0.3s; }
+-.jur-grid-expanded .jur-code { font-size: 22px; }
+-.jur-tile:hover .jur-code { transform: scale(1.08); }
+-.jur-label { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #666; font-weight: 500; }
+-.jur-grid-expanded .jur-label { font-size: 9px; }
+-.jur-body { display: block; font-size: 11px; color: #444; margin-top: 6px; transition: color 0.3s; }
+-.jur-grid-expanded .jur-body { font-size: 10px; }
+-.jur-tile:hover .jur-body { color: var(--text-muted); }
+-.jur-tile-expand { cursor: pointer; border: 1px dashed #333; background: transparent; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+-.jur-tile-expand:hover { border-color: #fff; background: rgba(255,255,255,0.03); }
+-.jur-expand-icon { color: #555; margin-bottom: 8px; transition: all 0.3s; }
+-.jur-tile-expand:hover .jur-expand-icon { color: #fff; transform: scale(1.2); }
+-.jur-tile-expand .jur-label { color: var(--text-muted); font-size: 13px; text-transform: none; letter-spacing: 0; font-weight: 600; }
+-.jur-tile-expand .jur-body { color: #555; }
+-.jur-collapse-btn { display: flex; align-items: center; gap: 6px; margin: 24px auto 0; padding: 8px 20px; border-radius: 999px; border: 1px solid #333; background: transparent; color: var(--text-muted); font-size: 12px; font-weight: 500; cursor: pointer; transition: all 0.3s; font-family: inherit; }
+-.jur-collapse-btn:hover { border-color: #666; color: #fff; }
+-@keyframes jur-enter { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+-@media (max-width: 768px) { .jur-grid { grid-template-columns: repeat(2, 1fr); } .jur-grid-expanded { grid-template-columns: repeat(3, 1fr); } }
+-
+-/* -- NUMBERS -- */
+-.numbers-section { padding: 80px 24px; }
+-.numbers-grid { display: grid; grid-template-columns: repeat(3, 1fr); }
+-.number-item { text-align: center; padding: 32px 24px; border-right: 1px solid rgba(255,255,255,0.06); }
+-.number-item:last-child { border-right: none; }
+-.number-value { display: block; font-size: clamp(32px, 4vw, 52px); font-weight: 700; letter-spacing: -0.03em; color: #fff; line-height: 1; margin-bottom: 6px; transition: transform 0.3s; white-space: nowrap; }
+-.number-item:hover .number-value { transform: scale(1.05); }
+-.number-label { font-size: 13px; color: var(--text-muted); font-weight: 500; display: block; margin-bottom: 8px; }
+-.number-versus { font-size: 11px; color: rgba(255,255,255,0.35); display: block; }
+-@media (max-width: 768px) { .numbers-grid { grid-template-columns: 1fr; } .number-item { border-right: none; border-bottom: 1px solid rgba(255,255,255,0.06); padding: 28px 16px; } .number-item:last-child { border-bottom: none; } }
+-
+-/* -- SERVICES STRIP -- */
+-.services-strip { padding: 72px 24px; border-top: 1px solid rgba(255,255,255,0.04); background: #050505; }
+-.services-strip-inner { max-width: 1100px; margin: 0 auto; }
+-.services-strip-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em; color: rgba(255,255,255,0.25); font-weight: 600; margin: 0 0 20px; }
+-.services-strip-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; align-items: stretch; }
+-.svc-card { position: relative; display: flex; flex-direction: column; gap: 12px; padding: 24px; border-radius: 14px; border: 1px solid rgba(255,255,255,0.07); background: #0a0a0a; text-decoration: none; color: inherit; transition: border-color 0.25s, box-shadow 0.25s, background 0.25s; overflow: hidden; }
+-.svc-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px; opacity: 0.55; transition: opacity 0.25s; }
+-.svc-card:hover::before { opacity: 1; }
+-.svc-card--emerald::before { background: linear-gradient(90deg, #34d399 0%, rgba(52,211,153,0.08) 100%); }
+-.svc-card--emerald:hover { border-color: rgba(52,211,153,0.22); box-shadow: 0 0 32px rgba(52,211,153,0.05); background: #080f0c; }
+-.svc-card--blue::before { background: linear-gradient(90deg, #63b3ed 0%, rgba(99,179,237,0.08) 100%); }
+-.svc-card--blue:hover { border-color: rgba(99,179,237,0.22); box-shadow: 0 0 32px rgba(99,179,237,0.05); background: #080c10; }
+-.svc-card--gold::before { background: linear-gradient(90deg, #fbbf24 0%, rgba(251,191,36,0.08) 100%); }
+-.svc-card--gold:hover { border-color: rgba(251,191,36,0.22); box-shadow: 0 0 32px rgba(251,191,36,0.05); background: #0d0b07; }
+-.svc-card--purple::before { background: linear-gradient(90deg, #a78bfa 0%, rgba(167,139,250,0.08) 100%); }
+-.svc-card--purple:hover { border-color: rgba(167,139,250,0.22); box-shadow: 0 0 32px rgba(167,139,250,0.05); background: #0a0810; }
+-.svc-card--teal::before { background: linear-gradient(90deg, #22d3ee 0%, rgba(34,211,238,0.08) 100%); }
+-.svc-card--teal:hover { border-color: rgba(34,211,238,0.22); box-shadow: 0 0 32px rgba(34,211,238,0.05); background: #070d0e; }
+-.svc-card--rose::before { background: linear-gradient(90deg, #fb7185 0%, rgba(251,113,133,0.08) 100%); }
+-.svc-card--rose:hover { border-color: rgba(251,113,133,0.22); box-shadow: 0 0 32px rgba(251,113,133,0.05); background: #0d0709; }
+-.svc-card-head { display: flex; align-items: center; gap: 10px; }
+-.svc-card-icon { width: 32px; height: 32px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+-.svc-icon--emerald { background: rgba(52,211,153,0.1); } .svc-icon--blue { background: rgba(99,179,237,0.1); } .svc-icon--purple { background: rgba(167,139,250,0.1); } .svc-icon--gold { background: rgba(251,191,36,0.1); } .svc-icon--teal { background: rgba(34,211,238,0.1); } .svc-icon--rose { background: rgba(251,113,133,0.1); }
+-.svc-card-badge { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; }
+-.svc-badge--emerald { color: rgba(52,211,153,0.55); } .svc-badge--blue { color: rgba(99,179,237,0.55); } .svc-badge--gold { color: rgba(251,191,36,0.55); } .svc-badge--purple { color: rgba(167,139,250,0.55); } .svc-badge--teal { color: rgba(34,211,238,0.55); } .svc-badge--rose { color: rgba(251,113,133,0.55); }
+-.svc-card-title { font-size: 15px; font-weight: 700; color: rgba(255,255,255,0.88); letter-spacing: -0.01em; margin: 0; }
+-.svc-card-desc { font-size: 13px; color: rgba(255,255,255,0.38); line-height: 1.65; margin: 0; flex: 1; }
+-.svc-stats { display: flex; align-items: center; border-radius: 9px; border: 1px solid rgba(255,255,255,0.06); overflow: hidden; }
+-.svc-stat { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 10px 6px; gap: 2px; }
+-.svc-stat-div { width: 1px; height: 30px; background: rgba(255,255,255,0.06); flex-shrink: 0; }
+-.svc-stat-num { font-size: 17px; font-weight: 800; letter-spacing: -0.02em; line-height: 1; }
+-.svc-stat-lbl { font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; color: rgba(255,255,255,0.28); font-weight: 500; white-space: nowrap; }
+-.svc-stats--emerald .svc-stat-num { color: #34d399; }
+-.svc-stats--gold .svc-stat-num { color: #fbbf24; }
+-.svc-card--emerald:hover .svc-stats { border-color: rgba(52,211,153,0.14); }
+-.svc-card--gold:hover .svc-stats { border-color: rgba(251,191,36,0.16); }
+-.svc-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+-.svc-chip { font-size: 10px; font-weight: 600; padding: 3px 9px; border-radius: 100px; border: 1px solid; letter-spacing: 0.02em; transition: all 0.2s; }
+-.svc-chip--blue { color: rgba(99,179,237,0.65); border-color: rgba(99,179,237,0.15); background: rgba(99,179,237,0.05); }
+-.svc-card--blue:hover .svc-chip--blue { color: rgba(99,179,237,0.9); border-color: rgba(99,179,237,0.28); }
+-.svc-chip--gold { color: rgba(251,191,36,0.65); border-color: rgba(251,191,36,0.15); background: rgba(251,191,36,0.05); }
+-.svc-card--gold:hover .svc-chip--gold { color: rgba(251,191,36,0.9); border-color: rgba(251,191,36,0.28); }
+-.svc-chip--purple { color: rgba(167,139,250,0.65); border-color: rgba(167,139,250,0.15); background: rgba(167,139,250,0.05); }
+-.svc-card--purple:hover .svc-chip--purple { color: rgba(167,139,250,0.9); border-color: rgba(167,139,250,0.28); }
+-.svc-chip--teal { color: rgba(34,211,238,0.65); border-color: rgba(34,211,238,0.15); background: rgba(34,211,238,0.05); }
+-.svc-card--teal:hover .svc-chip--teal { color: rgba(34,211,238,0.9); border-color: rgba(34,211,238,0.28); }
+-.svc-chip--rose { color: rgba(251,113,133,0.65); border-color: rgba(251,113,133,0.15); background: rgba(251,113,133,0.05); }
+-.svc-card--rose:hover .svc-chip--rose { color: rgba(251,113,133,0.9); border-color: rgba(251,113,133,0.28); }
+-.svc-card-cta { font-size: 12px; font-weight: 600; transition: color 0.2s; }
+-.svc-savings { font-size: 10px; color: rgba(255,255,255,0.18); letter-spacing: 0.01em; }
+-.svc-cta--emerald { color: rgba(52,211,153,0.45); } .svc-cta--blue { color: rgba(99,179,237,0.45); } .svc-cta--gold { color: rgba(251,191,36,0.45); } .svc-cta--purple { color: rgba(167,139,250,0.45); } .svc-cta--teal { color: rgba(34,211,238,0.45); } .svc-cta--rose { color: rgba(251,113,133,0.45); }
+-.svc-card--emerald:hover .svc-cta--emerald { color: #34d399; }
+-.svc-card--blue:hover .svc-cta--blue { color: #63b3ed; }
+-.svc-card--gold:hover .svc-cta--gold { color: #fbbf24; }
+-.svc-card--purple:hover .svc-cta--purple { color: #a78bfa; }
+-.svc-card--teal:hover .svc-cta--teal { color: #22d3ee; }
+-.svc-card--rose:hover .svc-cta--rose { color: #fb7185; }
+-@media (max-width: 900px) { .services-strip-grid { grid-template-columns: 1fr; gap: 12px; } }
+-
+-/* -- FAQ -- */
+-.faq-section { background: #0a0a0a; padding: 96px 24px; border-top: 1px solid rgba(255,255,255,0.04); }
+-.faq-inner { max-width: 720px; margin: 0 auto; }
+-.faq-h2 { font-size: clamp(22px, 3vw, 32px); font-weight: 700; letter-spacing: -0.02em; color: #fff; margin: 0 0 40px; text-align: center; }
+-.faq-grid { display: flex; flex-direction: column; gap: 1px; background: rgba(255,255,255,0.04); border-radius: 12px; overflow: hidden; }
+-.faq-item { background: #0a0a0a; }
+-.faq-q { padding: 18px 20px; font-size: 14px; font-weight: 500; color: rgba(255,255,255,0.8); cursor: pointer; list-style: none; display: flex; align-items: center; justify-content: space-between; transition: color 0.2s, background 0.2s; }
+-.faq-q:hover { color: #fff; background: rgba(255,255,255,0.02); }
+-.faq-q::after { content: '+'; font-size: 18px; color: #555; font-weight: 300; transition: transform 0.2s; flex-shrink: 0; margin-left: 16px; }
+-.faq-item[open] .faq-q::after { content: '−'; color: #fff; }
+-.faq-q::-webkit-details-marker { display: none; }
+-.faq-a { padding: 0 20px 18px; font-size: 13px; color: rgba(255,255,255,0.4); line-height: 1.7; margin: 0; }
+-.faq-more-wrap { display: flex; justify-content: center; margin-top: 20px; }
+-.faq-more-btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 20px; background: transparent; border: 1px solid rgba(255,255,255,0.1); border-radius: 8px; color: rgba(255,255,255,0.5); font-size: 13px; cursor: pointer; transition: color 0.2s, border-color 0.2s; font-family: inherit; }
+-.faq-more-btn:hover { color: #fff; border-color: rgba(255,255,255,0.25); }
+-
+-/* -- BLOG -- */
+-.blog-section { background: #0a0a0a; padding: 96px 24px; border-top: 1px solid rgba(255,255,255,0.04); }
+-.blog-inner { max-width: 1100px; margin: 0 auto; }
+-.blog-eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: 0.2em; color: #555; font-weight: 600; text-align: center; margin: 0 0 12px; }
+-.blog-h2 { font-size: clamp(22px, 3vw, 32px); font-weight: 700; letter-spacing: -0.02em; color: #fff; margin: 0 0 10px; text-align: center; }
+-.blog-sub { font-size: 14px; color: #666; text-align: center; margin: 0 auto 40px; max-width: 520px; line-height: 1.6; }
+-.blog-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: rgba(255,255,255,0.04); border-radius: 12px; overflow: hidden; }
+-.blog-card { background: #0a0a0a; padding: 24px; display: flex; flex-direction: column; gap: 12px; text-decoration: none; transition: background 0.2s; border: 1px solid rgba(255,255,255,0.07); }
+-.blog-card:hover { background: #111; }
+-.blog-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+-.blog-source { display: inline-flex; align-items: center; padding: 3px 8px; border-radius: 999px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; border: 1px solid rgba(255,255,255,0.12); color: #a1a1a1; background: rgba(255,255,255,0.03); }
+-.blog-source-medium { color: #e5e5e5; border-color: rgba(255,255,255,0.18); }
+-.blog-date { font-size: 11px; color: #555; }
+-.blog-title { font-size: 15px; font-weight: 600; color: #fff; margin: 0; line-height: 1.35; letter-spacing: -0.01em; }
+-.blog-excerpt { font-size: 13px; color: rgba(255,255,255,0.45); margin: 0; line-height: 1.6; flex: 1; }
+-.blog-read { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: #888; font-weight: 500; margin-top: 4px; transition: color 0.2s; }
+-.blog-card:hover .blog-read { color: #fff; }
+-.blog-follow { display: flex; justify-content: center; gap: 20px; margin-top: 32px; flex-wrap: wrap; }
+-.blog-follow-link { display: inline-flex; align-items: center; gap: 6px; padding: 9px 16px; border: 1px solid rgba(255,255,255,0.1); border-radius: 999px; font-size: 12px; font-weight: 500; color: #a1a1a1; text-decoration: none; transition: all 0.2s; }
+-.blog-follow-link:hover { border-color: rgba(255,255,255,0.25); color: #fff; }
+-@media (max-width: 900px) { .blog-grid { grid-template-columns: repeat(2, 1fr); } }
+-@media (max-width: 640px) { .blog-grid { grid-template-columns: 1fr; } }
+-
+-/* -- CTA -- */
+-.cta-section { position: relative; background: #000; padding: 120px 24px; overflow: hidden; }
+-.cta-grid-bg { position: absolute; inset: 0; background-image: linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px); background-size: 48px 48px; }
+-.cta-inner { position: relative; text-align: center; max-width: 600px; margin: 0 auto; }
+-.cta-h2 { font-size: clamp(30px, 5vw, 48px); font-weight: 700; letter-spacing: -0.03em; color: #fff; margin: 0 0 12px; }
+-.cta-sub { font-size: 15px; color: #666; margin: 0 0 36px; }
+-.cta-btn { display: inline-flex; align-items: center; gap: 6px; padding: 14px 28px; background: #fff; color: #000; font-size: 14px; font-weight: 600; border-radius: 8px; text-decoration: none; transition: all 0.2s; }
+-.cta-btn:hover { background: #f5f5f5; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(255,255,255,0.1); }
+-.cta-queue-note { font-size: 11px; color: rgba(255,255,255,0.4); margin-top: 16px; font-style: italic; }
+-
+-/* -- FOOTER -- */
+-.newsletter-section { border-top: 1px solid rgba(255,255,255,0.06); padding: 60px 24px 40px; text-align: center; }
+-.newsletter-inner { max-width: 540px; margin: 0 auto; }
+-.newsletter-title { font-size: 22px; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 8px; color: #fff; }
+-.newsletter-sub { color: var(--text-muted); font-size: 14px; margin: 0 0 20px; line-height: 1.5; }
+-.newsletter-form { display: flex; gap: 8px; max-width: 420px; margin: 0 auto; }
+-.newsletter-input { flex: 1; padding: 10px 14px; background: #0a0a0a; border: 1px solid #2a2a2a; border-radius: 8px; color: #ededed; font-size: 14px; font-family: inherit; outline: none; }
+-.newsletter-input:focus { border-color: #555; }
+-.newsletter-btn { padding: 10px 20px; background: #ededed; color: #0a0a0a; border-radius: 8px; font-weight: 600; font-size: 14px; border: none; cursor: pointer; font-family: inherit; transition: background 0.15s; }
+-.newsletter-btn:hover { background: #fff; }
+-.newsletter-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+-.newsletter-msg { margin-top: 12px; font-size: 13px; color: var(--text-muted); }
+-.site-footer { border-top: 1px solid rgba(255,255,255,0.06); padding: 24px 24px 28px; }
+-.footer-inner { max-width: 1100px; margin: 0 auto; }
+-.footer-disclaimer { font-size: 11px; color: #444; line-height: 1.6; margin-bottom: 16px; }
+-.footer-bottom { display: flex; align-items: center; justify-content: space-between; }
+-.footer-left { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #555; }
+-.footer-links { display: flex; gap: 20px; }
+-.footer-links a { font-size: 12px; color: #555; text-decoration: none; transition: color 0.15s; }
+-.footer-links a:hover { color: #ccc; }
+-@media (max-width: 768px) { .footer-bottom { flex-direction: column; gap: 16px; text-align: center; } }
+-
+-/* -- ANIMATIONS -- */
+-.anim-fade-up { animation: anim-fu 0.9s ease-out both; }
+-.anim-fade-up-delay { animation: anim-fu 1s ease-out 0.4s both; }
+-@keyframes anim-fu { from { opacity: 0; transform: translateY(28px); } to { opacity: 1; transform: translateY(0); } }
++.capability-card {
++  background: var(--bg-card);
++  border: 1px solid var(--border);
++  border-radius: var(--radius);
++  padding: 36px;
++  position: relative;
++  overflow: hidden;
++  transition: border-color 0.3s;
++}
++
++.capability-card:hover {
++  border-color: var(--border-hover);
++}
++
++.capability-accent {
++  position: absolute;
++  top: -50px;
++  right: -50px;
++  width: 200px;
++  height: 200px;
++  border-radius: 50%;
++  pointer-events: none;
++}
++
++.capability-title {
++  font-size: 22px;
++  font-weight: 600;
++  margin-bottom: 12px;
++  letter-spacing: -0.01em;
++  position: relative;
++}
++
++.capability-desc {
++  font-size: 15px;
++  color: var(--text-secondary);
++  line-height: 1.6;
++  margin-bottom: 24px;
++  position: relative;
++}
++
++.capability-list {
++  list-style: none;
++  display: flex;
++  flex-direction: column;
++  gap: 10px;
++  position: relative;
++}
++
++.capability-list li {
++  font-size: 14px;
++  color: var(--text-secondary);
++  padding-left: 18px;
++  position: relative;
++}
++
++.capability-list li::before {
++  content: '';
++  position: absolute;
++  left: 0;
++  top: 7px;
++  width: 6px;
++  height: 6px;
++  border-radius: 50%;
++  background: var(--accent);
++  opacity: 0.6;
++}
++
++/* ─── CTA Section ─── */
++.cta-section {
++  padding: 100px 0;
++}
++
++.cta-box {
++  text-align: center;
++  padding: 80px 40px;
++  background: var(--bg-card);
++  border: 1px solid var(--border);
++  border-radius: var(--radius);
++  position: relative;
++  overflow: hidden;
++}
++
++.cta-box::before {
++  content: '';
++  position: absolute;
++  top: -100px;
++  left: 50%;
++  transform: translateX(-50%);
++  width: 500px;
++  height: 300px;
++  background: radial-gradient(ellipse, rgba(34, 197, 94, 0.06) 0%, transparent 70%);
++  pointer-events: none;
++}
++
++.cta-title {
++  font-size: clamp(28px, 4vw, 40px);
++  font-weight: 700;
++  letter-spacing: -0.02em;
++  margin-bottom: 12px;
++  position: relative;
++}
++
++.cta-sub {
++  font-size: 17px;
++  color: var(--text-secondary);
++  margin-bottom: 32px;
++  position: relative;
++}
++
++/* ─── Footer ─── */
++.site-footer {
++  padding: 60px 0 40px;
++  border-top: 1px solid var(--border);
++}
++
++.footer-top {
++  display: grid;
++  grid-template-columns: 1fr 2fr;
++  gap: 60px;
++  margin-bottom: 48px;
++}
++
++.footer-brand {
++  max-width: 320px;
++}
++
++.footer-logo-row {
++  display: flex;
++  align-items: center;
++  gap: 8px;
++  margin-bottom: 16px;
++}
++
++.footer-logo {
++  border-radius: 4px;
++}
++
++.footer-wordmark {
++  font-size: 16px;
++  font-weight: 700;
++  letter-spacing: -0.01em;
++}
++
++.footer-disclaimer {
++  font-size: 12px;
++  color: var(--text-muted);
++  line-height: 1.6;
++}
++
++.footer-columns {
++  display: grid;
++  grid-template-columns: repeat(3, 1fr);
++  gap: 32px;
++}
++
++.footer-col {
++  display: flex;
++  flex-direction: column;
++  gap: 8px;
++}
++
++.footer-col-title {
++  font-size: 13px;
++  font-weight: 600;
++  color: var(--text-secondary);
++  letter-spacing: 0.02em;
++  text-transform: uppercase;
++  margin-bottom: 4px;
++}
++
++.footer-link {
++  text-decoration: none;
++  color: var(--text-muted);
++  font-size: 14px;
++  transition: color 0.2s;
++}
++
++.footer-link:hover {
++  color: var(--text);
++}
++
++.footer-bottom {
++  padding-top: 24px;
++  border-top: 1px solid var(--border);
++  text-align: center;
++}
++
++.footer-copy {
++  font-size: 13px;
++  color: var(--text-muted);
++}
++
++/* ─── Responsive: 900px ─── */
++@media (max-width: 900px) {
++  .verticals-grid {
++    grid-template-columns: repeat(2, 1fr);
++  }
++
++  .steps-row {
++    grid-template-columns: repeat(2, 1fr);
++    gap: 16px;
++  }
++
++  .step-beam {
++    display: none;
++  }
++
++  .capabilities-grid {
++    grid-template-columns: 1fr;
++  }
++
++  .footer-top {
++    grid-template-columns: 1fr;
++    gap: 40px;
++  }
++
++  .footer-brand {
++    max-width: none;
++  }
++}
++
++/* ─── Responsive: 640px ─── */
++@media (max-width: 640px) {
++  .mobile-toggle {
++    display: flex;
++  }
++
++  .nav-links {
++    display: none;
++    position: absolute;
++    top: 64px;
++    left: 0;
++    right: 0;
++    background: rgba(10, 11, 13, 0.95);
++    backdrop-filter: blur(20px);
++    -webkit-backdrop-filter: blur(20px);
++    border-bottom: 1px solid var(--border);
++    flex-direction: column;
++    padding: 16px 24px;
++    gap: 4px;
++  }
++
++  .nav-links.open {
++    display: flex;
++  }
++
++  .nav-link {
++    padding: 10px 14px;
++  }
++
++  .nav-actions {
++    gap: 4px;
++  }
++
++  .btn-login {
++    padding: 8px 10px;
++    font-size: 13px;
++  }
++
++  .btn-signup {
++    padding: 8px 14px;
++    font-size: 13px;
++  }
++
++  .hero {
++    padding: 140px 0 60px;
++  }
++
++  .verticals-grid {
++    grid-template-columns: 1fr;
++  }
++
++  .steps-row {
++    grid-template-columns: 1fr;
++  }
++
++  .stats-row {
++    grid-template-columns: repeat(2, 1fr);
++    gap: 32px;
++  }
++
++  .footer-columns {
++    grid-template-columns: 1fr;
++    gap: 24px;
++  }
++
++  .cta-box {
++    padding: 48px 24px;
++  }
++
++  .prompt-chips {
++    gap: 6px;
++  }
++
++  .chip {
++    font-size: 12px;
++    padding: 5px 12px;
++  }
++}
+ </style>
+diff --git a/docs/relfix-apparently-07240337.md b/docs/relfix-apparently-07240337.md
+deleted file mode 100644
+index d6bf1ddc..00000000
+--- a/docs/relfix-apparently-07240337.md
++++ /dev/null
+@@ -1,38 +0,0 @@
+-# Release-train divergence fix: relfix-apparently-07240337
+-
+-**Date:** 2026-07-24
+-**Blocked commit:** 9e3bc5b4 ("release-train: refresh orchestrator/dev from origin/master")
+-
+-## Divergence state
+-
+-The production push guard blocked commit 9e3bc5b4 because no green
+-release-train proof exists for it. Investigation:
+-
+-- **origin/master** is at 0b78d1db (17 commits ahead of origin/orchestrator/dev)
+-- **origin/orchestrator/dev** is at 8f3b4271 (an ancestor of origin/master — 0 commits unique)
+-- **local orchestrator/dev** is at 9e3bc5b4, which is a merge commit with
+-  parents 21ccea46 and 0b78d1db — this commit exists only locally and was
+-  never pushed to origin
+-
+-## Root cause
+-
+-A local "release-train: refresh orchestrator/dev from origin/master" merge
+-(9e3bc5b4) was created on the local orchestrator/dev branch but never pushed
+-to origin. The production push guard then encountered this unpushed commit
+-and blocked it because it has no release-train proof on origin.
+-
+-Meanwhile, origin/master already contains all the content from
+-origin/orchestrator/dev (orchestrator/dev is a strict ancestor), so there is
+-no actual content divergence — only a local branch pointer that is ahead of
+-its remote tracking branch.
+-
+-## Recommended resolution
+-
+-1. **Reset local orchestrator/dev** to match origin/orchestrator/dev:
+-   `git checkout orchestrator/dev && git reset --hard origin/orchestrator/dev`
+-2. The release train can then fast-forward origin/orchestrator/dev to
+-   origin/master since orchestrator/dev is already an ancestor.
+-3. No merge is needed — this is a pure fast-forward situation.
+-
+-The unpushed local merge commit (9e3bc5b4) can be safely discarded since all
+-its content is already on origin/master.
+diff --git a/server/utils/cade/divergence.ts b/server/utils/cade/divergence.ts
+index 79821ba3..b2758fd3 100644
+--- a/server/utils/cade/divergence.ts
++++ b/server/utils/cade/divergence.ts
+@@ -62,13 +62,11 @@ export function computeDivergence(opposingCase: OpposingCase): DivergenceMetrics
+   const numericalDivergence = totalCount > 0 ? divergenceSum / totalCount : 0
+ 
+   // Robustness is stronger when there are multiple strong disagreements
+-  // Blends strong proportion with a diminishing-returns strong count so 3/3 strong > 1/1 strong
++  // Formula: based on proportion of strong disagreements and material flag
+   const strongProportion = totalCount > 0 ? strongCount / totalCount : 0
+-  const strongCountFactor = 1 - 1 / (1 + strongCount)
+-  const strongSignal = (strongProportion + strongCountFactor) / 2
+   const robustness = materialDisagreement
+-    ? Math.min(1, 0.7 + strongSignal * 0.3) // Material: 0.7-1.0 range
+-    : Math.min(1, 0.3 + strongSignal * 0.3) // Non-material: 0.3-0.6 range
++    ? Math.min(1, 0.7 + strongProportion * 0.3) // Material: 0.7-1.0 range
++    : Math.min(1, 0.3 + strongProportion * 0.3) // Non-material: 0.3-0.6 range
+ 
+   return {
+     numericalDivergence,
