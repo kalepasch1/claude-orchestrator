@@ -22,6 +22,12 @@ import os, sys, time, json, socket, subprocess, threading, datetime, hashlib, fa
 import log as _log_mod
 _log = _log_mod.get("runner")
 
+
+def emit_task_log(slug: str, level: str, msg: str) -> None:
+    """Log a task message at the given level (info/error/warning/debug)."""
+    log_fn = getattr(_log, level, _log.info)
+    log_fn("[%s] %s", slug, msg)
+
 # ENV SANITY (2026-07-14): the runner (and everything it spawns — agents, npm installs, builds)
 # sometimes inherits NODE_ENV=production from its launcher. Under NODE_ENV=production, `npm
 # install` silently OMITS devDependencies, so builds fail with "Could not load <module>. Is it
