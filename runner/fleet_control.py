@@ -374,5 +374,40 @@ class FleetWebSocketServer:
                 pass
 
 
+def attach_bus_to_websocket(bus, ws_server):
+    """Bridge discovery bus events to the WebSocket server.
+
+    Subscribes to all bus publications and re-publishes them as
+    WebSocket events on the 'multiplayer/*' channel so the frontend
+    dashboard receives real-time updates.
+
+    Args:
+        bus: SharedDiscoveryBus instance
+        ws_server: FleetWebSocketServer instance
+    """
+    if not bus or not ws_server:
+        return
+
+    def _on_discovery(entry):
+        try:
+            channel = f"multiplayer/{entry.get('kind', 'discovery')}"
+            # publish is async on FleetWebSocketServer — schedule it
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.ensure_future(ws_server.publish(channel, {
+                    "event_type": entry.get("kind", "discovery"),
+                    "slug": entry.get("slug", "unknown"),
+                    "summary": entry.get("summary", ""),
+                    "tags": entry.get("tags", []),
+                    "confidence": entry.get("confidence", 0.0),
+                    "timestamp": int(time.time() * 1000),
+                    "publisher": "discovery_bus",
+                }))
+        except Exception:
+            pass  # fail-soft
+
+    bus.subscribe(_on_discovery)
+
+
 if __name__ == "__main__":
     print(f"fleet_control on {HOST}: config-keys={load_config()}, controls={process_controls()}")

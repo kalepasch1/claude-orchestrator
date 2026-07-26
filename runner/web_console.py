@@ -2,7 +2,8 @@
 web_console.py — lightweight HTTP endpoint for live run monitoring.
 
 Serves a JSON snapshot of the current task queue, running tasks, and key metrics.
-Designed to be polled by a simple dashboard or browser tab.
+Includes orchestration data: cascade stats, model routing, vendor capabilities, metrics.
+Designed to be polled by the Development Terminal dashboard.
 """
 import os, sys, json, logging, http.server, threading, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -15,7 +16,7 @@ _snapshot_cache = {"data": {}, "ts": 0.0}
 
 
 def _build_snapshot():
-    """Build a live snapshot of the orchestrator state."""
+    """Build a live snapshot of the orchestrator state including metrics and routing."""
     now = time.time()
     if now - _snapshot_cache["ts"] < 10:
         return _snapshot_cache["data"]
@@ -31,13 +32,15 @@ def _build_snapshot():
     running = []
     try:
         rows = db.select("tasks", {
-            "select": "id,slug,account,project_id,updated_at",
+            "select": "id,slug,account,project_id,updated_at,model_tier,cascade_confidence",
             "state": "eq.RUNNING",
             "order": "updated_at.asc",
             "limit": "20",
         }) or []
         running = [{"slug": r.get("slug"), "account": r.get("account"),
-                     "project_id": r.get("project_id"), "updated_at": r.get("updated_at")}
+                     "project_id": r.get("project_id"), "updated_at": r.get("updated_at"),
+                     "model_tier": r.get("model_tier", "unknown"),
+                     "cascade_confidence": r.get("cascade_confidence", 0.0)}
                     for r in rows]
     except Exception:
         pass
@@ -45,15 +48,86 @@ def _build_snapshot():
     recent_done = []
     try:
         rows = db.select("tasks", {
-            "select": "slug,state,updated_at",
+            "select": "slug,state,updated_at,cost_usd",
             "state": "in.(DONE,MERGED)",
             "order": "updated_at.desc",
             "limit": "10",
         }) or []
         recent_done = [{"slug": r.get("slug"), "state": r.get("state"),
-                        "updated_at": r.get("updated_at")} for r in rows]
+                        "updated_at": r.get("updated_at"),
+                        "cost_usd": r.get("cost_usd", 0.0)} for r in rows]
     except Exception:
         pass
+
+    # Cascade stats
+    cascade_stats = {}
+    try:
+        import model_cascade
+        cascade_stats = model_cascade.stats()
+    except Exception as e:
+        log.warning("Failed to get cascade stats: %s", e)
+
+    # Model routing info
+    model_routing = {}
+    try:
+        import model_policy
+        model_routing = model_policy.analysis() if hasattr(model_policy, 'analysis') else {}
+    except Exception as e:
+        log.warning("Failed to get model routing: %s", e)
+
+    # Vendor capabilities
+    vendor_matrix = {}
+    vendor_stats = {}
+    available_vendors = []
+    try:
+        import vendor_capabilities
+        vendor_matrix = vendor_capabilities.capability_matrix()
+        vendor_stats = vendor_capabilities.stats()
+        available_vendors = vendor_capabilities.available_vendors()
+    except Exception as e:
+        log.warning("Failed to get vendor capabilities: %s", e)
+
+    # Orchestrator metrics
+    metrics = {}
+    try:
+        import orchestrator_metrics
+        metrics = orchestrator_metrics.generate_report()
+    except Exception as e:
+        log.warning("Failed to get orchestrator metrics: %s", e)
+
+    # --- Multiplayer Hivemind layers ---
+    discovery_bus_stats = {}
+    try:
+        import discovery_bus
+        bus = discovery_bus.get_default_bus()
+        discovery_bus_stats = bus.stats()
+    except Exception as e:
+        log.warning("Failed to get discovery_bus stats: %s", e)
+
+    hivemind_stats = {}
+    try:
+        import hivemind_memory
+        hivemind_stats = hivemind_memory.stats()
+    except Exception as e:
+        log.warning("Failed to get hivemind_memory stats: %s", e)
+
+    compliance_stats = {}
+    compliance_risks = []
+    try:
+        import legal_compliance_monitor
+        compliance_stats = legal_compliance_monitor.stats()
+        compliance_risks = legal_compliance_monitor.unacknowledged_risks()
+    except Exception as e:
+        log.warning("Failed to get compliance stats: %s", e)
+
+    conflict_stats = {}
+    conflict_active_locks = []
+    try:
+        import conflict_prevention
+        conflict_stats = conflict_prevention.stats()
+        conflict_active_locks = conflict_prevention.active_locks()
+    except Exception as e:
+        log.warning("Failed to get conflict_prevention stats: %s", e)
 
     snapshot = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -63,6 +137,24 @@ def _build_snapshot():
         "total_queued": states.get("QUEUED", 0),
         "total_running": states.get("RUNNING", 0),
         "total_blocked": states.get("BLOCKED", 0) + states.get("TESTFAIL", 0) + states.get("BUILDFAIL", 0),
+        # Orchestration intelligence
+        "cascade": cascade_stats,
+        "model_routing": model_routing,
+        "vendor_matrix": vendor_matrix,
+        "vendor_stats": vendor_stats,
+        "available_vendors": available_vendors,
+        "metrics": metrics,
+        # Multiplayer Hivemind
+        "discovery_bus": discovery_bus_stats,
+        "hivemind": hivemind_stats,
+        "compliance": {
+            "stats": compliance_stats,
+            "unacknowledged_risks": compliance_risks,
+        },
+        "conflicts": {
+            "stats": conflict_stats,
+            "active_locks": conflict_active_locks,
+        },
     }
     _snapshot_cache["data"] = snapshot
     _snapshot_cache["ts"] = now

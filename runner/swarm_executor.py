@@ -570,16 +570,54 @@ async def execute_batch(tasks: List[dict]) -> List[dict]:
     return await asyncio.gather(*[_run(t) for t in tasks])
 
 
-async def execute_dag(tasks: List[dict], repo_path: str) -> List[dict]:
+async def execute_dag(tasks: List[dict], repo_path: str,
+                      bus=None, project_id: str = None,
+                      dag_id: str = None) -> List[dict]:
     """Execute a planner DAG respecting dependencies, maximizing parallelism.
 
     Each task dict: {slug, prompt, model, provider?, deps: [slug...], mode?}
+
+    Multiplayer Hivemind integration:
+      - bus: SharedDiscoveryBus instance for inter-task knowledge sharing
+      - project_id: Project ID for conflict prevention and compliance tracking
+      - dag_id: DAG run identifier for tracing
     """
     _semaphores.clear()
     by_slug = {t["slug"]: t for t in tasks}
     results: Dict[str, dict] = {}
     done: set = set()
     pending = set(by_slug.keys())
+
+    # --- Multiplayer Hivemind: lazy imports (fail-soft) ---
+    _discovery_bus = None
+    _compliance_monitor = None
+    _conflict_prevention = None
+    _hivemind_memory = None
+    try:
+        import discovery_bus as _discovery_bus
+    except ImportError:
+        pass
+    try:
+        import legal_compliance_monitor as _compliance_monitor
+    except ImportError:
+        pass
+    try:
+        import conflict_prevention as _conflict_prevention
+    except ImportError:
+        pass
+    try:
+        import hivemind_memory as _hivemind_memory
+    except ImportError:
+        pass
+
+    # Use the provided bus or the module's default singleton
+    if bus is None and _discovery_bus:
+        try:
+            bus = _discovery_bus.get_default_bus()
+        except Exception:
+            pass
+
+    _proj = project_id or "unknown"
 
     while pending:
         ready = [s for s in pending
@@ -593,9 +631,91 @@ async def execute_dag(tasks: List[dict], repo_path: str) -> List[dict]:
 
         async def _run_task(slug):
             t = by_slug[slug]
+            prompt = t["prompt"]
+
+            # --- Layer 1: Inject discovery bus context ---
+            if bus and _discovery_bus:
+                try:
+                    context = bus.context_injection(slug)
+                    if context:
+                        prompt = context + "\n\n" + prompt
+                except Exception as e:
+                    log.warning("discovery_bus context_injection failed for %s: %s", slug, e)
+
+            # --- Layer 4: Acquire file locks before execution ---
+            locked_files = []
+            if _conflict_prevention and project_id:
+                for fp in t.get("file_scope", "").split(","):
+                    fp = fp.strip()
+                    if fp:
+                        try:
+                            ok, info = _conflict_prevention.acquire_lock(
+                                _proj, fp, dag_id or slug,
+                                task_slug=slug, duration_minutes=30)
+                            if ok:
+                                locked_files.append(fp)
+                            else:
+                                log.warning("conflict_prevention: %s blocked on %s (held by %s)",
+                                            slug, fp, info.get("held_by", "?"))
+                        except Exception as e:
+                            log.warning("conflict_prevention acquire_lock failed: %s", e)
+
+            # Execute the task
             r = await execute_one(
-                t["prompt"], t["model"], t.get("provider", ""),
+                prompt, t["model"], t.get("provider", ""),
                 repo_path, t.get("mode", "diff"))
+
+            # --- Layer 4: Release file locks after execution ---
+            if _conflict_prevention and locked_files:
+                for fp in locked_files:
+                    try:
+                        _conflict_prevention.release_lock(_proj, fp, dag_id or slug)
+                    except Exception:
+                        pass
+
+            # --- Layer 1: Extract and publish discoveries ---
+            diff_text = r.get("text", "")
+            if bus and _discovery_bus and diff_text:
+                try:
+                    discoveries = _discovery_bus.extract_discoveries(diff_text, slug)
+                    for d in discoveries:
+                        bus.publish(d)
+                except Exception as e:
+                    log.warning("discovery_bus extract/publish failed for %s: %s", slug, e)
+
+            # --- Layer 3: Compliance scan ---
+            if _compliance_monitor and diff_text:
+                try:
+                    events = _compliance_monitor.scan_diff(
+                        diff_text, _proj, dag_id=dag_id, task_slug=slug)
+                    if events:
+                        _compliance_monitor.record_events(events)
+                        _compliance_monitor.broadcast_to_bus(events, bus)
+                        blocked, blocking_event = _compliance_monitor.check_merge_block(events)
+                        if blocked:
+                            log.warning("compliance: MERGE BLOCKED for %s — %s",
+                                        slug, blocking_event.get("summary", ""))
+                            r["compliance_block"] = True
+                            r["compliance_event"] = blocking_event
+                except Exception as e:
+                    log.warning("compliance scan failed for %s: %s", slug, e)
+
+            # --- Layer 2: Store useful patterns in hivemind ---
+            if _hivemind_memory and r.get("returncode") == 0 and diff_text:
+                try:
+                    _hivemind_memory.store({
+                        "project_id": _proj,
+                        "dag_id": dag_id,
+                        "slug": slug,
+                        "pattern_type": "diff",
+                        "summary": f"Successful diff from task {slug}",
+                        "content": diff_text[:3000],
+                        "tags": [s for s in (slug, t.get("mode", "diff")) if s],
+                        "quality_score": 0.8 if r.get("returncode") == 0 else 0.3,
+                    })
+                except Exception as e:
+                    log.warning("hivemind_memory store failed for %s: %s", slug, e)
+
             return slug, r
 
         batch = await asyncio.gather(*[_run_task(s) for s in ready])
@@ -674,13 +794,23 @@ def run_swarm(prompt: str, model: str, provider: str = "", cwd: str = "",
         return r
 
 
-def run_swarm_dag(tasks: List[dict], repo_path: str) -> List[dict]:
-    """Synchronous wrapper for execute_dag."""
+def run_swarm_dag(tasks: List[dict], repo_path: str,
+                  bus=None, project_id: str = None,
+                  dag_id: str = None) -> List[dict]:
+    """Synchronous wrapper for execute_dag.
+
+    Args:
+        bus: SharedDiscoveryBus instance for inter-task knowledge sharing
+        project_id: Project ID for conflict prevention and compliance
+        dag_id: DAG run identifier for tracing
+    """
     if not tasks:
         return []
     try:
         loop = asyncio.new_event_loop()
-        results = loop.run_until_complete(execute_dag(tasks, repo_path))
+        results = loop.run_until_complete(
+            execute_dag(tasks, repo_path, bus=bus,
+                        project_id=project_id, dag_id=dag_id))
         loop.close()
         return results
     except Exception as e:

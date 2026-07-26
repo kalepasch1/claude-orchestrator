@@ -159,6 +159,25 @@ def plan(master: str, repo: str = None) -> list:
     # Apply tests-first gate: split tasks whose proof references a missing test file
     tasks = tests_first_gate.apply_gate(tasks, repo_path=repo)
 
+    # HIVEMIND MEMORY: inject cross-project patterns into task prompts so agents
+    # benefit from proven solutions discovered in other projects/DAGs.
+    try:
+        import hivemind_memory
+        for t in tasks:
+            recalled = hivemind_memory.recall({
+                "slug": t.get("slug", ""),
+                "tags": [s.strip() for s in (t.get("slug", "") or "").replace("-", " ").split()],
+                "project_id": "",  # empty = cross-project recall preferred
+            }, limit=3)
+            if recalled:
+                context = hivemind_memory.format_context(recalled)
+                if context:
+                    t["prompt"] = context + "\n\n" + t["prompt"]
+    except ImportError:
+        pass  # hivemind_memory not available yet
+    except Exception as e:
+        sys.stderr.write(f"[planner] hivemind_memory recall failed ({e}); skipping\n")
+
     # PREDICTIVE CONFLICT AVOIDANCE: feed currently-reserved files and predicted
     # conflicts back into task deps so the planner chains correctly.
     try:
