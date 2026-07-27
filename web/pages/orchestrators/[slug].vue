@@ -703,6 +703,7 @@ watch(slug, () => { refreshInsights() })
               <button @click="toggleAdvanced" class="px-2 py-1 text-[10px] border rounded" :class="advancedOpen ? 'bg-gray-900 text-white border-gray-900' : 'text-gray-500 border-gray-200'">{{ advancedOpen ? 'Basic view' : 'Advanced' }}</button>
             </div>
           </div>
+        <template v-if="activeTab === 'workspace'">
           <section class="border-b border-blue-100 bg-[radial-gradient(circle_at_top_left,_rgba(37,99,235,.14),_transparent_34%),linear-gradient(135deg,#f8fbff,#eef5ff)] px-4 py-6 sm:px-7 sm:py-8">
             <div class="mx-auto grid max-w-6xl gap-6 xl:grid-cols-[minmax(260px,.72fr)_minmax(520px,1.28fr)] xl:items-center">
               <div>
@@ -1059,7 +1060,6 @@ watch(slug, () => { refreshInsights() })
                 </div>
               </div>
             </div>
-          </div>
         </template>
         <!-- ===== CONFIG TAB ===== -->
         <div v-else-if="activeTab === 'config'" class="flex-1 overflow-y-auto p-6">
