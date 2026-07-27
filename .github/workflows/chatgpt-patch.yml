@@ -79,7 +79,12 @@ jobs:
           git apply --3way --whitespace=nowarn /tmp/incoming.patch \
             || { echo "::error::patch does not apply cleanly to ${{ github.ref_name }}"; exit 1; }
           git add -A
-          git diff --cached --quiet && { echo "::error::patch produced no changes"; exit 1; }
+          # NB: `git diff --cached --quiet` exits 1 when changes DO exist, so it must be
+          # an `if`, not `&&` — under `set -e` the `&&` form fails the step on success.
+          if git diff --cached --quiet; then
+            echo "::error::patch produced no changes"; exit 1
+          fi
+          git diff --cached --name-only
 
       - name: Commit as repo owner
         run: |
@@ -108,7 +113,13 @@ jobs:
             echo "Branch: \`$BRANCH\`"
             echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           } > /tmp/pr-body.md
-          gh pr create --base "$BASE" --head "$BRANCH" --title "$TITLE" --body-file /tmp/pr-body.md
+          # Repos with "Allow GitHub Actions to create and approve pull requests" off will
+          # refuse this. The branch is already pushed, so fall back to the compare link
+          # rather than failing a run whose real work succeeded.
+          if ! gh pr create --base "$BASE" --head "$BRANCH" --title "$TITLE" --body-file /tmp/pr-body.md; then
+            echo "::warning::Could not open the PR automatically (Actions may lack PR-create permission). Branch is pushed — open it here:"
+            echo "${{ github.server_url }}/${{ github.repository }}/compare/$BASE...$BRANCH?expand=1"
+          fi
 
       - name: Summary
         run: |
