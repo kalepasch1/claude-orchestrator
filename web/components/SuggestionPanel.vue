@@ -51,7 +51,7 @@ function impactTagClass(impact: string) {
 .suggestions__count { @apply text-xs font-mono bg-white/10 text-slate-300 px-1.5 py-0.5 rounded-full; }
 .suggestions__empty { @apply text-sm text-slate-600 italic; }
 .suggestions__list { @apply space-y-2; }
-.suggestion { @apply flex gap-3 p-3 rounded-lg border border-white/5 bg-white/3; }
+.suggestion { @apply flex gap-3 p-3 rounded-lg border border-white/5 bg-white/5; }
 .suggestion--high { @apply border-emerald-500/20 bg-emerald-500/5; }
 .suggestion--medium { @apply border-yellow-500/20 bg-yellow-500/5; }
 .suggestion__rank { @apply text-xs font-mono text-slate-500 pt-0.5 shrink-0; }

@@ -204,6 +204,6 @@ onMounted(() => { setTimeout(() => inputRef.value?.focus(), 100) })
 .dev-terminal__input-row { @apply px-4 pb-3; }
 .dev-terminal__post-completion { @apply space-y-3; }
 .dev-terminal__panels-grid { @apply grid grid-cols-1 sm:grid-cols-2 gap-3; }
-.dev-terminal__panel { @apply rounded-xl border border-white/10 bg-white/3 p-4; }
+.dev-terminal__panel { @apply rounded-xl border border-white/10 bg-white/5 p-4; }
 .dev-terminal__panel--full { @apply sm:col-span-2; }
 </style>
