@@ -148,6 +148,16 @@ fi
 
 # ---- push -------------------------------------------------------------------
 if [ "$TARGET_DEFAULT" -eq 1 ]; then
+  # Repos behind the fleet's release train reject any direct production push that
+  # lacks a green build proof for the exact commit. Say so plainly instead of
+  # letting the user read a hook refusal — and never try to route around it.
+  HOOKS="$(git -C "$ROOT" config core.hooksPath 2>/dev/null || true)"
+  if [ -n "$HOOKS" ] && [ -x "$HOOKS/pre-push" ] && grep -q 'production_push_guard' "$HOOKS/pre-push" 2>/dev/null; then
+    cleanup_fail
+    die "$REPO is behind production_push_guard — --push-to-default cannot be used.
+       Re-run without it: the patch lands on a branch with a PR, and the release
+       train promotes it once the build is green."
+  fi
   git -C "$WT" push origin "HEAD:$DEFAULT_BRANCH" || { cleanup_fail; die "push to $DEFAULT_BRANCH failed"; }
   log "pushed directly to $DEFAULT_BRANCH"
   RESULT="pushed to $DEFAULT_BRANCH"

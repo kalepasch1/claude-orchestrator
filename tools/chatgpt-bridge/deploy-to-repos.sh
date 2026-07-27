@@ -5,7 +5,12 @@
 # a branch + PR. Idempotent: re-running updates the files in place.
 #
 #   ./deploy-to-repos.sh            # PR per repo (default)
-#   ./deploy-to-repos.sh --direct   # commit straight to the default branch
+#   ./deploy-to-repos.sh --direct   # commit straight to the default branch, where allowed
+#
+# --direct is honoured only for repos with no production_push_guard. Guarded
+# repos silently fall back to a PR: the guard requires a green release-train
+# proof for the exact commit, so a direct push there is guaranteed to be
+# rejected. Detecting that up front beats pushing and reading the refusal.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -89,7 +94,16 @@ for ROOT in "${REPOS[@]}"; do
 Sandbox sessions cannot reach github.com. CHATGPT.md tells the agent to emit a
 patch instead of debugging DNS; chatgpt-patch.yml applies one from the browser."
 
-  if [ "$DIRECT" -eq 1 ]; then
+  # Does this repo sit behind the fleet's release train?
+  GUARDED=0
+  HOOKS="$(git -C "$ROOT" config core.hooksPath 2>/dev/null || true)"
+  [ -n "$HOOKS" ] && [ -x "$HOOKS/pre-push" ] && grep -q 'production_push_guard' "$HOOKS/pre-push" 2>/dev/null && GUARDED=1
+
+  if [ "$DIRECT" -eq 1 ] && [ "$GUARDED" -eq 1 ]; then
+    echo "  production_push_guard present — using a PR instead of a direct push"
+  fi
+
+  if [ "$DIRECT" -eq 1 ] && [ "$GUARDED" -eq 0 ]; then
     git -C "$WT" push -q origin "HEAD:$DEF" && echo "  pushed to $DEF"
   else
     git -C "$WT" push -q -u origin "$BR" --force-with-lease && echo "  pushed $BR"

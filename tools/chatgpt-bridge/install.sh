@@ -53,6 +53,42 @@ launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 launchctl enable "gui/$(id -u)/$LABEL" 2>/dev/null || true
 
+# ---- watchdog -------------------------------------------------------------
+# Lives outside ~/Documents on purpose: when the FDA grant is lost, everything
+# under ~/Documents is unreadable, so the bridge can neither run nor report it.
+# The watchdog only needs ~/Library, which is always reachable.
+WD_DIR="$HOME/Library/Application Support/chatgpt-bridge"
+WD_LABEL="com.claudeorchestrator.chatgptbridge.watchdog"
+WD_PLIST="$HOME/Library/LaunchAgents/$WD_LABEL.plist"
+mkdir -p "$WD_DIR" "$HOME/Library/Logs/claude-orchestrator"
+cp "$HERE/watchdog.sh" "$WD_DIR/watchdog.sh"
+chmod +x "$WD_DIR/watchdog.sh"
+
+cat > "$WD_PLIST" <<WDEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$WD_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>$WD_DIR/watchdog.sh</string>
+  </array>
+  <key>StartInterval</key><integer>300</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardErrorPath</key><string>$HOME/Library/Logs/claude-orchestrator/chatgpt-bridge-watchdog.err</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>HOME</key><string>$HOME</string></dict>
+</dict>
+</plist>
+WDEOF
+
+# NB: the watchdog is bootstrapped further down, only AFTER the first heartbeat
+# exists — RunAtLoad would otherwise fire a false "bridge is broken" alert during
+# the install itself.
+launchctl bootout "gui/$(id -u)/$WD_LABEL" 2>/dev/null || true
+
 cat > "$DROPBOX/README.txt" <<'EOF'
 ChatGPT → GitHub drop-box
 =========================
@@ -86,3 +122,31 @@ echo "Installed."
 echo "  drop-box : $DROPBOX"
 echo "  CLI      : ~/bin/chatgpt-patch"
 echo "  launchd  : $LABEL (every 30s)"
+
+# ---- prove the agent can actually reach ~/Documents -------------------------
+# A silently-denied agent is the failure mode worth catching here: patches would
+# sit in the drop-box looking accepted while nothing ever ships. The watcher
+# writes a heartbeat on every successful sweep, so wait for one.
+echo -n "Verifying the launchd agent can read ~/Documents "
+HB="$HOME/Library/Logs/claude-orchestrator/chatgpt-bridge.heartbeat"
+rm -f "$HB"
+launchctl kickstart "gui/$(id -u)/$LABEL" 2>/dev/null || true
+for _ in $(seq 1 20); do
+  [ -f "$HB" ] && break
+  echo -n "."
+  sleep 1
+done
+echo
+if [ -f "$HB" ]; then
+  echo "  ✓ agent healthy — drop a patch in $DROPBOX and it will ship"
+  rm -f "$WD_DIR/.last-alert"
+  launchctl bootstrap "gui/$(id -u)" "$WD_PLIST"
+  launchctl enable "gui/$(id -u)/$WD_LABEL" 2>/dev/null || true
+  echo "  ✓ watchdog armed ($WD_LABEL, every 5 min)"
+else
+  echo "  ✗ agent could NOT read ~/Documents."
+  echo "    Grant Full Disk Access to ClaudeRunner.app, then re-run this script:"
+  echo "      System Settings → Privacy & Security → Full Disk Access → + → $(dirname "$(dirname "$APP")")"
+  echo "    Until then the drop-box is inert. 'chatgpt-patch <file>' from a terminal still works."
+  exit 1
+fi
