@@ -113,7 +113,13 @@ jobs:
             echo "Branch: \`$BRANCH\`"
             echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           } > /tmp/pr-body.md
-          gh pr create --base "$BASE" --head "$BRANCH" --title "$TITLE" --body-file /tmp/pr-body.md
+          # Repos with "Allow GitHub Actions to create and approve pull requests" off will
+          # refuse this. The branch is already pushed, so fall back to the compare link
+          # rather than failing a run whose real work succeeded.
+          if ! gh pr create --base "$BASE" --head "$BRANCH" --title "$TITLE" --body-file /tmp/pr-body.md; then
+            echo "::warning::Could not open the PR automatically (Actions may lack PR-create permission). Branch is pushed — open it here:"
+            echo "${{ github.server_url }}/${{ github.repository }}/compare/$BASE...$BRANCH?expand=1"
+          fi
 
       - name: Summary
         run: |
