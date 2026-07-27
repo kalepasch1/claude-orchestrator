@@ -86,7 +86,7 @@ log "default branch: $DEFAULT_BRANCH"
 git -C "$ROOT" fetch origin "$DEFAULT_BRANCH" --quiet || die "fetch failed (network?)"
 
 rm -rf "$WT" 2>/dev/null
-git -C "$ROOT" worktree prune --quiet 2>/dev/null
+git -C "$ROOT" worktree prune 2>/dev/null
 mkdir -p "$(dirname "$WT")"
 git -C "$ROOT" worktree add -b "$BRANCH" "$WT" "origin/$DEFAULT_BRANCH" --quiet \
   || die "could not create worktree $WT"
@@ -161,6 +161,6 @@ else
 fi
 
 git -C "$ROOT" worktree remove --force "$WT" >/dev/null 2>&1
-git -C "$ROOT" worktree prune --quiet 2>/dev/null
+git -C "$ROOT" worktree prune 2>/dev/null
 
 echo "OK: $REPO — $RESULT"

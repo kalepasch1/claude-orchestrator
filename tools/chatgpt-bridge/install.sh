@@ -16,6 +16,15 @@ mkdir -p "$DROPBOX/_applied" "$DROPBOX/_failed" "$DROPBOX/_logs"
 mkdir -p "$HOME/bin"
 ln -sf "$HERE/apply-patch.sh" "$HOME/bin/chatgpt-patch"
 
+# launchd cannot execute or read anything under ~/Documents (macOS TCC), so the
+# agent goes through ClaudeRunner.app — the bundle that already holds the
+# Full Disk Access grant for this fleet. Same pattern as the other orchestrator agents.
+APP="/Applications/ClaudeRunner.app/Contents/MacOS/ClaudeRunner"
+[ -x "$APP" ] || APP="$HOME/Applications/ClaudeRunner.app/Contents/MacOS/ClaudeRunner"
+[ -x "$APP" ] || { echo "ERROR: ClaudeRunner.app not found — run scripts/setup-scheduler.sh first" >&2; exit 1; }
+grep -q '\*\.sh ]]' "$(dirname "$(dirname "$APP")")/Resources/launcher.sh" \
+  || echo "WARNING: ClaudeRunner launcher lacks .sh support — re-run scripts/setup-scheduler.sh"
+
 cat > "$PLIST" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -24,8 +33,8 @@ cat > "$PLIST" <<PLISTEOF
   <key>Label</key><string>$LABEL</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/bash</string>
-    <string>$HERE/watch-dropbox.sh</string>
+    <string>$APP</string>
+    <string>tools/chatgpt-bridge/watch-dropbox.sh</string>
   </array>
   <key>StartInterval</key><integer>30</integer>
   <key>RunAtLoad</key><true/>

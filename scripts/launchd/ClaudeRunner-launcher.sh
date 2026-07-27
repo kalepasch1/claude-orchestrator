@@ -61,6 +61,10 @@ if [[ -z "$JOB" ]]; then
     export ORCH_KEEPALIVE_DUPLICATE_POLL_SECONDS="${ORCH_KEEPALIVE_DUPLICATE_POLL_SECONDS:-60}"
     exec /bin/zsh "$REPO/runner/keepalive.sh" \
         >> "$LOG_DIR/runner.log" 2>> "$LOG_DIR/runner.err"
+elif [[ "$JOB" == *.sh ]]; then
+    # Shell job, path relative to repo root (e.g. tools/chatgpt-bridge/watch-dropbox.sh).
+    # Runs under the .app's Full Disk Access grant so it can reach ~/Documents.
+    exec /bin/bash "$REPO/$JOB"
 elif [[ "$JOB" == *.py ]]; then
     exec /usr/bin/python3 "$REPO/runner/$JOB"
 else
