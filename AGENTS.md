@@ -10,3 +10,8 @@ Run this immediately after cloning, before your first commit. Vercel blocks
 production deployments whose commit author is anyone else — commits authored
 as e.g. mandyjustinepasch@gmail.com or kale@heretomorrow.us end up in BLOCKED
 state and never deploy. Do not use your platform account identity.
+
+## No-network agent sessions (ChatGPT sandbox)
+
+ChatGPT's code sandbox has no outbound network — `git push` and DNS always fail
+there. Do not debug it. Emit a patch instead: see [CHATGPT.md](./CHATGPT.md).
