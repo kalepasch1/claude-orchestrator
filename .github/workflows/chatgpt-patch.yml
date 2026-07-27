@@ -1,0 +1,118 @@
+name: Apply ChatGPT patch
+
+# Fallback path for landing code from a no-network agent session (ChatGPT code
+# interpreter) when you are away from the Mac running the chatgpt-bridge drop-box.
+#
+# Run it straight from github.com: Actions -> "Apply ChatGPT patch" -> Run workflow,
+# paste the base64 patch, done. Opens a PR; never writes to a production branch.
+#
+# In the sandbox:   git diff | base64 | tr -d '\n'      (copy that string)
+# Large patch?      put the raw patch in a secret gist and pass patch_url instead.
+
+on:
+  workflow_dispatch:
+    inputs:
+      patch_b64:
+        description: 'Base64-encoded unified diff (git diff | base64). Leave blank if using patch_url.'
+        required: false
+        type: string
+      patch_url:
+        description: 'Raw URL of the patch (e.g. gist raw link). Used when patch_b64 is blank.'
+        required: false
+        type: string
+      branch:
+        description: 'Branch name (blank = auto chatgpt/patch-<run>)'
+        required: false
+        type: string
+      message:
+        description: 'Commit message'
+        required: false
+        default: 'chore: apply patch via ChatGPT bridge'
+        type: string
+      open_pr:
+        description: 'Open a pull request'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: chatgpt-patch-${{ github.run_id }}
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Materialise patch
+        run: |
+          set -euo pipefail
+          if [ -n "${{ inputs.patch_b64 }}" ]; then
+            printf '%s' '${{ inputs.patch_b64 }}' | base64 -d > /tmp/incoming.patch
+          elif [ -n "${{ inputs.patch_url }}" ]; then
+            curl -fsSL "${{ inputs.patch_url }}" -o /tmp/incoming.patch
+          else
+            echo "::error::provide either patch_b64 or patch_url"; exit 1
+          fi
+          test -s /tmp/incoming.patch || { echo "::error::patch is empty"; exit 1; }
+          echo "patch bytes: $(wc -c < /tmp/incoming.patch)"
+
+      - name: Create branch
+        id: br
+        run: |
+          set -euo pipefail
+          BR="${{ inputs.branch }}"
+          [ -n "$BR" ] || BR="chatgpt/patch-${{ github.run_id }}"
+          git checkout -b "$BR"
+          echo "branch=$BR" >> "$GITHUB_OUTPUT"
+
+      - name: Apply
+        run: |
+          set -euo pipefail
+          git apply --3way --whitespace=nowarn /tmp/incoming.patch \
+            || { echo "::error::patch does not apply cleanly to ${{ github.ref_name }}"; exit 1; }
+          git add -A
+          git diff --cached --quiet && { echo "::error::patch produced no changes"; exit 1; }
+
+      - name: Commit as repo owner
+        run: |
+          set -euo pipefail
+          # Vercel blocks production deploys authored by anyone else.
+          git config user.name  "kalepasch1"
+          git config user.email "kalepasch@gmail.com"
+          git commit -m "${{ inputs.message }}"
+          git log -1 --pretty='author: %an <%ae>'
+
+      - name: Push
+        run: git push origin "${{ steps.br.outputs.branch }}"
+
+      - name: Open PR
+        if: ${{ inputs.open_pr }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --base "${{ github.ref_name }}" \
+            --head "${{ steps.br.outputs.branch }}" \
+            --title "${{ inputs.message }}" \
+            --body "Applied via the **Apply ChatGPT patch** workflow (no-network agent handoff).
+
+Branch: \`${{ steps.br.outputs.branch }}\`
+Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Patch applied"
+            echo ""
+            echo "- branch: \`${{ steps.br.outputs.branch }}\`"
+            echo "- files:"
+            git diff --name-only HEAD~1 HEAD | sed 's/^/  - /'
+          } >> "$GITHUB_STEP_SUMMARY"

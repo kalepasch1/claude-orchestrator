@@ -104,3 +104,8 @@ Here are the extracted conventions and DO/AVOID rules:
 * Do not introduce new risks or uncertainties without proper mitigation strategies.
 * Use conditional language (e.g., "we conditionally support this proposal") instead of absolute statements.
 * Refrain from including confidential information in publicly accessible documents.
+
+## No-network agent sessions (ChatGPT sandbox)
+
+ChatGPT's code sandbox has no outbound network — `git push` and DNS always fail
+there. Do not debug it. Emit a patch instead: see [CHATGPT.md](./CHATGPT.md).
