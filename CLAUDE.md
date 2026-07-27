@@ -109,3 +109,26 @@ Here are the extracted conventions and DO/AVOID rules:
 
 ChatGPT's code sandbox has no outbound network — `git push` and DNS always fail
 there. Do not debug it. Emit a patch instead: see [CHATGPT.md](./CHATGPT.md).
+
+## ChatGPT / no-network sandbox handoff (2026-07-27)
+
+ChatGPT's code-execution sandbox has **no outbound network** — `git push` and DNS
+(`Could not resolve host: github.com`) fail there permanently. It is a platform
+limitation; do not debug it. Sandbox sessions emit a **patch**; this Mac pushes.
+
+**Bridge:** `tools/chatgpt-bridge/` (see its README).
+Drop `<repo>--<slug>.patch` (or `.diff`/`.zip`/`.tar.gz`) into
+`~/Documents/chatgpt-dropbox/` → within 30s it becomes an isolated worktree, a commit
+authored `kalepasch1 <kalepasch@gmail.com>`, a `chatgpt/<slug>` branch, and a PR.
+Results in `_applied/` / `_failed/`; log at `_logs/bridge.log`. CLI: `chatgpt-patch <file>`.
+
+- launchd agent `com.claudeorchestrator.chatgptbridge` runs **through ClaudeRunner.app**
+  — launchd cannot read or execute anything under `~/Documents` without that FDA grant.
+  The app launcher now accepts `.sh` jobs relative to repo root.
+- Browser fallback in every repo: Actions → **Apply ChatGPT patch** → paste
+  `git diff | base64`. Needs "Allow GitHub Actions to create and approve pull requests"
+  (enabled on all six repos).
+- Every repo carries `CHATGPT.md` telling the agent to emit a patch instead of pushing;
+  `deploy-to-repos.sh` (re)installs it plus the workflow everywhere.
+- Direct pushes to production branches are still blocked by `production_push_guard` —
+  the bridge opens PRs, it does not bypass the release train.

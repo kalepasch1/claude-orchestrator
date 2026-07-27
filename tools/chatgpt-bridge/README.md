@@ -64,9 +64,24 @@ chatgpt-patch file.patch --push-to-default               # straight to main (car
 | `apply-patch.sh` | Core: resolve repo → worktree → apply → commit → push → PR |
 | `watch-dropbox.sh` | One sweep of the drop-box; run by launchd every 30s |
 | `install.sh` | Idempotent setup: drop-box, `~/bin/chatgpt-patch`, launchd agent |
+| `deploy-to-repos.sh` | Installs `CHATGPT.md` + `chatgpt-patch.yml` into every repo |
+| `chatgpt-patch.workflow.yml` | Source of the browser-fallback workflow |
+| `CHATGPT.template.md` | Source of the per-repo agent instructions |
 
 launchd label: `com.claudeorchestrator.chatgptbridge`
 Logs: `~/Documents/chatgpt-dropbox/_logs/bridge.log`
+
+### Why it runs through ClaudeRunner.app
+
+launchd cannot execute or even read files under `~/Documents` — macOS TCC denies it
+(`Operation not permitted`), and both the scripts and the repos live there. So the
+agent invokes `ClaudeRunner.app`, the bundle that already holds this fleet's Full Disk
+Access grant, exactly as the other orchestrator agents do. Its launcher accepts a `.sh`
+job path relative to the repo root.
+
+If the watcher silently stops firing, check `_logs/launchd.err.log` for
+`Operation not permitted` — that means the FDA grant on ClaudeRunner.app was lost
+(System Settings → Privacy & Security → Full Disk Access).
 
 ## Fallback without this Mac
 
