@@ -38,6 +38,7 @@ REPOS=(
   "$HOME/Documents/smarter"
   "$HOME/Documents/illuminati"
   "$HOME/Documents/vigil"
+  "$HOME/Documents/pareto/2080"
 )
 
 for ROOT in "${REPOS[@]}"; do

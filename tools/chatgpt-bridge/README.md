@@ -36,7 +36,7 @@ Or from a header line inside the patch:
 ```
 
 Known repos: `claude-orchestrator`, `tomorrow`, `apparently`, `smarter`,
-`illuminati`, `vigil`.
+`illuminati`, `vigil`, `2080`.
 
 ## Guarantees
 

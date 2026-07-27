@@ -23,6 +23,7 @@ REPO_ROOTS=(
   "$HOME/Documents/smarter"
   "$HOME/Documents/illuminati"
   "$HOME/Documents/vigil"
+  "$HOME/Documents/pareto/2080"
 )
 
 GIT_NAME="kalepasch1"

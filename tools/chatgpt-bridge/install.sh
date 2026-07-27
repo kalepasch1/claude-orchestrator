@@ -66,7 +66,7 @@ Naming (this is how the repo is chosen):
 e.g. tomorrow--fix-login-redirect.patch
      claude-orchestrator--add-retry.patch
 
-Known repos: claude-orchestrator, tomorrow, apparently, smarter, illuminati, vigil
+Known repos: claude-orchestrator, tomorrow, apparently, smarter, illuminati, vigil, 2080
 
 Optional header lines inside a .patch/.diff:
     # repo: tomorrow
