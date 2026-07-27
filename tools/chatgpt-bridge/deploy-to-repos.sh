@@ -12,6 +12,25 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIRECT=0
 [ "${1:-}" = "--direct" ] && DIRECT=1
 
+# Fail before touching any repo if the workflow YAML is malformed. GitHub reports a
+# bad workflow only as "workflow file issue" after the fact, so gate it here.
+python3 - "$HERE/chatgpt-patch.workflow.yml" <<'PY' || exit 1
+import sys, yaml
+p = sys.argv[1]
+try:
+    d = yaml.safe_load(open(p))
+except yaml.YAMLError as e:
+    m = getattr(e, 'problem_mark', None)
+    loc = f" (line {m.line+1}, col {m.column+1})" if m else ""
+    print(f"ERROR: {p} is not valid YAML: {getattr(e,'problem',e)}{loc}", file=sys.stderr)
+    sys.exit(1)
+trig = d.get(True, d.get('on'))            # YAML 1.1 parses bare `on:` as True
+if not isinstance(trig, dict) or 'workflow_dispatch' not in trig:
+    print("ERROR: workflow is missing a workflow_dispatch trigger", file=sys.stderr)
+    sys.exit(1)
+print("workflow YAML OK")
+PY
+
 REPOS=(
   "$HOME/Documents/beethoven/claude-orchestrator"
   "$HOME/Documents/tomorrow/tomorrow"
@@ -31,6 +50,10 @@ for ROOT in "${REPOS[@]}"; do
   [ -n "$DEF" ] || { echo "  skip (cannot resolve default branch)"; continue; }
 
   git -C "$ROOT" fetch -q origin "$DEF" || { echo "  skip (fetch failed)"; continue; }
+  # A previously-merged branch that was deleted on the remote leaves a stale tracking
+  # ref, and --force-with-lease then rejects the push as "stale info". Prune all refs
+  # (a pruning fetch scoped to one refspec does not clear it).
+  git -C "$ROOT" remote prune origin >/dev/null 2>&1
 
   BR="chore/chatgpt-bridge-protocol"
   WT="${ROOT}-wt/chatgpt-bridge-protocol"

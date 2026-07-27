@@ -79,7 +79,12 @@ jobs:
           git apply --3way --whitespace=nowarn /tmp/incoming.patch \
             || { echo "::error::patch does not apply cleanly to ${{ github.ref_name }}"; exit 1; }
           git add -A
-          git diff --cached --quiet && { echo "::error::patch produced no changes"; exit 1; }
+          # NB: `git diff --cached --quiet` exits 1 when changes DO exist, so it must be
+          # an `if`, not `&&` — under `set -e` the `&&` form fails the step on success.
+          if git diff --cached --quiet; then
+            echo "::error::patch produced no changes"; exit 1
+          fi
+          git diff --cached --name-only
 
       - name: Commit as repo owner
         run: |
@@ -97,15 +102,18 @@ jobs:
         if: ${{ inputs.open_pr }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.br.outputs.branch }}
+          BASE: ${{ github.ref_name }}
+          TITLE: ${{ inputs.message }}
         run: |
-          gh pr create \
-            --base "${{ github.ref_name }}" \
-            --head "${{ steps.br.outputs.branch }}" \
-            --title "${{ inputs.message }}" \
-            --body "Applied via the **Apply ChatGPT patch** workflow (no-network agent handoff).
-
-Branch: \`${{ steps.br.outputs.branch }}\`
-Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          set -euo pipefail
+          {
+            echo "Applied via the **Apply ChatGPT patch** workflow (no-network agent handoff)."
+            echo
+            echo "Branch: \`$BRANCH\`"
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > /tmp/pr-body.md
+          gh pr create --base "$BASE" --head "$BRANCH" --title "$TITLE" --body-file /tmp/pr-body.md
 
       - name: Summary
         run: |
