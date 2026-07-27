@@ -71,7 +71,7 @@ chatgpt-patch file.patch --push-to-default               # straight to main (car
 launchd label: `com.claudeorchestrator.chatgptbridge`
 Logs: `~/Documents/chatgpt-dropbox/_logs/bridge.log`
 
-### Why it runs through ClaudeRunner.app
+### Why it runs through ClaudeRunner.app, and how it tells you when that breaks
 
 launchd cannot execute or even read files under `~/Documents` — macOS TCC denies it
 (`Operation not permitted`), and both the scripts and the repos live there. So the
@@ -79,9 +79,29 @@ agent invokes `ClaudeRunner.app`, the bundle that already holds this fleet's Ful
 Access grant, exactly as the other orchestrator agents do. Its launcher accepts a `.sh`
 job path relative to the repo root.
 
-If the watcher silently stops firing, check `_logs/launchd.err.log` for
-`Operation not permitted` — that means the FDA grant on ClaudeRunner.app was lost
-(System Settings → Privacy & Security → Full Disk Access).
+The dangerous part is what happens if that grant is lost: the watcher can neither run
+**nor report** it, because the script itself becomes unreadable. Patches would sit in
+the drop-box looking accepted while nothing shipped. Two things prevent that:
+
+- **`watchdog.sh`** runs from its own launchd agent every 5 minutes and lives at
+  `~/Library/Application Support/chatgpt-bridge/` — deliberately outside `~/Documents`,
+  so it stays readable when the grant is gone. The heartbeat it reads is at
+  `~/Library/Logs/claude-orchestrator/chatgpt-bridge.heartbeat` for the same reason.
+  No sweep for 10 minutes ⇒ a notification, rate-limited to hourly.
+- **`install.sh`** proves the whole chain before declaring success: it clears the
+  heartbeat, kickstarts the agent, and waits for a real sweep. If none arrives it tells
+  you exactly which grant to restore and exits non-zero.
+
+To recover: System Settings → Privacy & Security → Full Disk Access → add
+`ClaudeRunner.app`, then re-run `install.sh`. `chatgpt-patch <file>` from a terminal
+keeps working throughout — a terminal has its own access.
+
+### Production branches
+
+`--push-to-default` (and `deploy-to-repos.sh --direct`) detect `production_push_guard`
+and refuse or fall back to a PR. The guard requires a green release-train proof for the
+exact commit, so a direct push is guaranteed to be rejected there. The bridge does not
+route around it.
 
 ## Fallback without this Mac
 

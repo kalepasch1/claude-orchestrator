@@ -125,6 +125,12 @@ Results in `_applied/` / `_failed/`; log at `_logs/bridge.log`. CLI: `chatgpt-pa
 - launchd agent `com.claudeorchestrator.chatgptbridge` runs **through ClaudeRunner.app**
   — launchd cannot read or execute anything under `~/Documents` without that FDA grant.
   The app launcher now accepts `.sh` jobs relative to repo root.
+- **FDA loss is self-reporting.** If the grant goes, the watcher can neither run nor
+  complain (its own file becomes unreadable), so `com.claudeorchestrator.chatgptbridge.watchdog`
+  runs every 5 min from `~/Library/Application Support/chatgpt-bridge/` — outside
+  `~/Documents` on purpose — and notifies when the heartbeat at
+  `~/Library/Logs/claude-orchestrator/chatgpt-bridge.heartbeat` is >10 min stale.
+  `install.sh` verifies the chain end-to-end and fails loudly if the grant is missing.
 - Browser fallback in every repo: Actions → **Apply ChatGPT patch** → paste
   `git diff | base64`. Needs "Allow GitHub Actions to create and approve pull requests"
   (enabled on all six repos).
