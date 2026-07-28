@@ -126,6 +126,65 @@ def _apply_tdd_gating(tasks):
     return modified
 
 
+def _shard_by_sections(master: str) -> list:
+    """Deterministic, model-free fallback: split a large multi-section freeform prompt into a
+    contract-first DAG by its section headings (## / ### / '1.' / '2)' style). Guarantees that a
+    failed or timed-out LLM plan never collapses a huge prompt into one monolithic, unexecutable
+    master-task. Returns [] if the prompt cannot be meaningfully sharded (caller keeps 1 task)."""
+    lines = master.splitlines()
+    header_re = re.compile(r'^\s*(?:#{2,4}\s+|\d+[.)]\s+)(.+)$')
+    sections = []            # list of (title|None, [lines])
+    cur_title, cur_body = None, []
+    for ln in lines:
+        m = header_re.match(ln)
+        if m and len(m.group(1).strip()) >= 3:
+            if cur_title is not None or cur_body:
+                sections.append((cur_title, cur_body))
+            cur_title, cur_body = m.group(1).strip(), [ln]
+        else:
+            cur_body.append(ln)
+    if cur_title is not None or cur_body:
+        sections.append((cur_title, cur_body))
+
+    real = [(t, b) for (t, b) in sections if t and len("\n".join(b).strip()) > 40]
+    if len(real) < 2:
+        return []
+
+    preamble = ""
+    if sections and sections[0][0] is None:
+        preamble = "\n".join(sections[0][1]).strip()
+
+    def _slug(t):
+        s = re.sub(r'[^a-z0-9]+', '-', t.lower()).strip('-')
+        return (s[:48].rstrip('-') or "section")
+
+    tasks = [{
+        "slug": "contracts",
+        "prompt": ("Establish the SHARED contracts/types/interfaces/DB-migration stubs that the "
+                   "sibling work items below depend on, and nothing else. Overall context:\n\n"
+                   + preamble +
+                   "\n\nDeliver only the shared interfaces + a short README describing them; the "
+                   "sibling tasks implement against these contracts."),
+        "deps": [], "model_hint": "opus",
+    }]
+    seen = {"contracts"}
+    for (title, body) in real:
+        base = _slug(title)
+        slug, i = base, 2
+        while slug in seen:
+            slug, i = f"{base}-{i}", i + 1
+        seen.add(slug)
+        body_txt = "\n".join(body).strip()
+        tasks.append({
+            "slug": slug,
+            "prompt": (preamble + "\n\n---\nImplement ONLY this section, end to end — wire it, "
+                       "test it, no dead code, honor the shared contracts:\n\n" + body_txt),
+            "deps": ["contracts"],
+            "model_hint": "opus" if len(body_txt) > 4000 else "sonnet",
+        })
+    return tasks
+
+
 def plan(master: str, repo: str = None) -> list:
     spec = ""
     if repo:
@@ -156,8 +215,22 @@ def plan(master: str, repo: str = None) -> list:
         tasks = json.loads(m.group(0)) if m else []
         assert isinstance(tasks, list) and tasks
     except Exception as e:
-        sys.stderr.write(f"[planner] decomposition failed ({e}); using single task\n")
-        tasks = [{"slug": "master-task", "prompt": master, "deps": [], "model_hint": "opus"}]
+        sys.stderr.write(f"[planner] LLM decomposition failed ({e}); trying deterministic section-shard\n")
+        tasks = _shard_by_sections(master) or [
+            {"slug": "master-task", "prompt": master, "deps": [], "model_hint": "opus"}]
+
+    # ROBUSTNESS GUARD (2026-07-28): a large, multi-section freeform prompt must NEVER run as a
+    # single monolithic task. If the LLM plan collapsed to one task (or the fallback did) for a big
+    # prompt, shard deterministically by its headings into a contract-first DAG. This prevents the
+    # "one giant master-task per mega-prompt -> quarantine" failure mode observed on the portfolio
+    # overhaul drop (5 prompts each degraded to a single unexecutable master-task).
+    if len(tasks) == 1 and len(master) > int(os.environ.get("PLAN_SHARD_MIN_CHARS", "6000")):
+        sharded = _shard_by_sections(master)
+        if len(sharded) >= 2:
+            sys.stderr.write(
+                f"[planner] single-task plan for {len(master)}-char prompt; "
+                f"using deterministic section-shard ({len(sharded)} tasks)\n")
+            tasks = sharded
 
     # Apply TDD-first enforcement if configured
     tasks = _apply_tdd_gating(tasks)
