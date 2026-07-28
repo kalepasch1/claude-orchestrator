@@ -201,9 +201,19 @@ def _default_project_for_dropbox(text, projects_by_name):
     drops most commonly target the orchestrator improving itself — the two real examples this
     feature was built for (PROMPT-backlog-blitz.md, PROMPT-meta-optimizer.md) both do."""
     head = (text or "")[:2000].lower()
-    for name in projects_by_name:
-        if name and name.lower() in head:
-            return name
+
+    # Match project names robustly + prefer the MOST SPECIFIC. Two failure modes this guards:
+    #  (1) prefix shadowing: 'apparently' must never shadow 'apparently-law' (longest wins);
+    #  (2) separator drift: a hyphenated project name ('apparently-law') rarely appears verbatim
+    #      in prose that says "Apparently Law" — so match hyphen/underscore as space too.
+    def _variants(n):
+        n = n.lower()
+        return {n, n.replace("-", " "), n.replace("_", " "), n.replace("-", ""), n.replace("_", "")}
+
+    matches = [name for name in projects_by_name
+               if name and any(v and v in head for v in _variants(name))]
+    if matches:
+        return max(matches, key=len)   # most specific / longest project name wins
     return "beethoven" if "beethoven" in projects_by_name else (next(iter(projects_by_name), None))
 
 
