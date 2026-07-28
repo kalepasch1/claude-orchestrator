@@ -215,14 +215,16 @@ def decompose_freeform(text, repo_root, default_project):
     master-task rather than raising in the common case; this only raises on a harder failure,
     e.g. planner.py itself being unimportable)."""
     import planner
-    tasks = planner.plan(text, repo=repo_root)
+    tasks = planner.plan(text, repo=repo_root, project=default_project)
     slug_base = _dropbox_slugify((text.strip().splitlines() or [""])[0])
     rendered = []
     for t in tasks:
         rendered.append({
             "project": default_project,
             "slug": f"dropbox-{slug_base}-{t['slug']}",
-            "material": False,
+            # honor the workflow router's materiality stamp (governed_heavy / material work gets
+            # gated); default False so non-material coherent/fast work isn't over-gated.
+            "material": bool(t.get("material", False)),
             "model": t.get("model_hint"),
             "depends": [f"dropbox-{slug_base}-{d}" for d in (t.get("deps") or [])],
             "proof": _extract_proof_line(t.get("prompt")),

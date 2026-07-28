@@ -185,7 +185,40 @@ def _shard_by_sections(master: str) -> list:
     return tasks
 
 
-def plan(master: str, repo: str = None) -> list:
+def _shard_coarse(master: str, max_tasks: int) -> list:
+    """Group a prompt's sections into a SMALL number of coherent, contract-first tasks
+    (<= max_tasks). Used by the fast_coherent / governed_heavy lanes: fewer, larger tasks
+    keep context and cut merge-train hops vs. the full per-section shard, while still giving
+    the pipeline verifiable units. Falls back to [] (caller keeps a single task) if it can't
+    meaningfully group."""
+    fine = _shard_by_sections(master)          # contract + one task per section, or []
+    if not fine:
+        return []
+    contract, sections = fine[0], fine[1:]
+    if max_tasks <= 1 or len(sections) <= max(1, max_tasks - 1):
+        return fine                             # already small enough
+    buckets = max(1, max_tasks - 1)             # reserve one slot for the contracts task
+    groups = [[] for _ in range(buckets)]
+    for i, t in enumerate(sections):
+        groups[i % buckets].append(t)
+    merged = [contract]
+    for gi, g in enumerate(groups, 1):
+        if not g:
+            continue
+        titles = " + ".join(s["slug"] for s in g)
+        body = "\n\n".join(s["prompt"] for s in g)
+        merged.append({
+            "slug": f"group-{gi}",
+            "prompt": ("Implement ALL of the following related sections together, coherently, "
+                       "end to end (wire + test, no dead code, honor the shared contracts). "
+                       f"Sections: {titles}\n\n{body}"),
+            "deps": ["contracts"],
+            "model_hint": "opus",
+        })
+    return merged
+
+
+def plan(master: str, repo: str = None, project: str = None) -> list:
     spec = ""
     if repo:
         try:
@@ -208,29 +241,69 @@ def plan(master: str, repo: str = None) -> list:
                              f"patterns to maximize first-pass merge rate):\n{lesson}\n\n")
             except Exception:
                 pass
+    # ADAPTIVE WORKFLOW ROUTING (2026-07-28): pick the execution profile for this objective so the
+    # fleet optimizes for the RIGHT thing (speed / throughput / safety / cost) instead of forcing
+    # every objective through the heavy wide-shard + merge-train pipeline. Default profile
+    # (parallel_fleet) reproduces historical behavior, so unclassified work is unchanged.
     try:
-        r = claude_cli.run(META + spec + master, PLAN_MODEL,
-                           timeout=int(os.environ.get("PLAN_TIMEOUT", "300")))
-        m = re.search(r"\[.*\]", r["text"], re.S)
-        tasks = json.loads(m.group(0)) if m else []
-        assert isinstance(tasks, list) and tasks
+        import workflow_router
+        prof = workflow_router.profile_for(master, project=project)
     except Exception as e:
-        sys.stderr.write(f"[planner] LLM decomposition failed ({e}); trying deterministic section-shard\n")
-        tasks = _shard_by_sections(master) or [
-            {"slug": "master-task", "prompt": master, "deps": [], "model_hint": "opus"}]
+        sys.stderr.write(f"[planner] workflow_router unavailable ({e}); using full-shard default\n")
+        prof = None
+    shard_mode = prof.shard if prof else "full"
+    default_model = prof.model_hint if prof else None
+    sys.stderr.write(f"[planner] workflow={getattr(prof,'mode','full')} shard={shard_mode} "
+                     f"model={default_model} max_tasks={getattr(prof,'max_tasks','-')} "
+                     f"({len(master)} chars, {getattr(prof,'rationale','')})\n")
 
-    # ROBUSTNESS GUARD (2026-07-28): a large, multi-section freeform prompt must NEVER run as a
-    # single monolithic task. If the LLM plan collapsed to one task (or the fallback did) for a big
-    # prompt, shard deterministically by its headings into a contract-first DAG. This prevents the
-    # "one giant master-task per mega-prompt -> quarantine" failure mode observed on the portfolio
-    # overhaul drop (5 prompts each degraded to a single unexecutable master-task).
-    if len(tasks) == 1 and len(master) > int(os.environ.get("PLAN_SHARD_MIN_CHARS", "6000")):
-        sharded = _shard_by_sections(master)
-        if len(sharded) >= 2:
-            sys.stderr.write(
-                f"[planner] single-task plan for {len(master)}-char prompt; "
-                f"using deterministic section-shard ({len(sharded)} tasks)\n")
-            tasks = sharded
+    tasks = None
+    if shard_mode == "none":
+        # coherent single-body / trivial / research: one strong task, no shard.
+        tasks = [{"slug": "task", "prompt": master, "deps": [], "model_hint": default_model or "opus"}]
+    elif shard_mode == "light":
+        # few coherent tasks — keep context, cut merge-train hops.
+        tasks = _shard_coarse(master, (prof.max_tasks if prof else 4))
+        if not tasks:
+            tasks = [{"slug": "task", "prompt": master, "deps": [], "model_hint": default_model or "opus"}]
+
+    if tasks is None:
+        # full shard: the LLM planner (wide-shallow DAG), with the deterministic section-shard
+        # as a robustness fallback so a big prompt never collapses to one master-task.
+        try:
+            r = claude_cli.run(META + spec + master, PLAN_MODEL,
+                               timeout=int(os.environ.get("PLAN_TIMEOUT", "300")))
+            m = re.search(r"\[.*\]", r["text"], re.S)
+            tasks = json.loads(m.group(0)) if m else []
+            assert isinstance(tasks, list) and tasks
+        except Exception as e:
+            sys.stderr.write(f"[planner] LLM decomposition failed ({e}); deterministic section-shard\n")
+            tasks = _shard_by_sections(master) or [
+                {"slug": "master-task", "prompt": master, "deps": [], "model_hint": "opus"}]
+        if len(tasks) == 1 and len(master) > int(os.environ.get("PLAN_SHARD_MIN_CHARS", "6000")):
+            sharded = _shard_by_sections(master)
+            if len(sharded) >= 2:
+                sys.stderr.write(f"[planner] single-task plan for {len(master)}-char prompt; "
+                                 f"section-shard ({len(sharded)} tasks)\n")
+                tasks = sharded
+
+    # apply the profile's default model to any task that didn't declare one, cap the task count,
+    # and stamp the workflow mode + materiality so downstream gates/observability can honor them.
+    if prof:
+        for t in tasks:
+            t.setdefault("model_hint", default_model)
+            t["workflow"] = prof.mode
+            if prof.material:
+                t["material"] = True
+        if len(tasks) > prof.max_tasks and shard_mode == "full":
+            # too many tasks for this lane — coarsen to the cap to reduce overhead.
+            coarse = _shard_coarse(master, prof.max_tasks)
+            if coarse:
+                for t in coarse:
+                    t["workflow"] = prof.mode
+                    if prof.material:
+                        t["material"] = True
+                tasks = coarse
 
     # Apply TDD-first enforcement if configured
     tasks = _apply_tdd_gating(tasks)
