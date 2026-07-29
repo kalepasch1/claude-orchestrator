@@ -43,9 +43,9 @@ class TestBoundaryCalculationEdgeCases:
     def test_tier_cost_above_max_boundary(self):
         """Test cost calculation above maximum unit boundary."""
         tier = PricingTier(name="basic", min_units=10, max_units=100, unit_price=2.0)
-        # Above max_units should cap at max, consuming 91 units (10-100 inclusive)
+        # Above max_units returns 0 (units outside valid range [min_units, max_units])
         cost = tier.cost_for_units(150)
-        assert cost == 182.0, f"Expected 182.0 (91 units * 2.0), got {cost}"
+        assert cost == 0.0, f"Expected 0.0 (150 > max_units), got {cost}"
 
     def test_tier_cost_one_unit_tier(self):
         """Test tier that covers exactly one unit."""

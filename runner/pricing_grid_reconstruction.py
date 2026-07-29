@@ -33,13 +33,29 @@ class PricingTier:
     def is_unlimited(self) -> bool:
         return self.max_units is None
 
+    @staticmethod
+    def _tier_capacity(tier: 'PricingTier') -> int:
+        """Calculate capacity (max number of units) this tier can hold.
+
+        Returns:
+            - 0 for unlimited tiers (max_units=None)
+            - max - min + 1 for limited tiers
+            - 0 for invalid tiers (max < min)
+        """
+        if tier.max_units is None:
+            return 0
+        if tier.max_units < tier.min_units:
+            return 0
+        return tier.max_units - tier.min_units + 1
+
     def cost_for_units(self, units: int) -> float:
         """Calculate cost for a given number of units within this tier.
 
         Only counts units that fall within [min_units, max_units].
-        Returns flat_fee + (applicable_units * unit_price).
+        Returns 0 if units are outside the valid range.
+        Otherwise returns flat_fee + (applicable_units * unit_price).
         """
-        if units < self.min_units:
+        if units < self.min_units or (self.max_units is not None and units > self.max_units):
             return 0.0
         upper = self.max_units if self.max_units is not None else units
         applicable = min(units, upper) - self.min_units + 1
@@ -59,6 +75,33 @@ class PricingGrid:
         """Tiers sorted by min_units ascending."""
         return sorted(self.tiers, key=lambda t: t.min_units)
 
+    @staticmethod
+    def _consume_tier_units(tier: PricingTier, remaining: int) -> Tuple[int, float]:
+        """Consume units from a tier and return (units_consumed, cost).
+
+        Args:
+            tier: The pricing tier to consume from
+            remaining: Number of units available to consume
+
+        Returns:
+            Tuple of (units_consumed, cost) where:
+            - units_consumed is the number of units actually consumed
+            - cost includes flat fee (if any) plus per-unit charges
+        """
+        if remaining <= 0:
+            return 0, 0.0
+
+        if tier.max_units is None:
+            # Unlimited tier: consume all remaining
+            consumed = remaining
+        else:
+            # Limited tier: consume up to capacity
+            capacity = tier.max_units - tier.min_units + 1
+            consumed = min(remaining, capacity)
+
+        cost = tier.flat_fee + (consumed * tier.unit_price)
+        return consumed, cost
+
     def total_cost(self, units: int) -> float:
         """Calculate total cost across all tiers for a given unit count.
 
@@ -69,10 +112,9 @@ class PricingGrid:
         for tier in self.sorted_tiers:
             if remaining <= 0:
                 break
-            tier_capacity = (tier.max_units - tier.min_units + 1) if tier.max_units is not None else remaining
-            applicable = min(remaining, tier_capacity)
-            total += tier.flat_fee + (applicable * tier.unit_price)
-            remaining -= applicable
+            consumed, cost = self._consume_tier_units(tier, remaining)
+            total += cost
+            remaining -= consumed
         return round(total, 2)
 
     def tier_for_units(self, units: int) -> Optional[PricingTier]:
