@@ -24,8 +24,16 @@ import re, sys, os, argparse, json
 
 # Tier defaults — overridable via env (set in runner/.env)
 HAIKU  = os.environ.get("ORCH_DEFAULT_MODEL",    "claude-haiku-4-5-20251001")
-SONNET = os.environ.get("ORCH_ESCALATION_MODEL", "claude-sonnet-4-6")
+SONNET = os.environ.get("ORCH_ESCALATION_MODEL", "claude-sonnet-5")
 OPUS   = os.environ.get("ORCH_HARD_MODEL",       "claude-opus-4-8")
+# SUPERINTELLIGENCE TIER (2026-07-29): Fable was defined in model_catalog/cost_ledger but was NOT
+# in the routing ladder, so it could never be selected no matter what a task's model_hint said.
+# It now sits at the TOP of the ladder for genuinely superintelligence-grade work: strategy/legal
+# drafting, novel architecture, adversarial review — and is reachable both by explicit hint
+# (SUPER_KEYWORDS below) and by retry escalation past Opus.
+FABLE  = os.environ.get("ORCH_SUPER_MODEL",       "claude-fable-5")
+# Set ORCH_SUPER_TIER_ENABLED=false to drop Fable back out of the ladder (cost control).
+SUPER_ENABLED = os.environ.get("ORCH_SUPER_TIER_ENABLED", "true").lower() != "false"
 
 MECHANICAL = re.compile(r"\b(rename|format|prettier|lint|typo|comment|import order|"
                         r"dark mode|theme|palette|css|tailwind|copy edit|bump version|"
@@ -33,6 +41,12 @@ MECHANICAL = re.compile(r"\b(rename|format|prettier|lint|typo|comment|import ord
 HEAVY = re.compile(r"\b(architect|design|novel|security|auth|crypto|settlement|migration|"
                    r"schema|distributed|concurrency|algorithm|refactor the|rewrite|"
                    r"non-custodial|allowlist|threat model|protocol)\b", re.I)
+# Work that genuinely warrants the superintelligence tier: strategy/legal/regulatory drafting and
+# adversarial reasoning, where output quality dominates token cost.
+SUPER_KEYWORDS = re.compile(r"\b(strategy|strategic|legal memo|legal opinion|regulatory|compliance "
+                            r"analysis|consilium|cade|tribunal|adversarial|draft the (agreement|"
+                            r"contract|memo|opinion|policy)|term sheet|paper pack|economic model|"
+                            r"projection|superintelligen\w*|novel legal|counsel)\b", re.I)
 
 
 def route(prompt: str, attempt: int = 1) -> dict:
@@ -44,16 +58,23 @@ def route(prompt: str, attempt: int = 1) -> dict:
     # is reachable solely via retry escalation, and even genuinely heavy work starts at Sonnet.
     # This is the Opus-retune: measured Opus share was ~34% because standard work defaulted to
     # Sonnet and retries pushed it to Opus. Target: Opus < 10% of tasks.
-    if score >= 4 or (long and score >= 3):
+    super_hits = len(SUPER_KEYWORDS.findall(p))
+    if SUPER_ENABLED and (super_hits >= 2 or (super_hits >= 1 and long)):
+        # Superintelligence-grade work (strategy/legal/regulatory drafting, adversarial reasoning):
+        # start at the top tier — output quality dominates token cost on this class.
+        tier = FABLE
+        why = f"superintelligence class ({super_hits} signal(s)) -> start at {FABLE}"
+    elif score >= 4 or (long and score >= 3):
         tier = SONNET
-        why = "multi-signal heavy -> start at Sonnet (Opus only on retry)"
+        why = "multi-signal heavy -> start at Sonnet (escalates on retry)"
     else:
         # both mechanical and standard first-attempt work -> Haiku
         tier = HAIKU
         why = "Haiku-first (mechanical/standard); escalate on retry"
     # Deduplicated tier order (handles the case where two env vars point to the same model)
     seen: set = set()
-    order = [x for x in [HAIKU, SONNET, OPUS] if not (x in seen or seen.add(x))]
+    ladder = [HAIKU, SONNET, OPUS] + ([FABLE] if SUPER_ENABLED else [])
+    order = [x for x in ladder if not (x in seen or seen.add(x))]
     base_idx = order.index(tier) if tier in order else min(1, len(order) - 1)
     idx = min(base_idx + max(0, attempt - 1), len(order) - 1)
     chosen = order[idx]

@@ -2455,6 +2455,16 @@ _SCHEDULE = [
     ("resmesh-60",    "resilience_mesh.py", "interval", 60),    # keep local/vendor/deploy prep moving during Supabase/vendor outages
     ("train-60",      "merge_train.py",     "interval", 60),    # canonical approved-card cleanup train
     ("mergestall-900","merge_stall_monitor.py","interval",900), # alert if merges stop landing despite a real backlog (2026-07-08 incident safeguard)
+    ("stuckreaper-1800","stuck_reaper",       "interval", 1800), # detect+recover RUNNING tasks stuck >2h (docstring promised this; was in
+                                                                  # periodic.py's JOBS dict but never added here — 2026-07-29 fix)
+    ("priorityscore-600","priority_scorer",   "interval", 600),  # score QUEUED tasks with default priority=1000 so claim order reflects
+                                                                  # urgency (same class of bug: registered, documented, never scheduled)
+    # NOTE: "remotegc" (workflow_guardrails.gc_remote_branches, deletes origin/agent/* branches
+    # >7d old) has the same never-scheduled gap but is intentionally left OUT here: with
+    # ORCH_REMOTE_BRANCH_GC_DRY_RUN=false in .env it does real, irreversible `git push --delete`
+    # on the remote, and unlike branch_gc.py's local equivalent it doesn't check the branch's
+    # task is in a terminal state first — it could delete a branch for a task that's still
+    # QUEUED/RUNNING/BLOCKED just because the branch itself is old. Left for a human decision.
     ("sweep-90",      "integration_sweeper.py","interval",90),  # passed-tests-but-not-integrated -> canonical train
     ("sentinel-300",  "sentinel.py",        "interval", 300),   # self-healing: DB-outage offline sweeps, checkout drift, runner singleton, RAM clamp, stale code
     ("medic-90",      "resource_medic.py",  "interval", 90),    # autonomous resource bots: predictive OOM guard, thrash-hunter (durable model exclusion / lane lowering), process hygiene, loop breaker
@@ -2642,7 +2652,7 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      "dedup", "contcompact", "backlogcompact", "canaryecon", "forecast", "arbitrage", "autoscale", "bizradar",
                      "credresolver", "pushdecisions", "selfheal", "newapp", "autopilot", "abedge", "portfolioautopilot",
                      "stripe", "ownerreport", "worktreegc", "remediate", "quarantine", "quarantine_gc",
-                     "rca_engine.py", "selfcheck", "release_kpi.py",
+                     "rca_engine.py", "stuck_reaper", "priority_scorer", "selfcheck", "release_kpi.py",
                      "integrate_kpi.py", "fleet_control.py",
                      "thermal_queue.py", "model_score.py", "queue_materializer.py",
                      "build_daemon.py", "lane_scheduler.py", "slo_controller.py", "merge_cycle.py",
