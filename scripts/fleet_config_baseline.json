@@ -11,7 +11,7 @@
   "ORCH_STAGING_BRANCH": "orchestrator/dev",
   "ORCH_PUSH_ON_DEV_MERGE": "true",
   "ORCH_PUSH_ON_MERGE": "false",
-  "ORCH_PUSH_ON_RELEASE": "true",
+  "ORCH_PUSH_ON_RELEASE": "false",
   "RELEASE_MIN_BATCH": "10",
   "RELEASE_INTERVAL_HOURS": "6",
   "MAX_PARALLEL_CEILING": "10",

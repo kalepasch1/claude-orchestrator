@@ -1178,9 +1178,18 @@ def train_run():
     caps = {"low": LOW_RISK_BATCH, "standard": STANDARD_BATCH, "sensitive": SENSITIVE_BATCH}
     ATTEMPT_OUTCOMES = ("merged", "testfail", "conflict")  # only real attempts consume the cap
     scan_cap = int(os.environ.get("MERGE_TRAIN_SCAN_PER_PROJECT", "200"))
-    for pid, group in by_project.items():
+    # FIX 2026-07-29: this block was a half-landed refactor — a bare `for` loop containing
+    # per-project logic that referenced an undefined `result` and returned mid-loop, while
+    # process_project_isolated() below called a process_project() that did not exist. Restored
+    # the intended shape: per-project worker function returning its own result dict, executed
+    # by the ThreadPoolExecutor below and aggregated into `summary`.
+    def process_project(item):
+        pid, group = item
         proj = projects.get(pid, {})
-        summary["projects"] += 1
+        result = {"projects": 1, "merged": 0, "already_integrated": 0,
+                  "redo": 0, "testfail": 0, "conflict": 0,
+                  "skipped": 0, "project_errors": 0,
+                  "risk": {"low": 0, "standard": 0, "sensitive": 0}}
         used = {"low": 0, "standard": 0, "sensitive": 0}
         scanned = 0
         # CONCURRENCY FIX (2026-07-08 merge-stall root cause): train_run() can be invoked

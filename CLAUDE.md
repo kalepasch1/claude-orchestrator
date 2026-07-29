@@ -138,3 +138,20 @@ Results in `_applied/` / `_failed/`; log at `_logs/bridge.log`. CLI: `chatgpt-pa
   `deploy-to-repos.sh` (re)installs it plus the workflow everywhere.
 - Direct pushes to production branches are still blocked by `production_push_guard` —
   the bridge opens PRs, it does not bypass the release train.
+
+
+## Learned from merged work (auto)
+### Conventions Followed by the Codebase:
+
+* The code uses a consistent naming convention (e.g., `branch_lease.py`) for files and modules.
+* The use of comments is sparse but useful, providing context for complex sections of code.
+* Variable names are descriptive, although some could be improved for better readability.
+* Functions are well-structured and concise, making it easy to follow their logic.
+
+### DO/AVOID Rules for a Future Agent:
+
+* **AVOID**: Using magic numbers directly in the code (e.g., `91` in `except Exception as e: sys.stderr.write(f"[branch_lease] heartbeat RPC infra error ({e}); fail-soft ALIVE\n")`). Consider defining constants or enums to make the code more readable and maintainable.
+* **DO**: Use a consistent coding style throughout the codebase. The provided diffs seem to follow a consistent indentation style, but other aspects of style (e.g., spacing around operators) are not consistently applied.
+* **AVOID**: Relying on global variables or functions without proper documentation. In this case, `db` is used as a global variable without explanation.
+* **DO**: Implement automated testing for the codebase to ensure its correctness and reliability.
+* **AVOID**: Using bare `except` clauses (e.g., `except Exception as e`). Consider using more specific exception handling to catch only the expected errors.
