@@ -57,13 +57,24 @@ def heartbeat(task_id: str, branch: Optional[str] = None) -> bool:
                   if tid == str(task_id) and (branch is None or b == branch)]
     if not leases:
         return False
-    return all(db.rpc("heartbeat_branch_execution_lease", {
-        "p_project_id": lease["p_project_id"],
-        "p_branch": lease["branch"],
-        "p_task_id": lease["p_task_id"],
-        "p_token": lease["token"],
-        "p_ttl_seconds": lease["ttl"],
-    }) is True for lease in leases)
+    # FAIL-SOFT (2026-07-28): if the lease RPC infrastructure itself errors (missing/drifted
+    # RPC on prod -> HTTPError), treat the heartbeat as ALIVE and log — a lease-infra outage
+    # must never mass-kill running tasks (this exact failure quarantined 91 tasks in one
+    # evening). Mirrors repo_lock's documented fail-soft philosophy; local per-repo flocks
+    # still serialize mutations on this machine. A genuine `False` from the RPC (lease lost
+    # to another holder) is still honored and returns False.
+    try:
+        return all(db.rpc("heartbeat_branch_execution_lease", {
+            "p_project_id": lease["p_project_id"],
+            "p_branch": lease["branch"],
+            "p_task_id": lease["p_task_id"],
+            "p_token": lease["token"],
+            "p_ttl_seconds": lease["ttl"],
+        }) is True for lease in leases)
+    except Exception as e:
+        import sys
+        sys.stderr.write(f"[branch_lease] heartbeat RPC infra error ({e}); fail-soft ALIVE\n")
+        return True
 
 
 def release(task_id: str, branch: Optional[str] = None) -> bool:
