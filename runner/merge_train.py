@@ -34,6 +34,12 @@ import events
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
 import integration_runtime
 import agentic_repair
+import repo_lock        # FIX 2026-07-28: was used at the per-repo serialization site but never
+                        # imported -> every train_run() crashed with NameError before integrating
+                        # anything (the silent integration-stall root cause).
+import concurrent.futures   # FIX 2026-07-28: used by the multi-project ThreadPoolExecutor path, never imported
+import repo_hygiene         # FIX 2026-07-28: used pre-test-run (stray .js cleanup), never imported (fail-soft masked it)
+import semantic_merge       # FIX 2026-07-28: used by the auto-merge path, never imported
 try:
     import pipeline_metrics as _pm
 except Exception:
@@ -798,6 +804,20 @@ def _select_batch(group):
                 pass
     annotated = [(card, slug, task, _risk_level(card, task))
                  for card, slug, task in newest_by_slug.values()]
+    # FIX 2026-07-28: value_scores was referenced but never defined (latent NameError on the
+    # integration path). Build it from value_router.estimate_value, fail-soft to 0 so a scoring
+    # error can never stall the train — ordering degrades to (risk band, age) which is safe.
+    value_scores = {}
+    try:
+        import value_router
+        for card, slug, task, _risk in annotated:
+            key = str(task.get("id") or task.get("slug") or "")
+            try:
+                value_scores[key] = float(value_router.estimate_value(task) or 0)
+            except Exception:
+                value_scores[key] = 0.0
+    except Exception:
+        value_scores = {}
     annotated.sort(key=lambda e: ({"low": 0, "standard": 1, "sensitive": 2}[e[3]],
                                   -value_scores.get(str(e[2].get("id") or e[2].get("slug") or ""), 0),
                                   str(e[0].get("created_at") or "")))
@@ -1173,7 +1193,9 @@ def train_run():
         # thread is mid-train, skip this cycle rather than block indefinitely -- the next
         # scheduled pass (or the next task completion) will pick it back up.
         repo_path = db.localize_repo_path(proj.get("repo_path", ""))
-        with repo_lock.hold(repo_path, timeout=300, priority=True) as got_lock:
+        # FIX 2026-07-28: repo_lock.hold() takes (repo, timeout) only — the stray priority=True
+        # kwarg was a second latent crash behind the missing import.
+        with repo_lock.hold(repo_path, timeout=300) as got_lock:
             if not got_lock:
                 result["skipped"] += len(group)
                 print(f"merge_train: {proj.get('name') or pid} busy (another train holds the repo lock) — skipping this cycle")
