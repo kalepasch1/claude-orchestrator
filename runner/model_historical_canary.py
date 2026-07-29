@@ -74,6 +74,24 @@ def run(limit_models=None, limit_tasks=None, timeout=None):
     limit_tasks = int(limit_tasks if limit_tasks is not None else os.environ.get("ORCH_HISTORICAL_CANARY_TASKS", "4"))
     timeout = int(timeout if timeout is not None else os.environ.get("ORCH_HISTORICAL_CANARY_TIMEOUT", "60"))
     models = ollama_catalog.candidates(include_canary_only=True)
+    # HOSTED-TIER CANARY (2026-07-29): the canary previously probed ONLY local/ollama candidates,
+    # so the hosted ladder — including the Fable superintelligence tier — was never quality-scored
+    # against the others. Add the hosted Claude ladder so routing decisions are evidence-based.
+    # Disable with ORCH_CANARY_INCLUDE_HOSTED=false.
+    if os.environ.get("ORCH_CANARY_INCLUDE_HOSTED", "true").lower() != "false":
+        try:
+            import model_router
+            hosted = [model_router.HAIKU, model_router.SONNET, model_router.OPUS]
+            if getattr(model_router, "SUPER_ENABLED", False):
+                hosted.append(model_router.FABLE)
+            have = {c.get("model") for c in models}
+            for i, m in enumerate(hosted):
+                if m and m not in have:
+                    models.append({"model": m, "provider": "claude", "cap": 6 + i,
+                                   "canary_only": False, "hosted": True})
+        except Exception as e:
+            import sys
+            sys.stderr.write(f"[historical_canary] hosted-tier add failed ({e}); local only\n")
     only = [m.strip() for m in os.environ.get("ORCH_HISTORICAL_CANARY_MODELS_ONLY", "").split(",") if m.strip()]
     if only:
         allowed = set(only)
@@ -89,7 +107,9 @@ def run(limit_models=None, limit_tasks=None, timeout=None):
             prompt = _probe_prompt(task)
             t0 = time.time()
             try:
-                res = model_gateway.complete("local", model, prompt, project="orchestrator",
+                # provider comes from the candidate (was hardcoded "local", which would have made
+                # every hosted-tier probe fail once hosted models joined the canary set).
+                res = model_gateway.complete(c.get("provider") or "local", model, prompt, project="orchestrator",
                                              timeout=timeout, operation="historical_model_canary",
                                              task_class=task.get("kind") or "build",
                                              fallback=False, record_op=False)
