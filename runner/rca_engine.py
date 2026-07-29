@@ -26,6 +26,8 @@ MAX_CLUSTERS = int(os.environ.get("ORCH_RCA_MAX_CLUSTERS", "10"))
 
 # Error signature patterns — map raw notes to root cause categories
 _SIGNATURES = [
+    (re.compile(r"semantic-dedupe|duplicate of|\bduplicate\b|monolith superseded|superseded by",
+                re.I), "duplicate-or-superseded"),
     (re.compile(r"repo not found|PAT lacks access", re.I), "auth-or-repo-missing"),
     (re.compile(r"rebase conflict|merge conflict", re.I), "merge-conflict"),
     (re.compile(r"tests? failed|test failure", re.I), "test-failure"),
@@ -39,6 +41,11 @@ _SIGNATURES = [
 ]
 
 _REMEDIATIONS = {
+    "duplicate-or-superseded": "Expected terminal state, not a failure — quarantine_gc.py should sweep "
+        "semantic-dedupe/duplicate notes automatically (scheduled every 10 min in runner.py's _SCHEDULE). "
+        "'monolith superseded' notes are deliberately left quarantined for human tracking and are not GC'd. "
+        "If this cluster keeps growing, check that quarantine_gc is actually running (.runtime/periodic-locks/"
+        "quarantine_gc.lock) before assuming it's a real problem.",
     "auth-or-repo-missing": "Verify GITHUB_PAT validity and repo access permissions.",
     "merge-conflict": "Rebase agent branches onto latest base; consider auto-rebase in merge train.",
     "test-failure": "Run failing tests locally; check if base branch tests pass first.",

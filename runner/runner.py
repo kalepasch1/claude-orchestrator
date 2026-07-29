@@ -2527,6 +2527,13 @@ _SCHEDULE = [
     ("remediate-180", "remediate",          "interval", 180),   # drive BLOCKED to zero (auto self-remedy)
     ("errrem-30",     "error_remediation_periodic", "interval", 30),  # AI-powered error detection + config rollback
     ("quarantine-180","quarantine",         "interval", 180),   # rewrite terminal blockers into safe claimable work
+    ("quarantine-gc-600","quarantine_gc",   "interval", 600),   # sweep dedupe/duplicate/PATCH-TEMPLATE junk out of QUARANTINED scans
+                                                                 # (module existed + was in periodic.py's JOBS dict but was never
+                                                                 # added here, so it never ran — 2026-07-29 fix, see stale dropbox-*
+                                                                 # semantic-dedupe pileup)
+    ("rca-report-1800","rca_engine.py",     "interval", 1800),  # cluster QUARANTINED/BLOCKED failures by root cause; report goes
+                                                                 # to .runtime/logs/rca-engine.log so root-cause triage doesn't
+                                                                 # require a manual DB query (2026-07-29: was built but never scheduled)
     ("objective-3600","objective",          "interval", 3600),  # meta-controller: tune knobs toward north-star
     ("selfcheck-600", "selfcheck",          "interval", 600),   # periodic invariant assert + auto-heal
     ("push-180",      "pushdecisions",      "interval", 180),   # push new decisions/actions to email + Smarter
@@ -2634,7 +2641,8 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      "governor", "costslo", "promote", "prewarm", "billingguard",
                      "dedup", "contcompact", "backlogcompact", "canaryecon", "forecast", "arbitrage", "autoscale", "bizradar",
                      "credresolver", "pushdecisions", "selfheal", "newapp", "autopilot", "abedge", "portfolioautopilot",
-                     "stripe", "ownerreport", "worktreegc", "remediate", "quarantine", "selfcheck", "release_kpi.py",
+                     "stripe", "ownerreport", "worktreegc", "remediate", "quarantine", "quarantine_gc",
+                     "rca_engine.py", "selfcheck", "release_kpi.py",
                      "integrate_kpi.py", "fleet_control.py",
                      "thermal_queue.py", "model_score.py", "queue_materializer.py",
                      "build_daemon.py", "lane_scheduler.py", "slo_controller.py", "merge_cycle.py",

@@ -288,3 +288,38 @@ class TestSpecialCasesAndRegression:
         valid, issues = PricingGridReconstructionUtil.validate_grid(grid)
         assert valid is False
         assert any("max < min" in issue for issue in issues)
+
+    def test_template_id_not_serialized_by_default(self):
+        """Test that template IDs in metadata are not serialized by default.
+
+        Metadata containing template IDs must be explicitly requested via
+        include_metadata=True to prevent cross-grid leakage of sensitive config.
+        """
+        raw = [
+            {
+                "name": "custom",
+                "min_units": 1,
+                "max_units": 100,
+                "unit_price": 2.0,
+                "metadata": {"template_id": "secret-template-xyz", "region": "us-east"}
+            }
+        ]
+        grid = PricingGridReconstructionUtil.from_raw_tiers("prod-secure", raw)
+
+        # Template ID is in metadata (internal storage)
+        assert "template_id" in grid.tiers[0].metadata
+        assert grid.tiers[0].metadata["template_id"] == "secret-template-xyz"
+
+        # But not in default serialization
+        serialized = grid.to_dict(include_metadata=False)
+        tier_dict = serialized["tiers"][0]
+        assert "metadata" not in tier_dict, \
+            "Metadata should not be in default serialization"
+        assert "template_id" not in tier_dict, \
+            "Template ID must not leak in default serialization"
+
+        # And explicitly available when requested
+        serialized_with_meta = grid.to_dict(include_metadata=True)
+        tier_dict_with_meta = serialized_with_meta["tiers"][0]
+        assert "metadata" in tier_dict_with_meta
+        assert tier_dict_with_meta["metadata"]["template_id"] == "secret-template-xyz"

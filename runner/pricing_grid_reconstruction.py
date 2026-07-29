@@ -61,6 +61,29 @@ class PricingTier:
         applicable = min(units, upper) - self.min_units + 1
         return self.flat_fee + (applicable * self.unit_price)
 
+    def to_dict(self, include_metadata: bool = False) -> Dict[str, Any]:
+        """Serialize tier to dict. Metadata (including template IDs) excluded by default.
+
+        Args:
+            include_metadata: If True, include metadata in serialization.
+                             Template IDs and other sensitive config must be
+                             explicitly requested to prevent cross-grid leakage.
+
+        Returns:
+            dict with name, min_units, max_units, unit_price, flat_fee.
+            Metadata is only included if include_metadata=True.
+        """
+        result = {
+            "name": self.name,
+            "min_units": self.min_units,
+            "max_units": self.max_units,
+            "unit_price": self.unit_price,
+            "flat_fee": self.flat_fee,
+        }
+        if include_metadata:
+            result["metadata"] = self.metadata
+        return result
+
 
 @dataclass
 class PricingGrid:
@@ -123,6 +146,25 @@ class PricingGrid:
             if tier.min_units <= units and (tier.max_units is None or units <= tier.max_units):
                 return tier
         return None
+
+    def to_dict(self, include_metadata: bool = False) -> Dict[str, Any]:
+        """Serialize grid to dict. Metadata (including template IDs) excluded by default.
+
+        Args:
+            include_metadata: If True, include tier metadata in serialization.
+                             Template IDs and other sensitive config must be
+                             explicitly requested to prevent cross-grid leakage.
+
+        Returns:
+            dict with product_id, currency, effective_date, and tiers list.
+            Tier metadata is only included if include_metadata=True.
+        """
+        return {
+            "product_id": self.product_id,
+            "currency": self.currency,
+            "effective_date": self.effective_date,
+            "tiers": [t.to_dict(include_metadata=include_metadata) for t in self.tiers],
+        }
 
 
 class PricingGridReconstructionUtil:
