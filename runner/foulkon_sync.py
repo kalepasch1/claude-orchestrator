@@ -65,16 +65,45 @@ def build_snapshot():
             "keywords": _keywords(r.get("question"), r.get("position")),
         })
     corps = {"population": 0, "generations": None, "calibration": None}
+    bench = []
     try:
         import expert_corps
         s = expert_corps.stats()
         corps = {"population": s.get("population"), "generations": s.get("generations"),
                  "calibration": s.get("calibration")}
+        # THE EXPERT BENCH (2026-07-30): the corps' top experts per vertical ship into Foulkon as
+        # seat PERSONAS. The swarm's specialist seats are no longer generic prompts — they carry a
+        # real evolved expert's doctrine (its falsifiable thesis, refined through research cycles
+        # and judged bouts). publication_view-safe fields only; internal lens never exports.
+        seen_domains = set()
+        for e in expert_corps.roster(limit=120):
+            key = (e.get("vertical"), (e.get("domain") or "").lower())
+            if key in seen_domains:
+                continue                      # one bench seat per (vertical, domain): the best
+            seen_domains.add(key)
+            bench.append({
+                "label": e.get("public_label"), "vertical": e.get("vertical"),
+                "domain": e.get("domain"), "method": e.get("method"),
+                "generation": e.get("generation"), "elo": round(float(e.get("elo") or 1500)),
+                "calibration": expert_corps.calibration(e),
+                "doctrine": (e.get("doctrine") or "")[:600],
+            })
+            if len(bench) >= 24:
+                break
+    except Exception:
+        pass
+    # Regulator-flag Monte-Carlo (regulator_simulation.py): what examiners statistically flag,
+    # pre-computed perpetually so the tribunal weighs it at zero query-time cost.
+    reg_flags = {}
+    try:
+        import regulator_simulation
+        reg_flags = regulator_simulation.load_latest() or {}
     except Exception:
         pass
     return {"_generated": "claude-orchestrator runner/foulkon_sync.py — do not hand-edit",
             "synced_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "corps": corps, "cards": cards}
+            "corps": corps, "expert_bench": bench,
+            "regulator_flags": reg_flags, "cards": cards}
 
 
 def verify():

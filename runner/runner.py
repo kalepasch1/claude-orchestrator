@@ -2544,6 +2544,15 @@ _SCHEDULE = [
     # anticipation, Foulkon cache-misses, and red-team-as-founder invention — so verdict cards
     # exist BEFORE customers ask. Generates questions only; the docket loop does the debating.
     ("corpusfcst-3600","corpus_forecaster.py","interval", 3600),
+    # Regulator-flag Monte-Carlo: seeded simulation of what examiners flag (per exam item, per
+    # jurisdiction) — perpetually pre-computed, embedded into Foulkon via foulkon_sync so the
+    # rapid tribunal weighs exam/report flag probability at zero query-time latency. Pure local
+    # compute (no LLM), so it runs outside lean-mode restrictions.
+    ("regsim-21600",  "regulator_simulation.py","interval", 21600),
+    # Nightly canon authoring for ALL jurisdictions (50 states + federal + tribal): the only token
+    # spend in the regulator-sim subsystem, on the cheapest tier (local Ollama first), bounded to
+    # ORCH_REG_CANON_PER_NIGHT jurisdictions/night. Once authored, a jurisdiction simulates free.
+    ("regcanon-daily","regulator_canon_author.py","daily",  (3, 35)),
     ("cadeextras-dy", "cadeextras",           "daily",    (4, 30)),# run cx_* extras daily at 4:30am
     ("committeecal-dy","committeecal",       "daily",    (5, 40)),# reweight committees + seats by predictive accuracy
     ("committeedock-dy","committeedocket",   "daily",    (4, 10)),# continuous docket: re-review shipped features
