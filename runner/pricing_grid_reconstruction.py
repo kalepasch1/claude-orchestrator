@@ -119,7 +119,7 @@ class PricingGrid:
             consumed = remaining
         else:
             # Limited tier: consume up to capacity
-            capacity = tier.max_units - tier.min_units + 1
+            capacity = PricingTier._tier_capacity(tier)
             consumed = min(remaining, capacity)
 
         cost = tier.flat_fee + (consumed * tier.unit_price)

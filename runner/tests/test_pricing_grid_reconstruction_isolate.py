@@ -8,7 +8,6 @@ This module isolates specific test scenarios that arise from:
 """
 import os
 import sys
-import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from pricing_grid_reconstruction import (
@@ -65,7 +64,7 @@ class TestBoundaryCalculationEdgeCases:
             name="premium", min_units=1, max_units=50,
             unit_price=3.0, flat_fee=100.0
         )
-        # Flat fee should apply regardless of units
+        # Flat fee should apply at valid tier boundaries
         cost_at_min = tier.cost_for_units(1)
         assert cost_at_min == 103.0, f"Expected 103.0 (100 + 1*3), got {cost_at_min}"
 
