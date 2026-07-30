@@ -2523,6 +2523,23 @@ _SCHEDULE = [
     ("improve-3am",   "improve",            "daily",    (3, 15)),# deeper improvement sweep in the research window
     ("improvemeas-dy","improvemeasure",     "daily",    (5, 20)),# learn which improvement kinds pay off
     ("committees-900","committees",         "interval", 900),   # expert committees weigh in on proposals/decisions
+    # ── EVOLVING EXPERT CORPS (2026-07-30) ──────────────────────────────────────────────────────
+    # The corps is the standing bench the gauntlet draws from. Each tick: the strongest experts do
+    # a research cycle (writing SOURCED memory), any that earned it advance a generation, new seats
+    # spawn from the top of the Elo distribution with a forced mutation, and the weakest retire.
+    # Population is capped (ORCH_EXPERT_POP_CAP) — the floor rises, the headcount does not.
+    ("expertcorps-60","expert_corps.py",    "interval", 60),    # continuous expert evolution
+    # The docket is what points the corps at LAW instead of at our own engineering backlog — the
+    # defect that had "Legal & Compliance" panels opining on Kubernetes. Each run puts real
+    # regulatory questions through the 5-round gauntlet and mints citation-backed verdict cards.
+    ("legaldocket-1800","legal_docket.py",  "interval", 1800),  # standing legal docket -> verdict cards
+    # Benchmark redlines: redline REAL filed briefs in the most contentious regulatory matters +
+    # draft the fully-revised addendum — the proof-of-superiority engine. Targets only activate
+    # once the actual public filing text is ingested (never redlines an unheld document).
+    ("benchredline-3600","benchmark_redlines.py","interval", 3600),
+    # Push fresh verdict cards into the Foulkon (illuminati) checkout as build-time data —
+    # the pump behind Foulkon's sub-millisecond local risk gradient. Writes only on change.
+    ("foulkonsync-600","foulkon_sync.py",   "interval", 600),
     ("cadeextras-dy", "cadeextras",           "daily",    (4, 30)),# run cx_* extras daily at 4:30am
     ("committeecal-dy","committeecal",       "daily",    (5, 40)),# reweight committees + seats by predictive accuracy
     ("committeedock-dy","committeedocket",   "daily",    (4, 10)),# continuous docket: re-review shipped features
@@ -2692,7 +2709,10 @@ _qdepth = {"n": 0, "t": 0.0}
 _LEAN_MODE_SKIP = {"colosseum.py", "cade_tournaments.py", "agentmarket",
                    "committees", "committeecal", "committeedocket", "committeedigest",
                    "committeerollout", "committeeboard", "committeewatch",
-                   "committeeminutes", "committeekg", "committeemeta"}
+                   "committeeminutes", "committeekg", "committeemeta",
+                   # The corps and the gauntlet are the most token-hungry subsystems in the fleet.
+                   # Lean mode must be able to stop them, or a cost incident has no off switch.
+                   "expert_corps.py", "legal_docket.py", "benchmark_redlines.py"}
 
 
 def _LEAN_MODE_ON():

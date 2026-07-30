@@ -111,6 +111,14 @@ def mint_card(row, agg):
         "authority_chain": json.dumps([c.get("source") for c in citations if isinstance(c, dict)])[:4000],
         "minted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "status": "fresh",
+        # Gauntlet-only fields (absent on the committees fallback — hence the .get defaults).
+        "flips_if": (agg.get("flips_if") or "")[:2000] or None,
+        "conditions": (agg.get("conditions") or "")[:2000] or None,
+        "unsettled": bool(agg.get("unsettled")),
+        "process": json.dumps(agg.get("process") or {})[:8000],
+        # A card is INTERNAL until the publication commission scores it and an attorney signs off.
+        # Minting is not publishing; nothing reaches a customer on the strength of a model alone.
+        "publication_state": "internal",
     }
     try:
         db.insert("verdict_cards", card, upsert=True)
@@ -128,21 +136,31 @@ def run(limit=BATCH):
     if not rows:
         print(json.dumps({"seeded": seeded, "convened": 0, "note": "docket empty or fully answered"}))
         return {"seeded": seeded, "convened": 0}
-    import committees
     minted = 0
     for row in rows:
         q = row.get("question") or ""
+        ctx = (f"VERTICAL: {row.get('vertical')}\nPRIORITY: {row.get('priority')}\n\n"
+               f"Answer as a memo a GC will act on this week. Cite the operative authority for "
+               f"every material assertion; state explicitly what would change the conclusion.")
+        agg = None
+        # GAUNTLET FIRST (2026-07-30): five adversarial rounds against the persistent expert corps —
+        # blind -> steelman -> rebuttal -> red team -> chair. committees.review remains the fallback
+        # so a cold/empty corps degrades to the old path instead of producing nothing.
         try:
-            agg = committees.review(
-                "legal_question", row.get("id"), q,
-                f"VERTICAL: {row.get('vertical')}\nPRIORITY: {row.get('priority')}\n\n"
-                f"Answer as a memo a GC will act on this week. Cite the operative authority for "
-                f"every material assertion; state explicitly what would change the conclusion.",
-                app="apparently")
-            if agg and mint_card(row, agg):
-                minted += 1
+            import gauntlet
+            agg = gauntlet.run(q, context=ctx, vertical=row.get("vertical"), docket_id=row.get("id"))
+            if agg and agg.get("error"):
+                agg = None
         except Exception as e:
-            print(f"legal_docket: panel failed on {row.get('id')}: {type(e).__name__}: {str(e)[:120]}")
+            print(f"legal_docket: gauntlet unavailable on {row.get('id')}: {type(e).__name__}: {str(e)[:120]}")
+        if not agg:
+            try:
+                import committees
+                agg = committees.review("legal_question", row.get("id"), q, ctx, app="apparently")
+            except Exception as e:
+                print(f"legal_docket: panel failed on {row.get('id')}: {type(e).__name__}: {str(e)[:120]}")
+        if agg and mint_card(row, agg):
+            minted += 1
     out = {"seeded": seeded, "convened": len(rows), "cards_minted": minted}
     print("legal_docket: " + json.dumps(out))
     return out
