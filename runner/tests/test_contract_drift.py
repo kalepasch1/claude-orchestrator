@@ -30,6 +30,12 @@ def test_detect_divergence_missing_field():
     assert result[0]["observed"] is None
 
 
+def test_detect_divergence_allows_additive_observed_fields():
+    golden = {"version": "1.0"}
+    observed = {"version": "1.0", "optional_metadata": True}
+    assert detect_divergence(golden, observed) == []
+
+
 def test_detect_divergence_json_strings():
     golden = '{"a": 1}'
     observed = '{"a": 2}'
@@ -78,6 +84,7 @@ if __name__ == "__main__":
     test_detect_divergence_no_drift()
     test_detect_divergence_with_drift()
     test_detect_divergence_missing_field()
+    test_detect_divergence_allows_additive_observed_fields()
     test_detect_divergence_json_strings()
     test_detect_divergence_empty()
     test_build_plan_with_golden()
