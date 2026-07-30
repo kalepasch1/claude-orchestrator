@@ -568,6 +568,21 @@ def _repair_original(task, category):
     db.update("tasks", {"id": task["id"]}, patch)
 
 
+def _rework_depth(slug):
+    """How many times this task has already been through the rework pipeline.
+
+    FIX 2026-07-30: called by run()'s depth cap but never defined — NameError on every quarantine
+    run that reached the cap (1,642 crashes logged). Because the cap never worked, nested
+    'rework-legal-rework-legal-…' chains kept respawning, which is exactly the runaway the cap was
+    written to stop. Counts the rework/recover markers the pipeline prefixes onto slugs.
+    """
+    s = str(slug or "").lower()
+    if not s:
+        return 0
+    return (s.count("rework-") + s.count("remediate-") +
+            s.count("recover-missing-branch-") + s.count("factory-unblock-"))
+
+
 def _candidate_rows(limit):
     selects = [
         "id,slug,prompt,note,log_tail,state,kind,project_id,base_branch,material,remediation_count,model,force_coder,sensitivity",
@@ -601,6 +616,9 @@ def run(limit=DEFAULT_LIMIT):
     deduped = dedupe_replacements(limit=int(os.environ.get("ORCH_QUARANTINE_DEDUPE_LIMIT", "1000")))
     rows = _candidate_rows(limit)
     created = parked = skipped = 0
+    # FIX 2026-07-30: `escalated` was incremented (line ~647) and reported (line ~694) but never
+    # initialized — UnboundLocalError on every run that hit the depth cap (732 crashes logged).
+    escalated = 0
     repaired_original = 0
     categories = collections.Counter()
     triage_retried = 0

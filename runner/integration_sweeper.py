@@ -150,6 +150,43 @@ def pressure(limit=1000):
     return payload
 
 
+def recovery_dedup():
+    """Collapse duplicate recovery tasks: keep the newest live task per recovery slug, terminally
+    mark the rest.
+
+    FIX 2026-07-30: this function was CALLED by sweep() (and reported in its payload) but was never
+    defined anywhere in the codebase — every integration-sweeper run died on NameError. 3,948
+    identical crashes accumulated in .runtime/logs/integration-sweeper.err while the sweeper
+    appeared "scheduled and healthy". Recovery tasks therefore never deduped, so a single missing
+    branch could spawn the same recover-missing-branch-<slug> task repeatedly.
+    Fail-soft: any error returns a zeroed report rather than killing the sweep.
+    """
+    report = {"scanned": 0, "duplicates_closed": 0}
+    try:
+        rows = db.select("tasks", {
+            "select": "id,slug,state,updated_at",
+            "slug": f"like.{RECOVERY_PREFIX}*",
+            "state": "in.(QUEUED,RETRY,BLOCKED)",
+            "order": "updated_at.desc", "limit": "500"}) or []
+        report["scanned"] = len(rows)
+        newest = {}
+        for t in rows:
+            slug = t.get("slug") or ""
+            if slug not in newest:          # rows are newest-first
+                newest[slug] = t
+                continue
+            try:                             # this one is an older duplicate
+                db.update("tasks", {"id": t["id"]}, {
+                    "state": "QUARANTINED",
+                    "note": "recovery_dedup: superseded by a newer recovery task for the same slug"})
+                report["duplicates_closed"] += 1
+            except Exception:
+                pass
+    except Exception as e:
+        report["error"] = f"{type(e).__name__}: {str(e)[:120]}"
+    return report
+
+
 def sweep(limit=LIMIT, run_train=RUN_TRAIN):
     dedup = recovery_dedup()
     projects = {p["id"]: p for p in (db.select("projects") or [])}
