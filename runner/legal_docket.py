@@ -96,6 +96,15 @@ def _stale_or_unanswered(limit):
 
 def mint_card(row, agg):
     """Persist a Consilium result as a verdict card with validity conditions."""
+    # HOLLOW-CARD GUARD (2026-07-30): the first live cards minted with NULL verdict, empty
+    # position, and zero citations (early model calls returning empty) — and still marked the
+    # docket question 'answered', permanently blocking a re-debate. An empty answer is not an
+    # answer: refuse to mint, leave the question pending, let the next cycle try again.
+    if len((agg.get("opinion") or "").strip()) < 200 or not (agg.get("verdict") or "").strip():
+        print(f"legal_docket: refusing hollow card for {row.get('id')} "
+              f"(opinion={len((agg.get('opinion') or '').strip())} chars, "
+              f"verdict={'set' if (agg.get('verdict') or '').strip() else 'EMPTY'}) — question stays pending")
+        return False
     citations = agg.get("citations") or []
     card = {
         "docket_id": row.get("id"),
