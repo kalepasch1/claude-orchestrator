@@ -49,7 +49,12 @@ def set_websocket_server(ws):
 # managed per-machine via environment.
 _SAFE_PREFIXES = ("ORCH_", "MAX_PARALLEL", "PER_TASK_GB", "RAM_FLOOR_GB", "RAM_", "RELEASE_", "QUEUE_",
                   "CONT_", "JANITOR_", "REMEDIATION_", "DEFAULT_TEST_CMD", "TASK_TIMEOUT", "ENABLE_",
-                  "SESSION_", "ACCOUNT_COOLDOWN", "MERGE_", "DEPLOY_", "INTEGRATE_", "COST_")
+                  "SESSION_", "ACCOUNT_COOLDOWN", "MERGE_", "DEPLOY_", "INTEGRATE_", "COST_",
+                  # 2026-07-30: these families were pushed to fleet_config but silently NOT applied
+                  # (prefix missing here) — OLLAMA model selection, committee/docket cadence, and
+                  # dedupe thresholds are all secret-free tuning knobs; _DENY_MARKERS still blocks
+                  # anything key/token-shaped regardless of prefix.
+                  "OLLAMA_", "COMMITTEE_", "LEGAL_DOCKET", "SEMANTIC_DEDUPE", "SWARM_", "CADE_")
 _DENY_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "PWD", "CREDENTIAL", "PAT")
 
 

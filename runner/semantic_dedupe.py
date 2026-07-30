@@ -13,8 +13,25 @@ from typing import Callable, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Conservative: only dedup when similarity is very high (near-identical phrasing)
-DEFAULT_THRESHOLD = float(os.environ.get("SEMANTIC_DEDUPE_THRESHOLD", "0.92"))
+# FALSE-POSITIVE FIX (2026-07-30): 0.92 quarantined six legitimate console-build shards as
+# "duplicates" of a DIFFERENT prompt at 0.92-0.94 — long strategy-adjacent prompts share enough
+# vocabulary (consilium/progress/tasks/dashboard) to score that high while being different work.
+# Two changes: (1) the base threshold rises to 0.97 — embedding similarity below that is
+# "same topic", not "same task"; (2) cross-PROMPT-FAMILY pairs (different dropbox source docs,
+# identified by the slug prefix before the shard suffix) require 0.985 — near-verbatim — because
+# the cost asymmetry is brutal: a missed dupe wastes one redundant task; a false positive
+# silently kills requested work, which is the exact failure class the operator banned tonight.
+DEFAULT_THRESHOLD = float(os.environ.get("SEMANTIC_DEDUPE_THRESHOLD", "0.97"))
+CROSS_FAMILY_THRESHOLD = float(os.environ.get("SEMANTIC_DEDUPE_CROSS_FAMILY", "0.985"))
+
+
+def _family(task: dict) -> str:
+    """Prompt family = the dropbox source doc: slug up to the generated shard suffix."""
+    slug = (task.get("slug") or "")
+    # dropbox-<doc-title-words>-<shard-slug>: family is the first 6 hyphen segments (stable for
+    # the same source doc, differs across docs). Non-dropbox slugs: whole slug = own family.
+    parts = slug.split("-")
+    return "-".join(parts[:7]) if slug.startswith("dropbox-") else slug
 
 
 def _cosine(a: List[float], b: List[float]) -> float:
@@ -64,7 +81,9 @@ def find_duplicates(
             if j in removed:
                 continue
             sim = _cosine(embeddings[i], embeddings[j])
-            if sim >= threshold:
+            # Cross-family pairs need near-verbatim similarity (see threshold comment above).
+            eff = threshold if _family(tasks[i]) == _family(tasks[j]) else max(threshold, CROSS_FAMILY_THRESHOLD)
+            if sim >= eff:
                 duplicates.append((tasks[i], tasks[j], sim))
                 removed.add(j)
 
