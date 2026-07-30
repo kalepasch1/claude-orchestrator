@@ -47,10 +47,29 @@ CHAIR_PROMPT = """You are the {chair}, chair of the {committee} committee. Below
 positions after deliberation. Draft the committee's SINGLE consensus opinion. Weigh conviction, do not
 just average; a high-conviction, well-grounded objection can carry the room. Preserve any material
 minority view as dissent rather than erasing it. Then run a quick PRE-MORTEM: forecast the likely outcome.
+MEMO-GRADE OUTPUT IS REQUIRED (2026-07-30). Prior output averaged ~300 characters of generic hedging
+("the committee recognizes the potential benefits but believes the risks outweigh...") with zero
+citations — plausible-sounding, unverifiable, and worthless as a source of truth. That is now a
+failing answer. Every opinion MUST:
+  * REASON, not summarize: state the operative rule/standard, apply it to THESE facts, and name what
+    would change the conclusion. "It depends" without naming the dependency is a non-answer.
+  * CITE: every material assertion carries a source in `citations` — an authority (statute, rule,
+    case, agency guidance, no-action letter) for legal/regulatory matters, or a concrete artifact
+    (file, metric, prior decision) for technical ones. If you cannot cite it, mark it explicitly as
+    an assumption in `assumptions` rather than asserting it.
+  * DECIDE: the reader is acting on this today. Give the recommendation you would defend, with the
+    conditions that bound it.
+  * PRESERVE DISSENT verbatim — a minority view with reasoning beats a smoothed consensus.
+Length follows substance: a genuinely simple question may resolve in a paragraph; a contested one
+should run several hundred words. Do NOT pad, and do NOT truncate real analysis to seem concise.
+
 Return ONE JSON object:
 {"verdict":"support|oppose|conditional|needs-info","score":0-10,"conviction":0-10,
- "opinion":"the committee's reasoned opinion, 2-3 sentences","conditions":"binding conditions the build must honor, or ''",
- "dissent":"the strongest preserved minority view, or 'none'","recommendation":"one concrete recommendation",
+ "opinion":"the committee's reasoned opinion: operative rule -> application to these facts -> what would change it. Cite inline.",
+ "citations":[{"source":"authority or artifact","proposition":"what it establishes","confidence":0.0-1.0}],
+ "assumptions":["anything asserted without a citable source"],
+ "conditions":"binding conditions the build must honor, or ''",
+ "dissent":"the strongest preserved minority view WITH its reasoning, or 'none'","recommendation":"one concrete recommendation",
  "p_success":0.0-1.0,"upside":"the 90-day upside if it works (<=1 sentence)",
  "downside":"the 90-day downside if it fails (<=1 sentence)",
  "reversible":true|false,"critical":true|false}
@@ -524,8 +543,10 @@ def deliberate(committee, subject_type, subject_id, title, body, app=None):
         opp = [p for p in positions if p.get("verdict") == "oppose"]
         syn = {"verdict": "oppose" if opp else "support" if score >= 6 else "conditional",
                "score": round(score, 1), "conviction": round(tw / max(1, len(positions)), 1),
-               "opinion": "; ".join(p.get("recommendation", "") for p in positions)[:400],
-               "conditions": " ".join(p.get("conditions", "") for p in positions if p.get("conditions"))[:400],
+               # 2026-07-30: the 400-char truncation here silently gutted the fallback path's output.
+               # Memo-grade analysis does not fit in 400 chars; cap generously instead of amputating.
+               "opinion": "; ".join(p.get("recommendation", "") for p in positions)[:4000],
+               "conditions": " ".join(p.get("conditions", "") for p in positions if p.get("conditions"))[:2000],
                "dissent": next((p.get("risk", "") for p in opp), "none"),
                "recommendation": positions[0].get("recommendation", "")}
 
@@ -560,8 +581,13 @@ def deliberate(committee, subject_type, subject_id, title, body, app=None):
         db.insert("committee_opinions", {"subject_type": subject_type, "subject_id": subject_id,
                   "subject_title": (title or "")[:200], "committee": name,
                   "consensus_verdict": syn.get("verdict"), "conviction": float(syn.get("conviction", 5) or 5),
-                  "rounds": rounds_run, "opinion": (syn.get("opinion") or "")[:1500],
-                  "dissent": (syn.get("dissent") or "")[:600], "precedent_conflict": conflict or None,
+                  # 2026-07-30: raised from 1500/600 — memo-grade opinions with citations and
+                  # preserved dissent do not fit the old caps, and silently clipping the analysis
+                  # at the persist boundary is how "adversarial tribunal" degraded into a soundbite.
+                  "rounds": rounds_run, "opinion": (syn.get("opinion") or "")[:12000],
+                  "dissent": (syn.get("dissent") or "")[:4000], "precedent_conflict": conflict or None,
+                  "citations": json.dumps(syn.get("citations") or [])[:8000],
+                  "assumptions": json.dumps(syn.get("assumptions") or [])[:4000],
                   "p_success": p_succ, "expected_value": ev_score, "app": app})
         for p in positions:   # per-SEAT trail so we can backtest and reweight individual experts
             db.insert("committee_seat_reviews", {"subject_type": subject_type, "subject_id": subject_id,
