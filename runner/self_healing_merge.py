@@ -87,19 +87,38 @@ def _classify_files(repo: str, branch: str, base: str) -> dict:
     if not changed_files:
         return result
 
-    # Try merging to find which files conflict
-    # Save current state
-    _git(["git", "stash", "--include-untracked"], repo)
-    _git(["git", "checkout", base], repo)
-    _git(["git", "reset", "--hard", "HEAD"], repo)
+    # ── ROOT-CAUSE FIX (2026-07-30): this function used to `git stash --include-untracked` on the
+    # MAIN checkout, `checkout base`, `reset --hard` — and NEVER popped the stash. Every dirty
+    # operator file present when a heal ran was silently swept into an anonymous "WIP on master"
+    # stash: the improvement-wipe pattern, third occurrence. The stash was never necessary — the
+    # classification only needs a tree at `base` to attempt a merge in. So: do it in an EPHEMERAL
+    # DETACHED WORKTREE. The main checkout is never touched, no stash exists to lose, and the
+    # worktree convention ("agent git work never happens in the main checkout") finally applies to
+    # this module too. Fail-soft: if the worktree can't be created we SKIP healing (returning
+    # nothing-clean is safe — the branch just stays CONFLICT for the normal path) rather than ever
+    # falling back to the stash behavior.
+    wt = os.path.join(repo + "-wt", f"selfheal-classify-{int(time.time() * 1000)}")
+    try:
+        os.makedirs(os.path.dirname(wt), exist_ok=True)
+    except Exception:
+        pass
+    add = _git(["git", "worktree", "add", "--detach", wt, base], repo)
+    if add.returncode != 0:
+        result["conflicting"] = changed_files      # unknown => treat all as conflicting (safe)
+        return result
 
-    # Attempt merge
-    merge = _git(["git", "merge", "--no-commit", "--no-ff", branch], repo)
+    def _cleanup():
+        _git(["git", "merge", "--abort"], wt)
+        _git(["git", "worktree", "remove", "--force", wt], repo)
+        _git(["git", "worktree", "prune"], repo)
+
+    # Attempt merge inside the ephemeral worktree
+    merge = _git(["git", "merge", "--no-commit", "--no-ff", branch], wt)
 
     if merge.returncode == 0:
         # No conflicts — all files are clean
         result["clean"] = changed_files
-        _git(["git", "merge", "--abort"], repo)
+        _cleanup()
         return result
 
     # Parse conflict files from merge output
@@ -115,8 +134,7 @@ def _classify_files(repo: str, branch: str, base: str) -> dict:
                 if f in line:
                     conflict_set.add(f)
 
-    _git(["git", "merge", "--abort"], repo)
-    _git(["git", "reset", "--hard", "HEAD"], repo)
+    _cleanup()
 
     for f in changed_files:
         if f in conflict_set:
@@ -275,51 +293,71 @@ def _create_sub_branch(
         return result
     merge_base = mb.stdout.strip()
 
-    # Create sub-branch from merge base
-    _git(["git", "checkout", base], repo)
-    _git(["git", "reset", "--hard", "HEAD"], repo)
-    create = _git(["git", "checkout", "-b", sub_branch, base], repo)
+    # ── ROOT-CAUSE FIX part 2 (2026-07-30): this path did `checkout base` + `reset --hard HEAD`
+    # on the MAIN checkout — which doesn't stash dirty operator work, it DESTROYS it outright.
+    # The sub-branch is now built in an EPHEMERAL DETACHED WORKTREE; the main checkout is only
+    # touched for the final fast merge, and only when it is verifiably clean and on base.
+    wt = os.path.join(repo + "-wt", f"selfheal-sub-{int(time.time() * 1000)}")
+    try:
+        os.makedirs(os.path.dirname(wt), exist_ok=True)
+    except Exception:
+        pass
+    add = _git(["git", "worktree", "add", "--detach", wt, base], repo)
+    if add.returncode != 0:
+        result["error"] = f"cannot create worktree: {add.stderr[:200]}"
+        return result
+
+    def _wt_cleanup():
+        _git(["git", "worktree", "remove", "--force", wt], repo)
+        _git(["git", "worktree", "prune"], repo)
+
+    create = _git(["git", "checkout", "-b", sub_branch], wt)
     if create.returncode != 0:
         result["error"] = f"cannot create sub-branch: {create.stderr[:200]}"
+        _wt_cleanup()
         return result
 
     result["created"] = True
 
-    # Cherry-pick only the clean files from the original branch
+    # Cherry-pick only the clean files from the original branch — into the worktree
     for filepath in clean_files:
-        # Get file content from the original branch
         content = _git(["git", "show", f"{branch}:{filepath}"], repo)
         if content.returncode == 0:
-            fullpath = os.path.join(repo, filepath)
-            # Ensure directory exists
+            fullpath = os.path.join(wt, filepath)
             dirpath = os.path.dirname(fullpath)
             if dirpath:
                 os.makedirs(dirpath, exist_ok=True)
             try:
                 with open(fullpath, "w") as f:
                     f.write(content.stdout)
-                _git(["git", "add", filepath], repo)
+                _git(["git", "add", filepath], wt)
             except Exception as e:
                 result["error"] = f"failed to write {filepath}: {e}"
-                _git(["git", "checkout", base], repo)
+                _wt_cleanup()
                 _git(["git", "branch", "-D", sub_branch], repo)
                 return result
 
-    # Commit
-    _git(["git", "config", "user.name", "kalepasch1"], repo)
-    _git(["git", "config", "user.email", "kalepasch@gmail.com"], repo)
-    commit = _git(["git", "commit", "-m",
-                    f"self-heal: clean files from {branch} ({len(clean_files)} files)"], repo)
+    # Commit (identity per repo convention)
+    commit = _git(["git", "-c", "user.name=kalepasch1", "-c", "user.email=kalepasch@gmail.com",
+                   "commit", "-m",
+                   f"self-heal: clean files from {branch} ({len(clean_files)} files)"], wt)
 
     if commit.returncode != 0:
-        # Nothing to commit (maybe files were identical)
-        _git(["git", "checkout", base], repo)
+        _wt_cleanup()
         _git(["git", "branch", "-D", sub_branch], repo)
         result["error"] = "nothing to commit"
         return result
+    _wt_cleanup()      # branch persists; the worktree does not
 
-    # Merge sub-branch into base
-    _git(["git", "checkout", base], repo)
+    # Merge sub-branch into base — ONLY if the main checkout is clean AND on base. A dirty or
+    # drifted main checkout means an operator/agent is mid-work there: leave the sub-branch for
+    # the merge train instead of forcing anything. Never checkout/reset the main tree here.
+    on_branch = _git(["git", "branch", "--show-current"], repo).stdout.strip()
+    dirty = _git(["git", "status", "--porcelain", "--untracked-files=no"], repo).stdout.strip()
+    if on_branch != base or dirty:
+        result["error"] = (f"main checkout busy (branch={on_branch or 'detached'}, "
+                           f"dirty={bool(dirty)}); sub-branch left for merge-train pickup")
+        return result
     merge = _git(["git", "merge", "--no-ff", sub_branch, "-m",
                    f"Merge self-healed clean files from {branch}"], repo)
 

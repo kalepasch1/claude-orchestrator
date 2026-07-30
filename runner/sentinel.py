@@ -325,6 +325,49 @@ def stash_drift_guard(st=None):
             st["stash_alert_last"] = time.time()
 
 
+def wip_stash_rescue(st=None):
+    """MAKE THE IMPROVEMENT-WIPE CLASS UNLOSEABLE (operator directive 2026-07-30).
+
+    Three times now, some code path stashed dirty operator work on the main checkout and never
+    popped it (the third culprit — self_healing_merge's classify — is root-cause-fixed to use
+    ephemeral worktrees). But the operator's requirement is that this CANNOT recur, and no grep can
+    prove a negative about future code. So: defense in depth. Any anonymous stash on the base
+    branch ("WIP on {base}" — the default label of a bare `git stash`, which no legitimate fleet
+    flow produces; every intentional stash here is `-m`-labeled) is auto-PRESERVED by pointing a
+    branch at the stash commit: `hotfix/stash-rescue-<ts>`. A stash is just an unreachable commit —
+    branching it makes the work permanently reachable, visible in `git branch`, diffable, and
+    mergeable, even if the stash entry is later dropped. We never pop, never drop, never touch the
+    working tree — pure preservation plus a loud alert.
+
+    Idempotent: a stash whose commit already has a rescue branch pointing at it is skipped.
+    """
+    st = {} if st is None else st
+    r = git("stash", "list", "--format=%gd %H %gs")
+    if r.returncode != 0:
+        return
+    rescued = 0
+    for line in r.stdout.splitlines():
+        parts = line.strip().split(" ", 2)
+        if len(parts) < 3:
+            continue
+        ref, sha, subject = parts
+        if not subject.startswith(f"WIP on {BASE_BRANCH}"):
+            continue                     # labeled/intentional stashes: alarm-only, never touched
+        held = git("branch", "--points-at", sha)
+        if "stash-rescue" in (held.stdout or ""):
+            continue                     # already preserved
+        hb = f"hotfix/stash-rescue-{int(time.time())}-{sha[:8]}"
+        b = git("branch", hb, sha)
+        if b.returncode == 0:
+            rescued += 1
+            emit("wip-stash-rescued", branch=hb, stash=ref, sha=sha[:12])
+            log("wip-stash-rescued",
+                f"anonymous '{subject[:60]}' ({ref}) preserved as {hb} — some code path stashed "
+                f"work on {BASE_BRANCH} without a label; find and fix the caller")
+    if rescued:
+        st["wip_rescued_total"] = int(st.get("wip_rescued_total", 0)) + rescued
+
+
 # ── 2b. nested-worktree hygiene ───────────────────────────────────────────────
 
 QUARANTINE = os.path.join(os.path.dirname(REPO), "_quarantine")
@@ -655,6 +698,10 @@ def main():
         stash_drift_guard(st)
     except Exception as e:
         log("stash-drift-guard-error", e)
+    try:
+        wip_stash_rescue(st)   # anonymous WIP-on-base stashes become branches: unloseable
+    except Exception as e:
+        log("wip-stash-rescue-error", e)
     try:
         silent_failure_guard(st)   # catches the "runs but fails quietly" class (see docstring)
     except Exception as e:
