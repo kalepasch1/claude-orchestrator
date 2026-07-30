@@ -7,6 +7,7 @@ has enough data to reconstruct its work without re-running the agent.
 """
 import os, subprocess, json, datetime
 import db
+import task_refs
 
 ARTIFACTS_TABLE = "task_artifacts"
 
@@ -56,7 +57,6 @@ def capture(repo, slug, branch, base, wt, test_log="", cost=None):
     # A branch can move; this ref cannot.  Publishing here covers the Cowork
     # terminal executor as well as the classic runner path.
     try:
-        import task_refs
         task_rows = db.select("tasks", {"select": "id,attempt", "slug": f"eq.{slug}",
                                          "order": "created_at.desc", "limit": "1"}) or []
         task = task_rows[0] if task_rows else {}
