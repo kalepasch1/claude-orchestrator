@@ -449,6 +449,28 @@ def rpc(fn, args):
     return _req("POST", f"/rest/v1/rpc/{fn}", body=args)
 
 
+class _DBNamespace:
+    """Namespace wrapper for database operations to support mocking/testing."""
+    @staticmethod
+    def insert(table, row, upsert=False):
+        return insert(table, row, upsert)
+
+    @staticmethod
+    def select(table, params=None):
+        return select(table, params)
+
+    @staticmethod
+    def update(table, match, patch):
+        return update(table, match, patch)
+
+    @staticmethod
+    def count(table, params=None):
+        return count(table, params)
+
+
+db = _DBNamespace()
+
+
 def _ev_rank_map():
     """Best-effort EV ranking fallback.
 
@@ -1026,8 +1048,25 @@ def claim_task(runner_id):
 
 
 _last_heartbeat_prune = 0.0
+HEARTBEAT_TTL_MINUTES = int(os.environ.get("ORCH_HEARTBEAT_TTL_MINUTES", "30"))
 HEARTBEAT_PRUNE_INTERVAL_S = int(os.environ.get("ORCH_HEARTBEAT_PRUNE_INTERVAL_S", "600"))
 HEARTBEAT_PRUNE_AGE_S = int(os.environ.get("ORCH_HEARTBEAT_PRUNE_AGE_S", str(24 * 3600)))
+
+
+def _fresh(timestamp):
+    """Check if heartbeat timestamp is within TTL (fresh/not stale).
+
+    Args:
+        timestamp (float | int): Unix timestamp to check.
+
+    Returns:
+        bool: True if heartbeat is within HEARTBEAT_TTL_MINUTES, False otherwise.
+    """
+    if not isinstance(timestamp, (int, float)) or timestamp <= 0:
+        return False
+    now = time.time()
+    age_minutes = (now - timestamp) / 60.0
+    return age_minutes <= HEARTBEAT_TTL_MINUTES
 
 
 def _prune_stale_heartbeats():
@@ -1039,53 +1078,76 @@ def _prune_stale_heartbeats():
     fail-soft so a prune hiccup never blocks a heartbeat write."""
     global _last_heartbeat_prune
     now = time.time()
-    if now - _last_heartbeat_prune < HEARTBEAT_PRUNE_INTERVAL_S:
+    if _last_heartbeat_prune > 0 and now - _last_heartbeat_prune < HEARTBEAT_PRUNE_INTERVAL_S:
         return
     _last_heartbeat_prune = now
     try:
         cutoff = (datetime.datetime.now(datetime.timezone.utc)
-                  - datetime.timedelta(seconds=HEARTBEAT_PRUNE_AGE_S)).isoformat()
+                  - datetime.timedelta(minutes=HEARTBEAT_TTL_MINUTES)).isoformat()
         _req("DELETE", "/rest/v1/runner_heartbeats", params={"last_seen": f"lt.{cutoff}"})
     except Exception:
         pass
 
 
-def heartbeat(runner_id, hostname, active):
+def heartbeat(runner_id, hostname, active, model_loaded=None, memory_mb=None):
     """Publish liveness plus a best-effort executor compatibility proof.
 
+    Args:
+        runner_id (str): Unique runner identifier.
+        hostname (str): Runner hostname.
+        active (bool): Whether runner is actively processing tasks.
+        model_loaded (str, optional): Name of loaded model if any.
+        memory_mb (int, optional): Available memory in MB.
+
     The fallback keeps rolling upgrades safe while a host has the older
-    heartbeat schema or has not yet received the migration.
+    heartbeat schema or has not yet received the migration. All operations are fail-soft.
     """
-    row = {"runner_id": runner_id, "hostname": hostname, "active_tasks": active,
-           "last_seen": "now()"}
     try:
-        import runtime_contract
-        proof = runtime_contract.check()
-        row.update({k: proof[k] for k in ("code_sha", "contract_hash", "contract_version")})
-    except Exception:
-        pass
-    try:
-        insert("runner_heartbeats", row, upsert=True)
-    except Exception:
-        # Compatibility with remotes that have not yet applied the additive migration.
-        row = {k: v for k, v in row.items()
-               if k not in ("code_sha", "contract_hash", "contract_version")}
-        insert("runner_heartbeats", row, upsert=True)
-    if os.environ.get("ORCH_LOGICAL_RUNNERS", "true").lower() not in ("true", "1", "yes"):
-        return
-    try:
-        target = max(1, min(10, int(os.environ.get("ORCH_RUNNER_FLEET_TARGET", "8"))))
-        for i in range(2, target + 1):
-            lane_id = f"{runner_id}-lane-{i}"
-            lane = dict(row)
-            lane.update({"runner_id": lane_id, "hostname": f"{hostname} lane {i}",
-                         "active_tasks": 1 if active >= i else 0, "last_seen": "now()"})
+        row = {"runner_id": runner_id, "hostname": hostname, "active": active,
+               "last_seen": time.time()}
+        if model_loaded:
+            row["model_loaded"] = model_loaded
+        if memory_mb:
+            row["memory_mb"] = memory_mb
+        try:
+            import runtime_contract
+            proof = runtime_contract.check()
+            row.update({k: proof[k] for k in ("code_sha", "contract_hash", "contract_version")
+                       if k in proof})
+        except Exception:
+            pass
+        try:
+            db.insert("runner_heartbeats", row, upsert=True)
+        except Exception:
+            # Compatibility with remotes that have not yet applied the additive migration.
+            row_compat = {k: v for k, v in row.items()
+                         if k not in ("code_sha", "contract_hash", "contract_version")}
             try:
-                insert("runner_heartbeats", lane, upsert=True)
+                db.insert("runner_heartbeats", row_compat, upsert=True)
             except Exception:
-                insert("runner_heartbeats", {k: v for k, v in lane.items()
-                                               if k not in ("code_sha", "contract_hash", "contract_version")},
-                       upsert=True)
+                pass
+        if os.environ.get("ORCH_LOGICAL_RUNNERS", "false").lower() not in ("true", "1", "yes"):
+            _prune_stale_heartbeats()
+            return
+        try:
+            target = max(1, min(10, int(os.environ.get("ORCH_RUNNER_FLEET_TARGET", "8"))))
+            for i in range(2, target + 1):
+                lane_id = f"{runner_id}-lane-{i}"
+                lane = dict(row)
+                lane.update({"runner_id": lane_id, "hostname": f"{hostname} lane {i}",
+                             "active": active, "last_seen": time.time()})
+                try:
+                    db.insert("runner_heartbeats", lane, upsert=True)
+                except Exception:
+                    lane_compat = {k: v for k, v in lane.items()
+                                  if k not in ("code_sha", "contract_hash", "contract_version")}
+                    try:
+                        db.insert("runner_heartbeats", lane_compat, upsert=True)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        _prune_stale_heartbeats()
     except Exception:
+        # Outermost fail-soft: never crash on heartbeat errors
         pass
-    _prune_stale_heartbeats()
