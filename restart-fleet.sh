@@ -18,11 +18,26 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")" && pwd)"
 cd "$REPO" || { echo "!! cannot cd to repo"; exit 1; }
 BR="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo master)"
+BASE_BRANCH="${ORCH_BASE_BRANCH:-master}"
 MAC2_HOST="${MAC2_HOST:-Mandys-MacBook-Pro.local}"
 MAC2_USER="${MAC2_USER:-$(whoami)}"
 MSG="${1:-fleet: ship orchestrator changes + restart}"
 
 echo "==> repo: $REPO   branch: $BR"
+
+# 2026-07-29 GUARD: this script used to blindly commit+push whatever branch happened to be
+# checked out. The main checkout drifts onto agent/* branches routinely (that's what sentinel's
+# checkout_guard exists to fix) — if this runs mid-drift, "ship orchestrator changes" silently
+# lands on a throwaway agent branch instead of $BASE_BRANCH, and never reaches prod unless
+# something separately merges that branch. Observed 2026-07-29: exactly this happened. Refuse
+# by default; override with FORCE_BRANCH=true if shipping to a non-base branch is intentional.
+if [[ "$BR" != "$BASE_BRANCH" && "${FORCE_BRANCH:-false}" != "true" ]]; then
+  echo "!! checked-out branch ('$BR') is not the base branch ('$BASE_BRANCH')."
+  echo "!! refusing to commit+push here — it would ship to '$BR', not '$BASE_BRANCH', and may"
+  echo "!! never reach prod. Either let sentinel's checkout_guard restore $BASE_BRANCH first"
+  echo "!! (it runs every ~5 min), or if this is deliberate: FORCE_BRANCH=true bash $0"
+  exit 1
+fi
 
 echo "==> 1/4  clear stale git locks"
 rm -f .git/index.lock .git/HEAD.lock .git/*.lock .git/refs/heads/*.lock 2>/dev/null || true
