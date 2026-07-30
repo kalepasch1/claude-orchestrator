@@ -111,14 +111,35 @@ def _triage_panels(title, body, app=None):
         "Return ONE JSON array; each item: {\"domain\":\"short stable label\",\"chair\":\"chair role\","
         "\"seats\":[\"specific expert role\", ...],\"why\":\"why this panel for this issue (<=1 sentence)\"}\n"
         f"ISSUE: {(title or '')[:200]}\nDETAIL: {(body or '')[:900]}\nAPP: {app or 'n/a'}", arr=True)
+    # FIX 2026-07-30 (CONSILIUM WAS 100% DEAD): every committee review crashed here with
+    # "AttributeError: 'list' object has no attribute 'strip'" — 308KB of identical tracebacks —
+    # because the model sometimes returns `domain`/`chair` as a LIST (or a non-str) rather than a
+    # string, and this code called .strip() on it unguarded. Result: zero debates, zero verdicts,
+    # zero corpus growth for as long as the bug existed, while the scheduler dutifully fired every
+    # 15 minutes. Coerce defensively; never let a malformed panel spec kill the whole review.
+    def _as_text(v, default=""):
+        if isinstance(v, str):
+            return v.strip()
+        if isinstance(v, (list, tuple)):
+            parts = [str(x).strip() for x in v if x is not None and str(x).strip()]
+            return " / ".join(parts)[:120]
+        if v is None:
+            return default
+        return str(v).strip()
+
     panels = []
     for it in (spec or []):
-        seats = [s for s in (it.get("seats") or []) if isinstance(s, str)][:4]
-        dom = (it.get("domain") or "").strip()
+        if not isinstance(it, dict):
+            continue
+        raw_seats = it.get("seats") or []
+        if isinstance(raw_seats, str):
+            raw_seats = [raw_seats]
+        seats = [_as_text(s) for s in raw_seats if _as_text(s)][:4]
+        dom = _as_text(it.get("domain"))
         if not dom or not seats:
             continue
-        panels.append({"name": dom, "mandate": (it.get("why") or dom)[:200],
-                       "chair": (it.get("chair") or "Chair").strip(),
+        panels.append({"name": dom, "mandate": _as_text(it.get("why"), dom)[:200] or dom,
+                       "chair": _as_text(it.get("chair"), "Chair") or "Chair",
                        "seats": seats, "weight": 1.0})
         if len(panels) >= 4:
             break

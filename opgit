@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# opgit — operator git, serialized against the fleet.
+#
+# WHY: the runner, sentinel, merge_train and the operator all mutate this repo concurrently.
+# Tonight that produced repeated `index.lock` / `HEAD.lock` collisions, and (worse) an operator
+# hotfix being stashed away mid-edit. This wrapper makes operator git actions take the SAME
+# advisory lock the fleet's repo_lock uses, so the two can never interleave — and it clears
+# genuinely-stale lock files safely (only when no git process is actually running).
+#
+# USAGE:   ./opgit commit -m "msg"      ./opgit push origin master:orchestrator/dev
+#          ./opgit save "msg"           # add -A + commit + push to dev, one shot
+#          ./opgit status               # lock-aware status
+#
+set -uo pipefail
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LOCKDIR="${TMPDIR:-/tmp}/orch-repo-locks"
+KEY="$(printf '%s' "$REPO" | shasum | cut -c1-16)"
+LOCKFILE="$LOCKDIR/repo-$KEY.lock"
+TIMEOUT="${OPGIT_TIMEOUT:-300}"
+mkdir -p "$LOCKDIR"
+
+_git_running() { pgrep -fl "git " 2>/dev/null | grep -q "$REPO" ; }
+
+_clear_stale_git_locks() {
+  local cleared=0
+  for f in "$REPO/.git/index.lock" "$REPO/.git/HEAD.lock" "$REPO/.git/refs/heads/*.lock"; do
+    for lock in $f; do
+      [ -e "$lock" ] || continue
+      if _git_running; then
+        echo "opgit: a git process IS running — refusing to clear $lock (wait for it)"; return 1
+      fi
+      # stale by definition now: file exists, no git process holds it
+      rm -f "$lock" && echo "opgit: cleared stale $(basename "$lock")" && cleared=1
+    done
+  done
+  return 0
+}
+
+# ---- acquire the fleet's advisory lock (flock; falls back to unlocked if unavailable) ----
+exec 9>"$LOCKFILE" 2>/dev/null || true
+if command -v flock >/dev/null 2>&1; then
+  if ! flock -w "$TIMEOUT" 9; then
+    echo "opgit: could not acquire repo lock within ${TIMEOUT}s — the fleet is mid-operation. Try again."; exit 1
+  fi
+else
+  # macOS has no flock(1) by default; use an atomic mkdir mutex instead
+  MUTEX="$LOCKDIR/repo-$KEY.mutex"; waited=0
+  until mkdir "$MUTEX" 2>/dev/null; do
+    sleep 1; waited=$((waited+1))
+    if [ "$waited" -ge "$TIMEOUT" ]; then
+      # stale mutex older than the timeout is reclaimable
+      if [ -d "$MUTEX" ] && [ -z "$(find "$MUTEX" -newermt "-${TIMEOUT} seconds" 2>/dev/null)" ]; then
+        rmdir "$MUTEX" 2>/dev/null || true; continue
+      fi
+      echo "opgit: repo busy for ${TIMEOUT}s — aborting rather than racing the fleet."; exit 1
+    fi
+  done
+  trap 'rmdir "$MUTEX" 2>/dev/null || true' EXIT
+fi
+
+_clear_stale_git_locks || exit 1
+cd "$REPO" || exit 1
+
+IDENT=(-c user.name=kalepasch1 -c user.email=kalepasch@gmail.com)
+
+case "${1:-}" in
+  save)
+    MSG="${2:-operator: save}"
+    git add -A
+    if git diff --cached --quiet; then echo "opgit: nothing to commit"; else
+      git "${IDENT[@]}" commit -m "$MSG" || exit 1
+    fi
+    echo "opgit: pushing to orchestrator/dev (prod guard respected)"
+    git push origin master:orchestrator/dev
+    ;;
+  commit)
+    shift; git "${IDENT[@]}" commit "$@"
+    ;;
+  "")
+    echo "usage: opgit {save \"msg\" | commit ... | push ... | status | <any git args>}"; exit 2
+    ;;
+  *)
+    git "$@"
+    ;;
+esac

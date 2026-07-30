@@ -243,10 +243,35 @@ def checkout_guard(st=None):
             return
 
     if r.returncode != 0:
-        # Stash TRACKED modifications only, so a dirty tree can't wedge us forever.
-        if git("status", "--porcelain", "--untracked-files=no").stdout.strip():
-            git("stash", "push", "-m", f"sentinel-drift-{branch}-{int(time.time())}")
-            r = git("checkout", BASE_BRANCH)
+        dirty = git("status", "--porcelain", "--untracked-files=no").stdout.strip()
+        if dirty:
+            # SELF-MODIFICATION GUARD (2026-07-30): stashing here silently swallowed operator
+            # hotfixes to the fleet's own critical path — twice in one night, including the fix
+            # for the merge-resolver bug that was actively wiping improvements. Stashes are
+            # write-only (nothing in this codebase ever pops one), so a stash IS a loss.
+            # New behavior: if any PROTECTED path is dirty, COMMIT the work to a hotfix branch
+            # (recoverable, visible, mergeable) instead of stashing it. Only non-protected dirt
+            # falls back to the old stash path.
+            protected_dirty = [ln[3:] for ln in dirty.splitlines()
+                               if ln[3:].startswith(("runner/", "scripts/", "web/server/"))
+                               or ln[3:].endswith((".py", ".sh"))]
+            if protected_dirty:
+                hb = f"hotfix/sentinel-rescue-{int(time.time())}"
+                git("stash", "push", "-m", f"pre-rescue-{int(time.time())}")   # atomic handoff
+                git("checkout", "-b", hb)
+                git("stash", "pop")
+                git("add", "-A")
+                git("-c", "user.name=kalepasch1", "-c", "user.email=kalepasch@gmail.com",
+                    "commit", "-m",
+                    f"rescue: operator/agent changes preserved by sentinel ({len(protected_dirty)} file(s))")
+                emit("hotfix-rescued", branch=hb, files=len(protected_dirty))
+                log("hotfix-rescued",
+                    f"preserved {len(protected_dirty)} protected file(s) on {hb} instead of stashing — "
+                    f"review and merge (git log {hb})")
+                r = git("checkout", BASE_BRANCH)
+            else:
+                git("stash", "push", "-m", f"sentinel-drift-{branch}-{int(time.time())}")
+                r = git("checkout", BASE_BRANCH)
 
     if r.returncode != 0:
         # Still stuck. Count consecutive failures and escalate rather than spin silently:
