@@ -507,7 +507,7 @@ class TestBacklogBatchProcessor:
         progress.stages.append(result2)
         progress.total_cost_usd += result2.cost_usd
 
-        assert progress.total_cost_usd == 0.06
+        assert progress.total_cost_usd == pytest.approx(0.06)
 
     def test_batch_cost_zero_cost_stages(self):
         """Some stages have zero cost (local models)."""

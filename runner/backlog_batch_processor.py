@@ -129,11 +129,11 @@ class BacklogBatchProcessor:
         with self._lock:
             if not resource_governor.can_claim(bytes_needed=1024*1024):  # 1MB per task
                 _log.warning("Resource exhausted; skipping batch")
-                return {"processed": 0, "passed": 0, "failed": 0, "blocked": 0, "reason": "resource_exhausted"}
+                return {"processed": 0, "passed": 0, "failed": 0, "blocked": 0, "reason": "resource_exhausted", "timestamp": time.time()}
 
             tasks = self._fetch_queued_tasks()
             if not tasks:
-                return {"processed": 0, "passed": 0, "failed": 0, "blocked": 0}
+                return self._summarize_batch([])
 
             results = []
             for task in tasks:
