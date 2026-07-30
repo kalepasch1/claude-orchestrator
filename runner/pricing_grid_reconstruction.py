@@ -15,41 +15,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import log as _log_mod
-import common_utils
 
 _log = _log_mod.get("pricing_grid_reconstruction")
-
-
-def _tier_units_in_range(units: int, tier_min: int, tier_max: Optional[int]) -> bool:
-    """Check if units fall within [tier_min, tier_max]."""
-    if units < tier_min:
-        return False
-    if tier_max is not None and units > tier_max:
-        return False
-    return True
-
-
-def _calculate_applicable_units(units: int, tier_min: int, tier_max: Optional[int]) -> int:
-    """Calculate the number of applicable units within a tier's range.
-
-    Returns 0 if units are outside range; otherwise returns units_in_range.
-    """
-    if not _tier_units_in_range(units, tier_min, tier_max):
-        return 0
-    upper = tier_max if tier_max is not None else units
-    return min(units, upper) - tier_min + 1
-
-
-def _build_pricing_tier_from_dict(tier_dict: Dict[str, Any]) -> 'PricingTier':
-    """Extract and construct a PricingTier from a raw dict."""
-    return PricingTier(
-        name=tier_dict.get("name", "default"),
-        min_units=int(tier_dict.get("min_units", 0)),
-        max_units=int(tier_dict["max_units"]) if tier_dict.get("max_units") is not None else None,
-        unit_price=float(tier_dict.get("unit_price", 0)),
-        flat_fee=float(tier_dict.get("flat_fee", 0)),
-        metadata=tier_dict.get("metadata", {}),
-    )
 
 
 @dataclass
@@ -66,34 +33,19 @@ class PricingTier:
     def is_unlimited(self) -> bool:
         return self.max_units is None
 
-    @staticmethod
-    def _tier_capacity(tier: 'PricingTier') -> int:
-        """Capacity (max units) this tier can hold."""
-        if tier.max_units is None:
-            return 0
-        if tier.max_units < tier.min_units:
-            return 0
-        return _calculate_applicable_units(tier.max_units, tier.min_units, tier.max_units)
-
     def cost_for_units(self, units: int) -> float:
         """Calculate cost for units within this tier's range."""
-        applicable = _calculate_applicable_units(units, self.min_units, self.max_units)
+        if units < self.min_units:
+            applicable = 0
+        elif self.max_units is not None and units > self.max_units:
+            applicable = 0
+        else:
+            upper = self.max_units if self.max_units is not None else units
+            applicable = min(units, upper) - self.min_units + 1
+
         if applicable == 0:
             return 0.0
         return self.flat_fee + (applicable * self.unit_price)
-
-    def to_dict(self, include_metadata: bool = False) -> Dict[str, Any]:
-        """Serialize tier to dict. Metadata excluded by default."""
-        result = {
-            "name": self.name,
-            "min_units": self.min_units,
-            "max_units": self.max_units,
-            "unit_price": self.unit_price,
-            "flat_fee": self.flat_fee,
-        }
-        if include_metadata:
-            result["metadata"] = self.metadata
-        return result
 
 
 @dataclass
@@ -109,21 +61,6 @@ class PricingGrid:
         """Tiers sorted by min_units ascending."""
         return sorted(self.tiers, key=lambda t: t.min_units)
 
-    @staticmethod
-    def _consume_tier_units(tier: PricingTier, remaining: int) -> Tuple[int, float]:
-        """Consume units from tier. Returns (units_consumed, cost)."""
-        if remaining <= 0:
-            return 0, 0.0
-
-        consumed, _ = common_utils.consume_from_tier(
-            current=tier.min_units - 1,
-            tier_min=tier.min_units,
-            tier_max=tier.max_units,
-            amount=remaining
-        )
-        cost = tier.flat_fee + (consumed * tier.unit_price)
-        return consumed, cost
-
     def total_cost(self, units: int) -> float:
         """Calculate total cost across all tiers for a given unit count.
 
@@ -134,7 +71,14 @@ class PricingGrid:
         for tier in self.sorted_tiers:
             if remaining <= 0:
                 break
-            consumed, cost = self._consume_tier_units(tier, remaining)
+
+            if tier.max_units is None:
+                consumed = remaining
+            else:
+                tier_capacity = tier.max_units - tier.min_units + 1
+                consumed = min(remaining, tier_capacity)
+
+            cost = tier.flat_fee + (consumed * tier.unit_price)
             total += cost
             remaining -= consumed
         return round(total, 2)
@@ -145,15 +89,6 @@ class PricingGrid:
             if tier.min_units <= units and (tier.max_units is None or units <= tier.max_units):
                 return tier
         return None
-
-    def to_dict(self, include_metadata: bool = False) -> Dict[str, Any]:
-        """Serialize grid to dict. Tier metadata excluded by default."""
-        return {
-            "product_id": self.product_id,
-            "currency": self.currency,
-            "effective_date": self.effective_date,
-            "tiers": [t.to_dict(include_metadata=include_metadata) for t in self.tiers],
-        }
 
 
 class PricingGridReconstructionUtil:
@@ -167,7 +102,17 @@ class PricingGridReconstructionUtil:
     def from_raw_tiers(product_id: str, raw_tiers: List[Dict[str, Any]],
                        currency: str = "USD") -> PricingGrid:
         """Reconstruct PricingGrid from raw tier dicts."""
-        tiers = [_build_pricing_tier_from_dict(rt) for rt in raw_tiers]
+        tiers = []
+        for rt in raw_tiers:
+            tier = PricingTier(
+                name=rt.get("name", "default"),
+                min_units=int(rt.get("min_units", 0)),
+                max_units=int(rt["max_units"]) if rt.get("max_units") is not None else None,
+                unit_price=float(rt.get("unit_price", 0)),
+                flat_fee=float(rt.get("flat_fee", 0)),
+                metadata=rt.get("metadata", {}),
+            )
+            tiers.append(tier)
         grid = PricingGrid(product_id=product_id, tiers=tiers, currency=currency)
         grid.tiers = grid.sorted_tiers  # normalize order on construction
         return grid

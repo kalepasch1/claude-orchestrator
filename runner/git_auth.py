@@ -18,10 +18,32 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import log as _log_mod
+import re
 
 _log = _log_mod.get("git_auth")
 _PAT = os.environ.get("ORCH_GIT_PAT", "").strip()
 _DEBUG = os.environ.get("ORCH_GIT_AUTH_DEBUG", "false").lower() in ("1", "true", "yes", "on")
+
+_SECRET_PATTERNS = re.compile(
+    r"("
+    r"(?:github_pat_|gh[posur]_)[A-Za-z0-9_]{20,}"
+    r"|"
+    r"(?:api[_-]?key|secret[_-]?key|service[_-]?key|token|password|credential)"
+    r"\s*[=:]\s*['\"]?([A-Za-z0-9_/+\-.]{16,})"
+    r"|"
+    r"Bearer\s+[A-Za-z0-9_\-/.]{20,}"
+    r")",
+    re.I,
+)
+
+
+def _redact_secrets(text):
+    if not text or not isinstance(text, str):
+        return text
+    try:
+        return _SECRET_PATTERNS.sub("[REDACTED]", text)
+    except Exception:
+        return text
 
 
 def _askpass_script():
@@ -93,13 +115,15 @@ def run_git(args, repo, timeout=60):
             timeout=timeout,
             env=env,
         )
-        return result.returncode, result.stdout.strip(), result.stderr.strip()
+        stderr = _redact_secrets(result.stderr.strip())
+        return result.returncode, result.stdout.strip(), stderr
     except subprocess.TimeoutExpired:
         return -1, "", "timeout"
     except Exception as e:
+        err_msg = _redact_secrets(str(e)[:200])
         if _DEBUG:
-            _log.debug("Git command failed: %s", str(e)[:200])
-        return -1, "", str(e)[:200]
+            _log.debug("Git command failed: %s", err_msg)
+        return -1, "", err_msg
 
 
 def branch_exists_remote(repo, branch, remote="origin"):
