@@ -7,7 +7,7 @@ docs/decisions/ADR-<date>-<slug>.md capturing the decision, the contributors/fac
 the counter-arguments, and the proof_hash. Idempotent (skips if the ADR already exists).
 Reuses the determination's stored fields; does not edit committees.py.
 """
-import os, sys, re, datetime
+import os, sys, re, datetime, glob
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
@@ -30,6 +30,12 @@ def _write_adr(det):
     filename = f"ADR-{date_str}-{slug}.md"
     filepath = os.path.join(ADR_DIR, filename)
 
+    # FIX 2026-07-30 (documentation sprawl root cause): the idempotency check keyed on
+    # DATE + slug, so the same determination re-emitted a new ADR every day it stayed in the
+    # "recent" window — 49 files for 17 unique decisions, and growing daily forever. Dedupe on
+    # the SLUG alone (a decision is the same decision regardless of when we re-notice it).
+    for existing in glob.glob(os.path.join(ADR_DIR, f"ADR-*-{slug}.md")):
+        return None  # idempotent: this decision already has an ADR under some date
     if os.path.exists(filepath):
         return None  # idempotent
 
