@@ -1,0 +1,4 @@
+recovery-intent: dropbox-historical-code-recovery-sweep-every-improvement-ever-lost-t-contracts
+template: e8131994afd5
+intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 17ed8d711728 20251001 39465ac 6f940a79484e 7f21d02 acceptance accounted actions active adapt advice after against agentic aider allowlist already anonymous applied architecture ast_merge author auto_conflict_resolver background batch beethoven before below branch branches broad_change build change checkout claim class claude coder codex conflicts contains context contract contracts converts coordination credential cross current custody debate_compress deepseek delete deliver depend deployfix describing diffs directive drafting dropbox ephemeral establish every excerpt exists fable feedback files first fixed flash force
+base: master
