@@ -155,6 +155,14 @@ RED TEAM FINDINGS: {red}
 Rules:
   * Lead with the answer. A memo that builds to a conclusion wastes the reader's first thirty seconds.
   * Every material assertion carries a citation. Uncited claims go in `assumptions`, explicitly.
+  * CITATION DEPTH FLOOR (2026-07-30): a publishable memo carries AT MINIMUM 10 citations overall
+    and 5-10 per contested issue; the standard to aim for is far higher — comprehensive treatment
+    runs 20-50 authorities per contentious issue. Exhaust the primary authority (statute, rule,
+    case, agency guidance, no-action letters), then the persuasive layer (other jurisdictions,
+    legislative history, enforcement patterns, academic treatment). For a truly NOVEL issue with
+    thin direct authority, cite by ANALOGY — the nearest doctrines, the reasoning frameworks courts
+    would import, first-principles sources — and label them as analogical; never fewer than 5 per
+    issue. Depth of authority is the product; a brilliant uncited memo is a blog post.
   * Preserve the strongest surviving objection VERBATIM with its reasoning, even where you reject it.
   * State the conditions that bound the conclusion and the trigger that would reverse it.
   * If the honest answer is that the question is unsettled, say that and give the decision rule for
@@ -251,7 +259,7 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS):
         r1.append(_json(R1.format(label=e.get("public_label"), method=e.get("method"),
                                   domain=e.get("domain"), doctrine=(e.get("doctrine") or "")[:800],
                                   memory=_memory(e["id"]), question=question,
-                                  context=(context or "")[:3000]), kind="review") or {})
+                                  context=(context or "")[:3000]), kind="review", need="seat") or {})
 
     # R2 — forced steelman of the most opposed position
     r2 = []
@@ -262,7 +270,7 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS):
             continue
         r2.append(_json(R2.format(label=e.get("public_label"),
                                   mine=json.dumps(r1[i])[:2500],
-                                  theirs=json.dumps(r1[j])[:2500]), kind="review") or {})
+                                  theirs=json.dumps(r1[j])[:2500]), kind="review", need="seat") or {})
 
     # R3 — hold or concede
     r3 = []
@@ -272,7 +280,7 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS):
                                   steel=(r2[i].get("steelman") or "")[:1500],
                                   mine=json.dumps(r1[i])[:2000],
                                   theirs=json.dumps(r1[j] if j is not None else {})[:2000]),
-                        kind="review") or {})
+                        kind="review", need="seat") or {})
 
     # Stake each expert's dated forecast, then judge pairwise bouts on grounding.
     for i, e in enumerate(panel):
@@ -302,7 +310,7 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS):
     # R4 — red team the leading position (the one carried by the highest-Elo holder)
     lead_i = max(range(len(panel)), key=lambda i: float(panel[i].get("elo") or 1500))
     red = _json(R4.format(position=(r3[lead_i].get("position") or "")[:1500],
-                          grounds=(r3[lead_i].get("grounds") or "")[:2500]), kind="review") or {}
+                          grounds=(r3[lead_i].get("grounds") or "")[:2500]), kind="review", need="seat") or {}
 
     # R5 — chair
     positions = [{"seat": panel[i].get("public_label"), "method": panel[i].get("method"),

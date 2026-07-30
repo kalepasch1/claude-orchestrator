@@ -35,12 +35,22 @@ spawn (an undifferentiated crowd regresses to the mean and drowns the calibrated
 bottom is culled above the cap. The corps grows where thought is missing, never where it is
 redundant.
 
-PUBLICATION SAFETY (binding). Each expert carries two names. `lens` is an internal analytic device
-and may reference a named school of thought. `public_label` is an ARCHETYPE and is the ONLY name
-that may ever appear in customer-facing or published material. Publishing analysis under the name
-of a real, identifiable person — living or dead — invites right-of-publicity and false-endorsement
-exposure (Lanham Act s.43(a)) and misrepresents authorship. `publication_view()` is the only
-accessor publication paths may use; it never returns `lens`.
+PUBLICATION SAFETY — BIFURCATED (operator revision 2026-07-30). Three persona classes, keyed by
+`persona_class`, because the names/schools ARE marketing and legitimacy assets and the ban only
+needs to cover what actually creates exposure:
+  * historical_public_domain — long-deceased figures whose persona/works are public domain
+    (Holmes, Brandeis, Coase, Hand...): publishable BY NAME with a real public-domain portrait,
+    always labeled "agentic interpretation in the tradition of X — not X, not an endorsement".
+  * school — named schools/groups/institutions ("2026 U.S. Supreme Court", "Chicago School of
+    Economics", "Enforcement-era CFPB"): publishable by school name (`school_label`) with a
+    REPRESENTATIVE COMPOSITE face evoking the school — never a face identifiable as any LIVING
+    member (a composite engineered to look like a sitting justice is a likeness use; the school
+    label carries the legitimacy, the face only has to carry the aesthetic).
+  * archetype — everything else ("Enforcement-Realist Gaming Counsel"): composite face, seat-name.
+What stays prohibited in ALL classes: naming a living person, or any face identifiable as one
+(right of publicity + Lanham Act s.43(a) false endorsement). `publication_view()` is still the only
+accessor publication paths may use; it returns name/school/portrait policy per class and never the
+raw internal `lens`.
 """
 from __future__ import annotations
 import json
@@ -86,10 +96,23 @@ STANCES = ["conservative/protective", "aggressive/expansionist", "adversarial re
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────────────────────────
+# SUBSCRIPTION-FIRST (2026-07-30): the corps is the highest-VOLUME consumer in the fleet, and volume
+# belongs on capacity already paid for (the Claude Max plans; Codex rides the ChatGPT plan via the
+# agentic path). So: research/spawn/maintenance calls route subscription/free-first
+# (model_policy.choose, non-agentic — free/cheap/sub tranches before any mid-tier paid API).
+# Gauntlet SEATS stay on choose_diverse — cross-model disagreement is the product there, and that
+# bounded slice is what the paid-provider budget is FOR. Subscription usage records $0 real in
+# outcomes.usd (claude_cli), so none of this volume touches ORCH_PAID_AGENTIC_DAILY_USD.
+_DIVERSE_KINDS = {"seat", "judge"}
+
+
 def _complete(prompt, kind="review", need=None):
     try:
         import model_policy, model_gateway
-        prov, model, _ = model_policy.choose_diverse(kind, need=need)
+        if need in _DIVERSE_KINDS:
+            prov, model, _ = model_policy.choose_diverse(kind, need=None)
+        else:
+            prov, model, _ = model_policy.choose(kind, agentic=False, prefer_free=True)
         r = model_gateway.complete(prov, model, prompt)
         return r.get("text") or ""
     except Exception:
@@ -111,7 +134,7 @@ def _now():
 
 def roster(vertical=None, limit=40, status="active"):
     p = {"select": "id,handle,public_label,lens,vertical,domain,method,era,doctrine,generation,"
-                   "elo,bouts,wins,brier_sum,brier_n,status",
+                   "elo,bouts,wins,brier_sum,brier_n,status,persona_class,school_label",
          "status": f"eq.{status}", "order": "elo.desc", "limit": str(limit)}
     if vertical:
         p["vertical"] = f"eq.{vertical}"
@@ -122,12 +145,30 @@ def roster(vertical=None, limit=40, status="active"):
 
 
 def publication_view(expert):
-    """The ONLY shape an expert may take in published material. Never exposes `lens`."""
-    return {"label": expert.get("public_label"),
-            "domain": expert.get("domain"),
-            "method": expert.get("method"),
-            "generation": expert.get("generation"),
-            "calibration": calibration(expert)}
+    """The ONLY shape an expert may take in published material. Never exposes raw `lens`.
+    Bifurcated by persona_class (2026-07-30): public-domain historicals publish by name with a real
+    portrait + tradition disclaimer; schools publish by school_label with a representative composite;
+    archetypes publish as seat names. No living person's name or identifiable face, ever."""
+    cls = expert.get("persona_class") or "archetype"
+    v = {"persona_class": cls,
+         "domain": expert.get("domain"),
+         "method": expert.get("method"),
+         "generation": expert.get("generation"),
+         "calibration": calibration(expert)}
+    if cls == "historical_public_domain":
+        v["label"] = expert.get("public_label")
+        v["portrait"] = "public_domain_portrait"
+        v["disclaimer"] = (f"Agentic interpretation in the tradition of {expert.get('public_label')} — "
+                           f"not the person, not an endorsement.")
+    elif cls == "school":
+        v["label"] = expert.get("school_label") or expert.get("public_label")
+        v["portrait"] = "school_representative_composite"
+        v["disclaimer"] = (f"Agentic panel reasoning in the tradition of {v['label']}. "
+                           f"Composite representation; no affiliation or endorsement.")
+    else:
+        v["label"] = expert.get("public_label")
+        v["portrait"] = "archetype_composite"
+    return v
 
 
 def calibration(e):

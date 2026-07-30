@@ -77,6 +77,49 @@ def build_snapshot():
             "corps": corps, "cards": cards}
 
 
+def verify():
+    """POST-FACTO CHECKS (operator requirement 2026-07-30): a sync that silently stops is exactly
+    the silent-failure class that burned us three times. Verifies, after every run:
+      (1) the destination file exists and parses;
+      (2) its card count is consistent with the DB (fresh cards exist => file is non-empty);
+      (3) it is not stale (>24h old while fresh cards exist upstream).
+    Any failure prints a CRITICAL line — which the sentinel's silent-failure guard and the log
+    scrapers treat as an alarm — and returns ok=False so callers can escalate."""
+    dest = os.path.join(DEST, REL_PATH)
+    problems = []
+    snap = None
+    try:
+        with open(dest, "r", encoding="utf-8") as f:
+            snap = json.load(f)
+    except FileNotFoundError:
+        problems.append("destination file missing")
+    except Exception as e:
+        problems.append(f"destination unparseable: {type(e).__name__}")
+    fresh_upstream = 0
+    try:
+        fresh_upstream = db.count("verdict_cards", {"status": "eq.fresh"}) or 0
+    except Exception:
+        pass
+    if snap is not None:
+        n = len(snap.get("cards") or [])
+        if fresh_upstream > 0 and n == 0:
+            problems.append(f"{fresh_upstream} fresh cards upstream but 0 embedded")
+        ts = snap.get("synced_at")
+        if ts and fresh_upstream > 0:
+            try:
+                import datetime
+                age_h = (datetime.datetime.now(datetime.timezone.utc)
+                         - datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))).total_seconds() / 3600
+                if age_h > 24:
+                    problems.append(f"embedded snapshot stale ({age_h:.1f}h old)")
+            except Exception:
+                pass
+    if problems:
+        print("foulkon_sync: CRITICAL verification failure: " + "; ".join(problems))
+        return {"ok": False, "problems": problems, "fresh_upstream": fresh_upstream}
+    return {"ok": True, "embedded": len((snap or {}).get("cards") or []), "fresh_upstream": fresh_upstream}
+
+
 def run():
     dest = os.path.join(DEST, REL_PATH)
     if not os.path.isdir(os.path.dirname(dest)):
@@ -101,10 +144,14 @@ def run():
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(snap, f, ensure_ascii=False, indent=1)
     os.replace(tmp, dest)
-    out = {"synced": True, "cards": len(snap["cards"]), "corps": snap["corps"]["population"]}
+    out = {"synced": True, "cards": len(snap["cards"]), "corps": snap["corps"]["population"],
+           "verify": verify()}          # post-facto: every sync proves itself or alarms
     print("foulkon_sync: " + json.dumps(out))
     return out
 
 
 if __name__ == "__main__":
-    print(json.dumps(run(), indent=2))
+    if len(sys.argv) > 1 and sys.argv[1] == "verify":
+        print(json.dumps(verify(), indent=2))
+    else:
+        print(json.dumps(run(), indent=2))
