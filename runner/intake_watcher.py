@@ -41,6 +41,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import intake_gate
 import pipeline_contract
+import autoclear as _autoclear   # FIX 2026-07-29: _autoclear.load_rules() was called with no
+                                 # import -> the operator-card path of the drop-box crashed with
+                                 # NameError whenever a freeform prompt carried operator items.
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 INTAKE = os.path.abspath(os.path.join(HERE, "..", "intake"))

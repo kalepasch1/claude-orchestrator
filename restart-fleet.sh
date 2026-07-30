@@ -37,10 +37,15 @@ if ! git diff --cached --quiet 2>/dev/null; then
 else
   echo "   (nothing to commit)"
 fi
-if git push origin "$BR" 2>/dev/null; then
+PUSH_ERR="$(git push origin "$BR" 2>&1 1>/dev/null)"
+if [[ $? -eq 0 ]]; then
   echo "   pushed -> origin/$BR ($(git rev-parse --short HEAD))"
 else
-  echo "   !! push failed — check auth, then: git push origin $BR"
+  # 2026-07-29: this used to swallow the real git error (2>/dev/null) and print a generic
+  # "check auth" guess, so nobody — human or agent — could tell WHY a push failed. Surface it.
+  echo "   !! push failed:"
+  echo "$PUSH_ERR" | sed 's/^/      /'
+  echo "   local HEAD ($(git rev-parse --short HEAD)) is now ahead of origin/$BR — retry: git push origin $BR"
 fi
 
 echo "==> 3/4  restart THIS Mac's runner"

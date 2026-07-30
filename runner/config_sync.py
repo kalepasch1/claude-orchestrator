@@ -18,6 +18,8 @@ import sys
 import time
 from typing import Callable, Optional
 
+import logging
+log = logging.getLogger('config_sync')   # FIX 2026-07-29: log used but never defined
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 

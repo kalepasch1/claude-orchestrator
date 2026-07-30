@@ -110,9 +110,26 @@ def _classify_conflict(filepath: str, conflict_type: str = "") -> str:
     if THEIRS_IF_ADDED_PATTERNS.search(normalized) and "add/add" in conflict_type.lower():
         return "theirs"
 
-    # For add/add conflicts on new files, prefer the branch version
+    # FIX 2026-07-29 (the "merged branch wiped prior improvements" bug): the old rule here took
+    # WHOLE-FILE `theirs` for ANY add/add conflict. When two branches from different bases both
+    # created/edited the same SOURCE file, the later merge replaced the entire file with its own
+    # version — silently reverting the earlier branch's sections to legacy code. Whole-file
+    # resolution is now FORBIDDEN for source files: add/add on source routes to ast_merge (real
+    # 3-way) or stays "manual" (CONFLICT -> agentic repair / human). Bare `theirs` remains only
+    # for non-source assets where whole-file replacement is genuinely safe.
+    _SOURCE_EXTS = (".py", ".ts", ".tsx", ".js", ".jsx", ".vue", ".mjs", ".cjs", ".sql",
+                    ".go", ".rs", ".rb", ".java", ".css", ".scss", ".html", ".yml", ".yaml",
+                    ".toml", ".json", ".md", ".sh", ".prisma")
     if "add/add" in conflict_type.lower():
-        return "theirs"
+        if normalized.endswith(_SOURCE_EXTS):
+            try:
+                import ast_merger
+                if ast_merger.can_handle(normalized):
+                    return "ast_merge"
+            except Exception:
+                pass
+            return "manual"   # never whole-file overwrite a source file
+        return "theirs"       # non-source assets (images, binaries, generated artifacts) only
 
     # AST MERGER: try semantic merge for supported file types before giving up
     try:

@@ -1,3 +1,4 @@
+import time   # FIX 2026-07-29: used but never imported
 
 
 # --- SmokeTest registry (structured test definition) ---

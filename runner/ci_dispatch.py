@@ -1,4 +1,5 @@
 # runner/ci_dispatch.py
+import json, time   # FIX 2026-07-29: used at module scope but never imported (NameError on every dispatch)
 
 def _github_dispatch(repo, payload, github_token):
     """POST repository_dispatch to GitHub API. Returns True on success."""

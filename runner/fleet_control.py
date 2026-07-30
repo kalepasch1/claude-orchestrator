@@ -71,7 +71,10 @@ def load_config():
                 os.environ[k] = str(v)
                 n += 1
     except Exception as e:
-        log.warning("fleet_config load failed: %s", e)
+        # FIX 2026-07-29: `log` was never defined — a config-load failure made the error handler
+        # itself raise NameError, masking the real failure. Plain stderr keeps it dependency-free.
+        import sys
+        sys.stderr.write(f"[fleet_control] fleet_config load failed: {e}\n")
     return n
 
 

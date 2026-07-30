@@ -21,6 +21,12 @@ required a human session, so the orchestrator never sits broken:
                         request cooperative restart; request ignored >45 min: cycle the runner
                         process (keepalive respawns it on current code).
   6. Train silence   -> DB up but no merge_train output for 30+ min: fire one train run.
+  7. Stash pileup    -> ALERT ONLY (never auto-pops/drops): checkout_guard and other flows
+                        (pre-runner-restart, pre-force-merge, cowork-session auto-pull, ...)
+                        stash and never reconcile. Found 592 accumulated 2026-07-29, oldest from
+                        2026-07-12 — nobody had ever looked. Logs + emits past a threshold so
+                        this can't silently regrow unnoticed; reconciling old stashes against a
+                        moved-on codebase is a human/agent triage call, not a bot's to make.
 
 Every action is journaled to .runtime/sentinel.log + .runtime/sentinel_state.json.
 Fail-soft everywhere: a sentinel bug must never take the fleet down with it.
@@ -259,6 +265,38 @@ def checkout_guard(st=None):
     st.pop("drift_branch", None)
     git("pull", "--ff-only", "origin", BASE_BRANCH, timeout=180)
     log("checkout-restored", BASE_BRANCH)
+
+
+# ── 2a2. stash drift alarm (never touches stashes — see checkout_guard's stash comment) ─
+
+STASH_ALERT_THRESHOLD = int(os.environ.get("SENTINEL_STASH_ALERT_THRESHOLD", "20"))
+STASH_ALERT_INTERVAL_S = int(os.environ.get("SENTINEL_STASH_ALERT_INTERVAL_S", "21600"))
+
+
+def stash_drift_guard(st=None):
+    """Alert (never auto-pop/drop) when unreconciled git stashes pile up.
+
+    checkout_guard creates a named stash whenever a drifted checkout can't switch back to
+    BASE_BRANCH cleanly; other flows (pre-runner-restart, pre-force-merge, pre-push-orchestrator,
+    cowork-session auto-pull, ...) create their own. Nothing anywhere in this codebase ever pops,
+    applies, or drops a stash — it's a write-only pile. Found 592 on 2026-07-29, oldest from
+    2026-07-12, none ever reconciled. Auto-popping old stashes against a codebase that's moved on
+    is its own hazard (stale/superseded diffs re-landing on top of newer work), so this only
+    alerts past a threshold; reconciliation stays a human (or explicitly-requested agent) call.
+    """
+    st = {} if st is None else st
+    r = git("stash", "list")
+    if r.returncode != 0:
+        return
+    count = len([l for l in r.stdout.splitlines() if l.strip()])
+    st["stash_count"] = count
+    if count >= STASH_ALERT_THRESHOLD:
+        last_alert = float(st.get("stash_alert_last", 0))
+        if time.time() - last_alert > STASH_ALERT_INTERVAL_S:
+            emit("stash-pileup", count=count, threshold=STASH_ALERT_THRESHOLD)
+            log("stash-pileup", f"{count} unreconciled git stashes (threshold {STASH_ALERT_THRESHOLD}) "
+                                 f"— nothing auto-pops these; needs a human/agent triage pass")
+            st["stash_alert_last"] = time.time()
 
 
 # ── 2b. nested-worktree hygiene ───────────────────────────────────────────────
@@ -514,6 +552,10 @@ def main():
         checkout_guard(st)
     except Exception as e:
         log("checkout-guard-error", e)
+    try:
+        stash_drift_guard(st)
+    except Exception as e:
+        log("stash-drift-guard-error", e)
     try:
         runner_guard(st)
     except Exception as e:
