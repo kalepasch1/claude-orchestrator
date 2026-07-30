@@ -15,8 +15,41 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import log as _log_mod
+import common_utils
 
 _log = _log_mod.get("pricing_grid_reconstruction")
+
+
+def _tier_units_in_range(units: int, tier_min: int, tier_max: Optional[int]) -> bool:
+    """Check if units fall within [tier_min, tier_max]."""
+    if units < tier_min:
+        return False
+    if tier_max is not None and units > tier_max:
+        return False
+    return True
+
+
+def _calculate_applicable_units(units: int, tier_min: int, tier_max: Optional[int]) -> int:
+    """Calculate the number of applicable units within a tier's range.
+
+    Returns 0 if units are outside range; otherwise returns units_in_range.
+    """
+    if not _tier_units_in_range(units, tier_min, tier_max):
+        return 0
+    upper = tier_max if tier_max is not None else units
+    return min(units, upper) - tier_min + 1
+
+
+def _build_pricing_tier_from_dict(tier_dict: Dict[str, Any]) -> 'PricingTier':
+    """Extract and construct a PricingTier from a raw dict."""
+    return PricingTier(
+        name=tier_dict.get("name", "default"),
+        min_units=int(tier_dict.get("min_units", 0)),
+        max_units=int(tier_dict["max_units"]) if tier_dict.get("max_units") is not None else None,
+        unit_price=float(tier_dict.get("unit_price", 0)),
+        flat_fee=float(tier_dict.get("flat_fee", 0)),
+        metadata=tier_dict.get("metadata", {}),
+    )
 
 
 @dataclass
@@ -35,44 +68,22 @@ class PricingTier:
 
     @staticmethod
     def _tier_capacity(tier: 'PricingTier') -> int:
-        """Calculate capacity (max number of units) this tier can hold.
-
-        Returns:
-            - 0 for unlimited tiers (max_units=None)
-            - max - min + 1 for limited tiers
-            - 0 for invalid tiers (max < min)
-        """
+        """Capacity (max units) this tier can hold."""
         if tier.max_units is None:
             return 0
         if tier.max_units < tier.min_units:
             return 0
-        return tier.max_units - tier.min_units + 1
+        return _calculate_applicable_units(tier.max_units, tier.min_units, tier.max_units)
 
     def cost_for_units(self, units: int) -> float:
-        """Calculate cost for a given number of units within this tier.
-
-        Only counts units that fall within [min_units, max_units].
-        Returns 0 if units are outside the valid range.
-        Otherwise returns flat_fee + (applicable_units * unit_price).
-        """
-        if units < self.min_units or (self.max_units is not None and units > self.max_units):
+        """Calculate cost for units within this tier's range."""
+        applicable = _calculate_applicable_units(units, self.min_units, self.max_units)
+        if applicable == 0:
             return 0.0
-        upper = self.max_units if self.max_units is not None else units
-        applicable = min(units, upper) - self.min_units + 1
         return self.flat_fee + (applicable * self.unit_price)
 
     def to_dict(self, include_metadata: bool = False) -> Dict[str, Any]:
-        """Serialize tier to dict. Metadata (including template IDs) excluded by default.
-
-        Args:
-            include_metadata: If True, include metadata in serialization.
-                             Template IDs and other sensitive config must be
-                             explicitly requested to prevent cross-grid leakage.
-
-        Returns:
-            dict with name, min_units, max_units, unit_price, flat_fee.
-            Metadata is only included if include_metadata=True.
-        """
+        """Serialize tier to dict. Metadata excluded by default."""
         result = {
             "name": self.name,
             "min_units": self.min_units,
@@ -100,28 +111,16 @@ class PricingGrid:
 
     @staticmethod
     def _consume_tier_units(tier: PricingTier, remaining: int) -> Tuple[int, float]:
-        """Consume units from a tier and return (units_consumed, cost).
-
-        Args:
-            tier: The pricing tier to consume from
-            remaining: Number of units available to consume
-
-        Returns:
-            Tuple of (units_consumed, cost) where:
-            - units_consumed is the number of units actually consumed
-            - cost includes flat fee (if any) plus per-unit charges
-        """
+        """Consume units from tier. Returns (units_consumed, cost)."""
         if remaining <= 0:
             return 0, 0.0
 
-        if tier.max_units is None:
-            # Unlimited tier: consume all remaining
-            consumed = remaining
-        else:
-            # Limited tier: consume up to capacity
-            capacity = tier.max_units - tier.min_units + 1
-            consumed = min(remaining, capacity)
-
+        consumed, _ = common_utils.consume_from_tier(
+            current=tier.min_units - 1,
+            tier_min=tier.min_units,
+            tier_max=tier.max_units,
+            amount=remaining
+        )
         cost = tier.flat_fee + (consumed * tier.unit_price)
         return consumed, cost
 
@@ -148,17 +147,7 @@ class PricingGrid:
         return None
 
     def to_dict(self, include_metadata: bool = False) -> Dict[str, Any]:
-        """Serialize grid to dict. Metadata (including template IDs) excluded by default.
-
-        Args:
-            include_metadata: If True, include tier metadata in serialization.
-                             Template IDs and other sensitive config must be
-                             explicitly requested to prevent cross-grid leakage.
-
-        Returns:
-            dict with product_id, currency, effective_date, and tiers list.
-            Tier metadata is only included if include_metadata=True.
-        """
+        """Serialize grid to dict. Tier metadata excluded by default."""
         return {
             "product_id": self.product_id,
             "currency": self.currency,
@@ -177,21 +166,8 @@ class PricingGridReconstructionUtil:
     @staticmethod
     def from_raw_tiers(product_id: str, raw_tiers: List[Dict[str, Any]],
                        currency: str = "USD") -> PricingGrid:
-        """Reconstruct a PricingGrid from raw tier data (e.g., from API/DB).
-
-        Each dict in raw_tiers should have:
-            name, min_units, max_units (or None), unit_price, flat_fee (optional)
-        """
-        tiers = []
-        for rt in raw_tiers:
-            tiers.append(PricingTier(
-                name=rt.get("name", "default"),
-                min_units=int(rt.get("min_units", 0)),
-                max_units=int(rt["max_units"]) if rt.get("max_units") is not None else None,
-                unit_price=float(rt.get("unit_price", 0)),
-                flat_fee=float(rt.get("flat_fee", 0)),
-                metadata=rt.get("metadata", {}),
-            ))
+        """Reconstruct PricingGrid from raw tier dicts."""
+        tiers = [_build_pricing_tier_from_dict(rt) for rt in raw_tiers]
         grid = PricingGrid(product_id=product_id, tiers=tiers, currency=currency)
         grid.tiers = grid.sorted_tiers  # normalize order on construction
         return grid
@@ -235,13 +211,18 @@ class PricingGridReconstructionUtil:
         if not grid.tiers:
             issues.append("grid has no tiers")
         seen_ranges = []
+        unlimited_count = 0
         for tier in grid.tiers:
             if tier.unit_price < 0:
                 issues.append(f"tier '{tier.name}' has negative unit_price")
             if tier.max_units is not None and tier.max_units < tier.min_units:
                 issues.append(f"tier '{tier.name}' max < min")
+            if tier.max_units is None:
+                unlimited_count += 1
             for prev_name, prev_min, prev_max in seen_ranges:
                 if prev_max is not None and tier.min_units <= prev_max:
                     issues.append(f"tier '{tier.name}' overlaps with '{prev_name}'")
             seen_ranges.append((tier.name, tier.min_units, tier.max_units))
+        if unlimited_count > 1:
+            issues.append("grid has multiple unlimited tiers")
         return len(issues) == 0, issues

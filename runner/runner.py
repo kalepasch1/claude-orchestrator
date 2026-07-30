@@ -143,6 +143,7 @@ import exhaustion_signal, surge_planner
 import agentic_repair
 import cowork_dispatch
 import worktree_isolation
+import common_utils
 try:
     import warm_pool
 except ImportError:
@@ -2967,16 +2968,14 @@ def _reap_zombie_tasks():
             pass
         reclaimed = 0
         for t in running:
-            # COWORK DISPATCH: skip tasks claimed by Cowork sessions — they run in a
-            # separate execution context, not as a local subprocess.
             if (t.get("account") or "").startswith("cowork-"):
                 continue
             account = str(t.get("account") or "")
             dead_runner_claim = (bool(live_runner_ids)
                                  and bool(re.match(r"^(Mac[.]lan|Mandys-MacBook-Pro[.]local)-[0-9]+$", account))
                                  and account not in live_runner_ids
-                                 and (t.get("updated_at") or "") < dead_cutoff)
-            if dead_runner_claim or (t.get("updated_at") or "") < cutoff:
+                                 and common_utils.is_older_than(t.get("updated_at") or "", dead_cutoff))
+            if dead_runner_claim or common_utils.is_older_than(t.get("updated_at") or "", cutoff):
                 patch = agentic_repair.repair_patch(
                     t, ("zombie-reaper: expired runner heartbeat" if dead_runner_claim
                         else "zombie-reaper: stale RUNNING >30min"),
@@ -2992,9 +2991,10 @@ def _reap_zombie_tasks():
                                        "updated_at": f"lt.{retry_cutoff}", "limit": "250"}) or []
         for task in retries:
             note = str(task.get("note") or "")
+            new_note = common_utils.truncate_string_at_bytes(f"{note} | retry-promoter", 1000)
             db.update("tasks", {"id": task["id"]}, {
                 "state": "QUEUED", "updated_at": "now()",
-                "note": f"{note} | retry-promoter"[-1000:],
+                "note": new_note,
             })
         if retries:
             print(f"[retry-promoter] returned {len(retries)} elapsed RETRY tasks to QUEUED")

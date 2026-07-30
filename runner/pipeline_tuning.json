@@ -17,9 +17,18 @@
       "kind": "bugfix",
       "action": "suggest_batching",
       "rationale": "avg cycle for kind=bugfix is 135.3h \u2014 consider batching smaller tasks or enabling parallel worktrees"
+    },
+    {
+      "ts": 1785403233.763038,
+      "metric": "cycle_time",
+      "value": 476122.4,
+      "threshold": 14400,
+      "kind": "bugfix",
+      "action": "suggest_batching",
+      "rationale": "avg cycle for kind=bugfix is 132.3h \u2014 consider batching smaller tasks or enabling parallel worktrees"
     }
   ],
-  "last_tuned_at": 1784974825.625907,
+  "last_tuned_at": 1785403233.763038,
   "guardrails": {
     "min_sample_size": 5,
     "cooldown_s": 86400,

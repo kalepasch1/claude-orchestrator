@@ -27,6 +27,21 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
+
+def _s(v):
+    """Coerce ANY model-returned value to a sliceable string. The model intermittently returns a
+    dict/list where the schema says string; `somedict[:1500]` then throws KeyError: slice — the
+    exact bug family that killed committees for weeks (Part 0). Never slice model output raw."""
+    if v is None:
+        return ""
+    if isinstance(v, str):
+        return v
+    try:
+        import json as _j
+        return _j.dumps(v, ensure_ascii=False)
+    except Exception:
+        return str(v)
+
 BATCH = int(os.environ.get("LEGAL_DOCKET_BATCH", "6"))
 
 # Seed docket. These are the questions our first two verticals actually get asked — the ones a
@@ -110,19 +125,19 @@ def mint_card(row, agg):
         "docket_id": row.get("id"),
         "vertical": row.get("vertical"),
         "question": row.get("question"),
-        "position": (agg.get("opinion") or "")[:12000],
+        "position": _s(agg.get("opinion"))[:12000],
         "verdict": agg.get("verdict"),
         "confidence": float(agg.get("conviction", 5) or 5) / 10.0,
         "citations": json.dumps(citations)[:8000],
         "assumptions": json.dumps(agg.get("assumptions") or [])[:4000],
-        "dissent": (agg.get("dissent") or "")[:4000],
+        "dissent": _s(agg.get("dissent"))[:4000],
         # validity: the authority chain. If any of these change, this card goes stale.
         "authority_chain": json.dumps([c.get("source") for c in citations if isinstance(c, dict)])[:4000],
         "minted_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "status": "fresh",
         # Gauntlet-only fields (absent on the committees fallback — hence the .get defaults).
-        "flips_if": (agg.get("flips_if") or "")[:2000] or None,
-        "conditions": (agg.get("conditions") or "")[:2000] or None,
+        "flips_if": _s(agg.get("flips_if"))[:2000] or None,
+        "conditions": _s(agg.get("conditions"))[:2000] or None,
         "unsettled": bool(agg.get("unsettled")),
         "process": json.dumps(agg.get("process") or {})[:8000],
         # A card is INTERNAL until the publication commission scores it and an attorney signs off.

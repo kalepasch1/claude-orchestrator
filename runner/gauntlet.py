@@ -43,6 +43,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import common_utils
+
+
 import expert_corps as corps
 
 SEATS       = int(os.environ.get("ORCH_GAUNTLET_SEATS", "5"))
@@ -257,7 +260,7 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS):
     r1 = []
     for e in panel:
         r1.append(_json(R1.format(label=e.get("public_label"), method=e.get("method"),
-                                  domain=e.get("domain"), doctrine=(e.get("doctrine") or "")[:800],
+                                  domain=e.get("domain"), doctrine=common_utils.safe_string_coerce(e.get("doctrine"))[:800],
                                   memory=_memory(e["id"]), question=question,
                                   context=(context or "")[:3000]), kind="review", need="seat") or {})
 
@@ -277,7 +280,7 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS):
     for i, e in enumerate(panel):
         j = _most_opposed(i, r1)
         r3.append(_json(R3.format(label=e.get("public_label"),
-                                  steel=(r2[i].get("steelman") or "")[:1500],
+                                  steel=_s(r2[i].get("steelman"))[:1500],
                                   mine=json.dumps(r1[i])[:2000],
                                   theirs=json.dumps(r1[j] if j is not None else {})[:2000]),
                         kind="review", need="seat") or {})
@@ -288,7 +291,7 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS):
         try:
             db.insert("expert_positions", {
                 "expert_id": e["id"], "docket_id": docket_id, "question": (question or "")[:2000],
-                "thesis": (r3[i].get("position") or r1[i].get("position") or "")[:2000],
+                "thesis": _s(r3[i].get("position") or r1[i].get("position"))[:2000],
                 "probability": max(0.0, min(1.0, float(p))) if p is not None else None,
                 "generation": int(e.get("generation") or 1)})
         except Exception:
@@ -305,12 +308,12 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS):
         wid = panel[a]["id"] if w == "A" else (panel[b]["id"] if w == "B" else None)
         corps.record_bout(question, panel[a], panel[b], wid,
                           margin=float(v.get("margin") or 0.5),
-                          grounds=str(v.get("grounds") or "")[:1000], docket_id=docket_id)
+                          grounds=str_s(v.get("grounds"))[:1000], docket_id=docket_id)
 
     # R4 — red team the leading position (the one carried by the highest-Elo holder)
     lead_i = max(range(len(panel)), key=lambda i: float(panel[i].get("elo") or 1500))
-    red = _json(R4.format(position=(r3[lead_i].get("position") or "")[:1500],
-                          grounds=(r3[lead_i].get("grounds") or "")[:2500]), kind="review", need="seat") or {}
+    red = _json(R4.format(position=_s(r3[lead_i].get("position"))[:1500],
+                          grounds=_s(r3[lead_i].get("grounds"))[:2500]), kind="review", need="seat") or {}
 
     # R5 — chair
     positions = [{"seat": panel[i].get("public_label"), "method": panel[i].get("method"),
