@@ -32,6 +32,7 @@ Every action is journaled to .runtime/sentinel.log + .runtime/sentinel_state.jso
 Fail-soft everywhere: a sentinel bug must never take the fleet down with it.
 """
 import datetime
+import glob
 import json
 import os
 import re
@@ -329,6 +330,79 @@ def stash_drift_guard(st=None):
 QUARANTINE = os.path.join(os.path.dirname(REPO), "_quarantine")
 
 
+SILENT_FAIL_ERR_GROWTH = int(os.environ.get("SENTINEL_SILENT_FAIL_ERR_BYTES", "20000"))
+SILENT_FAIL_ALERT_COOLDOWN_S = int(os.environ.get("SENTINEL_SILENT_FAIL_COOLDOWN_S", "21600"))  # 6h
+
+
+def silent_failure_guard(st=None):
+    """Alert when a scheduled job is FAILING SILENTLY: its .err log grows while its .log shows
+    no productive work.
+
+    WHY THIS EXISTS (2026-07-30): silent accumulation is this system's signature failure mode.
+    Four instances found in a single night, every one of them invisible for days-to-weeks:
+      * merge_train crashed on EVERY run for 3 weeks (194 identical tracebacks) — integration
+        dead, branches piling up, nothing alerted.
+      * committees (the Consilium) crashed every 15 min into a 308KB .err file — a share of all
+        expert debates silently dropped.
+      * checkout_guard wrote 315 stashes nothing ever popped — real work parked and forgotten.
+      * cx_auto_adr re-emitted the same ADRs daily — 49 files for 17 decisions.
+    Each looked harmless in isolation; collectively they cost weeks. A job that runs and fails
+    quietly is strictly worse than one that never runs, because its logs look reassuring
+    ("handled 0") while its error stream grows unread. This guard makes that impossible.
+
+    Alert-only by design (never restarts/disables a job): the failure modes are too varied for a
+    safe auto-action, and a wrong auto-action here would be worse than the silence.
+    """
+    st = st if st is not None else {}
+    logs_dir = os.path.join(RUNTIME, "logs")
+    if not os.path.isdir(logs_dir):
+        return
+    prev = st.get("silent_fail_sizes") or {}
+    now_sizes, offenders = {}, []
+    for err_path in glob.glob(os.path.join(logs_dir, "*.err")):
+        job = os.path.basename(err_path)[:-4]
+        try:
+            err_sz = os.path.getsize(err_path)
+        except OSError:
+            continue
+        now_sizes[job] = err_sz
+        grew = err_sz - int(prev.get(job, err_sz))
+        if grew < SILENT_FAIL_ERR_GROWTH:
+            continue
+        # the .err grew materially — did the job also produce productive output?
+        out_path = os.path.join(logs_dir, f"{job}.log")
+        productive = False
+        try:
+            with open(out_path, "r", errors="replace") as fh:
+                tail = fh.readlines()[-40:]
+            # "productive" = any recent line that isn't a zero-work heartbeat
+            for ln in tail:
+                s = ln.strip().lower()
+                if not s:
+                    continue
+                if re.search(r"\b(handled|processed|found|merged|created|archived)\s+0\b", s):
+                    continue
+                productive = True
+                break
+        except OSError:
+            productive = False
+        if not productive:
+            offenders.append((job, grew, err_sz))
+
+    st["silent_fail_sizes"] = now_sizes
+    if not offenders:
+        return
+    last = float(st.get("silent_fail_alert_last", 0))
+    if (time.time() - last) < SILENT_FAIL_ALERT_COOLDOWN_S:
+        return
+    st["silent_fail_alert_last"] = time.time()
+    names = ", ".join(f"{j}(+{g//1000}KB)" for j, g, _ in offenders[:6])
+    emit("silent-failure", jobs=[j for j, _, _ in offenders], count=len(offenders))
+    log("silent-failure",
+        f"{len(offenders)} job(s) failing silently — errors growing, no productive output: {names}. "
+        f"Check .runtime/logs/<job>.err")
+
+
 def nested_worktree_guard():
     """Quarantine agent worktrees nested inside the primary checkout.
 
@@ -579,6 +653,10 @@ def main():
         log("checkout-guard-error", e)
     try:
         stash_drift_guard(st)
+    except Exception as e:
+        log("stash-drift-guard-error", e)
+    try:
+        silent_failure_guard(st)   # catches the "runs but fails quietly" class (see docstring)
     except Exception as e:
         log("stash-drift-guard-error", e)
     try:
