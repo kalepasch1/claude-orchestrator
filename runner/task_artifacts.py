@@ -6,6 +6,7 @@ This kills the missing-branch recovery loop by ensuring every completed task
 has enough data to reconstruct its work without re-running the agent.
 """
 import os, subprocess, json, datetime
+from datetime import UTC
 import db
 import task_refs
 
@@ -50,7 +51,7 @@ def capture(repo, slug, branch, base, wt, test_log="", cost=None):
     artifacts["test_log"] = (test_log or "")[-10000:]
 
     # 6. Metadata
-    artifacts["captured_at"] = datetime.datetime.utcnow().isoformat()
+    artifacts["captured_at"] = datetime.datetime.now(UTC).isoformat()
     if cost:
         artifacts["cost_usd"] = cost.get("usd", 0)
 

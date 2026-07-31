@@ -17,6 +17,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch, MagicMock, call
 import datetime
+from datetime import UTC
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -392,9 +393,9 @@ class TestMetadataCapture(unittest.TestCase):
         with patch("task_artifacts.task_refs.publish") as mock_pub:
             mock_pub.return_value = {"ok": True, "ref": "r", "patch_id": "p"}
 
-            before = datetime.datetime.utcnow()
+            before = datetime.datetime.now(UTC)
             result = task_artifacts.capture("/repo", "task-1", "br", "master", None)
-            after = datetime.datetime.utcnow()
+            after = datetime.datetime.now(UTC)
 
         timestamp_str = result["captured_at"]
         captured = datetime.datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
