@@ -226,7 +226,11 @@ def _preflight_check(task: dict) -> str:
             _eol = _check_prompt.find("\n\n")
             if _eol > 0:
                 _check_prompt = _check_prompt[_eol + 2:]
-    if _GARBAGE_PROMPT_RE.search(_check_prompt):
+    # 2026-07-31: match only near-top-of-short-body (see preflight_filter.py) —
+    # embedded "PATCH TEMPLATE <hex>" inside merged-diff/transplant excerpts is
+    # reuse evidence, not garbage. Keep both copies of this check in sync.
+    _gm = _GARBAGE_PROMPT_RE.search(_check_prompt)
+    if _gm and (_gm.start() < 120 or len(_check_prompt.strip()) < 500):
         return "preflight: PATCH TEMPLATE or garbage prompt (auto-quarantine)"
     body = _check_prompt
     lines = [l for l in body.split("\n") if l.strip() and not l.startswith("- source:")

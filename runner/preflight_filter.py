@@ -70,7 +70,13 @@ def preflight_check(task: dict) -> str:
             if _eol > 0:
                 _check_prompt = _check_prompt[_eol + 2:]
 
-    if _GARBAGE_PROMPT_RE.search(_check_prompt):
+    # 2026-07-31: "PATCH TEMPLATE <hex>" also occurs INSIDE legitimate bodies
+    # (merged-diff-library excerpts, patch-transplant prior-diff quotes) — that
+    # cost 10 real 5KB work prompts today. A genuine garbage stub has the marker
+    # near the TOP of a SHORT stripped body; embedded occurrences deep in a long
+    # real prompt are evidence of reuse, not garbage.
+    _gm = _GARBAGE_PROMPT_RE.search(_check_prompt)
+    if _gm and (_gm.start() < 120 or len(_check_prompt.strip()) < 500):
         return "preflight: PATCH TEMPLATE or garbage prompt (auto-quarantine)"
     if _RECYCLED_NOTE_RE.search(note):
         return f"preflight: recycled task ({note[:80]})"
