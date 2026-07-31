@@ -14,6 +14,7 @@ import os
 import sys
 import json
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import Mock, patch, MagicMock, call
 import datetime
@@ -627,6 +628,308 @@ class TestEdgeCases(unittest.TestCase):
         # Should not crash
         assert isinstance(result["diff_bytes"], int)
         assert result["diff_bytes"] > 0
+
+
+class TestArtifactTimeouts(unittest.TestCase):
+    """Git command timeout handling."""
+
+    @patch("task_artifacts.db.insert")
+    @patch("task_artifacts.db.select")
+    @patch("subprocess.run")
+    def test_rev_parse_timeout_handled(self, mock_run, mock_select, mock_insert):
+        """rev-parse timeout is handled gracefully."""
+        mock_select.return_value = [{"id": "task-1", "attempt": 1}]
+        mock_run.side_effect = [
+            subprocess.TimeoutExpired("git", 30),
+            Mock(stdout="diff\n", returncode=0),
+            Mock(stdout="f.py\n", returncode=0),
+        ]
+
+        with patch("task_artifacts.task_refs.publish") as mock_pub:
+            mock_pub.return_value = {"ok": True, "ref": "r", "patch_id": "p"}
+
+            result = task_artifacts.capture("/repo", "task-1", "br", "master", None)
+
+        assert result["commit_sha"] == ""
+
+    @patch("task_artifacts.db.insert")
+    @patch("task_artifacts.db.select")
+    @patch("subprocess.run")
+    def test_diff_timeout_handled(self, mock_run, mock_select, mock_insert):
+        """git diff timeout is handled gracefully."""
+        mock_select.return_value = [{"id": "task-1", "attempt": 1}]
+        mock_run.side_effect = [
+            Mock(stdout="sha\n", returncode=0),
+            subprocess.TimeoutExpired("git", 60),
+            Mock(stdout="f.py\n", returncode=0),
+        ]
+
+        with patch("task_artifacts.task_refs.publish") as mock_pub:
+            mock_pub.return_value = {"ok": True, "ref": "r", "patch_id": "p"}
+
+            result = task_artifacts.capture("/repo", "task-1", "br", "master", None)
+
+        assert result["patch_diff"] == ""
+
+
+class TestArtifactPartialData(unittest.TestCase):
+    """Handling of partial/incomplete artifact data."""
+
+    @patch("task_artifacts.db.select")
+    def test_get_artifacts_with_missing_fields(self, mock_select):
+        """Artifacts missing some fields are still retrievable."""
+        mock_select.return_value = [{
+            "slug": "task-1",
+            "commit_sha": "abc123",
+            # patch_diff and touched_files missing
+        }]
+
+        result = task_artifacts.get_artifacts("task-1")
+        assert result is not None
+        assert result["commit_sha"] == "abc123"
+
+    @patch("task_artifacts.db.select")
+    def test_has_artifacts_with_partial_data(self, mock_select):
+        """has_artifacts still returns True for partial data."""
+        mock_select.return_value = [{
+            "slug": "task-1",
+            "commit_sha": "abc123",
+            # test_log missing
+        }]
+
+        assert task_artifacts.has_artifacts("task-1") is True
+
+    @patch("task_artifacts.db.insert")
+    @patch("task_artifacts.db.select")
+    @patch("subprocess.run")
+    def test_cost_dict_with_extra_fields_ignored(self, mock_run, mock_select, mock_insert):
+        """Extra fields in cost dict are ignored."""
+        mock_select.return_value = [{"id": "task-1", "attempt": 1}]
+        mock_run.side_effect = [
+            Mock(stdout="sha\n", returncode=0),
+            Mock(stdout="diff\n", returncode=0),
+            Mock(stdout="f.py\n", returncode=0),
+        ]
+
+        with patch("task_artifacts.task_refs.publish") as mock_pub:
+            mock_pub.return_value = {"ok": True, "ref": "r", "patch_id": "p"}
+
+            result = task_artifacts.capture(
+                "/repo", "task-1", "br", "master", None,
+                cost={"usd": 0.05, "tokens": 5000, "duration_ms": 3000, "extra": "ignored"}
+            )
+
+        assert result["cost_usd"] == 0.05
+        assert "tokens" not in result
+
+
+class TestLargeTestLogs(unittest.TestCase):
+    """Handling of large test logs."""
+
+    @patch("task_artifacts.db.insert")
+    @patch("task_artifacts.db.select")
+    @patch("subprocess.run")
+    def test_test_log_exactly_10kb_preserved(self, mock_run, mock_select, mock_insert):
+        """Test log of exactly 10KB is preserved."""
+        mock_select.return_value = [{"id": "task-1", "attempt": 1}]
+        test_log = "x" * 10000
+        mock_run.side_effect = [
+            Mock(stdout="sha\n", returncode=0),
+            Mock(stdout="diff\n", returncode=0),
+            Mock(stdout="f.py\n", returncode=0),
+        ]
+
+        with patch("task_artifacts.task_refs.publish") as mock_pub:
+            mock_pub.return_value = {"ok": True, "ref": "r", "patch_id": "p"}
+
+            result = task_artifacts.capture("/repo", "task-1", "br", "master", None, test_log=test_log)
+
+        assert len(result["test_log"]) == 10000
+
+    @patch("task_artifacts.db.insert")
+    @patch("task_artifacts.db.select")
+    @patch("subprocess.run")
+    def test_very_large_test_log_truncated(self, mock_run, mock_select, mock_insert):
+        """Very large test log is truncated to last 10KB."""
+        mock_select.return_value = [{"id": "task-1", "attempt": 1}]
+        test_log = "x" * 100000  # 100KB
+        mock_run.side_effect = [
+            Mock(stdout="sha\n", returncode=0),
+            Mock(stdout="diff\n", returncode=0),
+            Mock(stdout="f.py\n", returncode=0),
+        ]
+
+        with patch("task_artifacts.task_refs.publish") as mock_pub:
+            mock_pub.return_value = {"ok": True, "ref": "r", "patch_id": "p"}
+
+            result = task_artifacts.capture("/repo", "task-1", "br", "master", None, test_log=test_log)
+
+        assert len(result["test_log"]) == 10000
+        # Should be the tail (last 10KB)
+        assert result["test_log"] == test_log[-10000:]
+
+
+class TestMultipleTouchedFiles(unittest.TestCase):
+    """Handling of many touched files."""
+
+    @patch("task_artifacts.db.insert")
+    @patch("task_artifacts.db.select")
+    @patch("subprocess.run")
+    def test_many_touched_files_all_captured(self, mock_run, mock_select, mock_insert):
+        """Many touched files are all captured."""
+        mock_select.return_value = [{"id": "task-1", "attempt": 1}]
+        files = "\n".join([f"file{i}.py" for i in range(100)])
+        mock_run.side_effect = [
+            Mock(stdout="sha\n", returncode=0),
+            Mock(stdout="diff\n", returncode=0),
+            Mock(stdout=files + "\n", returncode=0),
+        ]
+
+        with patch("task_artifacts.task_refs.publish") as mock_pub:
+            mock_pub.return_value = {"ok": True, "ref": "r", "patch_id": "p"}
+
+            result = task_artifacts.capture("/repo", "task-1", "br", "master", None)
+
+        files_list = json.loads(result["touched_files"])
+        assert len(files_list) == 100
+        assert "file0.py" in files_list
+        assert "file99.py" in files_list
+
+    @patch("task_artifacts.db.insert")
+    @patch("task_artifacts.db.select")
+    @patch("subprocess.run")
+    def test_files_with_special_chars_preserved(self, mock_run, mock_select, mock_insert):
+        """Filenames with special characters are preserved."""
+        mock_select.return_value = [{"id": "task-1", "attempt": 1}]
+        mock_run.side_effect = [
+            Mock(stdout="sha\n", returncode=0),
+            Mock(stdout="diff\n", returncode=0),
+            Mock(stdout="file[1].py\nfile(test).js\nfile-name_123.ts\n", returncode=0),
+        ]
+
+        with patch("task_artifacts.task_refs.publish") as mock_pub:
+            mock_pub.return_value = {"ok": True, "ref": "r", "patch_id": "p"}
+
+            result = task_artifacts.capture("/repo", "task-1", "br", "master", None)
+
+        files = json.loads(result["touched_files"])
+        assert "file[1].py" in files
+        assert "file(test).js" in files
+        assert "file-name_123.ts" in files
+
+
+class TestBranchNames(unittest.TestCase):
+    """Branch name handling and edge cases."""
+
+    @patch("task_artifacts.db.insert")
+    @patch("task_artifacts.db.select")
+    @patch("subprocess.run")
+    def test_long_branch_name_captured(self, mock_run, mock_select, mock_insert):
+        """Very long branch names are captured."""
+        mock_select.return_value = [{"id": "task-1", "attempt": 1}]
+        long_branch = "feature/very-long-branch-name-" + "x" * 200
+        mock_run.side_effect = [
+            Mock(stdout="sha\n", returncode=0),
+            Mock(stdout="diff\n", returncode=0),
+            Mock(stdout="f.py\n", returncode=0),
+        ]
+
+        with patch("task_artifacts.task_refs.publish") as mock_pub:
+            mock_pub.return_value = {"ok": True, "ref": "r", "patch_id": "p"}
+
+            result = task_artifacts.capture("/repo", "task-1", long_branch, "master", None)
+
+        assert result["branch"] == long_branch
+
+    @patch("task_artifacts.db.insert")
+    @patch("task_artifacts.db.select")
+    @patch("subprocess.run")
+    def test_branch_with_special_chars_captured(self, mock_run, mock_select, mock_insert):
+        """Branch names with special characters are captured."""
+        mock_select.return_value = [{"id": "task-1", "attempt": 1}]
+        special_branch = "feature/ABC-123_test-branch/with-slashes"
+        mock_run.side_effect = [
+            Mock(stdout="sha\n", returncode=0),
+            Mock(stdout="diff\n", returncode=0),
+            Mock(stdout="f.py\n", returncode=0),
+        ]
+
+        with patch("task_artifacts.task_refs.publish") as mock_pub:
+            mock_pub.return_value = {"ok": True, "ref": "r", "patch_id": "p"}
+
+            result = task_artifacts.capture("/repo", "task-1", special_branch, "master", None)
+
+        assert result["branch"] == special_branch
+
+
+class TestDiffBytesCounting(unittest.TestCase):
+    """Accurate diff byte counting."""
+
+    @patch("task_artifacts.db.insert")
+    @patch("task_artifacts.db.select")
+    @patch("subprocess.run")
+    def test_diff_bytes_exact_count(self, mock_run, mock_select, mock_insert):
+        """diff_bytes accurately reflects UTF-8 byte count."""
+        mock_select.return_value = [{"id": "task-1", "attempt": 1}]
+        diff = "simple diff"  # 11 bytes in UTF-8
+        mock_run.side_effect = [
+            Mock(stdout="sha\n", returncode=0),
+            Mock(stdout=diff, returncode=0),
+            Mock(stdout="f.py\n", returncode=0),
+        ]
+
+        with patch("task_artifacts.task_refs.publish") as mock_pub:
+            mock_pub.return_value = {"ok": True, "ref": "r", "patch_id": "p"}
+
+            result = task_artifacts.capture("/repo", "task-1", "br", "master", None)
+
+        assert result["diff_bytes"] == len(diff.encode("utf-8"))
+
+    @patch("task_artifacts.db.insert")
+    @patch("task_artifacts.db.select")
+    @patch("subprocess.run")
+    def test_diff_bytes_multibyte_chars(self, mock_run, mock_select, mock_insert):
+        """diff_bytes counts multibyte UTF-8 characters correctly."""
+        mock_select.return_value = [{"id": "task-1", "attempt": 1}]
+        diff = "emoji: 😀 test"  # emoji is 4 bytes in UTF-8
+        mock_run.side_effect = [
+            Mock(stdout="sha\n", returncode=0),
+            Mock(stdout=diff, returncode=0),
+            Mock(stdout="f.py\n", returncode=0),
+        ]
+
+        with patch("task_artifacts.task_refs.publish") as mock_pub:
+            mock_pub.return_value = {"ok": True, "ref": "r", "patch_id": "p"}
+
+            result = task_artifacts.capture("/repo", "task-1", "br", "master", None)
+
+        expected_bytes = len(diff.encode("utf-8", errors="ignore"))
+        assert result["diff_bytes"] == expected_bytes
+
+
+class TestEmptyDiffs(unittest.TestCase):
+    """Empty diff handling."""
+
+    @patch("task_artifacts.db.insert")
+    @patch("task_artifacts.db.select")
+    @patch("subprocess.run")
+    def test_empty_diff_captured(self, mock_run, mock_select, mock_insert):
+        """Empty diffs (no changes) are handled correctly."""
+        mock_select.return_value = [{"id": "task-1", "attempt": 1}]
+        mock_run.side_effect = [
+            Mock(stdout="sha\n", returncode=0),
+            Mock(stdout="", returncode=0),  # empty diff
+            Mock(stdout="", returncode=0),  # no files changed
+        ]
+
+        with patch("task_artifacts.task_refs.publish") as mock_pub:
+            mock_pub.return_value = {"ok": True, "ref": "r", "patch_id": "p"}
+
+            result = task_artifacts.capture("/repo", "task-1", "br", "master", None)
+
+        assert result["patch_diff"] == ""
+        assert result["diff_bytes"] == 0
+        assert result["touched_files"] == "[]"
 
 
 if __name__ == "__main__":
