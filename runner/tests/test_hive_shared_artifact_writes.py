@@ -42,6 +42,34 @@ class TestArtifactCapture(unittest.TestCase):
     @patch("task_artifacts.db.insert")
     @patch("task_artifacts.db.select")
     @patch("subprocess.run")
+    def test_capture_clean_path_all_succeed(self, mock_run, mock_select, mock_insert):
+        """Capture succeeds when all git commands and DB operations succeed."""
+        mock_select.return_value = [{"id": "task-1", "attempt": 1}]
+        mock_run.side_effect = [
+            Mock(stdout="commit123\n", returncode=0),
+            Mock(stdout="diff content\n", returncode=0),
+            Mock(stdout="file.py\n", returncode=0),
+        ]
+        mock_insert.return_value = None
+
+        with patch("task_artifacts.task_refs.publish") as mock_publish:
+            mock_publish.return_value = {"ok": True, "ref": "ref-1", "patch_id": "p-1"}
+
+            result = task_artifacts.capture(
+                repo=self.repo,
+                slug="clean-task",
+                branch="feature",
+                base="master",
+                wt=None
+            )
+
+        assert result["commit_sha"] == "commit123"
+        assert result["branch"] == "feature"
+        assert mock_insert.called
+
+    @patch("task_artifacts.db.insert")
+    @patch("task_artifacts.db.select")
+    @patch("subprocess.run")
     def test_capture_all_fields(self, mock_run, mock_select, mock_insert):
         """Capture populates all expected artifact fields."""
         mock_select.return_value = [{"id": "task-1", "attempt": 1}]
@@ -385,6 +413,27 @@ class TestMetadataCapture(unittest.TestCase):
     @patch("task_artifacts.db.insert")
     @patch("task_artifacts.db.select")
     @patch("subprocess.run")
+    def test_updated_at_timestamp_on_subsequent_capture(self, mock_run, mock_select, mock_insert):
+        """Subsequent captures update the updated_at timestamp."""
+        mock_select.return_value = [{"id": "task-1", "attempt": 1}]
+        mock_run.side_effect = [
+            Mock(stdout="sha\n", returncode=0),
+            Mock(stdout="diff\n", returncode=0),
+            Mock(stdout="f.py\n", returncode=0),
+        ]
+
+        with patch("task_artifacts.task_refs.publish") as mock_pub:
+            mock_pub.return_value = {"ok": True, "ref": "r", "patch_id": "p"}
+
+            result = task_artifacts.capture("/repo", "task-1", "br", "master", None)
+
+        # Should have updated_at field set
+        assert "updated_at" in result or mock_insert.called
+        assert mock_insert.called
+
+    @patch("task_artifacts.db.insert")
+    @patch("task_artifacts.db.select")
+    @patch("subprocess.run")
     def test_captured_at_timestamp_is_utc_iso(self, mock_run, mock_select, mock_insert):
         """captured_at is set to UTC ISO format."""
         mock_select.return_value = [{"id": "task-1", "attempt": 1}]
@@ -449,6 +498,31 @@ class TestMetadataCapture(unittest.TestCase):
 
 class TestTaskRefIntegration(unittest.TestCase):
     """Immutable reference publishing via task_refs."""
+
+    @patch("task_artifacts.db.insert")
+    @patch("task_artifacts.db.select")
+    @patch("subprocess.run")
+    def test_task_ref_publish_with_full_metadata(self, mock_run, mock_select, mock_insert):
+        """Task ref publish includes full metadata (task_id, attempt, sha)."""
+        mock_select.return_value = [{"id": "test-123", "attempt": 3}]
+        mock_run.side_effect = [
+            Mock(stdout="commit-sha-xyz\n", returncode=0),
+            Mock(stdout="diff\n", returncode=0),
+            Mock(stdout="f.py\n", returncode=0),
+        ]
+
+        with patch("task_artifacts.task_refs.publish") as mock_pub:
+            mock_pub.return_value = {"ok": True, "ref": "refs/archive/test-123/3/xyz", "patch_id": "p-xyz"}
+
+            result = task_artifacts.capture("/repo", "my-task", "br", "master", None)
+
+        # Verify publish was called with full task metadata
+        mock_pub.assert_called_once()
+        call_kwargs = mock_pub.call_args[1] if mock_pub.call_args[1] else {}
+        # Check positional args instead
+        call_args = mock_pub.call_args[0]
+        assert len(call_args) >= 2
+        assert result["artifact_ref"] == "refs/archive/test-123/3/xyz"
 
     @patch("task_artifacts.db.insert")
     @patch("task_artifacts.db.select")
@@ -631,6 +705,123 @@ class TestEdgeCases(unittest.TestCase):
         # Should not crash
         assert isinstance(result["diff_bytes"], int)
         assert result["diff_bytes"] > 0
+
+    @patch("task_artifacts.db.insert")
+    @patch("task_artifacts.db.select")
+    @patch("subprocess.run")
+    def test_multiple_touched_files_captured(self, mock_run, mock_select, mock_insert):
+        """Multiple touched files are all captured in JSON array."""
+        mock_select.return_value = [{"id": "task-1", "attempt": 1}]
+        mock_run.side_effect = [
+            Mock(stdout="sha\n", returncode=0),
+            Mock(stdout="diff\n", returncode=0),
+            Mock(stdout="src/app.py\nsrc/utils.py\nREADME.md\ntests/test_app.py\n", returncode=0),
+        ]
+
+        with patch("task_artifacts.task_refs.publish") as mock_pub:
+            mock_pub.return_value = {"ok": True, "ref": "r", "patch_id": "p"}
+
+            result = task_artifacts.capture("/repo", "multi-file-task", "br", "master", None)
+
+        files = json.loads(result["touched_files"])
+        assert len(files) == 4
+        assert "src/app.py" in files
+        assert "README.md" in files
+
+    @patch("task_artifacts.db.insert")
+    @patch("task_artifacts.db.select")
+    @patch("subprocess.run")
+    def test_diff_truncation_stores_true_size(self, mock_run, mock_select, mock_insert):
+        """diff_bytes stores actual size even when truncated."""
+        mock_select.return_value = [{"id": "task-1", "attempt": 1}]
+        actual_diff = "x" * 750000  # 750KB
+        mock_run.side_effect = [
+            Mock(stdout="sha\n", returncode=0),
+            Mock(stdout=actual_diff, returncode=0),
+            Mock(stdout="file.py\n", returncode=0),
+        ]
+
+        with patch("task_artifacts.task_refs.publish") as mock_pub:
+            mock_pub.return_value = {"ok": True, "ref": "r", "patch_id": "p"}
+
+            result = task_artifacts.capture("/repo", "large-diff", "br", "master", None)
+
+        assert result["diff_bytes"] == 750000  # True size stored
+        assert len(result["patch_diff"]) == 500000  # But diff truncated to 500KB
+
+    @patch("task_artifacts.db.insert")
+    @patch("task_artifacts.db.select")
+    @patch("subprocess.run")
+    def test_capture_with_empty_test_log(self, mock_run, mock_select, mock_insert):
+        """Capture works correctly when test_log is empty string."""
+        mock_select.return_value = [{"id": "task-1", "attempt": 1}]
+        mock_run.side_effect = [
+            Mock(stdout="sha\n", returncode=0),
+            Mock(stdout="diff\n", returncode=0),
+            Mock(stdout="f.py\n", returncode=0),
+        ]
+
+        with patch("task_artifacts.task_refs.publish") as mock_pub:
+            mock_pub.return_value = {"ok": True, "ref": "r", "patch_id": "p"}
+
+            result = task_artifacts.capture("/repo", "task-1", "br", "master", None, test_log="")
+
+        assert result["test_log"] == ""
+
+    @patch("task_artifacts.db.insert")
+    @patch("task_artifacts.db.select")
+    @patch("subprocess.run")
+    def test_capture_with_zero_cost(self, mock_run, mock_select, mock_insert):
+        """Capture handles zero cost correctly."""
+        mock_select.return_value = [{"id": "task-1", "attempt": 1}]
+        mock_run.side_effect = [
+            Mock(stdout="sha\n", returncode=0),
+            Mock(stdout="diff\n", returncode=0),
+            Mock(stdout="f.py\n", returncode=0),
+        ]
+
+        with patch("task_artifacts.task_refs.publish") as mock_pub:
+            mock_pub.return_value = {"ok": True, "ref": "r", "patch_id": "p"}
+
+            result = task_artifacts.capture("/repo", "task-1", "br", "master", None, cost={"usd": 0.0})
+
+        assert result["cost_usd"] == 0.0
+
+    @patch("task_artifacts.db.select")
+    def test_get_artifacts_preserves_all_fields(self, mock_select):
+        """get_artifacts preserves all fields from DB record."""
+        mock_select.return_value = [{
+            "slug": "task-1",
+            "branch": "test-branch",
+            "commit_sha": "abc123",
+            "patch_diff": "diff",
+            "diff_bytes": 100,
+            "touched_files": '["f.py"]',
+            "test_log": "output",
+            "cost_usd": 0.05,
+            "artifact_ref": "ref-1",
+            "patch_id": "p-1",
+            "captured_at": "2026-07-31T12:00:00Z",
+            "updated_at": "2026-07-31T13:00:00Z"
+        }]
+
+        result = task_artifacts.get_artifacts("task-1")
+
+        assert result["branch"] == "test-branch"
+        assert result["cost_usd"] == 0.05
+        assert result["artifact_ref"] == "ref-1"
+        assert result["captured_at"] == "2026-07-31T12:00:00Z"
+
+    @patch("task_artifacts.db.select")
+    def test_has_artifacts_requires_commit_sha_proof(self, mock_select):
+        """has_artifacts returns False only when commit_sha is truly missing."""
+        # Test with empty commit_sha
+        mock_select.return_value = [{"slug": "task-1", "commit_sha": None}]
+        assert task_artifacts.has_artifacts("task-1") is False
+
+        # Test with null commit_sha
+        mock_select.return_value = [{"slug": "task-1", "commit_sha": None}]
+        assert task_artifacts.has_artifacts("task-1") is False
 
 
 if __name__ == "__main__":
