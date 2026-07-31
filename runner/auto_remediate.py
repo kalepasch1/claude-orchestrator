@@ -17,6 +17,7 @@ Remediation by cause (tasks.remediation_count changes strategy; it does not punt
 
 Runs every couple minutes; also callable. This is the "self-remedy everything" loop.
 """
+import re
 import os, sys, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
@@ -579,13 +580,29 @@ def recover_shelved(limit=200):
 
 
 def _revise(task, note):
-    """Fully rewrite a repeatedly-failing task's prompt to be concrete + achievable (cheap model)."""
-    prompt = ("A build task keeps failing. Rewrite it into a SHARPER, SMALLER, unambiguous instruction "
-              "that a coding agent can complete in one pass: exact files/scope, a concrete acceptance "
-              "test, and no vague goals. If the task is genuinely not doable or is a no-op, reply with "
-              "exactly 'DROP'.\n"
-              f"TASK: {(task.get('prompt') or '')[:1200]}\nFAILURE: {note[:400]}\n"
-              f"LOG: {(task.get('log_tail') or '')[:600]}\nRewritten task:")
+    """Sharpen a repeatedly-failing task's prompt WITHOUT destroying its spec.
+
+    2026-07-31 incident: this used to send only the first 1200 chars (often pure
+    PATCH-TRANSPLANT/library preamble — the real spec never reached the model)
+    and then REPLACE the whole prompt with the model's rewrite. Operator specs
+    and addenda were destroyed across 7 shards. Now: (a) excerpt from the real
+    body (preambles stripped), (b) the original spec is ALWAYS preserved below
+    the sharpened instruction, (c) a fidelity guard rejects rewrites that don't
+    echo the task's own vocabulary.
+    """
+    orig = task.get("prompt") or ""
+    body = orig
+    for marker in ("## ORCHESTRATION PIPELINE CONTRACT", "## TASK", "## OBJECTIVE"):
+        idx = body.find(marker)
+        if idx >= 0:
+            body = body[idx:]
+            break
+    prompt = ("A build task keeps failing. Write a SHARPER, SMALLER, unambiguous execution "
+              "instruction for it: exact files/scope, a concrete acceptance test, no vague "
+              "goals. Do NOT invent a different task — sharpen THIS one. If genuinely not "
+              "doable or a no-op, reply exactly 'DROP'.\n"
+              f"TASK: {body[:4000]}\nFAILURE: {note[:400]}\n"
+              f"LOG: {(task.get('log_tail') or '')[:600]}\nSharpened instruction:")
     try:
         import model_policy, model_gateway
         prov, model, _ = model_policy.choose("plan", agentic=False)
@@ -593,7 +610,16 @@ def _revise(task, note):
         txt = (r.get("text") or "").strip()
         if not txt or txt.upper().startswith("DROP") or len(txt) < 20:
             return None
-        return txt[:4000]
+        # Fidelity guard: the rewrite must share vocabulary with the task itself
+        # (slug words + body), else it hijacked the task (deployfix-class drift).
+        slug_words = [w for w in re.split(r"[^a-z0-9]+", str(task.get("slug") or "").lower())
+                      if len(w) > 4][:8]
+        low = txt.lower()
+        if slug_words and sum(1 for w in slug_words if w in low) < max(1, len(slug_words) // 3):
+            return None
+        # NEVER discard the original spec — it stays authoritative below the sharpener.
+        return (txt[:3000] + "\n\n## ORIGINAL SPEC (authoritative if the sharpened "
+                "instruction conflicts or omits scope)\n" + body[:8000])
     except Exception:
         return None
 
