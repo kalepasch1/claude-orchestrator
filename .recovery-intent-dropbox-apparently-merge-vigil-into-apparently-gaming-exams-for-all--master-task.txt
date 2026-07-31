@@ -1,0 +1,4 @@
+recovery-intent: dropbox-apparently-merge-vigil-into-apparently-gaming-exams-for-all--master-task
+template: 07f10c3be2f8
+intent: adaptive agency agents allowances apparently application attempts authenticated authority authoritypack backlog camels catalog codebase codex combines consolidate correctness coverage creation cutover dashboard decision default document dropbox engine engines entity escalate especially evaluator examinations examiner exams exhausted existing extraction facing files firings first fully gaming helpers history independently industrialcompiler intensive intent kernel keywords lifecycle llama3 local machine manual_review master merge mergeable middleware migration migrations minimal_slice model nonce official operator oracle origin package packages packs pages pattern phase pieces ploeh prior probe
+base: master

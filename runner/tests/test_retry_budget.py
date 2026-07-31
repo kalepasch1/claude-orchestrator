@@ -22,6 +22,17 @@ class TestStats(unittest.TestCase):
             self.assertIn(key, result)
 
 
+class TestErrorClassification(unittest.TestCase):
+    def test_transient_provider_errors_are_classified_case_insensitively(self):
+        cases = {
+            "HTTP 429 Too Many Requests": "rate_limit",
+            "CONTEXT DEADLINE EXCEEDED": "timeout",
+        }
+        for error, expected in cases.items():
+            with self.subTest(error=error):
+                self.assertEqual(retry_budget._classify_error(error), expected)
+
+
 class TestMaxAttempts(unittest.TestCase):
     def test_max_attempts_default(self):
         result = retry_budget.max_attempts({})

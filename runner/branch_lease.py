@@ -63,18 +63,22 @@ def heartbeat(task_id: str, branch: Optional[str] = None) -> bool:
     # evening). Mirrors repo_lock's documented fail-soft philosophy; local per-repo flocks
     # still serialize mutations on this machine. A genuine `False` from the RPC (lease lost
     # to another holder) is still honored and returns False.
-    try:
-        return all(db.rpc("heartbeat_branch_execution_lease", {
-            "p_project_id": lease["p_project_id"],
-            "p_branch": lease["branch"],
-            "p_task_id": lease["p_task_id"],
-            "p_token": lease["token"],
-            "p_ttl_seconds": lease["ttl"],
-        }) is True for lease in leases)
-    except Exception as e:
-        import sys
-        sys.stderr.write(f"[branch_lease] heartbeat RPC infra error ({e}); fail-soft ALIVE\n")
-        return True
+    alive = True
+    for lease in leases:
+        try:
+            if db.rpc("heartbeat_branch_execution_lease", {
+                "p_project_id": lease["p_project_id"],
+                "p_branch": lease["branch"],
+                "p_task_id": lease["p_task_id"],
+                "p_token": lease["token"],
+                "p_ttl_seconds": lease["ttl"],
+            }) is not True:
+                alive = False
+        except Exception as e:
+            import sys
+            sys.stderr.write(
+                f"[branch_lease] heartbeat RPC infra error ({e}); fail-soft ALIVE\n")
+    return alive
 
 
 def release(task_id: str, branch: Optional[str] = None) -> bool:
