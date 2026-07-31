@@ -1,0 +1,48 @@
+{
+  "verdict": "conditional",
+  "score": 6,
+  "conviction": 9,
+  "opinion": "Both seats converge on CONDITIONAL support for a scoped external legal review, but for explicitly different reasons—a divergence that defines the committee's actual position. The operative framework is statutory: 31 U.S.C. § 5320 (federal money services business registration) and parallel state Money Transmitter Licensing statutes (NY Banking Law § 641 exemplar) establish that wallet/payout flows constitute regulated activity if they involve control and transmission of monetary value. The statutory test is not point-based; it is product-flow-specific. Federal trigger: 31 CFR § 1010.100(ff)(5) defines 'money transmitter' as accepting value and transmitting it on behalf of another. State statutes are materially broader—'monetary value' captures instruments our federal test might not. Criminal exposure under 18 U.S.C. § 1960 (unlicensed money transmission) compounds regulatory risk. THE COMMITTEE'S REASONING: Misclassifying our 'apparently' gaming ecosystem's wallet/payout flows as *not* constituting money transmission carries catastrophic downside (statutory fines, cease-and-desist orders, enforcement action constructive damages, reputational harm). Over-compliance carries reversible costs (BSA/AML infrastructure, state licensing fees, legal review itself). The core disagreement is NOT whether to review—it is what the review must establish to be useful. The Economist seat treats the question as resolvable via focused legal analysis: commission the review, get an answer, calibrate compliance posture. The Devil's Advocate seat warns that a bright-line answer does not exist across the state/federal divide—and that false comfort from a surface-level review could be *more* dangerous than pre-review uncertainty. This is a material disagreement about the nature of the risk itself, not the remedy. Both seats correctly identify that the review must map our *actual* flows (not hypothetical ones) against the statutory tests; DA's warning that EVERY flow must be mapped is the operative constraint that makes the review defensible. WHAT WOULD CHANGE THIS: (1) If we obtain a no-action letter or favorable guidance from FinCEN *in advance* of the review, conditional support becomes unconditional support for that specific advice's implementation. (2) If the review concludes our flows do *not* trigger registration, the recommendation shifts to risk-monitoring (quarterly self-assessment) rather than licensing. (3) If the review concludes flows *do* trigger registration, the committee must then weigh the build/license/AML cost against revenue exposure; that second decision is not made here. The review is a gate, not a commitment.",
+  "citations": [
+    {
+      "source": "31 U.S.C. § 5320",
+      "proposition": "Federal Money Services Business registration requirement and prohibited conduct by unregistered MSBs; establishes federal jurisdiction and enforcement authority.",
+      "confidence": 1.0
+    },
+    {
+      "source": "31 CFR § 1010.100(ff)(5)",
+      "proposition": "Federal definition of 'money transmitter' as entity accepting monetary instruments and transmitting monetary value on behalf of another; core statutory trigger.",
+      "confidence": 1.0
+    },
+    {
+      "source": "18 U.S.C. § 1960",
+      "proposition": "Criminal prohibition on operating an unlicensed money transmitting business (felony, up to 5 years imprisonment); establishes criminal exposure distinct from civil regulatory fines.",
+      "confidence": 1.0
+    },
+    {
+      "source": "NY Banking Law § 641 (exemplar state MTL statute)",
+      "proposition": "State money transmitter licensing requirement using 'monetary value' test, typically broader than federal 'monetary instruments' definition; establishes multi-state licensing complexity.",
+      "confidence": 0.95
+    },
+    {
+      "source": "Devil's Advocate dissent (Devil's Advocate seat, Finance Committee deliberation 2026-07-30)",
+      "proposition": "No bright-line threshold exists across state/federal legal tests; false comfort from incomplete mapping is the material risk. Every actual product flow must be mapped against both federal and state tests to defensibly conclude non-registration or identify licensing scope.",
+      "confidence": 0.9
+    }
+  ],
+  "assumptions": [
+    "The 'apparently' gaming ecosystem involves wallet/payout flows where we hold customer funds or transmit value on customers' behalf; the review must validate this product architecture against statutory definitions.",
+    "We have not obtained a prior FinCEN no-action letter or advisory opinion on our specific flows.",
+    "Regulatory enforcement risk (fines, cease-and-desist) is material to our business model; reputational harm from enforcement would impact customer acquisition/retention.",
+    "The external counsel can access our actual product flows (not hypothetical scenarios) and map them against applicable statutory tests."
+  ],
+  "conditions": "The external legal review MUST: (1) Analyze our 'apparently' gaming ecosystem's actual wallet and payout flows within the context of *both* federal MSB registration (31 U.S.C. § 5320, 31 CFR § 1010.100(ff)(5)) and relevant state Money Transmitter Licensing statutes (NY Banking Law Article 14 as example; expand to all states where we operate or target). (2) Explicitly address criminal exposure under 18 U.S.C. § 1960. (3) Map EVERY material wallet/payout flow (origination, holding, transmission, settlement) against federal and state statutory definitions; do not rely on generic 'gaming wallets' categories—drill to actual product code and fund flow. (4) Deliver a product-flow-specific conclusion (e.g., 'flows A and C trigger federal registration; flow B is state-dependent'; not 'your business probably doesn't need to register'). (5) Identify the minimum MSB registration/licensing scope if triggered, and the BSA/AML compliance posture required. (6) Recommend monitoring triggers and re-review intervals if the landscape changes. The review's output is a risk-calibrated recommendation, not a binding legal opinion; the committee retains discretion to pursue licensing, seek no-action letter/advisory opinion, or implement risk-monitoring depending on the findings.",
+  "dissent": "Devil's Advocate (conviction 8): 'The Economist's framing assumes a resolvable question exists. It does not. Federal money transmission turns on control and transmission of value; state MTL statutes use broader 'monetary value' tests. No single point exists where we can confidently say 'here we need to register, there we do not.' The real risk is false comfort: a review that concludes 'your flows probably do not trigger registration' will give us permission to build further without licensing, and we will discover—too late, in an enforcement action—that state regulators disagree. The only defensible conclusion is one that maps EVERY flow we operate, compares it to EVERY jurisdiction's test, and either (a) explicitly excludes a flow from regulatory scope with named justification, or (b) includes it in licensing scope. Anything less is under-reserved. I support the review, but only if we are brutally clear that mapping every flow is non-negotiable, and that the upside of the review is not 'we can skip licensing'—it is 'we know exactly what licensing we need and can budget for it.''",
+  "recommendation": "Commission an external legal review, scoped precisely as defined in conditions above. Counsel should be selected for subject-matter expertise in FinCEN and multi-state money transmitter licensing (not general corporate counsel). Report to the committee in 6-8 weeks with product-flow-specific conclusions and a recommended licensing/compliance strategy. Pending the review's conclusion, defer any material scaling of wallet/payout capacity and maintain current BSA/AML monitoring posture as a holding pattern.",
+  "p_success": 0.75,
+  "upside": "Clear, actionable regulatory strategy (licensing scope, AML costs, compliance roadmap) reduces enforcement surprise and reputational risk; positions us to scale confidently or pivot operationally.",
+  "downside": "Review concludes broader registration/licensing/AML investment is required than budgeted; discovery of state-specific licensing complexity could delay product launches by 3–6 months.",
+  "reversible": true,
+  "critical": true,
+  "next_steps": "1. Approve counsel selection and engagement within 2 weeks. 2. Deliver product flow documentation and use cases to counsel within 1 week of engagement. 3. Review interim findings at 4-week mark; escalate any showstopper risks immediately. 4. Committee reconvenes upon final report to decide licensing strategy."
+}

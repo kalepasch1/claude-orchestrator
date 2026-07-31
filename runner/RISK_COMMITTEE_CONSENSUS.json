@@ -1,0 +1,49 @@
+{
+  "verdict": "conditional",
+  "score": 7,
+  "conviction": 8,
+  "opinion": "The operative rule is 31 C.F.R. § 1010.100(ff)(5)(i)(A): money transmission occurs when an entity accepts funds from one person and transmits them to another person or location. Applied to a gaming wallet/payout flow, this definition is narrow—mere wagering collection and intra-wallet balance redistribution do NOT trigger federal money-transmitter status. However, the federal definition is not the binding constraint. State money-transmitter laws, exemplified by N.Y. Banking Law § 641, impose broader definitions that capture value-transfer capabilities the federal rule may not reach. The 'integral part' exclusion (31 C.F.R. § 1010.100(ff)(5)(ii)) does not preempt stricter state regimes (18 U.S.C. § 1960 explicitly criminalizes unlicensed transmission 'in violation of any law').\n\nAPPLIED TO THESE FACTS: A gaming wallet that collects wagers, holds user balances, and pays out intra-wallet winnings likely clears the federal threshold. But the moment the operator allows wallet-to-wallet transfers, third-party payouts (e.g., casinos, payment providers), or cross-user value flows, the conduct plausibly becomes 'transmitting funds' under state law regimes that explicitly cover peer-to-peer value movement or multi-leg transactions. The proposal does not specify the final payout architecture: if winnings exit to a player's bank account via the operator, the operator is clearly accepting funds (wagers) and transmitting them (as payouts) to another location (player's bank).\n\nWHAT WOULD CHANGE THE CONCLUSION: (1) Completion of a state-by-state regulatory mapping showing no state defines money transmission in a way that captures the final payout architecture; (2) an opinion from multi-state regulatory counsel that the specific payout flow is exempt or excluded in all target states; (3) explicit removal of any peer-to-peer or cross-location transmission capability before launch. Without one of these, the risk is not 'eventual enforcement' but 'criminal and civil exposure under 18 U.S.C. § 1960 and state law for operating without required licensure'—a shutdown event, not a compliance adjustment.",
+  "citations": [
+    {
+      "source": "31 C.F.R. § 1010.100(ff)(5)(i)(A)",
+      "proposition": "Federal money-transmitter definition: accepting funds from one person and transmitting to another person or location.",
+      "confidence": 1.0
+    },
+    {
+      "source": "31 C.F.R. § 1010.100(ff)(5)(ii) ('integral part' exclusion)",
+      "proposition": "MSB status does not apply when funds/value are merely incidental to a non-transmission business.",
+      "confidence": 1.0
+    },
+    {
+      "source": "N.Y. Banking Law § 641",
+      "proposition": "New York money-transmitter statute captures broader conduct than federal definition, including peer-to-peer and value-movement activities.",
+      "confidence": 1.0
+    },
+    {
+      "source": "18 U.S.C. § 1960",
+      "proposition": "Criminal statute: unlicensed money transmission in violation of any law (state or federal) is a felony.",
+      "confidence": 1.0
+    },
+    {
+      "source": "31 U.S.C. § 5330",
+      "proposition": "MSB registration with FinCEN is required before operating in money transmission.",
+      "confidence": 1.0
+    }
+  ],
+  "assumptions": [
+    "The final payout architecture has not yet been finalized; this opinion assumes the operator retains control over fund movement.",
+    "Target markets include at least one high-regulation state (assumed: New York, California, or similar).",
+    "The operator does not currently hold any money-transmitter licenses or registrations.",
+    "Transaction volumes are expected to exceed de minimis thresholds that might otherwise avoid regulatory notice.",
+    "No formal legal opinion on state-by-state compliance has been commissioned to date."
+  ],
+  "conditions": "This verdict is conditional on completion of the following BEFORE launch: (1) A state-by-state regulatory mapping identifying the definition of money transmission in each target state and how the final payout architecture fits; (2) Removal of any peer-to-peer wallet transfers or third-party transmission capabilities, OR explicit licensing under 31 U.S.C. § 5330 (FinCEN MSB registration) and applicable state money-transmitter laws; (3) Implementation of transaction monitoring and circuit-breakers that prevent unlicensed transmission paths; (4) A written legal opinion from multi-state regulatory counsel on the final payout architecture. If these conditions are not met, the verdict downgrades to OPPOSE.",
+  "dissent": "none—both committee seats are aligned on the operative rule, the binding constraint (state law, not federal), and the core recommendation. The Devil's Advocate emphasizes that abstract boundary-drawing is insufficient without concrete factual application; the Compliance Risk Analyst operationalizes that requirement into a state-by-state mapping task. This is convergent reasoning, not conflict.",
+  "recommendation": "Commission an immediate regulatory gap analysis from multi-state counsel (target: 2 weeks). Pending that, freeze any decision to launch wallet-to-wallet or third-party payout features. If the final architecture requires money transmission, file FinCEN MSB registration and apply for state money-transmitter licenses before enabling those features. If the architecture can be redesigned to avoid transmission (e.g., all payouts directly from payment processor to player, operator never touches funds), document that design choice and obtain a no-action or interpretive letter from state regulators.",
+  "p_success": 0.75,
+  "upside": "Compliant launch 90 days ahead of schedule if state mapping shows the payout architecture is exempt or non-transmission under most target states; avoids multi-state licensing costs.",
+  "downside": "If state mapping reveals broad transmission definitions and the operator has committed payout architecture that triggers them without licensure already in place: cease-and-desist orders, criminal referrals under 18 U.S.C. § 1960, and platform shutdown.",
+  "reversible": false,
+  "critical": true,
+  "pre_mortem_forecast": "In 90 days, if no regulatory mapping has been completed, the failure mode will be an assumption that federal MSB rules apply nationally and the 'integral part' exclusion covers gaming wallets. That assumption is plausible but not verifiable without state counsel review. A New York or California regulator inquiry or enforcement action will then expose the gap. The most likely outcome if conditions are honored: 6–8 week delay for MSB registration + 1–2 state MTL license applications, then compliant launch. Most likely outcome if conditions are skipped: partial compliance (federal only, no state licenses), regulatory inquiry within 180 days, platform restriction or shutdown in 6–9 months."
+}

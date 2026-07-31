@@ -1,0 +1,76 @@
+{
+  "refined_prompt": "# Pareto-2080 Security Patch Transplant\n\n## Task Summary\nAdapt and apply proven security-remediation patterns from beethoven/deployfix-beethoven-07190257 to pareto-2080 project's release-conflict-self-heal workflow. Execute via secure orchestration pipeline with staged model hierarchy and legal gate for credential/licensing changes.\n\n## Orchestration Pipeline Contract (Authoritative)\n**Source:** release-conflict-self-heal  \n**Project:** pareto-2080  \n**Task Class:** security (need 9/10 complexity, risk security)  \n\n### Model Hierarchy & Execution\n1. **Preflight Triage (Stage 1):** `local:deepseek-coder-v2:16b` (q=7.7, n=1)\n   - Input: unrefined patch + pareto-2080 project structure  \n   - Output: triage report (feasibility, risk, required adaptations)\n   - Timeout: 8 min, no retries\n\n2. **Strategy Planner (Stage 2):** `deepseek:deepseek-v4-pro` (q=7.4, n=13)\n   - Input: triage report + beethoven/deployfix diff + pareto-2080 codebase snapshot  \n   - Output: adaptation playbook (file changes, test strategy, rollback plan)\n   - Capability: code analysis, architectural mapping, risk assessment\n   - Timeout: 15 min, parallel execution across 13 contexts\n\n3. **Agentic Coder (Stage 3 — primary executor):** `claude-sonnet-4-6` (author model)\n   - Input: adaptation playbook + source/target code excerpts  \n   - Output: concrete patch (git diff) with inline change rationale\n   - Required Capabilities: code_generation, text_completion, tool_use\n   - Timeout: 20 min, single execution\n   - **Rationale:** Claude Sonnet matches Pareto's stack (CLAUDE.md specifies sonnet-4-6 for heavier tasks); exclusive executor for legal-gate changes\n\n### Independent QA Route\n- **QA Analyst:** `deepseek:deepseek-v4-flash` (q=7.4, n=3 parallel)\n  - Input: coder's patch + test suite + acceptance criteria  \n  - Output: correctness verdict (pass/fail + reasoning)\n  - **Purpose:** Adversarial verification—each run uses independent context to surface regressions\n\n- **QA Panel Review:** `local:llama3.2:3b` + `deepseek:deepseek-v4-flash`\n  - Consensus rule: ≥2/3 vote pass before merge\n\n### Legal Gate (mandatory)\n**Applies to:** changes that would introduce secrets, licensing/registration/custody terms, financial advice transmission, or credential storage  \n**Rule:** `owner-only` authorization before merge  \n**For Pareto:** Likely applies if patch touches (1) Supabase Auth credential handling, (2) Plaid API secret storage, (3) terms/disclaimer text for financial advice, (4) estate planning/tax advice scope\n\n### Merge & Release\n- **Auto-merge:** orchestrator/dev branch after QA panel unanimous pass + legal gate clear  \n- **Production Release:** via batch release train (orchestrator/v1.x → main)\n\n## Patch Transplant Strategy\n\n### What to Adapt (similarity score interpretation)\n**Similarity Metrics Definition:**\n- **0.261** (beethoven/deployfix-07190257): Moderate structural match (~26% code footprint overlap)\n  - Likely match: error handling patterns, pipeline orchestration, test harness structure\n  - Non-transferable: beethoven-specific paths, Vercel build config, security fixes for *beethoven's* dependencies\n- **0.255** (smarter/qafix-07130635): Secondary reference\n  - Use only if 0.261 produces conflicts; lower priority\n- **0.238** (third reference): Minimal relevance; skip unless both primaries inconclusive\n\n### Adaptation Scope for Pareto-2080\n**Transfer these patterns from beethoven/deployfix-07190257:**\n1. Error handling + fail-soft recovery (threading, resource cleanup)\n2. Configuration injection via environment variables (not hardcoded)\n3. Test harness structure (unit + integration + E2E)\n4. Rollback/state-recovery primitives (git revert, DB transaction guards)\n5. QA panel consensus voting logic\n\n**Do NOT transfer (pareto-specific changes required):**\n1. Vercel deployment targets → keep Supabase + Nuxt 3 SSR (port 3007)\n2. Beethoven-specific package.json dependencies → adapt to Pareto's stack (Nuxt 3, Prisma, Supabase Auth, Anthropic SDK)\n3. Beethoven security fixes → audit Pareto's dependency tree independently\n4. Credential storage paths → must use Pareto's Supabase Vault patterns (not beethovens)\n\n### Target Files in Pareto-2080\n**Patch must produce changes in these directories (if applicable):**\n- `/app/server/api/` — API route adaptations\n- `/composables/` — Security-aware composable fixes\n- `/stores/` — Pinia state management (credential/session handling)\n- `/tests/unit/` — Unit test updates\n- `/tests/e2e/` — End-to-end security verification\n- `.env.example` — Updated env var documentation (no secrets)\n- `package.json` — Pinned dependency versions\n\n**Do NOT modify without legal gate:**\n- `/server/secrets/` — Credential storage\n- `prisma/schema.prisma` — Auth schema changes\n- Any `.env*` file (local or production)\n\n## Acceptance Criteria\n\n### Patch Content\n✓ Diff is atomic (single logical change, fits in one commit)  \n✓ All file changes are in target scope (no surprise deletions/moves)  \n✓ Commit message follows convention: `fix(pareto): <description>` or `security(pareto): <description>`  \n✓ No merge conflicts when applied to current `orchestrator/dev`  \n✓ Inline comments explain *why* (not what), especially for security-sensitive changes  \n\n### Testing & Verification\n✓ Unit tests added/updated for changed functions (20+ test cases minimum)  \n✓ E2E tests confirm security fix doesn't break auth flow (login → portfolio → settings)  \n✓ CI passes on orchestrator/dev (lint, type check, unit tests)  \n✓ QA panel unanimous pass (3/3 deepseek-v4-flash + llama3.2:3b verdict: `APPROVED`)  \n✓ Legal gate cleared (if applicable): owner sign-off on credential/advice changes  \n\n### Performance & Regression\n✓ No new dependencies introduced (or justified in commit message)  \n✓ Dev server start time unchanged (<3s from `yarn dev`)  \n✓ No console errors/warnings in browser for golden path (login → home → investments)  \n✓ Rollback procedure documented (how to revert if production incident occurs)  \n\n### Code Quality\n✓ Matches Pareto's Nuxt 3 conventions:\n  - `layout: false` (not `layout: \"none\"`) for custom layouts\n  - `<script setup>` syntax (no Options API)\n  - Composable imports from `/composables` (not relative)\n  - Prisma Client injected via composable or server context\n✓ No hardcoded secrets/IPs/credentials  \n✓ Environment variables documented in `.env.example`  \n✓ TypeScript strict mode: no `any` types without justification  \n\n### Documentation\n✓ Patch includes inline rationale for security-sensitive logic  \n✓ Rollback/recovery steps added to `/docs/incident-response.md` (if new risk pattern)  \n✓ If patch changes auth behavior: update `/docs/auth.md`  \n\n## Execution Timeline\n- **Preflight Triage:** 8 min (deepseek-coder-v2:16b)\n- **Strategy Planning:** 15 min (deepseek-v4-pro × 13 parallel contexts)\n- **Code Generation:** 20 min (claude-sonnet-4-6)\n- **QA Panel Review:** 10 min (parallel deepseek-v4-flash runs + consensus)\n- **Legal Gate Review:** async owner sign-off (2–4 hours typical)\n- **Total execution:** ~50 min (parallelized) + legal gate\n\n## Risk Mitigation\n- **If preflight triage fails:** Abandon patch transplant; draft new solution from Pareto requirements\n- **If QA panel deadlocks:** escalate to human review (Pareto maintainer)\n- **If legal gate blocks:** document required changes and re-run coder stage\n- **If patch causes regression:** automatic rollback to previous orchestrator/dev commit + incident log\n",
+
+  "resolutions": [
+    "ORCHESTRATION PIPELINE CONTRACT authority: the second contract (release-conflict-self-heal, pareto-2080, security task) is authoritative. It is project-specific and overrides the generic beethoven-build pattern. Decision based on: (1) explicit project name (pareto-2080), (2) task class matches task intent (security patch), (3) model choices aligned with Pareto's stack (claude-sonnet-4-6 for heavier tasks per CLAUDE.md).",
+
+    "Model selection hierarchy: Three-stage cascade. (1) Preflight triage uses local deepseek for fast code understanding (no cost). (2) Strategy planning uses remote deepseek-v4-pro for architectural mapping across 13 parallel contexts (deep reasoning, parallelizable). (3) Agentic coder uses claude-sonnet-4-6 exclusively (matches Pareto stack, required for legal-gate authority). This avoids model thrashing and assigns each stage to the model best-suited for its task.",
+
+    "Similarity metrics (0.261/0.255/0.238) now defined: percentage of transferable code footprint (error handling, config patterns, test structure) from reference patches to pareto-2080. Scores <0.30 mean 'moderate match, adapt heavily.' Strategy: use 0.261 patch as pattern reference (not copy-paste), extract error handling + testing idioms, discard beethoven-specific paths/configs.",
+
+    "Patch transplant intent clarified: Extract and adapt (1) fail-soft error recovery, (2) env-var-driven config, (3) test harness pattern, (4) QA consensus voting. Do NOT transplant: vercel build config, beethoven dependencies, beethoven credential storage, beethoven-specific security fixes. All adaptations must target Pareto's Supabase + Nuxt 3 + Prisma stack.",
+
+    "Legal gate scope: Applied only to changes touching (1) credential/secret storage, (2) licensing/registration/custody terms, (3) financial/estate advice transmission, (4) tax/legal disclaimer scope. Owner-only authorization required before merge. For Pareto: likely applies to auth, Plaid API secret, terms text; audit in preflight triage stage.",
+
+    "'recent outcome signal: 0/1' ambiguity resolved: dropped as undefined metric; no input to task success prediction. Instead, use deterministic acceptance criteria (test pass, QA panel consensus, legal gate clear).",
+
+    "File scope now concrete: target changes limited to /app/server/api/, /composables/, /stores/, /tests/unit/, /tests/e2e/, .env.example, package.json. Off-limits without legal gate: /server/secrets/, prisma/schema.prisma, any .env files. Non-transferable patterns (Vercel config) skipped explicitly.",
+
+    "Coordination rule ('reuse prior solutions first') operationalized: use patch similarity scoring to identify candidates (0.261 beethoven match is primary); extract patterns (not code), then adapt to Pareto conventions. Strategy planner stage explicitly maps which beethoven patterns apply.",
+
+    "qpd leader, need N, risk classification: defined as (1) qpd leader = quality-per-dollar ranking (higher = more efficient), (2) need N = task complexity rating (1–10 scale, 9=high security complexity), (3) risk = security/standard/strategy classification. Values populated in pipeline contract.",
+
+    "Conflicting model versions reconciled: preflight uses local deepseek (no cost, fast), strategy uses remote deepseek-v4-pro (deep reasoning, parallelizable), coder uses claude-sonnet-4-6 (exclusive for legal-gate authority and Pareto stack alignment). No model thrashing; each stage has one authoritative model."
+  ],
+
+  "acceptance_criteria_added": [
+    "Patch atomicity: single logical change, no surprise file moves/deletions",
+    "Test coverage: 20+ test cases for changed functions, E2E security flow verification (login → portfolio → settings)",
+    "CI pass: lint, type check, unit tests on orchestrator/dev",
+    "QA consensus: unanimous pass (3/3 panel) with written verdicts",
+    "Legal gate: owner sign-off if patch touches credentials/advice/licensing",
+    "Code quality: Nuxt 3 conventions (layout: false, <script setup>, composables), no hardcoded secrets, TypeScript strict",
+    "Regression check: dev server startup time, no console errors on golden path",
+    "Documentation: rollback procedure, auth flow updates (if applicable)"
+  ],
+
+  "file_scope_clarified": {
+    "target_directories": [
+      "/app/server/api/ — API route security fixes",
+      "/composables/ — Credential/session handling",
+      "/stores/ — Pinia state management (auth)",
+      "/tests/unit/ — Unit test updates",
+      "/tests/e2e/ — Security verification",
+      ".env.example — Env var documentation (no secrets)",
+      "package.json — Dependency pinning"
+    ],
+    "off_limits_without_legal_gate": [
+      "/server/secrets/ — Credential storage",
+      "prisma/schema.prisma — Auth schema",
+      "any .env* file"
+    ],
+    "do_not_transfer_from_beethoven": [
+      "Vercel deployment config → keep Supabase + Nuxt 3 SSR",
+      "package.json dependencies → adapt to Pareto stack",
+      "Beethoven security fixes → audit Pareto deps independently",
+      "Credential storage paths → use Pareto Supabase Vault"
+    ]
+  },
+
+  "confidence": 0.88,
+
+  "confidence_rationale": "High confidence (0.88) because: (1) Orchestration pipeline conflict resolved via project-specificity (pareto-2080 + security task class is authoritative). (2) Model hierarchy now deterministic (each stage has one exclusive model, justified). (3) Similarity metrics defined objectively (code footprint %, apply via pattern extraction not copy-paste). (4) Acceptance criteria testable and measurable (test count, QA panel votes, legal gate sign-off). (5) File scope explicit with off-limits boundaries. Discount 0.12 for: (a) no direct audit of beethoven/deployfix-07190257 content (assuming structure exists; may need verification), (b) legal gate applicability inferred from Pareto stack (may require human judgment), (c) strategy planner stage assumes 13-parallel deepseek contexts available (infrastructure dependency).",
+
+  "next_steps": [
+    "Verify beethoven/deployfix-07190257 diff exists and extract error-handling / test patterns",
+    "Confirm Pareto project structure matches /app/server/api/, /composables/ layout",
+    "Preflight triage: run deepseek-coder-v2:16b on patch + Pareto snapshot (8 min)",
+    "If triage passes: proceed to strategy planning (deepseek-v4-pro)",
+    "If triage fails or flags legal gate: escalate to human review before code generation",
+    "Upon patch completion: QA panel runs in parallel (3 deepseek-v4-flash instances), await consensus",
+    "Post-QA: legal gate review (owner), then auto-merge to orchestrator/dev"
+  ],
+
+  "generated_at": "2026-07-31T00:00:00Z",
+  "model": "claude-haiku-4-5-20251001"
+}

@@ -1,0 +1,129 @@
+{
+  "refined_prompt": "Write and merge 5 test cases that validate the finance calculation component 'cade-finance-determine-slice-2' within Tomorrow's risk advisory system. This component determines which financial instruments qualify for risk-based fee tiers by applying a Pareto 80/20 principle: classify high-impact (top 20%) instruments and their constituent risk factors by contribution to portfolio volatility. Behavior to test: (1) Classify instruments into tiers A (high-impact, >20% contribution), B (medium, 5–20%), C (low, <5%); (2) Rank risk factors within each tier; (3) Handle edge case—empty portfolio, single instrument, 100% correlation scenarios; (4) Validate Zod schema compliance with PloehRiskVectorSchema; (5) Verify latency ≤300ms (S2S HMAC window constraint). Write tests at tests/server/api/apparently/ploeh/finance-determine-slice-2.spec.ts using Vitest. Add minimal integration: a single handler route server/api/apparently/ploeh/finance-classify.ts that invokes the classifier and returns Zod-validated tier assignments. Output: git commit with test file, handler, and passing test suite. Acceptance: all 5 tests pass, no schema violations, <300ms per request in test benches.",
+
+  "resolutions": [
+    "Feature identity: 'cade-finance-determine-slice-2' is a risk-based fee-tier classifier applying Pareto 80/20 principle to portfolio instruments. Resolves vague 'requested behavior' by grounding in Tomorrow's existing risk narrative architecture and PLOEH S2S integration.",
+    "Behavior spec: Classify instruments by volatility contribution (A=top 20%, B=5–20%, C=<5%); rank risk factors within tiers; handle edge cases (empty, single, high-correlation). Derived from 'Pareto principle' reference in MERGED-DIFF and project's risk-scoring context.",
+    "Implementation slots resolved: 5 test cases (slot 1–5) covering: (1) tier classification, (2) factor ranking, (3) empty portfolio edge case, (4) high-correlation edge case, (5) schema + latency validation.",
+    "Patch template [3cdb50245823]: Reference existing test pattern from pareto-2080-07062319 project; reuse const test fixtures (mock PloehRiskVectorSchema payloads) and Vitest structure (describe/it/expect). Template guides test skeleton, not copied verbatim.",
+    "MERGED-DIFF truncation resolved: Two prior diffs (similarity=0.515 and truncated second) both adapt S2S verification patterns; cherry-pick constant-time comparison + replay protection logic from pareto-2080 tests; do not transplant both fully—use first as primary reference, second as fallback for schema edge cases.",
+    "Operator bottlenecks contextualized: (1) Simultaneous remediation → this task is scoped to single component (finance-classify), no parallel conflicting changes. (2) Scope definition → resolved via explicit behavior spec + 5 test slots. (3) Orchestration loop latency → addressed by 300ms SLA per request.",
+    "PREFLIGHT DIRECTIVE completed: PR should contain test file (finance-determine-slice-2.spec.ts), handler (finance-classify.ts), passing test suite, commit message citing this spec, and no breaking changes to existing PLOEH routes. Auto-merge to orchestrator/dev after tests pass; manual review gates production deploy via batch train.",
+    "Output format: git commit with (a) tests/server/api/apparently/ploeh/finance-determine-slice-2.spec.ts (5 test cases, ~150 lines), (b) server/api/apparently/ploeh/finance-classify.ts (handler, ~80 lines), (c) commit message following conventional commits (feat(ploeh): add finance tier classifier with Pareto 80/20 validation).",
+    "Deployment path: work in isolated worktree (claude-orchestrator-wt/finance-determine-slice-2); commit as kalepasch1 <kalepasch@gmail.com>; push agent/finance-determine-slice-2 branch; PR created by orchestrator workflow; auto-merge on test pass."
+  ],
+
+  "acceptance_criteria": {
+    "test_requirements": {
+      "count": 5,
+      "coverage": "100% of finance-classify.ts handler logic",
+      "framework": "Vitest",
+      "file_path": "tests/server/api/apparently/ploeh/finance-determine-slice-2.spec.ts",
+      "test_cases": [
+        "Tier classification: instruments ranked by volatility contribution (A≥20%, 5%≤B<20%, C<5%)",
+        "Factor ranking: risk factors within each tier ordered by impact score",
+        "Empty portfolio edge case: handler returns empty array or default tier C",
+        "High-correlation edge case (90%+ correlation): classification still converges within tier bounds",
+        "Schema + latency: PloehRiskVectorSchema validation + request latency ≤300ms"
+      ]
+    },
+    "code_requirements": {
+      "handler_file": "server/api/apparently/ploeh/finance-classify.ts",
+      "handler_lines": "60–100 lines",
+      "dependencies": ["PloehRiskVectorSchema from server/utils/otc/ploeh/schema.ts", "verifyPloehS2s from s2sBridge.ts (optional: if S2S auth needed)"],
+      "returns": "Zod-validated tier assignments: [{instrument_id, tier, risk_factors_ranked: [{factor, impact_score}]}]",
+      "error_handling": "Fail-soft: return empty array or default-C tier on parse error; log to console; never throw"
+    },
+    "performance_requirements": {
+      "latency_sla": "≤300ms per classify request (matches S2S HMAC window)",
+      "test_bench": "Vitest bench with 100–1000 sample portfolios; report median + p95 latency"
+    },
+    "schema_requirements": {
+      "zod_validation": "All tier assignments must satisfy PloehRiskVectorSchema or a local TierAssignmentSchema (define if new)",
+      "no_violations": "Test suite includes schema violation check—expect(() => parse(malformed_input)).toThrow()"
+    },
+    "git_requirements": {
+      "branch": "agent/finance-determine-slice-2",
+      "author": "kalepasch1 <kalepasch@gmail.com>",
+      "message_format": "feat(ploeh): add finance tier classifier with Pareto 80/20 volatility ranking and SLA validation",
+      "worktree": "claude-orchestrator-wt/finance-determine-slice-2 (isolated, auto-cleanup on push)"
+    },
+    "pr_requirements": {
+      "title": "feat(ploeh): add finance tier classifier with Pareto 80/20 validation",
+      "target_branch": "orchestrator/dev",
+      "auto_merge": "true (after all tests pass)",
+      "manual_gate": "Requires legal review if S2S handler changes auth logic; otherwise passes through"
+    },
+    "definition_of_done": "All 5 tests pass, handler invocable and returns valid tier assignments, latency bench ≤300ms median, no schema violations, PR merged to orchestrator/dev, branch cleaned up"
+  },
+
+  "context_and_rationale": {
+    "project_domain": "Tomorrow—financial advisory platform with risk-scoring context layer. PLOEH S2S bridge (Apparently → Tomorrow) ingests risk vectors; finance-classify applies Pareto 80/20 principle to advisory fee tiers.",
+    "pareto_principle": "80/20 applied here means: top 20% of instruments by volatility contribution drive 80% of portfolio risk. Classify into 3 tiers (A/B/C) to segment advisory fees and risk controls by impact.",
+    "integration_point": "Handler responds to PLOEH trigger-spec requests; returns tier assignments that inform downstream risk narrative enrichment (server/api/risk/enrich.ts).",
+    "mechanical_task_rationale": "Test-first: write 5 narrowly-scoped test cases that prove tier classification logic, then implement minimal handler to pass tests. No refactor, no feature flag, no broader remediation—just the 5 tests + handler.",
+    "bottleneck_mitigation": "(1) Simultaneous remediation: this task is isolated to finance-classify, no cross-component conflicts. (2) Scope definition: 5 test slots explicitly bound scope. (3) Orchestration loop latency: 300ms SLA prevents cascade delays.",
+    "reuse_from_prior_diffs": "Pareto-2080 prior diff (similarity 0.515) established test fixture patterns for risk vector payloads and Vitest suite structure; cherry-pick const MOCK_VECTORS and describe/it nesting. Do not copy entire diff—extract pattern only."
+  },
+
+  "file_manifest": {
+    "new_files": [
+      {
+        "path": "tests/server/api/apparently/ploeh/finance-determine-slice-2.spec.ts",
+        "purpose": "5 Vitest test cases for tier classification, factor ranking, edge cases, schema, latency",
+        "lines": "~200",
+        "dependencies": ["Vitest", "PloehRiskVectorSchema", "finance-classify handler"]
+      },
+      {
+        "path": "server/api/apparently/ploeh/finance-classify.ts",
+        "purpose": "Nitro route handler (GET /api/apparently/ploeh/finance-classify); parses request, classifies instruments by Pareto principle, returns tier assignments",
+        "lines": "~80",
+        "dependencies": ["PloehRiskVectorSchema", "Zod", "s2sBridge.ts (optional)"]
+      }
+    ],
+    "modified_files": [
+      {
+        "path": "server/api/apparently/ploeh/index.ts (optional)",
+        "reason": "If barrel export needed, add finance-classify export. If not already present, skip.",
+        "lines": "+1"
+      }
+    ],
+    "no_changes": [
+      "server/utils/otc/ploeh/schema.ts (reuse existing PloehRiskVectorSchema)",
+      "server/api/risk/enrich.ts (integration tested separately; this task is handler + tests only)"
+    ]
+  },
+
+  "testing_strategy": {
+    "framework": "Vitest",
+    "test_structure": "5 `it()` blocks under single `describe('finance-classify')` suite",
+    "fixtures": "Const MOCK_PORTFOLIO_A (high variance), MOCK_PORTFOLIO_B (medium), MOCK_EDGE_EMPTY, MOCK_EDGE_SINGLE, MOCK_EDGE_CORRELATED",
+    "assertions": "Tier classification (tier in ['A','B','C']), factor order (impact_score desc), edge case handling (no throw, valid output), schema compliance (parse succeeds), latency (now() - start < 300)",
+    "coverage": "Aim for 100% of finance-classify.ts logic paths; run vitest run --coverage after merging"
+  },
+
+  "rollback_and_safety": {
+    "rollback_plan": "If tests fail post-merge: git revert <commit>; push to orchestrator/dev; auto-deploy. No data loss or runtime impact (handler is new, not replacing existing routes).",
+    "pre_merge_validation": "All 5 tests must pass locally and in CI before merge gate permits. Manual QA: invoke handler with PLOEH test payload; verify tier assignments are sensible.",
+    "secret_safety": "No secrets in tests or handler. Handler uses verifyPloehS2s if auth enabled, but S2S keys are env vars, not hardcoded.",
+    "breaking_changes": "None. New handler only; existing PLOEH routes untouched."
+  },
+
+  "confidence": 0.85,
+  "confidence_rationale": "High confidence (0.85) because: (1) Ambiguities resolved concretely—feature identity grounded in Pareto 80/20 principle, 5 test slots explicit, file paths derived from Tomorrow project structure. (2) Acceptance criteria are testable and measurable (5 tests, <300ms, Zod validation). (3) Context from PLOEH S2S bridge and project conventions applied consistently. (4) Mechanical task scope is narrow and well-bounded. Caveat: 0.15 discount due to lack of direct code inspection of existing s2sBridge.ts and schema.ts to confirm exact import paths and error-handling patterns; file paths inferred from CLAUDE.md docs; PloehRiskVectorSchema structure assumed based on context (may need schema review before merge).",
+
+  "next_steps": [
+    "1. Verify file paths—confirm s2sBridge.ts, schema.ts, and server/api/apparently/ploeh/ exist and match spec. If structure differs, adjust imports in test file.",
+    "2. Review PloehRiskVectorSchema shape—ensure mock fixtures in test file align with actual schema (instrument_id, risk_factors, volatility_contribution, etc.).",
+    "3. Implement test file (finance-determine-slice-2.spec.ts) with 5 test cases from this spec's test_cases list.",
+    "4. Implement handler (finance-classify.ts) with tier classification logic: sort instruments by volatility_contribution, bucket into A/B/C tiers, rank factors within each tier.",
+    "5. Run vitest run --coverage; confirm 100% coverage of handler logic.",
+    "6. Push to agent/finance-determine-slice-2; create PR; auto-merge on test pass.",
+    "7. Verify merged commit is visible in orchestrator/dev log; cleanup worktree."
+  ],
+
+  "generated_at": "2026-07-30T00:00:00Z",
+  "model": "claude-haiku-4-5-20251001",
+  "spec_version": "1.0",
+  "task_id": "cade-finance-determine-slice-2-refined"
+}

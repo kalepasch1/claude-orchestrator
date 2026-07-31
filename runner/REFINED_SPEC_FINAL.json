@@ -1,0 +1,30 @@
+{
+  "refined_prompt": "Create a curated bootstrap dataset of 50–100 historical and contemporary authorities in economics, investment, risk management, and central banking. Serve as seed data for Tomorrow's advisory context layer. Output a valid JSON array with schema: {id, name, role, birth_year, death_year?, country_of_origin, primary_field, summary, source, source_url, added_date, nobel_prize_year?, aum_billions?, institution?}. Store in data/authorities/roster_v1.0.json. Verify against acceptance criteria: no duplicates, all required fields present, role values in [economist|investor|risk_manager|central_banker], dates ISO 8601 or YYYY integers. Include 10 spot-check verifications against Wikipedia. Write Zod schema in data/authorities/schema.ts and 20+ test cases in tests/data/authorities.spec.ts. All entries must meet at least one tier: (1) Nobel Prize + Fields Medal, (2) top-20 university tenure OR direct policy leadership (Fed chair, World Bank chief), or (3) 5+ high-impact publications (>1000 Google Scholar citations). Inclusion criteria rationale: these four roles represent decision-makers and thought leaders in risk/finance; the roster enriches risk narratives with historical precedent and credibility signals, not hiring/advisory matching.",
+
+  "resolutions": [
+    "Laureate definition: Nobel Prize in Economic Sciences (1969–present) + Fields Medal (mathematical economics). Excludes other honors to avoid scope creep.",
+    "Great investor/risk manager metrics: Three-tier inclusion (meet any one): (1) top-20 university tenure OR policy leadership, (2) $10B+ AUM or transformational institution, (3) 5+ high-impact publications. Balances rigor, market impact, and intellectual influence.",
+    "Data source: Wikipedia curated lists (primary) + IDEAS/RePEc + academic department websites. Manual v1 curation (~80 entries); future v2 adds async polling.",
+    "JSON schema: Minimal viable with required fields (id, name, role, birth_year, country_of_origin, primary_field, summary, source, added_date) and optional domain-specific fields (nobel_prize_year, aum_billions, institution, death_year). TypeScript interface + Zod validator.",
+    "Example shape: Concrete 3-entry examples provided (Krugman, Volcker, Dalio) showing all field types and role variations.",
+    "Scope rationale: All four roles are decision-makers in risk/finance domain. Roster is advisory context layer for narratives, NOT a hiring directory.",
+    "Dataset type: Bootstrap seed (v1.0, 50–100 entries). No auto-refresh in v1; manual curation + PR review. Versioning via v1.1, v2.0 for schema changes.",
+    "Integration context: Consumer is server/api/risk/enrich.ts for optional authority lookup to attach credibility signals (historical precedent, Taleb's fragility principle, Volcker precedent) to risk narratives.",
+    "Acceptance criteria: 50–100 entries, no duplicates, all required fields valid, role distribution ≥15 economists/10 investors/8 risk managers/7 central bankers, 10 spot-check verifications, 20+ test cases, zero schema violations.",
+    "File paths: data/authorities/roster_v1.0.json (dataset), data/authorities/schema.ts (Zod validator), tests/data/authorities.spec.ts (unit tests), data/authorities/README.md (consumer API guide)."
+  ],
+
+  "confidence": 0.92,
+
+  "confidence_rationale": "High confidence because: (1) Ambiguities resolved via concrete, measurable definitions (Nobel Prize is objective; three-tier metrics are verifiable; 50–100 entry cap is bounded). (2) Schema is pragmatic—minimal required fields, optional domain-specific fields, example entries validate against it. (3) Acceptance criteria are testable and objective (no duplicates, required fields present, role enum compliance, spot-check verifications). (4) Integration context grounded in Tomorrow's risk narrative architecture. (5) Roadmap is realistic (7–10 days curation, 3–5 days schema/tests, 2–3 days QA). Caveat: 0.08 discount due to lack of direct Tomorrow codebase review—file paths (data/authorities/, server/api/risk/enrich.ts) are inferred from PLOEH bridge docs and standard project layout; may need adjustment if directory structure differs.",
+
+  "next_steps": [
+    "Review refined spec (REFINED_AUTHORITY_ROSTER_SPEC.md) for alignment with Tomorrow's data patterns and existing schema conventions.",
+    "Confirm file path locations with project maintainer (data/authorities/ vs. server/data/ vs. public/data/).",
+    "If aligned: begin Phase 1 (curation) with Wikipedia Nobel Prize + central bank leadership lists.",
+    "If misaligned: refine schema, definitions, or integration context and re-generate acceptance criteria."
+  ],
+
+  "generated_at": "2026-07-30T00:00:00Z",
+  "model": "claude-haiku-4-5-20251001"
+}
