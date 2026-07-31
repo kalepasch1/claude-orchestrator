@@ -368,6 +368,71 @@ def wip_stash_rescue(st=None):
         st["wip_rescued_total"] = int(st.get("wip_rescued_total", 0)) + rescued
 
 
+def stranded_commit_rescue(st=None):
+    """MAKE THE BRANCH-STRANDING CLASS SELF-ANNOUNCING (operator directive 2026-07-31).
+
+    The 5bc36d6a incident: a committer wrote 15 session files to a side branch
+    (mac1-wip-*) that nothing ever merged; master advanced independently and the
+    working tree silently lost ~10 improvements until a human audit found them.
+    wip_stash_rescue preserves STASHES; this covers its blind spot — COMMITS
+    reachable only from non-agent side branches. (agent/* branches are the
+    merge-train's job and are excluded; it already sweeps them.)
+
+    For every local branch not named agent/* or the base branch whose tip
+    (a) is NOT an ancestor of the base branch, (b) touches runner/*.py or web/,
+    and (c) is older than SENTINEL_STRANDED_MIN_AGE_H hours: emit a loud alert +
+    a coordination event so the triage layer surfaces it in the progress console.
+    Alert-only (no auto-merge): the correct merge is 3-way and judgment-laden;
+    the alert names the exact branch, tip, and files so remediation is one queued
+    task, not an archaeology dig.
+    """
+    st = {} if st is None else st
+    min_age_h = float(os.environ.get("SENTINEL_STRANDED_MIN_AGE_H", "2"))
+    base = os.environ.get("ORCH_DEFAULT_BRANCH", "master")
+    r = git("for-each-ref", "refs/heads", "--format=%(refname:short) %(objectname) %(committerdate:unix)")
+    if r.returncode != 0:
+        return
+    found = []
+    now = time.time()
+    for line in (r.stdout or "").splitlines():
+        parts = line.split()
+        if len(parts) != 3:
+            continue
+        name, sha, cdate = parts
+        if name == base or name.startswith("agent/"):
+            continue
+        try:
+            if (now - float(cdate)) < min_age_h * 3600:
+                continue
+        except ValueError:
+            continue
+        anc = git("merge-base", "--is-ancestor", sha, base)
+        if anc.returncode == 0:
+            continue  # already merged
+        mb = git("merge-base", base, sha).stdout.strip()
+        changed = git("diff", "--name-only", mb or base, sha).stdout or ""
+        touched = [f for f in changed.splitlines()
+                   if f.startswith("runner/") or f.startswith("web/")]
+        if not touched:
+            continue
+        found.append({"branch": name, "tip": sha[:10], "files": len(touched),
+                      "sample": touched[:5]})
+    if found:
+        for f in found:
+            log(f"STRANDED-COMMIT ALERT: branch {f['branch']} ({f['tip']}) holds "
+                f"{f['files']} runner/web files not in {base} — sample {f['sample']}")
+        try:
+            import db as _db, json as _json
+            _db.insert("coordination_tasks", {
+                "task_type": "stranded_commit_alert",
+                "payload": _json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                        "base": base, "branches": found[:20]})[:8000]},
+                       upsert=False)
+        except Exception:
+            pass
+    st["stranded_branches"] = len(found)
+
+
 # ── 2b. nested-worktree hygiene ───────────────────────────────────────────────
 
 QUARANTINE = os.path.join(os.path.dirname(REPO), "_quarantine")
@@ -700,6 +765,7 @@ def main():
         log("stash-drift-guard-error", e)
     try:
         wip_stash_rescue(st)   # anonymous WIP-on-base stashes become branches: unloseable
+        stranded_commit_rescue(st)  # side-branch commits not in base: self-announcing
     except Exception as e:
         log("wip-stash-rescue-error", e)
     try:
