@@ -43,7 +43,17 @@ def acquire(task: dict, repo: str, branch: str, base: str, *, owner: Optional[st
         "p_remote_sha": _sha(repo, f"origin/{branch}"),
         "p_ttl_seconds": max(60, int(ttl)),
     }
-    if db.rpc("acquire_branch_execution_lease", args) is not True:
+    try:
+        acquired = db.rpc("acquire_branch_execution_lease", args)
+    except Exception as e:
+        # An unavailable lease control plane is not proof of contention. Fail closed
+        # and let the runner requeue instead of turning an RPC outage into a task error.
+        import sys
+        sys.stderr.write(
+            f"[branch_lease] acquire RPC infra error ({e}); fail-soft NOT ACQUIRED\n"
+        )
+        return None
+    if acquired is not True:
         return None
     lease = {**args, "branch": branch, "token": token, "ttl": max(60, int(ttl))}
     with _lock:

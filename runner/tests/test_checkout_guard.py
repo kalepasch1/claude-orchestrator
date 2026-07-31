@@ -142,6 +142,31 @@ class TestEscalation(unittest.TestCase):
         self.assertEqual(calls, [], "must not interfere with an in-progress rebase")
 
 
+class TestWipStashRescue(unittest.TestCase):
+    def test_preserves_anonymous_base_stash_without_mutating_it(self):
+        calls = []
+        sha = "a" * 40
+
+        def fake_git(*args, **kw):
+            calls.append(args)
+            if args[:2] == ("stash", "list"):
+                return _R(stdout=f"stash@{{0}} {sha} WIP on {sentinel.BASE_BRANCH}: local work\n")
+            return _R()
+
+        state = {}
+        with mock.patch.object(sentinel, "git", side_effect=fake_git), \
+             mock.patch.object(sentinel, "log"), \
+             mock.patch.object(sentinel, "emit"):
+            sentinel.wip_stash_rescue(state)
+
+        self.assertTrue(any(c[:2] == ("branch", "--points-at") for c in calls))
+        self.assertTrue(any(c and c[0] == "branch" and c[1].startswith("hotfix/stash-rescue-")
+                            for c in calls))
+        self.assertFalse(any(c[:2] in (("stash", "pop"), ("stash", "drop"),
+                                      ("stash", "apply")) for c in calls))
+        self.assertEqual(state["wip_rescued_total"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()
 
