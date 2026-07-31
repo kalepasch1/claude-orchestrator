@@ -36,7 +36,7 @@ there's nothing for intake to route work to yet); routine strategic prompts belo
 drop-box so they run as a parallel, dependency-linked DAG instead of one long serial session.
 A PROMPT-*.md that already IS canonical format is left untouched here (nothing to decompose).
 """
-import os, sys, re, glob, json, datetime, shutil
+import os, sys, re, glob, json, datetime, shutil, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import intake_gate
@@ -156,8 +156,36 @@ def ingest_file(path, projects_by_name):
     for t in tasks:
         proj = projects_by_name.get(t["project"])
         if not proj:
-            print(f"intake: unknown project '{t['project']}' (slug {t['slug']}) — skipped")
-            skipped += 1; continue
+            # NEVER silently drop an operator prompt (2026-07-31: a planner-emitted
+            # unregistered project name ate a whole initiative with only a log line).
+            # Fall back to the orchestrator's home project, tag the mis-route in the
+            # prompt so the coder/triage can re-route, and alert loudly.
+            fallback = projects_by_name.get(os.environ.get("ORCH_INTAKE_FALLBACK_PROJECT",
+                                                           "beethoven"))
+            bad_project = str(t.get("project"))
+            if fallback:
+                print(f"intake: unknown project '{t['project']}' (slug {t['slug']}) — "
+                      f"FALLBACK to '{fallback.get('name', 'beethoven')}' + alert")
+                t["prompt"] = (f"## INTAKE ROUTING NOTICE: planner emitted unregistered "
+                               f"project '{t['project']}'; routed to fallback. If this task "
+                               f"belongs in a different repo, define cross-repo contracts "
+                               f"here and note the re-route in your summary.\n\n" + t["prompt"])
+                t["project"] = fallback.get("name", "beethoven")
+                proj = fallback
+                try:
+                    db.insert("coordination_tasks", {
+                        "task_type": "intake_reroute_alert",
+                        "payload": json.dumps({"slug": t["slug"],
+                                               "bad_project": bad_project,
+                                               "at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                                    time.gmtime())})[:2000]},
+                              upsert=False)
+                except Exception:
+                    pass
+            else:
+                print(f"intake: unknown project '{t['project']}' (slug {t['slug']}) — "
+                      f"skipped (no fallback registered)")
+                skipped += 1; continue
         if t["slug"] in existing:
             skipped += 1; continue
         ok, reason = intake_gate.should_queue(t, proj)
