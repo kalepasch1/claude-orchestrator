@@ -39,7 +39,21 @@ fi
 
 echo "== 3/4 Apparently Stripe webhook (live payments path /api/billing/webhook)"
 SK="$(val "$APPARENTLY" STRIPE_SECRET_KEY)"
-[ -n "$SK" ] || { echo "FATAL: STRIPE_SECRET_KEY not found in apparently/.env"; exit 1; }
+if [ -z "$SK" ]; then
+  # Local .env has an empty placeholder — the real key lives in Vercel prod env.
+  echo "   local .env empty; pulling from Vercel production env..."
+  PULL=$(mktemp)
+  ( cd "$APPARENTLY" && vercel env pull "$PULL" --environment=production --yes --scope "$TEAM" >/dev/null 2>&1 )
+  SK="$(grep -m1 '^STRIPE_SECRET_KEY=' "$PULL" | cut -d= -f2- | tr -d '"')"
+  # backfill the local .env so future runs and local dev work
+  if [ -n "$SK" ]; then
+    ( cd "$APPARENTLY" && sed -i '' "s|^STRIPE_SECRET_KEY=.*|STRIPE_SECRET_KEY=$SK|" .env )
+    WH="$(grep -m1 '^STRIPE_WEBHOOK_SECRET=' "$PULL" | cut -d= -f2- | tr -d '"')"
+    [ -n "$WH" ] && ( cd "$APPARENTLY" && sed -i '' "s|^STRIPE_WEBHOOK_SECRET=.*|STRIPE_WEBHOOK_SECRET=$WH|" .env )
+  fi
+  rm -f "$PULL"
+fi
+[ -n "$SK" ] || { echo "FATAL: STRIPE_SECRET_KEY empty locally AND in Vercel prod pull — set it in the Stripe dashboard -> Vercel first"; exit 1; }
 HOOK_URL="$APP_DOMAIN/api/billing/webhook"
 EXISTING=$(curl -s https://api.stripe.com/v1/webhook_endpoints -u "$SK:" | python3 -c "import sys,json;d=json.load(sys.stdin);print(sum(1 for e in d.get('data',[]) if e.get('url')=='$HOOK_URL' and e.get('status')=='enabled'))")
 if [ "$EXISTING" -ge 1 ]; then
