@@ -34,6 +34,25 @@ class BranchLeaseTest(unittest.TestCase):
             self.task, "/repo", "agent/example", "main", owner="test"))
         self.assertIsNone(branch_lease.active(self.task["id"]))
 
+    @mock.patch.object(branch_lease, "_sha", return_value=None)
+    @mock.patch.object(branch_lease.db, "rpc", side_effect=RuntimeError("RPC unavailable"))
+    def test_acquire_rpc_outage_fails_soft_and_closed(self, _rpc, _sha):
+        self.assertIsNone(branch_lease.acquire(
+            self.task, "/repo", "agent/example", "main", owner="test"))
+        self.assertIsNone(branch_lease.active(self.task["id"]))
+
+    @mock.patch.object(branch_lease.db, "rpc", return_value=False)
+    def test_heartbeat_honors_lost_lease_with_rpc_token_shape(self, _rpc):
+        branch = "agent/example"
+        branch_lease._active[(self.task["id"], branch)] = {
+            "p_project_id": self.task["project_id"],
+            "branch": branch,
+            "p_task_id": self.task["id"],
+            "p_token": "lease-token",
+            "ttl": 3600,
+        }
+        self.assertFalse(branch_lease.heartbeat(self.task["id"], branch))
+
     def test_cowork_contract_forbids_destructive_branch_operations(self):
         skill = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cowork_executor", "SKILL.md")
         with open(skill, encoding="utf-8") as fh:
