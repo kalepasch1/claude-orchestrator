@@ -182,6 +182,35 @@ def isolated_repo(canonical_repo, owner):
     dirty = _git(path, "status", "--porcelain=v1", "--untracked-files=all")
     if actual.returncode or os.path.realpath(actual.stdout.strip()) != os.path.realpath(path):
         raise IntegrationRuntimeError("integration path is not the expected Git worktree")
+    # 2026-07-31: these two used to be HARD errors with no recovery — a single
+    # branch-attached or late-detected-dirty slot blocked EVERY merge for its
+    # project forever (581 skipped/0 merged; no prod promotion since Jul 28).
+    # Recovery now mirrors the documented strategy above: a clean-but-attached
+    # slot is simply re-detached; anything else is PRESERVED and the pass runs
+    # in a fresh temporary detached slot.
+    if branch.returncode == 0 and not temporary:
+        if not (dirty.returncode or dirty.stdout):
+            det = _git(path, "checkout", "--detach", before["head"])
+            if det.returncode:
+                print(f"integration_runtime: cannot detach {path}; preserving + using temp slot")
+                path = _temporary_worktree_path(canonical_repo)
+                temporary = True
+            else:
+                branch = _git(path, "symbolic-ref", "-q", "HEAD")
+        else:
+            print(f"integration_runtime: preserving branch-attached dirty worktree {path}; using temp slot")
+            path = _temporary_worktree_path(canonical_repo)
+            temporary = True
+    elif (dirty.returncode or dirty.stdout) and not temporary:
+        print(f"integration_runtime: preserving late-detected dirty worktree {path}; using temp slot")
+        path = _temporary_worktree_path(canonical_repo)
+        temporary = True
+    if temporary and not os.path.exists(path):
+        added = _git(canonical_repo, "worktree", "add", "--detach", path, before["head"])
+        if added.returncode or not os.path.isdir(path):
+            raise IntegrationRuntimeError((added.stderr or added.stdout or "temp worktree add failed")[-1000:])
+        branch = _git(path, "symbolic-ref", "-q", "HEAD")
+        dirty = _git(path, "status", "--porcelain=v1", "--untracked-files=all")
     if branch.returncode == 0:
         raise IntegrationRuntimeError("integration worktree must remain detached")
     if dirty.returncode or dirty.stdout:
