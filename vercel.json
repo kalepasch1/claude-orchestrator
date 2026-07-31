@@ -1,0 +1,4 @@
+{
+  "_comment": "GUARD (2026-07-30): the ONLY Vercel project for this repo is 'web' (root directory: web/). A duplicate project ('claude-orchestrator') was once auto-created by importing the repo ROOT; this file disables git deployments for any project ever pointed at the repo root again, so a duplicate can exist but can never silently build/deploy. Do not remove.",
+  "git": { "deploymentEnabled": false }
+}

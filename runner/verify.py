@@ -13,10 +13,27 @@ import model_gateway, model_policy
 
 REVIEW_MODEL = os.environ.get("VERIFY_MODEL", "")
 
-PROMPT = """You are a strict code reviewer. Below is a git diff. Decide if it is safe to
-merge. Look for: security regressions (auth/allowlist made permissive, secrets added),
-broken error handling, obviously failing logic, removed tests. Reply with a single JSON
-object: {"verdict":"pass"|"fail","notes":"<=2 sentences"}."""
+PROMPT = """You are a strict but PRECISE code reviewer. Below is a git diff. Decide if it
+is safe to merge. FAIL only for concrete, cited problems:
+  1. A LITERAL secret VALUE added to code/config: a real API key, token, password,
+     private key block, or high-entropy credential string (e.g. "sk_live_...", PEM body,
+     hex/base64 blobs assigned to a key-like name).
+  2. An EXISTING auth check, allowlist gate, or permission test REMOVED or loosened
+     (fail-closed changed to fail-open).
+  3. Obviously broken logic or removed/disabled existing tests.
+
+These are NOT failures (common false positives — do NOT fail for them):
+  - Environment-variable NAMES or references (process.env.X, os.environ["X"], key names
+    ending in _SECRET/_KEY/_TOKEN with no literal value, .env.example entries).
+  - Type/interface/schema fields, DB columns, docs, or comments that merely mention
+    secrets, tokens, auth, or allowlists.
+  - NEW fail-closed security code (new allowlists, new RLS policies, new HMAC
+    verification) — adding security is an improvement, not a regression.
+  - New files that lack tests (note it, but pass unless they touch auth or payments).
+
+A "fail" verdict MUST quote the exact offending diff line(s) verbatim in notes. If you
+cannot quote a specific line, the verdict is "pass". Reply with a single JSON object:
+{"verdict":"pass"|"fail","notes":"<=2 sentences incl. verbatim quote when failing"}."""
 
 BLAST_SUFFIX = """
 
@@ -64,6 +81,25 @@ def review_diff(worktree, base="main", max_chars=None, dependents=None, project=
         m = re.search(r"\{.*\}", out, re.S)
         d = json.loads(m.group(0)) if m else {"verdict": "pass", "notes": "unparseable; defaulting pass"}
         d["verdict"] = "fail" if str(d.get("verdict", "")).lower().startswith("fail") else "pass"
+        # Grounding gate: a fail whose notes cannot cite any verbatim diff content is
+        # an ungrounded claim (the "env-var name flagged as secret" class). Confirm it.
+        if d["verdict"] == "fail":
+            notes = str(d.get("notes", ""))
+            quoted = re.findall(r'[`"“]([^`"”]{6,120})[`"”]', notes)
+            grounded = any(q.strip() and q.strip() in diff for q in quoted)
+            if not grounded:
+                confirm = model_gateway.complete(
+                    prov, model,
+                    "Your previous review failed this diff with notes: " + notes[:400] +
+                    "\nQuote the exact verbatim line from the diff below that justifies the "
+                    "failure. If no such line exists, reply exactly NONE.\n\nDiff:\n" + diff,
+                    project=project, timeout=int(os.environ.get("VERIFY_TIMEOUT", "90")),
+                    operation="verify_confirm", task_class="review")
+                ctext = (confirm.get("text") or "").strip()
+                cline = ctext.splitlines()[0].strip() if ctext else ""
+                if (not cline) or cline.upper().startswith("NONE") or (cline[:60] not in diff):
+                    d["verdict"] = "pass"
+                    d["notes"] = "ungrounded fail overturned (no verbatim citation): " + notes[:160]
         d["by"] = f"{res.get('provider')}:{res.get('model')}"
         try:
             import verifier_marketplace

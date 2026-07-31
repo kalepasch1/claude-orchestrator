@@ -4,6 +4,8 @@
 A small local/cheap model gets a minimized diagnostic prompt first. The coder then
 receives a smaller, higher-signal slice instead of the full strategic burden.
 """
+from __future__ import annotations
+
 import os
 import sys
 from typing import Optional

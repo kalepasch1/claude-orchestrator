@@ -309,6 +309,27 @@ def ingest_dropbox_prompts(projects_by_name):
     auditable and re-triggerable by hand — never silent duplication.
     """
     files = [f for f in glob.glob(os.path.join(REPO_ROOT, "PROMPT-*.md")) if os.path.isfile(f)]
+    # PERMISSION SELF-HEAL (2026-07-30): prompts written by sandboxed tools (Cowork sessions) can
+    # land mode-600/foreign-owned and be INVISIBLE or unreadable to this process — the drop-box
+    # then reports "0 from dropbox" while the operator watches their file sit unclaimed (observed
+    # live tonight; chmod 644 released it). Two defenses: try to self-heal perms on anything we CAN
+    # see but not read, and loudly log a listdir-vs-glob mismatch so an invisible file is at least
+    # detectable in the log instead of silently uncounted.
+    try:
+        visible = {e for e in os.listdir(REPO_ROOT) if e.startswith("PROMPT-") and e.endswith(".md")}
+        globbed = {os.path.basename(f) for f in files}
+        for name in sorted(visible - globbed):
+            p = os.path.join(REPO_ROOT, name)
+            try:
+                os.chmod(p, 0o644)
+                if os.path.isfile(p):
+                    files.append(p)
+                    print(f"intake: self-healed permissions on {name} (was invisible to glob)")
+            except Exception as e:
+                print(f"intake: DROPBOX FILE UNREADABLE — {name} exists but cannot be claimed "
+                      f"({type(e).__name__}); operator: chmod 644 it")
+    except Exception:
+        pass
     total = 0
     for f in sorted(files):
         try:

@@ -409,6 +409,21 @@ def _learned_route(project, operation, task_class, sensitivity):
 def complete(provider, model, prompt, project=None, timeout=90, operation="completion",
              task_class="unknown", fallback=True, record_op=True):
     """Non-agentic completion via any provider (for QA/review/rating/planning)."""
+    # MISROUTE GUARD (2026-07-30, same class as swarm_executor's July 27-28 404 burst — a Claude
+    # model name sent to the OpenAI API): run the provider/model coherence check UNCONDITIONALLY.
+    # The model name is more specific than the provider hint, so on mismatch the call reroutes to
+    # the model's true provider; the correction is logged so the bad caller gets found. A vendor
+    # can never again receive another vendor's model name from this gateway.
+    _expected = provider_for_model(model)
+    if provider and _expected and provider != _expected and model:
+        # only reroute on a DEFINITE mismatch (both sides confidently identified); ambiguous/local
+        # names (expected == 'local' fallthrough) keep the caller's explicit choice.
+        _confident = any(k in (model or "").lower() for k in ("claude", "gemini", "deepseek", "grok")) \
+                     or (model or "").lower().startswith(("gpt-", "o1", "o3", "o4", "o5"))
+        if _confident:
+            print(f"model_gateway: misroute-guard: provider={provider} with model={model} — "
+                  f"rerouted to {_expected} (model name wins)")
+            provider = _expected
     confidential = _confidential_mode()
     if confidential:
         # In confidential mode a prompt may be intentionally scoped for one vendor/local model.

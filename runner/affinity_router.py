@@ -18,25 +18,30 @@ class AffinityScore:
 
     @property
     def weighted_score(self) -> float:
-        return self.affinity * self.value_weight
+        return round(self.affinity * self.value_weight, 10)
 
 
 def compute_affinity(runner: Dict[str, Any], task: Dict[str, Any]) -> float:
     score = 0.0
     # Project match
-    if runner.get("recent_project") == task.get("project_id"):
+    recent_project = runner.get("recent_project")
+    project_id = task.get("project_id")
+    if recent_project and project_id and recent_project == project_id:
         score += 0.4
     # Model match
-    if runner.get("loaded_model") == task.get("preferred_model"):
+    loaded_model = runner.get("loaded_model")
+    preferred_model = task.get("preferred_model")
+    if loaded_model and preferred_model and loaded_model == preferred_model:
         score += 0.3
     # Task-class experience
     runner_classes = set(runner.get("experienced_classes", []))
-    if task.get("task_class") in runner_classes:
+    task_class = task.get("task_class")
+    if task_class and task_class in runner_classes:
         score += 0.2
     # Recency bonus
     if runner.get("idle_seconds", 999) < 60:
         score += 0.1
-    return min(score, 1.0)
+    return min(round(score, 10), 1.0)
 
 
 def compute_value_weight(task: Dict[str, Any]) -> float:

@@ -6,7 +6,11 @@ This kills the missing-branch recovery loop by ensuring every completed task
 has enough data to reconstruct its work without re-running the agent.
 """
 import os, subprocess, json, datetime
-from datetime import UTC
+try:
+    from datetime import UTC
+except ImportError:  # Python < 3.11
+    from datetime import timezone
+    UTC = timezone.utc
 import db
 import task_refs
 

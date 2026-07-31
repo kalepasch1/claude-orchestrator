@@ -155,6 +155,12 @@ HTTP_RETRIES = int(os.environ.get("ORCH_SUPABASE_RETRIES", "1") or 1)
 # plus Cloudflare origin-down codes (521-523) so monitors ride through
 # Supabase capacity blips instead of silently no-op'ing.
 HTTP_RETRY_STATUSES = {429, 500, 502, 503, 504, 521, 522, 523}
+# Core orchestrator RPC operations that benefit from retries to tolerate transient failures
+CORE_RETRY_RPCS = {
+    "acquire_branch_execution_lease", "heartbeat_branch_execution_lease", "release_branch_execution_lease",
+    "execute_task", "complete_task", "claim_task", "mark_done",
+    "record_attempt", "update_task_state", "insert_outcome",
+}
 RECOVERY_PREFIX = "recover-missing-branch-"
 CANARY_PREFIX = "canary-"
 IMPROVEMENT_PREFIX = "improve-"
@@ -239,6 +245,18 @@ def repo_runnable_here(repo_path):
         return False
 
 
+def _is_core_rpc(path):
+    """Check if a request path is for a core orchestrator RPC that should be retried.
+
+    Returns True only for orchestrator-critical operations. External/vendor RPC calls
+    are not retried to reduce rate-limiting cascade on non-critical paths.
+    """
+    if "/rpc/" not in path:
+        return False
+    rpc_name = path.split("/rpc/")[-1].rstrip("/")
+    return rpc_name in CORE_RETRY_RPCS
+
+
 def _req(method, path, body=None, headers=None, params=None):
     if not URL or not KEY:
         raise RuntimeError("set SUPABASE_URL and SUPABASE_SERVICE_KEY")
@@ -249,10 +267,13 @@ def _req(method, path, body=None, headers=None, params=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(URL + path + qs, data=data, method=method, headers=h)
     # Reads are idempotent, so they can safely ride out transient resolver and
-    # edge failures.  Writes deliberately remain single-attempt: retrying an
-    # uncertain POST could create duplicate work when the first request reached
-    # PostgREST but its response was lost.
-    attempts = HTTP_RETRIES + 1 if method == "GET" else 1
+    # edge failures.  Core RPC writes (branch leases, task state) also retry on transient
+    # errors since they are orchestrator-critical and safe to retry. Other writes deliberately
+    # remain single-attempt: retrying an uncertain POST could create duplicate work when the
+    # first request reached PostgREST but its response was lost. External RPC calls skip retry
+    # to reduce rate-limiting cascade on non-critical paths.
+    retryable = method == "GET" or (method == "POST" and _is_core_rpc(path))
+    attempts = HTTP_RETRIES + 1 if retryable else 1
     for attempt in range(attempts):
         try:
             with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
@@ -265,11 +286,11 @@ def _req(method, path, body=None, headers=None, params=None):
             # of insert(), so returning None is safe.
             if e.code == 409:
                 raise TransientDBError(f"HTTP 409 Conflict on {method} {path}") from e
-            if method != "GET" or e.code not in HTTP_RETRY_STATUSES or attempt >= attempts - 1:
+            if not retryable or e.code not in HTTP_RETRY_STATUSES or attempt >= attempts - 1:
                 raise
             time.sleep(min(12, 2 ** attempt) + (0.1 * attempt))
         except (urllib.error.URLError, TimeoutError, socket.timeout):
-            if method != "GET" or attempt >= attempts - 1:
+            if not retryable or attempt >= attempts - 1:
                 raise
             time.sleep(min(12, 2 ** attempt) + (0.1 * attempt))
 
@@ -1048,6 +1069,7 @@ def claim_task(runner_id):
 
 
 _last_heartbeat_prune = 0.0
+_heartbeat_fail = {"n": 0, "t": 0.0}  # consecutive publish failures + last loud log
 HEARTBEAT_TTL_MINUTES = int(os.environ.get("ORCH_HEARTBEAT_TTL_MINUTES", "30"))
 HEARTBEAT_PRUNE_INTERVAL_S = int(os.environ.get("ORCH_HEARTBEAT_PRUNE_INTERVAL_S", "600"))
 HEARTBEAT_PRUNE_AGE_S = int(os.environ.get("ORCH_HEARTBEAT_PRUNE_AGE_S", str(24 * 3600)))
@@ -1103,12 +1125,16 @@ def heartbeat(runner_id, hostname, active, model_loaded=None, memory_mb=None):
     heartbeat schema or has not yet received the migration. All operations are fail-soft.
     """
     try:
-        row = {"runner_id": runner_id, "hostname": hostname, "active": active,
-               "last_seen": time.time()}
-        if model_loaded:
-            row["model_loaded"] = model_loaded
-        if memory_mb:
-            row["memory_mb"] = memory_mb
+        # Row MUST match the live schema exactly:
+        #   runner_id text, hostname text, active_tasks int, last_seen timestamptz,
+        #   code_sha text, contract_hash text, contract_version text.
+        # The previous shape ("active" bool, epoch-float last_seen, model_loaded/
+        # memory_mb columns that don't exist) made EVERY insert fail, and three
+        # nested silent excepts hid it — runner_heartbeats sat empty for weeks
+        # ("0 live machines", 2026-07-31). Schema-shaped row + loud failure now.
+        row = {"runner_id": runner_id, "hostname": hostname,
+               "active_tasks": int(active) if not isinstance(active, bool) else (1 if active else 0),
+               "last_seen": datetime.datetime.now(datetime.timezone.utc).isoformat()}
         try:
             import runtime_contract
             proof = runtime_contract.check()
@@ -1118,14 +1144,22 @@ def heartbeat(runner_id, hostname, active, model_loaded=None, memory_mb=None):
             pass
         try:
             db.insert("runner_heartbeats", row, upsert=True)
-        except Exception:
+            _heartbeat_fail["n"] = 0
+        except Exception as hb_err:
             # Compatibility with remotes that have not yet applied the additive migration.
             row_compat = {k: v for k, v in row.items()
                          if k not in ("code_sha", "contract_hash", "contract_version")}
             try:
                 db.insert("runner_heartbeats", row_compat, upsert=True)
+                _heartbeat_fail["n"] = 0
             except Exception:
-                pass
+                # Fail-soft but SELF-REPORTING: a heartbeat that can never land is
+                # an invisible outage. Log loudly (rate-limited to once/5 min).
+                _heartbeat_fail["n"] = _heartbeat_fail.get("n", 0) + 1
+                if time.time() - _heartbeat_fail.get("t", 0) > 300:
+                    _heartbeat_fail["t"] = time.time()
+                    print(f"[heartbeat] CRITICAL: publish failing "
+                          f"({_heartbeat_fail['n']} consecutive) — {hb_err}", flush=True)
         if os.environ.get("ORCH_LOGICAL_RUNNERS", "false").lower() not in ("true", "1", "yes"):
             _prune_stale_heartbeats()
             return
@@ -1135,7 +1169,8 @@ def heartbeat(runner_id, hostname, active, model_loaded=None, memory_mb=None):
                 lane_id = f"{runner_id}-lane-{i}"
                 lane = dict(row)
                 lane.update({"runner_id": lane_id, "hostname": f"{hostname} lane {i}",
-                             "active": active, "last_seen": time.time()})
+                             "active_tasks": row["active_tasks"],
+                             "last_seen": datetime.datetime.now(datetime.timezone.utc).isoformat()})
                 try:
                     db.insert("runner_heartbeats", lane, upsert=True)
                 except Exception:

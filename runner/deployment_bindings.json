@@ -101,6 +101,13 @@
       "branch": "main",
       "vercel_project": "vigil",
       "supabase_project_ref": "hjortulytchuaptnuciz"
+    },
+    {
+      "app": "apparently-law",
+      "repo_path": "/Users/kpasch/Documents/apparently-law",
+      "github_repo": "kalepasch1/apparently-law",
+      "branch": "main",
+      "vercel_project": "apparently-law"
     }
   ],
   "shared_deployments": [

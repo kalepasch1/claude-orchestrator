@@ -15,7 +15,7 @@ v2 additions:
   (same sustain window as scale-up) to prevent oscillation.
 - Stats: thread-safe stats() for observability.
 """
-import os, sys, time, threading
+import datetime, os, sys, time, threading
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
@@ -125,29 +125,28 @@ def throughput_signal(window_minutes=30):
         bottleneck: str — 'compute' | 'queue_empty' | 'balanced'
     """
     try:
-        rows = db.sql(
-            f"SELECT id, state, updated_at, finished_at "
-            f"FROM tasks "
-            f"WHERE state IN ('DONE', 'MERGED') "
-            f"AND finished_at > now() - interval '{int(window_minutes)} minutes' "
-            f"ORDER BY finished_at DESC"
-        ) or []
+        minutes = max(1, int(window_minutes))
+        since = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=minutes))
+        rows = db.select("tasks", {
+            "select": "id,state,updated_at,finished_at",
+            "state": "in.(DONE,MERGED)",
+            "finished_at": f"gt.{since.isoformat()}",
+            "order": "finished_at.desc",
+        }) or []
     except Exception:
         return {"tasks_completed": 0, "avg_duration_seconds": 0, "tasks_per_hour": 0, "bottleneck": "unknown"}
 
     completed = len(rows)
-    tasks_per_hour = completed * (60 / max(window_minutes, 1))
+    tasks_per_hour = completed * (60 / minutes)
 
     # Check queue depth for bottleneck classification
     try:
-        queued = db.sql("SELECT count(*) as cnt FROM tasks WHERE state = 'QUEUED'")
-        queue_depth = int(queued[0]["cnt"]) if queued else 0
+        queue_depth = int(db.count("tasks", {"state": "eq.QUEUED"}) or 0)
     except Exception:
         queue_depth = 0
 
     try:
-        running = db.sql("SELECT count(*) as cnt FROM tasks WHERE state = 'RUNNING'")
-        running_count = int(running[0]["cnt"]) if running else 0
+        running_count = int(db.count("tasks", {"state": "eq.RUNNING"}) or 0)
     except Exception:
         running_count = 0
 
@@ -160,6 +159,7 @@ def throughput_signal(window_minutes=30):
 
     return {
         "tasks_completed": completed,
+        "avg_duration_seconds": 0,
         "tasks_per_hour": round(tasks_per_hour, 1),
         "queue_depth": queue_depth,
         "running": running_count,

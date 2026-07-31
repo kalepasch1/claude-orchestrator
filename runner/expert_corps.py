@@ -486,6 +486,23 @@ def evolve(expert):
 
 
 # ── the tick ─────────────────────────────────────────────────────────────────────────────────────
+def _night_multiplier():
+    """OVERNIGHT BULK MODE (operator design 2026-07-30): corpus growth is not latency-sensitive,
+    so the night window (default 23:00-07:00 local) multiplies research throughput — and because
+    corps calls route subscription/free-first (local Ollama at the front of the tranche), the
+    extra volume lands overwhelmingly on $0 capacity. Daytime keeps the lean cadence so
+    interactive work owns the machines. ORCH_NIGHT_RESEARCH_MULT=1 disables."""
+    try:
+        import datetime
+        h = datetime.datetime.now().hour
+        start = int(os.environ.get("ORCH_NIGHT_START_HOUR", "23"))
+        end = int(os.environ.get("ORCH_NIGHT_END_HOUR", "7"))
+        in_night = (h >= start or h < end) if start > end else (start <= h < end)
+        return int(os.environ.get("ORCH_NIGHT_RESEARCH_MULT", "4")) if in_night else 1
+    except Exception:
+        return 1
+
+
 def tick():
     """One cycle: research the strongest, promote the earned, spawn from the top, retire the bottom."""
     out = {"researched": 0, "claims": 0, "evolved": 0, "spawned": 0, "retired": 0}
@@ -496,7 +513,7 @@ def tick():
                 out["spawned"] += 1
         return out
 
-    for e in pool[:RESEARCH_PER_TICK]:
+    for e in pool[:RESEARCH_PER_TICK * _night_multiplier()]:
         n = research(e)
         out["claims"] += n
         out["researched"] += 1

@@ -10,29 +10,22 @@ import autoscale_signal as asc
 
 class ThroughputSignalTest(unittest.TestCase):
     def test_returns_expected_keys(self):
-        with patch.object(asc.db, "sql", return_value=[]):
+        with patch.object(asc.db, "select", return_value=[]), \
+             patch.object(asc.db, "count", return_value=0):
             result = asc.throughput_signal()
         for key in ["tasks_completed", "tasks_per_hour", "bottleneck"]:
             self.assertIn(key, result)
 
     def test_compute_bottleneck_when_queue_deep(self):
         tasks = [{"id": f"t{i}", "state": "DONE"} for i in range(5)]
-        def fake_sql(q):
-            if "DONE" in q: return tasks
-            if "QUEUED" in q: return [{"cnt": 50}]
-            if "RUNNING" in q: return [{"cnt": 3}]
-            return []
-        with patch.object(asc.db, "sql", side_effect=fake_sql):
+        with patch.object(asc.db, "select", return_value=tasks), \
+             patch.object(asc.db, "count", side_effect=[50, 3]):
             result = asc.throughput_signal()
         self.assertEqual(result["bottleneck"], "compute")
 
     def test_queue_empty_bottleneck(self):
-        def fake_sql(q):
-            if "DONE" in q: return []
-            if "QUEUED" in q: return [{"cnt": 1}]
-            if "RUNNING" in q: return [{"cnt": 0}]
-            return []
-        with patch.object(asc.db, "sql", side_effect=fake_sql):
+        with patch.object(asc.db, "select", return_value=[]), \
+             patch.object(asc.db, "count", side_effect=[1, 0]):
             result = asc.throughput_signal()
         self.assertEqual(result["bottleneck"], "queue_empty")
 

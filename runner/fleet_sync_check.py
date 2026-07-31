@@ -30,10 +30,16 @@ def _git_commit():
         branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"],
                                          cwd=os.path.dirname(os.path.abspath(__file__)),
                                          text=True, timeout=10).strip()
-        dirty = bool(subprocess.check_output(["git", "status", "--porcelain"],
-                                             cwd=os.path.dirname(os.path.abspath(__file__)),
-                                             text=True, timeout=10).strip())
-        return {"commit": out, "branch": branch, "dirty": dirty}
+        porcelain = subprocess.check_output(["git", "status", "--porcelain"],
+                                            cwd=os.path.dirname(os.path.abspath(__file__)),
+                                            text=True, timeout=10)
+        # Untracked files (??) are not "dirty" — counting them made intake/processed/*.md
+        # droppings raise a permanent false DIRTY flag (2026-07-31 incident).
+        tracked_changes = [l for l in porcelain.splitlines()
+                           if l.strip() and not l.startswith("??")]
+        untracked = [l for l in porcelain.splitlines() if l.startswith("??")]
+        return {"commit": out, "branch": branch, "dirty": bool(tracked_changes),
+                "untracked_count": len(untracked)}
     except Exception as e:
         return {"error": str(e)}
 

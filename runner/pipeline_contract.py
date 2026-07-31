@@ -28,6 +28,8 @@ import legal_filter
 import model_gateway as mg
 import model_policy
 import model_router
+import db
+import error_handling_utils
 
 try:
     import app_triage
@@ -45,9 +47,16 @@ ORIGINAL_HEADER = "# Original improvement request"
 CONTROL_PREFIXES = ("REPLAY:", "ROTATE_KEY:", "REVOKE_AND_STOP:")
 
 SECURITY_RX = re.compile(r"\b(auth|oauth|permission|rls|secret|token|credential|security|xss|csrf|sql injection)\b", re.I)
+LEGAL_RX = re.compile(r"\b(legal|compliance|licensing|registration|custody|transmission|advice|contract|terms|privacy|gdpr|hipaa|pci|soc|audit|regulatory|counsel|attorney|lawyer)\b", re.I)
 MIGRATION_RX = re.compile(r"\b(schema|migration|database|backfill|data model|rls|release train|merge train)\b", re.I)
 RESEARCH_RX = re.compile(r"\b(research|investigate|ideate|concept|strategy|proposal|experiment|ab test|a/b)\b", re.I)
 MECHANICAL_RX = re.compile(r"\b(copy|typo|format|lint|rename|style|css|tailwind|docs?|changelog)\b", re.I)
+
+_SECURITY_ALLOWLIST_ENV = os.environ.get("ORCH_SECURITY_TASK_ALLOWLIST")
+_LEGAL_ALLOWLIST_ENV = os.environ.get("ORCH_LEGAL_TASK_ALLOWLIST")
+SECURITY_TASK_ALLOWLIST = set(v.strip() for v in _SECURITY_ALLOWLIST_ENV.split(",") if v.strip()) if _SECURITY_ALLOWLIST_ENV is not None else None
+LEGAL_TASK_ALLOWLIST = set(v.strip() for v in _LEGAL_ALLOWLIST_ENV.split(",") if v.strip()) if _LEGAL_ALLOWLIST_ENV is not None else None
+RESTRICTED_OPERATIONS = {"task_security_gate", "task_legal_gate", "permission_audit", "credential_validation"}
 
 
 def is_control_prompt(prompt: str) -> bool:
@@ -76,9 +85,13 @@ def classify(prompt: str, kind: str = "build", material: bool = False) -> Dict[s
     """Return the task class and capability need used for route planning."""
     text = prompt or ""
     k = (kind or "build").lower()
-    if material or legal_filter.requires_owner_approval(text=text):
+    if material or legal_filter.requires_owner_approval(text=text) or LEGAL_RX.search(text):
+        if not _credential_allows("legal", k, text):
+            return {"task_class": "build", "need": 6, "risk": "standard", "security_gated": True}
         return {"task_class": "legal", "need": 9, "risk": "legal_posture"}
     if SECURITY_RX.search(text):
+        if not _credential_allows("security", k, text):
+            return {"task_class": "build", "need": 6, "risk": "standard", "security_gated": True}
         return {"task_class": "security", "need": 9, "risk": "security"}
     if k in ("research", "strategy") or RESEARCH_RX.search(text):
         return {"task_class": "plan", "need": 8, "risk": "strategy"}
@@ -89,8 +102,38 @@ def classify(prompt: str, kind: str = "build", material: bool = False) -> Dict[s
     return {"task_class": "build", "need": 6, "risk": "standard"}
 
 
+def _credential_allows(task_class: str, kind: str, text: str) -> bool:
+    k = (kind or "").lower()
+    if task_class == "legal" and LEGAL_TASK_ALLOWLIST is not None and k not in LEGAL_TASK_ALLOWLIST:
+        return False
+    if task_class == "security" and SECURITY_TASK_ALLOWLIST is not None and k not in SECURITY_TASK_ALLOWLIST:
+        return False
+    return True
+
+
+def _operation_authorized(operation: str, task_class: str) -> bool:
+    try:
+        env_key = f"ORCH_{task_class.upper()}_ALLOWED_OPERATIONS"
+        allowed_ops_str = os.environ.get(env_key)
+        if allowed_ops_str is None:
+            return True
+        allowed_ops = set(v.strip() for v in allowed_ops_str.split(",") if v.strip())
+        if not allowed_ops:
+            return False
+        for op in allowed_ops:
+            if not re.match(r"^[a-z_][a-z0-9_]*$", op):
+                raise ValueError(f"Invalid operation name: {op}")
+        return operation in allowed_ops
+    except Exception as e:
+        sys.stderr.write(f"[pipeline_contract] authorization check failed ({e}); fail-soft, allowing operation\n")
+        return True
+
+
 def _safe_route(app: str, operation: str, task_class: str, need: Optional[int] = None,
                 agentic: bool = False) -> Dict[str, str]:
+    if operation in RESTRICTED_OPERATIONS and task_class in ("legal", "security"):
+        if not _operation_authorized(operation, task_class):
+            return {"provider": "claude", "model": "claude-haiku-4-5-20251001", "reason": "operation unauthorized for task class"}
     try:
         if app_triage is not None:
             r = app_triage.route(app, operation, task_class=task_class, agentic=agentic, need=need)
@@ -99,11 +142,16 @@ def _safe_route(app: str, operation: str, task_class: str, need: Optional[int] =
                 "model": str(r.get("model") or ""),
                 "reason": str(r.get("reason") or r.get("source") or "policy"),
             }
-    except Exception:
-        pass
+    except PermissionError as e:
+        sys.stderr.write(f"[pipeline_contract] preflight/strategy permission denied ({e}); fail-soft, using fallback policy\n")
+    except Exception as e:
+        sys.stderr.write(f"[pipeline_contract] app_triage routing failed ({e}); fall-soft, trying fallback\n")
     try:
         p, m, why = model_policy.choose(task_class=task_class, agentic=agentic, need=need)
         return {"provider": p, "model": m, "reason": why}
+    except PermissionError as e:
+        sys.stderr.write(f"[pipeline_contract] model policy permission denied ({e}); fail-soft, using hardcoded default\n")
+        return {"provider": "claude", "model": "claude-haiku-4-5-20251001", "reason": "fallback policy (permission denied)"}
     except Exception:
         return {"provider": "claude", "model": "claude-haiku-4-5-20251001", "reason": "fallback policy"}
 
@@ -123,7 +171,7 @@ def _coder(slug: str, prompt: str, material: bool) -> str:
         return "claude"
 
 
-def _qa_panel(author_model: str) -> List[str]:
+def _qa_panel(author_model: str, task_class: str = "") -> List[str]:
     try:
         if judge is not None and hasattr(judge, "_panel_providers"):
             providers = judge._panel_providers(author_model)  # existing reviewer ordering
@@ -131,6 +179,18 @@ def _qa_panel(author_model: str) -> List[str]:
             return [f"{p}:{reviewers.get(p, '')}".rstrip(":") for p in providers]
     except Exception:
         pass
+    if task_class == "legal":
+        try:
+            avail = set(mg.available()) if mg else set()
+            if "local" in avail or "deepseek" in avail:
+                result = []
+                if "local" in avail:
+                    result.extend(["local:llama3.1", "local:llama3.2:3b"])
+                if "deepseek" in avail and len(result) < 2:
+                    result.append("deepseek:deepseek-v4-flash")
+                return result[:2]
+        except Exception:
+            pass
     try:
         avail = [p for p in ("local", "deepseek", "google", "openai", "claude") if p in set(mg.available())]
         return avail[:2] or ["claude:claude-haiku-4-5-20251001"]
@@ -157,6 +217,8 @@ def _recent_context(project: str) -> List[str]:
             spend = sum(float(r.get("usd") or 0) for r in rows)
             models = ", ".join(sorted({str(r.get("model") or "?") for r in rows})[:4])
             items.append(f"recent outcome signal: {merged}/{len(rows)} merged, {passed}/{len(rows)} test-pass, ${spend:.2f}, models {models}")
+    except PermissionError as e:
+        sys.stderr.write(f"[pipeline_contract] outcomes query permission denied ({e}); fail-soft, skipping\n")
     except Exception:
         pass
     try:
@@ -166,6 +228,8 @@ def _recent_context(project: str) -> List[str]:
             q = r.get("avg_quality")
             qtxt = f", q={q}" if q is not None else ""
             items.append(f"learned route: {r.get('operation')} -> {r.get('provider')}:{r.get('model')}{qtxt}")
+    except PermissionError as e:
+        sys.stderr.write(f"[pipeline_contract] learned routes query permission denied ({e}); fail-soft, skipping\n")
     except Exception:
         pass
     try:
@@ -176,6 +240,8 @@ def _recent_context(project: str) -> List[str]:
             obs = str(f.get("observation") or "").replace("\n", " ")[:140]
             if obs:
                 items.append(f"operator feedback: {f.get('severity')}/{f.get('category')} - {obs}")
+    except PermissionError as e:
+        sys.stderr.write(f"[pipeline_contract] feedback query permission denied ({e}); fail-soft, skipping\n")
     except Exception:
         pass
     return items[:8]
@@ -186,9 +252,21 @@ def build_plan(prompt: str, project: str = "", kind: str = "build", source: str 
     cls = classify(prompt, kind=kind, material=material)
     author = _author_model(prompt, kind)
     coder = _coder(slug, prompt, material)
-    preflight = _safe_route("orchestrator", "task_preflight", "rating", need=5, agentic=False)
-    strategy = _safe_route("orchestrator", "task_strategy", "plan", need=max(7, int(cls["need"])), agentic=False)
-    qa = _safe_route("orchestrator", "task_qa", "review", need=6 if cls["need"] < 8 else 8, agentic=False)
+    try:
+        preflight = _safe_route("orchestrator", "task_preflight", "rating", need=5, agentic=False)
+    except Exception as e:
+        sys.stderr.write(f"[pipeline_contract] preflight routing failed ({e}); fail-soft, using default\n")
+        preflight = {"provider": "claude", "model": "claude-haiku-4-5-20251001", "reason": "preflight routing failed"}
+    try:
+        strategy = _safe_route("orchestrator", "task_strategy", "plan", need=max(7, int(cls["need"])), agentic=False)
+    except Exception as e:
+        sys.stderr.write(f"[pipeline_contract] strategy routing failed ({e}); fail-soft, using default\n")
+        strategy = {"provider": "claude", "model": "claude-haiku-4-5-20251001", "reason": "strategy routing failed"}
+    try:
+        qa = _safe_route("orchestrator", "task_qa", "review", need=6 if cls["need"] < 8 else 8, agentic=False)
+    except Exception as e:
+        sys.stderr.write(f"[pipeline_contract] qa routing failed ({e}); fail-soft, using default\n")
+        qa = {"provider": "claude", "model": "claude-haiku-4-5-20251001", "reason": "qa routing failed"}
     return {
         "source": source or "unknown",
         "project": project or "selected app",
@@ -202,7 +280,7 @@ def build_plan(prompt: str, project: str = "", kind: str = "build", source: str 
         "coder": coder,
         "author_model": author,
         "qa": qa,
-        "qa_panel": _qa_panel(author),
+        "qa_panel": _qa_panel(author, cls["task_class"]),
         "legal_gate": "owner-only when the change would force licensing/registration/custody/transmission/advice or needs a secret",
         "release": f"auto-merge to {os.environ.get('ORCH_STAGING_BRANCH', 'orchestrator/dev')} after tests, verify, judge; production release via batch train",
         "collaboration": _recent_context(project),

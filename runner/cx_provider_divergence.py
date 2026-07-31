@@ -5,7 +5,7 @@ determinations across two different providers to surface model-specific blind sp
 When two providers disagree on the same question, it inserts an inbox note
 (kind='provider_divergence') so the team can investigate before shipping.
 """
-import os, sys, logging, json, traceback
+import os, sys, logging, json, re, traceback
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 log = logging.getLogger(__name__)
@@ -58,6 +58,38 @@ def _ask_provider(question, model):
         return None
 
 
+def _extract_verdict(text):
+    """Return a structured verdict object embedded in a provider response.
+
+    Providers may wrap a JSON verdict in explanatory prose.  Parsing it once at
+    the module boundary keeps the divergence test deterministic and lets the
+    comparator prefer an explicit verdict over brittle keyword matching.
+    """
+    if not text:
+        return {}
+    match = re.search(r"\{[^{}]*\}", str(text), flags=re.S)
+    if not match:
+        return {}
+    try:
+        value = json.loads(match.group(0))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _verdict_token(text):
+    structured = _extract_verdict(text)
+    if structured.get("verdict") is not None:
+        return str(structured["verdict"]).lower().strip()
+    text = str(text or "").lower().strip()
+    for keyword in ("yes", "no", "approve", "deny", "pass", "fail",
+                    "accept", "reject", "compliant", "non-compliant",
+                    "material", "immaterial", "high", "low", "medium"):
+        if keyword in text[:100]:
+            return keyword
+    return text[:50]
+
+
 def _verdicts_diverge(answer_a, answer_b):
     """Check if two answers meaningfully diverge.
 
@@ -67,16 +99,7 @@ def _verdicts_diverge(answer_a, answer_b):
     if not answer_a or not answer_b:
         return True
 
-    def _extract_verdict(text):
-        text = text.lower().strip()
-        for keyword in ("yes", "no", "approve", "deny", "pass", "fail",
-                        "accept", "reject", "compliant", "non-compliant",
-                        "material", "immaterial", "high", "low", "medium"):
-            if keyword in text[:100]:
-                return keyword
-        return text[:50]
-
-    return _extract_verdict(answer_a) != _extract_verdict(answer_b)
+    return _verdict_token(answer_a) != _verdict_token(answer_b)
 
 
 def _insert_divergence_note(determination, original_answer, alt_model, alt_answer):

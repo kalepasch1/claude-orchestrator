@@ -49,7 +49,12 @@ def set_websocket_server(ws):
 # managed per-machine via environment.
 _SAFE_PREFIXES = ("ORCH_", "MAX_PARALLEL", "PER_TASK_GB", "RAM_FLOOR_GB", "RAM_", "RELEASE_", "QUEUE_",
                   "CONT_", "JANITOR_", "REMEDIATION_", "DEFAULT_TEST_CMD", "TASK_TIMEOUT", "ENABLE_",
-                  "SESSION_", "ACCOUNT_COOLDOWN", "MERGE_", "DEPLOY_", "INTEGRATE_", "COST_")
+                  "SESSION_", "ACCOUNT_COOLDOWN", "MERGE_", "DEPLOY_", "INTEGRATE_", "COST_",
+                  # 2026-07-30: these families were pushed to fleet_config but silently NOT applied
+                  # (prefix missing here) — OLLAMA model selection, committee/docket cadence, and
+                  # dedupe thresholds are all secret-free tuning knobs; _DENY_MARKERS still blocks
+                  # anything key/token-shaped regardless of prefix.
+                  "OLLAMA_", "COMMITTEE_", "LEGAL_DOCKET", "SEMANTIC_DEDUPE", "SWARM_", "CADE_")
 _DENY_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "PWD", "CREDENTIAL", "PAT")
 
 
@@ -147,15 +152,60 @@ def _restart():
     os._exit(0)
 
 
+# Code-drift self-restart (2026-07-31): Python doesn't hot-reload. Whenever code lands
+# on disk by ANY path (committer local commit, manual pull, another process's pull),
+# the running runner used to keep executing stale in-memory modules until a HUMAN
+# restarted it (the Mac-2 "0 live machines" incident). This closes that class:
+# capture HEAD at import; every tick, if disk HEAD differs AND the diff touches
+# runner code, self-restart via keepalive — debounced by minimum uptime.
+_STARTED_AT = time.time()
+try:
+    _STARTUP_HEAD = _git("rev-parse", "HEAD").stdout.strip()
+except Exception:
+    _STARTUP_HEAD = ""
+
+
+def code_drift_restart():
+    """Self-restart when the running process is older than the code on disk."""
+    if os.environ.get("ORCH_CODE_DRIFT_RESTART", "true").lower() not in ("true", "1", "yes"):
+        return False
+    min_uptime = float(os.environ.get("ORCH_CODE_DRIFT_MIN_UPTIME", "300"))
+    if not _STARTUP_HEAD or (time.time() - _STARTED_AT) < min_uptime:
+        return False
+    try:
+        head = _git("rev-parse", "HEAD").stdout.strip()
+        if not head or head == _STARTUP_HEAD:
+            return False
+        changed = _git("diff", "--name-only", _STARTUP_HEAD, head).stdout or ""
+        touched = [l for l in changed.splitlines()
+                   if l.startswith("runner/") and l.endswith(".py")]
+        if not touched:
+            return False
+        print(f"fleet_control: code drift {_STARTUP_HEAD[:8]}->{head[:8]} "
+              f"({len(touched)} runner .py files) — self-restarting on {HOST}", flush=True)
+        _restart()
+        return True  # unreachable; keeps the contract explicit
+    except Exception as e:
+        print(f"fleet_control: code-drift check failed ({e})", flush=True)
+        return False
+
+
 def _pull_safe():
-    """Check if it's safe to git pull. Returns (ok, reason)."""
+    """Check if it's safe to git pull. Returns (ok, reason).
+
+    Untracked files (`??`) do NOT block a pull — git pull never touches them.
+    Counting them made every machine with intake/processed/*.md droppings skip
+    auto-pull forever (the Mac-2 stale-code incident, 2026-07-31). Only tracked
+    modifications (M/A/D/R/U) are genuinely unsafe.
+    """
     try:
         status = _git("status", "--porcelain")
         if status.returncode != 0:
             return False, "git status failed"
-        dirty = [l for l in (status.stdout or "").strip().splitlines() if l.strip()]
+        dirty = [l for l in (status.stdout or "").strip().splitlines()
+                 if l.strip() and not l.startswith("??")]
         if dirty:
-            return False, f"{len(dirty)} dirty files"
+            return False, f"{len(dirty)} dirty tracked files"
         branch = _git("rev-parse", "--abbrev-ref", "HEAD")
         current = (branch.stdout or "").strip()
         default = os.environ.get("ORCH_DEFAULT_BRANCH", "master")
@@ -203,11 +253,23 @@ def process_controls():
                                            "order": "requested_at.asc", "limit": "50"}) or []
     except Exception:
         return 0
+    # Restart-storm guard: only the NEWEST pending restart matters; a host coming back
+    # after downtime must not churn through the whole backlog one respawn at a time.
+    # Older pending restarts this host would act on are marked superseded up front.
+    restart_ids = [r["id"] for r in rows if str(r.get("action") or "").lower() == "restart"]
+    superseded = set(restart_ids[:-1]) if len(restart_ids) > 1 else set()
     for r in rows:
         target = str(r.get("target") or "all")
         handled = r.get("handled_by") or []
         aliases = _host_aliases()
         if not _target_matches(target) or any(h in handled for h in aliases):
+            continue
+        if r["id"] in superseded:
+            try:
+                db.update("fleet_control", {"id": r["id"]},
+                          {"done": True, "last_error": f"superseded by newer restart ({HOST})"})
+            except Exception:
+                pass
             continue
         action = str(r.get("action") or "").lower()
         try:
@@ -232,11 +294,31 @@ def process_controls():
                 kill_switch.resume(scope="host", project=HOST, by="fleet_control")
             else:
                 raise RuntimeError(f"unknown fleet action: {action}")
-            # ack this host
+            # ack this host. A target='all' row completes when every LIVE fleet host has
+            # handled it (from runner_heartbeats, fresh <30 min), or — heartbeats absent —
+            # falls back to age-based completion (>6h old with at least this ack). The old
+            # `done = (target != "all")` left 'all' rows pending forever (44-row backlog).
             new_handled = list(dict.fromkeys(handled + [HOST]))
             params = r.get("params") or {}
+            all_done = target != "all"
+            if not all_done:
+                try:
+                    hb = db.select("runner_heartbeats", {"select": "hostname", "limit": "20"}) or []
+                    live = {str(h.get("hostname") or "") for h in hb if h.get("hostname")}
+                    if live:
+                        all_done = live.issubset(set(new_handled))
+                except Exception:
+                    pass
+                if not all_done:
+                    try:
+                        import dateutil.parser as _dp  # optional; fall through on absence
+                        age_h = (datetime.datetime.now(datetime.timezone.utc)
+                                 - _dp.parse(str(r.get("requested_at")))).total_seconds() / 3600
+                        all_done = age_h > 6
+                    except Exception:
+                        pass
             db.update("fleet_control", {"id": r["id"]},
-                      {"handled_by": handled + [HOST], "done": (target != "all")})
+                      {"handled_by": new_handled, "done": all_done})
             done += 1
             if action == "git_pull" and params.get("restart", True):
                 _restart()
@@ -262,6 +344,7 @@ def tick():
         load_config()
         process_controls()
         self_update()
+        code_drift_restart()
     except Exception as e:
         print(f"fleet_control: tick error ({e})")
 

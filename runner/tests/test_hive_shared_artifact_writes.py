@@ -17,7 +17,11 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch, MagicMock, call
 import datetime
-from datetime import UTC
+try:
+    from datetime import UTC
+except ImportError:  # Python < 3.11
+    from datetime import timezone
+    UTC = timezone.utc
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

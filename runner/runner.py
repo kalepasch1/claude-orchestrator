@@ -27,6 +27,14 @@ def emit_task_log(slug: str, level: str, msg: str) -> None:
     """Log a task message at the given level (info/error/warning/debug)."""
     log_fn = getattr(_log, level, _log.info)
     log_fn("[%s] %s", slug, msg)
+    try:
+        db.insert("run_logs", {
+            "source": slug,
+            "level": level,
+            "message": msg[:2000]
+        })
+    except Exception:
+        pass
 
 # ENV SANITY (2026-07-14): the runner (and everything it spawns — agents, npm installs, builds)
 # sometimes inherits NODE_ENV=production from its launcher. Under NODE_ENV=production, `npm
@@ -2554,6 +2562,14 @@ _SCHEDULE = [
     # spend in the regulator-sim subsystem, on the cheapest tier (local Ollama first), bounded to
     # ORCH_REG_CANON_PER_NIGHT jurisdictions/night. Once authored, a jurisdiction simulates free.
     ("regcanon-daily","regulator_canon_author.py","daily",  (3, 35)),
+    # Auto-triage for BLOCKED shards (2026-07-30): codifies the operator's manual triage as a
+    # standing loop — secret-shaped verify rejections, permissive allowlists, integrate
+    # contention, exhausted retries, missing tests each get their targeted requeue automatically.
+    # Deterministic classification only; max 2 requeues per task then human escalation.
+    ("blockedtriage-600","blocked_triage.py","interval", 600),
+    # Per-initiative progress rollup: strategy-round parts/subparts -> % progress, blockers,
+    # deploy-readiness. Persists to coordination KV + .runtime artifact; every surface reads it.
+    ("progressroll-300","progress_rollup.py","interval", 300),
     ("cadeextras-dy", "cadeextras",           "daily",    (4, 30)),# run cx_* extras daily at 4:30am
     ("committeecal-dy","committeecal",       "daily",    (5, 40)),# reweight committees + seats by predictive accuracy
     ("committeedock-dy","committeedocket",   "daily",    (4, 10)),# continuous docket: re-review shipped features

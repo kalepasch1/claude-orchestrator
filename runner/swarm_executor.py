@@ -431,6 +431,38 @@ async def _dispatch(session, provider: str, model: str,
         return _empty_result(provider)
 
 
+def _reconcile_provider_model(provider: str, model: str):
+    """MISROUTE GUARD (2026-07-30). Root cause of the July 27-28 404 burst (13x `openai 404: The
+    model 'claude-haiku-4-5-20251001' does not exist`): execute_one resolved the provider ONLY
+    when the caller passed none — `provider or _provider_for_model(model)` — so any caller passing
+    an explicit provider WITH a mismatched model name sailed straight to the wrong vendor API.
+    "It stopped on its own" just means the bad caller went quiet; the hole stayed open.
+
+    This guard runs UNCONDITIONALLY on every dispatch. Rule: the MODEL NAME is more specific than
+    the provider hint, so on mismatch we REROUTE to the model's true provider (if its key is
+    present); if that provider is unavailable, we keep the requested provider but SWAP the model
+    to that provider's tier-equivalent default. Either way the call that leaves this process is
+    coherent, and the correction is logged loudly so the bad caller gets found and fixed.
+    Returns (provider, model, note)."""
+    expected = _provider_for_model(model)
+    if not provider or provider == expected:
+        return (provider or expected), model, ""
+    exp_cfg = PROVIDERS.get(expected)
+    if exp_cfg and os.environ.get(exp_cfg["key_env"]):
+        note = (f"misroute-guard: caller sent provider={provider} with model={model} — "
+                f"rerouted to {expected} (model name wins)")
+        log.warning(note)
+        return expected, model, note
+    req_cfg = PROVIDERS.get(provider)
+    if req_cfg:
+        swapped = req_cfg["models"].get("mid") or next(iter(req_cfg["models"].values()))
+        note = (f"misroute-guard: caller sent provider={provider} with model={model}; {expected} "
+                f"key absent — swapped model to {provider}'s default {swapped}")
+        log.warning(note)
+        return provider, swapped, note
+    return expected, model, f"misroute-guard: unknown provider {provider} — resolved by model"
+
+
 def _provider_for_model(model: str) -> str:
     """Resolve provider name from a model string."""
     for pname, cfg in PROVIDERS.items():
@@ -445,7 +477,7 @@ def _provider_for_model(model: str) -> str:
         return "deepseek"
     if "gemini" in model:
         return "gemini"
-    if "llama" in model or "qwen" in model:
+    if "llama" in model or "qwen" in model or "mixtral" in model or "mistral" in model:
         return "groq"
     if "grok" in model:
         return "xai"
@@ -521,7 +553,7 @@ async def execute_one(prompt: str, model: str, provider: str = "",
         r["text"] = str(e)
         return r
 
-    provider = provider or _provider_for_model(model)
+    provider, model, _guard_note = _reconcile_provider_model(provider, model)
     file_cache = _read_repo_files(cwd) if cwd else {}
 
     try:
