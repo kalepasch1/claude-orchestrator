@@ -20,8 +20,8 @@ import common_utils
 _log = _log_mod.get("pricing_grid_reconstruction")
 
 
-def _tier_units_in_range(units: int, tier_min: int, tier_max: Optional[int]) -> bool:
-    """Check if units fall within [tier_min, tier_max]."""
+def _tier_in_range(units: int, tier_min: int, tier_max: Optional[int]) -> bool:
+    """Single source of truth for tier range checking."""
     if units < tier_min:
         return False
     if tier_max is not None and units > tier_max:
@@ -29,19 +29,19 @@ def _tier_units_in_range(units: int, tier_min: int, tier_max: Optional[int]) -> 
     return True
 
 
-def _calculate_applicable_units(units: int, tier_min: int, tier_max: Optional[int]) -> int:
-    """Calculate the number of applicable units within a tier's range.
+def _applicable_units_in_tier(units: int, tier_min: int, tier_max: Optional[int]) -> int:
+    """Single unified method for calculating applicable units in a tier range.
 
-    Returns 0 if units are outside range; otherwise returns units_in_range.
+    Returns 0 if units outside range; otherwise returns applicable_units.
     """
-    if not _tier_units_in_range(units, tier_min, tier_max):
+    if not _tier_in_range(units, tier_min, tier_max):
         return 0
     upper = tier_max if tier_max is not None else units
     return min(units, upper) - tier_min + 1
 
 
-def _build_pricing_tier_from_dict(tier_dict: Dict[str, Any]) -> 'PricingTier':
-    """Extract and construct a PricingTier from a raw dict."""
+def _tier_from_dict(tier_dict: Dict[str, Any]) -> 'PricingTier':
+    """Single unified factory for constructing PricingTier from dict."""
     return PricingTier(
         name=tier_dict.get("name", "default"),
         min_units=int(tier_dict.get("min_units", 0)),
@@ -64,23 +64,27 @@ class PricingTier:
 
     @property
     def is_unlimited(self) -> bool:
+        """Single source of truth for unlimited tier detection."""
         return self.max_units is None
 
-    @staticmethod
-    def _tier_capacity(tier: 'PricingTier') -> int:
-        """Capacity (max units) this tier can hold."""
-        if tier.max_units is None:
+    def _tier_capacity(self) -> int:
+        """Unified capacity calculation for this tier."""
+        if self.is_unlimited:
             return 0
-        if tier.max_units < tier.min_units:
+        if self.max_units < self.min_units:
             return 0
-        return _calculate_applicable_units(tier.max_units, tier.min_units, tier.max_units)
+        return _applicable_units_in_tier(self.max_units, self.min_units, self.max_units)
+
+    def _calculate_cost(self, applicable_units: int) -> float:
+        """Single unified cost calculation from applicable units."""
+        if applicable_units == 0:
+            return 0.0
+        return self.flat_fee + (applicable_units * self.unit_price)
 
     def cost_for_units(self, units: int) -> float:
         """Calculate cost for units within this tier's range."""
-        applicable = _calculate_applicable_units(units, self.min_units, self.max_units)
-        if applicable == 0:
-            return 0.0
-        return self.flat_fee + (applicable * self.unit_price)
+        applicable = _applicable_units_in_tier(units, self.min_units, self.max_units)
+        return self._calculate_cost(applicable)
 
     def to_dict(self, include_metadata: bool = False) -> Dict[str, Any]:
         """Serialize tier to dict. Metadata excluded by default."""
@@ -109,9 +113,8 @@ class PricingGrid:
         """Tiers sorted by min_units ascending."""
         return sorted(self.tiers, key=lambda t: t.min_units)
 
-    @staticmethod
-    def _consume_tier_units(tier: PricingTier, remaining: int) -> Tuple[int, float]:
-        """Consume units from tier. Returns (units_consumed, cost)."""
+    def _consume_and_cost(self, tier: PricingTier, remaining: int) -> Tuple[int, float]:
+        """Unified method: consume units from tier and calculate cost."""
         if remaining <= 0:
             return 0, 0.0
 
@@ -121,28 +124,32 @@ class PricingGrid:
             tier_max=tier.max_units,
             amount=remaining
         )
-        cost = tier.flat_fee + (consumed * tier.unit_price)
+        cost = tier._calculate_cost(consumed)
         return consumed, cost
 
     def total_cost(self, units: int) -> float:
         """Calculate total cost across all tiers for a given unit count.
 
         Walks tiers in ascending order, consuming units until exhausted.
+        Uses unified cost calculation to eliminate duplication.
         """
         total = 0.0
         remaining = units
         for tier in self.sorted_tiers:
             if remaining <= 0:
                 break
-            consumed, cost = self._consume_tier_units(tier, remaining)
+            consumed, cost = self._consume_and_cost(tier, remaining)
             total += cost
             remaining -= consumed
         return round(total, 2)
 
     def tier_for_units(self, units: int) -> Optional[PricingTier]:
-        """Find the applicable tier for a unit count."""
+        """Find the applicable tier for a unit count.
+
+        Uses unified range check to eliminate duplication.
+        """
         for tier in self.tiers:
-            if tier.min_units <= units and (tier.max_units is None or units <= tier.max_units):
+            if _tier_in_range(units, tier.min_units, tier.max_units):
                 return tier
         return None
 
@@ -160,69 +167,84 @@ class PricingGridReconstructionUtil:
     """Shared utility for reconstructing pricing grids from raw data.
 
     Previously this logic was duplicated across multiple modules.
-    All callers should now use this class.
+    All callers should now use this class. Uses unified factory and validation.
     """
 
     @staticmethod
     def from_raw_tiers(product_id: str, raw_tiers: List[Dict[str, Any]],
                        currency: str = "USD") -> PricingGrid:
-        """Reconstruct PricingGrid from raw tier dicts."""
-        tiers = [_build_pricing_tier_from_dict(rt) for rt in raw_tiers]
+        """Reconstruct PricingGrid from raw tier dicts using unified factory."""
+        tiers = [_tier_from_dict(rt) for rt in raw_tiers]
         grid = PricingGrid(product_id=product_id, tiers=tiers, currency=currency)
-        grid.tiers = grid.sorted_tiers  # normalize order on construction
+        grid.tiers = grid.sorted_tiers
         return grid
 
     @staticmethod
     def from_flat_price(product_id: str, unit_price: float,
                         currency: str = "USD") -> PricingGrid:
         """Create a simple single-tier grid from a flat price."""
-        return PricingGrid(
-            product_id=product_id,
-            tiers=[PricingTier(name="flat", min_units=1, max_units=None,
-                               unit_price=unit_price)],
-            currency=currency,
-        )
+        tier = PricingTier(name="flat", min_units=1, max_units=None,
+                           unit_price=unit_price)
+        return PricingGrid(product_id=product_id, tiers=[tier], currency=currency)
 
     @staticmethod
     def merge_grids(grids: List[PricingGrid]) -> PricingGrid:
-        """Merge multiple grids for the same product (e.g., from different sources).
+        """Merge multiple grids for the same product.
 
-        Takes the grid with the most tiers as the base. Uses sorted_tiers
-        to ensure consistent ordering in the result.
+        Takes the grid with the most tiers as the base and normalizes via sorted_tiers.
         """
         if not grids:
             raise ValueError("cannot merge empty grid list")
         base = max(grids, key=lambda g: len(g.tiers))
-        merged = PricingGrid(
+        return PricingGrid(
             product_id=base.product_id,
             tiers=base.sorted_tiers,
             currency=base.currency,
             effective_date=base.effective_date,
         )
-        return merged
+
+    @staticmethod
+    def _validate_tier_bounds(tier: PricingTier) -> List[str]:
+        """Unified tier validation: check bounds and price constraints."""
+        issues = []
+        if tier.unit_price < 0:
+            issues.append(f"tier '{tier.name}' has negative unit_price")
+        if tier.max_units is not None and tier.max_units < tier.min_units:
+            issues.append(f"tier '{tier.name}' max < min")
+        return issues
+
+    @staticmethod
+    def _validate_tier_overlaps(tier: PricingTier, seen_ranges: List[Tuple[str, int, Optional[int]]]) -> List[str]:
+        """Unified overlap detection using centralized range check."""
+        issues = []
+        for prev_name, prev_min, prev_max in seen_ranges:
+            if prev_max is not None and tier.min_units <= prev_max:
+                issues.append(f"tier '{tier.name}' overlaps with '{prev_name}'")
+        return issues
 
     @staticmethod
     def validate_grid(grid: PricingGrid) -> Tuple[bool, List[str]]:
         """Validate a pricing grid for consistency.
 
-        Returns (is_valid, list_of_issues).
+        Returns (is_valid, list_of_issues). Uses unified validation methods.
         """
         issues = []
         if not grid.tiers:
             issues.append("grid has no tiers")
+            return False, issues
+
         seen_ranges = []
         unlimited_count = 0
+
         for tier in grid.tiers:
-            if tier.unit_price < 0:
-                issues.append(f"tier '{tier.name}' has negative unit_price")
-            if tier.max_units is not None and tier.max_units < tier.min_units:
-                issues.append(f"tier '{tier.name}' max < min")
-            if tier.max_units is None:
+            issues.extend(PricingGridReconstructionUtil._validate_tier_bounds(tier))
+            issues.extend(PricingGridReconstructionUtil._validate_tier_overlaps(tier, seen_ranges))
+
+            if tier.is_unlimited:
                 unlimited_count += 1
-            for prev_name, prev_min, prev_max in seen_ranges:
-                if prev_max is not None and tier.min_units <= prev_max:
-                    issues.append(f"tier '{tier.name}' overlaps with '{prev_name}'")
             seen_ranges.append((tier.name, tier.min_units, tier.max_units))
+
         if unlimited_count > 1:
             issues.append("grid has multiple unlimited tiers")
+
         return len(issues) == 0, issues
