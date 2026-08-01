@@ -509,6 +509,63 @@ def _merge_into_staging(repo, branch):
         _git(repo, "worktree", "prune")
 
 
+
+def _release_window_open(project, repo, ahead):
+    """True when a prod promotion may push now (see policy note at call site).
+
+    Env dials:
+      ORCH_RELEASE_WINDOWS       "HH:MM,HH:MM,..." ET (default 09:00,13:00,18:00)
+      ORCH_RELEASE_WINDOW_MIN    minutes each window stays open (default 45)
+      ORCH_RELEASE_EARLY_THRESHOLD  pending-change count that opens an early
+                                    window (default 25) — a big verified batch
+                                    should not wait hours
+      ORCH_RELEASE_WINDOWS_EXEMPT   comma list of projects that always push
+                                    (default "beethoven" — the console has no
+                                    end-user sessions to interrupt)
+      ORCH_RELEASE_WINDOWS_ENABLED  master toggle (default true)
+    P0 bypass: any commit subject in the pending range containing [P0], [SEC],
+    [HOTFIX], or "security" pushes immediately.
+    """
+    try:
+        if os.environ.get("ORCH_RELEASE_WINDOWS_ENABLED", "true").lower() not in ("true", "1", "yes"):
+            return True
+        exempt = {x.strip() for x in os.environ.get(
+            "ORCH_RELEASE_WINDOWS_EXEMPT", "beethoven").split(",") if x.strip()}
+        if project in exempt:
+            return True
+        if ahead >= int(os.environ.get("ORCH_RELEASE_EARLY_THRESHOLD", "25")):
+            return True
+        try:
+            subjects = _git(repo, "log", "--format=%s", "-n", "60",
+                            f"{_git(repo, 'rev-parse', 'origin/' + (os.environ.get('ORCH_DEFAULT_BRANCH','master'))).stdout.strip() or 'HEAD~1'}..{STAGING}").stdout or ""
+        except Exception:
+            subjects = ""
+        low = subjects.lower()
+        if any(m in low for m in ("[p0]", "[sec]", "[hotfix]", "security")):
+            return True
+        import datetime
+        try:
+            from zoneinfo import ZoneInfo
+            now = datetime.datetime.now(ZoneInfo("America/New_York"))
+        except Exception:
+            now = datetime.datetime.utcnow() - datetime.timedelta(hours=4)
+        span = int(os.environ.get("ORCH_RELEASE_WINDOW_MIN", "45"))
+        for w in os.environ.get("ORCH_RELEASE_WINDOWS", "09:00,13:00,18:00").split(","):
+            w = w.strip()
+            if not w:
+                continue
+            try:
+                hh, mm = (int(x) for x in w.split(":"))
+            except ValueError:
+                continue
+            start = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if start <= now < start + datetime.timedelta(minutes=span):
+                return True
+        return False
+    except Exception:
+        return True  # fail-open: a broken window check must never freeze releases
+
+
 def _run_for_unlocked(project, repo_override=None):
     p = (db.select("projects", {"select": "*", "name": f"eq.{project}"}) or [{}])[0]
     repo = repo_override or p.get("repo_path", "")
@@ -740,6 +797,16 @@ def _run_for_unlocked(project, repo_override=None):
     last_good = release_base_sha
     db.update("projects", {"name": project}, {"last_good_sha": last_good})
     push_on = os.environ.get("ORCH_PUSH_ON_RELEASE", os.environ.get("ORCH_PUSH_ON_MERGE", "false")).lower() == "true"
+    # RELEASE WINDOWS (operator policy 2026-07-31): merging is continuous, prod
+    # PROMOTION is batched. A remote prod push (which triggers a Vercel build and
+    # can rotate assets under live sessions) happens only (a) inside a scheduled
+    # window, (b) when the pending batch is large enough, or (c) for a P0 marker.
+    # Local fast-forward bookkeeping is unaffected. Fail-open on any error.
+    if push_on and not _release_window_open(project, repo, int(ahead)):
+        print(f"release_train {project}: {ahead} changes staged — holding for next "
+              f"release window (windows={os.environ.get('ORCH_RELEASE_WINDOWS', '09:00,13:00,18:00')} ET)")
+        return {"project": project, "prod": prod, "released": 0,
+                "note": f"windowed: {ahead} changes held for next release window"}
     to_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
     if not push_on:
         ff = _git(repo, "fetch", ".", f"{STAGING}:{prod}")
