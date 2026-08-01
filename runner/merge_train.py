@@ -30,6 +30,13 @@ the legacy merge-handler are skipped.
 import datetime, json, os, re, sys, subprocess, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+# RESTORED 2026-07-31 (overwrite-class recovery; static_sanity gate)
+_RELFIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-", "copyfix-")
+try:
+    import verify as _verify_mod
+except Exception:
+    _verify_mod = None
+
 import events
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
 import integration_runtime
@@ -1011,6 +1018,7 @@ def _resolve_tasks_batch(cards):
 
 
 def _integrate_card(card, slug, task, proj, repo_override=None):
+    _t0 = time.monotonic()  # RESTORED 2026-07-31: _dur_ms timing base
     """Run one card through the train steps. Returns the outcome string for the summary."""
     # 2026-07-11: proj["repo_path"] is one shared absolute path stored fleet-wide
     # (e.g. /Users/kpasch/Documents/foo). On a second machine with a different home
@@ -1120,7 +1128,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         if _pm:
             try:
                 _pm.record(slug, task.get("kind") or "unknown",
-                           ok=False, duration_ms=_dur_ms, gate_decision="TESTFAIL",
+                           ok=False, duration_ms=int((time.monotonic() - _t0) * 1000), gate_decision="TESTFAIL",
                            gate_reason=tail[:200])
             except Exception:
                 pass
@@ -1189,7 +1197,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
     if _pm:
         try:
             _pm.record(slug, task.get("kind") or "unknown",
-                       ok=True, duration_ms=_dur_ms, gate_decision="MERGED")
+                       ok=True, duration_ms=int((time.monotonic() - _t0) * 1000), gate_decision="MERGED")
         except Exception:
             pass
     approval_merge._free_branch(repo, branch)   # cleanup so worktrees never accumulate

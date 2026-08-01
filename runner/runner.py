@@ -211,6 +211,15 @@ def projects(project_id=None):
     return _projects
 
 
+def _project_repo(project_id):
+    """RESTORED 2026-07-31: phantom helper an agent referenced but never wrote."""
+    try:
+        row = (projects() or {}).get(project_id) or {}
+        return row.get("repo_path") or None
+    except Exception:
+        return None
+
+
 def set_state(task_id: str, **kw) -> None:
     """Update a task row in Supabase, auto-setting updated_at to now().
 

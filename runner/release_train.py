@@ -280,6 +280,23 @@ def _open_release_fix_tasks(p, gate=None):
     return out
 
 
+def _self_heal_public_copy(p, project, repo, staging, findings):
+    """RESTORED 2026-07-31: phantom helper — queue a copyfix task for public-copy
+    gate findings so the red gate self-heals instead of NameError-ing."""
+    try:
+        slug = "copyfix-" + str(project) + "-" + datetime.datetime.utcnow().strftime("%m%d%H%M")
+        db.insert("tasks", {
+            "project_id": (p or {}).get("id") if isinstance(p, dict) else p,
+            "slug": slug, "kind": "build", "state": "QUEUED", "base_branch": staging,
+            "prompt": ("PUBLIC-COPY GATE RED — the public staging copy exposes protected "
+                       "IP/legal strategy. Remove/redact ONLY the flagged content; change "
+                       "nothing else. Findings: " + json.dumps(findings)[:2000]),
+        }, upsert=False)
+        print(f"release_train: queued {slug} for public-copy findings")
+    except Exception as e:
+        print(f"release_train: copyfix queue failed ({e})")
+
+
 def _hold_for_open_fix(p, project, gate):
     if not _truthy("ORCH_RELEASE_HOLD_WHILE_FIX_OPEN", True):
         return None
