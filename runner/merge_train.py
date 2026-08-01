@@ -178,11 +178,73 @@ def _rebase_onto_base(repo, branch, base):
     return True, ""
 
 
-def _run_tests(repo, test_cmd, task=None):
-    """Step 3: run the gate with continuous test integration.
+def _run_tests(repo, test_cmd, ref=None):
+    """Step 3: run the gate. Returns (ok, tail-of-output)."""
+    if not test_cmd:
+        return True, "no test_cmd configured"
+    if ref:
+        import shutil, tempfile
+        root = tempfile.mkdtemp(prefix="merge-qa-")
+        worktree = os.path.join(root, "candidate")
+        try:
+            added = _git(repo, "worktree", "add", "--detach", worktree, ref)
+            if added.returncode != 0:
+                return False, "could not create branch-exact QA worktree: " + (added.stderr or "")[-500:]
+            for shared in ("node_modules", ".env", ".env.local"):
+                src, dst = os.path.join(repo, shared), os.path.join(worktree, shared)
+                if os.path.exists(src) and not os.path.exists(dst):
+                    try: os.symlink(src, dst)
+                    except OSError: pass
+            return _run_tests(worktree, test_cmd)
+        finally:
+            _git(repo, "worktree", "remove", "--force", worktree)
+            shutil.rmtree(root, ignore_errors=True)
+    timeout = _test_timeout()
+    if "npm" in test_cmd or "vitest" in test_cmd or "vue-tsc" in test_cmd or "tsc" in test_cmd or "jest" in test_cmd:
+        # 2026-07-10: a leftover untracked compiled .js shadowing its .ts source (local build
+        # residue, invisible to git status) broke every test run touching it -- twice today,
+        # once at 10 files (beethoven, tracked -- needed a human) and once at 4106 (tomorrow,
+        # all untracked). This strips only the untracked kind before every test run so the
+        # gate can't be blocked by this class of bug again. See repo_hygiene.py.
+        try:
+            cleaned = repo_hygiene.clean_stray_js_duplicates(repo)
+            if cleaned:
+                print(f"merge_train: cleaned {len(cleaned)} stray untracked .js file(s) shadowing .ts in {repo}")
+        except Exception:
+            pass
+        _ensure_node_deps(repo)
+    try:
+        r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
+                           text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, f"tests timed out after {timeout}s"
+    if r.returncode != 0:
+        tail = ((r.stdout or "")[-6000:] + (r.stderr or "")[-6000:]).strip()
+        # One retry after a forced install if the failure looks like missing deps (env, not code).
+        if any(s in tail.lower() for s in ("cannot find module", "module not found", "eresolve", "command not found")):
+            _ensure_node_deps(repo)
+            try:
+                r2 = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
+                                    text=True, timeout=timeout)
+                if r2.returncode == 0:
+                    return True, "green (after dep install)"
+                return False, ((r2.stdout or "")[-6000:] + (r2.stderr or "")[-6000:]).strip()
+            except subprocess.TimeoutExpired:
+                return False, f"tests timed out after {timeout}s"
+        return False, tail
+    return True, "green"
 
-    Uses continuous_test_runner for flake detection and result persistence.
-    Returns (ok, tail-of-output).
+
+def _try_semantic_merge(repo, branch, base):
+    """Attempt AST-level semantic merge when rebase fails.
+
+    Identifies files changed on both sides since their merge-base, then uses
+    semantic_merge to resolve non-overlapping edits without a full redo.
+    Returns True if ALL conflicting files were auto-merged and a new commit
+    was created on `branch` that sits on top of `base`. Returns False on any
+    failure (caller falls through to existing redo logic).
+
+    Fail-soft: any exception returns False.
     """
     try:
         # find the merge-base commit
@@ -1248,6 +1310,13 @@ def train_run():
             except integration_runtime.IntegrationRuntimeError as exc:
                 result["skipped"] += len(group)
                 print(f"merge_train: {proj.get('name') or pid} isolation blocked: {exc}")
+            except FileNotFoundError as exc:
+                # A concurrent/killed pass removed a worktree dir mid-flight.
+                # Transient by construction — the entry-time `worktree prune`
+                # heals it next pass. Skip, don't error (2026-07-31 class).
+                result["skipped"] += len(group)
+                print(f"merge_train: {proj.get('name') or pid} worktree vanished mid-pass "
+                      f"(transient, will heal next pass): {exc}")
         return result
 
     def process_project_isolated(item):
@@ -1261,6 +1330,20 @@ def train_run():
             pname = (projects.get(pid, {}) or {}).get("name") or str(pid)
             print(f"merge_train [{pname}] PROJECT-ERROR: {type(exc).__name__}: {str(exc)[:500]}",
                   flush=True)
+            # 2026-07-31: a swallowed per-project exception hid the NameError
+            # that froze ALL releases for 3 days. Project errors now file a
+            # coordination alert carrying the actual exception text — silent
+            # only ever means healthy.
+            try:
+                import json as _json, time as _time
+                db.insert("coordination_tasks", {
+                    "task_type": "merge_train_project_error",
+                    "payload": _json.dumps({
+                        "at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                        "project": pname, "error": f"{type(exc).__name__}: {str(exc)[:800]}",
+                        "cards_skipped": len(group)})[:8000]}, upsert=False)
+            except Exception:
+                pass
             return {"projects": 1, "merged": 0, "already_integrated": 0,
                     "redo": 0, "testfail": 0, "conflict": 0,
                     "skipped": len(group), "project_errors": 1,
@@ -1320,7 +1403,19 @@ def train_run():
 run = train_run
 
 
+def _startup_static_gate():
+    """Refuse to run a pass whose own code would silently no-op (NameError class)."""
+    try:
+        import static_sanity
+        static_sanity.assert_critical("merge_train")
+    except RuntimeError:
+        raise
+    except Exception:
+        pass  # gate tooling itself must never wedge the train
+
+
 if __name__ == "__main__":
+    _startup_static_gate()
     import json
     # SINGLE-FLIGHT (2026-07-14): the 60s scheduler kept spawning new train processes while a
     # long pass (staging tests take minutes) was still running — 3-4 stacked merge_train.py

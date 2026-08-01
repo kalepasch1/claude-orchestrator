@@ -199,6 +199,20 @@ def fleet_liveness_check():
                 print(f"blocked_triage[liveness]: {f}", flush=True)
     except Exception as e:
         print(f"blocked_triage: liveness check failed ({type(e).__name__})")
+    # Undefined-name static gate (NameError class, 2026-07-31)
+    try:
+        import static_sanity
+        sf = static_sanity.check()
+        if sf:
+            findings.append("CRITICAL undefined names: " + "; ".join(sf[:5]))
+            db.insert("coordination_tasks", {
+                "task_type": "static_sanity_alert",
+                "payload": json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                       "findings": sf[:20]})[:8000]}, upsert=False)
+            for f_ in findings[-1:]:
+                print(f"blocked_triage[static]: {f_}", flush=True)
+    except Exception:
+        pass
     return findings
 
 
