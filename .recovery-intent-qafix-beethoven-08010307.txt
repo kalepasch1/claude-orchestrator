@@ -1,0 +1,4 @@
+recovery-intent: qafix-beethoven-08010307
+template: 565d82bd1722
+intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 382625ms 39465ac 399ms 496417 649458ms 6d61ee2bfb62757e0d4b1fb32d28676cc01bf101 6f940a79484e 7f21d02 8a3aa07d8a8ee0eed4c67448a098fd49e12b1328fdd26d2a5e3f2a93a5dd8e24 _applicable_units_in_tier _tier_from_dict _tier_in_range acceptance across active actual adapt adaptation adaptive_probe advice affect after agentic aider allowlist anonymous anthropic assertionerror async async_hooks author authored batch beethoven before behavior blocked blocker blocking bottleneck build buildfail c0l0z2xq cadence calculation calculations cancelled cases causing ce2e8dcd7954 change changed check checking claim clarity class claude closed coder codestral codex commit comprehensive consolidate consolidated consolidating context contract coordination correct coverage
+base: master
