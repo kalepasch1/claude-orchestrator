@@ -169,6 +169,48 @@ def _refresh_base(repo, base):
         pass  # no remote / offline is fine — the local base ref is the source of truth then
 
 
+def _post_fork_regression(repo, branch, base, orig_fork):
+    """Detect a CLEAN rebase that silently deletes improvements merged after the
+    branch forked (operator directive 2026-07-31 — the second wipe vector).
+
+    The conflict path is already safe (no whole-file theirs on source). But a
+    branch forked BEFORE an improvement landed can delete that improvement with
+    zero git conflict. Guard: lines base gained since fork vs lines the rebased
+    branch deletes; overlap >= MERGE_REGRESSION_LINE_THRESHOLD -> hold.
+    Returns (ok, detail); fail-open on its own errors.
+    """
+    try:
+        if not orig_fork:
+            return True, ""
+        thresh = int(os.environ.get("MERGE_REGRESSION_LINE_THRESHOLD", "3"))
+        gained = _git(repo, "diff", "--unified=0", orig_fork, base, timeout=120).stdout or ""
+        removed = _git(repo, "diff", "--unified=0", base, branch, timeout=120).stdout or ""
+
+        def collect(diff, sign):
+            per, cur = {}, None
+            for line in diff.splitlines():
+                if line.startswith("+++ b/"):
+                    cur = line[6:]
+                elif cur and line.startswith(sign) and not line.startswith(sign * 3):
+                    t = line[1:].strip()
+                    if len(t) > 3:
+                        per.setdefault(cur, set()).add(t)
+            return per
+
+        gained_lines = collect(gained, "+")
+        removed_lines = collect(removed, "-")
+        hits = []
+        for f, rem in removed_lines.items():
+            overlap = rem & gained_lines.get(f, set())
+            if len(overlap) >= thresh:
+                hits.append(f"{f} (-{len(overlap)} recently-improved lines)")
+        if hits:
+            return False, "; ".join(hits[:6])
+        return True, ""
+    except Exception:
+        return True, ""
+
+
 def _rebase_onto_base(repo, branch, base):
     """Step 2: rebase the branch onto the CURRENT base. Returns (ok, conflict_detail).
     Frees any leftover agent worktree first (approval_merge._free_branch — git refuses to
@@ -1026,6 +1068,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         return "already-integrated"
     _task_patch(task, {"state": MERGING_STATE, "note": f"train: integrating {branch} into {base}"})
 
+    _orig_fork = _git(repo, "merge-base", branch, base).stdout.strip()  # pre-rebase fork point
     rebase_ok, conflict_detail = _rebase_onto_base(repo, branch, base)  # (2)
     if not rebase_ok:
         # redo-on-fresh-base: a stale branch conflicting with the advanced base should be REBUILT
