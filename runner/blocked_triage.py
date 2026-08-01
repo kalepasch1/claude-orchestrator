@@ -155,6 +155,10 @@ def run(limit=BATCH):
         fleet_liveness_check()
     except Exception:
         pass
+    try:
+        release_currency_check()
+    except Exception:
+        pass
     return out
 
 
@@ -211,6 +215,87 @@ def fleet_liveness_check():
                                        "findings": sf[:20]})[:8000]}, upsert=False)
             for f_ in findings[-1:]:
                 print(f"blocked_triage[static]: {f_}", flush=True)
+    except Exception:
+        pass
+    return findings
+
+
+RELEASE_CURRENCY_MAX_BRANCHES = int(os.environ.get("ORCH_RELEASE_CURRENCY_MAX_BRANCHES", "25"))
+RELEASE_CURRENCY_MAX_MASTER_AGE_H = int(os.environ.get("ORCH_RELEASE_CURRENCY_MAX_MASTER_AGE_H", "48"))
+
+
+def release_currency_check():
+    """NEW SCOPE (operator directive 2026-07-31): the prod-behind-built-work class.
+
+    244 unmerged agent branches sat on apparently (1,174 on tomorrow) while prod
+    served weeks-old masters — and NOTHING alerted, because every monitor watched
+    process health, not OUTCOME currency. This check watches the outcome:
+
+      For each project: count unmerged origin agent/* heads and the age of
+      origin/<base>. If branches exceed the threshold AND base hasn't advanced
+      within the window, prod is falling behind the built work — file a CRITICAL
+      release_currency_alert naming the project, counts, and age, so the
+      catch-up drive / operator acts the same day, not weeks later.
+
+    Read-only + fail-soft; runs in the triage cycle (10 min) but self-limits to
+    one full scan per 6h via a KV timestamp.
+    """
+    import subprocess
+    findings = []
+    try:
+        gate = db.select("coordination_tasks", {
+            "select": "created_at", "task_type": "eq.release_currency_scan",
+            "order": "created_at.desc", "limit": "1"}) or []
+        if gate:
+            import datetime
+            last = datetime.datetime.fromisoformat(
+                str(gate[0]["created_at"]).replace("Z", "+00:00"))
+            if (time.time() - last.timestamp()) < 6 * 3600:
+                return []
+    except Exception:
+        pass
+    try:
+        projects = db.select("projects", {"select": "name,repo_path,default_base"}) or []
+    except Exception:
+        return []
+    for p in projects:
+        try:
+            repo = db.localize_repo_path(p.get("repo_path") or "")
+            if not repo or not os.path.isdir(repo):
+                continue
+            base = p.get("default_base") or "master"
+            heads = subprocess.run(["git", "ls-remote", "--heads", "origin"],
+                                   cwd=repo, capture_output=True, text=True, timeout=60)
+            n_branches = sum(1 for l in (heads.stdout or "").splitlines()
+                             if "refs/heads/agent/" in l)
+            age = subprocess.run(["git", "log", f"origin/{base}", "-1", "--format=%ct"],
+                                 cwd=repo, capture_output=True, text=True, timeout=30)
+            try:
+                age_h = (time.time() - float((age.stdout or "0").strip())) / 3600
+            except ValueError:
+                age_h = -1
+            if n_branches > RELEASE_CURRENCY_MAX_BRANCHES and age_h > RELEASE_CURRENCY_MAX_MASTER_AGE_H:
+                findings.append({"project": p.get("name"), "unmerged_agent_branches": n_branches,
+                                 "base_age_hours": round(age_h, 1)})
+        except Exception:
+            continue
+    try:
+        db.insert("coordination_tasks", {"task_type": "release_currency_scan",
+                                         "payload": json.dumps({"at": time.strftime(
+                                             "%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                             "flagged": len(findings)})[:2000]}, upsert=False)
+        if findings:
+            db.insert("coordination_tasks", {
+                "task_type": "release_currency_alert",
+                "payload": json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                       "findings": findings,
+                                       "action": "run runner/catchup_drive.sh or inspect the "
+                                                 "merge train — prod is falling behind built work"})[:8000]},
+                      upsert=False)
+            for f in findings:
+                print(f"blocked_triage[release-currency]: CRITICAL {f['project']}: "
+                      f"{f['unmerged_agent_branches']} unmerged agent branches, base "
+                      f"{f['base_age_hours']}h stale", flush=True)
     except Exception:
         pass
     return findings
