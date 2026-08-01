@@ -817,3 +817,520 @@
 +Parent task: recover-missing-branch-cade-contracts-slice-2
 +
 +[reuse-first: matched patch-template-recover-missing-branch-cade-contracts-slice-2]
+
+# 2026-08-01 19:29:24.759920
++
++- docs/recover-missing-branch-canary-gpt-18.md
++- runner/docs/patch_template_branch_analysis.md
++- runner/tests/test_merged_diff_library.py
++- runner/tests/test_patch_templates_branch_recovery.py
++- runner/tests/test_patch_transplant_relfix_kalepasch_com.py
++- runner/tests/test_patch_transplant_relfix_kalepasch_com_4fa4039b57dc.py
++- runner/tests/test_relfix_pareto_2080_07171927.py
++- runner/tests/test_relfix_pareto_2080_07171927_comprehensive.py
++- runner/tests/test_relfix_pareto_2080_release_conflict_healing.py
++- runner/tests/test_repo_setup_repair.py
++- runner/tests/test_zombie_reaper_complete.py
++- runner/utils/recover_missing_branch_improve_automated.py
++
++
++
++
++why: to avoid unnecessary task quarantine during RPC infra outages, which can occur when the lease infrastructure itself fails or drifts.
++proof: 
++files: runner/branch_lease.py
++
++
++
++
++why: to avoid unnecessary task quarantine during RPC infra outages, which can occur when the lease infrastructure itself fails or drifts.
++proof: 
++files: runner/branch_lease.py
++
++
++
++
++<orchestrator_feedback>[{"category":"context|model|prompt|tooling|guardrail|strategy|rate_limit|other","severity":"low|med|high","observation":"...","suggestion":"..."}]</orchestrator_feedback>
++Keep it specific and free of any private/customer data.
++
++
++
++
++- **Inspect existing worktree/branch** for `canary-gemini-pro-9` (`git worktree list`, `git branch -a`) and read `docs/recover-missing-branch-canary-gpt-18.md` + `runner/docs/patch_template_branch_analysis.md` to understand the expected recovery flow and any prior partial changes.
++- **Reproduce the failure** by running `pytest runner/tests/test_zombie_reaper_complete.py -v` and `pytest runner/tests/test_repo_setup_repair.py -v`; capture the exact assertion/log line that emits `stale RUNNING >30min`.
++- **Read the relevant source files**: `runner/zombie_reaper.py`, `runner/branch_lease.py`, and `runner/utils/recover_missing_branch_improve_automated.py`; locate the stale-RUNNING check and how it interacts with heartbeats, leases, and task state.
++- **Reuse the existing fail-soft pattern** from `runner/branch_lease.py`: on lease/heartbeat lookup errors, skip the task instead of defaulting to “stale” (fail-closed security behavior; do not reap running work when infrastructure is unavailable).
++- **Fix the staleness calculation**: compare against the most recent of `updated_at`, `heartbeat_at`, and active lease timestamp; make the threshold configurable via `ORCH_ZOMBIE_REAPER_RUN_MIN` (default 30) loaded from env/fleet config, and use UTC-aware datetime math to avoid timezone skew.
++- **Fix the recovery helper** in `runner/utils/recover_missing_branch_improve_automated.py`: emit periodic task heartbeats/lease renewals during long-running branch-recovery so it is not misclassified as a zombie, and keep the recovery idempotent so reruns are safe.
++- **Extend tests** in `runner/tests/test_zombie_reaper_complete.py` for: healthy heartbeat inside window, missing-lease fail-soft, exact 30-minute boundary, naive/aware timestamp mix, and a long-running canary task that heartbeats; add/update `test_repo_setup_repair.py` if it covers the recovery path.
++- **Run focused tests first**, then the full runner suite; fix any source/config/test errors. Run the prod/type/build checks locally before finishing.
++- **Commit from the worktree** with author `kalepasch1 <kalepasch@gmail.com>`, do not commit secrets, and leave the branch for the merge train; if in a no-network sandbox, emit a patch per `CHATGPT.md` instead of pushing.
++
++
++
++REUSABLE INTENT GRAPH: start from proven adapter shapes before drafting net-new code.
++Current intent signature: bdb7d372e1e190f35cc0
++- prediction-markets-institute/weekly-lint-prediction-markets-institute similarity=0.669: shape=+0/-0 | PATCH TEMPLATE bffd1c2752f8
++Intent: 07062319 07071626 30min 8b92d078e856 acceptance adapt agentic alter analysis artifacts because beethoven before behavior below blocks branch broad bugfix build category cause changes changing
++Acceptance: preserve existing behavior, make the smallest mergeable diff
++- smarter/cont-1042d0 similarity=0.635: shape=+0/-0 | PATCH TEMPLATE 7ba77da91bb4
++Intent: 07062319 07071626 1042d0 8b92d078e856 acceptance adapt agent agentic already alter analysis artifacts because beethoven before behavior below blocks branch broad bugfix build category cause
++Acceptance: preserve existing behavior, make the smallest mergeable diff, 
++- pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi similarity=0.586: shape=+0/-0 | PATCH TEMPLATE 8b92d078e856
++Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
++Acceptance: preserve existing behavior,
++
++
++
++
++
++Routine strategic/objective prompts belong in the operator drop-box, not a manual serial
++session: drop a `PROMPT-<name>.md` file at repo root (or a canonical-format file in `intake/`)
++and `intake_watcher.py` auto-decomposes anything that isn't already canonical format through
++`planner.py`'s contract-first DAG and queues it for parallel, dependency-linked execution (see
++`prompt_factory.py` and the drop-box section of `intake_watcher.py`'s module docstring).
++
++A manual serial Claude Code session (an operator pasting a long prompt directly into a live
++session, working the phases by hand) is reserved for **fleet-down recovery only** — i.e. when
++the fleet itself can't queue or execute anything yet, so there's nothing for intake to route
++work to. Once the fleet is healthy, prefer the drop-box.
++
++
++
++
++
++**CONVENTIONS**
++
++*   Centralized configuration management: fleet-wide config changes go through a central `fleet_config` table and are applied to all machines via an in-process gateway (`fleet_control.py`).
++*   Safe config keys only: only config keys without secrets or credentials can be pushed fleet-wide.
++*   DB + git for synchronization: code updates are propagated between machines using git, and database operations are used for configuration management.
++*   Fail-soft error handling: errors during code execution or database queries do not wedge the runner; they are swallowed to prevent crashes.
++
++**DO/AVOID RULES**
++
++*   **DO** prefix config key changes with ORCH_ to make them fleet-wide applicable.
++*   **DO NOT** introduce hardcoded secrets or credentials in the configuration keys.
++*   **AVOID** using manual SSH or second-terminal steps for configuration management; use the centralized gateway (`fleet_control.py`) instead.
++*   **AVOID** introducing model-specific logic that can wedge the runner on errors; instead, use fail-soft error handling.
++
++
++
++
++
++**CONVENTIONS**
++
++- **Module-level singleton pattern**: Provide module-level functions that delegate to a thread-safe singleton instance (e.g., `acquire()` → `_pool.acquire()`); avoids passing state through call chains
++- **Fail-soft error handling**: Return empty string `""` or sensible defaults on any error; never raise on bad input (None, missing path, permission errors)
++- **Environment variable configuration**: All tunable parameters (pool size, TTL, limits) are env vars with sensible defaults, not hardcoded
++- **Thread-safe with explicit locks**: Protect shared state with `threading.Lock()`; minimize critical section, do disk I/O outside the lock
++- **Defensive file I/O**: Check multiple file locations, use `errors="replace"`, catch `FileNotFoundError` separately, truncate at a byte limit
++
++**DO/AVOID RULES**
++
++- **DO** include 20+ test cases covering normal paths, edge cases (None, empty string, bad paths), eviction, staleness, and memory pressure before merging
++- **AVOID** forcing callers to handle unavailability—design for graceful degradation (missing file → return `""` instead of raising)
++- **DO** gate resource expansion (new pool entries) on memory checks via `resource_governor.can_claim()` to prevent wedging under pressure
++- **AVOID** blocking the caller on slow I/O—if a cache miss is likely, accept it and fall back rather than synchronous disk waits
++- **DO** provide `stats()` and `invalidate()` methods so operators and tests can observe/control pool state
++
++
++
++
++
++All agent work happens in isolated git worktrees under `{repo}-wt/{slug}`, never via
++`git checkout` in the main repo checkout. `sentinel.py` monitors the main checkout and
++will stash+reset any non-base branch it finds there. Worktrees are removed after push;
++the `agent/{slug}` branch persists for merge-train pickup.
++
++
++
++
++
++All commits in this repo MUST be authored as the repo owner:
++
++    git config user.name "kalepasch1"
++    git config user.email "kalepasch@gmail.com"
++
++Run this immediately after cloning, before your first commit. Vercel blocks
++production deployments whose commit author is anyone else — commits authored
++as e.g. mandyjustinepasch@gmail.com or kale@heretomorrow.us end up in BLOCKED
++state and never deploy. Do not use your platform account identity.
++
++
++
++
++Here are the concise conventions and DO/AVOID rules extracted from the codebase:
++
++**CONVENTIONS:**
++
++* Consistent use of spaces around operators and inside comments.
++* Use of descriptive variable names, e.g., `HIVEMIND_APPS` instead of `apps`.
++* Consistent naming conventions for types, functions, and interfaces.
++* Use of `as const` to assert the type of an array.
++
++**DO/AVOID RULES:**
++
++* DO:
++	+ Avoid using magic numbers; use constants or enums instead.
++	+ Use meaningful variable names that indicate their purpose.
++	+ Ensure consistent coding style throughout the codebase.
++* AVOID:
++	+ Deep nesting in functions; refactor to reduce complexity.
++	+ Unnecessary checks and conditions; simplify logic where possible.
++	+ Excessive use of nested loops; consider alternative algorithms.
++
++
++
++
++Here are the extracted conventions and DO/AVOID rules:
++
++**CONVENTIONS:**
++
++* Use clear and concise language in decision-making documents.
++* Include a date, status, and proof hash for each decision.
++* Define key terms and acronyms used throughout the document.
++* Organize content in a logical and consistent manner.
++
++**DO/AVOID RULES:**
++
++* Avoid using ambiguous or unclear language that may lead to misinterpretation.
++* Do not introduce new risks or uncertainties without proper mitigation strategies.
++* Use conditional language (e.g., "we conditionally support this proposal") instead of absolute statements.
++* Refrain from including confidential information in publicly accessible documents.
++
++
++
++
++
++ChatGPT's code sandbox has no outbound network — `git push` and DNS always fail
++there. Do not debug it. Emit a patch instead: see [CHATGPT.md](./CHATGPT.md).
++
++
++
++
++
++ChatGPT's code-execution sandbox has **no outbound network** — `git push` and DNS
++(`Could not resolve host: github.com`) fail there permanently. It is a platform
++limitation; do not debug it. Sandbox sessions emit a **patch**; this Mac pushes.
++
++**Bridge:** `tools/chatgpt-bridge/` (see its README).
++Drop `<repo>--<slug>.patch` (or `.diff`/`.zip`/`.tar.gz`) into
++`~/Documents/chatgpt-dropbox/` → within 30s it becomes an isolated worktree, a commit
++authored `kalepasch1 <kalepasch@gmail.com>`, a `chatgpt/<slug>` branch, and a PR.
++Results in `_applied/` / `_failed/`; log at `_logs/bridge.log`. CLI: `chatgpt-patch <file>`.
++
++- launchd agent `com.claudeorchestrator.chatgptbridge` runs **through ClaudeRunner.app**
++  — launchd cannot read or execute anything under `~/Documents` without that FDA grant.
++  The app launcher now accepts `.sh` jobs relative to repo root.
++- **FDA loss is self-reporting.** If the grant goes, the watcher can neither run nor
++  complain (its own file becomes unreadable), so `com.claudeorchestrator.chatgptbridge.watchdog`
++  runs every 5 min from `~/Library/Application Support/chatgpt-bridge/` — outside
++  `~/Documents` on purpose — and notifies when the heartbeat at
++  `~/Library/Logs/claude-orchestrator/chatgpt-bridge.heartbeat` is >10 min stale.
++  `install.sh` verifies the chain end-to-end and fails loudly if the grant is missing.
++- Browser fallback in every repo: Actions → **Apply ChatGPT patch** → paste
++  `git diff | base64`. Needs "Allow GitHub Actions to create and approve pull requests"
++  (enabled on all six repos).
++- Every repo carries `CHATGPT.md` telling the agent to emit a patch instead of pushing;
++  `deploy-to-repos.sh` (re)installs it plus the workflow everywhere.
++- Direct pushes to production branches are still blocked by `production_push_guard` —
++  the bridge opens PRs, it does not bypass the release train.
++
++---
++
++
++
++
++Treat every ACTIVE source below as authoritative. Implement its applicable requirements and verify the resulting behavior; do not complete with documentation-only changes.
++
++
++
++
++- **Status**: Complete and working
++- **Purpose**: Relationship intelligence loop that processes due contacts and generates recommendations by lifecycle stage, health, and permission status
++- **Key behaviors**:
++1. Queries contacts from `crm_contacts` table ordered by `next_contact_at` (due dates first)
++2. Filters out opted-out contacts (`do_not_contact=true`)
++3. Checks for existing open recommendations to avoid duplicates
++4. Generates 4 recommendation types based on contact state:
++- `relationship_repair`: health < 35
++- `permission`: missing marketing permission
++- `reconnect`: not contacted in 45+ days
++- `next_best_action`: active and healthy
++5. Returns `{reviewed: count, created: count, sent: 0}` (never sends, always 0)
++
++
++
++- **Status**: 22/23 tests passing
++- **Coverage**: 6 test classes across 23 assertions
++- **Test scope**:
++1. Source basics (active relationships, opted-out filtering, structured data)
++2. Recommendation generation (health-based, permission, stal
++
++nt data on increased operational resilience and risks associated with complexity. The Devil's Advocate recommends proceeding with caution a", 'position': 'The committee supports the redesign based on potential benefits of scalability and fault tolerance. However, concerns about increased complexity and operational risks must be addressed.', 'conviction': 8.0}, {'chair': 'Chief Security Officer', 'expert': 'Security & Trust', 'weight': 1.2, 'verdict': 'conditional', 'key_risk': 'None', 'position': 'The committee acknowledges the potential benefits of a cloud-native architecture in terms of scalability and fault tolerance, but is concerned about the significant increase in complexity and attack s', 'conviction': 7.0}, {'chair': 'Chief Architect', 'expert': 'Architecture & Scalability', 'weight': 1.2, 'verdict': 'conditional', 'key_risk': 'Some members are concerned about the immediate impact on team workload due to increased complexity post-migration. They argue for more gradual adoption or a hybrid approach that balances innovation wi', 'position': 'The committee acknowledges the potential benefits of transitioning to a fully cloud-native architecture for the orchestrator in terms of scalability and operational efficiency. However, concerns about', 'conviction': 7.0}
++
++
++
++
++{'chair': 'Chief Architect', 'expert': 'GO', 'weight': 1.4, 'verdict': 'conditional', 'key_risk': 'none', 'position': 'The committee supports the proposal to transition towards cloud-native architecture with a conditional approach due to concerns about potential latency between cloud services and existing infrastructu', 'conviction': 9.0}, {'chair': 'Security Advisor', 'expert': 'ESCALATE', 'weight': 1.3, 'verdict': 'conditional', 'key_risk': 'None', 'position': 'The proposal presents a significant potential for scalability and efficiency gains through cloud-native architecture. However, this benefits must be balanced against the risks of security exposure and', 'conviction': 8.0}, {'chair': 'Privacy Officer', 'expert': 'Data & Privacy', 'weight': 1.3, 'verdict': 'conditional', 'key_risk': 'Some members express concerns about the high costs associated with maintaining two separate infrastructures, which might outweigh the benefits of full cloud adoption. They ar
++[design contract truncated; read listed files directly]
++
++
++
++
++
++Routine strategic/objective prompts belong in the operator drop-box, not a manual serial
++session: drop a `PROMPT-<name>.md` file at repo root (or a canonical-format file in `intake/`)
++and `intake_watcher.py` auto-decomposes anything that isn't already canonical format through
++`planner.py`'s contract-first DAG and queues it for parallel, dependency-linked execution (see
++`prompt_factory.py` and the drop-box section of `intake_watcher.py`'s module docstring).
++
++A manual serial Claude Code session (an operator pasting a long prompt directly into a live
++session, working the phases by hand) is reserved for **fleet-down recovery only** — i.e. when
++the fleet itself can't queue or execute anything yet, so there's nothing for intake to route
++work to. Once the fleet is healthy, prefer the drop-box.
++
++
++
++
++
++**CONVENTIONS**
++
++*   Centralized configuration management: fleet-wide config changes go through a central `fleet_config` table and are applied to all machines via an in-process gateway (`fleet_control.py`).
++*   Safe config keys only: only config keys without secrets or credentials can be pushed fleet-wide.
++*   DB + git for synchronization: code updates are propagated between machines using git, and database operations are used for configuration management.
++*   Fail-soft error handling: errors during code execution or database queries do not wedge the runner; they are swallowed to prevent crashes.
++
++**DO/AVOID RULES**
++
++*   **DO** prefix config key changes with ORCH_ to make them fleet-wide applicable.
++*   **DO NOT** introduce hardcoded secrets or credentials in the configuration keys.
++*   **AVOID** using manual SSH or second-terminal steps for configuration management; use the centralized gateway (`fleet_control.py`) instead.
++*   **AVOID** introducing model-specific logic that can wedge the runner on errors; instead, use fail-soft error handling.
++
++
++
++
++
++**CONVENTIONS**
++
++- **Module-level singleton pattern**: Provide module-level functions that delegate to a thread-safe singleton instance (e.g., `acquire()` → `_pool.acquire()`); avoids passing state through call chains
++- **Fail-soft error handling**: Return empty string `""` or sensible defaults on any error; never raise on bad input (None, missing path, permission errors)
++- **Environment variable configuration**: All tunable parameters (pool size, TTL, limits) are env vars with sensible defaults, not hardcoded
++- **Thread-safe with explicit locks**: Protect shared state with `threading.Lock()`; minimize critical section, do disk I/O outside the lock
++- **Defensive file I/O**: Check multiple file locations, use `errors="replace"`, catch `FileNotFoundError` separately, truncate at a byte limit
++
++**DO/AVOID RULES**
++
++- **DO** include 20+ test cases covering normal paths, edge cases (None, empty string, bad paths), eviction, staleness, and memory pressure before merging
++- **AVOID** forcing callers to handle unavailability—design for graceful degradation (missing file → return `""` instead of raising)
++- **DO** gate resource expansion (new pool entries) on memory checks via `resource_governor.can_claim()` to prevent wedging under pressure
++- **AVOID** blocking the caller on slow I/O—if a cache miss is likely, accept it and fall back rather than synchronous disk waits
++- **DO** provide `stats()` and `invalidate()` methods so operators and tests can observe/control pool state
++
++
++
++
++
++All agent work happens in isolated git worktrees under `{repo}-wt/{slug}`, never via
++`git checkout` in the main repo checkout. `sentinel.py` monitors the main checkout and
++will stash+reset any non-base branch it finds there. Worktrees are removed after push;
++the `agent/{slug}` branch persists for merge-train pickup.
++
++
++
++
++
++All commits in this repo MUST be authored as the repo owner:
++
++    git config user.name "kalepasch1"
++    git config user.email "kalepasch@gmail.com"
++
++Run this immediately after cloning, before your first commit. Vercel blocks
++production deployments whose commit author is anyone else — commits authored
++as e.g. mandyjustinepasch@gmail.com or kale@heretomorrow.us end up in BLOCKED
++state and never deploy. Do not use your platform account identity.
++
++
++
++
++Here are the concise conventions and DO/AVOID rules extracted from the codebase:
++
++**CONVENTIONS:**
++
++* Consistent use of spaces around operators and inside comments.
++* Use of descriptive variable names, e.g., `HIVEMIND_APPS` instead of `apps`.
++* Consistent naming conventions for types, functions, and interfaces.
++* Use of `as const` to assert the type of an array.
++
++**DO/AVOID RULES:**
++
++* DO:
++	+ Avoid using magic numbers; use constants or enums instead.
++	+ Use meaningful variable names that indicate their purpose.
++	+ Ensure consistent coding style throughout the codebase.
++* AVOID:
++	+ Deep nesting in functions; refactor to reduce complexity.
++	+ Unnecessary checks and conditions; simplify logic where possible.
++	+ Excessive use of nested loops; consider alternative algorithms.
++
++
++
++
++Here are the extracted conventions and DO/AVOID rules:
++
++**CONVENTIONS:**
++
++* Use clear and concise language in decision-making documents.
++* Include a date, status, and proof hash for each decision.
++* Define key terms and acronyms used throughout the document.
++* Organize content in a logical and consistent manner.
++
++**DO/AVOID RULES:**
++
++* Avoid using ambiguous or unclear language that may lead to misinterpretation.
++* Do not introduce new risks or uncertainties without proper mitigation strategies.
++* Use conditional language (e.g., "we conditionally support this proposal") instead of absolute statements.
++* Refrain from including confidential information in publicly accessible documents.
++
++
++
++
++
++ChatGPT's code sandbox has no outbound network — `git push` and DNS always fail
++there. Do not debug it. Emit a patch instead: see [CHATGPT.md](./CHATGPT.md).
++
++
++
++
++
++ChatGPT's code-execution sandbox has **no outbound network** — `git push` and DNS
++(`Could not resolve host: github.com`) fail there permanently. It is a platform
++limitation; do not debug it. Sandbox sessions emit a **patch**; this Mac pushes.
++
++**Bridge:** `tools/chatgpt-bridge/` (see its README).
++Drop `<repo>--<slug>.patch` (or `.diff`/`.zip`/`.tar.gz`) into
++`~/Documents/chatgpt-dropbox/` → within 30s it becomes an isolated worktree, a commit
++authored `kalepasch1 <kalepasch@gmail.com>`, a `chatgpt/<slug>` branch, and a PR.
++Results in `_applied/` / `_failed/`; log at `_logs/bridge.log`. CLI: `chatgpt-patch <file>`.
++
++- launchd agent `com.claudeorchestrator.chatgptbridge` runs **through ClaudeRunner.app**
++  — launchd cannot read or execute anything under `~/Documents` without that FDA grant.
++  The app launcher now accepts `.sh` jobs relative to repo root.
++- **FDA loss is self-reporting.** If the grant goes, the watcher can neither run nor
++  complain (its own file becomes unreadable), so `com.claudeorchestrator.chatgptbridge.watchdog`
++  runs every 5 min from `~/Library/Application Support/chatgpt-bridge/` — outside
++  `~/Documents` on purpose — and notifies when the heartbeat at
++  `~/Library/Logs/claude-orchestrator/chatgpt-bridge.heartbeat` is >10 min stale.
++  `install.sh` verifies the chain end-to-end and fails loudly if the grant is missing.
++- Browser fallback in every repo: Actions → **Apply ChatGPT patch** → paste
++  `git diff | base64`. Needs "Allow GitHub Actions to create and approve pull requests"
++  (enabled on all six repos).
++- Every repo carries `CHATGPT.md` telling the agent to emit a patch instead of pushing;
++  `deploy-to-repos.sh` (re)installs it plus the workflow everywhere.
++- Direct pushes to production branches are still blocked by `production_push_guard` —
++  the bridge opens PRs, it does not bypass the release train.
++
++
++
++
++* Do not introduce new risks or uncertainties without proper mitigation strategies.
++* Use conditional language (e.g., "we conditionally support this proposal") instead of absolute statements.
++* Refrain from including confidential information in publicly accessible documents.
++- launchd agent `com.claudeorchestrator.chatgptbridge` runs **through ClaudeRunner.app**
++- **FDA loss is self-reporting.** If the grant goes, the watcher can neither run nor
++- Browser fallback in every repo: Actions → **Apply ChatGPT patch** → paste
++- Every repo carries `CHATGPT.md` telling the agent to emit a patch instead of pushing;
++- Direct pushes to production branches are still blocked by `production_push_guard` —
++
++
++
++- Default-DENY on allowlists. A fail-OPEN allowlist (permit on lookup miss) is a security bug - close it fail-closed, like the novel-instrument minting fix.
++- Two agents editing the same files corrupt each other. Stay within your task's file scope; shared interfaces belong in the 'contracts' task.
++- Never commit secrets. If gitleaks flags one: rotate it, purge history, gitignore, re-run.
++- agent run failed after 3 error-retries; re-scope or escalate model
++- run the prod build locally and fix all type/build errors before finishing
++
++
++
++
++why: Automating the sync process avoids manual intervention and reduces errors by ensuring that the latest changes from the development branch are consistently pushed to production in a timely manner.
++proof: git checkout master && git merge --ff-only origin/orchestrator/dev
++files: .github/workflows/auto-sync.yml
++
++
++
++
++- source: runner-claim
++- project: beethoven
++- task class: plan (need 8, risk strategy)
++- preflight triage: local:kimi-k2.7-code:cloud (qpd leader q=7.5 $0.0 (n=4))
++- strategy planner: local:deepseek-coder-v2:16b (qpd leader q=7.67 $0.0 (n=23))
++- agentic coder: claude using author model claude-fable-5
++- independent QA route: local:codestral:22b (non-agentic review: model-level optimizer rotating -> local:codestral:22b (free))
++- QA panel: local:llama3.2:3b, google:gemini-2.0-flash
++- legal gate: owner-only when the change would force licensing/registration/custody/transmission/advice or needs a secret
++- merge/release: auto-merge to orchestrator/dev after tests, verify, judge; production release via batch train
++- coordination rule: reconcile with active loop-generated work, reuse prior solutions first, do not delete or overwrite unrelated queued improvements, and leave recovered work in the queue until shipped.
++- cross-learning context:
++  - recent outcome signal: 0/12 merged, 0/12 test-pass, $0.00, models claude-fable-5, cowork-skill:claude-sonnet-5, ollama:ollama/deepseek-coder-v2:16b, swarm:openai:openai
++  - learned route: pipeline_scout -> local:llama3.2:3b, q=4.7
++  - learned route: debate_compress -> local:kimi-k2.7-code:cloud, q=7.7
++  - learned route: pipeline_plan -> local:llama3.2:3b, q=7.7
++  - learned route: build_fix -> local:llama3.1, q=7.7
++
++
++
++MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4 similarity=0.435: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi similarity=0.419: PATCH TEMPLATE 8b92d078e856
++Intent: 07062319 alter because blocks build duplicate duplicates eliminating examine focus functionality identify improve large lines maintainability module parent pareto performance pricinggridreconstruction qafix redundancy remove
++Acceptance: preserve existing behavior,
++
++REUSE FIRST: a solved implementation exists — adapt it instead of rebuilding.
++SOURCE: pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4
++SUMMARY: MERGED-DIFF LIBRARY: adapt proven prior diffs before drafting net-new code.
++SOURCE pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4 similarity=0.515: PATCH TRANSPLANT: before drafting from scratch, adapt the proven patch beethoven/recover-missing-branch-relfix-beethoven-07071626 (similarity 0.
++
++Complete the task 'canary-gemini-pro-9'.
++
++AGENTIC-REPAIR DIRECTIVE
++Repair category: orphaned-running
++Original task slug: canary-gemini-pro-9
++
++This is not a fresh requeue. Continue the same implementation to completion. Preserve any useful prior work, inspect the existing branch/worktree/artifacts first, and fix the root cause of the failure below.
++
++The worker died or stopped updating this RUNNING task. Resume the same task from existing branch/worktree/artifacts, finish the implementation, run checks, and commit.
++
++Required completion behavior:
++- Reproduce or inspect the concrete failure before changing broad strategy.
++- If dependencies/build tools are missing, repair the repo setup or install path minimally.
++- If tests/build fail, fix source/config/tests until the relevant checks are green.
++- If the branch/worktree is missing, reconstruct the smallest equivalent patch from artifacts, templates, or prior diffs.
++- Commit the final implementation on the task branch. Do not finish with only analysis, a plan, or no file changes.
++
++Agentic analysis artifacts from prior run:
++Touched files from prior run: unknown
++Prior commit SHA: unknown
++Prior patch diff (truncated):
++```diff
++zombie-reaper: stale RUNNING >30min
++```
++
++Failure context:
++```
++zombie-reaper: stale RUNNING >30min
++```
++
++bugfix
++
++[reuse-first: matched qafix-pareto-2080-07062319-slice-1-slice-1-slice-4]
++
++
++
++
++Before writing net-new code: (1) search THIS repo for an existing helper/component/pattern and extend it; (2) check the injected prior-solution notes above and the shared kernel (packages/darwin-kernel / vendor/darwin-kernel) for something to import or adapt; (3) if the same need clearly exists in sibling apps, write it as a small reusable module and note 'CANDIDATE-SHARED: <what>' in your final message so it can be promoted to a shared capability instead of re-drafted per app. Prefer the smallest diff that reuses existing code.
++
++---
++BEFORE YOU FINISH (required): run the project's production build and, if present, its tests (e.g. `npm run build` then the test command). If ANYTHING fails, fix it and re-run until the build is GREEN. Make the smallest correct change and reuse existing code. Do not finish with a red build, and do not finish by only describing changes — actually apply your edits to the files.
