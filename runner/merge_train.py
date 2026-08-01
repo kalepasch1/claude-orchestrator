@@ -185,62 +185,8 @@ def _rebase_onto_base(repo, branch, base):
     return True, ""
 
 
-def _run_tests(repo, test_cmd, ref=None):
-    """Step 3: run the gate. Returns (ok, tail-of-output)."""
-    if not test_cmd:
-        return True, "no test_cmd configured"
-    if ref:
-        import shutil, tempfile
-        root = tempfile.mkdtemp(prefix="merge-qa-")
-        worktree = os.path.join(root, "candidate")
-        try:
-            added = _git(repo, "worktree", "add", "--detach", worktree, ref)
-            if added.returncode != 0:
-                return False, "could not create branch-exact QA worktree: " + (added.stderr or "")[-500:]
-            for shared in ("node_modules", ".env", ".env.local"):
-                src, dst = os.path.join(repo, shared), os.path.join(worktree, shared)
-                if os.path.exists(src) and not os.path.exists(dst):
-                    try: os.symlink(src, dst)
-                    except OSError: pass
-            return _run_tests(worktree, test_cmd)
-        finally:
-            _git(repo, "worktree", "remove", "--force", worktree)
-            shutil.rmtree(root, ignore_errors=True)
-    timeout = _test_timeout()
-    if "npm" in test_cmd or "vitest" in test_cmd or "vue-tsc" in test_cmd or "tsc" in test_cmd or "jest" in test_cmd:
-        # 2026-07-10: a leftover untracked compiled .js shadowing its .ts source (local build
-        # residue, invisible to git status) broke every test run touching it -- twice today,
-        # once at 10 files (beethoven, tracked -- needed a human) and once at 4106 (tomorrow,
-        # all untracked). This strips only the untracked kind before every test run so the
-        # gate can't be blocked by this class of bug again. See repo_hygiene.py.
-        try:
-            cleaned = repo_hygiene.clean_stray_js_duplicates(repo)
-            if cleaned:
-                print(f"merge_train: cleaned {len(cleaned)} stray untracked .js file(s) shadowing .ts in {repo}")
-        except Exception:
-            pass
-        _ensure_node_deps(repo)
-    try:
-        r = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
-                           text=True, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return False, f"tests timed out after {timeout}s"
-    if r.returncode != 0:
-        tail = ((r.stdout or "")[-6000:] + (r.stderr or "")[-6000:]).strip()
-        # One retry after a forced install if the failure looks like missing deps (env, not code).
-        if any(s in tail.lower() for s in ("cannot find module", "module not found", "eresolve", "command not found")):
-            _ensure_node_deps(repo)
-            try:
-                r2 = subprocess.run(["bash", "-lc", test_cmd], cwd=repo, capture_output=True,
-                                    text=True, timeout=timeout)
-                if r2.returncode == 0:
-                    return True, "green (after dep install)"
-                return False, ((r2.stdout or "")[-6000:] + (r2.stderr or "")[-6000:]).strip()
-            except subprocess.TimeoutExpired:
-                return False, f"tests timed out after {timeout}s"
-        return False, tail
-    return True, "green"
 
+# (duplicate _run_tests removed 2026-07-31 — runtime always used the later def)
 
 def _try_semantic_merge(repo, branch, base):
     """Attempt AST-level semantic merge when rebase fails.
@@ -1108,6 +1054,20 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
 
     test_cmd = _test_cmd_for(proj, repo)
     candidate_sha = _commit_identity(repo, branch)
+    reg_ok, reg_detail = _post_fork_regression(repo, branch, base, _orig_fork)
+    if not reg_ok:
+        _task_patch(task, {"state": "BLOCKED",
+                           "note": ("train: REGRESSION-RISK — clean rebase deletes recently-merged improvements: " + reg_detail)[:480]})
+        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:REGRESSION-RISK"})
+        _log(pname, slug, "BLOCKED", f"regression-risk: {reg_detail[:120]}")
+        try:
+            import json as _json, time as _time
+            db.insert("coordination_tasks", {"task_type": "merge_regression_risk",
+                "payload": _json.dumps({"at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
+                                        "slug": slug, "detail": reg_detail[:800]})[:4000]}, upsert=False)
+        except Exception:
+            pass
+        return "regression-risk"
     ok, tail = _verified_or_run(repo, candidate_sha, test_cmd)  # (3) branch-exact and resumable
     if not ok and os.environ.get("ORCH_DIFFERENTIAL_QA", "true").lower() in ("1", "true", "yes", "on"):
         try:
