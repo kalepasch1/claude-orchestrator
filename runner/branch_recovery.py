@@ -116,7 +116,8 @@ def _reflog_recover(repo, branch):
     if rc2 == 0 and date_str:
         try:
             commit_dt = datetime.strptime(date_str[:19], "%Y-%m-%d %H:%M:%S")
-            if datetime.utcnow() - commit_dt > timedelta(days=STALE_DAYS):
+            age_days = (datetime.utcnow() - commit_dt).days
+            if age_days > STALE_DAYS:
                 return False, f"reflog entry too old ({date_str[:10]})"
         except ValueError:
             pass  # can't parse — proceed anyway
@@ -181,6 +182,13 @@ def recover_branch(project_path, branch_name):
     # Strategy 3: unrecoverable
     _stats["recover_unrecoverable"] += 1
     _log.info("branch %s is unrecoverable: %s", branch_name, detail)
+
+    # Final check: maybe it was recovered by another thread/process
+    if _branch_exists_local(project_path, branch_name):
+        _stats["recover_fetched"] += 1
+        return {"status": "recovered",
+                "action_taken": "recovered by concurrent process"}
+
     return {"status": "unrecoverable",
             "action_taken": f"all strategies exhausted: {detail}"}
 

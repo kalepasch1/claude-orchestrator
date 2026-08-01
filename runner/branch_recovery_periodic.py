@@ -111,6 +111,11 @@ def _recover_project(project, missing_tasks):
     return detected, recovered
 
 
+def sweep():
+    """Alias for run() — scans projects for missing branches."""
+    return run()
+
+
 def run():
     """Main entry point for the periodic scheduler."""
     if not ENABLED:

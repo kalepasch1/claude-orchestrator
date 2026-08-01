@@ -67,15 +67,6 @@ class PricingTier:
         """Single source of truth for unlimited tier detection."""
         return self.max_units is None
 
-    @staticmethod
-    def _tier_capacity(tier: 'PricingTier') -> int:
-        """Unified capacity calculation for a tier."""
-        if tier.is_unlimited:
-            return 0
-        if tier.max_units < tier.min_units:
-            return 0
-        return _calculate_applicable_units(tier.max_units, tier.min_units, tier.max_units)
-
     def cost_for_units(self, units: int) -> float:
         """Calculate cost for units within this tier's range."""
         applicable = _calculate_applicable_units(units, self.min_units, self.max_units)
@@ -111,8 +102,11 @@ class PricingGrid:
         return sorted(self.tiers, key=lambda t: t.min_units)
 
     @staticmethod
-    def _consume_and_cost(tier: PricingTier, remaining: int) -> Tuple[int, float]:
-        """Unified method: consume units from tier and calculate cost."""
+    def _consume_tier_units(tier: PricingTier, remaining: int) -> Tuple[int, float]:
+        """Consume units from tier and calculate cost.
+
+        Returns (consumed_units, cost_for_consumed).
+        """
         if remaining <= 0:
             return 0, 0.0
 
@@ -139,7 +133,7 @@ class PricingGrid:
         for tier in self.sorted_tiers:
             if remaining <= 0:
                 break
-            consumed, cost = self._consume_and_cost(tier, remaining)
+            consumed, cost = self._consume_tier_units(tier, remaining)
             total += cost
             remaining -= consumed
         return round(total, 2)
