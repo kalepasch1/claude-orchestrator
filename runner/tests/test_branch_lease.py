@@ -34,6 +34,13 @@ class BranchLeaseTest(unittest.TestCase):
             self.task, "/repo", "agent/example", "main", owner="test"))
         self.assertIsNone(branch_lease.active(self.task["id"]))
 
+    @mock.patch.object(branch_lease, "_sha", return_value=None)
+    @mock.patch.object(branch_lease.db, "rpc", side_effect=RuntimeError("RPC unavailable"))
+    def test_acquire_rpc_outage_fails_soft_and_closed(self, _rpc, _sha):
+        self.assertIsNone(branch_lease.acquire(
+            self.task, "/repo", "agent/example", "main", owner="test"))
+        self.assertIsNone(branch_lease.active(self.task["id"]))
+
     def test_cowork_contract_forbids_destructive_branch_operations(self):
         skill = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cowork_executor", "SKILL.md")
         with open(skill, encoding="utf-8") as fh:
