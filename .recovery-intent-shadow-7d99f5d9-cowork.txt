@@ -1,0 +1,4 @@
+recovery-intent: shadow-7d99f5d9-cowork
+template: 47303a29d02a
+intent: 07062319 07071626 7d99f5d9 8b92d078e856 acceptance adapt agentic alter analysis artifacts because beethoven before behavior below blocks branch broad bugfix build category cause changes changing checks commit complete completion concrete config context continue cowork dependencies diffs directive drafting duplicate duplicates eliminating equivalent examine existing exists expired failure files final finish first focus fresh functionality green heartbeat identify implementation improve inspect install instead intent large library lines maintainability matched merged minimally missing module original orphaned parent pareto patch performance preserve pricinggridreconstructi pricinggridreconstruction
+base: master
