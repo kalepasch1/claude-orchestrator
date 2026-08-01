@@ -96,6 +96,18 @@ def _git(repo, *args, timeout=60):
                           encoding="utf-8", errors="replace", timeout=timeout)
 
 
+def _already_integrated(repo, branch, base):
+    """True when branch's tip is already an ancestor of base (nothing left to merge).
+
+    RESTORED 2026-07-31: this helper was dropped by an overwrite while its call
+    site survived — every project's train pass then died with NameError, which
+    process_project_isolated swallowed into "project_errors", producing
+    "0 merged / 58x skipped" on every pass since Jul 28 (the no-prod-deploys
+    incident). One line of code; three days of frozen releases.
+    """
+    return _git(repo, "merge-base", "--is-ancestor", branch, base).returncode == 0
+
+
 def _branch_exists(repo, branch):
     return _git(repo, "rev-parse", "--verify", branch).returncode == 0
 
