@@ -1,0 +1,4 @@
+recovery-intent: canary-codex-8
+template: 306b64b8b6d8
+intent: 07041728 07190257 20251001 _cooldown _cooldown_max _run_task_safe acceptance account_pool actions active adapt address advice after agent agentic analogous analysis another apparently applied artifacts asking attempt author barks batch because beethoven before behavior below billing blocked bottleneck branch broad bugfix build build_fix canary cases category cause change changes changing checks claim clarification class claude cleanly coder codex commit completion concrete config context continue contract cooldown_until coordination corrective cowork cross custody deepseek defined delete dependencies deployed deployfix diffs directive documents drafting dropbox duplicate
+base: main
