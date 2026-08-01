@@ -190,6 +190,58 @@ def adapter_directive(task, limit=3):
     return "\n".join(lines)
 
 
+HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+DIFF_GIT = re.compile(r"^diff --git a/(.+) b/(.+)$")
+
+
+def identify_affected_lines(diff_text):
+    """Pinpoint the file paths and old/new line ranges touched by a unified diff.
+
+    Returns {file_path: [{"old_start", "old_count", "new_start", "new_count"}, ...]}.
+    Files touched with no line-level hunk (pure rename, binary, mode-only change)
+    map to an empty list. Fails soft to {} on None/empty/malformed input.
+    """
+    if isinstance(diff_text, bytes):
+        diff_text = diff_text.decode("utf-8", errors="replace")
+    if not diff_text or not isinstance(diff_text, str):
+        return {}
+    try:
+        affected = {}
+        current_file = None
+        for line in diff_text.splitlines():
+            m = DIFF_GIT.match(line)
+            if m:
+                current_file = m.group(2)
+                affected.setdefault(current_file, [])
+                continue
+            if line.startswith("+++ "):
+                path = line[4:].split("\t")[0].strip()
+                if path not in ("/dev/null", ""):
+                    current_file = path[2:] if path.startswith("b/") else path
+                    affected.setdefault(current_file, [])
+                continue
+            if line.startswith("--- "):
+                path = line[4:].split("\t")[0].strip()
+                if current_file is None and path not in ("/dev/null", ""):
+                    current_file = path[2:] if path.startswith("a/") else path
+                    affected.setdefault(current_file, [])
+                continue
+            m = HUNK_HEADER.match(line)
+            if m and current_file is not None:
+                try:
+                    affected[current_file].append({
+                        "old_start": int(m.group(1)),
+                        "old_count": int(m.group(2)) if m.group(2) is not None else 1,
+                        "new_start": int(m.group(3)),
+                        "new_count": int(m.group(4)) if m.group(4) is not None else 1,
+                    })
+                except (TypeError, ValueError):
+                    continue
+        return affected
+    except Exception:
+        return {}
+
+
 def stats():
     """Return library statistics for operator observability."""
     try:
