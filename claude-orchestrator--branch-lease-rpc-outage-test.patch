@@ -1,0 +1,37 @@
+# repo: claude-orchestrator
+# message: test(branch-lease): cover heartbeat RPC outages
+
+diff --git a/runner/tests/test_branch_lease.py b/runner/tests/test_branch_lease.py
+index 51d33ba9..1b4c19b4 100644
+--- a/runner/tests/test_branch_lease.py
++++ b/runner/tests/test_branch_lease.py
+@@ -34,6 +34,29 @@ class BranchLeaseTest(unittest.TestCase):
+             self.task, "/repo", "agent/example", "main", owner="test"))
+         self.assertIsNone(branch_lease.active(self.task["id"]))
+ 
++    @mock.patch.object(branch_lease.db, "rpc", side_effect=RuntimeError("RPC unavailable"))
++    def test_heartbeat_rpc_outage_fails_soft(self, _rpc):
++        branch = "agent/example"
++        lease = {
++            "p_project_id": self.task["project_id"],
++            "branch": branch,
++            "p_task_id": self.task["id"],
++            "p_token": "token",
++            "token": "token",
++            "ttl": 3600,
++        }
++
++        with mock.patch.object(
++                branch_lease, "_active", {(self.task["id"], branch): lease}):
++            self.assertTrue(branch_lease.heartbeat(self.task["id"], branch))
++        _rpc.assert_called_once_with("heartbeat_branch_execution_lease", {
++            "p_project_id": self.task["project_id"],
++            "p_branch": branch,
++            "p_task_id": self.task["id"],
++            "p_token": "token",
++            "p_ttl_seconds": 3600,
++        })
++
+     def test_cowork_contract_forbids_destructive_branch_operations(self):
+         skill = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cowork_executor", "SKILL.md")
+         with open(skill, encoding="utf-8") as fh:
