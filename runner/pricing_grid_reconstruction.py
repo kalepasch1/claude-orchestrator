@@ -20,7 +20,7 @@ import common_utils
 _log = _log_mod.get("pricing_grid_reconstruction")
 
 
-def _tier_in_range(units: int, tier_min: int, tier_max: Optional[int]) -> bool:
+def _tier_units_in_range(units: int, tier_min: int, tier_max: Optional[int]) -> bool:
     """Single source of truth for tier range checking."""
     if units < tier_min:
         return False
@@ -29,18 +29,18 @@ def _tier_in_range(units: int, tier_min: int, tier_max: Optional[int]) -> bool:
     return True
 
 
-def _applicable_units_in_tier(units: int, tier_min: int, tier_max: Optional[int]) -> int:
+def _calculate_applicable_units(units: int, tier_min: int, tier_max: Optional[int]) -> int:
     """Single unified method for calculating applicable units in a tier range.
 
     Returns 0 if units outside range; otherwise returns applicable_units.
     """
-    if not _tier_in_range(units, tier_min, tier_max):
+    if not _tier_units_in_range(units, tier_min, tier_max):
         return 0
     upper = tier_max if tier_max is not None else units
     return min(units, upper) - tier_min + 1
 
 
-def _tier_from_dict(tier_dict: Dict[str, Any]) -> 'PricingTier':
+def _build_pricing_tier_from_dict(tier_dict: Dict[str, Any]) -> 'PricingTier':
     """Single unified factory for constructing PricingTier from dict."""
     return PricingTier(
         name=tier_dict.get("name", "default"),
@@ -67,24 +67,21 @@ class PricingTier:
         """Single source of truth for unlimited tier detection."""
         return self.max_units is None
 
-    def _tier_capacity(self) -> int:
-        """Unified capacity calculation for this tier."""
-        if self.is_unlimited:
+    @staticmethod
+    def _tier_capacity(tier: 'PricingTier') -> int:
+        """Unified capacity calculation for a tier."""
+        if tier.is_unlimited:
             return 0
-        if self.max_units < self.min_units:
+        if tier.max_units < tier.min_units:
             return 0
-        return _applicable_units_in_tier(self.max_units, self.min_units, self.max_units)
-
-    def _calculate_cost(self, applicable_units: int) -> float:
-        """Single unified cost calculation from applicable units."""
-        if applicable_units == 0:
-            return 0.0
-        return self.flat_fee + (applicable_units * self.unit_price)
+        return _calculate_applicable_units(tier.max_units, tier.min_units, tier.max_units)
 
     def cost_for_units(self, units: int) -> float:
         """Calculate cost for units within this tier's range."""
-        applicable = _applicable_units_in_tier(units, self.min_units, self.max_units)
-        return self._calculate_cost(applicable)
+        applicable = _calculate_applicable_units(units, self.min_units, self.max_units)
+        if applicable == 0:
+            return 0.0
+        return self.flat_fee + (applicable * self.unit_price)
 
     def to_dict(self, include_metadata: bool = False) -> Dict[str, Any]:
         """Serialize tier to dict. Metadata excluded by default."""
@@ -113,7 +110,8 @@ class PricingGrid:
         """Tiers sorted by min_units ascending."""
         return sorted(self.tiers, key=lambda t: t.min_units)
 
-    def _consume_and_cost(self, tier: PricingTier, remaining: int) -> Tuple[int, float]:
+    @staticmethod
+    def _consume_and_cost(tier: PricingTier, remaining: int) -> Tuple[int, float]:
         """Unified method: consume units from tier and calculate cost."""
         if remaining <= 0:
             return 0, 0.0
@@ -124,7 +122,10 @@ class PricingGrid:
             tier_max=tier.max_units,
             amount=remaining
         )
-        cost = tier._calculate_cost(consumed)
+        if consumed == 0:
+            cost = 0.0
+        else:
+            cost = tier.flat_fee + (consumed * tier.unit_price)
         return consumed, cost
 
     def total_cost(self, units: int) -> float:
@@ -149,7 +150,7 @@ class PricingGrid:
         Uses unified range check to eliminate duplication.
         """
         for tier in self.tiers:
-            if _tier_in_range(units, tier.min_units, tier.max_units):
+            if _tier_units_in_range(units, tier.min_units, tier.max_units):
                 return tier
         return None
 
@@ -174,7 +175,7 @@ class PricingGridReconstructionUtil:
     def from_raw_tiers(product_id: str, raw_tiers: List[Dict[str, Any]],
                        currency: str = "USD") -> PricingGrid:
         """Reconstruct PricingGrid from raw tier dicts using unified factory."""
-        tiers = [_tier_from_dict(rt) for rt in raw_tiers]
+        tiers = [_build_pricing_tier_from_dict(rt) for rt in raw_tiers]
         grid = PricingGrid(product_id=product_id, tiers=tiers, currency=currency)
         grid.tiers = grid.sorted_tiers
         return grid
