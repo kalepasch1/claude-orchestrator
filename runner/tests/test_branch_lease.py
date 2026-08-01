@@ -41,6 +41,33 @@ class BranchLeaseTest(unittest.TestCase):
             self.task, "/repo", "agent/example", "main", owner="test"))
         self.assertIsNone(branch_lease.active(self.task["id"]))
 
+    @mock.patch.object(branch_lease, "_sha", return_value="abc")
+    def test_heartbeat_rpc_outage_reports_alive(self, _sha):
+        with mock.patch.object(branch_lease.db, "rpc", return_value=True):
+            self.assertIsNotNone(branch_lease.acquire(
+                self.task, "/repo", "agent/example", "main", owner="test"))
+        with mock.patch.object(branch_lease.db, "rpc",
+                               side_effect=RuntimeError("RPC unavailable")):
+            self.assertTrue(branch_lease.heartbeat(self.task["id"]))
+
+    @mock.patch.object(branch_lease, "_sha", return_value="abc")
+    def test_heartbeat_genuine_lease_loss_reports_dead(self, _sha):
+        with mock.patch.object(branch_lease.db, "rpc", return_value=True):
+            self.assertIsNotNone(branch_lease.acquire(
+                self.task, "/repo", "agent/example", "main", owner="test"))
+        with mock.patch.object(branch_lease.db, "rpc", return_value=False):
+            self.assertFalse(branch_lease.heartbeat(self.task["id"]))
+
+    @mock.patch.object(branch_lease, "_sha", return_value="abc")
+    def test_release_rpc_outage_does_not_raise(self, _sha):
+        with mock.patch.object(branch_lease.db, "rpc", return_value=True):
+            self.assertIsNotNone(branch_lease.acquire(
+                self.task, "/repo", "agent/example", "main", owner="test"))
+        with mock.patch.object(branch_lease.db, "rpc",
+                               side_effect=RuntimeError("RPC unavailable")):
+            self.assertFalse(branch_lease.release(self.task["id"]))
+        self.assertIsNone(branch_lease.active(self.task["id"]))
+
     def test_cowork_contract_forbids_destructive_branch_operations(self):
         skill = os.path.join(os.path.dirname(os.path.dirname(__file__)), "cowork_executor", "SKILL.md")
         with open(skill, encoding="utf-8") as fh:
