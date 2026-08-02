@@ -17,8 +17,10 @@ so callers always get a usable dict.
 """
 
 # PEP 604 (`X | None`) in a signature is evaluated at definition time -> TypeError on
-# Python 3.9, this fleet's interpreter. Without this the module cannot be imported.
-from __future__ import annotations
+# Python 3.9, this fleet's interpreter. The required `from __future__ import annotations`
+# is already the first statement above; a second copy here came after the module docstring,
+# which Python rejects outright ("__future__ imports must occur at the beginning of the file"),
+# so the module could not be imported at all.
 
 import os, sys, json, time, datetime, statistics
 

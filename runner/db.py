@@ -30,6 +30,19 @@ def _reset_db_failure_count():
         _db_failure_count = 0
 
 
+class MissingRelationError(Exception):
+    """Raised when a PostgREST request targets a table that does not exist in the schema.
+
+    This is a permanent, structural error, not a transient one: no amount of retrying will make
+    the table appear. It exists so callers — and the periodic job runner in particular — can tell
+    "this job is querying something that was never deployed" apart from a real outage.
+
+    Added 2026-08-02 after finding relationship_crm (crm_contacts) and virtual_executive_worker
+    (legal_obligations) had each crash-looped thousands of times against tables that do not
+    exist, writing 17MB of identical tracebacks that buried every genuine failure in the logs.
+    """
+
+
 class TransientDBError(Exception):
     """Raised when a Supabase/PostgREST request fails with a retryable HTTP status (e.g. 409 Conflict).
 
@@ -286,6 +299,13 @@ def _req(method, path, body=None, headers=None, params=None):
             # of insert(), so returning None is safe.
             if e.code == 409:
                 raise TransientDBError(f"HTTP 409 Conflict on {method} {path}") from e
+            # A 404 on /rest/v1/<table> means the relation is not in the schema. Retrying cannot
+            # help, and letting it surface as a bare HTTPError is what allowed several jobs to
+            # crash-loop indefinitely against tables that were never deployed.
+            if e.code == 404 and path.startswith("/rest/v1/"):
+                _relation = path[len("/rest/v1/"):].split("?")[0].strip("/")
+                raise MissingRelationError(
+                    f"relation '{_relation}' does not exist (HTTP 404 on {method} {path})") from e
             if not retryable or e.code not in HTTP_RETRY_STATUSES or attempt >= attempts - 1:
                 raise
             time.sleep(min(12, 2 ** attempt) + (0.1 * attempt))

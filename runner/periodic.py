@@ -19,7 +19,7 @@ Usage:
   python3 periodic.py spec
   python3 periodic.py txn
 """
-import os, sys, subprocess, time
+import os, sys, subprocess, time, json
 # Inherited NODE_ENV=production makes npm omit devDependencies in every child job (staging QA,
 # prewarm, merge/release trains) → "Could not load <module>" failures. Strip it (see runner.py).
 os.environ.pop("NODE_ENV", None)
@@ -126,10 +126,69 @@ def _reap_stale_holder(job, lock_path):
     return not _pid_alive(pid)
 
 
+def _invoke_job(job):
+    """Run a job, converting a permanently-missing table into a disable rather than a crash loop."""
+    try:
+        return JOBS[job]()
+    except db.MissingRelationError as exc:
+        _disable_job(job, str(exc))
+        return None
+
+
+_DISABLED_JOBS_PATH = os.path.join(_RUNTIME, "disabled_jobs.json")
+
+
+def _disabled_jobs():
+    try:
+        with open(_DISABLED_JOBS_PATH) as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _disable_job(job, reason):
+    """Record a job as structurally broken so it stops running every cycle.
+
+    A job querying a table that does not exist cannot be fixed by running it again. Before this,
+    relationship_crm and virtual_executive_worker each retried thousands of times and wrote 17MB
+    of identical tracebacks, which is how genuinely broken jobs stayed invisible. Disable the job,
+    say so once, and raise an approval so a human actually sees it.
+    """
+    state = _disabled_jobs()
+    if job in state:
+        return
+    state[job] = {"reason": reason, "disabled_at": int(time.time())}
+    try:
+        os.makedirs(_RUNTIME, exist_ok=True)
+        tmp = "%s.%d.tmp" % (_DISABLED_JOBS_PATH, os.getpid())
+        with open(tmp, "w") as fh:
+            json.dump(state, fh, indent=2)
+        os.replace(tmp, _DISABLED_JOBS_PATH)
+    except Exception as exc:
+        print(f"periodic {job}: could not persist disable state ({exc})")
+    print(f"periodic {job}: DISABLED — {reason}")
+    try:
+        db.insert("approvals", {
+            "project": "", "kind": "job_disabled",
+            "title": f"periodic job '{job}' disabled: missing database relation",
+            "status": "pending", "detail": reason,
+            "risk": "the job cannot run until the table is deployed or the job is retired; "
+                    "it is no longer retrying, so nothing else is being masked by its log noise",
+        })
+    except Exception:
+        pass  # never let the escalation path fail the runner
+
+
 def _run_job_locked(job):
     """Prevent slow periodic jobs from overlapping their next scheduled invocation."""
+    disabled = _disabled_jobs().get(job)
+    if disabled and os.environ.get("ORCH_RUN_DISABLED_JOBS", "").lower() not in ("1", "true", "yes", "on"):
+        print(f"periodic {job}: skipped; disabled — {disabled.get('reason', 'no reason recorded')}. "
+              f"Re-enable by removing it from {_DISABLED_JOBS_PATH}")
+        return None
     if fcntl is None or os.environ.get("ORCH_PERIODIC_JOB_LOCKS", "true").lower() not in ("1", "true", "yes", "on"):
-        return JOBS[job]()
+        return _invoke_job(job)
     os.makedirs(_PERIODIC_LOCK_DIR, exist_ok=True)
     lock_path = os.path.join(_PERIODIC_LOCK_DIR, f"{job}.lock")
     with open(lock_path, "a+") as lock:
@@ -147,7 +206,7 @@ def _run_job_locked(job):
         lock.truncate()
         lock.write(f"{os.getpid()} {int(time.time())}\n")
         lock.flush()
-        return JOBS[job]()
+        return _invoke_job(job)
 
 
 def run_spec():

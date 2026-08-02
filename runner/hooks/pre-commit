@@ -65,4 +65,47 @@ MSG
   fi
 fi
 
+# ── 3. Runner source integrity: conflict markers + undefined names ───────────────
+#
+# WHY (2026-08-02): an unresolved `<<<<<<< HEAD` was committed into runner/db.py. db.py is the
+# database layer, so every module importing it died with SyntaxError — merge_train (pushes),
+# preflight (the QA gate), integration_sweeper, quarantine and remediate all went down at once
+# and stayed down, while the fleet kept merging work locally that could never reach production.
+# Separately, a full-tree pyflakes sweep found 42 undefined names outside the 14 modules the
+# startup gate covers; one of them (blocker_quarantine's `max_depth`) crash-looped for weeks.
+#
+# Both classes are statically detectable in under a second, so neither should ever be committable.
+# Escape hatch: SKIP_RUNNER_SANITY=1 git commit …
+if [ "${SKIP_RUNNER_SANITY:-0}" != "1" ]; then
+  _staged_py=$(git diff --cached --name-only --diff-filter=ACM | grep -E '^runner/.*\.py$' || true)
+  if [ -n "$_staged_py" ]; then
+    _bad_markers=$(git diff --cached --name-only --diff-filter=ACM -G'^(<<<<<<< |>>>>>>> )' \
+                     -- 'runner/*.py' || true)
+    if [ -n "$_bad_markers" ]; then
+      echo "[pre-commit] ✗ unresolved merge-conflict markers in:" >&2
+      echo "$_bad_markers" | sed 's/^/    /' >&2
+      echo "[pre-commit] Resolve the conflict before committing (this is what took the fleet down on 2026-08-02)." >&2
+      exit 1
+    fi
+    for _f in $_staged_py; do
+      [ -f "$_f" ] || continue
+      if ! python3 -m py_compile "$_f" 2>/tmp/_pc.$$; then
+        echo "[pre-commit] ✗ $_f does not compile:" >&2
+        sed 's/^/    /' /tmp/_pc.$$ >&2; rm -f /tmp/_pc.$$
+        exit 1
+      fi
+      rm -f /tmp/_pc.$$
+    done
+    if python3 -c 'import pyflakes' 2>/dev/null; then
+      _undef=$(python3 -m pyflakes $_staged_py 2>/dev/null | grep 'undefined name' || true)
+      if [ -n "$_undef" ]; then
+        echo "[pre-commit] ✗ undefined names in staged runner code:" >&2
+        echo "$_undef" | sed 's/^/    /' >&2
+        echo "[pre-commit] Python only raises these at call time, so they ship silently and crash-loop a job later." >&2
+        exit 1
+      fi
+    fi
+  fi
+fi
+
 exit 0

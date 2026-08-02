@@ -32,6 +32,28 @@ CRITICAL_MODULES = [
 ]
 
 
+def all_modules():
+    """Every runner module, excluding tests.
+
+    WHY (2026-08-02): the gate only ever covered the 14 names above, so undefined names went on
+    shipping everywhere else. A sweep of the full tree found 42 of them across nine modules —
+    including blocker_quarantine's `max_depth`, which crash-looped the quarantine job for weeks,
+    and whole missing functions in config_sync, ci_dispatch and promotion_pipeline. Those are the
+    same "overwrite dropped the definition, the call site survived" failure this module was
+    written to stop; it just wasn't looking at those files. audit() below covers the whole tree so
+    the sentinel can report drift outside the critical set without gating startup on it.
+    """
+    return sorted(
+        os.path.join(HERE, n) for n in os.listdir(HERE)
+        if n.endswith(".py") and not n.startswith("test_")
+    )
+
+
+def audit():
+    """Undefined-name findings across the entire runner tree. Returns [] clean, None if no tool."""
+    return check(all_modules())
+
+
 def _pyflakes(paths):
     try:
         r = subprocess.run([sys.executable, "-m", "pyflakes", *paths],
