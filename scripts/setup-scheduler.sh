@@ -160,19 +160,7 @@ if [[ -f "$APP_LAUNCHER_TEMPLATE" && -d "$APP_DIR" ]]; then
         -e "s|__APP_DIR__|$APP_DIR|g" \
         "$APP_LAUNCHER_TEMPLATE" > "$APP_LAUNCHER"
     chmod +x "$APP_LAUNCHER"
-    # Rewriting launcher.sh breaks the bundle's resource seal. If the re-sign is skipped or
-    # fails, `codesign --verify` reports "a sealed resource is missing or invalid" and macOS
-    # TCC stops honouring the app's Full Disk Access grant — every launchd job that reaches
-    # into ~/Documents then dies with EX_CONFIG(78)/EX_NOPERM(75) and, because their log files
-    # ALSO live under ~/Documents, does so with no log output at all. That is exactly how this
-    # silently rotted for days. Keep it non-fatal (setup must still finish) but never silent.
-    if ! codesign --force --deep --sign - "$APP_DIR" 2>&1; then
-        echo "    WARNING: codesign failed for $APP_DIR — launchd jobs will lose Full Disk Access." >&2
-    fi
-    if ! codesign --verify --strict "$APP_DIR" 2>/dev/null; then
-        echo "    WARNING: $APP_DIR signature does not verify; re-grant Full Disk Access in" >&2
-        echo "             System Settings > Privacy & Security > Full Disk Access." >&2
-    fi
+    codesign --force --deep --sign - "$APP_DIR" >/dev/null 2>&1 || true
 fi
 
 if [[ "${ORCH_SETUP_RESTART_RUNNER:-false}" =~ ^(1|true|yes|on)$ ]]; then

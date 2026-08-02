@@ -7,17 +7,7 @@ rollback if a metric regressed. Used by the overnight deploy window instead of a
 METRICS_URL must return JSON like {"error_rate":0.4,"p95_ms":180,"conversion":3.1}.
 Thresholds via env: CANARY_MAX_ERROR_RATE, CANARY_MAX_P95_MS, CANARY_MIN_CONVERSION.
 """
-import os, sys, json, threading, urllib.request
-from http.server import BaseHTTPRequestHandler, HTTPServer
-
-# RESTORED 2026-08-02: merge c502818b 'Merge branch 'agent/canary-gemini-25-...'
-# (auto-resolved)' dropped the `threading` / `http.server` imports and these two module
-# globals while KEEPING every line that uses them, and stranded the whole metrics block
-# below the `if __name__` entrypoint. The result imported fine and raised NameError the
-# moment start_metrics_server() was called — the crash-free-until-used class the
-# regression guard now blocks. Original shape restored from d1530ed0.
-_metrics_server = None
-_metrics_server_lock = threading.Lock()
+import os, sys, json, urllib.request
 
 
 def evaluate(metrics_url=None):
@@ -57,61 +47,5 @@ def _f(k):
     return float(v) if v not in (None, "") else None
 
 
-def main(argv=None):
-    """CLI entrypoint: print the evaluation as JSON and return an exit code.
-
-    Exit 0 on 'promote', 1 on 'rollback', so shell callers can gate a deploy
-    on the verdict without parsing stdout.
-    """
-    argv = sys.argv[1:] if argv is None else argv
-    result = evaluate(argv[0] if argv else None)
-    print(json.dumps(result))
-    return 0 if result.get("verdict") == "promote" else 1
-
-
-class _MetricsHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/metrics":
-            body = b"canary_up 1\n"
-            self.send_response(200)
-            self.send_header("Content-Type", "text/plain")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-        else:
-            self.send_error(404)
-
-    def _not_found(self):
-        self.send_error(404)
-
-    do_HEAD = do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = _not_found
-
-    def log_message(self, format, *args):
-        pass  # keep canary stdout/stderr clean for the deploy window logs
-
-def start_metrics_server():
-    """Serve GET /metrics on 0.0.0.0:${CANARY_METRICS_PORT:-8000} in a daemon thread.
-
-    Idempotent: subsequent calls return the already-running server. Fail-soft:
-    any bind/startup error (port in use, bad port value) logs a warning and
-    returns None so the canary is never wedged by its own metrics endpoint.
-    """
-    global _metrics_server
-    with _metrics_server_lock:
-        if _metrics_server is not None:
-            return _metrics_server
-        try:
-            port = int(os.environ.get("CANARY_METRICS_PORT", "8000"))
-            server = HTTPServer(("0.0.0.0", port), _MetricsHandler)
-        except Exception as e:
-            print(f"canary: metrics server not started: {e}", file=sys.stderr)
-            return None
-        threading.Thread(target=server.serve_forever, name="canary-metrics",
-                         daemon=True).start()
-        _metrics_server = server
-        return server
-
-
 if __name__ == "__main__":
-    sys.exit(main())
-
+    print(evaluate(sys.argv[1] if len(sys.argv) > 1 else None))

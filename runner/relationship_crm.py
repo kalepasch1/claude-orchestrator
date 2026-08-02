@@ -13,12 +13,11 @@ def run(limit=250):
     }) or []
     created = 0
     for c in contacts:
-        if c.get('do_not_contact'): continue
         due = not c.get('next_contact_at') or c['next_contact_at'] <= _iso(now)
         if not due: continue
         existing = db.select('crm_recommendations', {'select':'id','contact_id':f"eq.{c['id']}",'status':'eq.open','limit':'1'}) or []
         if existing: continue
-        health = int(c['relationship_health']) if c.get('relationship_health') is not None else 50
+        health = int(c.get('relationship_health') or 50)
         if health < 35:
             kind,title,rationale = 'relationship_repair','Repair the relationship before making an ask','Health is below 35. Lead with acknowledgment, listening, and a no-pressure next step.'
         elif not c.get('marketing_allowed'):

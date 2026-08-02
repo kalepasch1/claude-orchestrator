@@ -150,13 +150,6 @@ def isolated_repo(canonical_repo, owner):
     path = _worktree_path(canonical_repo)
     temporary = False
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    # 2026-07-31: a killed/crashed pass leaves registrations pointing at removed
-    # directories; the next pass then hit FileNotFoundError mid-flight. Prune
-    # stale registrations up front so state on disk and in git agree.
-    try:
-        _git(canonical_repo, "worktree", "prune")
-    except Exception:
-        pass
     registered = _registered_worktrees(canonical_repo)
     # Never delete uncommitted integration work automatically.  It may contain
     # a partially completed merge that needs review.  Instead preserve that

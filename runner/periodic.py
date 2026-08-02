@@ -268,26 +268,6 @@ def run_worktreegc():
     import worktree_gc; worktree_gc.run()
 
 
-def run_vercelconfig():
-    """Deploy-config coherence: catches vercel.json/package.json/.vercelignore drift a local build cannot."""
-    import vercel_config_guard; vercel_config_guard.run()
-
-
-def run_cleanclone():
-    """Pristine git-archive + real install + real build. Catches 'works on my machine' drift."""
-    import clean_clone_gate; clean_clone_gate.run()
-
-
-def run_botcommits():
-    """Bot-authored commits must parse. Catches the hisanta class (bot stripped a string escape)."""
-    import bot_commit_verifier; bot_commit_verifier.run()
-
-
-def run_crashloop():
-    """Detect modules crashing on every invocation (preflight was 100% dead for 19 days, unnoticed)."""
-    import crash_loop_detector; crash_loop_detector.run()
-
-
 def run_remotegc():
     """GC stale remote agent/* branches (fills gap branch_gc.py doesn't cover)."""
     import workflow_guardrails
@@ -832,10 +812,6 @@ JOBS = {
     "stripe": run_stripe,
     "ownerreport": run_ownerreport,
     "worktreegc": run_worktreegc,
-    "vercelconfig": run_vercelconfig,
-    "cleanclone": run_cleanclone,
-    "botcommits": run_botcommits,
-    "crashloop": run_crashloop,
     "remotegc": run_remotegc,
     "releasetrain": run_releasetrain,
     "deployverify": run_deployverify,

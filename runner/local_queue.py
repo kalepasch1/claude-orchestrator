@@ -88,7 +88,7 @@ def sync_from_remote(remote_tasks_queued, remote_tasks_running):
     Returns:
         None. Fail-soft: logs warnings on error instead of raising.
     """
-    if remote_tasks_queued is None and remote_tasks_running is None:
+    if not remote_tasks_queued and not remote_tasks_running:
         return
 
     conn = _get_connection()
@@ -100,66 +100,21 @@ def sync_from_remote(remote_tasks_queued, remote_tasks_running):
         now = datetime.datetime.utcnow().isoformat() + "Z"
 
         with _mirror_lock:
-            # The caller's projection (db.claim_fields) does not select `state`,
-            # so the row's own state is unreliable -- RUNNING tasks were being
-            # mirrored as QUEUED. Label each row by the query that produced it.
             for task in (remote_tasks_queued or []):
-                _upsert_mirror_task(conn, task, now, state="QUEUED")
+                _upsert_mirror_task(conn, task, now)
             for task in (remote_tasks_running or []):
-                _upsert_mirror_task(conn, task, now, state="RUNNING")
-            _reconcile_mirror(conn, now)
+                _upsert_mirror_task(conn, task, now)
             conn.commit()
     except Exception as e:
         _log.warning("sync_from_remote failed: %s", e)
 
 
-# A task that leaves QUEUED/RUNNING simply stops appearing in the snapshot, so an
-# upsert-only sync can never observe its departure and the row lives forever. The
-# mirror had grown to 8,883 rows against ~1,053 genuinely-active tasks -- an 8x
-# overcount that fed every capacity and pacing decision made off the mirror.
-#
-# The snapshot is NOT authoritative: db.claim_task caps its scan at
-# ORCH_CLAIM_SCAN_LIMIT (1000) rows, so with 1,044 real QUEUED tasks a
-# "delete everything not in this batch" reconcile would evict live work on every
-# pass. Instead evict on the two signals that are individually sound:
-#   1. an observed non-active state (we saw it leave), and
-#   2. staleness -- no snapshot has mentioned the row in MIRROR_TTL_HOURS.
-# The mirror is a rebuildable offline cache with the remote as source of truth,
-# so an over-eager eviction costs a cache miss, never real work.
-MIRROR_TTL_HOURS = int(os.environ.get("ORCH_MIRROR_TTL_HOURS", "24") or 24)
-_ACTIVE_STATES = ("QUEUED", "RUNNING")
-
-
-def _reconcile_mirror(conn, now):
-    """Evict mirror rows that have left QUEUED/RUNNING or gone stale."""
-    try:
-        conn.execute(
-            "DELETE FROM mirror_tasks WHERE state IS NOT NULL AND state NOT IN (?, ?)",
-            _ACTIVE_STATES,
-        )
-        conn.execute(
-            "DELETE FROM mirror_tasks WHERE synced_at IS NULL OR synced_at < ?",
-            (_ttl_cutoff(now),),
-        )
-    except Exception as e:
-        _log.warning("mirror reconcile failed: %s", e)
-
-
-def _ttl_cutoff(now):
-    try:
-        base = datetime.datetime.strptime(now.rstrip("Z"), "%Y-%m-%dT%H:%M:%S.%f")
-    except Exception:
-        base = datetime.datetime.utcnow()
-    return (base - datetime.timedelta(hours=MIRROR_TTL_HOURS)).isoformat() + "Z"
-
-
-def _upsert_mirror_task(conn, task, now, state=None):
+def _upsert_mirror_task(conn, task, now):
     """Insert or replace task in mirror, idempotently."""
     try:
         task_id = task.get("id")
         if not task_id:
             return
-        state = state or task.get("state") or "QUEUED"
         deps_json = json.dumps(task.get("deps") or []) if task.get("deps") else "[]"
         conn.execute("""
             INSERT OR REPLACE INTO mirror_tasks
@@ -169,7 +124,7 @@ def _upsert_mirror_task(conn, task, now, state=None):
             task_id,
             task.get("slug"),
             task.get("project_id"),
-            state,
+            task.get("state", "QUEUED"),
             deps_json,
             task.get("confidence"),
             task.get("created_at"),

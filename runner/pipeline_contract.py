@@ -338,32 +338,6 @@ def artifact(prompt: str, project: str = "", kind: str = "build", source: str = 
         return "{}"
 
 
-def task_fields(prompt: str, project: str = "", kind: str = "build", source: str = "unknown",
-                slug: str = "", material: bool = False, existing_note: str = "",
-                model: Optional[str] = None, force_coder: Optional[str] = None) -> Dict[str, Any]:
-    """Return schema-safe admission fields shared by every task source.
-
-    Persisting the route is important for Cowork executors that claim directly
-    from Supabase and do not execute the native runner's prompt assembler.
-    Native execution still revalidates forced routes at claim time, so provider
-    exhaustion or capability drift safely falls through to a fresh choice.
-    """
-    text = prompt or ""
-    plan = build_plan(text, project=project, kind=kind, source=source,
-                      slug=slug, material=material)
-    wrapped = text if (already_wrapped(text) or is_control_prompt(text) or not text.strip()) else (
-        render_plan(plan) + "\n\n" + ORIGINAL_HEADER + "\n" + text
-    )
-    chosen_coder = force_coder or plan.get("coder") or None
-    chosen_model = model or plan.get("executor_model") or plan.get("author_model") or None
-    return {
-        "prompt": wrapped,
-        "note": note(existing_note, source=source),
-        "model": chosen_model,
-        "force_coder": chosen_coder,
-    }
-
-
 def note(existing: str = "", source: str = "unknown") -> str:
     base = (existing or "").strip()
     suffix = f"pipeline:{source or 'unknown'}; triage-plan-code-qa-devmerge-release"

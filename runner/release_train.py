@@ -280,23 +280,6 @@ def _open_release_fix_tasks(p, gate=None):
     return out
 
 
-def _self_heal_public_copy(p, project, repo, staging, findings):
-    """RESTORED 2026-07-31: phantom helper — queue a copyfix task for public-copy
-    gate findings so the red gate self-heals instead of NameError-ing."""
-    try:
-        slug = "copyfix-" + str(project) + "-" + datetime.datetime.utcnow().strftime("%m%d%H%M")
-        db.insert("tasks", {
-            "project_id": (p or {}).get("id") if isinstance(p, dict) else p,
-            "slug": slug, "kind": "build", "state": "QUEUED", "base_branch": staging,
-            "prompt": ("PUBLIC-COPY GATE RED — the public staging copy exposes protected "
-                       "IP/legal strategy. Remove/redact ONLY the flagged content; change "
-                       "nothing else. Findings: " + json.dumps(findings)[:2000]),
-        }, upsert=False)
-        print(f"release_train: queued {slug} for public-copy findings")
-    except Exception as e:
-        print(f"release_train: copyfix queue failed ({e})")
-
-
 def _hold_for_open_fix(p, project, gate):
     if not _truthy("ORCH_RELEASE_HOLD_WHILE_FIX_OPEN", True):
         return None
@@ -509,63 +492,6 @@ def _merge_into_staging(repo, branch):
         _git(repo, "worktree", "prune")
 
 
-
-def _release_window_open(project, repo, ahead):
-    """True when a prod promotion may push now (see policy note at call site).
-
-    Env dials:
-      ORCH_RELEASE_WINDOWS       "HH:MM,HH:MM,..." ET (default 09:00,13:00,18:00)
-      ORCH_RELEASE_WINDOW_MIN    minutes each window stays open (default 45)
-      ORCH_RELEASE_EARLY_THRESHOLD  pending-change count that opens an early
-                                    window (default 25) — a big verified batch
-                                    should not wait hours
-      ORCH_RELEASE_WINDOWS_EXEMPT   comma list of projects that always push
-                                    (default "beethoven" — the console has no
-                                    end-user sessions to interrupt)
-      ORCH_RELEASE_WINDOWS_ENABLED  master toggle (default true)
-    P0 bypass: any commit subject in the pending range containing [P0], [SEC],
-    [HOTFIX], or "security" pushes immediately.
-    """
-    try:
-        if os.environ.get("ORCH_RELEASE_WINDOWS_ENABLED", "true").lower() not in ("true", "1", "yes"):
-            return True
-        exempt = {x.strip() for x in os.environ.get(
-            "ORCH_RELEASE_WINDOWS_EXEMPT", "beethoven").split(",") if x.strip()}
-        if project in exempt:
-            return True
-        if ahead >= int(os.environ.get("ORCH_RELEASE_EARLY_THRESHOLD", "25")):
-            return True
-        try:
-            subjects = _git(repo, "log", "--format=%s", "-n", "60",
-                            f"{_git(repo, 'rev-parse', 'origin/' + (os.environ.get('ORCH_DEFAULT_BRANCH','master'))).stdout.strip() or 'HEAD~1'}..{STAGING}").stdout or ""
-        except Exception:
-            subjects = ""
-        low = subjects.lower()
-        if any(m in low for m in ("[p0]", "[sec]", "[hotfix]", "security")):
-            return True
-        import datetime
-        try:
-            from zoneinfo import ZoneInfo
-            now = datetime.datetime.now(ZoneInfo("America/New_York"))
-        except Exception:
-            now = datetime.datetime.utcnow() - datetime.timedelta(hours=4)
-        span = int(os.environ.get("ORCH_RELEASE_WINDOW_MIN", "45"))
-        for w in os.environ.get("ORCH_RELEASE_WINDOWS", "09:00,13:00,18:00").split(","):
-            w = w.strip()
-            if not w:
-                continue
-            try:
-                hh, mm = (int(x) for x in w.split(":"))
-            except ValueError:
-                continue
-            start = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-            if start <= now < start + datetime.timedelta(minutes=span):
-                return True
-        return False
-    except Exception:
-        return True  # fail-open: a broken window check must never freeze releases
-
-
 def _run_for_unlocked(project, repo_override=None):
     p = (db.select("projects", {"select": "*", "name": f"eq.{project}"}) or [{}])[0]
     repo = repo_override or p.get("repo_path", "")
@@ -766,44 +692,22 @@ def _run_for_unlocked(project, repo_override=None):
             pass
     # BUILD GATE on the whole staging batch: the real prod build must be green before we release to
     # prod (this is what stops the Vercel deploy failures — no green build, no release).
-    # FAIL-CLOSED (2026-08-02). This block used to be `try: ... except Exception: pass` with the
-    # whole gate nested under `if bcmd:` — so a build_gate import error, an undetectable build
-    # command, or ANY exception inside run_build silently RELEASED never-compiled code to prod.
-    # That fail-open is the release-side twin of the missing merge-train build gate. Now: no
-    # command => blocked; exception => blocked; red build => blocked. Never a silent pass.
-    held = _hold_for_open_fix(p, project, "build")
-    if held:
-        return held
-    if _recent_failed_gate(project, staging_sha, "build"):
-        return {"project": project, "build": "HELD", "note": "unchanged staging SHA already failed build recently"}
     try:
         import build_gate
-        if not bcmd:
-            bcmd = build_gate.build_cmd_for(p, repo) or build_gate.detect_build_cmd(repo) or ""
-        if not bcmd:
-            raise RuntimeError(
-                "no production build command could be determined (set projects.build_cmd, a "
-                "package.json build script, vercel.json buildCommand, or DEFAULT_BUILD_CMD)")
-        bok, blog = build_gate.run_build(repo, STAGING, bcmd)
-    except Exception as exc:
-        bok = False
-        blog = f"release build gate error (fail-closed): {type(exc).__name__}: {exc}"
-    if not bok:
-        if manifest:
-            try:
-                release_manifest.record_gate(manifest["id"], "build", False, command=bcmd,
-                                             detail=(blog or "")[-500:])
-            except Exception:
-                pass
-        _self_heal_build(p, project, repo, STAGING, blog)  # queue a targeted build-fix task
-        _insert_failed_release(project, "build", ahead, release_base_sha, staging_sha,
-                               f"staging BUILD red — self-heal queued: {(blog or '')[-120:]}")
-        return {"project": project, "build": "RED", "note": "staging build not green; build-fix task queued"}
-    if manifest:
-        try:
-            release_manifest.record_gate(manifest["id"], "build", True, command=bcmd)
-        except Exception:
-            pass
+        if bcmd:
+            held = _hold_for_open_fix(p, project, "build")
+            if held:
+                return held
+            if _recent_failed_gate(project, staging_sha, "build"):
+                return {"project": project, "build": "HELD", "note": "unchanged staging SHA already failed build recently"}
+            bok, blog = build_gate.run_build(repo, STAGING, bcmd)
+            if not bok:
+                _self_heal_build(p, project, repo, STAGING, blog)  # queue a targeted build-fix task
+                _insert_failed_release(project, "build", ahead, release_base_sha, staging_sha,
+                                       f"staging BUILD red — self-heal queued: {blog[-120:]}")
+                return {"project": project, "build": "RED", "note": "staging build not green; build-fix task queued"}
+    except Exception:
+        pass
     # release: record last-good, ff prod to staging, push (deploy_verify confirms/rolls back)
     held = _hold_for_open_fix(p, project, "refresh")
     if held:
@@ -819,16 +723,6 @@ def _run_for_unlocked(project, repo_override=None):
     last_good = release_base_sha
     db.update("projects", {"name": project}, {"last_good_sha": last_good})
     push_on = os.environ.get("ORCH_PUSH_ON_RELEASE", os.environ.get("ORCH_PUSH_ON_MERGE", "false")).lower() == "true"
-    # RELEASE WINDOWS (operator policy 2026-07-31): merging is continuous, prod
-    # PROMOTION is batched. A remote prod push (which triggers a Vercel build and
-    # can rotate assets under live sessions) happens only (a) inside a scheduled
-    # window, (b) when the pending batch is large enough, or (c) for a P0 marker.
-    # Local fast-forward bookkeeping is unaffected. Fail-open on any error.
-    if push_on and not _release_window_open(project, repo, int(ahead)):
-        print(f"release_train {project}: {ahead} changes staged — holding for next "
-              f"release window (windows={os.environ.get('ORCH_RELEASE_WINDOWS', '09:00,13:00,18:00')} ET)")
-        return {"project": project, "prod": prod, "released": 0,
-                "note": f"windowed: {ahead} changes held for next release window"}
     to_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
     if not push_on:
         ff = _git(repo, "fetch", ".", f"{STAGING}:{prod}")

@@ -226,8 +226,7 @@ def _template_adaptation(repo, slug, branch, base, project=None):
         if not patch or len(patch.strip()) < 10:
             return {"ok": False, "method": "template", "branch": branch,
                     "reason": "similar diff found but patch_diff is empty"}
-        return _apply_diff_to_branch(repo, slug, branch, base, patch, "template",
-                                     method="template")
+        return _apply_patch_to_branch(repo, patch, branch, base)
     except Exception as e:
         return {"ok": False, "method": "template", "branch": branch, "reason": str(e)[:200]}
 
@@ -369,7 +368,7 @@ def regenerate_from_intent(repo, slug, base, intent_words, template_id=None):
     return _create_intent_stub(repo, slug, branch, base, intent_words, template_id)
 
 
-def _apply_diff_to_branch(repo, slug, branch, base, diff, source, method="cache_replay"):
+def _apply_diff_to_branch(repo, slug, branch, base, diff, source):
     """Apply a known diff to a fresh branch off base. Returns recover-style dict."""
     wt = os.path.join(os.path.dirname(repo), os.path.basename(repo) + "-wt", f"regen-{slug}")
     try:
@@ -381,13 +380,13 @@ def _apply_diff_to_branch(repo, slug, branch, base, diff, source, method="cache_
         _free_branch(repo, branch)
         r = _git(repo, "worktree", "add", "-f", wt, branch, timeout=120)
         if r.returncode != 0:
-            return {"ok": False, "method": method, "branch": branch,
+            return {"ok": False, "method": "cache_replay", "branch": branch,
                     "reason": f"worktree setup failed: {r.stderr[:200]}"}
 
         proc = subprocess.run(["git", "apply", "--3way", "-"], cwd=wt,
                               input=diff, capture_output=True, text=True, timeout=120)
         if proc.returncode != 0:
-            return {"ok": False, "method": method, "branch": branch,
+            return {"ok": False, "method": "cache_replay", "branch": branch,
                     "reason": f"diff apply failed: {proc.stderr[:200]}"}
 
         env = _git_commit_env()
@@ -396,17 +395,17 @@ def _apply_diff_to_branch(repo, slug, branch, base, diff, source, method="cache_
                             f"regen-from-cache({source}): {slug}"],
                            cwd=wt, env=env, capture_output=True, text=True)
         if r2.returncode != 0:
-            return {"ok": False, "method": method, "branch": branch,
+            return {"ok": False, "method": "cache_replay", "branch": branch,
                     "reason": f"commit failed: {r2.stderr[:200]}"}
 
         ahead = subprocess.run(["git", "rev-list", "--count", f"{base}..HEAD"],
                                cwd=wt, capture_output=True, text=True)
         if int((ahead.stdout or "0").strip() or "0") > 0:
-            return {"ok": True, "method": method, "branch": branch}
-        return {"ok": False, "method": method, "branch": branch,
+            return {"ok": True, "method": "cache_replay", "branch": branch}
+        return {"ok": False, "method": "cache_replay", "branch": branch,
                 "reason": "diff produced no commits"}
     except Exception as e:
-        return {"ok": False, "method": method, "branch": branch, "reason": str(e)[:200]}
+        return {"ok": False, "method": "cache_replay", "branch": branch, "reason": str(e)[:200]}
     finally:
         subprocess.run(["git", "worktree", "remove", "--force", wt],
                       cwd=repo, capture_output=True)

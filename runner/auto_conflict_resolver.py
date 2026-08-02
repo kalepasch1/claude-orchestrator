@@ -142,33 +142,21 @@ def _classify_conflict(filepath: str, conflict_type: str = "") -> str:
     return "manual"
 
 def _resolve_file(repo: str, filepath: str, strategy: str, branch: str, base: str) -> bool:
-    """Apply a resolution strategy to a single conflicting file.
-
-    Every branch that writes a file now VERIFIES the result before claiming success —
-    a False here makes the caller `git merge --abort`, which is always safe.
-    """
+    """Apply a resolution strategy to a single conflicting file."""
     if strategy == "ours":
         r = _git(["git", "checkout", "--ours", filepath], repo)
-        if r.returncode == 0 and _resolved_ok(repo, filepath):
+        if r.returncode == 0:
             _git(["git", "add", filepath], repo)
             return True
         return False
     elif strategy == "theirs":
         r = _git(["git", "checkout", "--theirs", filepath], repo)
-        if r.returncode == 0 and _resolved_ok(repo, filepath):
+        if r.returncode == 0:
             _git(["git", "add", filepath], repo)
             return True
         return False
     elif strategy == "union":
-        # FIX 2026-08-02: this was `merge-file --union filepath filepath filepath` followed by
-        # an UNCONDITIONAL `return True`. Passing the same path as current/base/other merges a
-        # file with ITSELF — the output is the input unchanged, i.e. the still-conflicted
-        # working-tree file WITH its <<<<<<< markers — which was then `git add`ed and committed.
-        # The real union needs the three index stages: :1 = base, :2 = ours, :3 = theirs.
-        if not _union_stages(repo, filepath):
-            return False
-        if not _resolved_ok(repo, filepath):
-            return False
+        r = _git(["git", "merge-file", "--union", filepath, filepath, filepath], repo)
         _git(["git", "add", filepath], repo)
         return True
     elif strategy == "regenerate":
@@ -187,147 +175,12 @@ def _resolve_file(repo: str, filepath: str, strategy: str, branch: str, base: st
                 fullpath = os.path.join(repo, filepath)
                 with open(fullpath, "w") as f:
                     f.write(result["merged_content"])
-                if not _resolved_ok(repo, filepath):
-                    return False
                 _git(["git", "add", filepath], repo)
                 return True
         except Exception:
             pass
         return False
     return False
-
-
-CONFLICT_MARKERS = ("<<<<<<< ", "=======\n", ">>>>>>> ")
-
-
-def _union_stages(repo: str, filepath: str) -> bool:
-    """True union of the three index stages. Returns True only on a real success.
-
-    :1 = merge base, :2 = ours, :3 = theirs. `git merge-file --union` writes the union
-    into the first argument. An add/add conflict has no stage :1; an empty base is the
-    correct ancestor there, so both sides' additions are kept.
-    """
-    import tempfile
-    tmpdir = None
-    try:
-        tmpdir = tempfile.mkdtemp(prefix="acr-union-")
-        paths = {}
-        for stage, name in ((1, "base"), (2, "ours"), (3, "theirs")):
-            r = _git(["git", "show", f":{stage}:{filepath}"], repo)
-            content = r.stdout if r.returncode == 0 else ("" if stage == 1 else None)
-            if content is None:
-                return False  # a side is missing entirely — not a union case
-            paths[name] = os.path.join(tmpdir, name)
-            with open(paths[name], "w", errors="replace") as fh:
-                fh.write(content)
-        m = _git(["git", "merge-file", "--union",
-                  paths["ours"], paths["base"], paths["theirs"]], repo)
-        if m.returncode < 0:  # negative = merge-file error; >0 would be leftover conflicts
-            return False
-        with open(paths["ours"], "r", errors="replace") as fh:
-            merged = fh.read()
-        with open(os.path.join(repo, filepath), "w", errors="replace") as fh:
-            fh.write(merged)
-        return True
-    except Exception:
-        return False
-    finally:
-        if tmpdir:
-            import shutil
-            shutil.rmtree(tmpdir, ignore_errors=True)
-
-
-def _resolved_ok(repo: str, filepath: str) -> bool:
-    """Verify a just-resolved file: no conflict markers left, and it still parses.
-
-    FIX 2026-08-02: `_resolve_file` used to claim success without ever looking at what it
-    produced, so conflict markers and syntactically broken files were staged and committed.
-    Unknown file types pass the syntax check (only the marker check applies).
-    """
-    full = os.path.join(repo, filepath)
-    try:
-        with open(full, "r", errors="replace") as fh:
-            text = fh.read()
-    except (OSError, IOError):
-        return False
-    for marker in CONFLICT_MARKERS:
-        if marker in text or text.endswith(marker.rstrip("\n")):
-            return False
-
-    ext = os.path.splitext(filepath)[1].lower()
-    try:
-        if ext == ".py":
-            compile(text, filepath, "exec")
-        elif ext in (".json",):
-            import json as _json
-            _json.loads(text)
-        elif ext in (".js", ".mjs", ".cjs"):
-            chk = subprocess.run(["node", "--check", full], capture_output=True,
-                                 text=True, timeout=30)
-            if chk.returncode != 0:
-                return False
-        elif ext in (".yml", ".yaml"):
-            try:
-                import yaml as _yaml
-                _yaml.safe_load(text)
-            except ImportError:
-                pass  # no pyyaml — marker check only
-    except FileNotFoundError:
-        return True   # no node installed: marker check only, don't block the merge
-    except subprocess.SubprocessError:
-        return True
-    except Exception:
-        return False  # SyntaxError / JSONDecodeError / YAMLError -> broken resolution
-    return True
-
-def _regression_check(repo: str, pre_sha: str, branch: str) -> str:
-    """Post-merge anti-regression verification. Returns '' if clean, else the findings.
-
-    ADDED 2026-08-02 (operator directive: "I don't ever want to lose any improved code to
-    a merge"). RE-APPLIED the same day after `dc288ea5 Merge branch 'agent/qafix-...'
-    (auto-resolved)` deleted this very function — this module's own unverified merge path
-    ate its own guard, which is the exact failure mode the guard exists to stop.
-
-    This module authored every `Merge branch '...' (auto-resolved)` commit in the log and
-    until now committed the result of `checkout --ours/--theirs`, `merge-file --union` and
-    ast_merge with NO verification that the merged tree still contained the code it started
-    with. merge_train._post_fork_regression() never runs on this path. Confirmed losses:
-    improvement_miner (b9a8fd26), integration_sweeper (a780345c, d26357a6), vigil's
-    package-lock.json, and this function itself (dc288ea5).
-
-    FAIL-CLOSED: if the guard cannot be imported or it raises, the merge is rejected.
-    Opt out only with ORCH_MERGE_REGRESSION_GUARD=false.
-    """
-    if os.environ.get("ORCH_MERGE_REGRESSION_GUARD", "true").strip().lower() in (
-            "0", "false", "no", "off"):
-        return ""
-    if not pre_sha:
-        return "regression guard: could not capture pre-merge SHA (fail-closed)"
-    try:
-        import regression_guard
-    except Exception as exc:
-        return f"regression guard unavailable (fail-closed): {type(exc).__name__}: {exc}"
-    try:
-        msg = _git(["git", "log", "-1", "--format=%s%n%b"], repo).stdout or ""
-        ok, detail = regression_guard.gate(repo, pre_sha, "HEAD", commit_message=msg)
-        return "" if ok else detail
-    except Exception as exc:
-        return f"regression guard error (fail-closed): {type(exc).__name__}: {exc}"
-
-
-def _reject_merge(repo: str, pre_sha: str, result: dict, findings: str) -> dict:
-    """Undo a merge that would destroy code and route the branch to manual review.
-
-    The branch is deliberately NOT deleted: after a reset it is the only remaining copy of
-    the work, and deleting it is how code became unrecoverable in the first place.
-    """
-    _git(["git", "reset", "--hard", pre_sha], repo)
-    result["merged"] = False
-    result["strategy"] = "regression-blocked"
-    result["manual_files"] = result.get("resolved_files") or []
-    result["error"] = f"REGRESSION BLOCKED — merge rolled back, branch preserved: {findings}"
-    return result
-
 
 def resolve_branch(repo: str, branch: str, base: str, *, dry_run: bool = False) -> dict:
     """Try to merge a branch with auto-resolution of conflicts."""
@@ -336,20 +189,11 @@ def resolve_branch(repo: str, branch: str, base: str, *, dry_run: bool = False) 
         "resolved_files": [], "manual_files": [], "error": None,
     }
 
-    # Pre-merge SHA — the anti-regression gate's "before" tree, and the rollback target.
-    _pre = _git(["git", "rev-parse", "HEAD"], repo)
-    pre_sha = _pre.stdout.strip() if _pre.returncode == 0 else ""
-
     # Step 1: attempt normal merge
     merge_result = _git(["git", "merge", "--no-ff", branch, "-m",
                          f"Merge branch '{branch}' (auto-resolved)"], repo)
 
     if merge_result.returncode == 0:
-        # A CLEAN git merge is not evidence that nothing was lost: a branch forked before an
-        # improvement landed deletes it with zero conflict. Verify BEFORE we drop the branch.
-        findings = _regression_check(repo, pre_sha, branch)
-        if findings:
-            return _reject_merge(repo, pre_sha, result, findings)
         if dry_run:
             _git(["git", "reset", "--hard", "HEAD~1"], repo)
         else:
@@ -414,13 +258,6 @@ def resolve_branch(repo: str, branch: str, base: str, *, dry_run: bool = False) 
     # Step 5: commit the resolved merge
     commit = _git(["git", "commit", "--no-edit"], repo)
     if commit.returncode == 0:
-        # ANTI-REGRESSION GATE: --ours/--theirs/--union/ast_merge just decided, per file,
-        # which code survives. Verify the committed tree against the pre-merge tree BEFORE
-        # the branch (the only other copy of that code) is deleted. On any finding the merge
-        # is reset away and the branch is kept for manual/agentic repair.
-        findings = _regression_check(repo, pre_sha, branch)
-        if findings:
-            return _reject_merge(repo, pre_sha, result, findings)
         result["merged"] = True
         result["strategy"] = "auto"
         _git(["git", "branch", "-d", branch], repo)

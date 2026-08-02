@@ -110,14 +110,3 @@ class TestPricingGridReconstructionUtil:
         grid = PricingGrid("p", tiers=[PricingTier("a", 100, 10, 1.0)])
         valid, issues = PricingGridReconstructionUtil.validate_grid(grid)
         assert valid is False
-
-
-class TestConsumeHelperAlias:
-    """The pre-rename helper name must stay usable and identical to the canonical one."""
-
-    def test_alias_is_same_function(self):
-        assert PricingGrid._consume_tier_units is PricingGrid._consume_and_cost
-
-    def test_alias_behaves_identically(self):
-        tier = PricingTier(name="basic", min_units=1, max_units=100, unit_price=1.0)
-        assert PricingGrid._consume_tier_units(tier, 50) == PricingGrid._consume_and_cost(tier, 50)

@@ -1,4 +1,0 @@
-recovery-intent: backlog-batch-beethoven-22ee5bc-prompt-evolution-bandit-add-test-checks
-template: 21e5ec763b58
-intent: 07062319 07071626 22ee5bc 8b92d078e856 acceptance adapt agentic alter analysis artifacts backlog bandit batch because beethoven before behavior below blocked blocker blocks branch branches break broad bugfix build cache category cause change changes changing check checks commit completion concrete config context continue correctly dependencies diffs directive drafting duplicate duplicates eliminating ensure equivalent evolution examine existing exists failure feature files final finish first focus fresh functional functionality green hints identify implement implementation implemented improve inspect install instead integral intent large library lines
-base: master

@@ -557,10 +557,6 @@ def govern():
     heavy Ollama models under memory pressure, and adjusts the throttle file
     so concurrency scales with available headroom.
     """
-    # _t0 marks entry; _t_sample marks the end of the three probe calls below, so
-    # (_t_sample - _t0) is time spent sampling and (now - _t0) is total govern() time.
-    # Both are reported in the summary line at the end of this function.
-    _t0 = time.monotonic()
     used, free_gb = disk_pct()
     ram = ram_pct()
     free_ram = ram_free_gb()
@@ -701,8 +697,6 @@ def govern():
             set_throttle(recovered_target)
             action += f"; mem-recover->{recovered_target}"
             g = dashboard_gauge()
-    _sample_ms = (_t_sample - _t0) * 1000.0
-    _elapsed_ms = (time.monotonic() - _t0) * 1000.0
     print(f"governor: disk {used}% ({free_gb}GB free) ram {ram} free_ram {free_ram}GB "
           f"floor {eff_floor} -> {action}, limit={current_limit()} "
           f"[{_elapsed_ms:.0f}ms total, {_sample_ms:.0f}ms sampling]")

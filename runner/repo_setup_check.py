@@ -67,9 +67,7 @@ def check_tools(tools: Dict[str, str]) -> Dict[str, Optional[str]]:
 
 def check_repo_structure(repo_path: str) -> Dict[str, bool]:
     checks = {
-        # .git is a directory in a normal checkout but a gitdir pointer *file* in
-        # linked worktrees ({repo}-wt/{slug}), where all agent work runs.
-        "has_git": os.path.exists(os.path.join(repo_path, ".git")),
+        "has_git": os.path.isdir(os.path.join(repo_path, ".git")),
         "has_runner": os.path.isdir(os.path.join(repo_path, "runner")),
         "has_tests": os.path.isdir(os.path.join(repo_path, "runner", "tests")),
         "has_requirements": os.path.isfile(os.path.join(repo_path, "requirements.txt")),

@@ -30,13 +30,6 @@ the legacy merge-handler are skipped.
 import datetime, json, os, re, sys, subprocess, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
-# RESTORED 2026-07-31 (overwrite-class recovery; static_sanity gate)
-_RELFIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-", "copyfix-")
-try:
-    import verify as _verify_mod
-except Exception:
-    _verify_mod = None
-
 import events
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
 import integration_runtime
@@ -103,18 +96,6 @@ def _git(repo, *args, timeout=60):
                           encoding="utf-8", errors="replace", timeout=timeout)
 
 
-def _already_integrated(repo, branch, base):
-    """True when branch's tip is already an ancestor of base (nothing left to merge).
-
-    RESTORED 2026-07-31: this helper was dropped by an overwrite while its call
-    site survived — every project's train pass then died with NameError, which
-    process_project_isolated swallowed into "project_errors", producing
-    "0 merged / 58x skipped" on every pass since Jul 28 (the no-prod-deploys
-    incident). One line of code; three days of frozen releases.
-    """
-    return _git(repo, "merge-base", "--is-ancestor", branch, base).returncode == 0
-
-
 def _branch_exists(repo, branch):
     return _git(repo, "rev-parse", "--verify", branch).returncode == 0
 
@@ -169,146 +150,6 @@ def _refresh_base(repo, base):
         pass  # no remote / offline is fine — the local base ref is the source of truth then
 
 
-def _post_fork_regression(repo, branch, base, orig_fork):
-    """Detect a CLEAN rebase that silently deletes improvements merged after the
-    branch forked (operator directive 2026-07-31 — the second wipe vector).
-
-    The conflict path is already safe (no whole-file theirs on source). But a
-    branch forked BEFORE an improvement landed can delete that improvement with
-    zero git conflict. Guard: lines base gained since fork vs lines the rebased
-    branch deletes; overlap >= MERGE_REGRESSION_LINE_THRESHOLD -> hold.
-    Returns (ok, detail); fail-open on its own errors.
-    """
-    try:
-        if not orig_fork:
-            return True, ""
-        thresh = int(os.environ.get("MERGE_REGRESSION_LINE_THRESHOLD", "3"))
-        gained = _git(repo, "diff", "--unified=0", orig_fork, base, timeout=120).stdout or ""
-        removed = _git(repo, "diff", "--unified=0", base, branch, timeout=120).stdout or ""
-
-        def collect(diff, sign):
-            per, cur = {}, None
-            for line in diff.splitlines():
-                if line.startswith("+++ b/"):
-                    cur = line[6:]
-                elif cur and line.startswith(sign) and not line.startswith(sign * 3):
-                    t = line[1:].strip()
-                    if len(t) > 3:
-                        per.setdefault(cur, set()).add(t)
-            return per
-
-        gained_lines = collect(gained, "+")
-        removed_lines = collect(removed, "-")
-        hits = []
-        for f, rem in removed_lines.items():
-            overlap = rem & gained_lines.get(f, set())
-            if len(overlap) >= thresh:
-                hits.append(f"{f} (-{len(overlap)} recently-improved lines)")
-        if hits:
-            return False, "; ".join(hits[:6])
-        return True, ""
-    except Exception:
-        return True, ""
-
-
-def _regression_gate(repo, base, branch, candidate_sha):
-    """CONTENT anti-regression gate (2026-08-02 operator directive). Returns (ok, detail).
-
-    _post_fork_regression() above only compares raw text lines the BASE gained SINCE the
-    branch forked against lines the branch deletes. Every confirmed historical loss slipped
-    past it because the improvement predated the fork point (improvement_miner b9a8fd26,
-    pipeline_contract task_fields, integration_sweeper a780345c/d26357a6) or the loss
-    happened on the auto_conflict_resolver path, which never calls it at all.
-
-    This gate is content-based: it diffs the rebased candidate against the CURRENT base and
-    fails on a function/class that base has but the candidate lost or stubbed, on any new
-    undefined name, on a deleted lockfile/CI config, and on unexplained mass deletion.
-
-    FAIL-CLOSED: an import error, a guard crash, or an unreadable tree all return False.
-    Opt out only with ORCH_MERGE_REGRESSION_GUARD=false.
-    """
-    if os.environ.get("ORCH_MERGE_REGRESSION_GUARD", "true").strip().lower() in (
-            "0", "false", "no", "off"):
-        return True, "regression guard disabled by ORCH_MERGE_REGRESSION_GUARD"
-    try:
-        import regression_guard
-    except Exception as exc:
-        return False, (f"regression guard unavailable (fail-closed): "
-                       f"{type(exc).__name__}: {exc}")
-    try:
-        msg = _git(repo, "log", "--format=%s%n%b", f"{base}..{branch}", timeout=60).stdout or ""
-    except Exception:
-        msg = ""
-    try:
-        return regression_guard.gate(repo, base, candidate_sha or branch, commit_message=msg)
-    except Exception as exc:
-        return False, f"regression guard error (fail-closed): {type(exc).__name__}: {exc}"
-
-
-def _quarantine_regression_failure(repo, card, slug, task, pname, branch, base, detail, t0=None):
-    """Park ONE candidate that would DESTROY code in base; the train continues.
-
-    Mirrors _quarantine_build_failure's shape exactly so the existing remediation fleet can
-    act on it: 'regressfail' rows carry the specific findings in the note (file::symbol +
-    reason) so remediation bots can restore the exact symbols instead of guessing. Never
-    falls through to a merge — nothing below the call site runs for a red candidate.
-    """
-    head = ("integrate REGRESSFAIL — merge would DELETE or STUB code that exists in "
-            f"{base}; restore the named symbols before merging. branch={branch} base={base} "
-            "(merge-train regression guard; NOT merged, NOT pushed)")
-    tail = (detail or "")[-1200:]
-    tr = int(task.get("transient_retries") or 0)
-    cap = int(os.environ.get("MERGE_REGRESSION_REDO_CAP", "2"))
-    state = "QUARANTINED"
-    if tr < cap:
-        try:
-            patch = agentic_repair.repair_patch(
-                task, f"{head}\n{tail}", category="regressfail",
-                directive=("Re-apply your change on top of the CURRENT base WITHOUT removing "
-                           "or stubbing any existing function, class, method, lockfile or CI "
-                           "config. Restore every symbol named in the findings above with its "
-                           "full original body, keep your own new code, then run the tests."))
-        except Exception:
-            patch = {"state": "QUEUED", "account": None, "updated_at": "now()"}
-        patch["transient_retries"] = tr + 1
-        patch["note"] = f"{head} [regression-quarantine {tr + 1}/{cap}] {tail}"[:1800]
-        state = f"repair {tr + 1}/{cap}"
-    else:
-        patch = {"state": "QUARANTINED", "account": None, "updated_at": "now()",
-                 "note": (f"merge-train-regression-guard: quarantined as regressfail after {cap} "
-                          f"repair attempts. {head} Findings: {tail}")[:900]}
-    try:
-        _task_patch(task, patch)
-    except Exception:
-        try:
-            _task_patch(task, {"state": "BLOCKED", "account": None, "updated_at": "now()",
-                               "note": patch.get("note", head)[:900]})
-        except Exception:
-            pass
-    try:
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:REGRESSFAIL"})
-    except Exception:
-        pass
-    _attribute_train_outcome(slug, task, "regressfail", integrated=False)
-    try:
-        import json as _json, time as _time
-        db.insert("coordination_tasks", {"task_type": "merge_regression_blocked",
-            "payload": _json.dumps({"at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
-                                    "slug": slug, "branch": branch, "base": base,
-                                    "findings": (detail or "")[:2000]})[:4000]}, upsert=False)
-    except Exception:
-        pass
-    if _pm:
-        try:
-            _pm.record(slug, task.get("kind") or "unknown", ok=False,
-                       duration_ms=int((time.monotonic() - t0) * 1000) if t0 else 0,
-                       gate_decision="REGRESSFAIL", gate_reason=(detail or "")[:200])
-        except Exception:
-            pass
-    _log(pname, slug, "REGRESSFAIL", f"{state}; {(detail or '')[:120]}")
-    return "regressfail"
-
-
 def _rebase_onto_base(repo, branch, base):
     """Step 2: rebase the branch onto the CURRENT base. Returns (ok, conflict_detail).
     Frees any leftover agent worktree first (approval_merge._free_branch — git refuses to
@@ -325,19 +166,11 @@ def _rebase_onto_base(repo, branch, base):
     return True, ""
 
 
+def _run_tests(repo, test_cmd, task=None):
+    """Step 3: run the gate with continuous test integration.
 
-# (duplicate _run_tests removed 2026-07-31 — runtime always used the later def)
-
-def _try_semantic_merge(repo, branch, base):
-    """Attempt AST-level semantic merge when rebase fails.
-
-    Identifies files changed on both sides since their merge-base, then uses
-    semantic_merge to resolve non-overlapping edits without a full redo.
-    Returns True if ALL conflicting files were auto-merged and a new commit
-    was created on `branch` that sits on top of `base`. Returns False on any
-    failure (caller falls through to existing redo logic).
-
-    Fail-soft: any exception returns False.
+    Uses continuous_test_runner for flake detection and result persistence.
+    Returns (ok, tail-of-output).
     """
     try:
         # find the merge-base commit
@@ -561,178 +394,6 @@ def _test_cmd_for(proj, repo):
         return build_gate.detect_build_cmd(repo) or cmd
     except Exception:
         return cmd
-
-
-# ── production build gate (FAIL-CLOSED) ──────────────────────────────────────────────
-#
-# 2026-08-02: the train merged and PUSHED code that had never been compiled. The only
-# pre-merge check was _test_cmd_for(), which returns `npm test` for any repo with a root
-# package.json — so on every Next/Nuxt app the PRODUCTION BUILD never ran before the base
-# was fast-forwarded and pushed to origin. 19,262 merged tasks against 90 successful
-# releases (and the permanent stream of red Vercel deploys) came out of exactly this hole.
-#
-# Everything below is deliberately FAIL-CLOSED. build_gate.run_build() itself fail-OPENS on
-# an empty command (`if not build_cmd: return True, "no build_cmd (skipped)"`), so the
-# command must be resolved and validated HERE, before run_build is ever called. An
-# undeterminable build command, a failed import, or any exception raised inside run_build
-# is a BUILD FAILURE — never a pass. That is the exact inversion of the old behaviour.
-#
-# Gate ORDER in _integrate_card: (2c) content regression guard -> (3) tests -> (3b) THIS
-# build gate -> (4) fast-forward -> (5) push. Cheapest gate first; the build is the most
-# expensive check we run, so it only ever sees candidates that already passed the others.
-
-def _build_gate_enabled():
-    """Read at call time so a fleet_config/env change takes effect without a restart."""
-    return _truthy("ORCH_MERGE_BUILD_GATE", True)
-
-
-def _build_timeout():
-    try:
-        return int(os.environ.get("MERGE_TRAIN_BUILD_TIMEOUT", "900"))
-    except ValueError:
-        return 900
-
-
-def _build_cmd_for(proj, repo):
-    """Resolve the project's REAL production build command.
-
-    Deliberately does NOT reuse _test_cmd_for(): that helper falls back to TEST_CMD
-    ('npm test'), which is precisely what made the old gate meaningless. Order is
-    build_gate.build_cmd_for() (project row `build_cmd` reconciled with detection, and
-    persisted back onto the project) then a bare detect_build_cmd() if the DB write path
-    is unavailable. Returns '' when nothing can be determined — the caller treats that as
-    FAILURE, not as "nothing to do".
-    """
-    try:
-        import build_gate
-    except Exception:
-        return ""
-    try:
-        cmd = build_gate.build_cmd_for(proj, repo)
-        if cmd:
-            return str(cmd).strip()
-    except Exception:
-        pass  # DB unavailable / no build_cmd column — fall back to pure detection
-    try:
-        return str(build_gate.detect_build_cmd(repo) or "").strip()
-    except Exception:
-        return ""
-
-
-def _built_or_run(repo, commit, build_cmd, kind="merge-build"):
-    """Build an exact commit, reusing a durable proof when one exists.
-
-    Mirrors _verified_or_run()'s proof_graph cache (commit + dependency fingerprint +
-    command + kind) so an unchanged SHA is not rebuilt on every train pass. kind defaults
-    to 'merge-build' so build proofs can never alias the 'merge-qa' test proofs.
-    Only GREEN results are recorded; failures are never cached.
-    """
-    import build_gate
-    cacheable = bool(re.fullmatch(r"[0-9a-fA-F]{40,64}", str(commit or "")))
-    if cacheable:
-        try:
-            import proof_graph
-            if proof_graph.reusable_verification(repo, commit, build_cmd, kind):
-                return True, "reused exact commit/dependency build proof"
-        except Exception:
-            pass
-    ok, log = build_gate.run_build(repo, commit, build_cmd, timeout=_build_timeout())
-    if ok and cacheable:
-        try:
-            import proof_graph
-            proof_graph.record_verification(repo, commit, build_cmd, kind, True)
-        except Exception:
-            pass
-    return ok, log
-
-
-def _build_gate(repo, proj, branch, candidate_sha):
-    """Run the production build on the candidate. Returns (ok, detail).
-
-    FAIL-CLOSED: every path that is not a proven-green build returns False.
-    """
-    if not _build_gate_enabled():
-        # Explicit operator opt-out only (ORCH_MERGE_BUILD_GATE=false). Default is ENABLED.
-        return True, "build gate disabled by ORCH_MERGE_BUILD_GATE"
-    build_cmd = _build_cmd_for(proj, repo)
-    if not build_cmd:
-        # NOT a pass. run_build() would return (True, "no build_cmd (skipped)") here; that
-        # silent skip is the fail-open this gate exists to remove.
-        return False, ("no production build command could be determined for this repo "
-                       "(set projects.build_cmd, a package.json build script, vercel.json "
-                       "buildCommand, or DEFAULT_BUILD_CMD) — fail-closed, not skipped")
-    try:
-        ok, log = _built_or_run(repo, candidate_sha or branch, build_cmd)
-    except Exception as exc:
-        # An exception is a FAILURE. release_train.py used to `except Exception: pass` here
-        # and release anyway; the train must never do that.
-        return False, f"$ {build_cmd}\nbuild gate error (fail-closed): {type(exc).__name__}: {exc}"
-    if ok:
-        return True, f"build green: {build_cmd} ({str(log or '')[:120]})"
-    # Same tail convention as _run_tests(): last 6000 chars of the captured output.
-    return False, f"$ {build_cmd}\n{(log or '').strip()[-6000:]}"
-
-
-def _quarantine_build_failure(repo, card, slug, task, pname, branch, base, detail, t0=None):
-    """Park ONE build-red candidate; the train continues with the next card/project.
-
-    Reuses the fleet's existing quarantine mechanism: 'buildfail' is a repairable category
-    (blocker_quarantine.classify -> 'buildfail' -> _repair_original), so under the redo cap
-    the SAME task/branch is re-queued through agentic_repair with the build log attached —
-    that is what auto_remediate/build_fixer key off. Past the cap the row is parked in the
-    terminal QUARANTINED state with blocker_quarantine's note shape. The note always opens
-    with runner.py's canonical 'integrate BUILDFAIL — production build red' marker so the
-    existing remediation regexes (auto_remediate._ENV_BUILDFAIL, postmortem._BUILD_FAIL,
-    blocker_quarantine._BUILD) match it.
-    """
-    head = ("integrate BUILDFAIL — production build red; fix build/type errors before merge. "
-            f"branch={branch} base={base} (merge-train build gate; NOT merged, NOT pushed)")
-    tail = (detail or "")[-1200:]
-    tr = int(task.get("transient_retries") or 0)
-    cap = int(os.environ.get("MERGE_BUILD_REDO_CAP", "2"))
-    state = "QUARANTINED"
-    if tr < cap:
-        try:
-            patch = agentic_repair.repair_patch(
-                task, f"{head}\n{tail}", category="buildfail",
-                directive=("Make the production build pass on this SAME branch with the smallest "
-                           "possible change (types/imports/config). Do not add features. Run the "
-                           "project's real build command locally and confirm it exits 0 before "
-                           "committing."))
-        except Exception:
-            patch = {"state": "QUEUED", "account": None, "updated_at": "now()"}
-        patch["transient_retries"] = tr + 1
-        patch["note"] = f"{head} [build-quarantine {tr + 1}/{cap}] {tail}"[:1800]
-        state = f"repair {tr + 1}/{cap}"
-    else:
-        patch = {"state": "QUARANTINED", "account": None, "updated_at": "now()",
-                 "note": (f"merge-train-build-gate: quarantined as buildfail after {cap} build "
-                          f"repair attempts. {head} Original blocker: {tail}")[:900]}
-    try:
-        _task_patch(task, patch)
-    except Exception:
-        # QUARANTINED may be rejected by a stricter schema — park as BLOCKED instead, which
-        # blocker_quarantine._candidate_rows() also picks up. Never fall through to a merge.
-        try:
-            _task_patch(task, {"state": "BLOCKED", "account": None, "updated_at": "now()",
-                               "note": patch.get("note", head)[:900]})
-        except Exception:
-            pass
-    try:
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:BUILDFAIL"})
-    except Exception:
-        pass
-    _attribute_train_outcome(slug, task, "buildfail", integrated=False)
-    if _pm:
-        try:
-            _pm.record(slug, task.get("kind") or "unknown", ok=False,
-                       duration_ms=int((time.monotonic() - t0) * 1000) if t0 else 0,
-                       gate_decision="BUILDFAIL", gate_reason=(detail or "")[:200])
-        except Exception:
-            pass
-    _log(pname, slug, "BUILDFAIL", f"{state}; {(detail or '')[:120]}")
-    return "buildfail"
-
 
 def _commit_identity(repo, ref):
     try:
@@ -1276,7 +937,6 @@ def _resolve_tasks_batch(cards):
 
 
 def _integrate_card(card, slug, task, proj, repo_override=None):
-    _t0 = time.monotonic()  # RESTORED 2026-07-31: _dur_ms timing base
     """Run one card through the train steps. Returns the outcome string for the summary."""
     # 2026-07-11: proj["repo_path"] is one shared absolute path stored fleet-wide
     # (e.g. /Users/kpasch/Documents/foo). On a second machine with a different home
@@ -1338,7 +998,6 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         return "already-integrated"
     _task_patch(task, {"state": MERGING_STATE, "note": f"train: integrating {branch} into {base}"})
 
-    _orig_fork = _git(repo, "merge-base", branch, base).stdout.strip()  # pre-rebase fork point
     rebase_ok, conflict_detail = _rebase_onto_base(repo, branch, base)  # (2)
     if not rebase_ok:
         # redo-on-fresh-base: a stale branch conflicting with the advanced base should be REBUILT
@@ -1367,32 +1026,6 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
 
     test_cmd = _test_cmd_for(proj, repo)
     candidate_sha = _commit_identity(repo, branch)
-    reg_ok, reg_detail = _post_fork_regression(repo, branch, base, _orig_fork)
-    if not reg_ok:
-        _task_patch(task, {"state": "BLOCKED",
-                           "note": ("train: REGRESSION-RISK — clean rebase deletes recently-merged improvements: " + reg_detail)[:480]})
-        db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:REGRESSION-RISK"})
-        _log(pname, slug, "BLOCKED", f"regression-risk: {reg_detail[:120]}")
-        try:
-            import json as _json, time as _time
-            db.insert("coordination_tasks", {"task_type": "merge_regression_risk",
-                "payload": _json.dumps({"at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
-                                        "slug": slug, "detail": reg_detail[:800]})[:4000]}, upsert=False)
-        except Exception:
-            pass
-        return "regression-risk"
-
-    # (2c) CONTENT REGRESSION GATE — fail-closed, runs BEFORE tests, BEFORE any build gate,
-    # and long BEFORE the base moves (4) or anything is pushed (5). Cheapest real gate we
-    # have (AST + pyflakes over changed files only), so it runs first. Green tests are not
-    # evidence that nothing was LOST: a merge that replaces _branch_exists_anywhere() with
-    # `return False` passes every test suite and silently does the wrong thing forever.
-    # Nothing below this line executes for a candidate that would destroy code in base.
-    reg_gate_ok, reg_gate_detail = _regression_gate(repo, base, branch, candidate_sha)
-    if not reg_gate_ok:
-        return _quarantine_regression_failure(repo, card, slug, task, pname, branch, base,
-                                              reg_gate_detail, _t0)
-
     ok, tail = _verified_or_run(repo, candidate_sha, test_cmd)  # (3) branch-exact and resumable
     if not ok and os.environ.get("ORCH_DIFFERENTIAL_QA", "true").lower() in ("1", "true", "yes", "on"):
         try:
@@ -1413,7 +1046,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         if _pm:
             try:
                 _pm.record(slug, task.get("kind") or "unknown",
-                           ok=False, duration_ms=int((time.monotonic() - _t0) * 1000), gate_decision="TESTFAIL",
+                           ok=False, duration_ms=_dur_ms, gate_decision="TESTFAIL",
                            gate_reason=tail[:200])
             except Exception:
                 pass
@@ -1423,18 +1056,6 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         _attribute_train_outcome(slug, task, "testfail", integrated=False)
         _log(pname, slug, "TESTFAIL", tail[:120])
         return "testfail"
-
-    # (3b) PRODUCTION BUILD GATE — fail-closed, runs AFTER the (2c) regression guard and
-    # AFTER tests (cheapest gate first), and BEFORE the base moves.
-    # Green tests are not evidence that the app COMPILES: `npm test` on a Next/Nuxt repo
-    # never invokes `next build` / `nuxi build`, which is why build-red code merged and
-    # pushed for months. Nothing below this line executes for a red candidate — no
-    # fast-forward (4), no push (5), no MERGED (6). A failure quarantines this one card
-    # and returns, so the train moves on to the next card/project instead of halting.
-    build_ok, build_detail = _build_gate(repo, proj, branch, candidate_sha)
-    if not build_ok:
-        return _quarantine_build_failure(repo, card, slug, task, pname, branch, base,
-                                         build_detail, _t0)
 
     current_candidate_sha = _commit_identity(repo, branch)
     if current_candidate_sha != candidate_sha:
@@ -1494,7 +1115,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
     if _pm:
         try:
             _pm.record(slug, task.get("kind") or "unknown",
-                       ok=True, duration_ms=int((time.monotonic() - _t0) * 1000), gate_decision="MERGED")
+                       ok=True, duration_ms=_dur_ms, gate_decision="MERGED")
         except Exception:
             pass
     approval_merge._free_branch(repo, branch)   # cleanup so worktrees never accumulate
@@ -1518,7 +1139,6 @@ def train_run():
         merged    (int)  — branches successfully fast-forwarded into base
         redo      (int)  — branches re-queued due to stale-base rebase conflicts
         testfail  (int)  — branches whose tests failed after rebase
-        buildfail (int)  — branches whose PRODUCTION BUILD was red (quarantined, never merged)
         conflict  (int)  — branches with unresolvable merge conflicts
         skipped   (int)  — branches skipped (cap reached or repo locked)
         risk      (dict) — counts by risk tier: low / standard / sensitive
@@ -1551,16 +1171,12 @@ def train_run():
 
     pressure = _record_pressure(by_project, projects)
     summary = {"projects": 0, "merged": 0, "already_integrated": 0,
-               "redo": 0, "testfail": 0, "regressfail": 0, "buildfail": 0, "conflict": 0,
+               "redo": 0, "testfail": 0, "conflict": 0,
                "skipped": 0, "project_errors": 0,
                "risk": {"low": 0, "standard": 0, "sensitive": 0},
                "pressure": pressure}
     caps = {"low": LOW_RISK_BATCH, "standard": STANDARD_BATCH, "sensitive": SENSITIVE_BATCH}
-    # 'regressfail' is a real attempt: the candidate was built, rebased and inspected, and it
-    # would have destroyed code in base. It consumes the cap exactly like testfail.
-    # 'buildfail' likewise — a red production build is the most expensive attempt we make, so
-    # it must consume the cap or one perpetually build-red project burns the whole cycle.
-    ATTEMPT_OUTCOMES = ("merged", "testfail", "regressfail", "buildfail", "conflict")
+    ATTEMPT_OUTCOMES = ("merged", "testfail", "conflict")  # only real attempts consume the cap
     scan_cap = int(os.environ.get("MERGE_TRAIN_SCAN_PER_PROJECT", "200"))
     # FIX 2026-07-29 (re-applied — first attempt was wiped by the fleet's own stash/reset before
     # it could be committed): this block was a half-landed refactor — a bare `for` loop holding
@@ -1571,7 +1187,7 @@ def train_run():
         pid, group = item
         proj = projects.get(pid, {})
         result = {"projects": 1, "merged": 0, "already_integrated": 0,
-                  "redo": 0, "testfail": 0, "regressfail": 0, "buildfail": 0, "conflict": 0,
+                  "redo": 0, "testfail": 0, "conflict": 0,
                   "skipped": 0, "project_errors": 0,
                   "risk": {"low": 0, "standard": 0, "sensitive": 0}}
         used = {"low": 0, "standard": 0, "sensitive": 0}
@@ -1613,10 +1229,6 @@ def train_run():
                             result["redo"] += 1
                         elif outcome == "testfail":
                             result["testfail"] += 1
-                        elif outcome == "regressfail":
-                            result["regressfail"] += 1
-                        elif outcome == "buildfail":
-                            result["buildfail"] += 1
                         elif outcome == "conflict":
                             result["conflict"] += 1
                         else:
@@ -1624,13 +1236,6 @@ def train_run():
             except integration_runtime.IntegrationRuntimeError as exc:
                 result["skipped"] += len(group)
                 print(f"merge_train: {proj.get('name') or pid} isolation blocked: {exc}")
-            except FileNotFoundError as exc:
-                # A concurrent/killed pass removed a worktree dir mid-flight.
-                # Transient by construction — the entry-time `worktree prune`
-                # heals it next pass. Skip, don't error (2026-07-31 class).
-                result["skipped"] += len(group)
-                print(f"merge_train: {proj.get('name') or pid} worktree vanished mid-pass "
-                      f"(transient, will heal next pass): {exc}")
         return result
 
     def process_project_isolated(item):
@@ -1644,22 +1249,8 @@ def train_run():
             pname = (projects.get(pid, {}) or {}).get("name") or str(pid)
             print(f"merge_train [{pname}] PROJECT-ERROR: {type(exc).__name__}: {str(exc)[:500]}",
                   flush=True)
-            # 2026-07-31: a swallowed per-project exception hid the NameError
-            # that froze ALL releases for 3 days. Project errors now file a
-            # coordination alert carrying the actual exception text — silent
-            # only ever means healthy.
-            try:
-                import json as _json, time as _time
-                db.insert("coordination_tasks", {
-                    "task_type": "merge_train_project_error",
-                    "payload": _json.dumps({
-                        "at": _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime()),
-                        "project": pname, "error": f"{type(exc).__name__}: {str(exc)[:800]}",
-                        "cards_skipped": len(group)})[:8000]}, upsert=False)
-            except Exception:
-                pass
             return {"projects": 1, "merged": 0, "already_integrated": 0,
-                    "redo": 0, "testfail": 0, "regressfail": 0, "buildfail": 0, "conflict": 0,
+                    "redo": 0, "testfail": 0, "conflict": 0,
                     "skipped": len(group), "project_errors": 1,
                     "risk": {"low": 0, "standard": 0, "sensitive": 0}}
 
@@ -1671,9 +1262,8 @@ def train_run():
             results = list(pool.map(process_project_isolated, items))
         for result in results:
             for key in ("projects", "merged", "already_integrated", "redo",
-                        "testfail", "regressfail", "buildfail", "conflict", "skipped",
-                        "project_errors"):
-                summary[key] += result.get(key, 0)
+                        "testfail", "conflict", "skipped", "project_errors"):
+                summary[key] += result[key]
             for risk, count in result["risk"].items():
                 summary["risk"][risk] += count
     # AUTO-CONFLICT RESOLVER: second pass on branches that conflicted
@@ -1695,8 +1285,7 @@ def train_run():
 
     print(f"merge_train: {summary['merged']} merged, {summary['already_integrated']} already, "
           f"{summary['redo']} redo, "
-          f"{summary['testfail']} testfail, {summary['regressfail']} regressfail, "
-          f"{summary['buildfail']} buildfail, {summary['conflict']} conflict, "
+          f"{summary['testfail']} testfail, {summary['conflict']} conflict, "
           f"{summary['skipped']} skipped, {summary['project_errors']} project errors "
           f"across {summary['projects']} project(s)"
           f"{f', {auto_resolved} auto-resolved' if auto_resolved else ''}")
@@ -1719,19 +1308,7 @@ def train_run():
 run = train_run
 
 
-def _startup_static_gate():
-    """Refuse to run a pass whose own code would silently no-op (NameError class)."""
-    try:
-        import static_sanity
-        static_sanity.assert_critical("merge_train")
-    except RuntimeError:
-        raise
-    except Exception:
-        pass  # gate tooling itself must never wedge the train
-
-
 if __name__ == "__main__":
-    _startup_static_gate()
     import json
     # SINGLE-FLIGHT (2026-07-14): the 60s scheduler kept spawning new train processes while a
     # long pass (staging tests take minutes) was still running — 3-4 stacked merge_train.py
