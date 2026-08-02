@@ -22,7 +22,11 @@ class TestCanClaim(unittest.TestCase):
         # auto-loads that .env on import. These tests exercise the threshold logic itself,
         # so neutralize the bypass here -- otherwise can_claim() short-circuits to
         # "ok (mem-gate disabled)" and every assertion below is silently vacuous.
-        patcher = patch.dict(os.environ, {"ORCH_DISABLE_MEM_GATE": ""})
+        # Same problem with DISK_HARD_PCT: the code default is 90 but .env deploys 99.8,
+        # so the 95%-disk case below asserted against a threshold the suite never used.
+        # Pin it to the code default so the test checks the rule (used >= hard blocks)
+        # rather than one machine's tuning.
+        patcher = patch.dict(os.environ, {"ORCH_DISABLE_MEM_GATE": "", "DISK_HARD_PCT": "90"})
         patcher.start()
         self.addCleanup(patcher.stop)
 
