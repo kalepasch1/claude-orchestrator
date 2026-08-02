@@ -2613,6 +2613,10 @@ _SCHEDULE = [
     ("roadmap-weekly","roadmap",            "weekly",   (1, 6, 0)),# revenue-ranked weekly focus proposals
     ("dagspecunbl-60","dagspecunblock",      "interval", 60),    # speculatively release tasks waiting on RETRY deps
     ("worktreegc-300","worktreegc",         "interval", 300),   # remove stale agent worktrees (unblocks merges)
+    ("vercelconfig-600","vercelconfig",     "interval", 600),   # deploy-config drift a local build can't catch
+    ("botcommits-900","botcommits",         "interval", 900),   # bot-authored commits must parse
+    ("crashloop-300","crashloop",           "interval", 300),   # catch 100%-dead modules (preflight: 19d unnoticed)
+    ("cleanclone-6h","cleanclone",          "interval", 21600), # pristine clone install+build (expensive)
     ("releasetrain-600","releasetrain",     "interval", 600),   # accumulate on staging, QA, release to prod
     ("deployverify-120","deployverify",     "interval", 120),   # confirm Vercel deploy / auto-rollback
     ("releasekpi-1800","release_kpi.py",     "interval", 1800),  # released->deploy-green KPI + self-tune gate
