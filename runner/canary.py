@@ -47,5 +47,17 @@ def _f(k):
     return float(v) if v not in (None, "") else None
 
 
+def main(argv=None):
+    """CLI entrypoint: print the evaluation as JSON and return an exit code.
+
+    Exit 0 on 'promote', 1 on 'rollback', so shell callers can gate a deploy
+    on the verdict without parsing stdout.
+    """
+    argv = sys.argv[1:] if argv is None else argv
+    result = evaluate(argv[0] if argv else None)
+    print(json.dumps(result))
+    return 0 if result.get("verdict") == "promote" else 1
+
+
 if __name__ == "__main__":
-    print(evaluate(sys.argv[1] if len(sys.argv) > 1 else None))
+    sys.exit(main())
