@@ -1,0 +1,166 @@
+{
+  "task_slug": "qafix-kalepasch-com-34bc56c33a4f",
+  "title": "Consolidate duplicate pricing grid reconstruction logic into unified utility module",
+  "category": "refactoring / deduplication",
+  "status": "orphaned-running (prior agent died; task continues from existing artifacts)",
+
+  "refined_intent": "Remove duplicate pricing grid reconstruction implementations across the codebase and consolidate all tier range checking, unit calculation, and factory logic into a single PricingGridReconstructionUtil module. Target: reduce code duplication in pricing tier handling while maintaining 100% backward compatibility.",
+
+  "scope": {
+    "primary_target_file": "pricing_grid_reconstruction.py",
+    "related_files": [
+      "pricing_synthesizer.py",
+      "ploeh_s2s_pricing.py",
+      "common_utils.py"
+    ],
+    "test_files": [
+      "test_pricing_grid_reconstruction.py",
+      "test_qafix_kalepasch_com_34bc56c33a4f_final.py"
+    ],
+    "strategy": "REUSE-FIRST: adapt proven prior diffs before drafting net-new code"
+  },
+
+  "resolution_decisions": {
+    "primary_template_source": {
+      "source": "pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-4",
+      "similarity": 0.515,
+      "reasoning": "Highest similarity score among three candidates (0.515 > 0.443 > 0.426); represents the most similar proven implementation to adapt"
+    },
+
+    "secondary_sources": [
+      {
+        "source": "pareto-2080/qafix-pareto-2080-07062319-slice-1-slice-1-slice-4",
+        "similarity": 0.443,
+        "reasoning": "Second-highest similarity; use for validation and edge-case patterns"
+      },
+      {
+        "source": "pareto-2080/qafix-pareto-2080-07062319-slice-2-remove-duplicate-pricinggridreconstructi",
+        "similarity": 0.426,
+        "reasoning": "Lowest similarity but explicitly names pricing grid reconstruction; reference for deduplication scope"
+      }
+    ],
+
+    "patch_reference": {
+      "commit_hash": "8b92d078e856",
+      "reference": "beethoven/recover-missing-branch-relfix-beethoven-07071626",
+      "usage": "Historical reference implementation for tier operations; review for proven patterns but do not wholesale apply (similarity 0.26 too low)"
+    },
+
+    "failure_recovery": {
+      "prior_failure": "zombie-reaper: stale RUNNING >30min",
+      "recovery_action": "Resume from existing branch/worktree artifacts. All foundational code exists (pricing_grid_reconstruction.py completed; tests in place). Verify tests pass, commit final consolidation.",
+      "artifacts_preserved": "pricing_grid_reconstruction.py with unified helpers, test suites, related pricing modules"
+    }
+  },
+
+  "acceptance_criteria": {
+    "deduplication_success": {
+      "criterion": "Identify and consolidate all duplicate tier range checking, unit calculation, and factory logic",
+      "measurement": [
+        "All direct duplicate helper functions consolidated into pricing_grid_reconstruction.py",
+        "Single source of truth: _tier_units_in_range(), _calculate_applicable_units(), _build_pricing_tier_from_dict()",
+        "Callers in pricing_synthesizer.py and ploeh_s2s_pricing.py import from consolidated module"
+      ],
+      "success_threshold": "Zero duplicate implementations of tier range logic in separate files"
+    },
+
+    "behavior_preservation": {
+      "criterion": "All existing behavior maintained; no logic changes, only consolidation",
+      "measurement": [
+        "test_pricing_grid_reconstruction.py: 100% pass rate (existing tests continue to pass)",
+        "test_qafix_kalepasch_com_34bc56c33a4f_final.py: 100% pass rate (consolidation objectives verified)",
+        "Grid cost calculations produce identical results before/after consolidation",
+        "Tier range checking logic produces identical results for all edge cases (unlimited tiers, boundary values, overlaps)"
+      ],
+      "success_threshold": "All tests pass with zero behavior divergence"
+    },
+
+    "code_quality": {
+      "criterion": "Improved maintainability without performance regression",
+      "measurement": [
+        "No new linter/type errors (mypy, pylint)",
+        "Performance benchmarks stable or improved (unit calculation and range checking < 1µs per operation)",
+        "All factory methods follow consistent initialization pattern",
+        "Dataclass serialization (to_dict/from_dict) consistent across PricingTier and PricingGrid"
+      ],
+      "success_threshold": "Type checking clean, no performance regression"
+    },
+
+    "backward_compatibility": {
+      "criterion": "Public API unchanged; all callers import from unified module",
+      "measurement": [
+        "PricingTier and PricingGrid dataclass contracts unchanged",
+        "Helper function signatures stable (_tier_units_in_range, _calculate_applicable_units, _build_pricing_tier_from_dict)",
+        "Integration with common_utils.consume_from_tier() unmodified",
+        "All imports consolidated to pricing_grid_reconstruction module"
+      ],
+      "success_threshold": "No breaking changes to public API"
+    },
+
+    "documentation": {
+      "criterion": "Module docstring and helper function docstrings reflect consolidation",
+      "measurement": [
+        "pricing_grid_reconstruction.py module docstring identifies this as consolidated utility",
+        "Each helper function documents its role as 'single source of truth'",
+        "MERGED-DIFF LIBRARY references in docstrings removed (not needed after consolidation)"
+      ],
+      "success_threshold": "Clear documentation of consolidation"
+    }
+  },
+
+  "implementation_checklist": {
+    "0_recovery": [
+      "✓ pricing_grid_reconstruction.py exists with unified helpers",
+      "Verify branch exists and is not stale",
+      "Verify worktree integrity if present"
+    ],
+
+    "1_audit": [
+      "Scan pricing_synthesizer.py for duplicate tier range/calculation logic",
+      "Scan ploeh_s2s_pricing.py for duplicate tier range/calculation logic",
+      "Scan any other callers (grep for _tier_units_in_range, _calculate_applicable_units patterns)",
+      "Map duplicates back to pricing_grid_reconstruction.py helpers"
+    ],
+
+    "2_consolidation": [
+      "For each duplicate found: remove inline logic, add import from pricing_grid_reconstruction",
+      "Update type hints to match consolidated signatures",
+      "Verify all factory patterns use _build_pricing_tier_from_dict()"
+    ],
+
+    "3_verification": [
+      "Run test_pricing_grid_reconstruction.py: 100% pass",
+      "Run test_qafix_kalepasch_com_34bc56c33a4f_final.py: 100% pass",
+      "mypy pricing_grid_reconstruction.py pricing_synthesizer.py ploeh_s2s_pricing.py: zero errors",
+      "Run all integration tests that consume pricing grids"
+    ],
+
+    "4_commit": [
+      "Commit message: 'refactor(pricing): consolidate duplicate grid reconstruction logic'",
+      "Include in message: 'Consolidates _tier_units_in_range, _calculate_applicable_units, _build_pricing_tier_from_dict into single utility module. All callers now import from pricing_grid_reconstruction.'",
+      "Ensure author is kalepasch1 <kalepasch@gmail.com>"
+    ]
+  },
+
+  "related_context": {
+    "recent_related_commits": [
+      "326abd78 refactor(pricing): consolidate helper methods and improve naming",
+      "6d61ee2b fix(pricing): consolidate grid reconstruction deduplication into single utility"
+    ],
+    "conventions_applied": {
+      "module_pattern": "Module-level functions delegate to singleton; fail-soft error handling",
+      "env_vars": "All tunable parameters are env vars with sensible defaults",
+      "thread_safety": "Thread-safe with explicit locks if shared state modified",
+      "git_identity": "Commits authored as kalepasch1 <kalepasch@gmail.com>"
+    }
+  },
+
+  "clarifications_resolved": {
+    "intent_wordсалал": "Resolved to: Consolidate duplicate pricing grid reconstruction logic into unified utility module",
+    "source_priority": "Resolved to: Use similarity 0.515 as primary template; secondary sources for validation",
+    "patch_template": "Resolved to: Reference 8b92d078e856 for historical patterns; do not wholesale apply (similarity too low)",
+    "zombie_reaper": "Resolved to: Resume from existing artifacts; all core work exists, just needs verification and commit",
+    "acceptance_criteria": "Resolved to: Explicit criteria for deduplication success, behavior preservation, code quality, compatibility, documentation",
+    "redundant_sections": "Removed duplicate MERGED-DIFF LIBRARY and SOURCE sections; consolidated to single authoritative spec"
+  }
+}

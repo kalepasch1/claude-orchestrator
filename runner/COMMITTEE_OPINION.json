@@ -1,0 +1,46 @@
+{
+  "verdict": "conditional",
+  "score": 8,
+  "conviction": 10,
+  "opinion": "All seats unanimously find this proposal unripe for legal determination. The operative question—whether the proposed transaction triggers mandatory gaming commission notification under state control-change rules—cannot be answered without knowing which jurisdiction's statutes apply. Gaming regulators condition licensing on disclosure of material changes in control, defined by state-specific thresholds that vary dramatically: some states trigger at 5% indirect ownership, others at 10% direct, and still others require filing on any 'material change' without a bright-line test (compare Nevada Gaming Commission Regulation 5.110 (control thresholds) to New Jersey Casino Control Act 5:12-99 (materiality standard) to Tribal Gaming Regulatory Authority standards under 25 U.S.C. § 2702). The proposal's placeholder '{state}' is not a stylistic gap—it is the controlling variable for every material assertion. Until the General Counsel designates the specific jurisdiction(s) and license type(s) held by the operator, this committee cannot (1) identify the applicable control definition, (2) assess whether the transaction structure crosses it, (3) calculate the filing window, or (4) forecast remedial exposure if the filing is missed or late. The licensing specialist and compliance officer identify the concrete risk: a missed or late filing in an aggressive-threshold jurisdiction (e.g., Nevada, New Jersey, or tribal compacts) can trigger license suspension, mandatory surrender, or cease-and-desist orders with no cure period. The M&A counsel adds that the ownership chain itself—including options, warrants, and convertibles—must be inventoried before any control analysis is possible, as these instruments are often the fulcrum of indirect-control disputes. The committee therefore issues a conditional verdict: support this transaction's filing pathway ONLY upon the GC's immediate (within 48 hours) designation of jurisdiction(s), current license holder(s), license type(s), and a complete ownership chain including all derivative instruments.",
+  "citations": [
+    {
+      "source": "Nevada Gaming Commission Regulation 5.110",
+      "proposition": "Control thresholds and change-of-control notification requirements",
+      "confidence": 1.0
+    },
+    {
+      "source": "New Jersey Casino Control Act 5:12-99",
+      "proposition": "Materiality standard for licensing changes and disclosure obligations",
+      "confidence": 1.0
+    },
+    {
+      "source": "25 U.S.C. § 2702 (Indian Gaming Regulatory Act)",
+      "proposition": "Tribal gaming commission control definitions and reporting obligations",
+      "confidence": 1.0
+    },
+    {
+      "source": "Internal: Prior filing windows in this operator's current jurisdictions",
+      "proposition": "Actual filing deadlines and remedial exposure history",
+      "confidence": 0.0,
+      "note": "This artifact is not yet provided; GC must supply it."
+    }
+  ],
+  "assumptions": [
+    "The operator holds active gaming licenses (not suspended or conditional).",
+    "The transaction involves a change in ownership stake or control pathway; if not, no filing is required in any jurisdiction.",
+    "The GC has access to the operator's current licensing status and jurisdiction list (not assumed to be in committee's files).",
+    "The committee interprets 'proposal' as a pending transaction requiring legal review before announcement or closing, not a hypothetical."
+  ],
+  "conditions": "1. **IMMEDIATE (48h)**: GC designates all jurisdictions in which the operator holds active licenses and the license type(s) (e.g., commercial casino, slot-machine distributor, tribal gaming operator). 2. **IMMEDIATE (48h)**: GC provides complete current ownership chain, including beneficial ownership percentages and all derivative instruments (options, warrants, convertibles, call/put rights). 3. **GC's filing window analysis**: Once condition 1 and 2 are satisfied, GC works with state licensing boards to confirm filing deadlines for the transaction structure; committee will then issue a jurisdiction-tethered opinion within 5 business days. 4. **Binding constraint**: No announcement, closing, or shareholder filing may occur until this committee issues a binding written opinion tethered to the designated jurisdiction(s).",
+  "dissent": "none",
+  "recommendation": "1. **Immediate action (today)**: Chair notifies General Counsel in writing that this committee cannot issue a binding opinion until jurisdiction(s) and license details are provided; set a 48-hour response deadline. 2. **If GC complies**: Reconvene committee within 24 hours of receiving jurisdiction data; issue binding jurisdiction-tethered opinion with specific filing timelines and control-threshold analysis. 3. **If GC does not comply within 48h**: Escalate to Board General Counsel and CFO with written notice that the transaction cannot proceed without legal clearance; flag to company's external gaming counsel (if retained) that an independent opinion is needed to avoid license jeopardy.",
+  "p_success": 0.85,
+  "upside": "GC provides jurisdiction data promptly; committee issues binding, jurisdiction-specific opinion within 5 business days enabling compliant filing and on-time closing.",
+  "downside": "GC delays designation or transaction structure is more complex than anticipated (multi-state, tribal, or convertible-heavy); filing window compresses and committee opinion becomes irrelevant if deadline passes.",
+  "reversible": true,
+  "critical": true,
+  "pre_mortem": {
+    "forecast": "LIKELY OUTCOME: GC will provide jurisdiction(s) and license details within 48 hours (high confidence based on standard internal process). Committee will then issue binding opinion within 5 business days. Risk: If operator is multi-jurisdictional (e.g., 3+ states + tribal compact), filing-window coordination becomes complex and a single missed jurisdiction creates license jeopardy; external gaming counsel should be looped in immediately to avoid siloed analysis. CRITICAL PATH ITEM: Any delay in GC's designation cascades directly to closing timeline—gaming commission filings typically require 10-30 business days for review. This is not a background memo; it is a blocker. Chair should escalate to COO/CFO if GC is not responsive within 48h."
+  }
+}
