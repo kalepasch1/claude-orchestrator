@@ -1,0 +1,4 @@
+recovery-intent: canary-gemini-25-canary-gemini-25-setup-install-dependencies
+template: 4460de7ab0c7
+intent: 07062319 07071626 8b92d078e856 acceptance adapt agentic alter analysis artifacts because beethoven before behavior below blocks branch broad bugfix build canary category cause changes changing checks coder commit complete completion concrete config context continue dependencies diffs directive drafting duplicate duplicates eliminating equivalent examine existing exists expired failure files final finish first focus fresh functionality gemini green heartbeat hooks identify implementation improve inspect install instead intent issue large library lines maintainability matched merged minimally missing module original orphaned parent pareto patch performance
+base: main
