@@ -182,6 +182,55 @@ def _resolve_file(repo: str, filepath: str, strategy: str, branch: str, base: st
         return False
     return False
 
+def _regression_check(repo: str, pre_sha: str, branch: str) -> str:
+    """Post-merge anti-regression verification. Returns '' if clean, else the findings.
+
+    ADDED 2026-08-02 (operator directive: "I don't ever want to lose any improved code to
+    a merge"). RE-APPLIED the same day after `dc288ea5 Merge branch 'agent/qafix-...'
+    (auto-resolved)` deleted this very function — this module's own unverified merge path
+    ate its own guard, which is the exact failure mode the guard exists to stop.
+
+    This module authored every `Merge branch '...' (auto-resolved)` commit in the log and
+    until now committed the result of `checkout --ours/--theirs`, `merge-file --union` and
+    ast_merge with NO verification that the merged tree still contained the code it started
+    with. merge_train._post_fork_regression() never runs on this path. Confirmed losses:
+    improvement_miner (b9a8fd26), integration_sweeper (a780345c, d26357a6), vigil's
+    package-lock.json, and this function itself (dc288ea5).
+
+    FAIL-CLOSED: if the guard cannot be imported or it raises, the merge is rejected.
+    Opt out only with ORCH_MERGE_REGRESSION_GUARD=false.
+    """
+    if os.environ.get("ORCH_MERGE_REGRESSION_GUARD", "true").strip().lower() in (
+            "0", "false", "no", "off"):
+        return ""
+    if not pre_sha:
+        return "regression guard: could not capture pre-merge SHA (fail-closed)"
+    try:
+        import regression_guard
+    except Exception as exc:
+        return f"regression guard unavailable (fail-closed): {type(exc).__name__}: {exc}"
+    try:
+        msg = _git(["git", "log", "-1", "--format=%s%n%b"], repo).stdout or ""
+        ok, detail = regression_guard.gate(repo, pre_sha, "HEAD", commit_message=msg)
+        return "" if ok else detail
+    except Exception as exc:
+        return f"regression guard error (fail-closed): {type(exc).__name__}: {exc}"
+
+
+def _reject_merge(repo: str, pre_sha: str, result: dict, findings: str) -> dict:
+    """Undo a merge that would destroy code and route the branch to manual review.
+
+    The branch is deliberately NOT deleted: after a reset it is the only remaining copy of
+    the work, and deleting it is how code became unrecoverable in the first place.
+    """
+    _git(["git", "reset", "--hard", pre_sha], repo)
+    result["merged"] = False
+    result["strategy"] = "regression-blocked"
+    result["manual_files"] = result.get("resolved_files") or []
+    result["error"] = f"REGRESSION BLOCKED — merge rolled back, branch preserved: {findings}"
+    return result
+
+
 def resolve_branch(repo: str, branch: str, base: str, *, dry_run: bool = False) -> dict:
     """Try to merge a branch with auto-resolution of conflicts."""
     result = {
@@ -189,11 +238,20 @@ def resolve_branch(repo: str, branch: str, base: str, *, dry_run: bool = False) 
         "resolved_files": [], "manual_files": [], "error": None,
     }
 
+    # Pre-merge SHA — the anti-regression gate's "before" tree, and the rollback target.
+    _pre = _git(["git", "rev-parse", "HEAD"], repo)
+    pre_sha = _pre.stdout.strip() if _pre.returncode == 0 else ""
+
     # Step 1: attempt normal merge
     merge_result = _git(["git", "merge", "--no-ff", branch, "-m",
                          f"Merge branch '{branch}' (auto-resolved)"], repo)
 
     if merge_result.returncode == 0:
+        # A CLEAN git merge is not evidence that nothing was lost: a branch forked before an
+        # improvement landed deletes it with zero conflict. Verify BEFORE we drop the branch.
+        findings = _regression_check(repo, pre_sha, branch)
+        if findings:
+            return _reject_merge(repo, pre_sha, result, findings)
         if dry_run:
             _git(["git", "reset", "--hard", "HEAD~1"], repo)
         else:
@@ -258,6 +316,13 @@ def resolve_branch(repo: str, branch: str, base: str, *, dry_run: bool = False) 
     # Step 5: commit the resolved merge
     commit = _git(["git", "commit", "--no-edit"], repo)
     if commit.returncode == 0:
+        # ANTI-REGRESSION GATE: --ours/--theirs/--union/ast_merge just decided, per file,
+        # which code survives. Verify the committed tree against the pre-merge tree BEFORE
+        # the branch (the only other copy of that code) is deleted. On any finding the merge
+        # is reset away and the branch is kept for manual/agentic repair.
+        findings = _regression_check(repo, pre_sha, branch)
+        if findings:
+            return _reject_merge(repo, pre_sha, result, findings)
         result["merged"] = True
         result["strategy"] = "auto"
         _git(["git", "branch", "-d", branch], repo)
