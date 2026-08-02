@@ -1,0 +1,9 @@
+- id: lint-conventions
+  name: Convention Linter
+  entry: python tools/lint_conventions.py
+  language: python
+  types: [python]
+  stages: [commit]
+  pass_filenames: true
+  description: Enforce conventions from CLAUDE.md on Python files
+  additional_dependencies: []

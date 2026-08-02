@@ -1,0 +1,42 @@
+{
+  "verdict": "needs-info",
+  "score": 4,
+  "conviction": 8,
+  "opinion": "The committee is unanimous on the operative principle: a licensed gaming entity cannot change control without prior approval from the gaming control authority—this is non-waivable across all major gaming jurisdictions (Nevada, New Jersey, and most other states with gaming operators). However, the committee cannot recommend signing or proceeding without three material facts that are not provided: (1) the specific state or tribe, because the definition of 'control' (whether it includes unvested or unexercisable options, voting-rights transfers, or board-seat changes) is jurisdiction-specific and determines the trigger and filing window; (2) the full capitalization table and instrument terms (exercise schedules, conversion mechanics, attribution rules), because the timing of when control legally changes—at signing, conversion, first exercise, or voting-rights transfer—depends on those mechanics and may occur by operation of law before the regulator approves; (3) the regulator's prior guidance on this specific transaction type, because some regulators pre-clear certain structures while others require case-by-case review. The specialist seat has correctly identified that the answer is conditional: IF you provide those facts, the recommendation will be 'do not sign until prior approval is in hand, and make that approval an express condition precedent.' The auditor seat has correctly identified that without those facts, a single answer is impossible and any recommendation is speculation. The risk of proceeding without this information is severe: a change of control can occur by operation of law at signing, conversion, or voting-rights transfer (e.g., if options within 60 days are attributed as 'control' by the regulator) and leave the licensee in immediate violation of a prior-approval statute, exposing it to fines, suspension, or revocation. The committee's consensus is that the facts must be gathered before any vote on signing or closing can be responsibly given.",
+  "citations": [
+    {
+      "source": "Nev. Rev. Stat. § 463.643; Nev. Gaming Comm'n Reg. 13.110",
+      "proposition": "A person shall not acquire a material interest in or control of a gaming licensee without the prior approval of the Nevada Gaming Commission.",
+      "confidence": 0.95
+    },
+    {
+      "source": "N.J.S.A. 5:12-46; N.J.A.C. 13:2-4.5",
+      "proposition": "Gaming licensees must obtain prior approval for any transaction resulting in a change of control; control is construed broadly and includes voting power, economic interest, and material influence.",
+      "confidence": 0.95
+    },
+    {
+      "source": "Options, warrants, and debt-conversion trigger specialist seat position",
+      "proposition": "The biggest risk is that signing, an exercise/conversion notice, or board approval is deemed the change of control before commission approval, violating prior-approval statutes and exposing the licensee to fines, suspension, or revocation.",
+      "confidence": 1.0
+    },
+    {
+      "source": "Post-closing covenant and integration compliance auditor seat position",
+      "proposition": "There is no uniform cross-state rule; the great majority of states impose a prior-approval gate; a single answer cannot be given without the actual state and transaction facts.",
+      "confidence": 1.0
+    }
+  ],
+  "assumptions": [
+    "The entity is a licensed gaming operator subject to state or tribal gaming control statutes.",
+    "The transaction involves options, warrants, or convertible instruments whose conversion, exercise, or voting-rights transfer may trigger attribution of control.",
+    "The regulator's definition of 'control' and the timing of when control 'changes' (at signing, option exercise, conversion, first voting act, or board-seat transfer) is not known.",
+    "The regulator has not pre-cleared this transaction type and no safe-harbor guidance is in hand."
+  ],
+  "conditions": "Do not sign or close until: (1) the specific state or tribe and its gaming control statute (including the regulatory definition of 'control' and whether options exercisable within 60 days are attributed as control) are identified; (2) the full pre- and post-transaction cap table is provided; (3) all options, warrants, and convertible instruments are documented with vesting schedules, exercise windows, conversion mechanics, and board-rights provisions; (4) written confirmation from the gaming control authority is obtained that prior approval will be required, that no signing or closing will trigger a change of control by operation of law before approval is obtained, and that a reasonable filing window exists; (5) all signing, conversion, and voting-rights transfer are expressly conditioned on receipt of that approval in hand. Until these facts are provided and reviewed by the specialist seat, the committee cannot vote on signing or closing.",
+  "dissent": "none",
+  "recommendation": "Before any signing or closing, the proponent must provide: (1) the state/tribe and the regulator's written control definition; (2) the full cap table and all instrument terms; (3) a written pre-submission dialog with the regulator confirming that prior approval is required and that no signing or conversion will trigger a change of control by operation of law. Once provided, the committee's recommendation will be: Do not sign or close until gaming control authority approval is in hand as an express condition precedent. The committee strongly advises against any assumption that post-closing remediation, ratification, or retroactive approval is possible—gaming regulators do not work backward, and violations at signing are not curable after closing.",
+  "p_success": 0.7,
+  "upside": "Structured as condition precedent, the financing or capital raise closes in full compliance with gaming control law, with the regulator's prior blessing and zero post-closing audit or enforcement risk.",
+  "downside": "Signing or conversion proceeds without prior approval or with the assumption that post-closing remediation is possible; control changes by operation of law before approval is obtained; licensee faces fines, suspension, or revocation; transaction may be unwound and financing lost.",
+  "reversible": false,
+  "critical": true
+}

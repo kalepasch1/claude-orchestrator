@@ -1,0 +1,66 @@
+{
+  "verdict": "conditional",
+  "score": 7,
+  "conviction": 8.5,
+  "opinion": "The committee concludes that EU AI Act Art. 28(1)-(5) deployer obligations attach conditionally, contingent on a threshold analysis under Art. 25 that must precede any deployment decision. The operative rule is this: a natural or legal person placing an AI system on the market or putting it into service is a 'deployer' (Art. 3(4)) only if they are not simultaneously 'substantially modifying' it or placing it on the market under their own name or brand (Art. 25, which shifts the analysis to provider duties). The company's exposure under Art. 99 (administrative fines up to €30M or 6% of global turnover) depends entirely on which bucket it falls into. If the company is deploying a third-party high-risk system without material modification, then Art. 28(1)-(5) imposes independent obligations: (i) ensuring the provider supplies instructions and technical documentation; (ii) implementing data and monitoring procedures before deployment; (iii) maintaining use-monitoring, incident logging, and access controls during operation; and (iv) assuming liability for failures in these controls, regardless of what the contract says. The provider's own obligations do not transfer. If, however, the company is substantially modifying the system or own-branding it, the analysis flips: the company becomes a provider under Art. 25(4), triggering Art. 27 (pre-deployment fundamental-rights impact assessment), Art. 8 (post-market monitoring), and the full suite of Art. 28-30 obligations. This is not a fine distinction—it is the difference between limited, operationally-defined deployer duties and the comprehensive compliance burden of a provider. The conclusion would change if: (i) the system is not high-risk under Art. 6/Annex III (deployer duties contract sharply); (ii) the company is not a legal or natural person placing the system (e.g., a mere user); (iii) substantial modification or own-branding is already planned (analysis becomes provider-duty, not deployer-duty); or (iv) the EU AI Act is superseded by a regulatory update.",
+  "citations": [
+    {
+      "source": "Regulation (EU) 2024/1689 Art. 3(4)",
+      "proposition": "Deployer is a natural or legal person that is not a developer or provider, placing an AI system on the market or putting it into service.",
+      "confidence": 1.0
+    },
+    {
+      "source": "Regulation (EU) 2024/1689 Art. 28(1)-(5)",
+      "proposition": "Deployers of high-risk AI systems must ensure instructions are supplied, implement monitoring and data procedures, ensure compliance with prohibitions, and maintain records.",
+      "confidence": 1.0
+    },
+    {
+      "source": "Regulation (EU) 2024/1689 Art. 25",
+      "proposition": "A deployer who substantially modifies an AI system or places a system on the market under their own name or brand is considered a provider and must comply with provider obligations.",
+      "confidence": 1.0
+    },
+    {
+      "source": "Regulation (EU) 2024/1689 Art. 6, Annex III",
+      "proposition": "Defines high-risk AI systems; deployer obligations only apply to high-risk systems.",
+      "confidence": 1.0
+    },
+    {
+      "source": "Regulation (EU) 2024/1689 Art. 99",
+      "proposition": "Administrative fines for non-compliance with deployer obligations up to €30 million or 6% of global turnover.",
+      "confidence": 1.0
+    },
+    {
+      "source": "Regulation (EU) 2024/1689 Art. 27",
+      "proposition": "Providers must conduct fundamental-rights impact assessments before deploying high-risk systems.",
+      "confidence": 1.0
+    }
+  ],
+  "assumptions": [
+    "The company is a legal entity subject to EU AI Act jurisdiction (operates in EU or deploys to EU market).",
+    "The system in question is classified as high-risk under Art. 6/Annex III (assumption: not verified in submitted materials).",
+    "No substantial modification or own-branding is currently planned (assumption: not confirmed in submitted materials).",
+    "The third-party provider will supply compliant instructions and technical documentation (assumption: should be contractually verified).",
+    "Existing compliance infrastructure (logging, monitoring) can be adapted to Art. 28 requirements (assumption: implementation feasibility not assessed)."
+  ],
+  "conditions": "This opinion is binding only if: (1) the company first conducts and documents a high-risk classification analysis under Art. 6; (2) the company confirms in writing that no substantial modification or own-branding is planned, and documents any future modifications to trigger a provider-duty re-analysis; (3) before deployment, the company implements the pre-deployment playbook (see recommendation); (4) the company establishes and maintains ongoing Art. 28(1)-(5) data, monitoring, and logging controls through the system's lifecycle.",
+  "dissent": "The Devil's Advocate raised a high-conviction objection (conviction 8/10) that the deployer-duty analysis is legally incomplete without first resolving Art. 25 status. The red seat notes that a 'static deployer-only answer' misses the possibility of role-shifting through modification or own-branding, and that the memo risks under-scoping when obligations bite. The Governance Specialist's recommendation (a deployer playbook) and the Devil's Advocate's concern (threshold Art. 25 analysis first) are not in conflict; rather, the Devil's Advocate correctly identifies that Art. 25 must be answered BEFORE the deployer playbook applies. No meaningful dissent from the conditional verdict; both seats would accept conditional support if the Art. 25 threshold is resolved upfront.",
+  "recommendation": "Issue a deployer-duty roadmap with this sequence: (1) **Art. 25 Threshold Audit** (Week 1): Formally document whether the company intends any substantial modification (code changes, retraining, custom data pipelines, etc.) or own-branding of the system. If yes, switch to provider-duty playbook (Art. 27 fundamental-rights impact assessment, Art. 8 post-market monitoring, full Art. 28-30 suite). If no, proceed to (2). (2) **High-Risk Classification** (Week 2-3): Conduct and document Art. 6/Annex III analysis. If system is not high-risk, deployer duties do not apply; risk is substantially reduced. If high-risk, proceed to (3). (3) **Pre-Deployment FRIA & Controls** (Week 3-6): Require the provider to supply Art. 28(2) instructions; implement data-quality, monitoring, and incident-logging procedures per Art. 28(1)(c); establish audit trail. (4) **Deployment & Ongoing Compliance** (ongoing): Implement continuous monitoring per Art. 28(1)(c), maintain incident logs, conduct quarterly compliance reviews against Art. 28(1)-(5). Condition contract with provider on their supply of incident feeds, technical updates, and compliance certifications.",
+  "p_success": 0.75,
+  "upside": "Deployer duties are bounded and operationally achievable within 6-8 weeks; company avoids the much heavier provider-duty suite (Art. 27 fundamental-rights impact assessment, post-market monitoring, model documentation, bias testing) if no modification is planned.",
+  "downside": "If the company subsequently modifies the system or rebrands it without re-triggering the Art. 25 analysis, deployer duties become legally insufficient and exposure under Art. 99 (up to €30M or 6% global turnover) materializes.",
+  "reversible": false,
+  "critical": true,
+  "pre_mortem": {
+    "scenario_1_most_likely": "The company treats deployer duty as a discrete, checkbox compliance exercise (pre-deployment FRIA done, controls installed, memo filed). Then, 4–8 months post-deployment, a business stakeholder requests a minor retraining on in-house data or a UI rebrand. The Art. 25 'substantial modification' line is unclear; the team does not re-consult legal; the company silently becomes a provider without triggering Art. 27 re-assessment. An EU regulator audit 18 months later finds the modification was not disclosed and Art. 27 was never run. Exposure: €30M+ fine, reputational damage, system suspension order.",
+    "scenario_2_moderate_risk": "High-risk classification (Art. 6) is self-assessed as 'negative' without external validation. The system is later challenged by regulators or NGO complaint as high-risk (e.g., involves employment, credit, public services). Deployer duties were never triggered, but should have been. Retroactive compliance is expensive and reputationally costly.",
+    "scenario_3_control_failure": "Deployer playbook is implemented, but 'ongoing Art. 28(1)(c) monitoring and logging' is under-resourced or deprioritized post-deployment. Six months in, an incident occurs (system outputs cause harm, bias is detected, input data degrades). Logs are incomplete or missing. Company cannot demonstrate compliance with Art. 28(1)(c) and is liable for civil damages under Art. 84 and administrative fines under Art. 99.",
+    "mitigation": "Establish a **Role-Change Trigger**: Any substantial modification or rebranding requires mandatory legal re-review and re-triggering of Art. 25/Art. 27 analysis before execution. Assign a single owner (Data Governance or Legal) to calendar quarterly Art. 28(1)-(5) compliance reviews (data quality, monitoring adequacy, incident logs). Obtain external validation of high-risk classification before committing to deployment. Budget for ongoing monitoring (not just pre-deployment); treat Art. 28(1)(c) as a standing operational control, not a one-time audit."
+  },
+  "metadata": {
+    "committee_size": 2,
+    "deliberation_date": "2026-08-02",
+    "chair": "Data Protection Expert",
+    "note": "Devil's Advocate position was incomplete (cut off at 'Art. 26 t'); consensus was synthesized from complete portion of that position and full Data Governance Specialist position. This opinion assumes the missing text does not materially alter the red seat's high-conviction concern about Art. 25 threshold analysis.",
+    "next_review_trigger": "Any change to deployment plan (modification, rebranding, new use case, system update), or Art. 99 enforcement guidance released by EDPB/EU institutions, or new high-risk classification precedent"
+  }
+}

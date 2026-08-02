@@ -1,0 +1,36 @@
+{
+  "verdict": "needs-info",
+  "score": 0,
+  "conviction": 10,
+  "opinion": "The committee cannot render a substantive opinion on this change-of-control filing absent the specific U.S. state or territory with gaming jurisdiction. Gaming regulation is entirely state-specific: each state gaming commission publishes a distinct regulatory code, statutory trigger thresholds (e.g., 5% vs. 10% voting securities), filing windows (30–90 days post-event), required exhibits, and interpretive orders. The proposal's placeholder '{state}' renders the operative statute unknown, filing deadlines unidentifiable, and material exhibit requirements unresearchable. Any generic response would expose the operator to late-filing penalties, license suspension, or revocation—outcomes this committee exists to prevent. The threshold question 'which state?' is not a refinement; it is the predicate for any analysis. Once the jurisdiction is named, the Regulatory Analyst will pull the operative code, identify filing triggers, confirm the licensee's current license status, and cross-reference any recent commission interpretive orders or no-action letters. This work is routine and takes 24–48 hours. Until the state is specified, proceeding is malpractice.",
+  "citations": [
+    {
+      "source": "Gaming Regulatory Analyst, State Law Research (seat position)",
+      "proposition": "State gaming codes vary materially: voting-securities thresholds range 5%–10%; filing windows range 30–90 days; required exhibits are jurisdiction-specific",
+      "confidence": 1.0
+    },
+    {
+      "source": "Senior Associate, Corporate Governance & Filings (seat position)",
+      "proposition": "Failure to identify correct trigger date and operative statute creates risk of missed filing deadlines and regulatory enforcement",
+      "confidence": 1.0
+    },
+    {
+      "source": "Devil's Advocate (seat position)",
+      "proposition": "Generic response will omit state-specific triggers, filing windows, or mandated exhibits, exposing operator to undisclosed change-of-control penalties or license revocation",
+      "confidence": 1.0
+    }
+  ],
+  "assumptions": [
+    "The proposal refers to a real change-of-control transaction (acquisition, merger, sale, or transfer of material voting interest) subject to state gaming commission approval",
+    "The operator holds an active gaming license in at least one U.S. state or territory",
+    "The transaction has not yet closed; there is still time to file required notices"
+  ],
+  "conditions": "Resubmit the proposal with: (1) the specific U.S. state(s) or territory with gaming jurisdiction; (2) the licensee's legal entity name and current license status; (3) the transaction type (acquisition, merger, voting transfer, etc.) and percentage of voting securities or control transferred; (4) the proposed closing date. These four inputs are sufficient for the Regulatory Analyst to identify the operative statute, filing windows, and required exhibits within 48 hours.",
+  "dissent": "none",
+  "recommendation": "Do not proceed with filings or disclosures until the state jurisdiction is specified. Designate a point of contact to provide the four data points above. The committee will then schedule a follow-up call to confirm operative triggers, filing deadlines, and exhibit scope. Estimated turnaround: 24–48 hours post-submission.",
+  "p_success": 0.95,
+  "upside": "Timely, compliant regulatory filings in the correct jurisdiction with zero risk of late-filing penalties, license suspension, or enforcement action.",
+  "downside": "Continued uncertainty; if the transaction has a hard close date, delay in filing specifications could create deadline risk.",
+  "reversible": true,
+  "critical": true
+}

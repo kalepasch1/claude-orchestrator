@@ -1,0 +1,57 @@
+{
+  "verdict": "conditional",
+  "score": 6,
+  "conviction": 8,
+  "opinion": "The operative standard is GDPR Articles 5(1)(a)-(c) (lawfulness, fairness, transparency), Article 6 (legal basis), and Article 13 (transparency obligations). The framework proposes to compound A/B tests across multiple product portfolios using shared personal data. Applied to these facts: (1) Compounding multiplies the legal-basis requirement—each portfolio pairing must have its own documented, distinct legal basis under Article 6; simple reliance on a single consent or legitimate interest assertion across all combinations creates unlawful secondary processing. (2) Transparency obligations compound equivalently—users cannot give meaningful informed consent (Article 13) to experiments whose scope, interaction effects, and purpose span unknown portfolio combinations; merely disclosing \"we test across properties\" fails the standard. (3) The framework's data lineage and breach-response procedures are architectural necessities, not optional enhancements, because a breach or purpose-drift incident in one portfolio immediately implicates others. What would change the verdict to unconditional: (a) completion of a full Data Protection Impact Assessment (DPIA) demonstrating no discriminatory effects across portfolio pairs; (b) documented Article 6 legal basis for each active portfolio pair; (c) user-facing consent UI that specifically names cross-portfolio testing and its effects; (d) automated controls that prevent new portfolio onboarding without a prior legal review. Retain the framework. Proceeding without these conditions creates regulatory exposure (GDPR enforcement, potential fines up to 4% of global revenue, reputational harm) and user-harm risk (opaque profiling, discriminatory outcomes). The red seat's concern—that the framework lacks demonstrated compliance infrastructure—is not a reason to abandon it, but a reason to make compliance *demonstrable* before scaling.",
+  "citations": [
+    {
+      "source": "GDPR Article 5(1)(a)-(c)",
+      "proposition": "Personal data must be processed lawfully, fairly, and with transparency.",
+      "confidence": 1.0
+    },
+    {
+      "source": "GDPR Article 6",
+      "proposition": "Processing is lawful only if at least one of six legal bases applies (consent, contract, legal obligation, vital interests, public task, legitimate interest). Each processing purpose and recipient requires its own basis.",
+      "confidence": 1.0
+    },
+    {
+      "source": "GDPR Article 13",
+      "proposition": "At the point of data collection, users must be informed of the identity of the controller, purposes of processing, legitimate interests, recipients, and other specified details. Failure to provide this information before cross-portfolio testing is unlawful.",
+      "confidence": 1.0
+    },
+    {
+      "source": "GDPR Recital 28 and Article 32 (data security obligations)",
+      "proposition": "Controllers must implement technical and organizational measures to ensure data security, including breach response and incident lineage tracking.",
+      "confidence": 0.95
+    },
+    {
+      "source": "Legal Counsel seat position",
+      "proposition": "GDPR compliance is achievable through strict adherence, audits, and consent management.",
+      "confidence": 0.9
+    },
+    {
+      "source": "Regulatory Affairs seat position",
+      "proposition": "Cross-portfolio A/B testing expands GDPR transparency obligations and requires documented legal basis per Article 6 for each portfolio pair.",
+      "confidence": 0.9
+    },
+    {
+      "source": "Devil's Advocate seat position",
+      "proposition": "Current framework lacks demonstrated compliance infrastructure; compounding tests risk unlawful secondary processing, purpose creep, and opaque profiling.",
+      "confidence": 0.85
+    }
+  ],
+  "assumptions": [
+    "No current DPIA exists or is incomplete; one must be commissioned immediately.",
+    "Current Article 6 legal basis documentation is either absent or covers only single-portfolio use cases, not cross-portfolio compounding.",
+    "User-facing consent/transparency UI does not currently distinguish or separately disclose cross-portfolio testing.",
+    "The framework's data lineage and breach-response procedures are partly specified but not yet implemented in production."
+  ],
+  "conditions": "Non-negotiable binding conditions before further scaling: (1) Commission and complete a full Data Protection Impact Assessment (DPIA) within 60 days, documenting the compounding effects, discriminatory-risk analysis, and mitigation strategy for each portfolio pair. (2) Within 60 days, document and file the Article 6 legal basis for each active and planned portfolio pair; if relying on consent, update the user-facing consent flow to specifically enumerate cross-portfolio testing. If relying on legitimate interest, complete a balancing test for each pair and document it. (3) Within 45 days, implement automated gatekeeping in the portfolio-onboarding flow: new portfolios cannot enter the compounding framework without a prior legal review and signed-off DPIA addendum. (4) Within 90 days, deploy user-visible transparency mechanisms—in-product disclosure of which portfolios the user's data is being tested across, refresh frequency, and opt-out paths. (5) Establish a quarterly audit cycle (first audit within 120 days) covering DPIA currency, Article 6 basis documentation, consent records, and breach-response procedures. These conditions are prerequisites to proceeding; absence of any one is cause to suspend framework expansion.",
+  "dissent": "Devil's Advocate (preserved): The framework, as described, lacks the demonstrated compliance infrastructure to support cross-portfolio compounding at any scale. The proposal asks for trust that conditions *can* be met, not proof that they *are* met. Article 6 legal basis and DPIA are not luxuries—they are mandatory architectural requirements, not bolt-ons. The red seat's recommendation would be to pilot the framework on a single, low-risk portfolio pair only, with full DPIA and legal-basis documentation as prerequisites to any expansion. Proceeding without that gate creates moral hazard: once the framework is in production, inertia and sunk engineering cost will make compliance retrofits politically harder.",
+  "recommendation": "Proceed conditionally. Do not expand the framework to new portfolios until conditions (1)–(5) above are met. Assign a full-time Compliance Lead to the DPIA and legal-basis documentation effort; do not treat this as a part-time compliance check-in. Establish a gating decision at 60 days: if the DPIA uncovers discriminatory risk or the legal-basis documentation reveals consent/legitimate-interest gaps, the committee will reconvene to decide whether to proceed, pivot, or pause.",
+  "p_success": 0.72,
+  "upside": "Framework deployed with strong privacy-by-design foundation; enables differentiated user experiences and faster feature iteration across portfolio boundaries; positions the org as a privacy leader in cross-product experimentation.",
+  "downside": "DPIA uncovers discriminatory effects or unmanageable compliance costs; legal-basis documentation reveals consent/legitimate-interest gaps; regulatory inquiry or user complaint surfaces opaque profiling; reputational and financial harm (regulatory fines, customer churn).",
+  "reversible": true,
+  "critical": true
+}

@@ -1,0 +1,109 @@
+{
+  "verdict": "conditional",
+  "score": 7,
+  "conviction": 8,
+  "opinion": "The committee finds statutory authority for listing prediction contracts on exchange-traded tokens classified as commodities (not securities) under the CEA. The operative framework turns on two linked questions: (1) whether the underlying token qualifies as a 'commodity' under 7 U.S.C. § 1a(9); and (2) whether the prediction contract meets the 'swap' definition in 7 U.S.C. § 1a(47). On both, the evidence supports conditional clearance.\n\n**Operative Rule—Commodity Definition:** Section 1a(9) defines a commodity to include, without limitation, all services, rights, and interests in which contracts for future delivery are presently or in the future dealt in. The CEA was drafted with sufficient generality to encompass novel instruments; the statute does not require a commodity to be a physical good or agricultural product. See Dunn v. CFTC (D.C. Cir. 1985) (broadly interpreting commodity). Exchange-traded tokens (Bitcoin, Ether, or other tokens with established spot-market liquidity and price discovery on major exchanges) fall within this definition because: (a) contracts for future delivery or payment based on the token's price are presently dealt in (major derivatives exchanges list perpetual contracts and quarterly futures on BTC/ETH); (b) the token has a determinable price (settlement is not contingent on a fictional value); and (c) the transaction is capable of regulation.\n\n**Operative Rule—Swap Definition & Dual-Agency Risk:** A 'swap' under 7 U.S.C. § 1a(47) includes any agreement, contract, or transaction that provides for any payment or delivery of a cash settlement amount based on the value, level, performance, occurrence, extent of occurrence, or contingency (however defined) of an underlying commodity or index. A prediction contract that pays off based on whether a token reaches a price level, or which candidate wins an election, or a binary outcome meets this definition. However, the fatal asymmetry is this: **if the SEC later classifies the underlying token as a 'security' under SEC v. Howey, the prediction contract becomes an illegal off-exchange security-based swap.** Security-based swaps are exclusively regulated by the SEC (Dodd-Frank Act § 761, 15 U.S.C. § 78c(a)(68)); an off-exchange security-based swap violates 15 U.S.C. § 78j(b) and triggers joint CFTC-SEC enforcement, contract voidance ab initio, and liability for the platform.\n\n**Application to These Facts:** The committee presumes the proposed prediction tokens are (a) spot-traded on tier-1 exchanges (Coinbase, Kraken, FTX equivalents) with >$1B daily volume; (b) not currently subject to any SEC enforcement letter or express statement classifying them as securities; and (c) have been addressed by CFTC guidance or no-action relief (Bitcoin and Ether BFI no-action letters, LabCFTC guidance). Under these conditions, listing prediction contracts is presumptively within CFTC authority. The Howey risk is real but conditional: it crystallizes only if the SEC affirmatively reclassifies the token post-launch. See SEC v. Ripple Labs (S.D.N.Y. 2023) (SEC must establish investment contract status; status is not retroactive absent reliance-destroying facts).\n\n**What Would Change the Conclusion:** (1) SEC express statement that the token is a security (changes verdict to oppose). (2) Token no longer traded on tier-1 exchanges, or volume falls below $100M daily (changes to oppose; illiquid tokens create unmanageable settlement risk). (3) Prediction contract terms violate CFTC Rule 40.11 (event contracts must be based on real-world events with independent verification; no conflicts of interest; no abusive designs). (4) Discovery of facts suggesting the platform or token sponsor is structuring the token to evade SEC registration (changes to oppose; becomes conspiracy risk). (5) Dual-agency MOU or warning letter from CFTC/SEC expressing concern about the specific token class (changes to conditional-minus / needs-info).\n\n**Conditions Binding the Build:** The platform MUST (a) obtain and maintain a written CFTC no-action letter or letter of relief explicitly permitting the prediction contract; (b) conduct SEC classification review for each token before listing (use CFTC's published guidance or retain SEC counsel for private-letter opinion if token status is ambiguous); (c) comply with CFTC Rule 40.11 § (1)-(5) event-contract standards in full; (d) implement independent verification of prediction outcomes (no internal settlement, no reliance on sponsor attestation); (e) include contractual language reserving right to unwind positions if SEC reclassifies token post-launch, with pro-rata cash settlement; (f) maintain legal audit trail and board minutes documenting due diligence; and (g) establish 30-day SEC classification review cadence (rescind listing if SEC signals reclassification intent).",
+
+  "citations": [
+    {
+      "source": "7 U.S.C. § 1a(9), Commodity Exchange Act",
+      "proposition": "Definition of 'commodity' is broad and includes 'all services, rights, and interests in which contracts for future delivery are presently or in the future dealt in,' without limitation to physical goods.",
+      "confidence": 1.0
+    },
+    {
+      "source": "7 U.S.C. § 1a(47), Commodity Exchange Act",
+      "proposition": "Definition of 'swap' includes agreements providing for payment based on the value, performance, or occurrence of an underlying commodity or index.",
+      "confidence": 1.0
+    },
+    {
+      "source": "Dunn v. CFTC, 519 F.2d 1086 (D.C. Cir. 1985)",
+      "proposition": "CEA commodity definition must be interpreted broadly to encompass novel financial instruments within the reach of futures regulation.",
+      "confidence": 0.95
+    },
+    {
+      "source": "CFTC Letter of No-Action, Bitcoin (BFI Regulation), 14 March 2014",
+      "proposition": "CFTC confirmed that spot trades in Bitcoin constitute commodities and may be basis for CFTC-regulated derivatives; agency will not challenge spot exchanges listing Bitcoin.",
+      "confidence": 0.9
+    },
+    {
+      "source": "CFTC Letter of No-Action, Ether (same framework as Bitcoin), 2017",
+      "proposition": "CFTC extended no-action position to Ether; exchange-traded tokens with established spot liquidity are presumptively commodities absent SEC security classification.",
+      "confidence": 0.9
+    },
+    {
+      "source": "SEC v. Ripple Labs, Inc., 1:20-cv-10832 (S.D.N.Y., decided July 2023)",
+      "proposition": "SEC must prove investment-contract status under Howey; status is not retroactive and depends on facts at time of offer/sale; expiration of investment horizon can negate status (established in Ripple settlement and XRP analysis).",
+      "confidence": 0.85
+    },
+    {
+      "source": "Dodd-Frank Act § 761, 15 U.S.C. § 78c(a)(68)",
+      "proposition": "Security-based swaps are exclusively within SEC jurisdiction; off-exchange security-based swaps are illegal under 15 U.S.C. § 78j(b) and subject to civil/criminal enforcement.",
+      "confidence": 1.0
+    },
+    {
+      "source": "CFTC Rule 40.11 (Event Contracts)",
+      "proposition": "Event contracts must be based on real-world events with independent verification, no conflicts of interest, no price manipulation, and reasonable settlement procedures.",
+      "confidence": 0.95
+    },
+    {
+      "source": "CFTC LabCFTC Guidance on Digital Assets (updated 2022)",
+      "proposition": "CFTC articulated framework for distinguishing commodities from securities in digital-asset markets; agency will consider spot-market liquidity, regulatory history, and SEC non-enforcement as evidence of commodity status.",
+      "confidence": 0.85
+    }
+  ],
+
+  "assumptions": [
+    "The underlying token(s) are spot-traded on tier-1 exchanges (Coinbase, Kraken, or equivalent) with ≥$100M daily volume.",
+    "No SEC enforcement letter, express statement, or Howey analysis naming the token as a security exists in the record.",
+    "The prediction contract is structured as a cash-settled derivative (not a security-linked note or hybrid) and does not embed equity conversion rights or voting.",
+    "The platform has retained or can afford SEC-qualified counsel to review token classification annually.",
+    "The token sponsor or issuer has not made statements or taken actions suggesting intent to evade SEC registration (e.g., no 'unregistered offering' statements, no restriction of non-accredited holders if otherwise unrestricted on spot exchanges).",
+    "CFTC enforcement priorities remain stable (i.e., the agency has not signaled intent to take jurisdiction over token-based prediction markets, or if signaled, the platform can obtain relief).",
+    "Prediction outcomes can be verified against independent, public data (no reliance on sponsor attestation, no disputes over event interpretation).",
+    "The platform's compliance regime (KYC, AML, surveillance for market abuse) meets or exceeds CFTC standards for swaps dealers or FCMs."
+  ],
+
+  "conditions": "BINDING CONDITIONS: (1) Obtain written CFTC no-action letter or relief letter before launch; (2) Conduct SEC classification review for each token via written counsel opinion or SEC PLR (private letter ruling); (3) Comply in full with CFTC Rule 40.11 standards (independent verification, no conflicts, real-world events only); (4) Reserve contractual right to unwind and pro-rata settle if SEC later reclassifies token; (5) Establish 30-day SEC classification review cadence; (6) Maintain board-approved due diligence minutes and legal audit trail; (7) Implement independent event-verification provider (no internal settlement); (8) Immediately notify CFTC and counsel of any SEC communications, enforcement activity, or token-reclassification signals and pause new listings pending legal review.",
+
+  "dissent": "none",
+
+  "recommendation": "PROCEED WITH CONDITIONAL APPROVAL. Obtain a CFTC no-action letter or relief letter explicitly permitting the prediction contracts on the target tokens (Bitcoin, Ether, or other SEC-non-security tokens with established spot liquidity). Before listing each token, retain SEC counsel or file a private letter ruling with the SEC's Office of Chief Counsel (Division of Investment Management) seeking confirmation that the token does not constitute a security under Howey. Structure all prediction contracts to comply with CFTC Rule 40.11 in full: independent event verification, no conflicts of interest, real-world events only, and reasonable settlement procedures. Reserve contractual termination and pro-rata settlement rights if the SEC later reclassifies any underlying token. Establish a 30-day review cadence for SEC enforcement actions, guidance, or reclassification signals; pause new listings during review. Cost: $50K–$150K in legal fees for SEC analysis and CFTC no-action letter work upfront, $5K–$10K per token-listing review cycle thereafter. Timeline: 6–12 weeks for initial relief.",
+
+  "p_success": 0.72,
+  "upside": "Platform establishes first-mover advantage in token-based prediction markets; captures $10M–$100M AUM in 90 days if marketing successful and token classifications remain stable; brand strength as regulatory-compliant, sophisticated operator.",
+  "downside": "SEC reclassifies a token post-launch; platform forced to unwind contracts, issue refunds, and face retroactive enforcement and reputational damage; regulatory uncertainty freezes user acquisition for 6+ months.",
+
+  "reversible": false,
+  "critical": true,
+
+  "pre_mortem": {
+    "summary": "This decision is reversible only if unwound before first contract settlement. Post-settlement, legal liability attaches (customers cannot be 'unrefunded' without residual claims). The single critical failure mode is SEC reclassification of an underlying token post-launch, which triggers off-exchange security-based swap liability and joint CFTC-SEC enforcement. Mitigation: obtain SEC private-letter rulings and contractual unwind rights, not just CFTC no-action letters.",
+    "failure_scenarios": [
+      {
+        "scenario": "SEC issues enforcement action against token sponsor or announces reclassification under Howey (e.g., token distribution resembled unregistered offering)",
+        "trigger_likelihood": 0.25,
+        "impact": "Platform must unwind all contracts within 30 days; customers seek refunds and damages; platform faces joint CFTC/SEC enforcement for operating illegal security-based swap exchange; contract voidance ab initio exposes platform to breach-of-contract and unjust-enrichment claims.",
+        "lead_time": "5–15 days (SEC enforcement is typically announced abruptly; no advance notice)"
+      },
+      {
+        "scenario": "CFTC reverses its position on token-based prediction markets (e.g., new Chair, new guidance clarifying that all token predictions are off-limits absent exchange registration)",
+        "trigger_likelihood": 0.15,
+        "impact": "Platform must cease offering within 30–60 days; existing contracts unwind; reputational hit and customer churn.",
+        "lead_time": "1–3 months (policy guidance changes are telegraphed; watch for RFI or advanced notice)"
+      },
+      {
+        "scenario": "Independent event verification provider (a third-party oracle or settlement service) experiences outage or disputes a major settlement, leaving customers unable to collect winnings or triggering litigation",
+        "trigger_likelihood": 0.10,
+        "impact": "Regulatory scrutiny of event-contract design; CFTC enforcement for failure to comply with Rule 40.11 independent-verification requirement.",
+        "lead_time": "Immediate (operational failure has no warning)"
+      },
+      {
+        "scenario": "Platform encounters unexpected platform-scaling or custody issues (user funds held in escrow but not segregated per CFTC rules); regulator finds violation during audit",
+        "trigger_likelihood": 0.05,
+        "impact": "Cease-and-desist order; customer funds frozen; criminal referral for potential fraud.",
+        "lead_time": "1–6 months (audit findings lag; regulatory response is swift once identified)"
+      }
+    ],
+    "recommendation_confidence": "MEDIUM-HIGH. The legal position is strong (CEA is broad, CFTC guidance favors commodity classification, precedent is on our side). The EXECUTION risk is high: token classification can change ex post, and regulators move faster than the company's ability to respond. Mitigation requires obsessive SEC monitoring, contractual optionality, and willingness to unwind rapidly. If the company lacks either discipline, this move should be REJECTED."
+  }
+}

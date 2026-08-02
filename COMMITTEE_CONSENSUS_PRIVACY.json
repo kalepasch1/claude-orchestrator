@@ -1,0 +1,89 @@
+{
+  "verdict": "conditional",
+  "score": 7,
+  "conviction": 8.5,
+  "opinion": "The cade-consensus-embed-kit presents a compliant pathway ONLY if explicit governance controls are implemented before launch. Under GDPR Articles 5 (lawfulness, fairness, transparency), 6 (lawful basis), and 17 (right to erasure) and CCPA § 1798.100 et seq. (consumer rights to know, delete, opt-out), data collection and third-party sharing must be transparent to the end user, bounded by explicit purpose and retention limits, and subject to verifiable consent or opt-out. The kit's current design—embedded data collection and third-party sharing without documented data flows or user controls—violates the core transparency and purpose-limitation obligations that anchor GDPR and CCPA compliance. Merely applying a 'business model check' to the kit's design without mapping its actual data flows is a control-theater substitute for compliance; it audits intent, not implementation, leaving technical drift unchecked. The governance architect's risk assessment is well-founded: silent data exposure under an embedded kit (which typically has lower user visibility than a standalone service) compounds the regulatory risk. However, the compliance specialist's position—that comprehensive data-flow documentation, retention enforcement, and audit trails are feasible preconditions—is the operative ground. A 'business model check' is not a substitute for a data flow map. Launch is conditional on: (1) a demonstrably complete data inventory (all data points collected by the kit, whether first-party or inferred, with collection method and purpose); (2) documented retention schedules with automated enforcement (not retention 'policies' that are post-hoc aspirations); (3) explicit user consent or opt-out mechanisms in the embedding UX, not in a privacy policy; (4) third-party recipients identified by name, with contractual Data Processing Agreements (DPAs) mirroring GDPR Article 28 and CCPA § 1798.140(ag)); and (5) a pre-launch audit by an independent assessor confirming data flows match the inventory and retention enforcement is operational. Without these, the kit is non-compliant on launch.",
+  "citations": [
+    {
+      "source": "GDPR Article 5(1)(a)",
+      "proposition": "Personal data must be processed lawfully, fairly, and transparently.",
+      "confidence": 1.0
+    },
+    {
+      "source": "GDPR Article 5(1)(b)",
+      "proposition": "Data collection must be limited to specified, explicit, and legitimate purposes (purpose limitation).",
+      "confidence": 1.0
+    },
+    {
+      "source": "GDPR Article 5(1)(e)",
+      "proposition": "Data must be stored in a form permitting identification of data subjects for no longer than necessary (storage limitation).",
+      "confidence": 1.0
+    },
+    {
+      "source": "GDPR Article 6",
+      "proposition": "Processing must have a lawful basis; consent is one such basis, requiring freely given, specific, informed opt-in.",
+      "confidence": 1.0
+    },
+    {
+      "source": "GDPR Article 14",
+      "proposition": "When data is not provided by the data subject, the controller must provide transparency information about collection, purposes, recipients, and retention—within 1 month of collection.",
+      "confidence": 1.0
+    },
+    {
+      "source": "GDPR Article 28",
+      "proposition": "Any processor (including third-party recipients of shared data) must be bound by a contract (DPA) imposing specific data protection obligations.",
+      "confidence": 1.0
+    },
+    {
+      "source": "CCPA § 1798.100(b)",
+      "proposition": "Consumers have the right to know what personal information is collected, the purposes, and the categories of third parties to whom it is disclosed.",
+      "confidence": 1.0
+    },
+    {
+      "source": "CCPA § 1798.100(d)",
+      "proposition": "Businesses must provide opt-out mechanisms for the sale or sharing of personal information.",
+      "confidence": 1.0
+    },
+    {
+      "source": "CCPA § 1798.140(ag)",
+      "proposition": "Service providers and contractors receiving personal information for business purposes must contractually agree to use it only for those purposes and must comply with CCPA restrictions.",
+      "confidence": 1.0
+    },
+    {
+      "source": "Data governance architect's risk assessment (from seat position)",
+      "proposition": "Embedded kits with undocumented data collection pose elevated regulatory and reputational risk due to lower end-user visibility and awareness compared to standalone services.",
+      "confidence": 0.85
+    },
+    {
+      "source": "GDPR Recital 39 & Article 32",
+      "proposition": "Controllers and processors must implement accountability measures, including technical and organizational measures (e.g., automated retention enforcement, access logging) to ensure compliance.",
+      "confidence": 1.0
+    }
+  ],
+  "assumptions": [
+    "The embedded kit will collect personal data as defined by GDPR Article 4(1) and CCPA § 1798.100. If no personal data is collected, GDPR/CCPA do not apply, and this condition is moot.",
+    "Third-party recipients will receive personal data (not aggregated, anonymized data incapable of identification). If sharing is limited to non-personal (truly anonymized) data, the data-flow conditions for third-party governance do not apply to those shares.",
+    "The kit is intended to operate in jurisdictions where GDPR and/or CCPA apply. If deployment is restricted to jurisdictions without equivalent privacy regimes, compliance requirements may differ.",
+    "The kit's data collection occurs at runtime (not configuration-time only). If the kit collects no data at runtime, data-flow documentation is simpler.",
+    "User controls (consent/opt-out) can be surfaced in the embedding UX without breaking the embedded kit's core functionality. If consent/opt-out UX is infeasible, the kit's design may require reconsideration."
+  ],
+  "conditions": "1. COMPLETE DATA INVENTORY: Document all data points collected by the kit (including inferred, derived, or behavioral data), collection method (event, API, user input), and intended purpose. Inventory must be audited by a third party and published alongside the kit's release notes. 2. RETENTION ENFORCEMENT: Define retention schedules for each data category (e.g., event logs: 90 days; user preferences: until account deletion) and implement automated enforcement (TTLs, purge jobs, archival) with operational logs. Retention policies alone are insufficient; enforcement must be observable in code and monitoring. 3. USER CONSENT/OPT-OUT: Surface explicit consent or opt-out controls in the embedding UX. For GDPR in-scope contexts, consent must be opt-in (not pre-checked). For CCPA in-scope contexts, opt-out must be machine-readable and actionable within 45 days. Do not bury consent in privacy policies; it must be interactive at kit initialization. 4. THIRD-PARTY GOVERNANCE: For each third-party recipient (e.g., analytics vendors, payment processors), document the recipient name, data categories shared, purpose, and a signed Data Processing Agreement (DPA) or Processor Addendum (DPA) confirming the recipient's compliance with GDPR Article 28 or CCPA § 1798.140(ag). No third-party sharing without a DPA on file. 5. PRE-LAUNCH AUDIT: Engage an independent privacy assessor (external counsel, privacy consulting firm, or internal audit function with independence) to verify that data flows match the inventory, retention enforcement is operational, consent UX is compliant, and third-party contracts are in place. Audit scope: kit as deployed in the embedding context, not kit in isolation. 6. ONGOING REVIEW: Establish a post-launch cadence (quarterly or upon material changes) to re-audit data flows, retention enforcement, and third-party compliance. Any material drift (new data collection, new third-party, retention bypass) triggers a pause-and-remediate cycle before further deployment.",
+  "dissent": "none",
+  "recommendation": "Do not launch the kit in its current form. Implement governance controls in the order listed: (1) data inventory + audit (2 weeks), (2) retention enforcement in code (3 weeks), (3) consent/opt-out UX (2 weeks), (4) third-party DPA collection (2 weeks, parallel with 1–3), (5) independent pre-launch audit (1 week). Estimated time-to-launch: 6–8 weeks, depending on third-party responsiveness and remediation cycles. Parallel work with product/engineering to ensure governance is designed in, not bolted on; embed privacy review in the kit's development workflow going forward.",
+  "p_success": 0.75,
+  "upside": "Kit launches with demonstrable GDPR/CCPA compliance, reducing regulatory and reputational risk; end users trust the kit's data handling; competitive differentiation on transparency; no material delays beyond 8 weeks.",
+  "downside": "Governance implementation reveals unsupported data flows or third-party practices, requiring design changes (e.g., dropping certain analytics, narrowing third-party integrations); launch delay extends beyond 8 weeks if third parties are slow to sign DPAs or if user controls complicate the embedding UX.",
+  "reversible": false,
+  "critical": true,
+  "rationale_on_reversibility": "A launch without governance controls is difficult to reverse; once end users rely on the kit, retroactively enforcing retention or removing third-party sharing causes disruption. Conversely, launching with governance means privacy is part of the kit's identity from day one. The cost of building governance now is lower than unwinding a privacy incident later.",
+  "rationale_on_criticality": "Privacy compliance is regulatory (GDPR/CCPA fines: up to €20M or 4% of revenue; CCPA penalties: $7,500/violation). Reputational damage from privacy incidents (data breaches, silent third-party sharing, unauthorized use) is material. A single news cycle on data misuse can erode user trust platform-wide. Governance is not a nice-to-have; it is a prerequisite for defensible launch.",
+  "pre_mortem_forecast": {
+    "likely_outcome": "SUCCESS (72–77% confidence)",
+    "scenario_1_success": "Governance controls implemented on schedule; third parties cooperate on DPA signing; pre-launch audit is clean; kit launches within 8 weeks; compliance posture is demonstrable and becomes a market asset.",
+    "scenario_2_moderate_delay": "One or more third parties are slow to respond to DPA requests (common), or user consent UX requires iteration based on usability testing; launch slips by 2–4 weeks; governance is complete before shipment.",
+    "scenario_3_design_friction": "Data inventory reveals collection practices that conflict with consent UX or third-party DPA requirements (e.g., 'passive' analytics data incompatible with opt-in consent); product team and privacy team iterate on scope; launch slips by 4–6 weeks; net outcome is a kit with narrower scope but solid compliance.",
+    "scenario_4_failure_mode": "Third-party integrations are contractually impractical to govern (e.g., vendor refuses to sign a DPA or requires kit to collect data in ways that violate GDPR); kit design is fundamentally incompatible with governance; decision escalates to product leadership on trade-offs (drop the integration vs. accept non-compliance risk). This is rare but high-impact if it occurs.",
+    "success_drivers": "Executive sponsorship of governance timeline; dedicated privacy/legal resource; clear handoff between product and compliance teams; proactive outreach to third parties 4 weeks before launch.",
+    "failure_preventers": "Do not launch without a signed audit report confirming all conditions met. Do not treat DPA signing as optional or 'we'll sign it later.' Do not conflate a business model review with a data-flow audit."
+  }
+}

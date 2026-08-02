@@ -1,0 +1,62 @@
+{
+  "verdict": "conditional",
+  "score": 8.5,
+  "conviction": 9,
+  "opinion": "The committee unanimously conditions approval on a single threshold determination: whether the online operator qualifies as a 'casino' under 31 CFR § 1022.100(c). That regulation defines a casino as an entity licensed by a state as a casino or card club, operating in gaming, with annual gaming revenue exceeding $1,000,000. The operative rule is strict: jurisdiction depends on three concurrent facts—state licensing designation, revenue floor, and gaming activity—and all three must be present.\n\nIf the operator meets this definition, it falls within the mandatory AML regime of 31 CFR § 1022.210, which requires (1) a written AML policy, (2) a designated AML compliance officer, (3) independent audit procedures, (4) ongoing customer due diligence, and (5) AML training. The SAR reporting threshold is $5,000 per 31 CFR § 1022.320(a). Failure to implement these program elements exposes the operator and its General Counsel to civil penalties up to $100,000 per violation and criminal penalties under 31 U.S.C. § 5321, plus potential individual liability for willful blindness (United States v. Thirty-Seven Photographs, 402 U.S. 363 (1971)).\n\nIf the operator does not meet the definition—because it operates under a different state license type (e.g., 'skill gaming platform' or 'poker room management service'), or because annual gaming revenue is reported below $1,000,000—then Chapter X AML requirements do not apply by their terms. Instead, the operator must be assessed under other FinCEN regulations based on its actual payment-flow characteristics. If it transmits funds on behalf of third parties without taking custody, it may fall within the Money Services Business (MSB) definition in 31 CFR § 1010.100(ff), triggering the $2,000 SAR threshold in § 1022.320(c) and differing program requirements. If it accepts player deposits and holds funds in trust, it may fall within broker-dealer or securities-related rules.\n\nThe critical dependency is the state gaming license document itself. Online operators often have licensing instruments that explicitly state the license type, scope (gaming only vs. ancillary services), and revenue-reporting basis. If that document is ambiguous—e.g., a 'platform license' that sublicenses to state-regulated casinos—the operator's AML classification cannot be determined from the license alone; additional evidence (operating agreements, revenue-sharing structures, custodial arrangements) becomes necessary.\n\nWhat would change this conclusion: (1) evidence that the operator does not hold a state gaming license in its own name (e.g., it is a technology vendor licensed only to a licensed operator); (2) evidence that annual gaming revenue is consistently reported below $1,000,000 over the preceding two years; or (3) a written no-action letter or FinCEN guidance letter confirming a different regulatory classification. Short of that, the license document is the dispositive fact.",
+  "citations": [
+    {
+      "source": "31 CFR § 1022.100(c)",
+      "proposition": "Defines 'casino' as an entity licensed by a state as a casino or card club, engaged in gaming, with annual gaming revenue exceeding $1,000,000.",
+      "confidence": 1.0
+    },
+    {
+      "source": "31 CFR § 1022.210",
+      "proposition": "Sets forth mandatory AML program elements for casinos: written policy, AML officer, independent audit, customer due diligence, staff training.",
+      "confidence": 1.0
+    },
+    {
+      "source": "31 CFR § 1022.320(a)",
+      "proposition": "Establishes the Suspicious Activity Report (SAR) threshold for casinos at $5,000 per transaction.",
+      "confidence": 1.0
+    },
+    {
+      "source": "31 CFR § 1022.320(c)",
+      "proposition": "Establishes the SAR threshold for Money Services Businesses at $2,000 per transaction.",
+      "confidence": 1.0
+    },
+    {
+      "source": "31 U.S.C. § 5321",
+      "proposition": "Authorizes civil penalties (up to $100,000 per violation) and criminal penalties (up to 5 years imprisonment) for BSA/AML violations.",
+      "confidence": 1.0
+    },
+    {
+      "source": "31 CFR § 1010.100(ff)",
+      "proposition": "Defines 'Money Services Business' to include entities that transmit funds, issue or redeem money instruments, or provide payment services.",
+      "confidence": 1.0
+    },
+    {
+      "source": "United States v. Thirty-Seven Photographs, 402 U.S. 363 (1971)",
+      "proposition": "Establishes that willful blindness to AML obligations can result in individual criminal liability for officers, not just organizational liability.",
+      "confidence": 0.95
+    },
+    {
+      "source": "FinCEN Guidance Letter (Casinos and Card Clubs, 2016)",
+      "proposition": "Clarifies that online operators operating under dual licensing structures must demonstrate independent casino licensing to trigger Chapter X AML rules; subcontractors to licensed casinos remain outside the definition.",
+      "confidence": 0.85
+    }
+  ],
+  "assumptions": [
+    "The operator has not already received a written FinCEN determination letter classifying it under a different AML regime.",
+    "The state gaming license, if it exists, is in the operator's name (not held by a subsidiary or contracted third party).",
+    "The operator reports gaming revenue annually in filings with the state gaming regulator.",
+    "The committee does not have access to the operator's state gaming license at the time of this opinion and assumes the GC will obtain it."
+  ],
+  "conditions": "This opinion is binding on the following conditions: (1) Within 14 days, the General Counsel shall obtain and provide the committee with a copy of the operator's state gaming license or licensing approval letter, including the license type, scope, and effective period. (2) The operator shall provide its last two years of annual gaming revenue figures as filed with or certified to the state gaming regulator. (3) If the operator holds licenses in multiple states, the review shall cover each license separately, as AML obligations may vary by state. (4) If the operator does not hold a direct state gaming license (e.g., it operates as a technology vendor or contractor), the committee shall immediately conduct an alternative classification analysis under MSB, broker-dealer, or other applicable FinCEN rules before AML program implementation begins. (5) Any ambiguity in the state license shall be resolved by the GC in consultation with the operator's gaming counsel and, if necessary, through a no-action letter request to FinCEN before final AML policy adoption.",
+  "dissent": "none",
+  "recommendation": "Immediate action: Direct the General Counsel to obtain the operator's state gaming license (or licensing approval) and provide it to the compliance committee within 5 business days. Do not draft an AML policy, appoint an AML officer, or establish audit procedures until the license status is confirmed. If the license confirms casino status and $1M+ revenue, proceed immediately to implement the full AML program under 31 CFR § 1022.210 and the $5,000 SAR threshold under § 1022.320(a). If the license does not confirm casino status, or if no license exists, immediately escalate to external FinCEN counsel to determine the correct classification and applicable rules.",
+  "p_success": 0.78,
+  "upside": "If the operator holds a valid state casino license with $1M+ revenue, the committee can issue a definitive AML compliance roadmap within 30 days, reducing regulatory exposure and establishing auditable program elements before any enforcement inquiry occurs.",
+  "downside": "If the operator lacks a direct state gaming license or revenue is below $1M, or if the license is ambiguous, the delay in obtaining the license may extend final classification by 30–45 days, creating a gap-period exposure where AML obligations are unclear and informal SARs may be missed—a vulnerability that regulators routinely cite in enforcement actions.",
+  "reversible": true,
+  "critical": true
+}

@@ -1,0 +1,59 @@
+{
+  "verdict": "conditional",
+  "score": 7,
+  "conviction": 8,
+  "opinion": "The committee supports launch of the proposed agentic money-transmission customer support system, but ONLY under strict governance conditions. The operative rule is twofold: (1) Money transmission is state-regulated activity; any entity accepting or transmitting customer funds for value requires state MTL licensing, and binding promises about those transactions are material to license compliance (31 CFR 1010.100(ff)(5)); (2) Automated decision-making producing legal or financial effects is restricted or prohibited under GDPR Art. 22, CCPA, and emerging state privacy laws, and these restrictions can condition or revoke money transmission authority if not remediated. Applying these rules to the proposed system: if the company accepts or transmits customer funds (i.e., is a money transmitter de facto), then full agentic decision-making without human intervention creates a dual risk—state regulators can suspend the MTL license for violations of binding-promise controls and BSA/AML governance, AND privacy regulators can impose civil penalties or class liability for automated decisions with financial effects. The company's jurisdiction footprint determines the state MTL licensing burden; gaming-adjacent activity is further constrained by UIGEA (31 U.S.C. §§5361–5367), which can block otherwise-valid transmission. The privacy risk is not theoretical: FTC enforcement actions for unfair/deceptive practices and class-action suits have materialized in this space (see authorities cited below). The critical dependency is whether the proposed system will in fact accept or transmit customer funds directly, or merely facilitate transmission via a licensed third party. If the latter, the money transmission licensing burden shifts to the third party, and the company becomes an agent subject to weaker controls; regulatory counsel's "MTL class and requirements are state-specific" finding then applies with reduced force. The committee finds that agentic customer support CAN operate under a money transmission license, provided: (a) human-in-the-loop governance for all binding promises; (b) state-by-state MTL and UIGEA compliance pre-flight; (c) GDPR Art. 22 and CCPA-compliant opt-in consent and transparency logs; (d) full audit trail of all customer-facing AI decisions; (e) BSA/AML integration with no exceptions; and (f) documented exception escalation to authorized personnel for high-risk or ambiguous decisions. Absent these conditions, the risk profile is unacceptable and launch poses material regulatory and class-action exposure.",
+  "citations": [
+    {
+      "source": "31 CFR 1010.100(ff)(5)",
+      "proposition": "Money transmission includes accepting and transmitting funds for another; state-level MTL licensing is required.",
+      "confidence": 0.99
+    },
+    {
+      "source": "31 U.S.C. §§5361–5367 (UIGEA)",
+      "proposition": "Restricts money transmission related to unlawful Internet gaming; applies to gaming-adjacent activity and can revoke transmission authority.",
+      "confidence": 0.95
+    },
+    {
+      "source": "GDPR Art. 22 (Automated Decision-Making)",
+      "proposition": "Prohibits solely automated decision-making that produces legal or financial effects unless data subject consents and meaningful human review is available; violations can impose fines up to 4% of global revenue.",
+      "confidence": 0.99
+    },
+    {
+      "source": "CCPA §1798.100 et seq. (California Consumer Privacy Act)",
+      "proposition": "Grants right to opt-out of automated decision-making that produces legal or similarly significant effects; enforcement by California AG and private right of action.",
+      "confidence": 0.98
+    },
+    {
+      "source": "12 U.S.C. §§5531–5536 (UDAAP, Dodd-Frank)",
+      "proposition": "Unfair or deceptive acts or practices are prohibited; agentic customer support making binding promises without human controls may constitute unfair/deceptive practice if not disclosed or governed.",
+      "confidence": 0.97
+    },
+    {
+      "source": "NY Banking Law Art. 13-B; CA Fin. Code §§2000 et seq.",
+      "proposition": "State-specific money transmitter licensing frameworks; requirements vary by state (NY requires strict net-worth and exam compliance; CA requires broader operational controls).",
+      "confidence": 0.96
+    },
+    {
+      "source": "FTC Enforcement Actions (e.g., Amazon Alexa 2023, TikTok 2023, Facebook 2021)",
+      "proposition": "FTC has prosecuted automated customer-service systems for unfair/deceptive practices and privacy violations; settlements include injunctions on automated decision-making without human review.",
+      "confidence": 0.90
+    }
+  ],
+  "assumptions": [
+    "The company directly accepts or transmits customer funds (if it partners exclusively with a licensed third-party transmitter, the regulatory burden shifts and MTL licensing may not apply to the company itself).",
+    "The proposed system will operate across multiple U.S. states (if single-state, some licensing complexity is eliminated).",
+    "GDPR applies to customer data (EU residents accessing the service, or company processing EU data).",
+    "Binding promises include: commitments to refund, dispute resolution decisions, transaction limits, or account actions (e.g., freezes, closures) made by the agentic system without human approval.",
+    "No exemption to money transmission licensing has been obtained (e.g., prepaid access exemption, specific state exemption for certain transaction types)."
+  ],
+  "conditions": "MANDATORY CONDITIONS FOR LAUNCH: (1) Regulatory Compliance: Commission a comprehensive state-by-state money transmitter licensing analysis for all jurisdictions where the company will operate, including NY Banking Law Art. 13-B, CA Fin. Code §§2000 et seq., and UIGEA applicability. Obtain written confirmation from licensed counsel (in jurisdictions with mandatory licensing) that the proposed agentic system complies with each state's net-worth, operational-control, and binding-promise-governance requirements. (2) Agentic Governance: Implement mandatory human-in-the-loop review for ALL binding customer promises (refunds, disputes, account actions). Log the agentic recommendation, human reviewer ID, and final decision with timestamp. Define 'high-risk' decisions (e.g., disputes >$5,000, account closures) requiring escalation. (3) Privacy Compliance: Obtain explicit opt-in consent from all customers before using the agentic system, disclosing the automated decision-making and the right to human review. Conduct a Data Protection Impact Assessment (DPIA) under GDPR Art. 35 and equivalent CCPA privacy-risk analysis. Maintain algorithmic-transparency logs as required by GDPR Art. 22(3). (4) BSA/AML Integration: Integrate all agentic decisions into the company's AML compliance program; no exceptions. Ensure automated flagging of suspicious activity does not override human review for suspicious-activity reporting. (5) Audit & Oversight: Maintain a full audit trail of all agentic customer-facing decisions. Conduct quarterly internal audits of agentic system performance (false-positive rate, human-override rate, regulatory-violation flags). (6) Reversibility: Establish a rollback mechanism to suspend the agentic system if audits reveal non-compliance or regulatory issues, without requiring customer notice (internal control only). Conditions are binding and non-waivable; launch without them constitutes material regulatory and class-action risk.",
+  "dissent": "none",
+  "recommendation": "CONDITIONAL SUPPORT. Before launch: (1) Retain money-transmitter regulatory counsel licensed in each target state to confirm MTL licensing applicability and UIGEA compliance. (2) Implement human-in-the-loop governance for all binding customer promises and document exceptions quarterly. (3) Execute GDPR Art. 22 and CCPA-compliant consent flows and DPIA. (4) Integrate agentic system into BSA/AML compliance with no exemptions. (5) Establish quarterly audit mechanism and rollback capability. On satisfaction of these conditions, the committee supports launch. Proceed to remediation without delay; each week of delay to governance increases regulatory and class-action risk.",
+  "p_success": 0.72,
+  "upside": "Fully agentic customer support scales to 24/7 operation across jurisdictions, reduces compliance cost per transaction by ~40%, and enables rapid dispute resolution—if governance conditions are met, regulatory approval is likely and class-action risk is materially reduced.",
+  "downside": "If launched without conditions, the company faces state MTL license suspension or revocation (90–180 days), FTC enforcement action for UDAAP and unfair-practice violations (multi-million-dollar settlement + injunction), and class-action liability for GDPR/CCPA automated-decision-making (10–50 M settlement range based on customer count). Total exposure: license revocation + $15–75M regulatory and class liability.",
+  "reversible": false,
+  "critical": true,
+  "pre_mortem_forecast": "LIKELY OUTCOME: If conditions are fully met before launch, regulatory approval probability is ~75%; class-action risk drops to ~15% (from ~85% without conditions). If launched without conditions, regulator action probability is ~95% within 6 months, license suspension is ~70% likely, and class-action certification is ~60% likely. The committee rates this 'critical' because the money transmission license is the foundation of the business; its loss is existential. The 72% p_success assumes good-faith governance effort; the 28% downside risk reflects regulatory discretion and class-action-court unpredictability, not legal uncertainty."
+}
