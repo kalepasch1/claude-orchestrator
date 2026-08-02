@@ -45,7 +45,11 @@ BLOCKING = {"stub_shadows_reexport", "body_replaced_by_constant", "stub_commit_m
 
 CODE_EXT = (".ts", ".tsx", ".js", ".mjs", ".vue", ".svelte")
 _SKIP_DIR = re.compile(
-    r"(^|/)(node_modules|\.git|dist|\.nuxt|\.output|build|vendor|coverage|\.vercel|__pycache__|\.next)(/|$)")
+    r"(^|/)(node_modules|\.git|dist|\.nuxt|\.output|build|vendor|coverage|\.vercel|__pycache__|\.next"
+    # .runtime holds the orchestrator's own scratch worktrees (integration-worktrees/, agent
+    # checkouts). Scanning it re-reports every OTHER project's files through a scratch path,
+    # which filed ~400 duplicate remediation tasks on the first live run.
+    r"|\.runtime|\.claude/worktrees)(/|$)")
 
 # A commit whose MESSAGE advertises that it papered over a build break with stubs.
 # These are the exact shapes seen in the fleet.
