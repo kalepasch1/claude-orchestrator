@@ -350,6 +350,18 @@ def _three_way_merge(base, a, b):
         ops_a = [(tag, i1, i2, j1, j2) for tag, i1, i2, j1, j2 in sm_a.get_opcodes() if tag != "equal"]
         ops_b = [(tag, i1, i2, j1, j2) for tag, i1, i2, j1, j2 in sm_b.get_opcodes() if tag != "equal"]
 
+        # Both sides making the IDENTICAL edit is agreement, not a collision — apply it once
+        # and exclude it from the conflict scan below (otherwise the stricter zero-width rules
+        # would reject "we both added the same import", which used to merge fine).
+        def _key(ops, lines):
+            return {(i1, i2, tuple(lines[j1:j2])) for _tag, i1, i2, j1, j2 in ops}
+
+        shared = _key(ops_a, a) & _key(ops_b, b)
+        if shared:
+            shared_spans = {(i1, i2) for i1, i2, _repl in shared}
+            ops_a = [o for o in ops_a if (o[1], o[2]) not in shared_spans]
+            ops_b = [o for o in ops_b if (o[1], o[2]) not in shared_spans]
+
         # Check for base-range overlap between any A op and any B op.
         # FIX 2026-08-02 (root cause of the improvement_miner wipe): the test used to be a
         # bare `ai1 < bi2 and bi1 < ai2`. A pure INSERTION is a ZERO-WIDTH range (i1 == i2),
@@ -364,9 +376,17 @@ def _three_way_merge(base, a, b):
                 if _ranges_conflict(ai1, ai2, bi1, bi2):
                     return None  # overlapping base ranges
 
+        # An agreed-on edit must also not collide with a one-sided edit.
+        for si1, si2, _repl in shared:
+            for _t, oi1, oi2, _j1, _j2 in list(ops_a) + list(ops_b):
+                if _ranges_conflict(si1, si2, oi1, oi2):
+                    return None
+
         # No overlapping -- build merged result
         # Collect all edits keyed by base position
         edits = {}  # base_start -> (base_end, replacement_lines)
+        for i1, i2, repl in shared:      # agreed-on edits, applied exactly once
+            edits[i1] = (i2, list(repl))
         for tag, i1, i2, j1, j2 in ops_a:
             edits[i1] = (i2, a[j1:j2])
         for tag, i1, i2, j1, j2 in ops_b:
