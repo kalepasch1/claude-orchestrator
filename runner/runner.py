@@ -501,6 +501,50 @@ def _integration_base(repo, proj, task_base):
     return dev
 
 
+def _quarantine_garbage_paths(wt, slug, env):
+    """Drop agent-created files whose PATH is obviously not a path, pre-`git add -A`.
+
+    An agent that answers with a step-by-step explanation can leave fragments of
+    that answer behind as file names. On 2026-08-02 one run committed
+    "Step 5: Write a Minimal Test", "unittest.main()" and a root-level
+    test_template_95fc17a.py whose body was its own filename — the last of which
+    broke `pytest --collect-only` for the whole repo. `git add -A` staged all of
+    it without looking. Validate first; park anything rejected outside the
+    worktree and log loudly so the run is still auditable.
+
+    Only UNTRACKED files are considered: modifications to files already in the
+    repo are the agent's legitimate business, and we must never delete those.
+    Fail-soft — a guard error must not cost the fleet a completed task.
+    """
+    try:
+        import write_guard
+    except ImportError:
+        return []
+    if not write_guard.enabled():
+        return []
+    try:
+        proc = subprocess.run(["git", "status", "--porcelain", "-z",
+                               "--untracked-files=all"],
+                              cwd=wt, env=env, capture_output=True, text=True, timeout=60)
+        if proc.returncode != 0:
+            return []
+        candidates = [entry[3:] for entry in (proc.stdout or "").split("\0")
+                      if len(entry) > 3 and entry[:2] == "??"]
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+    def _read(rel):
+        with open(os.path.join(wt, rel), encoding="utf-8", errors="replace") as fh:
+            return fh.read(4096)
+
+    _, rejected = write_guard.partition(candidates, read=_read)
+    for rel, reason in rejected:
+        dest = write_guard.quarantine(wt, rel, tag=slug)
+        _log.error("[write-guard] %s: REFUSED agent file %r — %s%s",
+                   slug, rel, reason, f" (quarantined to {dest})" if dest else "")
+    return rejected
+
+
 def _commit_agent_work(wt, slug, prompt, base="main"):
     """Capture the agent's work. Returns True if the branch has real work to integrate.
 
@@ -516,6 +560,7 @@ def _commit_agent_work(wt, slug, prompt, base="main"):
            "GIT_AUTHOR_NAME": _git_name, "GIT_AUTHOR_EMAIL": _git_email,
            "GIT_COMMITTER_NAME": _git_name, "GIT_COMMITTER_EMAIL": _git_email}
     try:
+        _quarantine_garbage_paths(wt, slug, env)
         subprocess.run(["git", "add", "-A"], cwd=wt, env=env, capture_output=True)
         # commit any uncommitted changes the agent left staged
         if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=wt, env=env).returncode != 0:
