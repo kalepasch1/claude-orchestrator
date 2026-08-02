@@ -616,6 +616,20 @@ def invalidate_done_cache():
         _done_cache["ts"] = 0.0
 
 
+def set_pin(slug, rank=1):
+    """Set or clear pin status on a task.
+
+    Args:
+        slug (str): Task slug to pin/unpin.
+        rank (int, optional): Pin rank (1 = highest priority among pinned).
+                              rank=0 clears the pin. Default is 1.
+    """
+    if rank == 0:
+        return update("tasks", {"slug": slug}, {"pinned": False, "pin_rank": 0})
+    else:
+        return update("tasks", {"slug": slug}, {"pinned": True, "pin_rank": rank})
+
+
 def claim_task(runner_id):
     """Atomically claim one QUEUED task whose dependencies are satisfied.
 
@@ -660,7 +674,7 @@ def claim_task(runner_id):
     except Exception:
         _increment_db_failure_count()
         pass
-    claim_fields = "id,slug,project_id,deps,confidence,created_at,updated_at,kind,note,priority,prompt,batch_id,parent_task_id,operator_approved_at,operator_approved_by,counsel_approved_at,counsel_approved_by"
+    claim_fields = "id,slug,project_id,deps,confidence,created_at,updated_at,kind,note,priority,prompt,batch_id,parent_task_id,operator_approved_at,operator_approved_by,counsel_approved_at,counsel_approved_by,pinned,pin_rank"
     try:
         queued = select("tasks", {"select": claim_fields,
                                   "state": "eq.QUEUED",
@@ -809,6 +823,16 @@ def claim_task(runner_id):
             except Exception:
                 pass
         return kind_w - age_boost
+
+    def _pinned_rank(t):
+        # Pinned tasks claim before unpinned: rank 0 for pinned, 1 for unpinned.
+        return 0 if t.get("pinned") else 1
+
+    def _pin_rank_order(t):
+        # Among pinned tasks, lower pin_rank claims first (1 = highest priority).
+        # Rank 0 or missing treated as unpinned (rank 9999).
+        rank = t.get("pin_rank") or 0
+        return rank if rank > 0 else 9999
 
     thermal_rank = _thermal_rank_map()
     ev_rank = _ev_rank_map()
@@ -978,7 +1002,9 @@ def claim_task(runner_id):
         except Exception:
             return False
 
-    queued.sort(key=lambda t: (_evidence_reserve_rank(t),                        # reserve one vendor-evidence lane
+    queued.sort(key=lambda t: (_pinned_rank(t),                                 # pinned tasks claim first
+                               _pin_rank_order(t),                               # among pinned, lower rank wins
+                               _evidence_reserve_rank(t),                        # reserve one vendor-evidence lane
                                _recovery_reserve_rank(t),                        # turn completed work into mergeable branches
                                _release_fix_rank(t),                             # unblock Vercel releases across the portfolio
                                _release_fix_urgency(t),                          # hot gate fixes before stale EV noise
