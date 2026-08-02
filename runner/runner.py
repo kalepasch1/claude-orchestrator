@@ -2661,6 +2661,7 @@ _SCHEDULE = [
     ("vercelconfig-600","vercelconfig",     "interval", 600),   # deploy-config drift a local build can't catch
     ("botcommits-900","botcommits",         "interval", 900),   # bot-authored commits must parse
     ("crashloop-300","crashloop",           "interval", 300),   # catch 100%-dead modules (preflight: 19d unnoticed)
+    ("stubguard-900","stubguard",           "interval", 900),   # constant-return stubs shadowing real code (build stays GREEN)
     ("cleanclone-6h","cleanclone",          "interval", 21600), # pristine clone install+build (expensive)
     ("releasetrain-600","releasetrain",     "interval", 600),   # accumulate on staging, QA, release to prod
     ("deployverify-120","deployverify",     "interval", 120),   # confirm Vercel deploy / auto-rollback

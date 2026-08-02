@@ -288,6 +288,11 @@ def run_crashloop():
     import crash_loop_detector; crash_loop_detector.run()
 
 
+def run_stubguard():
+    """Constant-return stubs shadowing real code. Silent: the build is GREEN (tomorrow: 187 symbols)."""
+    import stub_guard; stub_guard.run()
+
+
 def run_remotegc():
     """GC stale remote agent/* branches (fills gap branch_gc.py doesn't cover)."""
     import workflow_guardrails
@@ -836,6 +841,7 @@ JOBS = {
     "cleanclone": run_cleanclone,
     "botcommits": run_botcommits,
     "crashloop": run_crashloop,
+    "stubguard": run_stubguard,
     "remotegc": run_remotegc,
     "releasetrain": run_releasetrain,
     "deployverify": run_deployverify,
