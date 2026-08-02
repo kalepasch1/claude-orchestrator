@@ -27,32 +27,200 @@ RECOVERY_PREFIX = "recover-missing-branch-"
 PRESSURE_KEY = "merge_train_pressure"
 ACTIVE_STATES = "in.(QUEUED,RUNNING,RETRY,DONE,MERGED,BLOCKED,QUARANTINED)"
 
-def _existing_recovery(project_id, slug):
-    # Placeholder implementation for _existing_recovery function
-    pass
-
-def _normalize_base(repo, proj, base_branch):
-    # Placeholder implementation for _normalize_base function
-    return base_branch
-
-def _reuse_context(task, proj, repo, base):
-    # Placeholder implementation for _reuse_context function
-    return ""
-
 def _branch_exists(repo, branch):
     if not repo or not os.path.isdir(repo):
         return False
     return subprocess.run(["git", "rev-parse", "--verify", branch],
                           cwd=repo, capture_output=True).returncode == 0
 
+
+# RESTORED: the helpers below were dropped by merges a780345c / d26357a6 and had been
+# replaced by stub placeholders that always returned False/None -- which made the sweeper
+# treat EVERY passed task as a lost branch and file endless recovery churn. Text is taken
+# verbatim from the last pyflakes-clean revision of this file (commit 5ef15641).
+_FETCHED_AGENT_REFS = set()
+
+
+def _fetch_agent_refs(repo):
+    """One best-effort fetch of the shared agent/* namespace per repo per process.
+
+    The fleet runs on TWO Macs sharing one Supabase queue: agent branches are created on
+    whichever machine ran the task, so a purely local rev-parse on the other machine
+    mislabels finished work as 'missing branch' and files recovery churn. Fetching
+    refs/heads/agent/* into refs/remotes/origin/agent/* makes the check fleet-aware.
+    Fail-soft: offline / no remote just means we fall back to local-only visibility.
+    """
+    if not repo or repo in _FETCHED_AGENT_REFS or not os.path.isdir(repo):
+        return
+    _FETCHED_AGENT_REFS.add(repo)
+    try:
+        subprocess.run(["git", "fetch", "origin",
+                        "+refs/heads/agent/*:refs/remotes/origin/agent/*", "--prune"],
+                       cwd=repo, capture_output=True, timeout=120)
+    except Exception:
+        pass
+
+
 def _branch_exists_anywhere(repo, branch):
-    # Placeholder implementation for _branch_exists_anywhere function
+    """True if the branch exists locally OR on origin (the other runner's Mac)."""
+    if _branch_exists(repo, branch):
+        return True
+    _fetch_agent_refs(repo)
+    return _branch_exists(repo, f"refs/remotes/origin/{branch}")
+
+
+def _already_integrated(repo, slug):
+    """True if this slug's work already landed in an origin integration branch. When a branch is
+    missing because it was legitimately merged (and later GC'd), rebuilding it is pure waste — this
+    lets the sweeper CLOSE the original instead of filing (and re-filing forever) recovery churn."""
+    if not repo or not slug:
+        return False
+    targets = [t for t in (os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev"),
+                           os.environ.get("ORCH_CODE_MERGE_TARGET", "dev"),
+                           "main", "master") if t]
+    needle = str(slug)[:48]
+    for tgt in targets:
+        ref = f"origin/{tgt}"
+        try:
+            if subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref], cwd=repo,
+                              capture_output=True).returncode != 0:
+                continue
+            g = subprocess.run(["git", "log", "--oneline", "-30000", "--grep", needle, ref],
+                               cwd=repo, capture_output=True, text=True, timeout=60)
+            if g.returncode == 0 and g.stdout.strip():
+                return True
+        except Exception:
+            continue
     return False
 
+
+def _normalize_base(repo, proj, requested):
+    for b in (requested, proj.get("default_base"), proj.get("prod_branch"), "main", "master"):
+        if b and _branch_exists(repo, b):
+            return b
+    return requested or proj.get("default_base") or proj.get("prod_branch") or "main"
+
+
+def _reuse_context(task, proj, repo, base):
+    parts = []
+    try:
+        import result_cache
+        sig = result_cache.signature(proj.get("name") or str(task.get("project_id")),
+                                     task.get("prompt") or "", repo, base)
+        hit = result_cache.lookup(sig)
+        if hit:
+            parts.append("RESULT CACHE HIT: reuse this prior result before drafting net-new code.\n"
+                         f"Cached branch: {hit.get('branch')}\nSummary: {hit.get('summary')}")
+    except Exception:
+        pass
+    try:
+        import patch_transplant
+        h = patch_transplant.hint(task)
+        if h:
+            parts.append(h)
+    except Exception:
+        pass
+    # REMOVED 2026-07-11: patch_templates.build() was baking hex-hash keyword
+    # salad into recovery task prompts at creation time, producing 1,801+
+    # unexecutable tasks. The template is injected at claim time by
+    # pre_claim_hook (in-memory only).
+    return "\n\n".join(p for p in parts if p)
+
+
+def _looks_passed(task):
+    note = (task.get("note") or "").lower()
+    return (
+        task.get("state") == "DONE"
+        or "verify pass" in note
+        or "passed tests" in note
+        or "tests pass" in note
+        or "work passed tests" in note
+    )
+
+
+def _existing_recovery(project_id, slug):
+    if str(slug or "").startswith(RECOVERY_PREFIX):
+        return True
+    try:
+        rows = db.select("tasks", {"select": "slug,state", "project_id": f"eq.{project_id}",
+                                   "slug": f"eq.{RECOVERY_PREFIX}{slug}",
+                                   "state": ACTIVE_STATES,
+                                   "limit": "1"}) or []
+        if rows:
+            return True
+        rework = db.select("tasks", {"select": "slug,state", "project_id": f"eq.{project_id}",
+                                     "slug": f"like.rework-%-{RECOVERY_PREFIX}{slug}%",
+                                     "state": ACTIVE_STATES,
+                                     "limit": "1"}) or []
+        return bool(rework)
+    except Exception:
+        return False
+
+
+def _active_recovery_index(limit=5000):
+    """Load active recovery/rework rows once so sweep does not do N DB reads."""
+    rows = []
+    for pattern in (f"{RECOVERY_PREFIX}%", f"rework-%-{RECOVERY_PREFIX}%"):
+        try:
+            rows.extend(db.select("tasks", {"select": "slug,state,project_id",
+                                            "slug": f"like.{pattern}",
+                                            "state": ACTIVE_STATES,
+                                            "limit": str(limit)}) or [])
+        except Exception:
+            continue
+    exact = set()
+    rework = []
+    for row in rows:
+        slug = str(row.get("slug") or "")
+        project_id = row.get("project_id")
+        if slug.startswith(RECOVERY_PREFIX):
+            exact.add((project_id, _recovery_root(slug)))
+        elif RECOVERY_PREFIX in slug:
+            rework.append((project_id, slug))
+    return {"exact": exact, "rework": rework}
+
+
+def _existing_recovery_indexed(project_id, slug, index):
+    if str(slug or "").startswith(RECOVERY_PREFIX):
+        return True
+    if not index:
+        return _existing_recovery(project_id, slug)
+    root = _recovery_root(slug)
+    if (project_id, root) in index.get("exact", set()):
+        return True
+    needle = f"{RECOVERY_PREFIX}{root}"
+    return any(pid == project_id and needle in rework_slug
+               for pid, rework_slug in index.get("rework", []))
+
+
+def _recovery_root(slug):
+    s = str(slug or "")
+    while s.startswith(RECOVERY_PREFIX):
+        s = s[len(RECOVERY_PREFIX):]
+    return s
+
+
+def _has_live_recovery(project_id, slug):
+    """True if a recovery for this slug is still in flight (QUEUED/RUNNING/RETRY). A QUARANTINED or
+    otherwise terminal recovery does NOT count — that means recovery is exhausted, so the original
+    should be closed rather than re-counted as missing_branch on every sweep (phantom pressure)."""
+    root = _recovery_root(f"{RECOVERY_PREFIX}{slug}") if not str(slug).startswith(RECOVERY_PREFIX) else _recovery_root(slug)
+    for pat in (f"{RECOVERY_PREFIX}{slug}", f"rework-%-{RECOVERY_PREFIX}{slug}%"):
+        try:
+            rows = db.select("tasks", {"select": "state", "project_id": f"eq.{project_id}",
+                                       "slug": (f"eq.{pat}" if not pat.endswith("%") else f"like.{pat}"),
+                                       "state": "in.(QUEUED,RUNNING,RETRY)", "limit": "1"}) or []
+            if rows:
+                return True
+        except Exception:
+            continue
+    return False
+
+
 # Added function to handle missing agent branches
-def _handle_missing_branch(task, proj):
+def _handle_missing_branch(task, proj, recovery_index=None):
     slug = task.get("slug")
-    if not slug or _existing_recovery(task.get("project_id"), slug):
+    if not slug or _existing_recovery_indexed(task.get("project_id"), slug, recovery_index):
         return False
     repo = proj.get("repo_path", "")
     base = _normalize_base(repo, proj, task.get("base_branch") or proj.get("default_base") or proj.get("prod_branch") or "main")
@@ -93,9 +261,12 @@ def _handle_missing_branch(task, proj):
         return False
 
 # Modified _queue_recovery function to use the new _handle_missing_branch function
-def _queue_recovery(task, proj):
+def _queue_recovery(task, proj, recovery_index=None):
+    # recovery_index is the prebuilt active-recovery index from _active_recovery_index(); sweep()
+    # passes it so the duplicate check is one in-memory lookup instead of 2 DB reads per task.
+    # None keeps the old per-task DB path (used by any caller that has no index).
     if not _branch_exists_anywhere(proj.get("repo_path", ""), f"agent/{task.get('slug')}"):
-        return _handle_missing_branch(task, proj)
+        return _handle_missing_branch(task, proj, recovery_index=recovery_index)
     return False
 
 def _age_seconds(ts):
