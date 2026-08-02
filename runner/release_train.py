@@ -766,22 +766,44 @@ def _run_for_unlocked(project, repo_override=None):
             pass
     # BUILD GATE on the whole staging batch: the real prod build must be green before we release to
     # prod (this is what stops the Vercel deploy failures — no green build, no release).
+    # FAIL-CLOSED (2026-08-02). This block used to be `try: ... except Exception: pass` with the
+    # whole gate nested under `if bcmd:` — so a build_gate import error, an undetectable build
+    # command, or ANY exception inside run_build silently RELEASED never-compiled code to prod.
+    # That fail-open is the release-side twin of the missing merge-train build gate. Now: no
+    # command => blocked; exception => blocked; red build => blocked. Never a silent pass.
+    held = _hold_for_open_fix(p, project, "build")
+    if held:
+        return held
+    if _recent_failed_gate(project, staging_sha, "build"):
+        return {"project": project, "build": "HELD", "note": "unchanged staging SHA already failed build recently"}
     try:
         import build_gate
-        if bcmd:
-            held = _hold_for_open_fix(p, project, "build")
-            if held:
-                return held
-            if _recent_failed_gate(project, staging_sha, "build"):
-                return {"project": project, "build": "HELD", "note": "unchanged staging SHA already failed build recently"}
-            bok, blog = build_gate.run_build(repo, STAGING, bcmd)
-            if not bok:
-                _self_heal_build(p, project, repo, STAGING, blog)  # queue a targeted build-fix task
-                _insert_failed_release(project, "build", ahead, release_base_sha, staging_sha,
-                                       f"staging BUILD red — self-heal queued: {blog[-120:]}")
-                return {"project": project, "build": "RED", "note": "staging build not green; build-fix task queued"}
-    except Exception:
-        pass
+        if not bcmd:
+            bcmd = build_gate.build_cmd_for(p, repo) or build_gate.detect_build_cmd(repo) or ""
+        if not bcmd:
+            raise RuntimeError(
+                "no production build command could be determined (set projects.build_cmd, a "
+                "package.json build script, vercel.json buildCommand, or DEFAULT_BUILD_CMD)")
+        bok, blog = build_gate.run_build(repo, STAGING, bcmd)
+    except Exception as exc:
+        bok = False
+        blog = f"release build gate error (fail-closed): {type(exc).__name__}: {exc}"
+    if not bok:
+        if manifest:
+            try:
+                release_manifest.record_gate(manifest["id"], "build", False, command=bcmd,
+                                             detail=(blog or "")[-500:])
+            except Exception:
+                pass
+        _self_heal_build(p, project, repo, STAGING, blog)  # queue a targeted build-fix task
+        _insert_failed_release(project, "build", ahead, release_base_sha, staging_sha,
+                               f"staging BUILD red — self-heal queued: {(blog or '')[-120:]}")
+        return {"project": project, "build": "RED", "note": "staging build not green; build-fix task queued"}
+    if manifest:
+        try:
+            release_manifest.record_gate(manifest["id"], "build", True, command=bcmd)
+        except Exception:
+            pass
     # release: record last-good, ff prod to staging, push (deploy_verify confirms/rolls back)
     held = _hold_for_open_fix(p, project, "refresh")
     if held:
