@@ -321,41 +321,48 @@ def pressure(limit=1000):
     return payload
 
 
-def recovery_dedup():
-    """Collapse duplicate recovery tasks: keep the newest live task per recovery slug, terminally
-    mark the rest.
+def recovery_dedup(limit=5000):
+    """Collapse duplicate recovery rows without touching the original solved task.
 
-    FIX 2026-07-30: this function was CALLED by sweep() (and reported in its payload) but was never
-    defined anywhere in the codebase — every integration-sweeper run died on NameError. 3,948
-    identical crashes accumulated in .runtime/logs/integration-sweeper.err while the sweeper
-    appeared "scheduled and healthy". Recovery tasks therefore never deduped, so a single missing
-    branch could spawn the same recover-missing-branch-<slug> task repeatedly.
-    Fail-soft: any error returns a zeroed report rather than killing the sweep.
+    Recovery tasks are intentionally protected from the generic task_dedup pass, but the sweeper can
+    still encounter stale DONE/BLOCKED recovery rows and accidentally create recoveries of recoveries.
+    Keep one active representative per (project, original slug) and quarantine the rest so lanes go to
+    real rebuilds instead of recursive backlog churn.
+
+    FIX 2026-07-30: this function was CALLED by sweep() (and reported in its payload) but had been
+    dropped from the file -- every integration-sweeper run died on NameError, ~3,948 crashes in
+    .runtime/logs/integration-sweeper.err while the sweeper appeared "scheduled and healthy".
+
+    RESTORED 2026-08-02: that emergency fix reimplemented this from scratch and grouped by EXACT
+    slug, so nested recover-missing-branch-recover-missing-branch-* rows never collapsed -- the one
+    thing this function exists to do -- and its return keys stopped matching the test. This is the
+    original implementation (5ef15641), grouping by (project, recovery root).
     """
-    report = {"scanned": 0, "duplicates_closed": 0}
-    try:
-        rows = db.select("tasks", {
-            "select": "id,slug,state,updated_at",
-            "slug": f"like.{RECOVERY_PREFIX}*",
-            "state": "in.(QUEUED,RETRY,BLOCKED)",
-            "order": "updated_at.desc", "limit": "500"}) or []
-        report["scanned"] = len(rows)
-        newest = {}
-        for t in rows:
-            slug = t.get("slug") or ""
-            if slug not in newest:          # rows are newest-first
-                newest[slug] = t
+    rows = db.select("tasks", {"select": "id,slug,state,project_id,created_at,note",
+                               "slug": f"like.{RECOVERY_PREFIX}%",
+                               "limit": str(limit),
+                               "order": "created_at.asc"}) or []
+    groups = {}
+    for row in rows:
+        groups.setdefault((row.get("project_id"), _recovery_root(row.get("slug"))), []).append(row)
+    state_rank = {"MERGED": 0, "DONE": 1, "RUNNING": 2, "QUEUED": 3, "RETRY": 4,
+                  "BLOCKED": 5, "QUARANTINED": 6}
+    quarantined = duplicate_groups = 0
+    for group in groups.values():
+        if len(group) <= 1:
+            continue
+        duplicate_groups += 1
+        group.sort(key=lambda r: (state_rank.get(r.get("state"), 9), r.get("created_at") or ""))
+        keep = group[0]
+        for dup in group[1:]:
+            if dup.get("state") in ("MERGED", "QUARANTINED"):
                 continue
-            try:                             # this one is an older duplicate
-                db.update("tasks", {"id": t["id"]}, {
-                    "state": "QUARANTINED",
-                    "note": "recovery_dedup: superseded by a newer recovery task for the same slug"})
-                report["duplicates_closed"] += 1
-            except Exception:
-                pass
-    except Exception as e:
-        report["error"] = f"{type(e).__name__}: {str(e)[:120]}"
-    return report
+            db.update("tasks", {"id": dup["id"]},
+                      {"state": "QUARANTINED",
+                       "note": f"recovery-dedup: duplicate of {keep.get('slug')}; keeping one recovery lane for {_recovery_root(keep.get('slug'))}",
+                       "updated_at": "now()"})
+            quarantined += 1
+    return {"duplicate_groups": duplicate_groups, "quarantined": quarantined}
 
 
 def sweep(limit=LIMIT, run_train=RUN_TRAIN):
