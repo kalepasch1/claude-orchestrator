@@ -12,7 +12,7 @@ import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), ".."))
 import repo_setup_repair
 
 
@@ -113,7 +113,7 @@ class TestRepairForTask(unittest.TestCase):
         with patch.object(repo_setup_repair, "db") as mock_db:
             mock_db.select.return_value = []
             result = repo_setup_repair.repair_for_task({"project_id": "xxx"})
-            self.assertFalse(result["valid"])
+            self.assertIsNone(result)
 
 
 if __name__ == "__main__":

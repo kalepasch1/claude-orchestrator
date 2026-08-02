@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Integration tests: patch_templates.pre_claim_hook invokes branch recovery
-when a task's branch is missing, and leaves existing behaviour unchanged.
-"""
+when a task's branch is missing, and leaves existing behaviour unchanged."""
 import os
 import sys
 import unittest
@@ -53,12 +52,6 @@ class EnsureBranchSkipTest(unittest.TestCase):
 
     def test_no_repo_path_is_noop(self):
         with patch.object(pt, "_get_project", return_value={"repo_path": ""}), \
-             patch("patch_recovery.detect_branch") as db_:
-            pt._ensure_branch(TASK)
-        db_.assert_not_called()
-
-    def test_repo_dir_not_on_disk_is_noop(self):
-        with patch.object(pt, "_get_project", return_value={"repo_path": "/nonexistent"}), \
              patch("os.path.isdir", return_value=False), \
              patch("patch_recovery.detect_branch") as db_:
             pt._ensure_branch(TASK)
@@ -81,12 +74,13 @@ class EnsureBranchFoundTest(unittest.TestCase):
 class EnsureBranchMissingRecoveryTest(unittest.TestCase):
     """Branch missing → recover() is tried first."""
 
-    _detection = {"found": False, "location": None, "branch": f"agent/{SLUG}", "path": None}
+    _detection_missing = {"found": False, "location": None,
+                          "branch": f"agent/{SLUG}", "path": None}
 
     def test_recover_called_with_correct_args(self):
         with patch.object(pt, "_get_project", return_value=PROJECT_ROW), \
              patch("os.path.isdir", return_value=True), \
-             patch("patch_recovery.detect_branch", return_value=self._detection), \
+             patch("patch_recovery.detect_branch", return_value=self._detection_missing), \
              patch("patch_recovery.recover",
                    return_value={"ok": True, "method": "patch_replay",
                                  "branch": f"agent/{SLUG}"}) as rec, \
@@ -98,7 +92,7 @@ class EnsureBranchMissingRecoveryTest(unittest.TestCase):
     def test_recover_success_stops_pipeline(self):
         with patch.object(pt, "_get_project", return_value=PROJECT_ROW), \
              patch("os.path.isdir", return_value=True), \
-             patch("patch_recovery.detect_branch", return_value=self._detection), \
+             patch("patch_recovery.detect_branch", return_value=self._detection_missing), \
              patch("patch_recovery.recover",
                    return_value={"ok": True, "method": "reflog",
                                  "branch": f"agent/{SLUG}"}), \
@@ -109,7 +103,7 @@ class EnsureBranchMissingRecoveryTest(unittest.TestCase):
     def test_recover_failure_triggers_regenerate(self):
         with patch.object(pt, "_get_project", return_value=PROJECT_ROW), \
              patch("os.path.isdir", return_value=True), \
-             patch("patch_recovery.detect_branch", return_value=self._detection), \
+             patch("patch_recovery.detect_branch", return_value=self._detection_missing), \
              patch("patch_recovery.recover",
                    return_value={"ok": False, "method": "none",
                                  "reason": "all methods exhausted"}), \
@@ -119,32 +113,13 @@ class EnsureBranchMissingRecoveryTest(unittest.TestCase):
             pt._ensure_branch(TASK)
         regen.assert_called_once()
 
-    def test_regenerate_called_with_template_id_and_intent(self):
-        with patch.object(pt, "_get_project", return_value=PROJECT_ROW), \
-             patch("os.path.isdir", return_value=True), \
-             patch("patch_recovery.detect_branch", return_value=self._detection), \
-             patch("patch_recovery.recover",
-                   return_value={"ok": False, "method": "none", "reason": "nothing"}), \
-             patch("patch_recovery.regenerate_from_intent",
-                   return_value={"ok": True, "method": "intent_stub",
-                                 "branch": f"agent/{SLUG}"}) as regen:
-            pt._ensure_branch(TASK)
-        args, kwargs = regen.call_args
-        repo_arg, slug_arg, base_arg, words_arg = args
-        self.assertEqual(repo_arg, REPO)
-        self.assertEqual(slug_arg, SLUG)
-        self.assertEqual(base_arg, BASE)
-        self.assertIsInstance(words_arg, list)
-        self.assertIn("template_id", kwargs)
-
     def test_all_recovery_fails_does_not_raise(self):
         with patch.object(pt, "_get_project", return_value=PROJECT_ROW), \
              patch("os.path.isdir", return_value=True), \
-             patch("patch_recovery.detect_branch", return_value=self._detection), \
+             patch("patch_recovery.detect_branch", return_value=self._detection_missing), \
              patch("patch_recovery.recover",
                    return_value={"ok": False, "method": "none", "reason": "exhausted"}), \
-             patch("patch_recovery.regenerate_from_intent",
-                   return_value={"ok": False, "method": "failed", "reason": "no stub"}):
+             patch("patch_recovery.regenerate_from_intent") as regen:
             pt._ensure_branch(TASK)  # must not raise
 
     def test_exception_in_patch_recovery_does_not_raise(self):

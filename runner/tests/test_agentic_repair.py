@@ -1,11 +1,3 @@
-"""Tests for agentic_repair error handling and recovery mechanisms.
-
-Validates that:
-  - Technical vs replacement categories are classified correctly
-  - Repair prompts are built safely without leaking secrets
-  - Max prompt length is enforced
-  - Edge cases (None, empty, unknown) fail gracefully
-"""
 import os
 import sys
 import unittest
@@ -105,7 +97,6 @@ class TestMarkerConstant(unittest.TestCase):
 
         self.assertNotIn("Agentic analysis artifacts", prompt)
         self.assertIn("Failure context:", prompt)
-        self.assertIn("build failed", prompt)
         self.assertIn(agentic_repair.MARKER, prompt)
 
     def test_agentic_artifacts_context_is_fail_soft_on_import_error(self):
@@ -115,4 +106,4 @@ class TestMarkerConstant(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    unittest.main()

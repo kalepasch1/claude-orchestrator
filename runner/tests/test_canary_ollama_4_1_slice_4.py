@@ -1,9 +1,5 @@
-"""Canary: ollama-4-1-slice-4 — deliberation mechanics stub.
-
-This canary verifies that the coder can reconstruct missing-branch
-work from reuse-first context. The deliberation mechanics integration
-is stubbed here as a minimal passing implementation.
-"""
+"""Canary: ollama-4-1-slice-4 — deliberation mechanics stub."""
+import pytest
 
 
 def test_canary_deliberation_stub():
