@@ -199,6 +199,43 @@ def symbols_of(path, source):
     return None
 
 
+_DEF_RX = (r"(^|\s)(def|class|function|const|let|var|type|interface|enum)\s+%s\b"
+           r"|^%s\s*[:=]")
+
+
+def _defined_or_referenced(repo, ref, path, name, result_src):
+    """(defined_elsewhere, referenced) for a symbol missing from the resolved file.
+
+    Distinguishes the two reasons a symbol can be absent from a merge result:
+
+      * RELOCATED -- a refactor moved it to another module. Not loss; the symbol still
+        exists and callers still resolve. This is the dominant shape in real history
+        (test classes lifted out of runner.py, helpers split into new files) and reporting
+        it drowned the real findings: 45 of 300 merges (15%) flagged, almost all benign.
+      * DROPPED but still USED -- something in the resolved tree reads the name and nothing
+        defines it. That is a real, silent break, and it is exactly what 71cfd4ca6 did to
+        CANARY_ENABLED / CANARY_PERCENT.
+
+    Fast path first: most references live in the same file we already have in memory.
+    """
+    if result_src and re.search(r"\b%s\b" % re.escape(name), result_src):
+        # Present in the same file but not as a top-level definition -> it is read here.
+        return False, True
+    rc, out, _ = _git(repo, "grep", "-l", "-w", "-e", name, ref)
+    if rc != 0 or not out.strip():
+        return False, False
+    files = [ln.split(":", 1)[-1] for ln in out.splitlines() if ln.strip()]
+    defined_elsewhere = False
+    for other in files[:40]:
+        if other == path:
+            continue
+        src = _blob(repo, ref, other)
+        if src and re.search(_DEF_RX % (re.escape(name), re.escape(name)), src, re.M):
+            defined_elsewhere = True
+            break
+    return defined_elsewhere, True
+
+
 def _finding(code, path, detail, fix, symbol=None):
     return {"code": code, "severity": "block" if code in BLOCKING else "warn",
             "path": path, "symbol": symbol, "detail": detail, "fix": fix}
@@ -328,6 +365,12 @@ def check_pair(repo, ref_a, ref_b, merge_base=None, result_ref=None):
                     in_other = name in (other or {})
                     if in_base and not in_other:
                         continue  # the other side intentionally deleted it
+                    relocated, referenced = _defined_or_referenced(
+                        repo, result_ref, path, name, result_src)
+                    if relocated or not referenced:
+                        # Moved to another module, or dropped and used by nobody. Neither is
+                        # the silent break this detector exists to catch.
+                        continue
                     findings.append(_finding(
                         "union_merge_symbol_loss", path,
                         "`%s` exists in %s but is ABSENT from the resolved tree %s. The "

@@ -245,6 +245,74 @@ def _regression_gate(repo, base, branch, candidate_sha):
         return False, f"regression guard error (fail-closed): {type(exc).__name__}: {exc}"
 
 
+def _divergent_gate(repo, base, branch):
+    """PRE-merge divergent-authorship gate (2026-08-02). Returns (ok, detail).
+
+    _regression_gate above compares the merge RESULT against the base, which cannot see the
+    add/add shape: when neither the base nor anything before it contained the file, both
+    sides authored it from scratch and there is no "lost symbol relative to base" to find.
+    That is exactly how 71cfd4ca6 dropped CANARY_ENABLED/CANARY_PERCENT from
+    gpt1_canary_router.py while every base-vs-result check stayed green.
+
+    This gate runs on the two SIDES before any resolution and routes divergent files to a
+    namespacing/manual path instead of letting --ours/--theirs/--union guess.
+
+    FAIL-CLOSED: an import error or a guard crash returns False.
+    Opt out only with ORCH_DIVERGENT_GUARD_ENABLED=false.
+    """
+    if os.environ.get("ORCH_MERGE_DIVERGENT_GATE", "true").strip().lower() in (
+            "0", "false", "no", "off"):
+        return True, "divergent guard disabled by ORCH_MERGE_DIVERGENT_GATE"
+    try:
+        import divergent_authorship_guard
+    except Exception as exc:
+        return False, (f"divergent authorship guard unavailable (fail-closed): "
+                       f"{type(exc).__name__}: {exc}")
+    try:
+        return divergent_authorship_guard.gate(repo, base, branch)
+    except Exception as exc:
+        return False, f"divergent authorship guard error (fail-closed): {type(exc).__name__}: {exc}"
+
+
+def _stub_gate(repo, proj, base, branch):
+    """MERGE-path stub gate (2026-08-02). Returns (ok, detail).
+
+    stub_guard has existed as a PERIODIC sweep only, so the 206 shadowed re-exports it can
+    detect were free to merge and were caught (if at all) hours later by the next sweep. A
+    barrel that adds `export const assertEcpCounterparty = () => ({})` next to
+    `export * from './real'` compiles, tests green, and silently disables a regulatory gate
+    the moment it lands. A periodic scan is a report; only a gate is a guarantee.
+
+    FAIL-CLOSED: an import error or a guard crash returns False.
+    Opt out only with ORCH_MERGE_STUB_GATE=false / ORCH_STUB_GUARD_ENABLED=false.
+    """
+    if os.environ.get("ORCH_MERGE_STUB_GATE", "true").strip().lower() in (
+            "0", "false", "no", "off"):
+        return True, "stub gate disabled by ORCH_MERGE_STUB_GATE"
+    try:
+        import stub_guard
+    except Exception as exc:
+        return False, f"stub guard unavailable (fail-closed): {type(exc).__name__}: {exc}"
+    try:
+        result = stub_guard.check_repo(repo, branch, (proj or {}).get("name"), base=base)
+    except Exception as exc:
+        return False, f"stub guard error (fail-closed): {type(exc).__name__}: {exc}"
+    if result.get("skipped"):
+        return True, f"stub gate: {result['skipped']}"
+    blocking = [v for v in result.get("violations", []) if v.get("severity") == "block"]
+    if not blocking:
+        return True, f"stub gate clean ({result.get('files', 0)} file(s))"
+    if stub_guard.BREAK_GLASS:
+        return True, "stub gate BREAK-GLASS override (ORCH_STUB_GUARD_BREAK_GLASS)"
+    detail = " | ".join("[%s] %s%s: %s" % (v["code"], v.get("path"),
+                                           ("::" + v["symbol"]) if v.get("symbol") else "",
+                                           v.get("detail", ""))
+                        for v in blocking[:8])
+    if len(blocking) > 8:
+        detail += f" | ... and {len(blocking) - 8} more"
+    return False, detail
+
+
 def _quarantine_regression_failure(repo, card, slug, task, pname, branch, base, detail, t0=None):
     """Park ONE candidate that would DESTROY code in base; the train continues.
 
@@ -1401,6 +1469,27 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
     if not reg_gate_ok:
         return _quarantine_regression_failure(repo, card, slug, task, pname, branch, base,
                                               reg_gate_detail, _t0)
+
+    # (2d) DIVERGENT-AUTHORSHIP GATE — fail-closed. Covers the one shape (2c) is structurally
+    # blind to: both sides AUTHORED the same file, so there is no base version whose loss a
+    # base-vs-result diff could detect. 71cfd4ca6 merged green through every result-based
+    # check and still dropped two module constants. Quarantines through the same
+    # regressfail path so the existing remediation fleet acts on it unchanged.
+    div_ok, div_detail = _divergent_gate(repo, base, branch)
+    if not div_ok:
+        return _quarantine_regression_failure(repo, card, slug, task, pname, branch, base,
+                                              "DIVERGENT AUTHORSHIP — " + div_detail, _t0)
+
+    # (2e) STUB GATE — fail-closed. stub_guard was a periodic sweep only, so a barrel that
+    # shadows `export * from './real'` with a local constant-return stub merged freely and
+    # was reported hours later, if at all. 206 such instances landed this way; the ones that
+    # mattered silently disabled regulatory gates (assertEcpCounterparty stopped throwing)
+    # and zeroed financial functions. Now it blocks at merge time.
+    stub_ok, stub_detail = _stub_gate(repo, proj, base, branch)
+    if not stub_ok:
+        return _quarantine_regression_failure(repo, card, slug, task, pname, branch, base,
+                                              "SILENT STUB / SHADOWED RE-EXPORT — " + stub_detail,
+                                              _t0)
 
     ok, tail = _verified_or_run(repo, candidate_sha, test_cmd)  # (3) branch-exact and resumable
     if not ok and os.environ.get("ORCH_DIFFERENTIAL_QA", "true").lower() in ("1", "true", "yes", "on"):

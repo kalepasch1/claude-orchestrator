@@ -36,7 +36,15 @@ FILE_TASKS = os.environ.get("ORCH_VERCEL_CONFIG_GUARD_FILE_TASKS", "true").lower
 # severity "block" -> gate() refuses the merge. "warn" -> reported + remediated, never blocks.
 BLOCKING = {"lockfile_not_committed", "build_input_vercelignored",
             "build_input_not_committed", "missing_package_script",
-            "output_dir_never_built"}
+            "output_dir_never_built",
+            # 2026-08-02: silent deploy skips. illuminati's ignoreCommand tested
+            # $VERCEL_GIT_COMMIT_REF != "main" on a repo whose default branch is `master`,
+            # so on every production push the test was TRUE -> exit 0 -> Vercel SKIPPED the
+            # build. Exit 0 is "success" to every dashboard, so a full day of production
+            # deploys silently never happened and NOTHING alerted. A config that disables
+            # the default branch is now a hard block.
+            "ignore_command_skips_default_branch",
+            "deployment_disabled_for_default_branch"}
 
 _LOCK_REQUIREMENTS = (
     (re.compile(r"\bnpm\s+ci\b"), ("package-lock.json", "npm-shrinkwrap.json")),
@@ -205,6 +213,196 @@ def _violation(code, root_rel, detail, fix):
             "package_root": root_rel, "detail": detail, "fix": fix}
 
 
+# --------------------------------------------------------------------------------------
+# silent deploy skips + configs that match nothing (2026-08-02)
+# --------------------------------------------------------------------------------------
+
+def minimatch_regex(pattern):
+    """Compile a glob to a regex with MINIMATCH semantics, which Vercel uses.
+
+    The distinction that caused the outage: in minimatch `*` does NOT cross a `/`, so a
+    `git.deploymentEnabled` rule of `{"*": false}` matches `main` but NOT `agent/foo`.
+    The author believed they had disabled every branch; the rule silently matched nothing
+    they cared about. `**` is the only token that crosses separators.
+    """
+    out, i = ["^"], 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "*":
+            if pattern[i:i + 2] == "**":
+                out.append(".*")
+                i += 2
+                if i < len(pattern) and pattern[i] == "/":
+                    i += 1
+                continue
+            out.append("[^/]*")
+        elif ch == "?":
+            out.append("[^/]")
+        elif ch in ".^$+(){}[]|\\":
+            out.append("\\" + ch)
+        else:
+            out.append(ch)
+        i += 1
+    out.append("$")
+    return re.compile("".join(out))
+
+
+def glob_matches(pattern, name):
+    """True when a minimatch pattern matches a branch name."""
+    try:
+        return bool(minimatch_regex(pattern).match(name))
+    except re.error:
+        return False
+
+
+def _default_branch(repo, fallback=None):
+    """The repo's real default branch: origin/HEAD, else the local HEAD, else fallback."""
+    rc, out, _ = _git(repo, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD")
+    if rc == 0 and out.strip():
+        return out.strip().rsplit("/", 1)[-1]
+    rc, out, _ = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    if rc == 0 and out.strip() and out.strip() != "HEAD":
+        return out.strip()
+    return fallback
+
+
+def _branch_names(repo):
+    """Every local + remote branch name, for 'does this rule match anything real'."""
+    names = set()
+    rc, out, _ = _git(repo, "for-each-ref", "--format=%(refname:short)",
+                      "refs/heads", "refs/remotes")
+    if rc == 0:
+        for line in out.splitlines():
+            n = line.strip()
+            if not n or n.endswith("/HEAD"):
+                continue
+            names.add(n[len("origin/"):] if n.startswith("origin/") else n)
+    return names
+
+
+# Branch literals inside an ignoreCommand. Covers the shapes Vercel docs recommend:
+#   bash -c '[ "$VERCEL_GIT_COMMIT_REF" != "main" ]'
+#   if [ "$VERCEL_GIT_COMMIT_REF" == "production" ]; then exit 1; else exit 0; fi
+#   npx vercel-deploy-check --branch main
+# The optional quote AFTER the variable is load-bearing: the shape Vercel's own docs use is
+# [ "$VERCEL_GIT_COMMIT_REF" != "main" ], where a closing double-quote sits between the
+# variable and the operator. Omitting it made this detector silently match nothing.
+_REF_VAR = r"\$\{?VERCEL_GIT_COMMIT_REF\}?"
+_Q = r"[\"']?"
+_REF_CMP = re.compile(
+    r"(?:%s%s\s*(==|!=|=~|=)\s*%s([\w./*-]+)%s)"
+    r"|(?:%s([\w./*-]+)%s\s*(==|!=|=~|=)\s*%s%s)"
+    % (_REF_VAR, _Q, _Q, _Q, _Q, _Q, _Q, _REF_VAR))
+
+
+def check_deploy_skip(repo, root, cfg, default_branch):
+    """ignoreCommand / git.deploymentEnabled configs that silently skip the DEFAULT branch.
+
+    Vercel semantics, and the reason this was invisible: ignoreCommand exit 0 means SKIP
+    the build, exit 1 means BUILD. A skipped build is reported as a SUCCESS. There is no
+    failed deployment, no red check, no alert -- production simply stops updating.
+    """
+    out = []
+    rel_root = os.path.relpath(root, repo)
+    if not default_branch:
+        return out
+
+    # -- 1. ignoreCommand that evaluates "skip" on the default branch.
+    ignore = str(cfg.get("ignoreCommand") or "").strip()
+    if ignore:
+        refs = set()
+        negated = False
+        for m in _REF_CMP.finditer(ignore):
+            op = m.group(1) or m.group(4)
+            val = m.group(2) or m.group(3)
+            if val:
+                refs.add(val)
+            if op == "!=":
+                negated = True
+        if refs and not any(r == default_branch or glob_matches(r, default_branch)
+                            for r in refs):
+            out.append(_violation(
+                "ignore_command_skips_default_branch", rel_root,
+                "vercel.json ignoreCommand `%s` branches on VERCEL_GIT_COMMIT_REF against %s, "
+                "but this repository's DEFAULT branch is '%s', which is not among them. On "
+                "every push to '%s' the%s comparison makes the command exit 0, and exit 0 means "
+                "SKIP THE BUILD. Vercel records a skipped build as a SUCCESS, so production "
+                "stops updating with no failed deploy, no red check and no alert -- exactly how "
+                "illuminati skipped every production build for a day."
+                % (ignore[:200], " or ".join(sorted("'%s'" % r for r in refs)),
+                   default_branch, default_branch, " negated" if negated else ""),
+                "Change the ignoreCommand to reference '%s' (the real default branch), or "
+                "delete it. Verify with: VERCEL_GIT_COMMIT_REF=%s sh -c %r ; echo $?  — it "
+                "MUST print 1 (build) for the default branch."
+                % (default_branch, default_branch, ignore[:120])))
+
+    # -- 2. git.deploymentEnabled disabling the default branch.
+    git_cfg = cfg.get("git") or {}
+    enabled_cfg = git_cfg.get("deploymentEnabled")
+    if isinstance(enabled_cfg, bool) and enabled_cfg is False:
+        out.append(_violation(
+            "deployment_disabled_for_default_branch", rel_root,
+            "vercel.json git.deploymentEnabled is `false` for ALL branches, so no push to "
+            "'%s' ever deploys. Nothing reports this as a failure." % default_branch,
+            "Set git.deploymentEnabled to true for '%s', or remove the key." % default_branch))
+    elif isinstance(enabled_cfg, dict):
+        for pattern, value in enabled_cfg.items():
+            if value is False and (pattern == default_branch
+                                   or glob_matches(pattern, default_branch)):
+                out.append(_violation(
+                    "deployment_disabled_for_default_branch", rel_root,
+                    "vercel.json git.deploymentEnabled maps '%s' -> false, and that pattern "
+                    "matches the DEFAULT branch '%s'. Every production push is silently not "
+                    "deployed; Vercel shows no failure."
+                    % (pattern, default_branch),
+                    "Add an explicit `\"%s\": true` entry, or narrow the '%s' pattern so it "
+                    "cannot match the default branch." % (default_branch, pattern)))
+    return out
+
+
+def check_config_noop(repo, root, cfg):
+    """Config rules the author believes are active but which match NOTHING real.
+
+    The incident: `git.deploymentEnabled: {"*": false}` was written to stop agent branches
+    from deploying. Under minimatch `*` does not cross `/`, so it never matched `agent/foo`
+    -- and because a rule that matches nothing produces no output of any kind, the author
+    had no way to learn it was inert. Advisory rather than blocking: a rule for a branch
+    that simply does not exist YET is legitimate and common.
+    """
+    out = []
+    rel_root = os.path.relpath(root, repo)
+    git_cfg = cfg.get("git") or {}
+    enabled_cfg = git_cfg.get("deploymentEnabled")
+    if not isinstance(enabled_cfg, dict) or not enabled_cfg:
+        return out
+    branches = _branch_names(repo)
+    if not branches:
+        return out
+    for pattern in enabled_cfg:
+        matched = sorted(b for b in branches if glob_matches(pattern, b))
+        if matched:
+            continue
+        # Is it inert only because of the `*`-doesn't-cross-`/` rule? Say so explicitly.
+        loose = sorted(b for b in branches
+                       if re.match("^" + re.escape(pattern).replace(r"\*", ".*") + "$", b))
+        hint = ""
+        if loose:
+            hint = (" It WOULD match %d branch(es) (%s) if `*` crossed `/`, but under "
+                    "minimatch `*` stops at a path separator — use `**` to cross it. This is "
+                    "the exact bug that let agent/* branches keep deploying."
+                    % (len(loose), ", ".join(loose[:5])))
+        out.append(_violation(
+            "config_rule_matches_nothing", rel_root,
+            "vercel.json git.deploymentEnabled has a rule for '%s' which matches NONE of the "
+            "%d branches that exist in this repo. The rule is inert: it produces no effect "
+            "and no output, so it looks configured while doing nothing.%s"
+            % (pattern, len(branches), hint),
+            "Either correct the pattern (e.g. '%s' -> '%s**') or delete the rule so the "
+            "config states what is actually enforced."
+            % (pattern, pattern.rstrip("*"))))
+    return out
+
+
 def check_root(repo, root, ref):
     """Validate one vercel.json deploy root against the committed tree."""
     out = []
@@ -216,6 +414,12 @@ def check_root(repo, root, ref):
     install = str(cfg.get("installCommand") or "")
     build = str(cfg.get("buildCommand") or "")
     dev = str(cfg.get("devCommand") or "")
+
+    # 0. Silent deploy skips + inert config rules. These run FIRST because they are the only
+    # failures in this module that produce no error signal anywhere: a skipped build is a
+    # green build, and a config rule matching nothing emits nothing at all.
+    out.extend(check_deploy_skip(repo, root, cfg, _default_branch(repo)))
+    out.extend(check_config_noop(repo, root, cfg))
 
     # 1. `npm ci` (and friends) demand a lockfile that is actually COMMITTED.
     for pattern, lockfiles in _LOCK_REQUIREMENTS:
