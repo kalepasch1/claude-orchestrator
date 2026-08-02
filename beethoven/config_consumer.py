@@ -17,8 +17,6 @@ import os
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 
-import yaml
-
 ENV_CONFIG_PATH = "ORCH_CONFIG_PATH"
 DEFAULT_CONFIG_FILENAME = "orchestration.yaml"
 
@@ -118,8 +116,9 @@ def _read_yaml_mapping(config_path: Path):
     except (OSError, ValueError):
         return None
     try:
+        import yaml  # type: ignore  # lazy: PyYAML is optional, no-yaml envs degrade to defaults
         data = yaml.safe_load(raw)
-    except yaml.YAMLError:
+    except Exception:
         return None
     return data if isinstance(data, dict) else None
 

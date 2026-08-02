@@ -129,6 +129,21 @@ def test_unreadable_file_returns_defaults(tmp_path):
         path.chmod(0o644)
 
 
+def test_missing_pyyaml_returns_defaults(tmp_path, monkeypatch):
+    import builtins
+    path = write_config(tmp_path, "retry_limit: 9\n")
+    real_import = builtins.__import__
+
+    def no_yaml(name, *args, **kwargs):
+        if name == "yaml":
+            raise ImportError("No module named 'yaml'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.delitem(sys.modules, "yaml", raising=False)
+    monkeypatch.setattr(builtins, "__import__", no_yaml)
+    assert load_orchestration_config(path) == OrchestrationConfig()
+
+
 def test_never_raises_on_weird_path_types():
     assert load_orchestration_config(12345) == OrchestrationConfig()
     assert load_orchestration_config(b"\x00bad") == OrchestrationConfig()
