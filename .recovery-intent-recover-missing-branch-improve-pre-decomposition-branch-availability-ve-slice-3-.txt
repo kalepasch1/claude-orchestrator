@@ -1,0 +1,4 @@
+recovery-intent: recover-missing-branch-improve-pre-decomposition-branch-availability-ve-slice-3-
+template: e83f7e1f73e5
+intent: 07062319 07071626 8b92d078e856 acceptance actually adapt adjust agentic alter analysis applies apply artifacts availability because beethoven before behavior below blocks branch branches broad bugfix build cache category cause changes changing check checks cleanly commit completion concrete config confirm context continue current decomposition dependencies diffs directive drafting duplicate duplicates eliminating empty equivalent examine existing exists exits failure failures files final finish first focus fresh functionality green hints identify implementation improve inspect install instead integral integrated intent large library lines local locate
+base: master
