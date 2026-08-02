@@ -11,6 +11,8 @@ from typing import Dict, List, Any, Optional
 
 log = logging.getLogger(__name__)
 
+GIT_TIMEOUT = int(os.environ.get("ORCH_REPO_SETUP_GIT_TIMEOUT", "30"))
+
 REQUIRED_TOOLS = {
     "python3": "python3 --version",
     "pip": "pip3 --version",
@@ -100,6 +102,90 @@ def verify_repo_setup(repo_path: str) -> SetupCheckResult:
         if not passed:
             result.errors.append(f"repo structure check failed: {check_name}")
 
+    return result
+
+
+def _git(args: List[str], cwd: str, timeout: int = GIT_TIMEOUT):
+    """Run a git command, return (stdout, stderr, returncode). Never raises."""
+    try:
+        r = subprocess.run(
+            ["git"] + args, cwd=cwd, capture_output=True, text=True, timeout=timeout
+        )
+        return r.stdout.strip(), r.stderr.strip(), r.returncode
+    except FileNotFoundError:
+        return "", "git not found", 127
+    except Exception as e:
+        return "", str(e), 1
+
+
+def detect_default_branch(repo_path: str, remote: str = "origin") -> str:
+    """Best-effort default branch for a repo: remote HEAD, then main/develop,
+    then whatever is currently checked out. Returns "" if undeterminable."""
+    out, _, rc = _git(["symbolic-ref", "--short", f"refs/remotes/{remote}/HEAD"], repo_path)
+    if rc == 0 and out:
+        return out.split("/", 1)[-1]
+    for candidate in ("main", "develop"):
+        for ref in (f"refs/remotes/{remote}/{candidate}", f"refs/heads/{candidate}"):
+            _, _, rc = _git(["rev-parse", "--verify", "--quiet", ref], repo_path)
+            if rc == 0:
+                return candidate
+    out, _, rc = _git(["rev-parse", "--abbrev-ref", "HEAD"], repo_path)
+    return out if rc == 0 else ""
+
+
+def check_repo_ready(repo_path: str, remote: str = "origin") -> Dict[str, Any]:
+    """Fail-soft local-repo readiness check.
+
+    Returns a dict with:
+      exists         - path is a valid git work tree
+      clean          - no uncommitted changes
+      current        - default branch is not behind its remote-tracking ref
+                       (True when there is no remote to be behind)
+      default_branch - detected default branch name ("" if unknown)
+      ready          - exists and clean and current
+      error          - "" or first blocking problem
+
+    Never raises, including on None/missing paths.
+    """
+    result: Dict[str, Any] = {
+        "exists": False, "clean": False, "current": False,
+        "default_branch": "", "ready": False, "error": "",
+    }
+    try:
+        if not repo_path or not os.path.isdir(repo_path):
+            result["error"] = f"repo path does not exist: {repo_path}"
+            return result
+        _, err, rc = _git(["rev-parse", "--is-inside-work-tree"], repo_path)
+        if rc != 0:
+            result["error"] = f"not a git repository: {err}"
+            return result
+        result["exists"] = True
+
+        out, err, rc = _git(["status", "--porcelain"], repo_path)
+        if rc != 0:
+            result["error"] = f"git status failed: {err}"
+            return result
+        result["clean"] = not out
+
+        branch = detect_default_branch(repo_path, remote)
+        result["default_branch"] = branch
+
+        result["current"] = True
+        if branch:
+            _, _, rc = _git(
+                ["rev-parse", "--verify", "--quiet", f"refs/remotes/{remote}/{branch}"],
+                repo_path,
+            )
+            if rc == 0:
+                out, _, rc = _git(
+                    ["rev-list", "--count", f"{branch}..{remote}/{branch}"], repo_path
+                )
+                if rc == 0 and out.isdigit() and int(out) > 0:
+                    result["current"] = False
+
+        result["ready"] = result["exists"] and result["clean"] and result["current"]
+    except Exception as e:
+        result["error"] = str(e)
     return result
 
 
