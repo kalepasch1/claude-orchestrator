@@ -1,0 +1,4 @@
+recovery-intent: recover-missing-branch-remediate-fused-canary-ollama-2-2-slice-3-canary-deepseek-2-slice-3-canary-ollam
+template: 2979a776dfbf
+intent: 20260725 686148afbef2 6ed453e 940db0e acceptance actionable adapt adding agent analogous baf840c0fe53 before behavior below boilerplate branch build cache canary cannot canonical change changes combining comment commit committee complete concrete config containing context contract court create current deepseek deploy diffs drafting efiling engine equivalent excerpt exercise existing exists fails files first found function fused green heartbeat implementation instead integrate integrated intent legal library locate matched merge mergeable merged missing module ollam ollama original overlapping owner patch patterns pipeline prefer preference preserve
+base: master
