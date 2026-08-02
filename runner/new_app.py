@@ -5,9 +5,28 @@ it registers a project and seeds a contracts-first plan so the swarm scaffolds r
 and the first tasks — spinning up app #11 becomes a sentence. Repo creation + deploy are operator steps
 (filed as action items with drafts); everything else the swarm builds through the gated pipeline.
 """
-import os, sys
+import json, os, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+
+# Branch-name globs that must never trigger a Vercel deployment. Vercel matches
+# git.deploymentEnabled keys with minimatch, where `*` does NOT cross a `/`, so a
+# bare `"*": false` never matches `agent/<name>` and the fleet's branches would
+# each fire a preview build (and email a failure whenever the branch predates a
+# fix). `**` is required for the slash-carrying prefixes.
+VERCEL_BOT_BRANCH_GLOBS = [
+    "agent/**", "bot/**", "codex/**", "orchestrator/**",
+    "recover/**", "recovery/**", "consolidate/**", "rescue/**",
+    "qafix-*", "canary-*", "relfix-*", "rescue-*", "recover-*",
+    "recovery-*", "consolidate-*", "wt-*", "ssw-*", "mac1-*",
+]
+
+
+def vercel_git_block(default_branch="main"):
+    """The git.deploymentEnabled block every new app's vercel.json must ship with."""
+    enabled = {default_branch: True}
+    enabled.update({glob: False for glob in VERCEL_BOT_BRANCH_GLOBS})
+    return {"git": {"deploymentEnabled": enabled}}
 
 
 def create(name, goal, repo_path=None):
@@ -22,11 +41,17 @@ def create(name, goal, repo_path=None):
     db.insert("tasks", {"project_id": pid, "slug": "contracts", "state": "QUEUED", "kind": "build",
         "prompt": f"Scaffold the new product '{name}'. GOAL: {goal}\nDefine the shared contracts: data "
                   f"model, key API signatures, and the SPEC.md invariants. Implementation comes in later "
-                  f"tasks that depend on this one.", "deps": [], "base_branch": "main"})
+                  f"tasks that depend on this one.\n\nThe repo's vercel.json MUST contain this exact "
+                  f"git.deploymentEnabled block so fleet branches never fire preview deployments "
+                  f"(keep the default branch true; `**` is required because Vercel's minimatch `*` does "
+                  f"not cross a `/`):\n{json.dumps(vercel_git_block(), indent=2)}",
+        "deps": [], "base_branch": "main"})
     # operator action items for the parts only the owner can do
     for title, why in [
         (f"[operator] Create the git repo + Vercel project for '{name}'",
-         f"New product '{name}'. Create the repo and link a Vercel project, then set its repo_path in projects."),
+         f"New product '{name}'. Create the repo and link a Vercel project, then set its repo_path in "
+         f"projects. Before the first push, commit the standard vercel.json git.deploymentEnabled block "
+         f"(runner/new_app.py: vercel_git_block) so agent/* branches never create preview deployments."),
         (f"[operator] Provision '{name}' Supabase/DB + env",
          f"Create the database/env for '{name}' and add its keys to the deploy env."),
     ]:
