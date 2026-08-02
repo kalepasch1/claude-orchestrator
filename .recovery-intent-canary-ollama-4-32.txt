@@ -1,0 +1,4 @@
+recovery-intent: canary-ollama-4-32
+template: 602db9242c68
+intent: 07062319 07071626 8b92d078e856 acceptance adapt agentic alter analysis artifacts because beethoven before behavior below blocked blocks branch broad budget bugfix build canary category cause changes changing checks coder commit complete completion concrete config context continue dependencies diffs directive drafting duplicate duplicates eliminating equivalent examine existing exists failure files final finish first focus fresh functionality green identify implementation improve inspect install instead intent issue large library lines maintainability matched merged minimally missing module needed ollama original parent pareto patch performance preserve
+base: main
