@@ -66,6 +66,48 @@ def build(task):
     return tid, "\n".join(lines)
 
 
+def _fallback_path():
+    """Local JSONL store used when the knowledge table is unavailable."""
+    return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        ".runtime", "patch_templates.jsonl")
+
+
+def lookup(template_id):
+    """Resolve a stored patch template by id. Fail-soft: returns {} on any miss/error.
+
+    Checks the local JSONL fallback first (newest matching entry wins), then
+    falls back to a best-effort knowledge-table query.
+    """
+    tid = str(template_id or "").strip()
+    if not tid:
+        return {}
+    found = {}
+    try:
+        with open(_fallback_path()) as f:
+            for line in f:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and row.get("template_id") == tid:
+                    found = row
+    except OSError:
+        pass
+    if found:
+        return found
+    try:
+        rows = db.select("knowledge", {"select": "title,body,tags",
+                                       "body": f"like.PATCH TEMPLATE {tid}*"})
+        for row in rows or []:
+            body = str((row or {}).get("body") or "")
+            if tid in body:
+                return {"template_id": tid, "body": body,
+                        "title": (row or {}).get("title"), "source": "db"}
+    except Exception:
+        pass
+    return {}
+
+
 def _store(task, template_id, body):
     row = {"project": task.get("project_id") or "unknown",
            "title": f"patch template {task.get('slug') or template_id}",
@@ -76,8 +118,7 @@ def _store(task, template_id, body):
     try:
         db.insert("knowledge", row, upsert=True)
     except Exception:
-        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                            ".runtime", "patch_templates.jsonl")
+        path = _fallback_path()
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "a") as f:
