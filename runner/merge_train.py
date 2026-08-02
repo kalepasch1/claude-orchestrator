@@ -987,6 +987,15 @@ def _record_pressure(by_project, projects):
                 json.dump(payload, f, indent=2)
         except OSError:
             pass
+    # cowork fix 2026-08-02: sentinel train_guard reads the FILE mtime, but the DB
+    # upsert above succeeds, so the file never updated -> perpetual false train-stale.
+    try:
+        _pf = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           ".runtime", "merge_train_pressure.json")
+        with open(_pf, "w") as _f:
+            json.dump(payload, _f, indent=2)
+    except OSError:
+        pass
     return payload
 
 
