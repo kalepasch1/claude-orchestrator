@@ -128,6 +128,9 @@ class PricingGrid:
             cost = tier.flat_fee + (consumed * tier.unit_price)
         return consumed, cost
 
+    # Backward-compatible alias: callers/tests predating the rename still use this name.
+    _consume_tier_units = _consume_and_cost
+
     def total_cost(self, units: int) -> float:
         """Calculate total cost across all tiers for a given unit count.
 
