@@ -350,10 +350,18 @@ def _three_way_merge(base, a, b):
         ops_a = [(tag, i1, i2, j1, j2) for tag, i1, i2, j1, j2 in sm_a.get_opcodes() if tag != "equal"]
         ops_b = [(tag, i1, i2, j1, j2) for tag, i1, i2, j1, j2 in sm_b.get_opcodes() if tag != "equal"]
 
-        # Check for base-range overlap between any A op and any B op
+        # Check for base-range overlap between any A op and any B op.
+        # FIX 2026-08-02 (root cause of the improvement_miner wipe): the test used to be a
+        # bare `ai1 < bi2 and bi1 < ai2`. A pure INSERTION is a ZERO-WIDTH range (i1 == i2),
+        # so that expression is False for every insertion — two edits anchored at the same
+        # base offset were declared non-overlapping, both landed in the `edits` dict below,
+        # and B's entry silently CLOBBERED A's. A's code vanished with no conflict, no error,
+        # and the result was reported as a successful auto-merge. That is how
+        # improvement_miner lost its `proposal_only = ...` binding while every reader of it
+        # survived. _ranges_conflict() handles zero-width ranges explicitly.
         for ta, ai1, ai2, aj1, aj2 in ops_a:
             for tb, bi1, bi2, bj1, bj2 in ops_b:
-                if ai1 < bi2 and bi1 < ai2:
+                if _ranges_conflict(ai1, ai2, bi1, bi2):
                     return None  # overlapping base ranges
 
         # No overlapping -- build merged result
@@ -362,24 +370,65 @@ def _three_way_merge(base, a, b):
         for tag, i1, i2, j1, j2 in ops_a:
             edits[i1] = (i2, a[j1:j2])
         for tag, i1, i2, j1, j2 in ops_b:
-            edits[i1] = (i2, b[j1:j2])
+            incoming = (i2, b[j1:j2])
+            existing = edits.get(i1)
+            if existing is not None and existing != incoming:
+                # Belt-and-braces: _ranges_conflict should already have caught this. If it
+                # ever does not, CONFLICT — never silently drop one side's edit.
+                return None
+            edits[i1] = incoming
 
-        # Replay base, substituting edits
+        # Replay base, substituting edits.
+        # FIX 2026-08-02: the loop was `while i < len(base)`, so an edit anchored at
+        # i == len(base) — i.e. an APPEND at end-of-file, the single most common shape of
+        # "add a new function" — was never applied and the appended lines were silently
+        # dropped. The bound is now inclusive and zero-width inserts fall through to emit
+        # the base line they precede.
         result = []
         i = 0
-        while i < len(base):
-            if i in edits:
-                end, replacement = edits[i]
+        n = len(base)
+        while i <= n:
+            edit = edits.get(i)
+            if edit is not None:
+                end, replacement = edit
                 result.extend(replacement)
-                i = end
-            else:
-                result.append(base[i])
-                i += 1
+                if end > i:
+                    i = end
+                    continue
+            if i == n:
+                break
+            result.append(base[i])
+            i += 1
 
         return result
 
     except Exception:
         return None
+
+
+def _ranges_conflict(a1, a2, b1, b2):
+    """True if two base-line edit ranges cannot be applied independently.
+
+    difflib ranges are half-open [i1, i2). A replacement/deletion is non-empty
+    (i1 < i2); an INSERTION is zero-width (i1 == i2) and needs its own rules,
+    which the original `a1 < b2 and b1 < a2` test silently got wrong:
+
+      * two insertions at the SAME anchor  -> conflict (ordering is a coin flip,
+        and the old code resolved it by overwriting one of them)
+      * an insertion at anchor p vs a non-empty span [q1, q2) -> conflict when
+        p lies anywhere in [q1, q2] INCLUDING the endpoints: the other side is
+        rewriting the very lines this insertion is anchored to, so where the new
+        text belongs is a guess. Guessing is what lost code.
+      * two non-empty spans -> ordinary half-open overlap.
+    """
+    a_empty, b_empty = (a1 == a2), (b1 == b2)
+    if a_empty and b_empty:
+        return a1 == b1
+    if a_empty:
+        return b1 <= a1 <= b2
+    if b_empty:
+        return a1 <= b1 <= a2
+    return a1 < b2 and b1 < a2
 
 
 # ---------------------------------------------------------------------------
