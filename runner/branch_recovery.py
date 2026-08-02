@@ -7,13 +7,18 @@ Recovery strategies (tried in order):
   2. Restore from git reflog if the branch was recently active
   3. Mark as unrecoverable if the branch is >30 days stale
 
-Pure git operations — no database writes.
+Pure git operations — no database writes, except recover_missing_branches()
+which does best-effort task-state marking (MERGED/QUARANTINED) after a
+recovery attempt; a DB failure there never aborts the loop.
 
 Env vars:
-    ORCH_BRANCH_RECOVERY_ENABLED    "true" (default) to enable
-    ORCH_BRANCH_RECOVERY_STALE_DAYS days before marking unrecoverable (default: 30)
-    ORCH_BRANCH_RECOVERY_TIMEOUT    git command timeout in seconds (default: 60)
+    ORCH_BRANCH_RECOVERY_ENABLED              "true" (default) to enable
+    ORCH_BRANCH_RECOVERY_STALE_DAYS           days before marking unrecoverable (default: 30)
+    ORCH_BRANCH_RECOVERY_TIMEOUT              git command timeout in seconds (default: 60)
+    ORCH_MISSING_BRANCH_RECOVERY_THRESHOLD    min library-hit similarity to apply (default: 0.8)
+    ORCH_MISSING_BRANCH_LIBRARY_PATH          optional JSON file mapping slug -> diff
 """
+import json
 import os, re, subprocess, sys
 from datetime import datetime, timedelta
 
@@ -34,6 +39,10 @@ _stats = {
     "recover_errors": 0,
     "detect_calls": 0,
     "detect_missing_found": 0,
+    "batch_reviewed": 0,
+    "batch_merged": 0,
+    "batch_quarantined": 0,
+    "batch_skipped": 0,
 }
 
 
@@ -210,3 +219,175 @@ def detect_missing_branches(project_path, expected_branches):
             missing.append(branch)
     _stats["detect_missing_found"] += len(missing)
     return missing
+
+
+# ── batch recovery of missing merge-train branches ─────────────────
+def _recovery_threshold(threshold):
+    """Resolve the library-similarity threshold (arg > ORCH_ env > 0.8)."""
+    if threshold is not None:
+        try:
+            return float(threshold)
+        except (TypeError, ValueError):
+            pass
+    try:
+        return float(os.environ.get("ORCH_MISSING_BRANCH_RECOVERY_THRESHOLD", "0.8"))
+    except ValueError:
+        return 0.8
+
+
+def _load_library_from_path():
+    """Load slug->diff mapping from ORCH_MISSING_BRANCH_LIBRARY_PATH, or None."""
+    path = os.environ.get("ORCH_MISSING_BRANCH_LIBRARY_PATH", "").strip()
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else None
+    except Exception as exc:
+        _log.debug("library path %s unreadable: %s", path, exc)
+        return None
+
+
+def _library_patch(library, slug, threshold):
+    """Best library diff for *slug*, or "" when none clears *threshold*.
+
+    Accepts a callable slug -> entry or a mapping slug -> entry, where entry
+    is a diff string or a dict {"diff"|"patch_diff": str, "similarity": float}.
+    """
+    if library is None:
+        return ""
+    try:
+        entry = library(slug) if callable(library) else library.get(slug)
+    except Exception as exc:
+        _log.debug("library lookup failed for %s: %s", slug, exc)
+        return ""
+    if not entry:
+        return ""
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict):
+        try:
+            sim = float(entry.get("similarity", 1.0))
+        except (TypeError, ValueError):
+            sim = 0.0
+        if sim >= threshold:
+            return entry.get("diff") or entry.get("patch_diff") or ""
+    return ""
+
+
+def _run_focused_tests(repo, test_cmd):
+    """Run the entry's focused test command in *repo*. Returns (ok, output)."""
+    if not test_cmd:
+        return True, ""
+    cmd = test_cmd if isinstance(test_cmd, (list, tuple)) else str(test_cmd).split()
+    try:
+        r = subprocess.run(list(cmd), cwd=repo, capture_output=True,
+                           text=True, timeout=max(TIMEOUT, 300))
+        return r.returncode == 0, (r.stdout + "\n" + r.stderr)[-2000:]
+    except Exception as exc:
+        return False, str(exc)[:500]
+
+
+def _mark_task_state(slug, state):
+    """Best-effort task-state marking; DB/RPC failure never propagates."""
+    try:
+        import db
+        db.update("tasks", {"slug": f"eq.{slug}"}, {"state": state})
+        return True
+    except Exception as exc:
+        _log.debug("state mark %s=%s failed: %s", slug, state, exc)
+        return False
+
+
+def recover_missing_branches(missing, library=None, threshold=None, project=None):
+    """Batch-recover missing merge-train branches from the merged-diff library.
+
+    Args:
+        missing:   iterable of entries, each a dict:
+                     {"slug": str, "repo": str, "base": str (default "master"),
+                      "project": str (optional), "test_cmd": list|str (optional)}
+                   Entries without slug or repo are counted as skipped.
+        library:   callable slug -> entry, or mapping slug -> entry (see
+                   _library_patch); defaults to ORCH_MISSING_BRANCH_LIBRARY_PATH.
+        threshold: min library-hit similarity to apply
+                   (default ORCH_MISSING_BRANCH_RECOVERY_THRESHOLD, 0.8).
+        project:   when set, entries carrying a different "project" are skipped
+                   so recovery never touches another project's branches.
+
+    Per entry: skip if the branch already exists locally; else apply the
+    library patch (or fall back to patch_recovery.recover) into a fresh
+    worktree, run the focused tests, and mark MERGED on pass or QUARANTINED
+    on any failure. Fail-soft: git/DB/RPC errors are logged, counted as
+    QUARANTINED, and never abort the loop.
+
+    Returns:
+        {"reviewed": int, "merged": int, "quarantined": int, "skipped": int,
+         "details": [{"slug", "status", "reason"}, ...]}
+    """
+    out = {"reviewed": 0, "merged": 0, "quarantined": 0, "skipped": 0, "details": []}
+    if not ENABLED or not missing:
+        return out
+
+    threshold = _recovery_threshold(threshold)
+    if library is None:
+        library = _load_library_from_path()
+
+    def _done(slug, status, reason=""):
+        key = {"MERGED": "merged", "QUARANTINED": "quarantined"}.get(status, "skipped")
+        out[key] += 1
+        _stats["batch_" + key] += 1
+        out["details"].append({"slug": slug, "status": status, "reason": reason[:500]})
+        if status in ("MERGED", "QUARANTINED"):
+            _mark_task_state(slug, status)
+
+    for entry in missing:
+        out["reviewed"] += 1
+        _stats["batch_reviewed"] += 1
+        try:
+            if not isinstance(entry, dict):
+                _done(str(entry), "SKIPPED", "malformed entry")
+                continue
+            slug = (entry.get("slug") or "").strip()
+            repo = (entry.get("repo") or "").strip()
+            if not slug or not repo:
+                _done(slug or "?", "SKIPPED", "missing slug or repo")
+                continue
+            if project and entry.get("project") and entry["project"] != project:
+                _done(slug, "SKIPPED",
+                      f"project isolation: {entry['project']} != {project}")
+                continue
+            if not _is_git_repo(repo):
+                _done(slug, "QUARANTINED", f"invalid git path: {repo}")
+                continue
+
+            branch = entry.get("branch") or f"agent/{slug}"
+            base = entry.get("base") or "master"
+            if _branch_exists_local(repo, branch):
+                _done(slug, "SKIPPED", "branch already exists locally")
+                continue
+
+            import patch_recovery
+            diff = _library_patch(library, slug, threshold)
+            if diff:
+                result = patch_recovery._apply_diff_to_branch(
+                    repo, slug, branch, base, diff, "library")
+            else:
+                result = patch_recovery.recover(repo, slug, base,
+                                                project=entry.get("project") or project)
+            if not result.get("ok"):
+                _done(slug, "QUARANTINED",
+                      result.get("reason") or "recovery failed")
+                continue
+
+            ok, test_out = _run_focused_tests(repo, entry.get("test_cmd"))
+            if ok:
+                _done(slug, "MERGED", f"recovered via {result.get('method', 'library')}")
+            else:
+                _done(slug, "QUARANTINED", f"focused tests failed: {test_out}")
+        except Exception as exc:
+            _stats["recover_errors"] += 1
+            _log.warning("batch recovery error: %s", exc)
+            slug = entry.get("slug", "?") if isinstance(entry, dict) else str(entry)
+            _done(slug, "QUARANTINED", str(exc)[:200])
+    return out
