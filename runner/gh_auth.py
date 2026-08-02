@@ -12,6 +12,8 @@ Env vars consumed:
   GITHUB_APP_INSTALLATION_ID – Installation ID (e.g. 145579394)
   GITHUB_TOKEN / GITHUB_PAT  – Personal access token fallback
 """
+from __future__ import annotations
+
 import json
 import os
 import subprocess
