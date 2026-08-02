@@ -217,9 +217,142 @@ def _ignore_scripts_cmd(manager, cmd):
     return None
 
 
+def _entrypoint_files(pkg_dir, meta):
+    """Relative entrypoint paths a package declares, as far as we can cheaply tell."""
+    out = []
+    for key in ("main", "module"):
+        val = meta.get(key)
+        if isinstance(val, str) and val.strip():
+            out.append(val.strip())
+    def _collect(node, depth=0):
+        """Walk nested export conditions: {"import": {"default": "./src/index.js"}}."""
+        if depth > 6:
+            return
+        if isinstance(node, str):
+            out.append(node)
+        elif isinstance(node, dict):
+            for key in ("node", "import", "require", "default", "browser"):
+                if key in node:
+                    _collect(node[key], depth + 1)
+        elif isinstance(node, list):
+            for item in node:
+                _collect(item, depth + 1)
+
+    exports = meta.get("exports")
+    if isinstance(exports, str):
+        out.append(exports)
+    elif isinstance(exports, dict):
+        _collect(exports.get(".", exports))
+    return [p for p in out if isinstance(p, str) and not p.startswith("#") and "*" not in p]
+
+
+_ENTRY_EXTS = (".js", ".mjs", ".cjs", ".json", ".node", ".ts", ".d.ts")
+
+
+def _resolves(pkg_dir, target):
+    """Whether `target` resolves inside pkg_dir the way Node would.
+
+    Manifests routinely declare extensionless entrypoints ("main": "./dist/index") or point at a
+    directory. A bare os.path.exists() call marks all of those missing, which would flag most of
+    a healthy tree as corrupt and send every checkout into a reinstall loop.
+    """
+    base = os.path.normpath(os.path.join(pkg_dir, target.lstrip("./") if target.startswith("./") else target))
+    if os.path.isfile(base):
+        return True
+    for ext in _ENTRY_EXTS:
+        if os.path.isfile(base + ext):
+            return True
+    if os.path.isdir(base):
+        for ext in _ENTRY_EXTS:
+            if os.path.isfile(os.path.join(base, "index" + ext)):
+                return True
+        # A directory that exists but has no index is still a real directory on disk; treat the
+        # entrypoint as present and let the build be the judge rather than guessing wrong.
+        return True
+    return False
+
+
+def broken_packages(repo, limit=25):
+    """Installed packages whose directory exists but whose declared entrypoint does not.
+
+    Concurrent npm/pnpm runs against one checkout leave exactly this shape: node_modules/<pkg>
+    survives with its package.json, but dist/ was pruned by the other process. Nothing downstream
+    notices — .bin symlinks still resolve — until the build dies with ERR_MODULE_NOT_FOUND for
+    some transitive dependency. Scanning the top level is bounded (a few hundred stats) and cheap
+    relative to the doomed build it prevents.
+    """
+    nm = os.path.join(repo, "node_modules")
+    if not os.path.isdir(nm):
+        return []
+    broken = []
+    try:
+        entries = sorted(os.listdir(nm))
+    except OSError:
+        return []
+    for name in entries:
+        if name.startswith(".") or name == ".bin":
+            continue
+        base = os.path.join(nm, name)
+        candidates = []
+        if name.startswith("@"):
+            try:
+                candidates = [os.path.join(base, sub) for sub in sorted(os.listdir(base))]
+            except OSError:
+                continue
+        else:
+            candidates = [base]
+        for pkg_dir in candidates:
+            manifest = os.path.join(pkg_dir, "package.json")
+            if not os.path.isfile(manifest):
+                continue
+            try:
+                with open(manifest, encoding="utf-8") as fh:
+                    meta = json.load(fh)
+            except Exception:
+                continue
+            targets = _entrypoint_files(pkg_dir, meta)
+            if not targets:
+                continue
+            # Only flag when *every* declared entrypoint is missing: packages legitimately ship
+            # a subset (e.g. ESM-only builds that still declare a CJS "main").
+            if all(not _resolves(pkg_dir, t) for t in targets):
+                broken.append(os.path.relpath(pkg_dir, nm))
+                if len(broken) >= limit:
+                    return broken
+    return broken
+
+
+# Transitive packages the JS toolchains load on every build. A corrupt copy of any of these takes
+# the build down with an ERR_MODULE_NOT_FOUND that names the transitive package, not the direct
+# dependency, which is what made the 2026-08-02 corruption so slow to diagnose.
+_RUNTIME_CRITICAL = frozenset({
+    "citty", "consola", "std-env", "h3", "nitropack", "unstorage", "ofetch", "ufo", "defu",
+    "pathe", "jiti", "unimport", "unplugin", "vite", "rollup", "esbuild", "webpack",
+    "nuxt", "nuxi", "next", "typescript", "vue", "vue-router", "postcss", "tailwindcss",
+})
+
+
+def _load_bearing(repo, rel_pkg, manifest):
+    """Whether a damaged package is one this build will actually try to load.
+
+    Some packages are simply mispackaged upstream — the deprecated `fs` stub ships no index.js at
+    all, and `javascript-opentimestamps` points `main` at a file it never publishes. Those have
+    been "broken" since the day they were installed and the builds pass anyway. Failing readiness
+    on them would put the checkout into a permanent reinstall loop, which is a worse outage than
+    the one this check exists to catch — so direct dependencies deliberately do NOT qualify.
+
+    Only the shared JS toolchain does. Those packages are correctly published, every build loads
+    them, and they are precisely what a torn concurrent install damaged on 2026-08-02. If one of
+    them has lost its entrypoint, the tree really is corrupt and reinstalling really is the fix.
+    """
+    name = rel_pkg.replace(os.sep, "/")
+    return name in _RUNTIME_CRITICAL or name.split("/")[0] in ("@nuxt", "@vue", "@vitejs")
+
+
 def _deps_ready_local(repo):
     if not os.path.isfile(os.path.join(repo, "package.json")):
         return True
+    manifest = {}
     try:
         with open(os.path.join(repo, "package.json"), encoding="utf-8") as f:
             manifest = json.load(f)
@@ -241,7 +374,18 @@ def _deps_ready_local(repo):
         required_bins.append(("next",))
     if "vite" in joined or os.path.exists(os.path.join(repo, "vite.config.ts")) or os.path.exists(os.path.join(repo, "vite.config.js")):
         required_bins.append(("vite",))
-    if "tsc" in joined or "typescript" in joined or os.path.exists(os.path.join(repo, "tsconfig.json")):
+    # Require the TypeScript CLI only when the project actually depends on it.
+    #
+    # FIX 2026-08-02: this used to fire on the mere presence of tsconfig.json. Nuxt generates a
+    # tsconfig.json for editor support in projects that never install a standalone `typescript`
+    # (pareto-2080 is one), so that checkout could never satisfy readiness. Every caller that
+    # asked "are deps ready?" got False and kicked off another install — which is how several
+    # agents ended up running npm/pnpm against the same node_modules at once and tearing it. The
+    # never-satisfiable gate was manufacturing the corruption this module is meant to prevent.
+    _declares_ts = any((manifest.get(k) or {}).get(dep)
+                       for k in ("dependencies", "devDependencies")
+                       for dep in ("typescript", "vue-tsc"))
+    if "tsc" in joined or "typescript" in joined or _declares_ts:
         required_bins.append(("tsc", "vue-tsc"))
     if not os.path.isdir(nm):
         return not required_bins
@@ -261,6 +405,15 @@ def _deps_ready_local(repo):
             ("@vue", "compiler-sfc", "dist", "compiler-sfc.cjs.js"),
         )
         if not all(os.path.isfile(os.path.join(nm, *parts)) for parts in required_files):
+            return False
+    # Catch the general case the two hardcoded probes above only sample: any package left
+    # entrypoint-less by a concurrent install. Reporting not-ready sends this checkout back
+    # through a reinstall instead of into a build that dies on ERR_MODULE_NOT_FOUND.
+    if _truthy("ORCH_PREWARM_INTEGRITY_SCAN", True):
+        damaged = [p for p in broken_packages(repo, limit=40) if _load_bearing(repo, p, manifest)]
+        if damaged:
+            print(f"dependency_prewarm: {repo} has {len(damaged)} load-bearing package(s) with "
+                  f"missing entrypoints ({', '.join(damaged[:5])}); treating install as not ready")
             return False
     return True
 
@@ -295,6 +448,28 @@ def ensure(repo, reason="prewarm", timeout=None):
         return {"ok": True, "skipped": "no-package-json"}
     if _stamp_matches(repo):
         return {"ok": True, "skipped": "warm-cache"}
+    # Two locks, two jobs. The manifest-keyed lock below collapses identical installs across
+    # worktrees into one build. It deliberately does NOT provide mutual exclusion per checkout —
+    # two installs against the same tree with different manifest states take different locks — so
+    # take the checkout-keyed lock as well before touching this repo's dependencies.
+    _checkout_lock = None
+    try:
+        import install_lock as _il
+        _checkout_lock = _il.hold(repo, reason=reason)
+        _checkout_lock.__enter__()
+    except Exception:
+        _checkout_lock = None
+    try:
+        return _ensure_locked(repo, reason=reason, timeout=timeout)
+    finally:
+        if _checkout_lock is not None:
+            try:
+                _checkout_lock.__exit__(None, None, None)
+            except Exception:
+                pass
+
+
+def _ensure_locked(repo, reason="prewarm", timeout=None):
     # The lock is keyed by manifest content rather than checkout path: identical installs
     # across worktrees collapse into one build and one immutable runtime.
     lock_file = None

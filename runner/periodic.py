@@ -72,6 +72,60 @@ def _ensure_tool_path():
     os.environ["PATH"] = os.pathsep.join(parts)
 
 
+# A hung job used to hold its lock forever: every later invocation printed
+# "skipped; previous invocation still running" and returned, silently and without bound. On
+# 2026-08-02 `remediate` sat wedged for six hours that way, so no remediation ran all afternoon
+# while the queue kept growing. Cap how long a holder may keep the lock, then reap it.
+_JOB_MAX_RUNTIME_S = int(os.environ.get("ORCH_PERIODIC_JOB_MAX_RUNTIME_S", "3600"))
+
+
+def _read_lock_holder(lock_path):
+    """Return (pid, started_at) recorded by the current holder, or (None, None)."""
+    try:
+        with open(lock_path) as fh:
+            parts = fh.read().split()
+        return int(parts[0]), int(parts[1])
+    except Exception:
+        return None, None
+
+
+def _pid_alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _reap_stale_holder(job, lock_path):
+    """Kill a lock holder that has outlived _JOB_MAX_RUNTIME_S. Returns True if we cleared it."""
+    import signal
+    pid, started = _read_lock_holder(lock_path)
+    if not pid or not started:
+        # Unreadable lock with nobody obviously behind it — let the caller retry once.
+        return True
+    age = int(time.time()) - started
+    if not _pid_alive(pid):
+        print(f"periodic {job}: holder pid {pid} is gone; reclaiming lock")
+        return True
+    if age < _JOB_MAX_RUNTIME_S:
+        print(f"periodic {job}: skipped; previous invocation still running "
+              f"(pid {pid}, {age}s of {_JOB_MAX_RUNTIME_S}s budget)")
+        return False
+    print(f"periodic {job}: HUNG — pid {pid} has held the lock {age}s "
+          f"(limit {_JOB_MAX_RUNTIME_S}s); terminating it")
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.kill(pid, sig)
+        except OSError:
+            break
+        for _ in range(50):
+            if not _pid_alive(pid):
+                return True
+            time.sleep(0.1)
+    return not _pid_alive(pid)
+
+
 def _run_job_locked(job):
     """Prevent slow periodic jobs from overlapping their next scheduled invocation."""
     if fcntl is None or os.environ.get("ORCH_PERIODIC_JOB_LOCKS", "true").lower() not in ("1", "true", "yes", "on"):
@@ -82,8 +136,13 @@ def _run_job_locked(job):
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except (BlockingIOError, OSError):
-            print(f"periodic {job}: skipped; previous invocation still running")
-            return None
+            if not _reap_stale_holder(job, lock_path):
+                return None
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (BlockingIOError, OSError):
+                print(f"periodic {job}: skipped; lock still held after reaping the stale holder")
+                return None
         lock.seek(0)
         lock.truncate()
         lock.write(f"{os.getpid()} {int(time.time())}\n")

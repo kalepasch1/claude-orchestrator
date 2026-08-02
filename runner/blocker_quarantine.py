@@ -23,6 +23,15 @@ DEFAULT_LIMIT = int(os.environ.get("ORCH_QUARANTINE_LIMIT", "120"))
 MAX_BASE_CHARS = int(os.environ.get("ORCH_QUARANTINE_PROMPT_CHARS", "12000"))
 MARK = "blocker-quarantine"
 REPLACEMENT_CATEGORIES = {"legal", "secret", "security"}
+# How many rework/recover passes a task may accumulate before we stop auto-respawning
+# replacements and escalate to a human instead.
+#
+# FIX 2026-08-02: run()'s depth cap referenced a bare `max_depth` that was never bound, so every
+# quarantine run that reached the cap died with NameError. The earlier fix added the missing
+# _rework_depth() helper but left `max_depth` undefined, which just moved the crash one name to
+# the right — the cap has therefore never actually fired, and nested rework chains kept
+# respawning. 2 matches the "2+ nested rework- segments" rule the cap was written for.
+REWORK_MAX_DEPTH = int(os.environ.get("ORCH_QUARANTINE_REWORK_MAX_DEPTH", "2"))
 
 _LEGAL = re.compile(
     r"\blegal review\b|\blegal counsel\b|\bunauthorized practice of law\b|\bupl violation\b|"
@@ -651,8 +660,8 @@ def run(limit=DEFAULT_LIMIT):
         # "rework-legal-rework-legal-rework-legal-..." chain in production, manufacturing
         # QUARANTINED rows forever. Once the cap is hit, stop reworking automatically and put a
         # human in the loop instead.
-        if category in REPLACEMENT_CATEGORIES and _rework_depth(task.get("slug")) >= max_depth:
-            note = (f"{MARK}: escalated after {max_depth}+ rework attempts (category={category}); "
+        if category in REPLACEMENT_CATEGORIES and _rework_depth(task.get("slug")) >= REWORK_MAX_DEPTH:
+            note = (f"{MARK}: escalated after {REWORK_MAX_DEPTH}+ rework attempts (category={category}); "
                     f"needs human review instead of another auto-rework. "
                     f"Last blocker: {(task.get('note') or task.get('log_tail') or '')[:300]}")[:900]
             try:
