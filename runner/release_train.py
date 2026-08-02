@@ -33,7 +33,8 @@ import integration_runtime
 # production deploys through stale process or machine-local environment overrides.
 # The explicit AUTOPILOT_RELEASE_BLOCKER_FLUSH hot lane may still set these module
 # values to 1/0 temporarily for a genuine production blocker.
-MIN_BATCH = max(10, int(os.environ.get("RELEASE_MIN_BATCH", os.environ.get("ORCH_RELEASE_BATCH_MIN", "10"))))
+# cowork 2026-08-02: floor lowered 10->1 so recovery mode (RELEASE_MIN_BATCH=1) can flush small batches
+MIN_BATCH = max(1, int(os.environ.get("RELEASE_MIN_BATCH", os.environ.get("ORCH_RELEASE_BATCH_MIN", "10"))))
 RELEASE_INTERVAL_HOURS = max(6.0, float(os.environ.get("RELEASE_INTERVAL_HOURS", os.environ.get("ORCH_RELEASE_INTERVAL_HOURS", "6"))))
 STAGING = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
 RELEASE_FIX_PREFIXES = ("relfix-", "buildfix-", "deployfix-")
