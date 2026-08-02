@@ -1,0 +1,4 @@
+recovery-intent: backlog-batch-beethoven-22ee5bc-convention-conformance-lints-reuse-project-helpe
+template: 8027b150069e
+intent: 05ab230efefa 07060650 07062319 1677fc0f7242 22ee5bc 3f01f94359a3 3f5957686efc 490564c811b3 4ff7ba380eac 6096aa2b 8b92d078e856 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agentic agentledger alter analysis artifacts assertion backlog based batch because beethoven before behavior being below blocked blocker blocks branch branches brief broad bugfix build cache category cause changes changing checks commit completion concrete config conformance context continue convention conventions dependencies diffs directive document drafting duplicate duplicates eliminating equivalent examine excerpt existing exists failure files final finish first focus fresh functional functionality green helpe
+base: master
