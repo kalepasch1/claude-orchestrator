@@ -205,10 +205,14 @@ def _draft_slots(capacity):
 def run():
     import improvement_scrutiny, improvement_optimizer
     capacity = improvement_optimizer.capacity(db)
-    if capacity["limited"]:
-        print("improvement_miner: capacity-limited; draining scrutiny/build backlog before drafting")
-        return {"queued": 0, "for_review": 0, "needs_revision": 0,
-                "capacity_limited": True, "capacity": capacity}
+    # proposal_only: the review/build lane is saturated, so we keep MINING (discovery never stalls)
+    # but record every draft as status='proposed' instead of promoting it to 'for_review'. That adds
+    # zero work to the saturated lane while preserving the idea. `deferred` counts those drafts.
+    # (Restored from commit d4ff56be, whose run() body was partially reverted by merge b9a8fd26 —
+    #  leaving proposal_only/deferred referenced but never bound. See also _draft_slots().)
+    proposal_only = bool(capacity["limited"])
+    if proposal_only:
+        print("improvement_miner: review capacity full; drafting bounded proposals without promotion")
     pid = {p["name"]: p["id"] for p in (db.select("projects", {"select": "id,name"}) or [])}
     # don't re-propose the same title for the same app+surface
     existing = db.select("improvement_proposals", {
@@ -247,7 +251,8 @@ def run():
             seen.add((app, surface, title.lower()))
     cands.sort(key=lambda x: x[0], reverse=True)   # impact-ranked: biggest wins first
     queued = review = revision = 0
-    for score, app, surface, it, title in cands[:capacity["slots"]]:
+    deferred = 0
+    for score, app, surface, it, title in cands[:_draft_slots(capacity)]:
             divergent = bool(it.get("divergent"))
             row = {"app": app, "surface": surface, "title": title[:200],
                    "current_state": (it.get("current_state") or "")[:600],
@@ -282,8 +287,9 @@ def run():
                 review += int(not proposal_only)
                 deferred += int(proposal_only)
             seen.add((app, surface, title.lower()))
-    print(f"improvement_miner: queued 0 directly; {review} scrutiny-ready, {revision} need revision")
+    print(f"improvement_miner: queued 0 directly; {review} scrutiny-ready, {revision} need revision, {deferred} deferred")
     return {"queued": queued, "for_review": review, "needs_revision": revision,
+            "deferred": deferred, "capacity_limited": proposal_only,
             "novelty_rejected": novelty_rejected, "capacity": capacity}
 
 
