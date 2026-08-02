@@ -7,7 +7,17 @@ rollback if a metric regressed. Used by the overnight deploy window instead of a
 METRICS_URL must return JSON like {"error_rate":0.4,"p95_ms":180,"conversion":3.1}.
 Thresholds via env: CANARY_MAX_ERROR_RATE, CANARY_MAX_P95_MS, CANARY_MIN_CONVERSION.
 """
-import os, sys, json, urllib.request
+import os, sys, json, threading, urllib.request
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+# RESTORED 2026-08-02: merge c502818b 'Merge branch 'agent/canary-gemini-25-...'
+# (auto-resolved)' dropped the `threading` / `http.server` imports and these two module
+# globals while KEEPING every line that uses them, and stranded the whole metrics block
+# below the `if __name__` entrypoint. The result imported fine and raised NameError the
+# moment start_metrics_server() was called — the crash-free-until-used class the
+# regression guard now blocks. Original shape restored from d1530ed0.
+_metrics_server = None
+_metrics_server_lock = threading.Lock()
 
 
 def evaluate(metrics_url=None):
@@ -59,9 +69,6 @@ def main(argv=None):
     return 0 if result.get("verdict") == "promote" else 1
 
 
-if __name__ == "__main__":
-    sys.exit(main())
-
 class _MetricsHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/metrics":
@@ -103,4 +110,8 @@ def start_metrics_server():
                          daemon=True).start()
         _metrics_server = server
         return server
+
+
+if __name__ == "__main__":
+    sys.exit(main())
 
