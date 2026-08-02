@@ -16,6 +16,16 @@ import sys
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# semantic_merge._ENABLED is bound at IMPORT time from ORCH_SEMANTIC_MERGE, and
+# test_semantic_merge.py sets these before its own import. Whichever test module is
+# imported FIRST wins, so this file must set the identical environment or it silently
+# breaks the sibling suite's two "disabled" tests when it happens to be collected first.
+# The tests below call _three_way_merge/_ranges_conflict directly; neither reads _ENABLED.
+os.environ["ORCH_SEMANTIC_MERGE"] = "false"   # hard assignment: setdefault is a no-op
+os.environ["ORCH_DB_URL"] = ""                # when the fleet env already exports these
+os.environ["ORCH_DB_ENABLED"] = "false"
+
 import semantic_merge  # noqa: E402
 
 
