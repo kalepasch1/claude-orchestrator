@@ -1,0 +1,4 @@
+recovery-intent: recover-missing-branch-improve-enhanced-testing-pipeline-missing-branch-r-slice-1
+template: 151878eb1018
+intent: 07062319 07071626 acceptance adapt agent agentic apparently applica beethoven before below branch branches build cache canonical checks children coder commit complete config context conventions diffs drafting either enhanced enumerate equivalent failure first green helpers improve integrate integrated least library matched matching materializer merge merged missing naming original parent pareto patch pipeline prefer pressure prior project prompt proven qafix quarantined recover recovery recreate relevant relfix resume reuse scope scratch similarity slice smallest smarter source template tested testing tests through tomorrow train
+base: master
