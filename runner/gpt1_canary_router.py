@@ -4,7 +4,14 @@
 Routes requests to 'canary' or 'control' endpoint based on a rollout
 percentage (0-100). Deterministic at boundaries, random in between.
 """
+import os
 import random
+
+# Restored from merge parent 8ec8e8ef (dropped by auto-resolved merge 71cfd4ca6).
+# get_canary_stats() and route_request() below read these; without them both
+# raise NameError at call time.
+CANARY_ENABLED = os.environ.get('GPT1_CANARY_ENABLED', '0') == '1'
+CANARY_PERCENT = float(os.environ.get('GPT1_CANARY_PERCENT', '0'))
 
 
 def route_gpt1_request_canary(request_context, canary_pct):
