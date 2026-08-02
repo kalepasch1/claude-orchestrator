@@ -44,6 +44,10 @@ import pipeline_contract
 import autoclear as _autoclear   # FIX 2026-07-29: _autoclear.load_rules() was called with no
                                  # import -> the operator-card path of the drop-box crashed with
                                  # NameError whenever a freeform prompt carried operator items.
+try:
+    import branch_bootstrap_injection as _branch_bootstrap
+except Exception:                # fail-soft: intake must keep queueing even if the
+    _branch_bootstrap = None     # bootstrap-injection module can't load.
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 INTAKE = os.path.abspath(os.path.join(HERE, "..", "intake"))
@@ -202,6 +206,11 @@ def ingest_file(path, projects_by_name):
                "note": pipeline_contract.note(source="intake-file")}
         if t.get("model"):
             row["model"] = t["model"]
+        if _branch_bootstrap:
+            try:  # stage the base branch ahead of the task if it's missing locally
+                _branch_bootstrap.inject_bootstrap_if_needed(row, proj)
+            except Exception:
+                pass
         db.insert("tasks", row)
         existing.add(t["slug"]); created += 1
     # surface each operator-only item as its OWN approval card (per-item, not a lump)
@@ -295,6 +304,11 @@ def _queue_dropbox_tasks(rendered, projects_by_name):
                "note": pipeline_contract.note(source="intake-dropbox")}
         if t.get("model"):
             row["model"] = t["model"]
+        if _branch_bootstrap:
+            try:  # stage the base branch ahead of the task if it's missing locally
+                _branch_bootstrap.inject_bootstrap_if_needed(row, proj)
+            except Exception:
+                pass
         db.insert("tasks", row)
         existing.add(t["slug"]); created += 1
     return created, skipped
