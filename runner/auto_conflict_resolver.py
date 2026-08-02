@@ -142,21 +142,33 @@ def _classify_conflict(filepath: str, conflict_type: str = "") -> str:
     return "manual"
 
 def _resolve_file(repo: str, filepath: str, strategy: str, branch: str, base: str) -> bool:
-    """Apply a resolution strategy to a single conflicting file."""
+    """Apply a resolution strategy to a single conflicting file.
+
+    Every branch that writes a file now VERIFIES the result before claiming success —
+    a False here makes the caller `git merge --abort`, which is always safe.
+    """
     if strategy == "ours":
         r = _git(["git", "checkout", "--ours", filepath], repo)
-        if r.returncode == 0:
+        if r.returncode == 0 and _resolved_ok(repo, filepath):
             _git(["git", "add", filepath], repo)
             return True
         return False
     elif strategy == "theirs":
         r = _git(["git", "checkout", "--theirs", filepath], repo)
-        if r.returncode == 0:
+        if r.returncode == 0 and _resolved_ok(repo, filepath):
             _git(["git", "add", filepath], repo)
             return True
         return False
     elif strategy == "union":
-        r = _git(["git", "merge-file", "--union", filepath, filepath, filepath], repo)
+        # FIX 2026-08-02: this was `merge-file --union filepath filepath filepath` followed by
+        # an UNCONDITIONAL `return True`. Passing the same path as current/base/other merges a
+        # file with ITSELF — the output is the input unchanged, i.e. the still-conflicted
+        # working-tree file WITH its <<<<<<< markers — which was then `git add`ed and committed.
+        # The real union needs the three index stages: :1 = base, :2 = ours, :3 = theirs.
+        if not _union_stages(repo, filepath):
+            return False
+        if not _resolved_ok(repo, filepath):
+            return False
         _git(["git", "add", filepath], repo)
         return True
     elif strategy == "regenerate":
@@ -175,12 +187,98 @@ def _resolve_file(repo: str, filepath: str, strategy: str, branch: str, base: st
                 fullpath = os.path.join(repo, filepath)
                 with open(fullpath, "w") as f:
                     f.write(result["merged_content"])
+                if not _resolved_ok(repo, filepath):
+                    return False
                 _git(["git", "add", filepath], repo)
                 return True
         except Exception:
             pass
         return False
     return False
+
+
+CONFLICT_MARKERS = ("<<<<<<< ", "=======\n", ">>>>>>> ")
+
+
+def _union_stages(repo: str, filepath: str) -> bool:
+    """True union of the three index stages. Returns True only on a real success.
+
+    :1 = merge base, :2 = ours, :3 = theirs. `git merge-file --union` writes the union
+    into the first argument. An add/add conflict has no stage :1; an empty base is the
+    correct ancestor there, so both sides' additions are kept.
+    """
+    import tempfile
+    tmpdir = None
+    try:
+        tmpdir = tempfile.mkdtemp(prefix="acr-union-")
+        paths = {}
+        for stage, name in ((1, "base"), (2, "ours"), (3, "theirs")):
+            r = _git(["git", "show", f":{stage}:{filepath}"], repo)
+            content = r.stdout if r.returncode == 0 else ("" if stage == 1 else None)
+            if content is None:
+                return False  # a side is missing entirely — not a union case
+            paths[name] = os.path.join(tmpdir, name)
+            with open(paths[name], "w", errors="replace") as fh:
+                fh.write(content)
+        m = _git(["git", "merge-file", "--union",
+                  paths["ours"], paths["base"], paths["theirs"]], repo)
+        if m.returncode < 0:  # negative = merge-file error; >0 would be leftover conflicts
+            return False
+        with open(paths["ours"], "r", errors="replace") as fh:
+            merged = fh.read()
+        with open(os.path.join(repo, filepath), "w", errors="replace") as fh:
+            fh.write(merged)
+        return True
+    except Exception:
+        return False
+    finally:
+        if tmpdir:
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _resolved_ok(repo: str, filepath: str) -> bool:
+    """Verify a just-resolved file: no conflict markers left, and it still parses.
+
+    FIX 2026-08-02: `_resolve_file` used to claim success without ever looking at what it
+    produced, so conflict markers and syntactically broken files were staged and committed.
+    Unknown file types pass the syntax check (only the marker check applies).
+    """
+    full = os.path.join(repo, filepath)
+    try:
+        with open(full, "r", errors="replace") as fh:
+            text = fh.read()
+    except (OSError, IOError):
+        return False
+    for marker in CONFLICT_MARKERS:
+        if marker in text or text.endswith(marker.rstrip("\n")):
+            return False
+
+    ext = os.path.splitext(filepath)[1].lower()
+    try:
+        if ext == ".py":
+            compile(text, filepath, "exec")
+        elif ext in (".json",):
+            import json as _json
+            _json.loads(text)
+        elif ext in (".js", ".mjs", ".cjs"):
+            chk = subprocess.run(["node", "--check", full], capture_output=True,
+                                 text=True, timeout=30)
+            if chk.returncode != 0:
+                return False
+        elif ext in (".yml", ".yaml"):
+            try:
+                import yaml as _yaml
+                _yaml.safe_load(text)
+            except ImportError:
+                pass  # no pyyaml — marker check only
+    except FileNotFoundError:
+        return True   # no node installed: marker check only, don't block the merge
+    except subprocess.SubprocessError:
+        return True
+    except Exception:
+        return False  # SyntaxError / JSONDecodeError / YAMLError -> broken resolution
+    return True
 
 def _regression_check(repo: str, pre_sha: str, branch: str) -> str:
     """Post-merge anti-regression verification. Returns '' if clean, else the findings.
