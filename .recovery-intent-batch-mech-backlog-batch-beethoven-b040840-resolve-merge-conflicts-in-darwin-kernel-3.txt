@@ -2,3 +2,25 @@ recovery-intent: batch-mech-backlog-batch-beethoven-b040840-resolve-merge-confli
 template: 54427071c9be
 intent: acceptance achieve adjustments after appears applies apply assertions b040840 backlog based baseline batch beethoven blame branches build ccacb00 changelog changes check checkout clean cleanly clearly command commit complete configuration configured confirm conflict conflicting conflicts consistent contains conventions correctness craft create darwin directory document documentation ensuring eslint exits files final following formatters fresh fully include independent infer intent intents isolated kernel linters markers mechanical merge merged minimal modifications modified necessary needed original otherwise output package parameters patch preserves prettier previous project
 base: master
+
+## Historical Merged Task Documentation Clarification
+
+This section clarifies the process for reviewing and merging historical tasks within the `beethoven` project.  The goal is to prevent duplication of effort with currently active tasks and ensure a clear understanding of task lifecycle management.
+
+**Reviewing Historical Tasks:**
+
+Before initiating work on a new task, it's crucial to review existing historical tasks. This helps identify if similar work has already been completed or if the current task can leverage previous solutions.  The task history is accessible [link to task tracking system/repository].
+
+**Merging Legacy Tasks:**
+
+If a historical task addresses a similar problem or provides a relevant solution, consider merging it into the current workflow. This involves:
+
+1.  Assessing the relevance and applicability of the historical task's approach.
+2.  Adapting the existing code or documentation as needed to integrate seamlessly with the current project structure.
+3.  Documenting the merge process and rationale for future reference.
+
+**Avoiding Duplication:**
+
+To prevent duplication, clearly mark historical tasks as "merged" or "superseded" in the task tracking system. This ensures that developers are aware of existing solutions and avoid redundant work.
+
+This clarification aims to streamline our workflow and promote efficient collaboration within the `beethoven` project.
