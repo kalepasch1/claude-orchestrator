@@ -1,0 +1,4 @@
+recovery-intent: dropbox-economic-scheduler-revenue-revenue-focused-task-prioritizati-contracts
+template: c4951c160c1f
+intent: 07130635 07190257 20251001 acceptance active actual adapt advice after against agentic analysis appears artifacts author batch beethoven before behavior below blocked blocker bottleneck branch branches broad bugfix build build_fix cache category cause change changes changing checks claim clarifies class claud claude cloud coder commit commits committing completion concrete config context continue contract contracts coordination could create cross current custody deepseek delete deliver denials depend dependencies deployfix describing diffs directive drafting dropbox economic efforts emitted equivalent error establish excerpt exist existing
+base: main

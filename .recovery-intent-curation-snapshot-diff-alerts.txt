@@ -1,0 +1,4 @@
+recovery-intent: curation-snapshot-diff-alerts
+template: 7d7656edc546
+intent: 05ab230efefa 07060650 07062319 07071626 1677fc0f7242 3f01f94359a3 3f5957686efc 490564c811b3 4ff7ba380eac 6096aa2b 9f821ef2b6cc __init__ __tests__ _execute_child _run_task_safe a5f8e22456b6 acceptance adapt address affected after agent agentic agentic_coders agentledger alert alertpayload alerts analysis applications approved artifacts assertion attempt authenticated based batch because beethoven before behavior being below binding branch branches brief broad budget bugfix build builder building cache camelcase capture_output cases category cause change changes changing checks child_exception_type claude claude_cli close_fds coder columns commit comparing complete completion concrete config conflict constraints contents context continue
+base: main
