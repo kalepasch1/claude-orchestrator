@@ -390,6 +390,82 @@ def _protected_extra():
 
 
 # ---------------------------------------------------------------------------
+# detector 5: committed conflict markers (ALL tracked file types)
+# ---------------------------------------------------------------------------
+#
+# racefeed 601342b06 shipped `<<<<<<<` markers inside .gitignore on master. The cause was
+# auto_conflict_resolver._resolve_file's union branch, which ran `git merge-file --union` with
+# the SAME path as all three inputs and then `return True` unconditionally -- so the working
+# tree kept its markers, and the caller `git add`ed them. (That specific bug is fixed; this
+# detector makes the OUTCOME impossible regardless of which resolver reintroduces it.)
+#
+# Deliberately NOT limited to source files: the incident file was .gitignore. Every tracked
+# text file is scanned.
+#
+# The regex only anchors on `<<<<<<<` and `>>>>>>>` at column 0. A bare `=======` line is
+# excluded on purpose -- it is the standard reStructuredText section underline and a common
+# ASCII banner, so matching it produces constant false alarms on docs.
+_CONFLICT_MARKER = re.compile(
+    r"(?m)^(%s{7}|%s{7})(?:\s|$)" % (chr(60), chr(62)))
+
+# Fixtures that legitimately contain marker text: the guards' own tests, and any path a
+# project explicitly exempts.
+_MARKER_EXEMPT_DEFAULT = (
+    "*/test_*conflict*", "test_*conflict*", "*/tests/fixtures/*", "*.patch", "*.diff", "*.rej",
+    "*/test_auto_conflict_resolver_guard.py", "*/regression_guard.py", "regression_guard.py",
+)
+
+
+def _marker_exempt(path):
+    pats = tuple(_MARKER_EXEMPT_DEFAULT) + tuple(
+        p.strip() for p in os.environ.get("ORCH_MARKER_EXEMPT", "").split(",") if p.strip())
+    return any(fnmatch.fnmatch(path, p) or fnmatch.fnmatch(os.path.basename(path), p)
+               for p in pats)
+
+
+def _looks_binary(text):
+    return "\x00" in (text or "")[:8000]
+
+
+def check_conflict_markers(path, source):
+    """Unresolved conflict markers left in a file. Always a hard fail.
+
+    A committed marker is never intentional and never harmless: it breaks parsers silently
+    for config formats (.gitignore stops ignoring, JSON stops loading) and loudly for code.
+    """
+    if not source or _looks_binary(source) or _marker_exempt(path):
+        return []
+    hits = []
+    for m in _CONFLICT_MARKER.finditer(source):
+        line = source[:m.start()].count("\n") + 1
+        hits.append(line)
+    if not hits:
+        return []
+    return [{"file": path, "symbol": "", "kind": "conflict-marker", "detector": "markers",
+             "reason": "unresolved git conflict marker(s) at line(s) {0} of '{1}'. A resolver "
+                       "wrote merge markers into the file and something committed them. This "
+                       "corrupts the file for EVERY consumer -- racefeed 601342b06 shipped "
+                       "exactly this into .gitignore on master, which then silently stopped "
+                       "ignoring anything.".format(
+                           ", ".join(str(h) for h in hits[:10]), path)}]
+
+
+def scan_paths(repo, paths, ref=None):
+    """Conflict-marker scan over an explicit path list. Used by the git hooks.
+
+    ref=None reads the working tree; otherwise reads the blob at that ref (so the pre-commit
+    hook can scan STAGED content rather than what happens to be on disk).
+    """
+    findings = []
+    for path in paths:
+        src = _blob(repo, ref, path)
+        if src is None:
+            continue
+        findings.extend(check_conflict_markers(path, src))
+    return findings
+
+
+# ---------------------------------------------------------------------------
 # main entry point
 # ---------------------------------------------------------------------------
 
@@ -444,6 +520,18 @@ def check_merge(repo, base_sha, result_ref=None, *, commit_message="",
         post_src = _blob(repo, result_ref, path)
         if post_src is None:
             continue
+
+        # --- detector 5: conflict markers, EVERY file type ------------------
+        # Runs before the language-specific detectors and is not gated on extension:
+        # the racefeed incident put markers in .gitignore, which no source-file scan
+        # would ever have looked at.
+        try:
+            findings.extend(check_conflict_markers(path, post_src))
+        except Exception as exc:
+            findings.append({"file": path, "symbol": "", "kind": "guard-error",
+                             "detector": "markers",
+                             "reason": "marker scan failed (fail-closed): {0}: {1}".format(
+                                 type(exc).__name__, exc)})
 
         # --- detectors 1 + 2: Python symbol / undefined-name ----------------
         if path.endswith(".py"):

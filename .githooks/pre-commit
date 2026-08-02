@@ -20,6 +20,47 @@ for pattern in ".env.local" "settings.local.json"; do
     fi
 done
 
+# ---------------------------------------------------------------------------
+# HARD BLOCK: unresolved conflict markers in ANY staged file type.
+# racefeed 601342b06 committed `<<<<<<<` into .gitignore on master, from a resolver that
+# returned success without checking its own output. Scanned against the STAGED content
+# (:file), not the working tree, so `git add`ing a marked-up file cannot slip through.
+# Fail-closed: if the guard cannot run, the commit is refused.
+# ---------------------------------------------------------------------------
+export REPO_ROOT_HOOK=$(git rev-parse --show-toplevel)
+STAGED=$(git diff --cached --name-only --diff-filter=ACMR)
+if [ -n "$STAGED" ]; then
+    MARKER_OUT=$(printf '%s\n' "$STAGED" | python3 -c '
+import sys, os
+sys.path.insert(0, os.path.join(os.environ.get("REPO_ROOT_HOOK", "."), "runner"))
+try:
+    import regression_guard as rg
+except Exception as exc:
+    print("GUARD-UNAVAILABLE: %s: %s" % (type(exc).__name__, exc))
+    sys.exit(3)
+paths = [p.strip() for p in sys.stdin.read().splitlines() if p.strip()]
+# ":path" reads the staged blob from the index -- what will ACTUALLY be committed.
+findings = []
+for p in paths:
+    src = rg._blob(os.environ.get("REPO_ROOT_HOOK", "."), "", p)
+    if src is None:
+        continue
+    findings.extend(rg.check_conflict_markers(p, src))
+for f in findings:
+    print("%s :: %s" % (f["file"], f["reason"]))
+sys.exit(1 if findings else 0)
+' 2>&1)
+    MARKER_RC=$?
+    if [ $MARKER_RC -ne 0 ]; then
+        echo "ERROR: conflict-marker guard refused this commit (rc=$MARKER_RC)"
+        echo "$MARKER_OUT"
+        echo ""
+        echo "Resolve the markers properly, then re-stage. Do NOT use --no-verify:"
+        echo "committed markers silently corrupt the file for every consumer."
+        exit 1
+    fi
+fi
+
 # Enforce canonical git author to prevent Vercel BLOCKED deployments
 AUTHOR_EMAIL=$(git config user.email)
 CANONICAL_EMAIL="kalepasch@gmail.com"

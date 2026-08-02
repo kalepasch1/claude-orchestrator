@@ -41,7 +41,11 @@ BREAK_GLASS = os.environ.get("ORCH_STUB_GUARD_BREAK_GLASS", "false").lower() in 
 FILE_TASKS = os.environ.get("ORCH_STUB_GUARD_FILE_TASKS", "true").lower() in ("1", "true", "yes", "on")
 
 # severity "block" -> gate() refuses the merge. "warn" -> reported + remediated, never blocks.
-BLOCKING = {"stub_shadows_reexport", "body_replaced_by_constant", "stub_commit_message"}
+# fabricated_critical_return is BLOCKING while plain fabricated_constant_return stays advisory:
+# a legitimately-empty default is indistinguishable from a stub by shape alone, but not when the
+# function's NAME asserts it computes, prices, validates or enforces something. See _CRITICAL.
+BLOCKING = {"stub_shadows_reexport", "body_replaced_by_constant", "stub_commit_message",
+            "fabricated_critical_return"}
 
 CODE_EXT = (".ts", ".tsx", ".js", ".mjs", ".vue", ".svelte")
 _SKIP_DIR = re.compile(
@@ -87,6 +91,36 @@ _QUANT = re.compile(
     r"^(compute|calc|calculate|price|value|score|assess|estimate|forecast|project|rate|"
     r"aggregate|net|sum|total|measure|quantify|simulate|optimi[sz]e|is|assert|verify|validate|check)",
     re.I)
+
+# --- CRITICAL classifier (2026-08-02 operator directive) -----------------------------------
+# A constant return is a warning in general and a CRITICAL DEFECT when the function's own name
+# promises a computation, a price, or an enforcement decision. Both halves of the tomorrow /
+# apparently incident are in here:
+#   * assertEcpCounterparty()  -- a REGULATORY gate. Stubbed to a constant, it stopped throwing;
+#     every ineligible counterparty then passed the eligibility check silently.
+#   * computeWarrantyEconomics() -- financial. Stubbed to zeros, downstream P&L read plausible
+#     wrong numbers rather than crashing.
+# Fabricated compliance/financial output is strictly worse than a crash: it is believable, so
+# nobody investigates. These BLOCK the merge instead of filing an advisory task.
+_CRITICAL = re.compile(
+    # verb prefixes that promise real work
+    r"^(compute|price|assert|validate|verify|check|calculate|reconcile|settle|enforce)[A-Z_0-9]"
+    # is<Something>Enforceable / isEligible / isCompliant / isPermitted...
+    r"|^is[A-Z]\w*(Enforceable|Eligible|Compliant|Permitted|Allowed|Authori[sz]ed|Valid|Required)$"
+    # domain suffixes: anything *Economics, *Pricing, *Compliance, *Eligibility...
+    r"|(Economics|Pricing|Compliance|Eligibility|Solvency|Exposure|Margin|Interest|Tax|Fee"
+    r"|Notional|Collateral|Settlement|Valuation)$",
+    re.I)
+# Bare scalar constants that count as fabricated when a CRITICAL name returns them. `return {}`
+# / `0` / `[]` are the classic shapes; `'replicated'` is the literal string compileReplication()
+# handed back for every policy.
+_FABRICATED_SCALAR = re.compile(
+    r"^(\{\s*\}|\[\s*\]|0|0\.0|-?\d+(\.\d+)?|true|false|null|undefined|''|\"\"|'[^']*'|\"[^\"]*\")$")
+
+
+def is_critical_name(symbol):
+    """True when a constant return from this symbol is a compliance/financial defect."""
+    return bool(symbol and _CRITICAL.search(symbol))
 
 
 def _home():
@@ -288,18 +322,43 @@ def scan_fabricated(repo, files=None):
     than blocks -- but it is the computeWarrantyEconomics -> all zeros shape.
     """
     out = []
+    # Any single-expression return body, object literal OR bare scalar. The scalar arm is what
+    # catches `assertEcpCounterparty(): void { return; }` / `compileReplication() { return
+    # 'replicated'; }` / `priceLeg() { return 0; }` -- shapes the object-literal-only rule missed.
     rx = re.compile(
-        r"(?m)^\s*export\s+(?:async\s+)?function\s+(%s)\s*\([^)]*\)[^{]*\{\s*return\s+(\{[^{}]*\})\s*;?\s*\}"
-        % _IDENT)
+        r"(?m)^\s*(?:export\s+)?(?:async\s+)?function\s+(%s)\s*\([^)]*\)[^{]*\{"
+        r"\s*return\s*([^;{}]*?|\{[^{}]*\})\s*;?\s*\}" % _IDENT)
     for path in files if files is not None else _code_files(repo):
         txt = _read(path)
         rel = os.path.relpath(path, repo)
         for m in rx.finditer(txt):
-            sym, body = m.group(1), m.group(2)
-            if not _QUANT.match(sym) or not _all_literal_obj(body):
+            sym, body = m.group(1), (m.group(2) or "").strip()
+            obj_stub = body.startswith("{") and _all_literal_obj(body)
+            scalar_stub = bool(_FABRICATED_SCALAR.match(body)) or body == ""
+            if not (obj_stub or scalar_stub):
+                continue
+            critical = is_critical_name(sym)
+            if not critical and not (_QUANT.match(sym) and obj_stub):
+                continue
+            where = "%s:%d" % (rel, txt[:m.start()].count("\n") + 1)
+            if critical:
+                out.append(_violation(
+                    "fabricated_critical_return", where,
+                    "CRITICAL: `%s` returns the constant `%s`. Its NAME promises a computation, "
+                    "a price or an enforcement decision, so a constant body means the check no "
+                    "longer runs and the number is fabricated. This is the assertEcpCounterparty "
+                    "shape: a regulatory gate that stopped throwing, and the computeWarrantyEconomics "
+                    "shape: financial output silently replaced by zeros. Callers cannot tell — the "
+                    "value is plausible and nothing errors."
+                    % (sym, (body or "<nothing>")[:120]),
+                    "BLOCKING. Restore the real implementation (`git log -S %s -- %s` will show it "
+                    "if one ever existed). If `%s` is genuinely unimplemented it MUST throw — never "
+                    "return a constant from a compliance or financial function."
+                    % (sym, rel, sym),
+                    symbol=sym))
                 continue
             out.append(_violation(
-                "fabricated_constant_return", "%s:%d" % (rel, txt[:m.start()].count("\n") + 1),
+                "fabricated_constant_return", where,
                 "`%s` returns a hard-coded all-literal object %s. A quantitative function that "
                 "returns constants produces plausible WRONG numbers rather than an error."
                 % (sym, body[:120]),
