@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import socket
+import sys
 import urllib.error
 import urllib.request
 
@@ -151,4 +152,12 @@ def run_once():
 
 
 if __name__ == "__main__":
-    print(json.dumps(run_once(), default=str))
+    # This worker runs as a standalone script rather than through periodic.py, so it does not get
+    # that module's missing-relation auto-disable. It queries `legal_obligations`, which is not in
+    # the schema, and had crash-looped ~1,800 times into a 17MB .err log — noise that buried every
+    # real failure. Exit quietly and non-fatally instead of dumping another traceback.
+    try:
+        print(json.dumps(run_once(), default=str))
+    except db.MissingRelationError as exc:
+        print(json.dumps({"skipped": "missing-relation", "detail": str(exc)}))
+        sys.exit(0)
