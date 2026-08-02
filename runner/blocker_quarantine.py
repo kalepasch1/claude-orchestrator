@@ -53,7 +53,7 @@ _SECRET_TERM = re.compile(
 )
 _SECRET_EXPLICIT = re.compile(
     r"hardcoded.*(?:key|secret|token)|\.claude/settings\.local\.json|gitleaks|trufflehog|"
-    r"\bleak(?:ed|age)?\b",
+    r"\bleak(?:ed|age)?\b|\bxox[a-z]-",  # xox[a-z]-: Slack token prefixes (xoxb-, xoxp-, ...)
     re.I,
 )
 

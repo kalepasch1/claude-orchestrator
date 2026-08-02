@@ -365,8 +365,12 @@ class TestClaimTaskOrder(unittest.TestCase):
 
         db.select = select
         db._req = req
+        # Pin reserved recovery lanes to the default: the operator fleet profile exports
+        # ORCH_RECOVERY_RESERVED_LANES>0, and an open recovery reserve deliberately outranks
+        # the release-fix lane, which would flip this test's expected claim order.
         with patch.dict(os.environ, {"ORCH_RELEASE_FIX_JUMP_QUEUE": "true",
-                                     "ORCH_RECOVERY_JUMP_QUEUE": "true"}, clear=False):
+                                     "ORCH_RECOVERY_JUMP_QUEUE": "true",
+                                     "ORCH_RECOVERY_RESERVED_LANES": "0"}, clear=False):
             task = db.claim_task("runner-1")
         self.assertEqual(task["id"], "relfix")
 
