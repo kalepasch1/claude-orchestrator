@@ -20,6 +20,18 @@
     <true/>
     <key>ThrottleInterval</key>
     <integer>30</integer>
+    <!-- AbandonProcessGroup (2026-08-03): when the job head exits, launchd by default kills every
+         remaining process sharing the job's process group. That group holds keepalive.sh, the
+         working runner.py and ALL in-flight agent processes, so a single job restart wiped out
+         agent runs mid-flight (TASK_TIMEOUT=900s vs a ~12min restart cycle = most runs killed).
+         true = leave the group alone on restart. Crash recovery is unaffected: KeepAlive=true
+         still relaunches a genuinely dead job head, and keepalive.sh's runner.lock /
+         keepalive.lock singletons plus sentinel.py's extra-runner reaper prevent duplicates.
+         REVERT: delete this key (and the ThrottleInterval stays as-is), then
+           launchctl bootout gui/$(id -u)/com.claudeorchestrator.runner
+           launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.claudeorchestrator.runner.plist -->
+    <key>AbandonProcessGroup</key>
+    <true/>
     <key>StandardOutPath</key>
     <string>LOG_DIR/runner.log</string>
     <key>StandardErrorPath</key>
