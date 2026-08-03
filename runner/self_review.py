@@ -355,7 +355,7 @@ if __name__ == "__main__":
     ap.add_argument("--monthly", action="store_true", help="Run monthly subsystem audit")
     a = ap.parse_args()
     if a.monthly:
-        r = monthly_audit()
+        r = run_monthly_audit()
         if r:
             print(json.dumps(r, indent=2, default=str))
     else:
