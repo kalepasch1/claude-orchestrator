@@ -5,6 +5,7 @@ import socket
 import sys
 import time
 import unittest
+from unittest.mock import MagicMock, patch
 
 import websockets
 
