@@ -300,6 +300,27 @@ def _cli_present(name):
     return ok
 
 
+def claude_runnable_here():
+    """Can THIS host actually execute the claude lane?
+
+    True when the `claude` binary resolves (honouring CLAUDE_BIN, which may be an absolute path)
+    or the Agent SDK is importable — the SDK path in claude_cli.run() needs no binary. Checked
+    before dispatch so a host missing both fails over instead of raising FileNotFoundError and
+    leaving a no-diff task for the repair pipeline to cycle on.
+    """
+    binname = os.environ.get("CLAUDE_BIN", "claude")
+    if os.path.sep in binname:
+        if os.path.isfile(binname) and os.access(binname, os.X_OK):
+            return True
+    elif _cli_present(binname):
+        return True
+    try:
+        import claude_cli
+        return bool(getattr(claude_cli, "_HAS_AGENT_SDK", False))
+    except Exception:
+        return False
+
+
 def _ollama_up():
     """Is a local Ollama server reachable? Cached ~60s. Used to prune the free ollama coder when the
     server is down, so easy tasks don't all fail on it before switching coders."""
@@ -857,6 +878,26 @@ def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900, **k
             logging.getLogger(__name__).warning("swarm path failed (%s), falling back to claude", e)
             coder = "claude"  # fall through to normal path
     if coder == "claude":
+        # A host without the `claude` binary (and without the Agent SDK) cannot run this lane at
+        # all: claude_cli.run() raises FileNotFoundError from subprocess before the agent does any
+        # work, the task ends with no diff, and the repair pipeline classifies it as missing-branch
+        # and re-queues it onto the same host forever. Observed on the second Mac, whose launchd
+        # environment has no `claude` on PATH. Fail over to a coder this host actually has.
+        if not claude_runnable_here():
+            failover = next((c for c in available()
+                             if c != "claude" and not c.startswith("swarm:")), None) \
+                or next((c for c in available() if c != "claude"), None)
+            if failover:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "claude lane unavailable on this host (no CLI, no SDK) — failing over to %s",
+                    failover)
+                return run(failover, prompt, model, cwd=cwd, env=env, project=project,
+                           timeout=timeout, **kwargs)
+            raise RuntimeError(
+                "claude lane requested but this host has neither the `claude` CLI on PATH nor the "
+                "Agent SDK installed, and no other coder is available. Install the CLI or set "
+                "CLAUDE_BIN to its absolute path in the runner environment.")
         import claude_cli
         return claude_cli.run(prompt, model, cwd=cwd, env=env, project=project, timeout=timeout, **kwargs)
     spec = _spec(coder)
