@@ -1,0 +1,4 @@
+recovery-intent: canary-gemini-pro-9
+template: eaa9afd072c7
+intent: 07062319 07071626 1042d0 7ba77da91bb4 8b92d078e856 acceptance actionable adapt agent agentic already alter analogous analysis artifacts automated backlog because beethoven before behavior below billing blocks branch broad bugfix build cache canary canonical category cause change changes changing check checks claude cleaned coder commit complete completed completion concrete config config_applier context continue cowork dependencies detect_missing_branches diffs directive drafting duplicate duplicates eliminating equivalent escalation examine excerpt executor existing exists failure files final finish first focus fresh functionality garbage gemini green identify implement implementation
+base: main
