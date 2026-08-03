@@ -802,32 +802,6 @@ def _quarantine_build_failure(repo, card, slug, task, pname, branch, base, detai
     return "buildfail"
 
 
-def _commit_identity(repo, ref):
-    try:
-        resolved = _git(repo, "rev-parse", ref).stdout.strip()
-        return resolved or ref
-    except (OSError, subprocess.SubprocessError):
-        return ref
-
-def _verified_or_run(repo, commit, command, kind="merge-qa"):
-    import re
-    cacheable = bool(re.fullmatch(r"[0-9a-fA-F]{40,64}", str(commit or "")))
-    try:
-        import proof_graph
-        if cacheable and proof_graph.reusable_verification(repo, commit, command, kind):
-            return True, "reused exact commit/dependency verification proof"
-    except Exception:
-        pass
-    ok, tail = _run_tests(repo, command, commit)
-    if ok and cacheable:
-        try:
-            import proof_graph
-            proof_graph.record_verification(repo, commit, command, kind, True)
-        except Exception:
-            pass
-    return ok, tail
-
-
 def _verified_or_run(repo, commit, command, kind="merge-qa"):
     """Resume exact-commit QA from a durable dependency-addressed proof.
 
@@ -1830,7 +1804,6 @@ def _startup_static_gate():
 
 if __name__ == "__main__":
     _startup_static_gate()
-    import json
     # SINGLE-FLIGHT (2026-07-14): the 60s scheduler kept spawning new train processes while a
     # long pass (staging tests take minutes) was still running — 3-4 stacked merge_train.py
     # processes contended on the per-repo locks and burned RAM for zero extra merges. If another
