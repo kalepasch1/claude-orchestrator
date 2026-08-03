@@ -355,30 +355,33 @@ def check_deploy_skip(repo, root, cfg, default_branch):
             "If this project SHOULD deploy, set git.deploymentEnabled to true for '%s'."
             % default_branch))
     elif isinstance(enabled_cfg, dict):
-        any_enabled = any(v is True for v in enabled_cfg.values())
-        for pattern, value in enabled_cfg.items():
-            if value is not False:
-                continue
-            if not (pattern == default_branch or glob_matches(pattern, default_branch)):
-                continue
-            if not any_enabled:
+        # PRECEDENCE MATTERS. `{"*": false, "master": true}` is a correct, common config:
+        # the exact branch key overrides the catch-all glob, so master DOES deploy. Reading
+        # only the `false` rules called that an outage and produced a BLOCKING false
+        # positive on this repo's own web/vercel.json -- a guard that would have quarantined
+        # every merge on a correctly configured project.
+        matching = [(pat, val) for pat, val in enabled_cfg.items()
+                    if pat == default_branch or glob_matches(pat, default_branch)]
+        if matching and not any(val is True for _, val in matching):
+            patterns = ", ".join("'%s'" % p for p, _ in matching)
+            if not any(v is True for v in enabled_cfg.values()):
                 out.append(_violation(
                     "deployment_disabled_everywhere", rel_root,
-                    "vercel.json git.deploymentEnabled disables '%s' (matching the default "
+                    "vercel.json git.deploymentEnabled disables %s (matching the default "
                     "branch '%s') and enables nothing, so this project never deploys. "
                     "Advisory: consistent with a repo that deliberately does not deploy."
-                    % (pattern, default_branch),
+                    % (patterns, default_branch),
                     "If this project SHOULD deploy, add `\"%s\": true`." % default_branch))
-                continue
-            out.append(_violation(
-                "deployment_disabled_for_default_branch", rel_root,
-                "vercel.json git.deploymentEnabled maps '%s' -> false, and that pattern "
-                "matches the DEFAULT branch '%s' — while OTHER branches are explicitly "
-                "enabled. Production pushes are silently not deployed and Vercel shows no "
-                "failure, but this project clearly is meant to deploy."
-                % (pattern, default_branch),
-                "Add an explicit `\"%s\": true` entry, or narrow the '%s' pattern so it "
-                "cannot match the default branch." % (default_branch, pattern)))
+            else:
+                out.append(_violation(
+                    "deployment_disabled_for_default_branch", rel_root,
+                    "vercel.json git.deploymentEnabled matches the DEFAULT branch '%s' only "
+                    "with rules that are false (%s), while OTHER branches are explicitly "
+                    "enabled. Production pushes are silently not deployed and Vercel shows "
+                    "no failure, but this project clearly is meant to deploy."
+                    % (default_branch, patterns),
+                    "Add an explicit `\"%s\": true` entry — an exact branch key overrides a "
+                    "catch-all glob." % default_branch))
     return out
 
 

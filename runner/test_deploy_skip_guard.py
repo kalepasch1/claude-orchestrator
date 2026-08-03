@@ -123,6 +123,16 @@ def test_blanket_disable_is_advisory_not_blocking():
             "a deliberate global opt-out must stay advisory"
 
 
+def test_exact_branch_key_overrides_catch_all_glob():
+    """`{"*": false, "master": true}` is correct config — master DOES deploy.
+
+    Reading only the false rules made this a BLOCKING false positive on this repo's own
+    web/vercel.json, which would have quarantined every merge on a healthy project.
+    """
+    cfg = {"git": {"deploymentEnabled": {"*": False, "master": True}}}
+    assert vcg.check_deploy_skip(".", ".", cfg, "master") == []
+
+
 def test_clean_control_deployment_enabled_true():
     cfg = {"git": {"deploymentEnabled": {"master": True, "agent/**": False}}}
     assert vcg.check_deploy_skip(".", ".", cfg, "master") == []
