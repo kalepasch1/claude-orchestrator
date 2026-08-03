@@ -372,7 +372,13 @@ def count(table, params=None):
 # repairing itself out of the condition.
 _QUEUE_DEPTH_CACHE = {"at": 0.0, "depth": 0}
 _QUEUE_BLOCK_LOGGED = {"at": 0.0, "count": 0}
-_EXEMPT_KINDS = {"bugfix", "release-fix", "deployfix", "buildfix", "hotfix"}
+# Exemption is by slug prefix only, deliberately.
+#
+# `kind` is far too coarse: agentic_repair stamps kind="bugfix" on every buildfail/testfail/
+# missing-branch/noop/conflict repair it spawns, so exempting that kind waved the entire rework
+# loop straight past the ceiling — which is the loop that produced 2,000 queued and 700
+# quarantined rows in the first place. The slug prefixes below are set by the release and deploy
+# fix paths specifically, and those are the only tasks that genuinely unblock shipping.
 _EXEMPT_SLUG_PREFIXES = ("relfix-", "deployfix-", "buildfix-", "hotfix-")
 
 
@@ -389,7 +395,7 @@ def _queue_depth_block(row):
     if ceiling <= 0:
         return False
     slug = str(row.get("slug") or "")
-    if str(row.get("kind") or "") in _EXEMPT_KINDS or slug.startswith(_EXEMPT_SLUG_PREFIXES):
+    if slug.startswith(_EXEMPT_SLUG_PREFIXES):
         return False
     if row.get("_bypass_depth_cap"):
         return False
