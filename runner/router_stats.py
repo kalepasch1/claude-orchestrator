@@ -107,12 +107,14 @@ def _rebuild():
             a["deployed_n"] += 1
         if str(r.get("train_outcome") or "").lower() in ("testfail", "conflict"):
             a["train_failed"] += 1
+    # Restored from feab8b59: computed once over the whole aggregate, before scoring.
+    # The counter is "deployed_n" in this revision (renamed from "deployed").
+    any_deployment_evidence = any(a["deployed_n"] for a in agg.values())
     table = {}
     for (coder, kind), a in agg.items():
         if a["n"] < MIN_SAMPLES:
             continue
         rate = a["merged"] / a["n"]
-        deployed_rate = a["deployed"] / a["n"]
         test_rate = a["tests"] / a["n"]
         deployed_rate = a["deployed_n"] / a["n"]
         train_fail_rate = a["train_failed"] / a["n"]
@@ -121,7 +123,7 @@ def _rebuild():
         tokens_per_diff = a["tokens"] / max(1.0, a["diff_bytes"])
         review_failures_per_merge = a["review_failures"] / max(1.0, a["merged"])
         # Cost follows the strongest evidence stage available fleet-wide.
-        delivered = a["deployed"] if any_deployment_evidence else a["merged"]
+        delivered = a["deployed_n"] if any_deployment_evidence else a["merged"]
         cpm = a["usd"] / delivered if delivered else a["usd"] / 0.5 + 1000
         latency_penalty = min(10.0, avg_wall_s / 600.0)
         retry_penalty = max(0.0, avg_attempts - 1.0) * 0.35
