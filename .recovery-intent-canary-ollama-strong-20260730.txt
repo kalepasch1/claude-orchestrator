@@ -1,0 +1,4 @@
+recovery-intent: canary-ollama-strong-20260730
+template: baa5dbc72cfb
+intent: 07060650 07062319 07071626 1677fc0f7242 31dd6ca9ed9d 4ff7ba380eac 6096aa2b 8b92d078e856 9f821ef2b6cc a5f8e22456b6 absent acceptance adapt affected after agentledger alter append artifacts assertion based because beethoven before behavior being bf2a3f19ec30 blocks branch brief build canary changes create diffs drafted drafting drafts duplicate duplicates eliminating engine exactly examine existing exists first fleet_notes focus functionality identify implementation improve instead intent large library lines local maintainability matched merged merges minimal minimis missing model module ollama other parent pareto patch performance preserve pricinggridreconstructi pricinggridreconstruction prior production proven
+base: main
