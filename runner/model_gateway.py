@@ -126,8 +126,25 @@ def configured():
     if os.environ.get("DEEPSEEK_API_KEY", "").strip(): prov.append("deepseek")
     if os.environ.get("GROQ_API_KEY", "").strip(): prov.append("groq")
     if os.environ.get("XAI_API_KEY", "").strip(): prov.append("xai")
-    if _ollama_up(): prov.append("local")
+    if _ollama_up() and not _local_disabled(): prov.append("local")
     return prov
+
+
+def _local_disabled():
+    """Whether local (Ollama) inference is switched off in favour of hosted providers.
+
+    WHY (2026-08-02): local inference was the fleet's actual throughput ceiling, not the work
+    itself. Ollama kept a 23GB qwen2.5-coder:32b resident; memory_guard unloaded it every few
+    minutes at 18-23% free RAM, something immediately reloaded it, and in the middle of that
+    thrash launchd's runner was SIGKILLed (exit 137) — so zero agent processes were alive and
+    nothing drained the queue. Meanwhile the resource governor read the same memory pressure and
+    throttled concurrency *down*, which made it worse.
+
+    Hosted providers (Claude subscription accounts, OpenAI, Google, DeepSeek) are all configured
+    and have none of that footprint. Setting ORCH_DISABLE_LOCAL_MODELS=1 keeps 'local' out of
+    routing entirely so the machine's RAM stops being a scheduling constraint.
+    """
+    return os.environ.get("ORCH_DISABLE_LOCAL_MODELS", "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def available():
@@ -276,11 +293,13 @@ def provider_for_model(model):
         # Groq for cloud inference of open-source models; local for Ollama
         if os.environ.get("GROQ_API_KEY"):
             return "groq"
-        return "local"
+        # With local inference switched off, an open-weights model name must not silently pull a
+        # 23GB download back onto the box — fall through to a hosted provider instead.
+        return "claude" if _local_disabled() else "local"
     if m.startswith(("gpt-", "o1", "o3", "o4", "o5")):
         return "openai"
     if m:
-        return "local"
+        return "claude" if _local_disabled() else "local"
     return "claude"
 
 
