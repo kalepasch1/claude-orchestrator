@@ -39,6 +39,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import guard_tasks
 import proof_graph
 
 NAME = "bot-commit-verifier"
@@ -48,6 +49,7 @@ FILE_TASKS = os.environ.get("ORCH_BOT_COMMIT_VERIFIER_FILE_TASKS", "true").lower
 SCAN_DEPTH = int(os.environ.get("ORCH_BOT_COMMIT_SCAN_DEPTH", "60"))
 FILE_TIMEOUT = int(os.environ.get("ORCH_BOT_COMMIT_FILE_TIMEOUT", "90"))
 MAX_FILES = int(os.environ.get("ORCH_BOT_COMMIT_MAX_FILES", "60"))
+MAX_TASKS_PER_RUN = int(os.environ.get("ORCH_BOT_COMMIT_MAX_TASKS_PER_RUN", "10"))
 # v2: proofs recorded before the broken-tsc fail-open fix could mean "tsc never ran", so they
 # must not be reused. Bump this whenever the checking semantics change.
 KIND = "bot-commit-syntax-v2"
@@ -377,29 +379,44 @@ def gate(project_name, branch, base=None, repo=None):
     return False, "bot-authored commit(s) do NOT parse — this is the hisanta failure mode:\n" + log
 
 
-def _file_task(project_row, commit, result):
+def _file_task(project_row, commit, result, filer):
     """A broken bot commit becomes real remediation work, not a log line."""
-    if not FILE_TASKS or not project_row.get("id"):
-        return None
-    slug = ("botfix-%s-%s" % (project_row.get("name", "app"), commit["sha"][:8]))[:60]
+    if not FILE_TASKS:
+        return "disabled"
+    slug = guard_tasks.stable_slug("botfix", project_row.get("name", "app"), commit["sha"][:8])
     detail = "\n".join("%s [%s]\n%s" % (p["path"], p["checker"], p["error"])
                        for p in result["problems"] if not p.get("skipped"))
-    try:
-        existing = db.select("tasks", {"select": "id,state", "slug": "eq.%s" % slug, "limit": "1"}) or []
-        if existing and existing[0].get("state") not in ("DONE", "MERGED", "SHIPPED", "CLOSED", "SHELVED"):
-            return None
-        return db.insert("tasks", {
-            "project_id": project_row["id"], "slug": slug, "state": "QUEUED", "kind": "build",
-            "prompt": ("A BOT-AUTHORED commit introduced a file that does not parse. Fix the syntax "
-                       "error without reverting the commit's intent, then confirm with "
-                       "`python3 runner/bot_commit_verifier.py %s %s`.\n\n"
-                       "commit: %s\nsubject: %s\nauthor: %s\n\n%s"
-                       % (project_row.get("name", ""), commit["sha"], commit["sha"],
-                          commit["subject"], commit.get("author", ""), detail))[:12000],
-        })
-    except (KeyError, TypeError, ValueError) as e:
-        _log_event({"event": "task_error", "slug": slug, "error": str(e)})
-        return None
+    return filer.file(
+        project_row.get("id"), slug,
+        ("A BOT-AUTHORED commit introduced a file that does not parse. Fix the syntax "
+         "error without reverting the commit's intent, then confirm with "
+         "`python3 runner/bot_commit_verifier.py %s %s`.\n\n"
+         "commit: %s\nsubject: %s\nauthor: %s\n\n%s"
+         % (project_row.get("name", ""), commit["sha"], commit["sha"],
+            commit["subject"], commit.get("author", ""), detail)),
+        severity=guard_tasks.CRITICAL, project_name=project_row.get("name", ""),
+        title="%s: bot commit %s does not parse" % (project_row.get("name", ""), commit["sha"][:12]),
+        escalate_why=detail[:800])
+
+
+def _file_branch_task(project_row, ref, filer):
+    """A configured branch that does not exist is a CONFIGURATION defect, not a skip."""
+    if not FILE_TASKS:
+        return "disabled"
+    slug = guard_tasks.stable_slug("branchcfg", project_row.get("name", "app"), ref)
+    return filer.file(
+        project_row.get("id"), slug,
+        ("projects.prod_branch for '%s' is %r, but that ref does not exist in %s.\n\n"
+         "bot_commit_verifier used to fall back to HEAD here, so it happily reported "
+         "'N bot commit(s) on HEAD, 0 broken' while verifying whatever branch happened to be "
+         "checked out — an agent branch, not production. It now refuses to check anything.\n\n"
+         "Fix the projects row (or create/push the branch), then re-run:\n"
+         "    cd runner && python3 bot_commit_verifier.py %s"
+         % (project_row.get("name", ""), ref, project_row.get("repo_path", ""),
+            project_row.get("name", ""))),
+        severity=guard_tasks.CRITICAL, project_name=project_row.get("name", ""),
+        title="%s: configured branch %r does not exist" % (project_row.get("name", ""), ref),
+        escalate_why="Guards silently verified the wrong ref for this project.")
 
 
 def run(depth=None, project=None):
@@ -411,8 +428,9 @@ def run(depth=None, project=None):
     if project:
         params["name"] = "eq.%s" % project
     projects = db.select("projects", params) or []
+    filer = guard_tasks.Filer(NAME, max_per_run=MAX_TASKS_PER_RUN)
     summary = {"projects": 0, "bot_commits": 0, "verified": 0, "cached": 0,
-               "broken": 0, "live": 0, "already_fixed": 0, "tasks_filed": 0}
+               "broken": 0, "live": 0, "already_fixed": 0, "misconfigured": 0}
     for p in projects:
         repo = p.get("repo_path") or ""
         if not repo or not os.path.isdir(repo):
@@ -421,7 +439,19 @@ def run(depth=None, project=None):
         ref = p.get("prod_branch") or p.get("default_base") or "HEAD"
         rc, _, _ = _git(repo, "rev-parse", "--verify", "--quiet", str(ref) + "^{commit}")
         if rc != 0:
-            ref = "HEAD"
+            # SILENT DEGRADATION, removed. illuminati carried prod_branch='main' in the DB while
+            # the repo's default is master and origin/main does not exist, so this fell back to
+            # whatever branch happened to be checked out — review/agent-access, an agent branch —
+            # and reported "27 bot commit(s) on HEAD, 0 broken" as though it had verified
+            # production. A guard that quietly checks the wrong thing is worse than one that
+            # does not run: it manufactures a green result nobody can question.
+            summary["misconfigured"] += 1
+            print("  %-14s MISCONFIGURED: configured branch %r does not exist in %s — NOT falling "
+                  "back to HEAD. Fix projects.prod_branch." % (p.get("name"), ref, repo), flush=True)
+            _log_event({"event": "branch_missing", "project": p.get("name"), "repo": repo,
+                        "configured_ref": ref})
+            _file_branch_task(p, ref, filer)
+            continue
         commits = bot_commits(repo, ref, depth=depth or SCAN_DEPTH)
         summary["bot_commits"] += len(commits)
         broken_here = 0
@@ -456,8 +486,7 @@ def run(depth=None, project=None):
                 summary["already_fixed"] += 1
                 continue
             summary["live"] += 1
-            if _file_task(p, c, res):
-                summary["tasks_filed"] += 1
+            _file_task(p, c, res, filer)
             try:
                 import notify
                 notify.send("bot_commit_verifier: %s %s does not parse (%s)"
@@ -466,11 +495,13 @@ def run(depth=None, project=None):
                 pass
         print("  %-14s %d bot commit(s) on %s, %d broken" % (p.get("name"), len(commits), ref, broken_here),
               flush=True)
+    summary.update(filer.counters())
     _log_event({"event": "sweep", **summary})
     print("bot_commit_verifier: %(projects)d project(s), %(bot_commits)d bot commit(s), "
           "%(verified)d newly verified, %(cached)d cached, %(broken)d broken "
           "(%(live)d still live, %(already_fixed)d already remediated), "
-          "%(tasks_filed)d task(s) filed" % summary)
+          "%(misconfigured)d MISCONFIGURED branch(es)" % summary)
+    print("bot_commit_verifier: " + filer.summary_line())
     return summary
 
 

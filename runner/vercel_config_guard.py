@@ -27,11 +27,13 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import guard_tasks
 
 NAME = "vercel-config-guard"
 ENABLED = os.environ.get("ORCH_VERCEL_CONFIG_GUARD_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 BREAK_GLASS = os.environ.get("ORCH_VERCEL_CONFIG_GUARD_BREAK_GLASS", "false").lower() in ("1", "true", "yes", "on")
 FILE_TASKS = os.environ.get("ORCH_VERCEL_CONFIG_GUARD_FILE_TASKS", "true").lower() in ("1", "true", "yes", "on")
+MAX_TASKS_PER_RUN = int(os.environ.get("ORCH_VERCEL_CONFIG_MAX_TASKS_PER_RUN", "10"))
 
 # severity "block" -> gate() refuses the merge. "warn" -> reported + remediated, never blocks.
 BLOCKING = {"lockfile_not_committed", "build_input_vercelignored",
@@ -135,12 +137,28 @@ def _load_json(path):
         return {}
 
 
-def _resolve_branch(repo, branch):
-    """Pick a ref that actually exists: caller's branch, else HEAD."""
+class BranchMissing(Exception):
+    """The configured branch does not exist in this repo."""
+
+
+def _resolve_branch(repo, branch, strict=False):
+    """Pick a ref that actually exists: caller's branch, else HEAD.
+
+    <strict> refuses the HEAD fallback. illuminati carried prod_branch='main' in the DB while
+    the repo's default is master and origin/main does not exist, so this quietly returned HEAD —
+    whatever branch happened to be checked out, in that case an agent branch — and the guard
+    reported a clean production result for a ref nobody configured. Silent degradation is the
+    exact bug class these guards exist to remove, so the periodic sweep now passes strict=True
+    and reports a MISCONFIGURED project instead of inventing a ref.
+    """
     if branch:
         rc, _, _ = _git(repo, "rev-parse", "--verify", "--quiet", branch + "^{commit}")
         if rc == 0:
             return branch
+        if strict:
+            raise BranchMissing(branch)
+    elif strict:
+        raise BranchMissing("<unset>")
     return "HEAD"
 
 
@@ -519,7 +537,7 @@ def check_root(repo, root, ref):
     return out
 
 
-def check_repo(repo, branch=None, project=None):
+def check_repo(repo, branch=None, project=None, strict=False):
     """Validate every vercel.json in a repo. Returns a result dict; never raises."""
     result = {"project": project, "repo": repo, "branch": branch,
               "ref": None, "roots": 0, "violations": [], "ok": True, "skipped": None}
@@ -529,7 +547,14 @@ def check_repo(repo, branch=None, project=None):
     if not repo or not os.path.isdir(repo):
         result["skipped"] = "repo not on this machine"
         return result
-    ref = _resolve_branch(repo, branch)
+    try:
+        ref = _resolve_branch(repo, branch, strict=strict)
+    except BranchMissing as exc:
+        result["ok"] = False
+        result["branch_missing"] = str(exc)
+        result["skipped"] = ("configured branch %r does not exist in this repo — refusing to fall "
+                             "back to HEAD" % str(exc))
+        return result
     result["ref"] = ref
     roots = _package_roots(repo)
     result["roots"] = len(roots)
@@ -578,28 +603,43 @@ def gate(project_name, branch=None):
     return False, "vercel.json/git-tree incoherent — this WILL fail on Vercel:\n" + log
 
 
-def _file_task(project_row, violation):
+def _file_task(project_row, violation, filer):
     """File a remediation task so an advisory finding still gets fixed."""
-    if not FILE_TASKS or not project_row.get("id"):
-        return None
+    if not FILE_TASKS:
+        return "disabled"
     key = "%s-%s" % (violation["code"].replace("_", "-"),
                      re.sub(r"[^a-z0-9]+", "-", (violation.get("package_root") or ".").lower()).strip("-") or "root")
-    slug = ("vercelcfg-%s-%s" % (project_row.get("name", "app"), key))[:60].strip("-")
-    try:
-        existing = db.select("tasks", {"select": "id,state", "slug": "eq.%s" % slug, "limit": "1"}) or []
-        if existing and existing[0].get("state") not in ("DONE", "MERGED", "SHIPPED", "CLOSED", "SHELVED"):
-            return None
-        return db.insert("tasks", {
-            "project_id": project_row["id"], "slug": slug, "state": "QUEUED", "kind": "build",
-            "prompt": ("Fix a Vercel deploy-config incoherence that a local build cannot catch.\n\n"
-                       "Violation: %s\nWhere: %s\nDetail: %s\nSuggested fix: %s\n\n"
-                       "Verify with: python3 runner/vercel_config_guard.py %s"
-                       % (violation["code"], violation.get("package_root"), violation["detail"],
-                          violation["fix"], project_row.get("name", ""))),
-        })
-    except (KeyError, TypeError, ValueError) as e:
-        _log_event({"event": "task_error", "slug": slug, "error": str(e)})
-        return None
+    slug = guard_tasks.stable_slug("vercelcfg", project_row.get("name", "app"), key)
+    severity = guard_tasks.HIGH if violation.get("severity") == "block" else guard_tasks.ADVISORY
+    return filer.file(
+        project_row.get("id"), slug,
+        ("Fix a Vercel deploy-config incoherence that a local build cannot catch.\n\n"
+         "Violation: %s\nWhere: %s\nDetail: %s\nSuggested fix: %s\n\n"
+         "Verify with: python3 runner/vercel_config_guard.py %s"
+         % (violation["code"], violation.get("package_root"), violation["detail"],
+            violation["fix"], project_row.get("name", ""))),
+        severity=severity, project_name=project_row.get("name", ""),
+        title="%s: %s" % (project_row.get("name", ""), violation["code"]),
+        escalate_why=violation["detail"][:800])
+
+
+def _file_branch_task(project_row, ref, filer):
+    """A configured branch that does not exist is a CONFIGURATION defect, not a skip."""
+    if not FILE_TASKS:
+        return "disabled"
+    slug = guard_tasks.stable_slug("branchcfg", project_row.get("name", "app"), ref)
+    return filer.file(
+        project_row.get("id"), slug,
+        ("projects.prod_branch for '%s' is %r, but that ref does not exist in %s.\n\n"
+         "vercel_config_guard used to fall back to HEAD here, so it validated whatever branch "
+         "happened to be checked out and reported it as production. It now refuses.\n\n"
+         "Fix the projects row (or create/push the branch), then re-run:\n"
+         "    cd runner && python3 vercel_config_guard.py %s"
+         % (project_row.get("name", ""), ref, project_row.get("repo_path", ""),
+            project_row.get("name", ""))),
+        severity=guard_tasks.CRITICAL, project_name=project_row.get("name", ""),
+        title="%s: configured branch %r does not exist" % (project_row.get("name", ""), ref),
+        escalate_why="Guards silently validated the wrong ref for this project.")
 
 
 def run(project=None):
@@ -611,14 +651,25 @@ def run(project=None):
     if project:
         params["name"] = "eq.%s" % project
     projects = db.select("projects", params) or []
-    summary = {"projects": 0, "violations": 0, "blocking": 0, "tasks_filed": 0, "by_code": {}}
+    filer = guard_tasks.Filer(NAME, max_per_run=MAX_TASKS_PER_RUN)
+    summary = {"projects": 0, "violations": 0, "blocking": 0, "misconfigured": 0, "by_code": {}}
     for p in projects:
         repo = p.get("repo_path") or ""
         if not repo or not os.path.isdir(repo):
             continue
         summary["projects"] += 1
         ref = p.get("prod_branch") or p.get("default_base")
-        result = check_repo(repo, ref, p.get("name"))
+        # strict: a configured branch that does not exist is a MISCONFIGURATION to report, never
+        # a silent switch to HEAD. See _resolve_branch (the illuminati prod_branch='main' case).
+        result = check_repo(repo, ref, p.get("name"), strict=True)
+        if result.get("branch_missing"):
+            summary["misconfigured"] += 1
+            print("  %-14s MISCONFIGURED: %s (projects.prod_branch=%r) — NOT falling back to HEAD"
+                  % (p.get("name"), result["skipped"], ref), flush=True)
+            _log_event({"event": "branch_missing", "project": p.get("name"), "repo": repo,
+                        "configured_ref": ref})
+            _file_branch_task(p, ref, filer)
+            continue
         for v in result["violations"]:
             summary["violations"] += 1
             summary["by_code"][v["code"]] = summary["by_code"].get(v["code"], 0) + 1
@@ -626,14 +677,15 @@ def run(project=None):
                 summary["blocking"] += 1
             _log_event({"event": "violation", "project": p.get("name"), "ref": result["ref"], **v})
             print("  %-14s %-22s %s" % (p.get("name"), v["code"], v["detail"][:150]), flush=True)
-            if _file_task(p, v):
-                summary["tasks_filed"] += 1
+            _file_task(p, v, filer)
         if not result["violations"] and not result.get("skipped"):
             print("  %-14s OK (%d vercel.json root(s) @ %s)" % (p.get("name"), result["roots"], result["ref"]),
                   flush=True)
+    summary.update(filer.counters())
     _log_event({"event": "sweep", **summary})
     print("vercel_config_guard: %(projects)d project(s), %(violations)d violation(s) "
-          "(%(blocking)d blocking), %(tasks_filed)d task(s) filed" % summary)
+          "(%(blocking)d blocking), %(misconfigured)d MISCONFIGURED branch(es)" % summary)
+    print("vercel_config_guard: " + filer.summary_line())
     return summary
 
 
