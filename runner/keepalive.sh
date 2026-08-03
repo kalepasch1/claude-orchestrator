@@ -133,7 +133,18 @@ if ! echo "$$" > "$SUPERVISOR_LOCK/pid" 2>/dev/null; then
   log_duplicate_exit
   exit 0
 fi
-trap 'rm -rf "$SUPERVISOR_LOCK"' EXIT INT TERM
+# SUPERVISOR CONSOLIDATION (2026-08-03): this used to be
+#   trap 'rm -rf "$SUPERVISOR_LOCK"' EXIT INT TERM
+# A TERM/INT trap that does not itself exit makes the script SURVIVE the signal. When launchd
+# cycles the job it SIGTERMs the whole process group; the outgoing keepalive lived through it and
+# kept holding $SUPERVISOR_LOCK while still owning a working runner.py. The incoming launchd
+# keepalive then saw "runner already live via lock" + a live supervisor lock, exited 0, which
+# exited ClaudeRunner.app, which made launchd (KeepAlive=true) restart the job 30s later and
+# SIGTERM the previous group all over again — 139 launchd runs, 4,276 duplicate-supervisor
+# events, and runner.py dying mid-task with code=143. Exiting on the signal makes the outgoing
+# supervisor release the lock so the incoming one can take ownership instead of bouncing.
+trap 'rm -rf "$SUPERVISOR_LOCK"' EXIT
+trap 'echo "[keepalive] received SIGTERM/SIGINT — releasing supervisor lock and exiting at $(date)" >> "$RUNNER_LOG"; rm -rf "$SUPERVISOR_LOCK"; exit 143' INT TERM
 
 while true; do
   if is_live_runner; then
