@@ -107,7 +107,13 @@ def _iso_days_ago(days):
 
 def _select_outcomes(window_days):
     params = {
-        "select": "project,model,coder,tests_passed,integrated,usd,wall_ms,input_tokens,output_tokens,created_at",
+        # `outcomes` has no `coder` column — selecting it made PostgREST reject the whole query
+        # with HTTP 400, so this job failed on every run. The reuse coders ("zero-token",
+        # "compiled-intent") record their name in `model`, which is what the consumers below
+        # actually compare against, so alias it rather than dropping the field and silently
+        # changing what those comparisons mean.
+        "select": "project,model,coder:model,tests_passed,integrated,usd,wall_ms,"
+                  "input_tokens,output_tokens,created_at",
         "created_at": f"gte.{_iso_days_ago(window_days)}",
         "limit": "20000",
     }
