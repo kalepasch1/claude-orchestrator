@@ -19,6 +19,7 @@ Entry points:
   run(limit=N)          -> dict       periodic sweep, budgeted (this is the expensive bot)
 Structured JSONL goes to .runtime/logs/clean-clone-gate.log.
 """
+import hashlib
 import json
 import os
 import re
@@ -30,6 +31,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import guard_tasks
 import proof_graph
 
 NAME = "clean-clone-gate"
@@ -39,6 +41,8 @@ FILE_TASKS = os.environ.get("ORCH_CLEAN_CLONE_GATE_FILE_TASKS", "true").lower() 
 INSTALL_TIMEOUT = int(os.environ.get("ORCH_CLEAN_CLONE_INSTALL_TIMEOUT", "1200"))
 BUILD_TIMEOUT = int(os.environ.get("ORCH_CLEAN_CLONE_BUILD_TIMEOUT", "1800"))
 PER_RUN_LIMIT = int(os.environ.get("ORCH_CLEAN_CLONE_PER_RUN_LIMIT", "2"))
+MAX_TASKS_PER_RUN = int(os.environ.get("ORCH_CLEAN_CLONE_MAX_TASKS_PER_RUN", "6"))
+RETRACT_STALE = os.environ.get("ORCH_CLEAN_CLONE_RETRACT_STALE", "true").lower() in ("1", "true", "yes", "on")
 KIND = "clean-clone"
 
 # A failure that is about THIS MACHINE's connectivity, not about the committed tree. These must
@@ -293,18 +297,31 @@ def gate(project_name, branch=None, force=False):
     return False, log
 
 
-def _file_task(project_row, result):
+_SIG_NOISE = re.compile(r"0x[0-9a-fA-F]+|\b[0-9a-f]{7,40}\b|/[^\s'\"]+|\d+")
+
+
+def failure_signature(result):
+    """A stable id for WHAT IS BROKEN, independent of which commit exposed it.
+
+    The slug used to be keyed on the TREE sha, so pareto-2080's unchanged root cause (missing
+    DATABASE_URL, DIRECT_URL, SUPABASE_KEY, CRON_SECRET, AGENT_SIGNING_SECRET, APP_URL,
+    RESEND_API_KEY for check-runtime-config) filed a brand-new task on every single commit —
+    four open duplicates for one problem, and beethoven three more. Key on the normalised
+    failure text instead: the same breakage refiles nothing, a different breakage still does.
+    """
+    body = "%s|%s" % (result.get("failed_step") or "?", (result.get("log") or "")[-2500:])
+    return hashlib.sha256(_SIG_NOISE.sub("N", body).encode("utf-8", "replace")).hexdigest()[:10]
+
+
+def _file_task(project_row, result, filer):
     """A red clean-clone must produce work, not just a log line."""
-    if not FILE_TASKS or not project_row.get("id"):
-        return None
-    slug = ("cleanclone-%s-%s" % (project_row.get("name", "app"), (result.get("tree") or "")[:8]))[:60]
-    try:
-        existing = db.select("tasks", {"select": "id,state", "slug": "eq.%s" % slug, "limit": "1"}) or []
-        if existing and existing[0].get("state") not in ("DONE", "MERGED", "SHIPPED", "CLOSED", "SHELVED"):
-            return None
-        return db.insert("tasks", {
-            "project_id": project_row["id"], "slug": slug, "state": "QUEUED", "kind": "build",
-            "prompt": ("A pristine export of the committed tree (`git archive %s`) fails to %s.\n\n"
+    if not FILE_TASKS:
+        return "disabled"
+    slug = guard_tasks.stable_slug("cleanclone", project_row.get("name", "app"),
+                                   failure_signature(result))
+    return filer.file(
+        project_row.get("id"), slug,
+        ("A pristine export of the committed tree (`git archive %s`) fails to %s.\n\n"
                        "FIRST establish which of these it is:\n"
                        "  (a) the build is simply broken — the same command fails in the warm repo too;\n"
                        "  (b) works-on-my-machine drift — it passes warm and only fails from the\n"
@@ -315,11 +332,43 @@ def _file_task(project_row, result):
                        "Reproduce with: python3 runner/clean_clone_gate.py %s"
                        % (result.get("ref"), result.get("failed_step"), result.get("install_cmd"),
                           result.get("build_cmd"), (result.get("log") or "")[-2500:],
-                          project_row.get("name", "")))[:12000],
-        })
-    except (KeyError, TypeError, ValueError) as e:
-        _log_event({"event": "task_error", "slug": slug, "error": str(e)})
-        return None
+                          project_row.get("name", ""))),
+        severity=guard_tasks.HIGH, project_name=project_row.get("name", ""),
+        title="%s: clean clone fails at the %s step" % (project_row.get("name", ""),
+                                                        result.get("failed_step")),
+        escalate_why=(result.get("log") or "")[-800:])
+
+
+def retract_stale(project_row, live_slugs):
+    """Withdraw open clean-clone tasks whose failure no longer reproduces.
+
+    A project that now verifies GREEN — or that fails a DIFFERENT way — must not keep its old
+    claims open, otherwise the queue accumulates one dead task per commit forever.
+    """
+    if not RETRACT_STALE or not project_row.get("id"):
+        return 0
+    prefix = guard_tasks.stable_slug("cleanclone", project_row.get("name", "app"), limit=200)
+    try:
+        rows = db.select("tasks", {"select": "id,slug", "project_id": "eq.%s" % project_row["id"],
+                                   "slug": "like.%s-*" % prefix, "state": "eq.QUEUED",
+                                   "limit": "200"}) or []
+    except Exception:                                   # noqa: BLE001
+        return 0
+    closed = 0
+    for row in rows:
+        if row.get("slug") in live_slugs:
+            continue
+        try:
+            db.update("tasks", {"id": row["id"]},
+                      {"state": "CLOSED",
+                       "note": "clean_clone_gate: retracted — this failure no longer reproduces "
+                               "for %s" % project_row.get("name", "")})
+            closed += 1
+            _log_event({"event": "task_retracted", "slug": row.get("slug"),
+                        "project": project_row.get("name")})
+        except Exception as exc:                        # noqa: BLE001
+            _log_event({"event": "retract_error", "slug": row.get("slug"), "error": str(exc)[:300]})
+    return closed
 
 
 def run(limit=None):
@@ -329,7 +378,8 @@ def run(limit=None):
         return {"enabled": False}
     budget = PER_RUN_LIMIT if limit is None else int(limit)
     projects = db.select("projects", {"select": "*"}) or []
-    summary = {"checked": 0, "cached": 0, "green": 0, "red": 0, "skipped": 0, "tasks_filed": 0}
+    filer = guard_tasks.Filer(NAME, max_per_run=MAX_TASKS_PER_RUN)
+    summary = {"checked": 0, "cached": 0, "green": 0, "red": 0, "skipped": 0, "tasks_retracted": 0}
     for p in projects:
         repo = p.get("repo_path") or ""
         if not repo or not os.path.isdir(repo):
@@ -354,14 +404,23 @@ def run(limit=None):
             summary["red"] += 1
             print("  %-14s RED at %s step: %s" % (p.get("name"), peek.get("failed_step"),
                                                   (peek.get("log") or "")[-300:]), flush=True)
-            if _file_task(p, peek):
-                summary["tasks_filed"] += 1
+            _file_task(p, peek, filer)
+        # A conclusive verdict (green or red) supersedes every earlier claim about this project.
+        # An inconclusive SKIP proves nothing, so it must not retract anything.
+        if peek.get("ok") is not None:
+            live = set()
+            if peek.get("ok") is False:
+                live.add(guard_tasks.stable_slug("cleanclone", p.get("name", "app"),
+                                                 failure_signature(peek)))
+            summary["tasks_retracted"] += retract_stale(p, live)
         _log_event({"event": "verify", "project": p.get("name"), "ref": peek.get("ref"),
                     "tree": peek.get("tree"), "ok": peek.get("ok"), "cached": peek.get("cached"),
                     "skipped": peek.get("skipped"), "failed_step": peek.get("failed_step")})
+    summary.update(filer.counters())
     _log_event({"event": "sweep", **summary})
     print("clean_clone_gate: %(checked)d checked (%(cached)d cached), %(green)d green, "
-          "%(red)d red, %(skipped)d skipped, %(tasks_filed)d task(s) filed" % summary)
+          "%(red)d red, %(skipped)d skipped, %(tasks_retracted)d retracted" % summary)
+    print("clean_clone_gate: " + filer.summary_line())
     return summary
 
 
