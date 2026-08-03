@@ -123,7 +123,10 @@ class PricingGrid:
         return consumed, cost
 
     # Backward-compatible alias: callers/tests predating the rename still use this name.
-    _consume_tier_units = _consume_and_cost
+    # NB: the canonical implementation is _consume_tier_units above; the old name is the
+    # alias. This assignment was inverted (new = old), which raised NameError at class-body
+    # evaluation time and made the whole module unimportable.
+    _consume_and_cost = _consume_tier_units
 
     def total_cost(self, units: int) -> float:
         """Calculate total cost across all tiers for a given unit count.
