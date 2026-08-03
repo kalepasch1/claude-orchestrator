@@ -771,9 +771,18 @@ def claim_task(runner_id):
             _reset_db_failure_count()  # DB is healthy, reset failure counter
         except Exception:
             pass
-    except Exception:
+    except Exception as exc:
         _increment_db_failure_count()
         queued = []
+        # A failing claim scan means this runner claims NOTHING — it is total
+        # starvation, not a slowdown, so it must never be silent. On 2026-08-02
+        # claim_fields listed `pinned`/`pin_rank` before their migration existed;
+        # PostgREST answered every scan with HTTP 400, this handler swallowed it,
+        # and the runner sat idle for hours against a 2,000-task queue while the
+        # logs showed a healthy main loop. Say so, loudly, every time.
+        print(f"[claim] SCAN FAILED — claiming nothing this cycle: {exc}. "
+              f"A 400 here usually means claim_fields names a column the tasks "
+              f"table does not have (schema/code drift).", flush=True)
     # PostgREST/Supabase caps large result sets at 1,000 rows. Urgent new work
     # otherwise sits outside an oldest-first scan and cannot be prioritized at
     # all. Pull bounded escape hatches for deployment blockers and evidence
