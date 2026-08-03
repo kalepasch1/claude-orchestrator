@@ -31,7 +31,11 @@ _log = logging.getLogger("guardrails")
 # ── Configuration ──────────────────────────────────────────────────────────
 MODE = os.environ.get("ORCH_GUARDRAIL_MODE", "warn")
 MAX_BRANCHES = int(os.environ.get("ORCH_MAX_BRANCHES_PER_PROJECT", "30"))
-MAX_CREATES_PER_H = int(os.environ.get("ORCH_MAX_BRANCH_CREATES_PER_H", "10"))
+# Default raised 10 -> 240 (2026-08-03). 10/h was set when the fleet ran a handful of serial
+# agents; at MAX_PARALLEL=24 with a measured 2-3 claims/min it blocked every claim after the
+# first ~4 minutes of each hour and was the binding throughput limit. 240/h still catches the
+# runaway branch spam this guardrail exists for (thousands/h) — see runner/.env for sizing.
+MAX_CREATES_PER_H = int(os.environ.get("ORCH_MAX_BRANCH_CREATES_PER_H", "240"))
 MAX_MERGE_BACKLOG = int(os.environ.get("ORCH_MAX_MERGE_BACKLOG", "20"))
 DEPLOY_DEDUP_WINDOW = int(os.environ.get("ORCH_DEPLOY_DEDUP_WINDOW_S", "300"))
 MAX_WORKTREES = int(os.environ.get("ORCH_MAX_WORKTREES", "8"))
