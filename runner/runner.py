@@ -168,6 +168,17 @@ USE_CONFIDENCE = os.environ.get("CONFIDENCE_GATE", "true").lower() == "true"
 
 CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 RUNNER_ID = os.environ.get("RUNNER_ID", socket.gethostname() + "-" + str(os.getpid()))
+
+# When this process started. Used by the self-deploy gate to enforce a minimum uptime before
+# honouring a restart request, so a fleet that commits to its own repo cannot restart the runner
+# faster than tasks can finish.
+_PROC_START_T = time.time()
+
+
+class _SkipRestart(Exception):
+    """Control-flow signal: a restart was requested but is being deferred, not performed."""
+
+
 POLL = int(os.environ.get("POLL_SECONDS", "5"))
 # Concurrency ceiling. Bumped 2->4: resource_governor.can_claim() still clamps every claim by
 # free RAM / kernel memory pressure / disk, so the Mac can't be overrun — this just lets the
@@ -3345,6 +3356,33 @@ def main():
             _rr = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".restart_requested")
             if os.path.exists(_rr):
                 max_active = max(0, int(os.environ.get("ORCH_RESTART_MAX_ACTIVE", "2") or 2))
+                # A drain threshold at or above lane capacity is not a drain — `active` can never
+                # exceed MAX_PARALLEL, so `active <= threshold` is true on the very first check and
+                # the runner exits instantly with every task still mid-flight. fleet_config had this
+                # at 40 against 12 lanes: the fleet commits to its own repo, self_deploy sees new
+                # code and requests a restart, the runner drops all in-flight work and exits, and
+                # ~90 seconds later it happens again. 55 tasks sat in RUNNING with 2 agents alive
+                # and nothing completed for hours. Clamp it to something that can actually gate.
+                _lane_cap = max(1, int(os.environ.get("MAX_PARALLEL", "12") or 12))
+                _ceiling = max(0, _lane_cap // 4)
+                if max_active > _ceiling:
+                    print(f"[self-deploy] restart drain threshold {max_active} >= lane capacity "
+                          f"{_lane_cap} would never gate anything — clamping to {_ceiling}")
+                    max_active = _ceiling
+                # A self-improving fleet commits to its own repo continuously, so "new code exists"
+                # is true again within minutes. Without a floor on restart frequency the runner
+                # spends its life restarting instead of finishing tasks.
+                _min_gap = max(0, int(os.environ.get("ORCH_RESTART_MIN_INTERVAL_S", "1800") or 0))
+                _since_boot = time.time() - _PROC_START_T
+                if _since_boot < _min_gap:
+                    if time.time() - _restart_log_t > 300:
+                        print(f"[self-deploy] restart requested but this runner is only "
+                              f"{int(_since_boot)}s old (min interval {_min_gap}s) — deferring so "
+                              f"in-flight work can finish")
+                        _restart_log_t = time.time()
+                    # Deferring, not draining: keep claiming so the lanes stay busy.
+                    os.environ.pop("ORCH_DRAINING_FOR_RESTART", None)
+                    raise _SkipRestart()
                 if time.time() - _restart_log_t > 30:
                     print(f"[self-deploy] restart requested — draining lanes active={len(active)} threshold={max_active}")
                     _restart_log_t = time.time()
@@ -3356,6 +3394,8 @@ def main():
                 os.environ["ORCH_DRAINING_FOR_RESTART"] = "1"
             else:
                 os.environ.pop("ORCH_DRAINING_FOR_RESTART", None)
+        except _SkipRestart:
+            pass
         except ValueError:
             pass
         except SystemExit:
