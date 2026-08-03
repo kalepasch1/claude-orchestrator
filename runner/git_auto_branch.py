@@ -326,7 +326,6 @@ def run():
             continue
         base = p.get("default_base") or "master"
         # Clean worktrees first — this unblocks branch deletion
-        total_worktrees += cleanup_stale_worktrees(repo)
         total_cleaned += cleanup_merged_branches(repo)
         total_rebased += rebase_stale_branches(repo, base)
         total_wt_pruned += cleanup_stale_worktrees(repo)
