@@ -143,8 +143,30 @@ fi
 # SIGTERM the previous group all over again — 139 launchd runs, 4,276 duplicate-supervisor
 # events, and runner.py dying mid-task with code=143. Exiting on the signal makes the outgoing
 # supervisor release the lock so the incoming one can take ownership instead of bouncing.
+SIGTERM_FORENSICS="${ORCH_LOG_DIR}/sigterm_forensics.log"
+# Snapshot enough state to name the sender on the NEXT SIGTERM: launchd suppresses job-level
+# entries in the unified log, so the process table + launchd job counters at signal time are the
+# decisive evidence. If launchd is cycling the job, `runs` will have incremented and the app pid
+# will differ from our own parent; if a peer process is signalling us, it will still be on the
+# table (medic/sentinel/mesh all run for seconds at a time).
+term_forensics() {
+  {
+    echo "=== SIGTERM at $(date -u +%FT%TZ) ==="
+    echo "keepalive_pid=$$ ppid=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')"
+    echo "--- parent chain ---"
+    ps -o pid,ppid,lstart,command -p "$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')" 2>/dev/null
+    echo "--- launchd job ---"
+    launchctl print "gui/$(id -u)/com.claudeorchestrator.runner" 2>/dev/null \
+      | grep -E 'runs =|^	pid =|last terminating signal|state ='
+    echo "--- supervisor-ish processes ---"
+    ps -axo pid,ppid,lstart,command 2>/dev/null \
+      | grep -E 'ClaudeRunner|keepalive\.sh|runner\.py|sentinel|resource_medic|resilience_mesh|stall' \
+      | grep -v grep
+    echo
+  } >> "$SIGTERM_FORENSICS" 2>/dev/null
+}
 trap 'rm -rf "$SUPERVISOR_LOCK"' EXIT
-trap 'echo "[keepalive] received SIGTERM/SIGINT — releasing supervisor lock and exiting at $(date)" >> "$RUNNER_LOG"; rm -rf "$SUPERVISOR_LOCK"; exit 143' INT TERM
+trap 'echo "[keepalive] received SIGTERM/SIGINT — releasing supervisor lock and exiting at $(date)" >> "$RUNNER_LOG"; term_forensics; rm -rf "$SUPERVISOR_LOCK"; exit 143' INT TERM
 
 while true; do
   if is_live_runner; then
