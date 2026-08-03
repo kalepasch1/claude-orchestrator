@@ -1,0 +1,4 @@
+recovery-intent: recover-missing-branch-canary-ollama-2-1-slice-5
+template: d6b21d0ba77c
+intent: 07062319 07071626 8b92d078e856 acceptance adapt against agentic alter analysis artifacts backlog bankrupted because beethoven before behavior below blocks branch broad bugfix build canary category cause chains changes changing checks cleared cloud coder commit complete completion completions concrete config context continue could dependencies diffs directive directly draft drafting duplicate duplicates eliminating equivalent examine existing exists expired failure files final finish first focus fresh functionality green heartbeat identify implement implementation improve individually inspect install instead intent issue large library lifetime lines local
+base: master
