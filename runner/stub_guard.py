@@ -76,6 +76,17 @@ _STUB_TYPE = re.compile(
 _STUB_CONST = re.compile(
     r"^\s*export\s+const\s+(%s)\s*(?::[^=]*)?=\s*(?:%s|undefined\s+as\s+any)\s*;?\s*$"
     % (_IDENT, _CONST_RET))
+# The ARROW form, which is the shape the tomorrow/apparently incident actually used:
+#   export const assertEcpCounterparty = () => ({});
+# _STUB_CONST above only matched a bare literal on the right of `=`, so every one of the 206
+# arrow-function stubs slipped past the shadowed-re-export detector -- the single most
+# important shape this module exists to catch. Covers `() => ({})`, `() => {}`, `() => 0`,
+# `async () => []`, a typed left side, and any parameter list.
+_STUB_ARROW = re.compile(
+    r"^\s*export\s+const\s+(%s)\s*(?::[^=]*)?=\s*(?:async\s+)?"
+    r"(?:\([^)]*\)|%s)\s*(?::[^=>]*)?=>\s*"
+    r"(?:\(\s*%s\s*\)|%s|\{\s*\})\s*(?:as\s+any\s*)?;?\s*$"
+    % (_IDENT, _IDENT, _CONST_RET, _CONST_RET))
 
 _STAR = re.compile(r"(?m)^\s*export\s+\*\s+from\s+['\"]([^'\"]+)['\"]")
 _NAMED_EXPORT = re.compile(
@@ -207,7 +218,7 @@ def _exports_of(repo, path, cache, seen=None):
 
 
 def _stub_symbol(line):
-    for rx in (_STUB_FN, _STUB_TYPE, _STUB_CONST):
+    for rx in (_STUB_FN, _STUB_TYPE, _STUB_CONST, _STUB_ARROW):
         m = rx.match(line)
         if m:
             return m.group(1)
