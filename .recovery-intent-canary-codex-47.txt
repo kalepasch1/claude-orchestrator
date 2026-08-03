@@ -1,0 +1,4 @@
+recovery-intent: canary-codex-47
+template: b2ffe6b1ea9b
+intent: 07062319 07071626 8b92d078e856 acceptance adapt against agentic alter analysis artifacts backlog bankrupted because beethoven before behavior below blocks branch branches broad bugfix build cache canary category cause chains changes changing checks cleared coder codex commit complete completion completions concrete config context continue dependencies diffs directive drafting duplicate duplicates eliminating equivalent examine existing exists expired failure files final finish first focus fresh functionality green heartbeat hints identify implementation improve individually inspect install instead intent issue large library lifetime lines local maintainability
+base: main
