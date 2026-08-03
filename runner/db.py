@@ -77,6 +77,19 @@ def _load_env():
         k = k.strip()
         v = v.split("#")[0].strip().strip('"').strip("'")
         pairs.append((k, v))
+    # setdefault() below means the FIRST definition of a key wins, so a later line setting the
+    # same key to a different value is silently dead. ORCH_SUPABASE_RETRIES was set to 1 on line
+    # 116 and 4 on line 399 of a 500-line file; the 4 never applied and three monitor jobs
+    # crash-looped on a transient edge error as a result. Nothing surfaced it. Now it is loud.
+    _seen = {}
+    _shadowed = []
+    for k, v in pairs:
+        if k in _seen and _seen[k] != v:
+            _shadowed.append((k, _seen[k], v))
+        _seen.setdefault(k, v)
+    for k, kept, ignored in _shadowed:
+        print("db: .env defines %s twice with different values — using %r, IGNORING %r. "
+              "Delete one of the definitions." % (k, kept, ignored))
     # First pass: everything except Anthropic API keys, so an ORCH_ALLOW_API_BILLING=true set
     # only inside .env (not the shell/plist) is honored below rather than read as its old default.
     anthropic_pairs = []
