@@ -129,6 +129,19 @@ def ai_slice_task(task):
     return parts if len(parts) >= 2 else None
 
 
+def _slice_exists(task, slug):
+    """True if a slice row with this slug already exists for the task's project (any state)."""
+    try:
+        rows = db.select("tasks", {"select": "id",
+                                   "project_id": f"eq.{task.get('project_id')}",
+                                   "slug": f"eq.{slug}",
+                                   "limit": "1"}) or []
+        return bool(rows)
+    except Exception:
+        # DB unreachable: report absent so the normal path (which is also fail-soft) proceeds.
+        return False
+
+
 def pre_agent_hook(task):
     if not isinstance(task, dict) or not should_slice(task):
         return False
