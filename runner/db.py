@@ -356,6 +356,66 @@ def count(table, params=None):
         raise
 
 
+# ── Queue admission control ──────────────────────────────────────────────────────────────────
+#
+# WHY (2026-08-02): the fleet created 1,877 tasks in 24h and completed 55. Depth grew ~166/hour
+# and never converged, so genuinely wanted work (the queued branding and design missions) sat
+# behind thousands of machine-generated tasks that would never be reached.
+#
+# queue_velocity.py already had a PID controller for this, but it gated on a hardcoded set of
+# nine "pausable generators" — and 53 different modules call db.insert("tasks", ...). None of the
+# high-volume ones were in the set, so it never fired. A per-generator allowlist cannot keep up
+# with a codebase that grows new generators; the ceiling has to live at the single insertion
+# choke point, where every route is subject to it regardless of caller.
+#
+# Work that clears blockage is exempt, otherwise a full queue would prevent the fleet from
+# repairing itself out of the condition.
+_QUEUE_DEPTH_CACHE = {"at": 0.0, "depth": 0}
+_QUEUE_BLOCK_LOGGED = {"at": 0.0, "count": 0}
+_EXEMPT_KINDS = {"bugfix", "release-fix", "deployfix", "buildfix", "hotfix"}
+_EXEMPT_SLUG_PREFIXES = ("relfix-", "deployfix-", "buildfix-", "hotfix-")
+
+
+def _max_queue_depth():
+    try:
+        return int(os.environ.get("ORCH_MAX_QUEUE_DEPTH", "800"))
+    except ValueError:
+        return 800
+
+
+def _queue_depth_block(row):
+    """True when the queue is over its ceiling and this task is not exempt."""
+    ceiling = _max_queue_depth()
+    if ceiling <= 0:
+        return False
+    slug = str(row.get("slug") or "")
+    if str(row.get("kind") or "") in _EXEMPT_KINDS or slug.startswith(_EXEMPT_SLUG_PREFIXES):
+        return False
+    if row.get("_bypass_depth_cap"):
+        return False
+
+    now = time.time()
+    if now - _QUEUE_DEPTH_CACHE["at"] > 60:
+        try:
+            _QUEUE_DEPTH_CACHE["depth"] = count("tasks", {"state": "eq.QUEUED"}) or 0
+            _QUEUE_DEPTH_CACHE["at"] = now
+        except Exception:
+            return False  # never let admission control fail an insert on its own error
+
+    if _QUEUE_DEPTH_CACHE["depth"] < ceiling:
+        return False
+
+    _QUEUE_BLOCK_LOGGED["count"] += 1
+    if now - _QUEUE_BLOCK_LOGGED["at"] > 300:
+        print(f"[queue-cap] QUEUED depth {_QUEUE_DEPTH_CACHE['depth']} >= ceiling {ceiling}; "
+              f"refused {_QUEUE_BLOCK_LOGGED['count']} task insert(s) in the last window "
+              f"(latest: {slug[:70]}). Blocker-clearing kinds are still admitted. "
+              f"Raise ORCH_MAX_QUEUE_DEPTH to change.", flush=True)
+        _QUEUE_BLOCK_LOGGED["at"] = now
+        _QUEUE_BLOCK_LOGGED["count"] = 0
+    return True
+
+
 def insert(table, row, upsert=False):
     """Insert a single row into *table* via PostgREST POST.  Returns the created row or None on 409 dedup."""
     if table == "tasks" and isinstance(row, dict):
@@ -365,6 +425,9 @@ def insert(table, row, upsert=False):
         import execution_assurance
         row = dict(row)
         row["deps"] = execution_assurance.normalize_deps(row.get("deps"))
+        blocked = _queue_depth_block(row)
+        if blocked:
+            return None
     # IDEMPOTENT TASK ENQUEUE (2026-07-10): the queue has no UNIQUE(project_id, slug) constraint,
     # so ~20 different generators that db.insert("tasks", ...) directly kept creating duplicate
     # QUEUED rows (5-at-a-time, recurring — the sentinel dedupe was firing 45x/24h just cleaning up
