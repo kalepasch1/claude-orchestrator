@@ -163,7 +163,50 @@ def run(limit=BATCH):
         infra_failure_recovery()
     except Exception:
         pass
+    try:
+        fleet_config_secret_audit()
+    except Exception:
+        pass
     return out
+
+
+def fleet_config_secret_audit():
+    """Standing check that no credential is sitting in fleet_config.
+
+    The db-layer guard blocks NEW writes, but a row planted before the guard existed —
+    or by a future path that bypasses db.py (raw SQL, a psql session, the Supabase
+    dashboard) — would sit there indefinitely. On 2026-08-02 five did, including a
+    GITHUB_PAT with push access to every repo, and nothing ever said so.
+
+    Reports keys and value LENGTHS only; never the material.
+    """
+    try:
+        import fleet_config_guard
+        rows = db.select("fleet_config", {"select": "key,value"}) or []
+    except Exception as e:
+        print(f"blocked_triage: fleet_config audit could not run: {str(e)[:120]}")
+        return {"error": "unreadable"}
+
+    hits = fleet_config_guard.scan_rows(rows)
+    result = {"scanned": len(rows), "credentials_found": len(hits),
+              "keys": [h["key"] for h in hits]}
+    if hits:
+        print(f"blocked_triage: SECRET IN FLEET_CONFIG — {result['keys']}")
+        try:
+            db.insert("approvals", {
+                "project": "ORCHESTRATOR", "kind": "self",
+                "title": "Credential stored in fleet_config",
+                "why": (f"{len(hits)} fleet_config row(s) hold credential material: "
+                        f"{', '.join(h['key'] for h in hits)}. fleet_config is replicated "
+                        f"fleet-wide, echoed into drift reports and config diffs, and has no "
+                        f"row-level protection."),
+                "value": "Rotate the credential at its provider, put the new value in the host "
+                         "env/secret store only, then delete the fleet_config row.",
+                "risk": "Any process that can read fleet config can read the secret.",
+                "command": ""})
+        except Exception:
+            pass  # unique index on (kind,title) rejects duplicates — fine
+    return result
 
 
 # ---------------------------------------------------------------------------

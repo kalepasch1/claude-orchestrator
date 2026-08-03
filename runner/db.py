@@ -440,8 +440,37 @@ def _queue_depth_block(row):
     return True
 
 
+def _guard_fleet_config(table, row):
+    """Refuse to persist a credential into fleet_config, from ANY write path.
+
+    The ban existed in config_applier and config_sync, but a dozen other writers
+    (config_changelog, config_rollback, auto_tune_applicator, continuous_test,
+    decomposition_backpressure, raw SQL INSERTs) never consulted them — which is how
+    VERCEL_TOKEN, GITHUB_PAT, OPENAI_API_KEY and GEMINI_API_KEY ended up stored in
+    plaintext (incident 2026-08-02). This is the one door every writer passes through.
+
+    Fails CLOSED: if the guard module is unavailable, an inline pattern still blocks
+    the obvious cases rather than letting the write through.
+    """
+    if table != "fleet_config" or not isinstance(row, dict):
+        return
+    key, value = row.get("key"), row.get("value")
+    try:
+        import fleet_config_guard
+    except Exception:
+        import re as _re
+        if _re.search(r"(SECRET|TOKEN|PASSWORD|CREDENTIAL|API_?KEY|_PAT\b|PRIVATE_?KEY)",
+                      str(key or ""), _re.I):
+            raise ValueError(
+                f"[fleet-config-guard/fallback] refusing to store credential-named key "
+                f"'{key}' in fleet_config")
+        return
+    fleet_config_guard.assert_writable(key, value)
+
+
 def insert(table, row, upsert=False):
     """Insert a single row into *table* via PostgREST POST.  Returns the created row or None on 409 dedup."""
+    _guard_fleet_config(table, row)
     if table == "tasks" and isinstance(row, dict):
         # Keep the persisted DAG shape deterministic for every insertion route,
         # including upserts. A SQL NULL here makes independent tasks disappear
@@ -561,6 +590,11 @@ def upsert(table, row):
 
 def update(table, match, patch):
     """PATCH rows in *table* matching *match* dict with *patch* fields.  Tolerates 409 (concurrent write)."""
+    # A PATCH can plant a secret just as easily as an INSERT; the key may live in
+    # `match` (WHERE key=…) while the credential arrives in `patch` (SET value=…).
+    if table == "fleet_config":
+        _guard_fleet_config(table, {"key": (match or {}).get("key") or (patch or {}).get("key"),
+                                    "value": (patch or {}).get("value")})
     params = {k: f"eq.{v}" for k, v in match.items()}
     try:
         return _req("PATCH", f"/rest/v1/{table}", body=patch,
