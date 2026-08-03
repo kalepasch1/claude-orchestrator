@@ -34,6 +34,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import guard_tasks
 
 NAME = "stub-guard"
 ENABLED = os.environ.get("ORCH_STUB_GUARD_ENABLED", "true").lower() in ("1", "true", "yes", "on")
@@ -46,6 +47,23 @@ FILE_TASKS = os.environ.get("ORCH_STUB_GUARD_FILE_TASKS", "true").lower() in ("1
 # function's NAME asserts it computes, prices, validates or enforces something. See _CRITICAL.
 BLOCKING = {"stub_shadows_reexport", "body_replaced_by_constant", "stub_commit_message",
             "fabricated_critical_return"}
+
+# How a violation ROUTES once found. A fabricated compliance/financial return escalates loudly
+# (notification + approvals card); a plain constant return is logged and files nothing, because a
+# legitimately-empty default is indistinguishable from a stub by shape alone.
+TASK_SEVERITY = {
+    "fabricated_critical_return": guard_tasks.CRITICAL,
+    "body_replaced_by_constant": guard_tasks.CRITICAL,
+    "stub_shadows_reexport": guard_tasks.HIGH,
+    "stub_commit_message": guard_tasks.HIGH,
+    "fabricated_constant_return": guard_tasks.ADVISORY,
+    "guard_error": guard_tasks.ADVISORY,
+}
+_SEVERITY_RANK = {guard_tasks.ADVISORY: 0, guard_tasks.HIGH: 1, guard_tasks.CRITICAL: 2}
+# One earlier sweep filed 411 tasks in a single run (one per SYMBOL, plus 200 from scratch
+# worktrees under .runtime). Findings are now grouped one-task-per-FILE and capped per run.
+MAX_TASKS_PER_RUN = int(os.environ.get("ORCH_STUB_GUARD_MAX_TASKS_PER_RUN", "10"))
+RETRACT_STALE = os.environ.get("ORCH_STUB_GUARD_RETRACT_STALE", "true").lower() in ("1", "true", "yes", "on")
 
 CODE_EXT = (".ts", ".tsx", ".js", ".mjs", ".vue", ".svelte")
 _SKIP_DIR = re.compile(
@@ -483,30 +501,80 @@ def gate(project_name, branch=None, base=None):
     return False, "silent code loss — stubs are shadowing real implementations:\n" + log
 
 
-def _file_task(project_row, violation):
-    """File a remediation task so an advisory finding still gets fixed."""
-    if not FILE_TASKS or not project_row.get("id"):
-        return None
-    key = re.sub(r"[^a-z0-9]+", "-", (violation.get("symbol") or violation.get("path") or "x").lower()).strip("-")
-    slug = ("stub-%s-%s-%s" % (project_row.get("name", "app"),
-                               violation["code"].replace("_", "-"), key))[:60].strip("-")
+def group_key(violation):
+    """The unit of remediation work: one FILE (or one commit), never one line.
+
+    Filing per SYMBOL is what produced 411 open tasks from a single sweep — 187 of tomorrow's
+    stubs live in 19 barrel files, and a human fixing one barrel fixes every stub in it at once.
+    """
+    if violation.get("code") == "stub_commit_message":
+        return "commit:%s" % (violation.get("path") or "?")
+    return (violation.get("path") or "?").split(":", 1)[0]
+
+
+def _file_group_task(project_row, where, violations, filer):
+    """One task per file, carrying every stubbed symbol in it with line numbers."""
+    if not FILE_TASKS:
+        return "disabled"
+    severity = max((TASK_SEVERITY.get(v["code"], guard_tasks.HIGH) for v in violations),
+                   key=lambda s: _SEVERITY_RANK.get(s, 1))
+    slug = guard_tasks.stable_slug("stub", project_row.get("name", "app"), where)
+    lines = []
+    for v in sorted(violations, key=lambda v: v.get("path") or ""):
+        lines.append("- [%s] %s  symbol=%s\n    %s\n    fix: %s"
+                     % (v["code"], v.get("path"), v.get("symbol") or "-", v["detail"], v["fix"]))
+    return filer.file(
+        project_row.get("id"), slug,
+        ("Restore the real implementations that constant-return stubs are silently replacing in "
+         "ONE file. The build is GREEN — this loss produces no error and no failing test.\n\n"
+         "project: %s\nfile: %s\n%d stubbed symbol(s):\n\n%s\n\n"
+         "Never satisfy this by writing another stub. If a symbol is genuinely unimplemented it "
+         "MUST throw. Verify with: python3 runner/stub_guard.py %s"
+         % (project_row.get("name", ""), where, len(violations), "\n".join(lines),
+            project_row.get("name", ""))),
+        severity=severity, project_name=project_row.get("name", ""),
+        title="%s: %d fabricated/stubbed symbol(s) in %s" % (project_row.get("name", ""),
+                                                             len(violations), where),
+        escalate_why=lines[0] if lines else where)
+
+
+def retract_stale(project_row, live_slugs):
+    """Close open stub tasks whose finding no longer reproduces.
+
+    The queue held 411 open stub tasks against 11 live violations: 200 of them pointed at files
+    inside .runtime scratch worktrees that the scanner no longer visits and that no longer exist,
+    and the rest named symbols that have since been fixed or deleted. A guard that only ever ADDS
+    work eventually buries the findings that still matter, so a clean sweep of a project also
+    withdraws that project's stale claims. Only tasks this bot filed, only QUEUED ones.
+    """
+    if not RETRACT_STALE or not project_row.get("id"):
+        return 0
+    prefix = guard_tasks.stable_slug("stub", project_row.get("name", "app"), limit=200)
     try:
-        existing = db.select("tasks", {"select": "id,state", "slug": "eq.%s" % slug, "limit": "1"}) or []
-        if existing and existing[0].get("state") not in ("DONE", "MERGED", "SHIPPED", "CLOSED", "SHELVED"):
-            return None
-        return db.insert("tasks", {
-            "project_id": project_row["id"], "slug": slug, "state": "QUEUED", "kind": "build",
-            "prompt": ("Restore a real implementation that a constant-return stub is silently "
-                       "replacing. The build is GREEN — this loss produces no error.\n\n"
-                       "Violation: %s\nWhere: %s\nSymbol: %s\nDetail: %s\nSuggested fix: %s\n\n"
-                       "Never satisfy this by writing a new stub. Verify with: "
-                       "python3 runner/stub_guard.py %s"
-                       % (violation["code"], violation.get("path"), violation.get("symbol"),
-                          violation["detail"], violation["fix"], project_row.get("name", ""))),
-        })
-    except (KeyError, TypeError, ValueError) as e:
-        _log_event({"event": "task_error", "slug": slug, "error": str(e)})
-        return None
+        rows = db.select("tasks", {"select": "id,slug,state", "project_id": "eq.%s" % project_row["id"],
+                                   "slug": "like.%s-*" % prefix, "state": "eq.QUEUED",
+                                   "limit": "500"}) or []
+    except Exception:                                   # noqa: BLE001
+        return 0
+    closed = 0
+    for row in rows:
+        if row.get("slug") in live_slugs:
+            continue
+        try:
+            # db.update() adds the `eq.` operator itself — passing "eq.<uuid>" here made every
+            # PATCH a 400 and silently retracted nothing (1185 swallowed errors in the log).
+            db.update("tasks", {"id": row["id"]},
+                      {"state": "CLOSED",
+                       "note": "stub_guard: retracted — this finding no longer reproduces on "
+                               "%s (re-scanned %s)" % (project_row.get("name", ""),
+                                                       time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                                                     time.gmtime()))})
+            closed += 1
+            _log_event({"event": "task_retracted", "slug": row.get("slug"),
+                        "project": project_row.get("name")})
+        except Exception as exc:                        # noqa: BLE001
+            _log_event({"event": "retract_error", "slug": row.get("slug"), "error": str(exc)[:300]})
+    return closed
 
 
 def run(project=None):
@@ -518,13 +586,16 @@ def run(project=None):
     if project:
         params["name"] = "eq.%s" % project
     projects = db.select("projects", params) or []
-    summary = {"projects": 0, "violations": 0, "blocking": 0, "tasks_filed": 0, "by_code": {}}
+    filer = guard_tasks.Filer(NAME, max_per_run=MAX_TASKS_PER_RUN)
+    summary = {"projects": 0, "violations": 0, "blocking": 0, "files_with_stubs": 0,
+               "tasks_retracted": 0, "by_code": {}}
     for p in projects:
         repo = p.get("repo_path") or ""
         if not repo or not os.path.isdir(repo):
             continue
         summary["projects"] += 1
         result = check_repo(repo, p.get("prod_branch") or p.get("default_base"), p.get("name"))
+        groups = {}
         for v in result["violations"]:
             summary["violations"] += 1
             summary["by_code"][v["code"]] = summary["by_code"].get(v["code"], 0) + 1
@@ -532,13 +603,28 @@ def run(project=None):
                 summary["blocking"] += 1
             _log_event({"event": "violation", "project": p.get("name"), **v})
             print("  %-14s %-24s %s" % (p.get("name"), v["code"], (v["path"] or "")[:110]), flush=True)
-            if _file_task(p, v):
-                summary["tasks_filed"] += 1
+            groups.setdefault(group_key(v), []).append(v)
+        summary["files_with_stubs"] += len(groups)
+        live_slugs = set()
+        # CRITICAL files first, then the ones carrying the most fabricated symbols: if the
+        # per-run budget bites, it must bite on the least dangerous work.
+        for where, vs in sorted(groups.items(), key=lambda kv: (
+                -max(_SEVERITY_RANK.get(TASK_SEVERITY.get(v["code"], guard_tasks.HIGH), 1) for v in kv[1]),
+                -len(kv[1]))):
+            live_slugs.add(guard_tasks.stable_slug("stub", p.get("name", "app"), where))
+            _file_group_task(p, where, vs, filer)
+        # Only a COMPLETE scan may retract: a skipped or errored repo proves nothing about
+        # whether its open findings are still real.
+        if not result.get("skipped") and not any(v["code"] == "guard_error" for v in result["violations"]):
+            summary["tasks_retracted"] += retract_stale(p, live_slugs)
         if not result["violations"] and not result.get("skipped"):
             print("  %-14s OK (%d file(s) scanned)" % (p.get("name"), result["files"]), flush=True)
+    summary.update(filer.counters())
     _log_event({"event": "sweep", **summary})
     print("stub_guard: %(projects)d project(s), %(violations)d violation(s) "
-          "(%(blocking)d blocking), %(tasks_filed)d task(s) filed" % summary)
+          "(%(blocking)d blocking) in %(files_with_stubs)d file(s), "
+          "%(tasks_retracted)d stale task(s) retracted" % summary)
+    print("stub_guard: " + filer.summary_line())
     return summary
 
 
