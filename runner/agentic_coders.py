@@ -631,7 +631,10 @@ def pick(task, slot_index=0):
         return strongest[0]["name"] if strongest else "claude"
 
     # HIGH URGENCY: bypass cost optimisation — reliability matters more than savings for P0/thermal tasks.
-    if _task_urgency(task) == "high" and any(c["name"] == "claude" for c in usable):
+    # Not when the operator has explicitly demanded full offload: "most reliable" is worthless if that
+    # backend has no quota left, which is exactly the state that motivated the directive.
+    if (_task_urgency(task) == "high" and any(c["name"] == "claude" for c in usable)
+            and not _explicit_full_offload_requested()):
         return "claude"
 
     # LEARNED ROUTER: prefer the coder that empirically converts THIS task-kind to merges most cheaply
@@ -642,7 +645,17 @@ def pick(task, slot_index=0):
             import router_stats
             slug = str(task.get("slug") or "").lower()
             stage = "recovery" if slug.startswith("recover-missing-branch") else None
-            rec = router_stats.best_coder(task.get("kind"), [c["name"] for c in usable], stage=stage)
+            candidates = [c["name"] for c in usable]
+            # The learned router optimises $/merge from our own history — but that history was
+            # written when Claude was effectively the only coder that ever ran, so it now returns
+            # "claude" for every kind and short-circuits every cost check below it. That is a
+            # self-reinforcing loop: Claude wins because Claude is all it has ever seen. When the
+            # operator has explicitly demanded full offload (a 100% share), hold the router to
+            # non-Claude candidates so the other backends can actually produce the outcome data
+            # the router needs to learn from.
+            if _explicit_full_offload_requested():
+                candidates = [n for n in candidates if n != "claude"] or candidates
+            rec = router_stats.best_coder(task.get("kind"), candidates, stage=stage)
             if rec:
                 return rec
         except Exception:
