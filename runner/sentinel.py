@@ -726,9 +726,22 @@ def stale_code_guard():
             log("restart-requested", f"{boot[:9]} -> {head[:9]}")
         elif time.time() - os.path.getmtime(req) > RESTART_STALE_S:
             runners = _pids("MacOS/Python runner.py") + _pids("python3 runner.py")
-            for p in runners:
-                log("runner-cycled", f"cooperative restart ignored {RESTART_STALE_S}s; killing {p}")
-                sh("kill", p)
+            # SUPERVISOR CONSOLIDATION (2026-08-03): this `sh("kill", p)` is a BARE kill, i.e.
+            # SIGTERM — the only SIGTERM-emitting kill site in sentinel (every other one is -9).
+            # It is a third supervisor racing launchd and keepalive.sh for the runner's lifecycle,
+            # and it kills unconditionally, mid-task, with no drain. launchd now owns restarts
+            # (keepalive respawns the runner the moment it exits), so the correct behaviour here is
+            # to REPORT stale code, not to kill. Gated off by default; REVERT by setting
+            # ORCH_SENTINEL_CYCLE_RUNNER=true.
+            if os.environ.get("ORCH_SENTINEL_CYCLE_RUNNER", "false").lower() in ("1", "true", "yes"):
+                for p in runners:
+                    log("runner-cycled", f"cooperative restart ignored {RESTART_STALE_S}s; killing {p}")
+                    sh("kill", p)
+            else:
+                log("runner-cycle-suppressed",
+                    f"cooperative restart ignored {RESTART_STALE_S}s on pids {runners}; "
+                    "NOT killing (launchd owns runner lifecycle; "
+                    "set ORCH_SENTINEL_CYCLE_RUNNER=true to restore)")
 
 
 # ── 6. merge-train recency (DB up only) ──────────────────────────────────────
