@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import sys
+import threading
 import time
 from typing import Callable, Optional
 
@@ -22,6 +23,67 @@ import logging
 log = logging.getLogger('config_sync')   # FIX 2026-07-29: log used but never defined
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+
+# --- restored 2026-08-03: this block was dropped by union merge 76cf3ea4
+# (Merge branch 'agent/canary-gpt-mini-61'), which kept the branch's new
+# helpers but deleted the module state they depend on. Recovered verbatim
+# from a29367e4, the last revision where pyflakes reported 0 undefined names.
+HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
+LOCAL_CONFIG = os.path.join(HOME, "config.local.json")
+SYNC_STATE_FILE = os.path.join(HOME, "config_sync_state.json")
+ENABLED = os.environ.get("ORCH_CONFIG_SYNC", "true").lower() == "true"
+SYNC_INTERVAL_S = int(os.environ.get("ORCH_CONFIG_SYNC_INTERVAL_S", "300"))
+
+_DENY_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "PWD", "CREDENTIAL")
+_SAFE_PREFIXES = ("ORCH_", "MAX_PARALLEL", "PER_TASK_GB", "RAM_FLOOR_GB", "RAM_",
+                  "RELEASE_", "QUEUE_", "CONT_", "JANITOR_", "REMEDIATION_",
+                  "DEFAULT_TEST_CMD", "TASK_TIMEOUT", "ENABLE_", "SESSION_",
+                  "ACCOUNT_COOLDOWN", "MERGE_", "DEPLOY_", "INTEGRATE_", "COST_")
+
+_lock = threading.Lock()
+_stats = {"syncs": 0, "keys_pushed": 0, "keys_skipped": 0, "errors": 0}
+
+
+def stats():
+    return dict(_stats)
+
+
+def _is_safe_key(k):
+    ku = (k or "").upper()
+    if any(m in ku for m in _DENY_MARKERS):
+        return False
+    return any(ku.startswith(p) for p in _SAFE_PREFIXES)
+
+
+def _load_local_config():
+    """Load local config overrides. Returns dict or empty."""
+    try:
+        with open(LOCAL_CONFIG) as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception as e:
+        log.debug("failed to read local config: %s", e)
+        return {}
+
+
+def _load_sync_state():
+    try:
+        with open(SYNC_STATE_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {"last_sync": 0, "synced_keys": {}}
+
+
+def _save_sync_state(state):
+    try:
+        os.makedirs(os.path.dirname(SYNC_STATE_FILE), exist_ok=True)
+        with open(SYNC_STATE_FILE, "w") as f:
+            json.dump(state, f, indent=2)
+    except Exception:
+        pass
+
 
 # Config keys that are safe to hot-reload (no restart required)
 HOT_RELOAD_KEYS = {
