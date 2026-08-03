@@ -5,6 +5,8 @@ Tests validate patch adaptation, config preservation, build validation, and QA r
 """
 import sys, os, json, tempfile, shutil
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Disable external dependencies; tests call internals directly
