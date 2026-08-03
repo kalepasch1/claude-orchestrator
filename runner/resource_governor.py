@@ -233,27 +233,6 @@ def can_claim(n_active: int = 0) -> tuple[bool, str]:
     return True, "ok"
 
 
-def stats():
-    """Return a snapshot of current resource state for diagnostics and fleet dashboards."""
-    free = ram_free_gb()
-    try:
-        used_pct, _ = disk_pct()
-    except Exception:
-        used_pct = None
-    ok, reason = can_claim()
-    return {
-        "ram_free_gb": free,
-        "ram_floor_gb": effective_floor_gb(),
-        "per_task_gb": _per_task_gb(),
-        "disk_used_pct": used_pct,
-        "disk_soft_pct": _disk_soft(),
-        "disk_hard_pct": _disk_hard(),
-        "ceiling": _ceiling(),
-        "can_claim": ok,
-        "claim_reason": reason,
-    }
-
-
 def _projects():
     try:
         return db.select("projects", {"select": "name,repo_path"}) or []
@@ -706,14 +685,6 @@ def govern():
     print(f"governor: disk {used}% ({free_gb}GB free) ram {ram} free_ram {free_ram}GB "
           f"floor {eff_floor} -> {action}, limit={current_limit()} "
           f"[{_elapsed_ms:.0f}ms total, {_sample_ms:.0f}ms sampling]")
-    return g
-
-
-def stats() -> dict:
-    """Return a snapshot of current resource state for observability."""
-    g = dashboard_gauge()
-    g["current_limit"] = current_limit()
-    g["ceiling"] = _ceiling()
     return g
 
 
