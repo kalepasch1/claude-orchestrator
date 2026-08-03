@@ -116,7 +116,10 @@ def load_config():
     except Exception as e:
         # FIX 2026-07-29: `log` was never defined — a config-load failure made the error handler
         # itself raise NameError, masking the real failure. Plain stderr keeps it dependency-free.
-        import sys
+        # FIX 2026-08-03: the `import sys` that used to live HERE made `sys` a function-local name
+        # for the WHOLE function, so the precedence logging above died with
+        # "local variable 'sys' referenced before assignment" — aborting load_config partway and
+        # leaving config half-applied. sys is already imported at module scope; do not re-import.
         sys.stderr.write(f"[fleet_control] fleet_config load failed: {e}\n")
     return n
 
