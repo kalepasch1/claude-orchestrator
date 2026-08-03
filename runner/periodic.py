@@ -78,6 +78,128 @@ def _ensure_tool_path():
 # while the queue kept growing. Cap how long a holder may keep the lock, then reap it.
 _JOB_MAX_RUNTIME_S = int(os.environ.get("ORCH_PERIODIC_JOB_MAX_RUNTIME_S", "3600"))
 
+# A skip is NOT a success. Before this, a job whose predecessor never exited printed
+# "previous invocation still running" and exited 0 forever, so launchd, the dashboard and every
+# health check saw an unbroken run of green. Three of four jobs no-opped that way during one
+# verification pass. That is the same shape as preflight_gate being 100% dead for 19 days: the
+# scheduler was reporting success for work that never happened.
+#
+# So: count CONSECUTIVE skips per job. Past the threshold the job is WEDGED — say so loudly,
+# escalate on the crash_loop_detector alerting path, file remediation work, and reap the holder
+# regardless of how much of its runtime budget is left.
+_WEDGE_SKIPS = int(os.environ.get("ORCH_PERIODIC_WEDGE_SKIPS", "3"))
+_SKIP_STATE_PATH = os.path.join(_RUNTIME, "periodic-skips.json")
+
+# Exit codes, so a scheduler/wrapper can tell the three outcomes apart.
+_EX_OK = 0
+_EX_SKIPPED = 75        # EX_TEMPFAIL: legitimately busy, try again next interval
+_EX_WEDGED = 1          # the job has not run for _WEDGE_SKIPS intervals — this is a failure
+
+
+class _Skipped(object):
+    """Sentinel: this invocation did not run the job."""
+
+    def __init__(self, job, reason, wedged=False, skips=0):
+        self.job, self.reason, self.wedged, self.skips = job, reason, wedged, skips
+
+
+def _skip_state():
+    try:
+        with open(_SKIP_STATE_PATH) as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_skip_state(state):
+    try:
+        os.makedirs(_RUNTIME, exist_ok=True)
+        tmp = "%s.%d.tmp" % (_SKIP_STATE_PATH, os.getpid())
+        with open(tmp, "w") as fh:
+            json.dump(state, fh, indent=2, default=str)
+        os.replace(tmp, _SKIP_STATE_PATH)
+    except Exception as exc:
+        print(f"periodic: could not persist skip state ({exc})")
+
+
+def _clear_skips(job):
+    """This invocation actually acquired the lock, so the job is demonstrably not wedged."""
+    state = _skip_state()
+    entry = state.get(job) or {}
+    if entry.get("consecutive_skips"):
+        print(f"periodic {job}: recovered after {entry['consecutive_skips']} consecutive skip(s)")
+    state[job] = {"consecutive_skips": 0, "last_run_at": int(time.time())}
+    _save_skip_state(state)
+
+
+def _record_skip(job, pid, age):
+    """Count one skip and report whether the job has now crossed into WEDGED."""
+    state = _skip_state()
+    entry = state.get(job) or {}
+    count = int(entry.get("consecutive_skips") or 0) + 1
+    entry.update({"consecutive_skips": count, "last_skip_at": int(time.time()),
+                  "holder_pid": pid, "holder_age_s": age,
+                  "first_skip_at": entry.get("first_skip_at") or int(time.time())})
+    state[job] = entry
+    _save_skip_state(state)
+    return count, entry
+
+
+def _alert_wedged(job, entry, pid, age):
+    """A wedged job is unbounded invisible loss — escalate it like a crash loop.
+
+    Same destinations crash_loop_detector uses (notify + an approvals card) plus a remediation
+    task, so "this job has not run in N intervals" surfaces in exactly the place operators
+    already look for "this job crashes every time".
+    """
+    headline = (f"periodic {job}: WEDGED — skipped {entry['consecutive_skips']} consecutive "
+                f"invocation(s); holder pid {pid} has held the lock {age}s")
+    print(headline, file=sys.stderr, flush=True)
+    print(headline, flush=True)
+    try:
+        import notify
+        notify.send(headline[:400])
+    except Exception:
+        pass
+    try:
+        db.insert("approvals", {
+            "project": "ORCHESTRATOR", "kind": "self", "status": "pending",
+            "title": headline[:200],
+            "why": (f"periodic.py acquired no lock for '{job}' on "
+                    f"{entry['consecutive_skips']} consecutive runs. Every one of those "
+                    f"invocations exited 0, so the scheduler reported success for work that "
+                    f"never happened.")[:1000],
+            "value": "A scheduler that reports success on a skip hides a permanently wedged job "
+                     "forever; this is how preflight stayed 100% dead for 19 days.",
+            "risk": f"holder pid {pid}, age {age}s, lock {os.path.join(_PERIODIC_LOCK_DIR, job)}.lock",
+        })
+    except Exception:
+        pass
+    try:
+        import guard_tasks
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        project_id = ""
+        for row in (db.select("projects", {"select": "id,repo_path"}) or []):
+            if os.path.abspath(row.get("repo_path") or "") == os.path.abspath(root):
+                project_id = row.get("id")
+                break
+        filer = guard_tasks.Filer("periodic-wedge", max_per_run=3)
+        filer.file(project_id, guard_tasks.stable_slug("wedged", job),
+                   (f"The periodic job '{job}' is WEDGED: it has been skipped for "
+                    f"{entry['consecutive_skips']} consecutive invocations because a previous "
+                    f"run never released its singleton lock (holder pid {pid}, held {age}s).\n\n"
+                    f"Every skipped invocation exited 0, so nothing downstream noticed.\n\n"
+                    f"Find why `JOBS['{job}']()` does not terminate — an unbounded subprocess, a "
+                    f"blocking network read with no timeout, or a deadlock. Give it a hard "
+                    f"timeout. Reproduce with:\n"
+                    f"    cd runner && python3 -c \"import periodic; periodic.JOBS['{job}']()\"\n\n"
+                    f"lock file: {os.path.join(_PERIODIC_LOCK_DIR, job)}.lock"),
+                   severity=guard_tasks.CRITICAL, project_name="ORCHESTRATOR",
+                   title=headline[:200], escalate_why=headline)
+    except Exception as exc:
+        print(f"periodic {job}: could not file wedge remediation task ({exc})")
+
 
 def _read_lock_holder(lock_path):
     """Return (pid, started_at) recorded by the current holder, or (None, None)."""
@@ -109,11 +231,25 @@ def _reap_stale_holder(job, lock_path):
         print(f"periodic {job}: holder pid {pid} is gone; reclaiming lock")
         return True
     if age < _JOB_MAX_RUNTIME_S:
-        print(f"periodic {job}: skipped; previous invocation still running "
-              f"(pid {pid}, {age}s of {_JOB_MAX_RUNTIME_S}s budget)")
-        return False
+        skips, entry = _record_skip(job, pid, age)
+        if skips < _WEDGE_SKIPS:
+            print(f"periodic {job}: skipped; previous invocation still running "
+                  f"(pid {pid}, {age}s of {_JOB_MAX_RUNTIME_S}s budget) "
+                  f"— consecutive skip {skips}/{_WEDGE_SKIPS}")
+            return False
+        # Threshold crossed. The runtime budget is irrelevant now: whatever the holder is
+        # doing, this job has not run for _WEDGE_SKIPS intervals, and that is the failure.
+        _alert_wedged(job, entry, pid, age)
+        print(f"periodic {job}: reaping the holder so the job can run again")
+        return _terminate(job, pid)
     print(f"periodic {job}: HUNG — pid {pid} has held the lock {age}s "
           f"(limit {_JOB_MAX_RUNTIME_S}s); terminating it")
+    return _terminate(job, pid)
+
+
+def _terminate(job, pid):
+    """SIGTERM then SIGKILL a lock holder. True once it is gone."""
+    import signal
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.kill(pid, sig)
@@ -186,8 +322,9 @@ def _run_job_locked(job):
     if disabled and os.environ.get("ORCH_RUN_DISABLED_JOBS", "").lower() not in ("1", "true", "yes", "on"):
         print(f"periodic {job}: skipped; disabled — {disabled.get('reason', 'no reason recorded')}. "
               f"Re-enable by removing it from {_DISABLED_JOBS_PATH}")
-        return None
+        return _Skipped(job, "disabled")
     if fcntl is None or os.environ.get("ORCH_PERIODIC_JOB_LOCKS", "true").lower() not in ("1", "true", "yes", "on"):
+        _clear_skips(job)
         return _invoke_job(job)
     os.makedirs(_PERIODIC_LOCK_DIR, exist_ok=True)
     lock_path = os.path.join(_PERIODIC_LOCK_DIR, f"{job}.lock")
@@ -196,16 +333,22 @@ def _run_job_locked(job):
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except (BlockingIOError, OSError):
             if not _reap_stale_holder(job, lock_path):
-                return None
+                skips = int((_skip_state().get(job) or {}).get("consecutive_skips") or 0)
+                return _Skipped(job, "previous invocation still running",
+                                wedged=skips >= _WEDGE_SKIPS, skips=skips)
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except (BlockingIOError, OSError):
                 print(f"periodic {job}: skipped; lock still held after reaping the stale holder")
-                return None
+                skips = int((_skip_state().get(job) or {}).get("consecutive_skips") or 0)
+                return _Skipped(job, "lock still held after reaping",
+                                wedged=skips >= _WEDGE_SKIPS, skips=skips)
         lock.seek(0)
         lock.truncate()
         lock.write(f"{os.getpid()} {int(time.time())}\n")
         lock.flush()
+        # We hold the lock, so the job is about to actually run: the skip streak is broken.
+        _clear_skips(job)
         return _invoke_job(job)
 
 
@@ -1030,4 +1173,14 @@ if __name__ == "__main__":
                 sys.exit(0)
         except Exception:
             pass
-    _run_job_locked(job)
+    outcome = _run_job_locked(job)
+    # rc 0 = the job ran. rc 75 = legitimately busy, retry next interval. rc 1 = WEDGED.
+    # Returning 0 for a skip is what let three of four jobs no-op through a verification pass
+    # while every caller recorded success.
+    if isinstance(outcome, _Skipped):
+        if outcome.wedged:
+            print(f"periodic {job}: exiting {_EX_WEDGED} — WEDGED ({outcome.skips} consecutive "
+                  f"skips, reason: {outcome.reason})", file=sys.stderr, flush=True)
+            sys.exit(_EX_WEDGED)
+        sys.exit(_EX_SKIPPED)
+    sys.exit(_EX_OK)
