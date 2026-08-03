@@ -34,6 +34,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import guard_tasks
 
 NAME = "crash-loop-detector"
 ENABLED = os.environ.get("ORCH_CRASH_LOOP_ENABLED", "true").lower() in ("1", "true", "yes", "on")
@@ -57,6 +58,9 @@ _TRANSIENT = re.compile(
     r"ConnectionResetError|ConnectionRefusedError|TimeoutError|timed out|"
     r"TransientDBError|RemoteDisconnected|IncompleteRead", re.I)
 MAX_FIRES = int(os.environ.get("ORCH_CRASH_LOOP_MAX_FIRES", "5"))
+# Alerting is throttled to MAX_FIRES so the operator is not spammed; task FILING has its own,
+# larger budget so a backlog of real crash loops still becomes real work within a few cycles.
+MAX_TASKS_PER_RUN = int(os.environ.get("ORCH_CRASH_LOOP_MAX_TASKS_PER_RUN", "12"))
 
 _TB_START = re.compile(r"^Traceback \(most recent call last\):\s*$")
 _FRAME = re.compile(r'^\s+File "([^"]+)", line (\d+), in (\S+)')
@@ -261,9 +265,28 @@ def classify(jobs):
     return findings
 
 
+def state_key(finding):
+    """The dedupe key for one finding: JOB **and** signature.
+
+    This used to be the signature alone, while _file_task's slug was job+signature. One
+    NameError shape ('run_editorial' is not defined) crashes eleven different jobs, so firing
+    for the first job wrote state[sig] and every OTHER job's identical signature was then
+    reported '[deduplicated]' forever — 26 of 49 live findings, including 2 of the 3 CRITICAL
+    100%-dead modules (cost-intelligence, credresolver), could never file a task. The bot
+    watching the bots was itself silent.
+    """
+    return "%s|%s" % (finding.get("job", ""), finding.get("signature", ""))
+
+
 def _should_fire(finding, state, now):
-    """Dedupe by signature: fire once, then only after a cooldown or a 10x escalation."""
-    prior = state.get(finding["signature"])
+    """Dedupe by (job, signature): fire once, then after a cooldown or a 10x escalation."""
+    prior = state.get(state_key(finding))
+    # Migration: entries written before the key carried the job. Honour them once so upgrading
+    # does not replay every historical alert, but only for the job that actually recorded it.
+    if not prior:
+        legacy = state.get(finding["signature"])
+        if legacy and legacy.get("job") == finding["job"]:
+            prior = legacy
     if not prior:
         return True, "new"
     if (now - float(prior.get("last_alert") or 0)) >= COOLDOWN_S:
@@ -285,18 +308,15 @@ def _orchestrator_project():
     return {}
 
 
-def _file_task(finding, project_row):
-    if not FILE_TASKS or not project_row.get("id"):
-        return None
-    slug = ("crashloop-%s-%s" % (finding["job"], finding["signature"][:8]))[:60]
-    try:
-        existing = db.select("tasks", {"select": "id,state", "slug": "eq.%s" % slug, "limit": "1"}) or []
-        if existing and existing[0].get("state") not in ("DONE", "MERGED", "SHIPPED", "CLOSED", "SHELVED"):
-            return None
-        return db.insert("tasks", {
-            "project_id": project_row["id"], "slug": slug, "state": "QUEUED", "kind": "build",
-            "priority": 90,
-            "prompt": ("A scheduled job is in a CRASH LOOP and has been failing silently.\n\n"
+def _file_task(finding, project_row, filer):
+    """Turn one finding into remediation work. Dedupe is the DB; the budget is the filer."""
+    if not FILE_TASKS:
+        return "disabled"
+    slug = guard_tasks.stable_slug("crashloop", finding["job"], finding["signature"][:8])
+    severity = guard_tasks.CRITICAL if "module_dead" in finding["reasons"] else guard_tasks.HIGH
+    return filer.file(
+        project_row.get("id"), slug,
+        ("A scheduled job is in a CRASH LOOP and has been failing silently.\n\n"
                        "job: %s\nlog: %s\noccurrences: %d (%.0f%% of this job's tracebacks)\n"
                        "why it fired: %s\n%s\n"
                        "Fix the root cause, then confirm the job actually runs "
@@ -307,11 +327,14 @@ def _file_task(finding, project_row):
                           ("NOTE: zero successful runs detected — this module is 100% dead.\n"
                            if "module_dead" in finding["reasons"] else ""),
                           finding["job"].replace("-", "_"), finding["err_path"],
-                          finding["traceback"]))[:12000],
-        })
-    except (KeyError, TypeError, ValueError) as e:
-        _log_event({"event": "task_error", "slug": slug, "error": str(e)})
-        return None
+                          finding["traceback"])),
+        severity=severity, project_name="ORCHESTRATOR",
+        title="%s is %s — %s x%d" % (finding["job"],
+                                     "100% DEAD" if severity == guard_tasks.CRITICAL
+                                     else "crash-looping",
+                                     finding["exception"][:100], finding["count"]),
+        escalate_why=("%d identical tracebacks in %s. Last frame: %s."
+                      % (finding["count"], finding["err_path"], finding["last_frame"])))
 
 
 def _alert(finding):
@@ -349,8 +372,9 @@ def run(log_dir=None, window_hours=None, dry_run=False):
     state = _load_state()
     now = time.time()
     project_row = _orchestrator_project() if not dry_run else {}
+    filer = guard_tasks.Filer(NAME, max_per_run=MAX_TASKS_PER_RUN, enabled=not dry_run)
     summary = {"jobs_scanned": len(jobs), "findings": len(findings), "fired": 0,
-               "deduplicated": 0, "throttled": 0, "tasks_filed": 0, "dead_modules": 0}
+               "deduplicated": 0, "throttled": 0, "dead_modules": 0}
     for finding in findings:
         if "module_dead" in finding["reasons"]:
             summary["dead_modules"] += 1
@@ -371,6 +395,12 @@ def run(log_dir=None, window_hours=None, dry_run=False):
             # signatures, full records would add megabytes a day to .runtime/logs.
             _log_event({"event": "finding_suppressed", "job": finding["job"],
                         "signature": finding["signature"], "count": finding["count"], "why": why})
+        # ALERTING is deduplicated; REMEDIATION is not. A finding that is still live but whose
+        # alert is inside its cooldown must still have an open task — the alert cooldown exists
+        # to stop notification spam, not to stop work from being created. The database (not the
+        # cooldown) decides whether a task already exists, so this is idempotent by construction.
+        if not dry_run:
+            _file_task(finding, project_row, filer)
         if not fire:
             if why.startswith("deduplicated"):
                 summary["deduplicated"] += 1
@@ -379,19 +409,19 @@ def run(log_dir=None, window_hours=None, dry_run=False):
         if dry_run:
             continue
         _alert(finding)
-        if _file_task(finding, project_row):
-            summary["tasks_filed"] += 1
-        state[finding["signature"]] = {
+        state[state_key(finding)] = {
             "job": finding["job"], "exception": finding["exception"][:200],
-            "first_seen": (state.get(finding["signature"]) or {}).get("first_seen") or now,
+            "first_seen": (state.get(state_key(finding)) or {}).get("first_seen") or now,
             "last_alert": now, "count_at_alert": finding["count"], "reasons": finding["reasons"],
         }
+    summary.update(filer.counters())
     if not dry_run:
         _save_state(state)
     _log_event({"event": "sweep", **summary})
     print("crash_loop_detector: %(jobs_scanned)d job log(s), %(findings)d finding(s), "
           "%(dead_modules)d dead module(s), %(fired)d fired, %(deduplicated)d deduped, "
-          "%(throttled)d throttled, %(tasks_filed)d task(s) filed" % summary)
+          "%(throttled)d throttled" % summary)
+    print("crash_loop_detector: " + filer.summary_line())
     return summary
 
 
