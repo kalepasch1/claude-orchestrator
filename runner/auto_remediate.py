@@ -17,7 +17,6 @@ Remediation by cause (tasks.remediation_count changes strategy; it does not punt
 
 Runs every couple minutes; also callable. This is the "self-remedy everything" loop.
 """
-import re
 import os, sys, re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
@@ -336,8 +335,13 @@ def offload_budget_capacity_backlog(limit=500):
         patch = agentic_repair.repair_patch(
             t, signal, category="capacity", prefer_non_claude=True,
             directive="This backlog row was blocked by Claude budget/capacity. Continue the same task through a non-Claude/local coder and finish it.")
-        patch["remediation_count"] = 0
-        patch["note"] = "agentic-repair:capacity; backlog offloaded from Claude budget/capacity guard"
+        # Never reset remediation_count here. It used to be zeroed on every capacity offload, so a
+        # task that repeatedly hit the Claude budget guard had its repair history wiped each pass
+        # and no ceiling could ever bind — an unbounded re-queue loop hiding behind a fair-sounding
+        # "don't penalise the task for our capacity problem". A capacity offload is still a repair
+        # cycle spent; if a row needs more than the ceiling, something else is wrong with it.
+        if not agentic_repair.is_terminal(patch):
+            patch["note"] = "agentic-repair:capacity; backlog offloaded from Claude budget/capacity guard"
         db.update("tasks", {"id": t["id"]}, patch)
         changed += 1
     return changed

@@ -77,6 +77,13 @@ def collect():
                         capture_output=True, text=True)
     out["classification_invariants_ok"] = rc.returncode == 0
 
+    # Repair-termination invariants. Without these, no path bounds the TOTAL number of times a
+    # task can be re-queued, and repairs run with no failure evidence at all — the fleet spends
+    # its whole throughput re-queueing tasks it has no information about.
+    rc = subprocess.run([sys.executable, os.path.join(HERE, "test_repair_ceiling.py")],
+                        capture_output=True, text=True)
+    out["repair_ceiling_invariants_ok"] = rc.returncode == 0
+
     # Repair mix: a healthy fleet repairs a variety of causes. One category dominating means the
     # classifier is probably matching on identity rather than evidence again.
     try:
@@ -84,19 +91,34 @@ def collect():
         import collections
         import datetime as _dt
         since = (datetime.datetime.now(datetime.timezone.utc) - _dt.timedelta(hours=3)).isoformat()
-        rows = _db.select("tasks", {"select": "note", "updated_at": "gte.%s" % since,
-                                    "limit": "400"}) or []
+        rows = _db.select("tasks", {"select": "note,log_tail,remediation_count",
+                                    "updated_at": "gte.%s" % since, "limit": "400"}) or []
         mix = collections.Counter()
+        repaired = []
         for r in rows:
             note = str(r.get("note") or "")
             if note.startswith("agentic-repair:"):
                 mix[note.split(":", 1)[1].split()[0]] += 1
+                repaired.append(r)
         out["repair_mix_3h"] = dict(mix.most_common(6))
         total = sum(mix.values())
         out["repair_top_share"] = round(max(mix.values()) / total, 2) if total >= 20 else None
+
+        # Blind repairs: a repair whose only input is the task's own name and a counter cannot
+        # converge — it is a guess, repeated. This is the metric that was missing on 2026-08-03,
+        # when 81% of live tasks carried no log_tail and the fleet re-queued them forever.
+        import agentic_repair as _ar
+        blind = sum(1 for r in repaired if not _ar.has_evidence(r))
+        out["blind_repair_share"] = round(blind / len(repaired), 2) if len(repaired) >= 20 else None
+        out["repair_count_max"] = max((int(r.get("remediation_count") or 0) for r in repaired),
+                                      default=0)
+        out["repair_ceiling"] = "%d global / %d blind" % (_ar.GLOBAL_REPAIR_CEILING,
+                                                          _ar.BLIND_REPAIR_CEILING)
     except Exception:
         out["repair_mix_3h"] = {}
         out["repair_top_share"] = None
+        out["blind_repair_share"] = None
+        out["repair_count_max"] = 0
     return out
 
 
@@ -130,6 +152,17 @@ def verdict(s):
         bad.append("blocker classification invariants FAILED — blocked tasks can be categorised "
                    "from their own name again, which respawns them indefinitely "
                    "(run test_blocker_classification.py)")
+    if not s.get("repair_ceiling_invariants_ok"):
+        bad.append("repair-termination invariants FAILED — nothing bounds how many times a task "
+                   "can be re-queued; run runner/test_repair_ceiling.py for the specific break")
+    if (s.get("blind_repair_share") or 0) > 0.5:
+        bad.append("%d%% of repairs have no failure evidence — the fleet is guessing, not fixing; "
+                   "check that runs persist log_tail before repair classifies them"
+                   % round(s["blind_repair_share"] * 100))
+    if (s.get("repair_count_max") or 0) > 12:
+        bad.append("a task has been repaired %d times — the repair ceiling is not binding "
+                   "(a call site is resetting remediation_count or bypassing repair_patch)"
+                   % s["repair_count_max"])
     if (s.get("repair_top_share") or 0) > 0.6:
         top = max(s.get("repair_mix_3h") or {"?": 0}, key=(s.get("repair_mix_3h") or {"?": 0}).get)
         bad.append("repairs are %d%% '%s' — one category dominating usually means the classifier "

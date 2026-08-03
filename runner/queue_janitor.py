@@ -59,8 +59,12 @@ def _repair_task(task, category, detail, prefer_non_claude=False):
     patch = agentic_repair.repair_patch(
         task, detail, category=category, directive=directive, prefer_non_claude=prefer_non_claude
     )
-    if "transient_retries" in task:
-        patch["transient_retries"] = int(task.get("transient_retries") or 0)
+    if "transient_retries" in task and not agentic_repair.is_terminal(patch):
+        # Was `= int(...or 0)` — it PRESERVED the counter instead of advancing it, so every
+        # transient_retries-based cap elsewhere in the fleet stayed frozen at the same value no
+        # matter how many times the janitor re-queued the row. Advancing it is the whole point of
+        # writing the field back.
+        patch["transient_retries"] = int(task.get("transient_retries") or 0) + 1
     db.update("tasks", {"id": task["id"]}, patch)
 
 
