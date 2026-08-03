@@ -13,8 +13,12 @@ required a human session, so the orchestrator never sits broken:
                         3 consecutive failures instead of retrying silently forever.
                         (Root cause of the 2026-07-08/09 stale-code incidents; its own -u stash
                         was the root cause of the 07-08..16 intake-drop losses.)
-  3. Runner health   -> 0 runners: kickstart the launchd service. >1 runner/keepalive:
-                        kill the orphans (SIGKILL; supervisor-lock holder wins).
+  3. Runner health   -> launchd JOB not running for 10+ min: plain `launchctl kickstart` (never
+                        `-k`, which force-kills a healthy job head and every in-flight agent),
+                        rate-limited to 3/hour then escalated to a human. Job alive but no
+                        runner.py child: keepalive.sh owns the respawn — report, never restart.
+                        >1 runner/keepalive: kill the orphans (SIGKILL; supervisor-lock holder
+                        wins), never the job head.
   4. RAM clamp       -> free RAM under floor+2GB with a big local model loaded: unload the
                         largest Ollama model (the codestral/qwen 'limit=1' clamp).
   5. Stale code      -> origin/base ahead of local: ff-pull; runner booted on an older commit:
@@ -54,6 +58,19 @@ SWEEP_MIN_INTERVAL_S = int(os.environ.get("SENTINEL_SWEEP_INTERVAL_S", "2700"))
 TRAIN_STALE_S = int(os.environ.get("SENTINEL_TRAIN_STALE_S", "1800"))
 RESTART_STALE_S = int(os.environ.get("SENTINEL_RESTART_STALE_S", "2700"))
 RAM_GUARD_FREE_GB = float(os.environ.get("SENTINEL_RAM_GUARD_FREE_GB", "6"))
+
+# ── runner_guard kickstart policy (see runner_guard for the incident write-up) ────────────
+# Time-based, not tick-based: sentinel runs on TWO interleaving schedules (its own launchd
+# job at StartInterval=120 and runner.py's "sentinel-300" periodic), so "N ticks" is not a
+# duration. Only wall-clock is meaningful.
+RUNNER_MISSING_GRACE_S = int(os.environ.get("SENTINEL_RUNNER_MISSING_GRACE_S", "600"))
+# Circuit breaker: a restart LOOP must escalate to a human, not restart forever.
+KICKSTART_MAX_PER_HOUR = int(os.environ.get("SENTINEL_KICKSTART_MAX_PER_HOUR", "3"))
+KICKSTART_BREAKER_COOLDOWN_S = int(os.environ.get("SENTINEL_KICKSTART_BREAKER_COOLDOWN_S", "3600"))
+# Job alive but no runner.py child for this long => genuinely wedged supervisor. Alert always;
+# only force-restart (-k) if the operator has explicitly opted in.
+JOB_WEDGED_S = int(os.environ.get("SENTINEL_JOB_WEDGED_S", "3600"))
+FORCE_KICKSTART = os.environ.get("ORCH_SENTINEL_FORCE_KICKSTART", "false").lower() in ("1", "true", "yes")
 
 
 def log(action, detail=""):
@@ -598,18 +615,163 @@ def _parent_is_job_head(pid):
     return "ClaudeRunner" in sh("ps", "-o", "command=", "-p", ppid).stdout
 
 
+def _is_job_head(pid):
+    """True if pid IS a launchd job head (the ClaudeRunner.app binary itself).
+
+    Nothing in sentinel may ever signal a job head: killing it takes down the whole job —
+    the supervisor AND every in-flight agent — and KeepAlive=true then restarts it, which
+    is the restart churn we are trying to eliminate. Every kill site checks this."""
+    cmd = sh("ps", "-o", "command=", "-p", str(pid)).stdout
+    return "ClaudeRunner.app" in cmd and "runner.py" not in cmd and "sentinel.py" not in cmd
+
+
+def _runner_pids():
+    """Every live runner.py process, found via several patterns.
+
+    A false NEGATIVE here is the dangerous direction — it makes the guard below believe the
+    runner is dead and restart a healthy fleet — so match broadly and union the results.
+    The real command line is
+      /Applications/Xcode.app/.../Python3.framework/.../MacOS/Python runner.py
+    but the interpreter path is not stable across Xcode/CLT/brew upgrades, so do not rely on
+    any single spelling of it. A false POSITIVE (e.g. an agent whose argv mentions runner.py)
+    only makes us decline to restart, which is safe."""
+    seen, out = set(), []
+    for pat in ("MacOS/Python runner.py", "python3 runner.py",
+                "[Pp]ython[0-9.]* runner\\.py", "[Pp]ython[0-9.]* .*/runner\\.py"):
+        for p in _pids(pat):
+            if p not in seen:
+                seen.add(p)
+                out.append(p)
+    return out
+
+
+def _job_pid(service):
+    """PID of the launchd job head for `service`; 0 if the job is not running; None if
+    launchd's state could not be read.
+
+    None means UNKNOWN and callers must treat it as "assume healthy" — acting on an
+    unreadable launchd state is exactly the fail-open behaviour that caused the incident."""
+    r = sh("launchctl", "print", f"gui/{os.getuid()}/{service}", timeout=25)
+    if r.returncode != 0 or not r.stdout:
+        return None
+    m = re.search(r"^\s*pid\s*=\s*(\d+)\s*$", r.stdout, re.M)
+    if m:
+        pid = int(m.group(1))
+        # confirm against the process table: a stale pid line is worse than no pid line
+        return pid if sh("ps", "-o", "pid=", "-p", str(pid)).stdout.strip() else 0
+    m = re.search(r"^\s*state\s*=\s*(.+?)\s*$", r.stdout, re.M)
+    if m and m.group(1).strip() in ("not running", "waiting", "exited"):
+        return 0
+    return None
+
+
+def _kickstart_allowed(st):
+    """Circuit breaker. More than KICKSTART_MAX_PER_HOUR restarts in an hour is not
+    remediation, it is a restart loop — stop and escalate to a human."""
+    now = time.time()
+    hist = []
+    for t in (st.get("kickstart_history") or []):
+        try:
+            t = float(t)
+        except (TypeError, ValueError):
+            continue
+        if now - t < 3600:
+            hist.append(t)
+    st["kickstart_history"] = hist
+    if len(hist) < KICKSTART_MAX_PER_HOUR:
+        return True
+    if now - float(st.get("kickstart_breaker_alert_t") or 0) > KICKSTART_BREAKER_COOLDOWN_S:
+        st["kickstart_breaker_alert_t"] = now
+        msg = (f"KICKSTART BREAKER TRIPPED: {len(hist)} kickstarts of {SERVICE} in the last "
+               f"hour (limit {KICKSTART_MAX_PER_HOUR}). Refusing to restart it again — this is "
+               "a restart LOOP, not a recoverable fault. Needs a human.")
+        log("kickstart-breaker", msg)
+        emit("kickstart-breaker-tripped", service=SERVICE, count=len(hist),
+             limit=KICKSTART_MAX_PER_HOUR)
+        try:
+            import notify
+            notify.send("[sentinel] " + msg)
+        except Exception:
+            pass
+    return False
+
+
+def _do_kickstart(st, force, why):
+    args = ["launchctl", "kickstart"] + (["-k"] if force else []) + [f"gui/{os.getuid()}/{SERVICE}"]
+    log("runner-kickstart", f"{'FORCE (-k, kills the running job) ' if force else ''}{why} :: "
+                            f"{' '.join(args)}")
+    emit("runner-kickstart", service=SERVICE, force=bool(force), why=why)
+    sh(*args, timeout=30)
+    st.setdefault("kickstart_history", []).append(time.time())
+    st["runner_missing_since"] = 0
+
+
 def runner_guard(st):
-    runners = _pids("MacOS/Python runner.py") + _pids("python3 runner.py")
+    """Keep exactly one runner alive — without ever restarting a healthy job.
+
+    2026-08-03 incident: this function used to do
+        if no runner.py child seen twice: launchctl kickstart -k gui/<uid>/<runner service>
+    `-k` force-kills the ENTIRE launchd job — the resident ClaudeRunner job head, keepalive.sh
+    and every in-flight agent — and launchd, not sentinel, delivers that SIGTERM, so sentinel
+    never appeared on the process table at signal time and process-level instrumentation kept
+    exonerating it. Because runner.py legitimately exits and is respawned by keepalive.sh, a
+    momentary gap between child processes was enough to trigger it: sentinel killed the job to
+    "repair" a restart that was already in progress, causing the next restart. Self-amplifying;
+    638 `kickstarting` entries, job cycling every 9-12 min.
+
+    The rules now:
+      * the launchd JOB is the health signal, not the runner.py child. Job has a live pid =>
+        healthy => never restart, whatever the child process table looks like.
+      * plain `kickstart` (starts a stopped job), never `-k` (force-kills a running one),
+        unless an operator explicitly opts in via ORCH_SENTINEL_FORCE_KICKSTART.
+      * wall-clock grace, not tick counts (two interleaving schedules feed this function).
+      * a rate limit that escalates to a human instead of looping.
+    """
+    runners = _runner_pids()
     keepalives = _pids("keepalive.sh")
     if not runners:
-        misses = int(st.get("runner_misses", 0)) + 1
-        st["runner_misses"] = misses
-        if misses >= 2:  # ~4 min without a runner
-            log("runner-missing", f"kickstarting {SERVICE}")
-            sh("launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{SERVICE}")
-            st["runner_misses"] = 0
+        job_pid = _job_pid(SERVICE)
+        since = float(st.get("runner_missing_since") or 0) or time.time()
+        st["runner_missing_since"] = since
+        gap = int(time.time() - since)
+        if job_pid is None:
+            # Could not read launchd state. Unknown != dead. Do nothing.
+            log("runner-missing-unknown", f"no runner.py child ({gap}s) but launchd state for "
+                                          f"{SERVICE} is unreadable — NOT restarting")
+            return
+        if job_pid > 0:
+            # THE case that caused the loop. The job head is alive, so its keepalive.sh owns
+            # respawning runner.py. Restarting here kills a healthy job to fix nothing.
+            log("runner-child-gap", f"job {SERVICE} healthy (pid={job_pid}); no runner.py child "
+                                    f"for {gap}s — keepalive owns respawn, NOT kickstarting")
+            if gap >= JOB_WEDGED_S:
+                msg = (f"job {SERVICE} (pid={job_pid}) has had NO runner.py child for {gap}s "
+                       f"(>{JOB_WEDGED_S}s): its supervisor looks wedged.")
+                if FORCE_KICKSTART and _kickstart_allowed(st):
+                    _do_kickstart(st, True, msg + " ORCH_SENTINEL_FORCE_KICKSTART=true")
+                else:
+                    log("job-wedged", msg + " NOT force-restarting (set "
+                        "ORCH_SENTINEL_FORCE_KICKSTART=true to allow `kickstart -k`, which "
+                        "kills the job head and every in-flight agent). Escalating instead.")
+                    emit("job-wedged", service=SERVICE, pid=job_pid, gap_s=gap)
+                    try:
+                        import notify
+                        notify.send("[sentinel] " + msg)
+                    except Exception:
+                        pass
+            return
+        # job_pid == 0: launchd says the job is genuinely NOT running. This is the only case
+        # the original intent (restart a dead runner) actually applies to.
+        if gap < RUNNER_MISSING_GRACE_S:
+            log("runner-missing", f"job {SERVICE} not running for {gap}s "
+                                  f"(grace {RUNNER_MISSING_GRACE_S}s) — waiting")
+            return
+        if not _kickstart_allowed(st):
+            return
+        _do_kickstart(st, False, f"job {SERVICE} not running for {gap}s")
         return
-    st["runner_misses"] = 0
+    st["runner_missing_since"] = 0
+    st["runner_misses"] = 0  # legacy key, kept zeroed so a stale value can't resurrect
     if len(runners) > 1:
         # keep the newest (freshest code), kill the rest
         by_start = []
@@ -620,6 +782,9 @@ def runner_guard(st):
             by_start.append((secs, p))
         by_start.sort()  # ascending elapsed -> [0] is the youngest/freshest, keep it
         for _, p in by_start[1:]:
+            if _is_job_head(p):
+                log("extra-runner-skipped", f"{p} is the launchd job head — never signal it")
+                continue
             log("extra-runner-killed", p)
             sh("kill", "-9", p)
     if len(keepalives) > 1:
@@ -636,7 +801,7 @@ def runner_guard(st):
                 # That resident one is exec'd from ClaudeRunner.app, so killing it exits the job
                 # head, and KeepAlive=true restarts the job — which is the restart churn that was
                 # killing agents mid-run in the first place. Only reap genuine strays.
-                if _parent_is_job_head(p):
+                if _parent_is_job_head(p) or _is_job_head(p):
                     continue
                 log("extra-keepalive-killed", p)
                 sh("kill", "-9", p)
@@ -661,8 +826,12 @@ def runner_guard(st):
             except Exception:
                 age = 0
             if age > stale_s and runners:
-                log("runner-wedged", f"heartbeat stale {int(age)}s but process alive — cycling {runners[0]}")
-                sh("kill", "-9", runners[0])  # keepalive respawns on current code
+                if _is_job_head(runners[0]):
+                    log("runner-wedged-skipped",
+                        f"{runners[0]} is the launchd job head — never signal it")
+                else:
+                    log("runner-wedged", f"heartbeat stale {int(age)}s but process alive — cycling {runners[0]}")
+                    sh("kill", "-9", runners[0])  # keepalive respawns on current code
     except Exception as e:
         log("liveness-check-error", e)
 
@@ -691,8 +860,10 @@ def zombie_agent_reaper():
         low = cmd.lower()
         is_agent = any(t in low for t in ("/gemini", "bin/gemini", "aider", "codex exec",
                                           "claude --", "claude exec", " grok"))
-        # never reap the fleet's own python processes or ollama server
-        if is_agent and "runner.py" not in low and "sentinel.py" not in low and "ollama serve" not in low:
+        # never reap the fleet's own python processes, the launchd job heads, or ollama server
+        if (is_agent and "runner.py" not in low and "sentinel.py" not in low
+                and "ollama serve" not in low and "clauderunner.app" not in low
+                and "keepalive.sh" not in low):
             log("zombie-agent-reaped", f"pid={pid} age={secs//60}min {cmd[:60]}")
             sh("kill", "-9", pid)
             reaped += 1
@@ -772,7 +943,7 @@ def stale_code_guard():
                 f.write(f"reason=sentinel: runner boot {boot[:9]} != HEAD {head[:9]}\n")
             log("restart-requested", f"{boot[:9]} -> {head[:9]}")
         elif time.time() - os.path.getmtime(req) > RESTART_STALE_S:
-            runners = _pids("MacOS/Python runner.py") + _pids("python3 runner.py")
+            runners = _runner_pids()
             # SUPERVISOR CONSOLIDATION (2026-08-03): this `sh("kill", p)` is a BARE kill, i.e.
             # SIGTERM — the only SIGTERM-emitting kill site in sentinel (every other one is -9).
             # It is a third supervisor racing launchd and keepalive.sh for the runner's lifecycle,
@@ -782,6 +953,8 @@ def stale_code_guard():
             # ORCH_SENTINEL_CYCLE_RUNNER=true.
             if os.environ.get("ORCH_SENTINEL_CYCLE_RUNNER", "false").lower() in ("1", "true", "yes"):
                 for p in runners:
+                    if _is_job_head(p):
+                        continue
                     log("runner-cycled", f"cooperative restart ignored {RESTART_STALE_S}s; killing {p}")
                     sh("kill", p)
             else:
