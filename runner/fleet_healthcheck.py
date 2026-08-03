@@ -61,8 +61,12 @@ def collect():
     out["ollama_loaded"] = int(_sh("pgrep -c llama-server") or 0)
     out["disabled_jobs"] = list(_read_json("disabled_jobs.json").keys())
 
+    # A .err file being *written* recently is not the same as a job failing: fleet_control logs
+    # informational config-pin notices to stderr, and flagging those cried wolf on the first run.
+    # Require an actual exception in the file's tail as well as a recent write.
     errs = _sh("cd %s/logs 2>/dev/null && for f in *.err; do "
                "[ -s \"$f\" ] && [ $(( ($(date +%%s) - $(stat -f %%m \"$f\")) / 60 )) -le 15 ] "
+               "&& tail -25 \"$f\" | grep -qE '^[A-Za-z_.]*(Error|Exception):' "
                "&& echo ${f%%.err}; done" % RUNTIME)
     out["live_error_jobs"] = [e for e in errs.split("\n") if e]
     return out
