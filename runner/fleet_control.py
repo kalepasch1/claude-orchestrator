@@ -65,15 +65,53 @@ def _safe_key(k):
     return any(ku.startswith(p) for p in _SAFE_PREFIXES)
 
 
+# CONFIG PRECEDENCE (2026-08-03). fleet_config (the DB) is the fleet-wide SOURCE OF TRUTH and
+# deliberately outranks runner/.env — but it used to do so SILENTLY and unconditionally, on every
+# loop. A machine-local memory retune written into .env (MAX_PARALLEL_CEILING=24, RAM_FLOOR_GB=6,
+# PER_TASK_GB=0.75) was therefore replaced by stale DB values (10 / 1.0 / 0.5) on the very next
+# tick, and the two sources disagreed with nothing in any log to say so. RAM_FLOOR_GB=1.0 in
+# particular let the governor admit tasks until only 1GB was free, which is how the runner earned
+# its SIGKILL(137) deaths. Two changes, both reversible:
+#   1. ORCH_CONFIG_ENV_PINS — comma-separated keys whose LOCAL .env value wins over the DB, for
+#      genuinely per-machine knobs. Empty by default, so DB precedence is unchanged out of the box.
+#   2. every *effective* change is logged once (both sides shown), so precedence is auditable
+#      instead of invisible. Logged on change only — this runs every loop.
+_applied_config = {}
+
+
+def _env_pins():
+    """Keys pinned to this machine's local .env value; fleet_config cannot override them."""
+    raw = os.environ.get("ORCH_CONFIG_ENV_PINS", "")
+    return {p.strip().upper() for p in raw.split(",") if p.strip()}
+
+
 def load_config():
-    """Apply central fleet_config into this process's env (safe keys only, gated keys skipped)."""
+    """Apply central fleet_config into this process's env (safe keys only, gated keys skipped).
+
+    Precedence: fleet_config (DB) > runner/.env, EXCEPT for keys named in ORCH_CONFIG_ENV_PINS,
+    where the local .env wins. Every change is logged to stderr with both values.
+    """
     n = 0
     try:
         blocked = config_approval.blocked_keys()
+        pins = _env_pins()
         for row in (db.select("fleet_config", {"select": "key,value"}) or []):
             k, v = row.get("key"), row.get("value")
             if k and v is not None and _safe_key(k) and k not in blocked:
-                os.environ[k] = str(v)
+                new = str(v)
+                if k.upper() in pins:
+                    if _applied_config.get(k) != "\0pin\0" + new:
+                        _applied_config[k] = "\0pin\0" + new
+                        sys.stderr.write(
+                            f"[fleet_control] config {k}: PINNED to local .env value "
+                            f"{os.environ.get(k, '<unset>')!r}; ignoring fleet_config {new!r}\n")
+                    continue
+                cur = os.environ.get(k)
+                if cur != new and _applied_config.get(k) != new:
+                    sys.stderr.write(
+                        f"[fleet_control] config {k}: fleet_config {new!r} overrides local {cur!r}\n")
+                _applied_config[k] = new
+                os.environ[k] = new
                 n += 1
     except Exception as e:
         # FIX 2026-07-29: `log` was never defined — a config-load failure made the error handler
@@ -81,6 +119,22 @@ def load_config():
         import sys
         sys.stderr.write(f"[fleet_control] fleet_config load failed: {e}\n")
     return n
+
+
+def get_fleet_config(key, default=""):
+    """Get a fleet_config value from environment with ORCH_ prefix validation.
+
+    Reads ORCH_{key} from env (loaded via load_config). Returns default on
+    missing/invalid keys. Never raises — fail-soft by design.
+    """
+    if not key or not isinstance(key, str):
+        return default
+    try:
+        env_key = f"ORCH_{key}".upper()
+        value = os.environ.get(env_key, "").strip()
+        return value if value else default
+    except Exception:
+        return default
 
 
 def update_fleet_config(key, value):
@@ -165,6 +219,36 @@ except Exception:
     _STARTUP_HEAD = ""
 
 
+_drift_seen = {"t": 0.0}
+
+
+def _local_active_tasks():
+    """Best-effort count of tasks in flight on THIS host. Returns 0 when unknown.
+
+    Fail-soft by design: if we cannot tell, we return 0 so drift restart keeps its
+    original (eager) behaviour rather than deferring forever on a broken query.
+    """
+    try:
+        rows = db.select("runner_heartbeats", {
+            "select": "active_tasks,last_seen,hostname",
+            "hostname": f"eq.{HOST}",
+        }) or []
+        now = datetime.datetime.now(datetime.timezone.utc)
+        total = 0
+        for r in rows:
+            try:
+                seen = datetime.datetime.fromisoformat(
+                    str(r.get("last_seen") or "").replace("Z", "+00:00"))
+            except Exception:
+                continue
+            # only trust heartbeats from live runners
+            if (now - seen).total_seconds() <= 300:
+                total += int(r.get("active_tasks") or 0)
+        return total
+    except Exception:
+        return 0
+
+
 def code_drift_restart():
     """Self-restart when the running process is older than the code on disk."""
     if os.environ.get("ORCH_CODE_DRIFT_RESTART", "true").lower() not in ("true", "1", "yes"):
@@ -181,6 +265,26 @@ def code_drift_restart():
                    if l.startswith("runner/") and l.endswith(".py")]
         if not touched:
             return False
+        # GRACEFUL DRAIN (2026-08-02): _restart() is os._exit(0) — it kills every
+        # in-flight task mid-execution, which reverts them to QUEUED and throws away
+        # the work. When the orchestrator is improving its OWN runner/ code, drift is
+        # near-continuous (~6 commits/hr to runner/*.py), so an eager restart livelocks
+        # the fleet: measured 5 restarts in one hour vs 1 merge in that hour, with the
+        # runner never surviving long enough to finish a task. Defer while work is in
+        # flight — but never past the deadline, so stale code cannot run indefinitely.
+        busy = _local_active_tasks()
+        max_defer = float(os.environ.get("ORCH_CODE_DRIFT_MAX_DEFER", "3600"))
+        if busy > 0:
+            if not _drift_seen["t"]:
+                _drift_seen["t"] = time.time()
+            waited = time.time() - _drift_seen["t"]
+            if waited < max_defer:
+                print(f"fleet_control: code drift {_STARTUP_HEAD[:8]}->{head[:8]} "
+                      f"({len(touched)} runner .py files) — deferring restart, {busy} task(s) "
+                      f"in flight ({waited:.0f}s/{max_defer:.0f}s) on {HOST}", flush=True)
+                return False
+            print(f"fleet_control: code drift defer deadline reached after {waited:.0f}s — "
+                  f"restarting with {busy} task(s) still in flight on {HOST}", flush=True)
         print(f"fleet_control: code drift {_STARTUP_HEAD[:8]}->{head[:8]} "
               f"({len(touched)} runner .py files) — self-restarting on {HOST}", flush=True)
         _restart()
