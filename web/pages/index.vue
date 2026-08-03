@@ -58,7 +58,9 @@ async function authedFetch<T = any>(url: string, opts: any = {}): Promise<T> {
   return $fetch<T>(url, { ...opts, headers: { ...(opts.headers || {}), ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) } })
 }
 
-function alive(r: any) { return Date.now() - new Date(r.last_seen).getTime() < 60_000 }
+// 2026-08-03: 60s was tighter than the heartbeat cadence (~1-2 min), so healthy runners
+// flapped to 'dead'. 3 min tolerates one missed beat without hiding a real outage.
+function alive(r: any) { return Date.now() - new Date(r.last_seen).getTime() < 180_000 }
 function ago(ts: string) {
   const minutes = Math.round((Date.now() - new Date(ts).getTime()) / 60_000)
   if (!Number.isFinite(minutes)) return ''
@@ -98,8 +100,15 @@ function readableState(state: string) {
 }
 
 async function loadAll() {
-  const [taskRows, approvalRows, projectRows, runnerRows, spendRows, outcomeRows, controlRows, capabilityRows] = await Promise.all([
-    supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(50),
+  // FIX 2026-08-03 (cowork): this destructuring was misaligned — 20 queries but 8 names,
+  // so runners<-budgets, providerSpend<-runs, outcomes<-v_project_health, controls<-goals.
+  // Every headline metric on Mission Control read the wrong table. Names now match order,
+  // and runner_heartbeats (the real liveness source) is queried instead of nothing.
+  const [taskRows, approvalRows, projectRows, budgetRows, runRows, healthRows, goalRows,
+         actionInboxRows, txnRows, capabilityRows, capabilityInstanceRows, capabilityProvenanceRows,
+         proposalRows, loopRows, sessionActionRows, feedbackRows, providerSpendRows, outcomeRows,
+         controlRows, capabilityAllRows, runnerRows] = await Promise.all([
+    supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(2000),
     supabase.from('approvals').select('*').eq('status', 'pending').order('created_at'),
     supabase.from('projects').select('*').order('name'),
     supabase.from('budgets').select('*'),
@@ -120,10 +129,12 @@ async function loadAll() {
     supabase.from('outcomes').select('model,usd,project,tests_passed,integrated,created_at,slug').order('created_at', { ascending: false }).limit(500),
     supabase.from('controls').select('*'),
     supabase.from('capabilities').select('*'),
+    supabase.from('runner_heartbeats').select('*').order('last_seen', { ascending: false }),
   ])
   tasks.value = taskRows.data || []; approvals.value = approvalRows.data || []; projects.value = projectRows.data || []
-  runners.value = runnerRows.data || []; providerSpend.value = spendRows.data || []; outcomes.value = outcomeRows.data || []
-  capabilities.value = capabilityRows.data || []; globalPaused.value = (controlRows.data || []).some((c: any) => c.scope === 'global' && c.paused)
+  runners.value = runnerRows.data || []; providerSpend.value = providerSpendRows.data || []; outcomes.value = outcomeRows.data || []
+  capabilities.value = capabilityRows.data || []; budgets.value = budgetRows.data || []; loops.value = loopRows.data || []
+  globalPaused.value = (controlRows.data || []).some((c: any) => c.scope === 'global' && c.paused)
 }
 
 async function submitIntent(projectId?: string) {
