@@ -203,6 +203,48 @@ _DEF_RX = (r"(^|\s)(def|class|function|const|let|var|type|interface|enum)\s+%s\b
            r"|^%s\s*[:=]")
 
 
+def _undefined_names(source):
+    """Names the module READS but never binds, or None if it will not parse.
+
+    Delegates to regression_guard's scope walker so both guards agree on what "undefined"
+    means; falls back to a local copy of the same walk if that import is unavailable, since
+    this guard must never fail open just because a sibling module moved.
+    """
+    try:
+        import regression_guard
+        return regression_guard._ast_undefined(source)
+    except Exception:
+        pass
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+    bound = set(dir(__builtins__) if isinstance(__builtins__, type(os)) else __builtins__)
+    bound |= {"__name__", "__file__", "__doc__", "self", "cls"}
+    loads = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name):
+            (bound if isinstance(node.ctx, (ast.Store, ast.Del)) else loads).add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            bound.add(node.name)
+            a = node.args
+            for arg in list(a.args) + list(a.kwonlyargs) + list(getattr(a, "posonlyargs", [])):
+                bound.add(arg.arg)
+            for extra in (a.vararg, a.kwarg):
+                if extra:
+                    bound.add(extra.arg)
+        elif isinstance(node, ast.ClassDef):
+            bound.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                bound.add((alias.asname or alias.name).split(".")[0])
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)):
+            bound.update(node.names)
+    return loads - bound
+
+
 def _defined_or_referenced(repo, ref, path, name, result_src):
     """(defined_elsewhere, referenced) for a symbol missing from the resolved file.
 
@@ -217,10 +259,25 @@ def _defined_or_referenced(repo, ref, path, name, result_src):
         CANARY_ENABLED / CANARY_PERCENT.
 
     Fast path first: most references live in the same file we already have in memory.
+
+    "Referenced" is answered with the AST, not a word search. A bare `\\bname\\b` match calls
+    every dropped symbol named `run`, `log`, `check`, `start` or `health` a live reference,
+    because those words occur in docstrings, in `subprocess.run(...)`, and as attributes of
+    unrelated objects. The precise question is whether the resolved module now READS a name
+    that nothing defines -- which is the actual breakage, and which is exactly what
+    route_request() did to CANARY_ENABLED in 71cfd4ca6.
     """
-    if result_src and re.search(r"\b%s\b" % re.escape(name), result_src):
-        # Present in the same file but not as a top-level definition -> it is read here.
-        return False, True
+    if result_src and path.endswith(PY_EXT):
+        undefined = _undefined_names(result_src)
+        if undefined is not None:
+            return (False, True) if name in undefined else (False, False)
+    if result_src and not path.endswith(PY_EXT):
+        # TS/JS: require a usage shape, not a bare word. Exclude `.name` (a property of some
+        # other object) and `name:` (an object-literal key).
+        if re.search(r"(?<![.\w])%s\s*(?:\(|[-+*/=<>,;)\]}]|$)" % re.escape(name),
+                     result_src, re.M):
+            return False, True
+        return False, False
     rc, out, _ = _git(repo, "grep", "-l", "-w", "-e", name, ref)
     if rc != 0 or not out.strip():
         return False, False

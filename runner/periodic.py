@@ -411,6 +411,21 @@ def run_stubguard():
     import stub_guard; stub_guard.run()
 
 
+def run_divergent():
+    """Merges that dropped a symbol because both sides authored the same file (71cfd4ca6)."""
+    import divergent_authorship_guard; divergent_authorship_guard.run()
+
+
+def run_worktreeguard():
+    """Pin uncommitted work in every worktree to a rescue ref so no bot can destroy it."""
+    import worktree_ownership_guard; worktree_ownership_guard.run()
+
+
+def run_deploysilence():
+    """Projects with ZERO successful production deploys in N days — absence of deploys is invisible."""
+    import deploy_silence_detector; deploy_silence_detector.run()
+
+
 def run_remotegc():
     """GC stale remote agent/* branches (fills gap branch_gc.py doesn't cover)."""
     import workflow_guardrails
@@ -960,6 +975,9 @@ JOBS = {
     "botcommits": run_botcommits,
     "crashloop": run_crashloop,
     "stubguard": run_stubguard,
+    "divergent": run_divergent,
+    "worktreeguard": run_worktreeguard,
+    "deploysilence": run_deploysilence,
     "remotegc": run_remotegc,
     "releasetrain": run_releasetrain,
     "deployverify": run_deployverify,
