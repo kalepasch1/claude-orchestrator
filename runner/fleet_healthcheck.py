@@ -69,6 +69,34 @@ def collect():
                "&& tail -25 \"$f\" | grep -qE '^[A-Za-z_.]*(Error|Exception):' "
                "&& echo ${f%%.err}; done" % RUNTIME)
     out["live_error_jobs"] = [e for e in errs.split("\n") if e]
+
+    # Classification invariants. If these break, blocked tasks get categorised from their own
+    # name again and the repair pipeline starts respawning them indefinitely — the single
+    # largest source of the 2026-08-03 backlog, and invisible in every other metric here.
+    rc = subprocess.run([sys.executable, os.path.join(HERE, "test_blocker_classification.py")],
+                        capture_output=True, text=True)
+    out["classification_invariants_ok"] = rc.returncode == 0
+
+    # Repair mix: a healthy fleet repairs a variety of causes. One category dominating means the
+    # classifier is probably matching on identity rather than evidence again.
+    try:
+        import db as _db
+        import collections
+        import datetime as _dt
+        since = (datetime.datetime.now(datetime.timezone.utc) - _dt.timedelta(hours=3)).isoformat()
+        rows = _db.select("tasks", {"select": "note", "updated_at": "gte.%s" % since,
+                                    "limit": "400"}) or []
+        mix = collections.Counter()
+        for r in rows:
+            note = str(r.get("note") or "")
+            if note.startswith("agentic-repair:"):
+                mix[note.split(":", 1)[1].split()[0]] += 1
+        out["repair_mix_3h"] = dict(mix.most_common(6))
+        total = sum(mix.values())
+        out["repair_top_share"] = round(max(mix.values()) / total, 2) if total >= 20 else None
+    except Exception:
+        out["repair_mix_3h"] = {}
+        out["repair_top_share"] = None
     return out
 
 
@@ -98,6 +126,15 @@ def verdict(s):
                    % (round(created / max(done, 1)), created, done))
     if s.get("live_error_jobs"):
         bad.append("jobs erroring right now: %s" % ", ".join(s["live_error_jobs"][:6]))
+    if s.get("classification_invariants_ok") is False:
+        bad.append("blocker classification invariants FAILED — blocked tasks can be categorised "
+                   "from their own name again, which respawns them indefinitely "
+                   "(run test_blocker_classification.py)")
+    if (s.get("repair_top_share") or 0) > 0.6:
+        top = max(s.get("repair_mix_3h") or {"?": 0}, key=(s.get("repair_mix_3h") or {"?": 0}).get)
+        bad.append("repairs are %d%% '%s' — one category dominating usually means the classifier "
+                   "is matching on task identity rather than failure evidence"
+                   % (round(s["repair_top_share"] * 100), top))
     return bad
 
 
