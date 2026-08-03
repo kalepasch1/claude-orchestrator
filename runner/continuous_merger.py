@@ -28,6 +28,8 @@ Usage from runner.py:
     # In set_state, when state == "DONE":
     continuous_merger.on_task_done(task_dict)
 """
+from __future__ import annotations  # PY3.9 fleet: PEP-604 'str | None' annotations
+# would raise TypeError at import time, making this whole module silently unimportable.
 import os
 import sys
 import subprocess

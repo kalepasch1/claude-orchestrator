@@ -1,18 +1,36 @@
 #!/usr/bin/env python3
 """Convention linter for claude-orchestrator runner.
 
-Enforces 5 key conventions from CLAUDE.md:
+Enforces conventions from CLAUDE.md:
 1. ORCH_ prefix for config keys
 2. No hardcoded secrets in config keys
 3. Fail-soft error handling (no bare except/raise)
 4. Module-level singleton pattern
 5. Return sensible defaults on error
+6. Naming conventions (snake_case for functions/variables)
+7. No magic numbers (use constants instead)
+8. Proper syntax (no syntax errors)
 """
 
 import ast
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Tuple, Set
+from typing import List, Tuple, Set, Optional
+
+
+@dataclass
+class ConventionViolation:
+    """Represents a convention violation."""
+    filepath: str
+    lineno: int
+    rule: str
+    severity: str  # 'error', 'warning', 'info'
+    message: str
+
+    def __str__(self) -> str:
+        """Format violation for output."""
+        return f"{self.filepath}:{self.lineno}: {self.rule}: {self.message}"
 
 
 # Safe config keys that don't require ORCH_ prefix
@@ -35,7 +53,9 @@ class ConventionChecker(ast.NodeVisitor):
 
     def __init__(self, filepath: str):
         self.filepath = filepath
+        # Keep violations as tuples for backward compatibility
         self.violations: List[Tuple[int, str, str]] = []
+        self._v2_violations: List[ConventionViolation] = []
         self.current_function_name = None
         self.in_module_level = True
 
@@ -49,13 +69,28 @@ class ConventionChecker(ast.NodeVisitor):
         if self.in_module_level and node.args.args:
             first_arg = node.args.args[0].arg
             if first_arg == "self":
-                self.violations.append(
-                    (
-                        node.lineno,
-                        "module-singleton-pattern",
-                        f"Module-level function '{node.name}' has 'self' parameter; use module delegation instead",
-                    )
-                )
+                msg = f"Module-level function '{node.name}' has 'self' parameter; use module delegation instead"
+                self.violations.append((node.lineno, "module-singleton-pattern", msg))
+                self._v2_violations.append(ConventionViolation(
+                    filepath=self.filepath,
+                    lineno=node.lineno,
+                    rule="MODULE_SINGLETON_PATTERN",
+                    severity="error",
+                    message=msg
+                ))
+
+        # Check naming convention (snake_case)
+        if not self._is_valid_identifier(node.name) and node.name.startswith("_"):
+            pass  # Private functions are OK
+        elif not self._is_snake_case(node.name):
+            msg = f"Function '{node.name}' should use snake_case naming convention"
+            self._v2_violations.append(ConventionViolation(
+                filepath=self.filepath,
+                lineno=node.lineno,
+                rule="NAMING_CONVENTION",
+                severity="warning",
+                message=msg
+            ))
 
         self.in_module_level = False
         self.generic_visit(node)
@@ -90,24 +125,29 @@ class ConventionChecker(ast.NodeVisitor):
         for handler in node.handlers:
             # Check for bare except or except Exception without return
             if handler.type is None:
-                self.violations.append(
-                    (
-                        handler.lineno,
-                        "fail-soft-error-handling",
-                        "Bare 'except:' clause found; use specific exceptions and return sensible default",
-                    )
-                )
+                msg = "Bare 'except:' clause found; use specific exceptions and return sensible default"
+                self.violations.append((handler.lineno, "fail-soft-error-handling", msg))
+                self._v2_violations.append(ConventionViolation(
+                    filepath=self.filepath,
+                    lineno=handler.lineno,
+                    rule="FAIL_SOFT_ERROR",
+                    severity="error",
+                    message=msg
+                ))
             elif self._is_broad_exception(handler.type):
                 # Check if handler returns a default value
                 has_return = self._handler_returns_default(handler)
                 if not has_return:
-                    self.violations.append(
-                        (
-                            handler.lineno,
-                            "fail-soft-error-handling",
-                            f"Broad exception '{self._get_exception_name(handler.type)}' without returning sensible default",
-                        )
-                    )
+                    exc_name = self._get_exception_name(handler.type)
+                    msg = f"Broad exception '{exc_name}' without returning sensible default"
+                    self.violations.append((handler.lineno, "fail-soft-error-handling", msg))
+                    self._v2_violations.append(ConventionViolation(
+                        filepath=self.filepath,
+                        lineno=handler.lineno,
+                        rule="FAIL_SOFT_ERROR",
+                        severity="error",
+                        message=msg
+                    ))
 
         self.generic_visit(node)
 
@@ -123,7 +163,7 @@ class ConventionChecker(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Assign(self, node: ast.Assign) -> None:
-        """Check assignments for hardcoded secrets (Rule 2)."""
+        """Check assignments for hardcoded secrets and magic numbers (Rule 2, 7)."""
         # Check if assigning a string constant that looks like a secret
         if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
             value_str = node.value.value
@@ -140,13 +180,33 @@ class ConventionChecker(ast.NodeVisitor):
                             pattern in var_name
                             for pattern in _SECRET_PATTERNS
                         ):
-                            self.violations.append(
-                                (
-                                    node.lineno,
-                                    "no-hardcoded-secrets",
-                                    f"Hardcoded secret detected in assignment to '{target.id}'",
-                                )
-                            )
+                            msg = f"Hardcoded secret detected in assignment to '{target.id}'"
+                            self.violations.append((node.lineno, "no-hardcoded-secrets", msg))
+                            self._v2_violations.append(ConventionViolation(
+                                filepath=self.filepath,
+                                lineno=node.lineno,
+                                rule="NO_HARDCODED_SECRETS",
+                                severity="error",
+                                message=msg
+                            ))
+
+        # Check for magic numbers
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, (int, float)):
+            # Skip zero, one (commonly allowed)
+            if node.value.value not in (0, 1, -1):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        var_name = target.id
+                        # Only flag if variable is not in UPPERCASE (i.e., not a constant)
+                        if not (var_name.isupper() and "_" in var_name):
+                            msg = f"Magic number {node.value.value} should be assigned to a named constant"
+                            self._v2_violations.append(ConventionViolation(
+                                filepath=self.filepath,
+                                lineno=node.lineno,
+                                rule="MAGIC_NUMBERS",
+                                severity="warning",
+                                message=msg
+                            ))
 
         self.generic_visit(node)
 
@@ -198,24 +258,42 @@ class ConventionChecker(ast.NodeVisitor):
         """Check if config key follows conventions (Rules 1 & 2)."""
         # Rule 1: Check ORCH_ prefix or safe key
         if not key.startswith("ORCH_") and key not in _SAFE_CONFIG_KEYS:
-            self.violations.append(
-                (
-                    lineno,
-                    "config-orch-prefix",
-                    f"Config key '{key}' missing ORCH_ prefix or not in safe allowlist",
-                )
-            )
+            msg = f"Config key '{key}' missing ORCH_ prefix or not in safe allowlist"
+            self.violations.append((lineno, "config-orch-prefix", msg))
+            self._v2_violations.append(ConventionViolation(
+                filepath=self.filepath,
+                lineno=lineno,
+                rule="CONFIG_KEY_NAMING",
+                severity="error",
+                message=msg
+            ))
 
         # Rule 2: Check for secret patterns in key name
         key_lower = key.lower()
         if any(pattern in key_lower for pattern in _SECRET_PATTERNS):
-            self.violations.append(
-                (
-                    lineno,
-                    "no-hardcoded-secrets",
-                    f"Config key '{key}' contains secret pattern; use env var instead",
-                )
-            )
+            msg = f"Config key '{key}' contains secret pattern; use env var instead"
+            self.violations.append((lineno, "no-hardcoded-secrets", msg))
+            self._v2_violations.append(ConventionViolation(
+                filepath=self.filepath,
+                lineno=lineno,
+                rule="CONFIG_KEY_NAMING",
+                severity="error",
+                message=msg
+            ))
+
+    @staticmethod
+    def _is_snake_case(name: str) -> bool:
+        """Check if identifier is in snake_case."""
+        if "_" not in name and name.islower():
+            return True
+        if name.islower() and all(c.islower() or c == "_" or c.isdigit() for c in name):
+            return True
+        return False
+
+    @staticmethod
+    def _is_valid_identifier(name: str) -> bool:
+        """Check if identifier is valid Python."""
+        return name.isidentifier()
 
     @staticmethod
     def _is_broad_exception(exc_type: ast.expr) -> bool:
@@ -263,7 +341,7 @@ class ConventionChecker(ast.NodeVisitor):
 
 
 def lint_file(filepath: str) -> List[Tuple[int, str, str]]:
-    """Lint a single Python file."""
+    """Lint a single Python file. Returns legacy tuple format."""
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             content = f.read()
@@ -278,6 +356,57 @@ def lint_file(filepath: str) -> List[Tuple[int, str, str]]:
     checker = ConventionChecker(filepath)
     checker.visit(tree)
     return checker.violations
+
+
+def check_file(filepath: str) -> List[ConventionViolation]:
+    """Check a single Python file for convention violations."""
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            content = f.read()
+    except (FileNotFoundError, PermissionError):
+        return []
+
+    try:
+        tree = ast.parse(content, filename=filepath)
+    except SyntaxError as e:
+        return [ConventionViolation(
+            filepath=filepath,
+            lineno=e.lineno or 1,
+            rule="SYNTAX_ERROR",
+            severity="error",
+            message=f"Syntax error: {e.msg}"
+        )]
+
+    checker = ConventionChecker(filepath)
+    checker.visit(tree)
+    return checker._v2_violations
+
+
+def scan_directory(directory: str, exclude_dirs: Optional[Set[str]] = None) -> List[ConventionViolation]:
+    """Scan a directory for convention violations."""
+    if exclude_dirs is None:
+        exclude_dirs = {"venv", ".venv", "__pycache__", ".git", "node_modules", ".pytest_cache"}
+
+    all_violations = []
+    root = Path(directory)
+
+    for py_file in root.rglob("*.py"):
+        # Skip excluded directories
+        skip = False
+        for excluded in exclude_dirs:
+            if excluded in py_file.parts:
+                skip = True
+                break
+
+        if skip:
+            continue
+
+        violations = check_file(str(py_file))
+        all_violations.extend(violations)
+
+    # Sort by filepath and line number
+    all_violations.sort(key=lambda v: (v.filepath, v.lineno))
+    return all_violations
 
 
 def main() -> int:

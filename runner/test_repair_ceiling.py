@@ -49,11 +49,12 @@ check("a parked task does not have its repair count advanced",
       p["remediation_count"] == ar.GLOBAL_REPAIR_CEILING)
 
 # 3. Blind repairs get a lower ceiling — guessing repeatedly cannot converge.
-p = ar.repair_patch(task(remediation_count=ar.BLIND_REPAIR_CEILING), "", category="missing-branch")
+p = ar.repair_patch(task(attempt=1, remediation_count=ar.BLIND_REPAIR_CEILING), "",
+                    category="missing-branch")
 check("blind ceiling parks a task with no evidence sooner than the global ceiling",
       p["state"] == "QUARANTINED" and ar.BLIND_REPAIR_CEILING < ar.GLOBAL_REPAIR_CEILING)
 
-p = ar.repair_patch(task(remediation_count=ar.BLIND_REPAIR_CEILING,
+p = ar.repair_patch(task(attempt=1, remediation_count=ar.BLIND_REPAIR_CEILING,
                          log_tail="FileNotFoundError: [Errno 2] No such file or directory: 'claude'"),
                     "", category="missing-branch")
 check("the same count with real evidence still re-queues",
@@ -70,7 +71,7 @@ check("a real traceback IS counted as evidence",
       ar.has_evidence(task(log_tail="NameError: name 'emit_task_log' is not defined")))
 
 # 5. A blind repair must tell the agent to go find the failure rather than guess at a fix.
-p = ar.repair_patch(task(remediation_count=1), "", category="rework")
+p = ar.repair_patch(task(attempt=1, remediation_count=1), "", category="rework")
 check("a blind repair instructs the agent to capture diagnostics first",
       "do NOT guess" in p["prompt"] and "read the real" in p["prompt"])
 
@@ -79,6 +80,45 @@ check("is_terminal is false for an ordinary repair patch",
       not ar.is_terminal({"note": "agentic-repair:rework"}))
 check("is_terminal is true for a parked patch",
       ar.is_terminal({"note": ar.TERMINAL_NOTE_PREFIX + " rework after 8 repairs"}))
+
+# 7. A task that has never run has not failed — repairing it is meaningless, and the repair
+#    directive it would get ("continue the same implementation, inspect the existing branch")
+#    describes work that does not exist. 69% of live repairs were of this kind.
+p = ar.repair_patch(task(attempt=0, remediation_count=2), "", category="missing-branch")
+check("a never-attempted task is plainly requeued, not 'repaired'",
+      p["state"] == "QUEUED" and p["note"] == ar.NEVER_RAN_NOTE and ar.MARKER not in p["prompt"])
+check("a plain requeue does not advance the repair count",
+      "remediation_count" not in p)
+
+p = ar.repair_patch(task(attempt=3, remediation_count=2), "", category="missing-branch")
+check("a task that HAS run still gets a real repair",
+      ar.MARKER in p["prompt"] and p["remediation_count"] == 3)
+
+# 8. Repair directives must not stack. in_session_prompt() appends to the prompt it is given,
+#    which is the previous repair's output, so prompts accumulated contradictory directives.
+p1 = ar.repair_patch(task(attempt=1, remediation_count=1, log_tail="TS2345 type error"),
+                     "build failed", category="buildfail")
+p2 = ar.repair_patch(task(attempt=2, remediation_count=2, prompt=p1["prompt"],
+                          log_tail="TS2345 type error"),
+                     "build failed", category="buildfail")
+check("a repaired prompt carries exactly one repair directive, not one per repair",
+      p2["prompt"].count(ar.MARKER) == 1)
+check("repairing preserves the original task text",
+      p2["prompt"].startswith("do the thing"))
+
+# 9. A caller that did not select `prompt` must not have the task's specification overwritten
+#    with the "Complete the task '<slug>'." stub. periodic.run_unstick did exactly this.
+narrow = {"id": "t1", "slug": "qafix-tomorrow-abc123", "note": "blocked: urlopen timeout",
+          "remediation_count": 1}
+p = ar.repair_patch(narrow, "urlopen timeout", category="transient")
+check("a narrow row is repaired without clobbering the unselected prompt",
+      "prompt" not in p and p["state"] == "QUEUED")
+
+# 10. A missing `attempt` column must not be read as "never ran".
+p = ar.repair_patch({"id": "t1", "slug": "s", "prompt": "real spec", "note": "",
+                     "log_tail": "", "remediation_count": 1}, "", category="rework")
+check("an unselected attempt column is not mistaken for a never-run task",
+      p["note"] != ar.NEVER_RAN_NOTE)
 
 print()
 if FAILURES:

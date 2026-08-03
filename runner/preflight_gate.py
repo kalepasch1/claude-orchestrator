@@ -125,7 +125,11 @@ def run():
                        "Do not stop at analysis. Implement the smallest useful code/file change, "
                        "or convert the idea into a specific test/docs/config improvement and commit it.\n"
                        f"Preflight scope concern: {scope_def[:220] if scope_def else 'Not clearly defined'}")
-            existing_note = "preflight: sharpened instead of blocked"
+            # NOTE (2026-08-02): must NOT start with "preflight:" — preflight_filter's
+            # skip regex (r"preflight:|GC:") treats that prefix as a kill marker, so this
+            # SUCCESS path was making every sharpened task permanently unclaimable
+            # (73 tasks sat QUEUED-but-never-claimed before this was caught).
+            existing_note = "preflight-ok: sharpened instead of blocked"
             sharpened += 1
         else:
             revised = t.get("prompt") or ""

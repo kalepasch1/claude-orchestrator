@@ -4,6 +4,8 @@
 Routes requests to 'canary' or 'control' endpoint based on a rollout
 percentage (0-100). Deterministic at boundaries, random in between.
 """
+from __future__ import annotations  # PY3.9 fleet: PEP-604 'str | None' annotations
+# would raise TypeError at import time, making this whole module silently unimportable.
 import os
 import random
 

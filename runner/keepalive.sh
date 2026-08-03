@@ -200,6 +200,17 @@ while true; do
     fi
   fi
   echo "[keepalive] starting runner at $(date)" >> "$RUNNER_LOG"
+  # Stamp the commit this runner is booting on. Without it self_deploy.running_commit()
+  # returns "" and check_new_code()["stale"] is ALWAYS False, so self-deploy can never
+  # fire and merged code never takes effect until a human restarts the fleet — the exact
+  # "sentinel: stale-code-unknown, no .runner_boot_commit" warning seen since 2026-07-16.
+  # Written here because this is the single choke point every runner boot passes through.
+  _boot_commit="$(git -C "$(dirname "$PWD")" rev-parse HEAD 2>/dev/null || git rev-parse HEAD 2>/dev/null || true)"
+  if [ -n "$_boot_commit" ]; then
+    printf '%s\n' "$_boot_commit" > "$(dirname "$PWD")/.runner_boot_commit" 2>/dev/null || \
+      printf '%s\n' "$_boot_commit" > .runner_boot_commit 2>/dev/null || true
+    export ORCH_BOOT_COMMIT="$_boot_commit"
+  fi
   tmp_log="$(mktemp "${ORCH_LOG_DIR}/runner-start.XXXXXX")"
   python3 runner.py > "$tmp_log" 2>&1
   code=$?

@@ -58,9 +58,25 @@ def choose_coder(task):
         return fallback
 
 
+def original_prompt(task):
+    """The task's prompt with every previously-appended repair directive removed.
+
+    in_session_prompt() appends a ~1.5KB directive block to whatever prompt it is given, and it is
+    given the CURRENT prompt — which is usually the output of the last repair. So a task repaired
+    N times carried N stacked directives, each contradicting the last ("continue the same
+    implementation" after "use this revised smaller plan" after "re-scope into the smallest
+    visible change"), with the actual work buried at the top. Live tasks reached 28 repairs.
+    Stripping at the first marker restores the original text exactly, so a repaired prompt always
+    carries exactly one directive: the current one.
+    """
+    text = str(task.get("prompt") or "")
+    cut = text.find("\n\n" + MARKER + "\n")
+    return (text[:cut] if cut != -1 else text).strip()
+
+
 def in_session_prompt(task, failure, category="rework", directive=None):
     directive = directive or _DEFAULT_DIRECTIVE
-    base = (task.get("prompt") or f"Complete the task '{task.get('slug')}'.").strip()
+    base = original_prompt(task) or f"Complete the task '{task.get('slug')}'."
     touched = task.get("touched_files") or "unknown"
     sha = task.get("commit_sha") or "unknown"
     log = str(task.get("log_tail") or task.get("note") or failure or "")[:1000]
@@ -131,6 +147,34 @@ def _terminal_patch(task, category, rc, blind, signal=""):
     }
 
 
+NEVER_RAN_NOTE = "requeue: never attempted — nothing to repair"
+
+
+def _never_ran_patch(task):
+    """A task with attempt=0 and no evidence has not failed; it has never been tried.
+
+    Measured 2026-08-03: 322 of 469 repairs in a three-hour window (69%) were applied to tasks
+    that had never run. There was nothing to repair, so each one only rewrote the prompt with a
+    directive that is false on its face — "This is not a fresh requeue. Continue the same
+    implementation. Preserve any useful prior work, inspect the existing branch/worktree/artifacts
+    first" — pointing at prior work, a branch and a diff that never existed. By the time such a
+    task finally reached a coder it was carrying several of these stacked on top of each other,
+    and the agent, told to continue work it could not find, routinely produced no diff at all.
+    That fed straight back in as missing-branch. This is the loop's engine.
+
+    The correct action is a plain requeue: the original prompt, no repair directive, no count.
+    """
+    patch = {
+        "state": "QUEUED",
+        "account": None,
+        "updated_at": "now()",
+        "note": NEVER_RAN_NOTE,
+    }
+    if "prompt" in task:
+        patch["prompt"] = original_prompt(task)
+    return patch
+
+
 def is_terminal(patch):
     """True when repair_patch() gave up rather than re-queueing.
 
@@ -161,15 +205,25 @@ def repair_patch(task, signal, category="rework", directive=None, prefer_non_cla
     """
     rc = int(task.get("remediation_count") or 0)
     blind = not has_evidence(task, signal)
-    if rc >= GLOBAL_REPAIR_CEILING or (blind and rc >= BLIND_REPAIR_CEILING):
+    # The GLOBAL ceiling is checked first, even for a task that never ran: a row that has been
+    # through the machinery this many times and still has not executed once is stuck on something
+    # structural (repo not mounted, an unsatisfiable dependency) that no requeue will resolve.
+    if rc >= GLOBAL_REPAIR_CEILING:
+        return _terminal_patch(task, category, rc, blind, signal)
+    # "attempt" absent from the row means the CALLER did not select it, not that the task never
+    # ran. Only the explicit value 0 means never attempted. The BLIND ceiling deliberately does
+    # NOT apply here: a plain requeue does not advance remediation_count, so a never-run task
+    # cannot inflate its way to the ceiling, and parking it on a count inherited from this very
+    # bug would discard work that was never given a chance to run.
+    if blind and "attempt" in task and int(task.get("attempt") or 0) <= 0:
+        return _never_ran_patch(task)
+    if blind and rc >= BLIND_REPAIR_CEILING:
         return _terminal_patch(task, category, rc, blind, signal)
     if blind:
         directive = _BLIND_DIRECTIVE if not directive else (directive + "\n\n" + _BLIND_DIRECTIVE)
-    prompt = in_session_prompt(task, signal, category=category, directive=directive)
     coder = choose_coder(task)
     patch = {
         "state": "QUEUED",
-        "prompt": prompt,
         "account": None,
         "updated_at": "now()",
         "remediation_count": rc + 1,
@@ -177,4 +231,11 @@ def repair_patch(task, signal, category="rework", directive=None, prefer_non_cla
         "model": coder,
         "note": f"agentic-repair:{category}",
     }
+    # Only rewrite the prompt when the caller actually selected it. Sweep jobs that query a narrow
+    # column set (periodic.run_unstick used to select id,slug,note,transient_retries,project_id)
+    # would otherwise get in_session_prompt()'s fallback — "Complete the task '<slug>'." — written
+    # back over the real specification, permanently destroying the task's content and guaranteeing
+    # the next run produces nothing useful. Silently omitting the field leaves the prompt intact.
+    if "prompt" in task:
+        patch["prompt"] = in_session_prompt(task, signal, category=category, directive=directive)
     return patch

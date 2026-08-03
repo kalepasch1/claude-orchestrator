@@ -5,14 +5,19 @@ Selects prompt variants and records outcomes to drive continuous improvement.
 """
 import logging
 import math
+import threading
 from runner import db
 
 logger = logging.getLogger(__name__)
 
 TEMPLATE_IDS = ["base", "chain_of_thought", "edit_first"]
 
+_lock = threading.Lock()
+_evolver = None
+_kind_counters = {}
 
-class PromptEvolver:
+
+class _PromptEvolver:
     """UCB1 bandit for selecting and evaluating prompt templates per kind."""
 
     def select_template(self, kind: str, base_prompt: str) -> tuple[str, str]:
@@ -30,20 +35,36 @@ class PromptEvolver:
         try:
             rows = db.select("prompt_templates", {"kind": f"eq.{kind}"}) or []
         except Exception as e:
-            logger.warning("Error querying prompt_templates for kind=%s: %s", kind, e)
+            logger.warning(f"DB error in select_template: {e}")
             return (base_prompt, "base")
 
         if not rows:
-            return (base_prompt, "base")
+            # Cold-start: return next template from round-robin
+            if kind not in _kind_counters:
+                _kind_counters[kind] = 0
+            idx = _kind_counters[kind] % len(TEMPLATE_IDS)
+            _kind_counters[kind] += 1
+            template_id = TEMPLATE_IDS[idx]
+            if template_id == "base":
+                return (base_prompt, "base")
+            else:
+                return (f"[template:{template_id}]\n{base_prompt}", template_id)
 
-        total_trials = sum(r.get("n_trials", 0) for r in rows)
-        best_id = None
-        best_score = -float("inf")
-
+        # Aggregate by template_id: sum total_reward and n_trials per template
+        aggregated = {}
         for row in rows:
             template_id = row.get("template_id", "base")
-            n_trials = row.get("n_trials", 0)
-            total_reward = row.get("total_reward", 0.0)
+            if template_id not in aggregated:
+                aggregated[template_id] = {"total_reward": 0.0, "n_trials": 0}
+            aggregated[template_id]["total_reward"] += row.get("total_reward", 0.0)
+            aggregated[template_id]["n_trials"] += row.get("n_trials", 0)
+
+        # Compute UCB1 scores
+        total_trials = sum(v["n_trials"] for v in aggregated.values())
+        candidates = []
+        for template_id, agg in aggregated.items():
+            n_trials = agg["n_trials"]
+            total_reward = agg["total_reward"]
 
             if n_trials == 0:
                 score = float("inf")
@@ -52,17 +73,16 @@ class PromptEvolver:
                 ucb = mean_reward + math.sqrt(2 * math.log(total_trials) / n_trials)
                 score = ucb
 
-            if score > best_score:
-                best_score = score
-                best_id = template_id
+            candidates.append((score, template_id))
 
-        if best_id is None:
-            return (base_prompt, "base")
+        # Sort by score (descending), then by template_id (ascending) for tie-break
+        candidates.sort(key=lambda x: (-x[0], x[1]))
+        best_id = candidates[0][1]
 
         if best_id == "base":
             return (base_prompt, "base")
-
-        return (f"[template:{best_id}]\n{base_prompt}", best_id)
+        else:
+            return (f"[template:{best_id}]\n{base_prompt}", best_id)
 
     def record_outcome(self, kind: str, template_id: str, merged_first_try: bool) -> None:
         """
@@ -87,9 +107,58 @@ class PromptEvolver:
                 resolution="merge-duplicates",
             )
         except Exception as e:
-            logger.warning(
-                "Error recording prompt outcome for kind=%s, template_id=%s: %s",
-                kind,
-                template_id,
-                e,
-            )
+            logger.warning(f"Failed to record outcome: {e}")
+
+    def stats(self) -> dict:
+        """Return {"total_trials": int, "kinds": {...}} for monitoring."""
+        try:
+            rows = db.select("prompt_templates") or []
+            total_trials = sum(r.get("n_trials", 0) for r in rows)
+
+            kinds = {}
+            for row in rows:
+                kind = row.get("kind", "unknown")
+                if kind not in kinds:
+                    kinds[kind] = 0
+                kinds[kind] += row.get("n_trials", 0)
+
+            return {"total_trials": total_trials, "kinds": kinds}
+        except Exception as e:
+            logger.warning(f"Error in stats(): {e}")
+            return {"total_trials": 0, "kinds": {}}
+
+
+def _get_evolver() -> _PromptEvolver:
+    global _evolver
+    if _evolver is None:
+        _evolver = _PromptEvolver()
+    return _evolver
+
+
+def select_template(kind: str, base_prompt: str) -> tuple[str, str]:
+    """Returns (modified_prompt, template_id). Thread-safe."""
+    with _lock:
+        return _get_evolver().select_template(kind, base_prompt)
+
+
+def record_outcome(kind: str, template_id: str, merged_first_try: bool) -> None:
+    """Record trial outcome. Thread-safe, swallows all exceptions."""
+    with _lock:
+        _get_evolver().record_outcome(kind, template_id, merged_first_try)
+
+
+def stats() -> dict:
+    """Return {"total_trials": int, "kinds": {...}} for monitoring."""
+    with _lock:
+        return _get_evolver().stats()
+
+
+def invalidate() -> None:
+    """Clear singleton for testing."""
+    global _evolver, _kind_counters
+    _evolver = None
+    _kind_counters = {}
+
+
+# For backward compatibility: expose PromptEvolver as an alias
+PromptEvolver = _PromptEvolver

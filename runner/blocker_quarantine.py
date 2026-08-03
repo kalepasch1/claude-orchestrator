@@ -654,8 +654,8 @@ def _rework_depth(slug):
 
 def _candidate_rows(limit):
     selects = [
-        "id,slug,prompt,note,log_tail,state,kind,project_id,base_branch,material,remediation_count,model,force_coder,sensitivity",
-        "id,slug,prompt,note,log_tail,state,kind,project_id,base_branch,material,remediation_count,model,force_coder",
+        "id,slug,prompt,note,log_tail,state,kind,project_id,base_branch,material,remediation_count,model,force_coder,sensitivity,attempt",
+        "id,slug,prompt,note,log_tail,state,kind,project_id,base_branch,material,remediation_count,model,force_coder,attempt",
         "id,slug,prompt,note,log_tail,state,kind,project_id,base_branch,material,remediation_count,model",
         "id,slug,prompt,note,log_tail,state,kind,project_id,base_branch,material",
         "id,slug,prompt,note,log_tail,state,kind,project_id,base_branch",

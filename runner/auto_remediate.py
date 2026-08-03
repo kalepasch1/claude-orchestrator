@@ -82,7 +82,7 @@ def run(limit=120):
     _phase_times["offload_backlog"] = _time.monotonic() - _tp
 
     _tp = _time.monotonic()
-    blocked = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,base_branch,log_tail,state",
+    blocked = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,base_branch,log_tail,state,attempt",
                                   "state": "in.(BLOCKED,CONFLICT,TESTFAIL)", "limit": str(limit)}) or []
     _phase_times["fetch_blocked"] = _time.monotonic() - _tp
     requeued = escalated = revised = reclaimed = left = shelved = decomposed = agentic_repairs = 0
@@ -317,7 +317,7 @@ def _non_claude_model(model):
 def offload_budget_capacity_backlog(limit=500):
     """Convert already-queued Claude budget/capacity rows to explicit non-Claude routes."""
     try:
-        rows = db.select("tasks", {"select": "id,slug,prompt,note,model,force_coder,material,kind,project_id,base_branch,log_tail",
+        rows = db.select("tasks", {"select": "id,slug,prompt,note,model,force_coder,material,kind,project_id,base_branch,log_tail,attempt,remediation_count",
                                    "state": "in.(QUEUED,RETRY,BLOCKED)", "limit": str(limit)}) or []
     except Exception:
         return 0
@@ -387,7 +387,7 @@ def recover_auto_closed_noops(limit=500):
     """Put tasks that were incorrectly marked DONE for no-op retries back into the queue."""
     if os.environ.get("ORCH_RECOVER_AUTO_CLOSED_NOOPS", "false").lower() not in ("1", "true", "yes", "on"):
         return 0
-    rows = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,log_tail",
+    rows = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,log_tail,attempt",
                                "state": "eq.DONE", "limit": str(limit)}) or []
     restored = 0
     for task in rows:
@@ -558,7 +558,7 @@ def _already_decomposed(task, note):
 def recover_shelved(limit=200):
     """Auto-process the SHELVED pile so no human ever has to requeue: decompose big ones, requeue small
     ones. Only genuine legal/secret human-holds are left for the owner."""
-    rows = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,base_branch,log_tail",
+    rows = db.select("tasks", {"select": "id,slug,prompt,note,remediation_count,model,project_id,material,base_branch,log_tail,attempt",
                                "state": "eq.SHELVED", "limit": str(limit)}) or []
     decomposed = requeued = 0
     for t in rows:

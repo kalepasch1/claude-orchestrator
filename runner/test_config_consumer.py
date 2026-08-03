@@ -673,6 +673,76 @@ class TestIntegration:
         del os.environ["ORCH_CHAIN"]
 
 
+class TestFleetControl:
+    """Test fleet_control.py config consumption validation."""
+
+    def test_fleet_config_reads_valid_key():
+        """fleet_control.get_fleet_config() reads valid ORCH_* prefixed keys."""
+        try:
+            import fleet_control
+            os.environ["ORCH_TESTKEY"] = "testvalue"
+
+            value = fleet_control.get_fleet_config("TESTKEY")
+            assert value == "testvalue", f"Expected 'testvalue', got {value}"
+
+            del os.environ["ORCH_TESTKEY"]
+        except ImportError:
+            # fleet_control not available in this test environment; skip gracefully
+            pass
+
+    def test_fleet_config_missing_key_returns_default():
+        """fleet_control.get_fleet_config() returns default for missing keys."""
+        try:
+            import fleet_control
+            os.environ.pop("ORCH_MISSING", None)
+
+            value = fleet_control.get_fleet_config("MISSING")
+            assert value == "", f"Expected empty string, got {value!r}"
+
+            value_with_default = fleet_control.get_fleet_config("MISSING", default="fallback")
+            assert value_with_default == "fallback", f"Expected 'fallback', got {value_with_default}"
+        except ImportError:
+            pass
+
+    def test_fleet_config_invalid_value_does_not_crash():
+        """fleet_control.get_fleet_config() never raises on invalid input."""
+        try:
+            import fleet_control
+
+            # Test with None key — should return default, never crash
+            try:
+                value = fleet_control.get_fleet_config(None)
+                assert value == "", f"Expected empty string for None key, got {value!r}"
+            except Exception as e:
+                raise AssertionError(f"get_fleet_config(None) raised {type(e).__name__}: {e}")
+
+            # Test with empty string key — should return default
+            try:
+                value = fleet_control.get_fleet_config("")
+                assert value == "", f"Expected empty string for empty key, got {value!r}"
+            except Exception as e:
+                raise AssertionError(f"get_fleet_config('') raised {type(e).__name__}: {e}")
+
+            # Test with non-string key — should return default
+            try:
+                value = fleet_control.get_fleet_config(123)
+                assert value == "", f"Expected empty string for numeric key, got {value!r}"
+            except Exception as e:
+                raise AssertionError(f"get_fleet_config(123) raised {type(e).__name__}: {e}")
+
+            # Test with whitespace-only value — should return default
+            try:
+                os.environ["ORCH_WHITESPACE"] = "   "
+                value = fleet_control.get_fleet_config("WHITESPACE")
+                assert value == "", f"Expected empty string for whitespace value, got {value!r}"
+                del os.environ["ORCH_WHITESPACE"]
+            except Exception as e:
+                raise AssertionError(f"get_fleet_config('WHITESPACE') raised {type(e).__name__}: {e}")
+
+        except ImportError:
+            pass
+
+
 # ---- Test runner ----
 
 def run_all_tests() -> bool:

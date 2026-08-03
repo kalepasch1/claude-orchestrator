@@ -466,7 +466,12 @@ def run_unstick():
     import retry_policy
     import agentic_repair
     limit = int(os.environ.get("UNSTICK_LIMIT", "60"))
-    blocked = db.select("tasks", {"select": "id,slug,note,transient_retries,project_id",
+    # `prompt`, `attempt`, `log_tail` and `remediation_count` are selected because
+    # agentic_repair.repair_patch() needs them: without prompt it cannot tell a real spec from a
+    # missing column, without attempt it cannot tell "failed" from "never tried", and without
+    # log_tail/remediation_count neither the evidence check nor the repair ceiling can bind.
+    blocked = db.select("tasks", {"select": "id,slug,prompt,note,log_tail,attempt,"
+                                            "remediation_count,transient_retries,project_id",
                                   "state": "eq.BLOCKED", "limit": str(limit * 3)}) or []
     requeued = terminal = capped = 0
     for t in blocked:

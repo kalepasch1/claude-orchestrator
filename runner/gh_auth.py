@@ -12,6 +12,8 @@ Env vars consumed:
   GITHUB_APP_INSTALLATION_ID – Installation ID (e.g. 145579394)
   GITHUB_TOKEN / GITHUB_PAT  – Personal access token fallback
 """
+from __future__ import annotations  # PY3.9 fleet: PEP-604 'str | None' annotations
+# would raise TypeError at import time, making this whole module silently unimportable.
 import json
 import os
 import subprocess
