@@ -163,11 +163,16 @@ def redact_secrets(text):
         return _SECRET_PATTERNS.sub("[REDACTED]", text)
     except Exception:
         return text
-HTTP_RETRIES = int(os.environ.get("ORCH_SUPABASE_RETRIES", "1") or 1)
-# Retry on transient HTTP errors: 429 (rate-limited), 5xx (server errors),
-# plus Cloudflare origin-down codes (521-523) so monitors ride through
-# Supabase capacity blips instead of silently no-op'ing.
-HTTP_RETRY_STATUSES = {429, 500, 502, 503, 504, 521, 522, 523}
+# One retry was not enough to ride out a Cloudflare edge blip: on 2026-08-03 the arbitrage,
+# batchmech and forecast jobs all crash-looped on 521/525 within the same minute, having exhausted
+# their single retry against an outage that lasted longer than one second of backoff.
+HTTP_RETRIES = int(os.environ.get("ORCH_SUPABASE_RETRIES", "3") or 3)
+# Retry on transient HTTP errors: 408 (request timeout), 429 (rate-limited), 5xx (server errors),
+# plus the Cloudflare edge codes so monitors ride through Supabase capacity blips instead of
+# silently no-op'ing. 520 (unknown origin error), 524 (origin timeout) and 525 (origin SSL
+# handshake failed) were missing and are as transient as the 521-523 already listed — a 525 in
+# particular is a TLS handshake that will usually succeed on the next attempt.
+HTTP_RETRY_STATUSES = {408, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524, 525}
 # Core orchestrator RPC operations that benefit from retries to tolerate transient failures
 CORE_RETRY_RPCS = {
     "acquire_branch_execution_lease", "heartbeat_branch_execution_lease", "release_branch_execution_lease",
