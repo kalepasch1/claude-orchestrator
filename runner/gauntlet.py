@@ -48,6 +48,12 @@ import common_utils
 
 import expert_corps as corps
 
+# Coerce model output to a sliceable string before any [:n]. The model intermittently
+# returns dict/list where the schema says string, and `somedict[:1500]` raises
+# "KeyError: slice". This module's local _s was lost; common_utils.safe_string_coerce is
+# the canonical implementation (byte-identical to legal_docket._s), so alias it.
+_s = common_utils.safe_string_coerce
+
 SEATS       = int(os.environ.get("ORCH_GAUNTLET_SEATS", "5"))
 MAX_BOUTS   = int(os.environ.get("ORCH_GAUNTLET_BOUTS", "4"))
 ENABLED     = os.environ.get("ORCH_GAUNTLET_ENABLED", "true").lower() != "false"
@@ -308,7 +314,7 @@ def run(question, context="", vertical=None, docket_id=None, seats=SEATS):
         wid = panel[a]["id"] if w == "A" else (panel[b]["id"] if w == "B" else None)
         corps.record_bout(question, panel[a], panel[b], wid,
                           margin=float(v.get("margin") or 0.5),
-                          grounds=str_s(v.get("grounds"))[:1000], docket_id=docket_id)
+                          grounds=_s(v.get("grounds"))[:1000], docket_id=docket_id)
 
     # R4 — red team the leading position (the one carried by the highest-Elo holder)
     lead_i = max(range(len(panel)), key=lambda i: float(panel[i].get("elo") or 1500))
