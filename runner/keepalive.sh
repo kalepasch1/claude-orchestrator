@@ -103,26 +103,47 @@ wait_for_runner_release() {
   done
 }
 
+# RESIDENT-JOB-HEAD (2026-08-03): stay_resident is now checked FIRST. Previously a duplicate
+# supervisor exited 0 even when STAY_RESIDENT=true. That exit propagated up through the exec
+# chain (keepalive.sh <- launcher.sh <- ClaudeRunner) and ended the launchd job head, so
+# KeepAlive=true restarted the job ~30s later and launchd SIGKILLed/SIGTERMed the leftover
+# process group — which still held the WORKING runner.py and its in-flight agents. With
+# TASK_TIMEOUT=900s and a ~12min restart cycle, most agent runs were killed before finishing.
+# Staying resident keeps the job head alive so launchd never restarts, so nothing gets killed.
 if is_live_runner; then
-  if supervisor_lock_live; then
+  if stay_resident; then
+    wait_for_runner_release "runner already live via lock $(cat "$LOCK_FILE" 2>/dev/null)"
+  elif supervisor_lock_live; then
     echo "[keepalive] runner already live via lock $(cat "$LOCK_FILE" 2>/dev/null); duplicate supervisor exiting at $(date)" >> "$RUNNER_LOG"
     exit 0
-  elif stay_resident; then
-    wait_for_runner_release "runner already live via lock $(cat "$LOCK_FILE" 2>/dev/null)"
   else
     echo "[keepalive] runner already live via lock $(cat "$LOCK_FILE" 2>/dev/null); supervisor exiting at $(date)" >> "$RUNNER_LOG"
     exit 0
   fi
 fi
 
+# RESIDENT-JOB-HEAD (2026-08-03): same reasoning as the is_live_runner block above. Losing the
+# race for the supervisor lock must NOT end the launchd job head when STAY_RESIDENT=true —
+# exiting here is what produced the "duplicate supervisor exit" + launchd-restart + SIGTERM loop.
+# Wait for the winning supervisor to go away instead, then take the lock over.
 while ! mkdir "$SUPERVISOR_LOCK" 2>/dev/null; do
   if supervisor_lock_live; then
+    if stay_resident; then
+      log_duplicate_exit
+      sleep "$POLL_SECONDS"
+      continue
+    fi
     log_duplicate_exit
     exit 0
   fi
   stale="${SUPERVISOR_LOCK}.stale.$$"
   if mv "$SUPERVISOR_LOCK" "$stale" 2>/dev/null; then
     rm -rf "$stale"
+    continue
+  fi
+  if stay_resident; then
+    log_duplicate_exit
+    sleep "$POLL_SECONDS"
     continue
   fi
   log_duplicate_exit
