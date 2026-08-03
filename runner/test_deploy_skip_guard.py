@@ -94,24 +94,33 @@ def test_clean_control_no_ignore_command():
 
 # ------------------------------------------------------------- deploymentEnabled disables
 
-def test_deployment_disabled_map_for_default_branch_blocks():
-    cfg = {"git": {"deploymentEnabled": {"master": False}}}
+def test_inconsistent_map_disabling_default_branch_blocks():
+    """The accidental shape: other branches deploy, the default one silently does not."""
+    cfg = {"git": {"deploymentEnabled": {"master": False, "staging": True}}}
     findings = vcg.check_deploy_skip(".", ".", cfg, "master")
     assert "deployment_disabled_for_default_branch" in _codes(findings)
-    assert findings[0]["severity"] == "block"
+    assert [f for f in findings if f["severity"] == "block"]
 
 
-def test_deployment_disabled_via_matching_glob_blocks():
-    cfg = {"git": {"deploymentEnabled": {"*": False}}}
+def test_disabled_via_matching_glob_while_others_enabled_blocks():
+    cfg = {"git": {"deploymentEnabled": {"*": False, "release/**": True}}}
     findings = vcg.check_deploy_skip(".", ".", cfg, "master")
     assert "deployment_disabled_for_default_branch" in _codes(findings), \
         "`*` DOES match a top-level branch name like master"
 
 
-def test_deployment_disabled_bool_false_blocks():
-    cfg = {"git": {"deploymentEnabled": False}}
-    assert "deployment_disabled_for_default_branch" in _codes(
-        vcg.check_deploy_skip(".", ".", cfg, "master"))
+def test_blanket_disable_is_advisory_not_blocking():
+    """A repo that deliberately never deploys must not have its merges quarantined.
+
+    The orchestrator's own vercel.json says exactly this. Blocking it would stop the merge
+    train on a correctly configured project — a guard doing more damage than the bug.
+    """
+    for cfg in ({"git": {"deploymentEnabled": False}},
+                {"git": {"deploymentEnabled": {"*": False}}}):
+        findings = vcg.check_deploy_skip(".", ".", cfg, "master")
+        assert "deployment_disabled_everywhere" in _codes(findings)
+        assert not [f for f in findings if f["severity"] == "block"], \
+            "a deliberate global opt-out must stay advisory"
 
 
 def test_clean_control_deployment_enabled_true():
@@ -170,6 +179,26 @@ def test_clean_control_no_deployment_enabled_key(tmp_path):
 def test_default_branch_detection(tmp_path):
     repo = _repo_with_branches(tmp_path, [])
     assert vcg._default_branch(str(repo)) == "master"
+
+
+def test_deploy_silence_honours_a_deliberate_opt_out(tmp_path):
+    """A repo configured never to deploy must not be alerted about forever.
+
+    An alert that is always on is the same as no alert — which is the failure mode this
+    whole class is about.
+    """
+    import deploy_silence_detector as dsd
+    repo = tmp_path / "r"
+    repo.mkdir()
+    (repo / "vercel.json").write_text('{"git": {"deploymentEnabled": false}}')
+    assert dsd.deployment_intentionally_disabled(str(repo)) is True
+    assert dsd.evaluate({"repo_path": str(repo), "name": "x", "prod_branch": "master"}) is None
+
+    (repo / "vercel.json").write_text('{"git": {"deploymentEnabled": {"master": true}}}')
+    assert dsd.deployment_intentionally_disabled(str(repo)) is False
+
+    (repo / "vercel.json").write_text('{"buildCommand": "npm run build"}')
+    assert dsd.deployment_intentionally_disabled(str(repo)) is False
 
 
 def test_blocking_codes_are_registered():

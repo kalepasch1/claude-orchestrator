@@ -337,26 +337,48 @@ def check_deploy_skip(repo, root, cfg, default_branch):
                 % (default_branch, default_branch, ignore[:120])))
 
     # -- 2. git.deploymentEnabled disabling the default branch.
+    # A blanket `deploymentEnabled: false`, or a map in which NOTHING is enabled, is a
+    # deliberate "this repository does not deploy" -- the orchestrator's own repo says
+    # exactly that. Blocking it would quarantine every merge on a correctly-configured
+    # project, so it is advisory. The BLOCKING case is the INCONSISTENT one: some branches
+    # are explicitly enabled while the default branch is disabled, which is never intended
+    # and is the shape that silently stops production.
     git_cfg = cfg.get("git") or {}
     enabled_cfg = git_cfg.get("deploymentEnabled")
     if isinstance(enabled_cfg, bool) and enabled_cfg is False:
         out.append(_violation(
-            "deployment_disabled_for_default_branch", rel_root,
+            "deployment_disabled_everywhere", rel_root,
             "vercel.json git.deploymentEnabled is `false` for ALL branches, so no push to "
-            "'%s' ever deploys. Nothing reports this as a failure." % default_branch,
-            "Set git.deploymentEnabled to true for '%s', or remove the key." % default_branch))
+            "'%s' ever deploys. Advisory: for a repo that deliberately does not deploy this "
+            "is correct, and deploy_silence_detector honours it. Confirm it is intended."
+            % default_branch,
+            "If this project SHOULD deploy, set git.deploymentEnabled to true for '%s'."
+            % default_branch))
     elif isinstance(enabled_cfg, dict):
+        any_enabled = any(v is True for v in enabled_cfg.values())
         for pattern, value in enabled_cfg.items():
-            if value is False and (pattern == default_branch
-                                   or glob_matches(pattern, default_branch)):
+            if value is not False:
+                continue
+            if not (pattern == default_branch or glob_matches(pattern, default_branch)):
+                continue
+            if not any_enabled:
                 out.append(_violation(
-                    "deployment_disabled_for_default_branch", rel_root,
-                    "vercel.json git.deploymentEnabled maps '%s' -> false, and that pattern "
-                    "matches the DEFAULT branch '%s'. Every production push is silently not "
-                    "deployed; Vercel shows no failure."
+                    "deployment_disabled_everywhere", rel_root,
+                    "vercel.json git.deploymentEnabled disables '%s' (matching the default "
+                    "branch '%s') and enables nothing, so this project never deploys. "
+                    "Advisory: consistent with a repo that deliberately does not deploy."
                     % (pattern, default_branch),
-                    "Add an explicit `\"%s\": true` entry, or narrow the '%s' pattern so it "
-                    "cannot match the default branch." % (default_branch, pattern)))
+                    "If this project SHOULD deploy, add `\"%s\": true`." % default_branch))
+                continue
+            out.append(_violation(
+                "deployment_disabled_for_default_branch", rel_root,
+                "vercel.json git.deploymentEnabled maps '%s' -> false, and that pattern "
+                "matches the DEFAULT branch '%s' — while OTHER branches are explicitly "
+                "enabled. Production pushes are silently not deployed and Vercel shows no "
+                "failure, but this project clearly is meant to deploy."
+                % (pattern, default_branch),
+                "Add an explicit `\"%s\": true` entry, or narrow the '%s' pattern so it "
+                "cannot match the default branch." % (default_branch, pattern)))
     return out
 
 

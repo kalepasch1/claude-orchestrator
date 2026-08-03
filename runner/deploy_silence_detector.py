@@ -144,6 +144,29 @@ def last_production_deploy(vercel_project):
     return None
 
 
+def deployment_intentionally_disabled(repo):
+    """True when the repo's own vercel.json declares that it does not deploy.
+
+    Distinguishes "production silently stopped" (the incident) from "this repository was
+    never meant to deploy" (the orchestrator itself, tooling repos, libraries). Without this
+    the detector alerts forever on projects that are behaving exactly as configured, and an
+    alert that is always on is the same as no alert.
+    """
+    for candidate in (os.path.join(repo, "vercel.json"),):
+        try:
+            with open(candidate, encoding="utf-8") as fh:
+                cfg = json.load(fh) or {}
+        except (OSError, ValueError):
+            continue
+        enabled = ((cfg.get("git") or {}).get("deploymentEnabled"))
+        if enabled is False:
+            return True
+        if isinstance(enabled, dict) and enabled and not any(
+                v is True for v in enabled.values()):
+            return True
+    return False
+
+
 def evaluate(project_row, silence_days=None):
     """Decide whether one project is deploy-silent. Returns a finding dict or None."""
     silence_days = SILENCE_DAYS if silence_days is None else silence_days
@@ -151,6 +174,10 @@ def evaluate(project_row, silence_days=None):
     name = project_row.get("name") or "?"
     branch = project_row.get("prod_branch") or project_row.get("default_base") or "master"
     if not repo or not os.path.isdir(repo):
+        return None
+    if deployment_intentionally_disabled(repo):
+        # The project's own vercel.json states it does not deploy. Silence is then the
+        # correct behaviour, not an incident -- the orchestrator's own repo is exactly this.
         return None
     commit_age = last_commit_age_days(repo, branch)
     if commit_age is None:

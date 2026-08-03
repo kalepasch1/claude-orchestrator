@@ -148,6 +148,51 @@ def is_dirty(path):
     return bool(entries), entries
 
 
+def _rescue_refs(path):
+    """Existing rescue refs for this worktree, newest first."""
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "-", os.path.basename(os.path.abspath(path)))
+    rc, out, _ = _git(path, "for-each-ref", "--sort=-refname",
+                      "--format=%(refname)%09%(objectname)", RESCUE_PREFIX)
+    if rc != 0:
+        return []
+    refs = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        # Ref shape is <prefix>/<ts>-<worktree-name>-<sha8>, and worktree names themselves
+        # contain hyphens, so match the delimited name rather than a suffix.
+        if len(parts) == 2 and ("-%s-" % name) in parts[0]:
+            refs.append({"ref": parts[0], "sha": parts[1]})
+    return refs
+
+
+def _prune_rescue_refs(path, keep=None, max_age_days=None):
+    """Retire old rescue refs so the safety net cannot become a leak.
+
+    A rescue ref pins objects, so keeping every one forever would grow the object store
+    without bound. The retention rule keeps the newest `keep` refs per worktree regardless
+    of age -- recent work is the work most likely to need recovering -- and drops anything
+    older than `max_age_days` beyond that.
+    """
+    keep = int(os.environ.get("ORCH_WORKTREE_RESCUE_KEEP", "10") if keep is None else keep)
+    max_age = float(os.environ.get("ORCH_WORKTREE_RESCUE_DAYS", "14")
+                    if max_age_days is None else max_age_days)
+    refs = _rescue_refs(path)
+    cutoff = time.time() - max_age * 86400
+    pruned = 0
+    for entry in refs[keep:]:
+        stamp = entry["ref"].rsplit("/", 1)[-1].split("-", 1)[0]
+        try:
+            when = time.mktime(time.strptime(stamp, "%Y%m%dT%H%M%S"))
+        except ValueError:
+            continue
+        if when < cutoff:
+            if _git(path, "update-ref", "-d", entry["ref"])[0] == 0:
+                pruned += 1
+    if pruned:
+        _log_event({"event": "prune", "path": path, "pruned": pruned})
+    return pruned
+
+
 def rescue(path, reason="pre-destructive"):
     """Capture the worktree's uncommitted state into refs/orch-rescue/<ts>-<name>.
 
@@ -159,6 +204,7 @@ def rescue(path, reason="pre-destructive"):
     dirty, entries = is_dirty(path)
     if not dirty:
         return None
+    _prune_rescue_refs(path)
     rc, sha, err = _git(path, "stash", "create", "orch-rescue: " + reason)
     if rc != 0 or not sha:
         # `stash create` yields nothing when only untracked files exist; commit-tree the
@@ -168,8 +214,25 @@ def rescue(path, reason="pre-destructive"):
             _log_event({"event": "rescue_failed", "path": path, "error": err or "no HEAD"})
             return None
         sha = head
-    ref = "%s/%s-%s" % (RESCUE_PREFIX, time.strftime("%Y%m%dT%H%M%S", time.gmtime()),
-                        re.sub(r"[^A-Za-z0-9_.-]+", "-", os.path.basename(os.path.abspath(path))))
+    # Content dedupe. The periodic sweep runs every 300s over every worktree; without this
+    # an idle-but-dirty checkout would mint a fresh ref twice a minute (the first live run
+    # created 34 refs in this repo alone, across 231 dirty worktrees). A rescue is only
+    # worth writing when the uncommitted content actually CHANGED, so refs are compared by
+    # tree, not by timestamp.
+    rc_t, tree, _ = _git(path, "rev-parse", sha + "^{tree}")
+    if rc_t == 0 and tree:
+        for existing in _rescue_refs(path):
+            rc_e, prev, _ = _git(path, "rev-parse", existing["ref"] + "^{tree}")
+            if rc_e == 0 and prev.strip() == tree.strip():
+                return {"ref": existing["ref"], "sha": existing["sha"], "entries": entries,
+                        "deduped": True}
+    # The sha suffix is not decoration: the timestamp has one-second granularity, so two
+    # rescues of DIFFERENT content in the same second would otherwise resolve to the same
+    # ref name and update-ref would silently overwrite the first — this guard destroying
+    # work is the one outcome it cannot be allowed to have.
+    ref = "%s/%s-%s-%s" % (
+        RESCUE_PREFIX, time.strftime("%Y%m%dT%H%M%S", time.gmtime()),
+        re.sub(r"[^A-Za-z0-9_.-]+", "-", os.path.basename(os.path.abspath(path))), sha[:8])
     rc, _, err = _git(path, "update-ref", ref, sha)
     if rc != 0:
         _log_event({"event": "rescue_failed", "path": path, "error": err})

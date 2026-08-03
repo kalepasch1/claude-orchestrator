@@ -107,6 +107,50 @@ def test_rescue_does_not_disturb_the_working_tree(tmp_path):
     assert git(repo, "stash", "list").stdout.strip() == "", "the stash list must be untouched"
 
 
+def test_repeated_rescue_of_unchanged_work_does_not_mint_new_refs(tmp_path):
+    """The sweep runs every 300s; an idle dirty worktree must not mint a ref each cycle.
+
+    The first live run created 34 refs in one repo across 231 dirty worktrees. Unchecked,
+    that is roughly 10k refs per repo per day — the safety net becoming a leak.
+    """
+    repo = _repo(tmp_path)
+    _dirty(repo)
+    first = wog.rescue(str(repo), "sweep 1")
+    assert first and not first.get("deduped")
+
+    for i in range(5):
+        again = wog.rescue(str(repo), "sweep %d" % (i + 2))
+        assert again["deduped"] is True
+        assert again["ref"] == first["ref"]
+
+    refs = git(repo, "for-each-ref", "--format=%(refname)", "refs/orch-rescue").stdout.split()
+    assert len(refs) == 1, "unchanged content must reuse the existing ref, got %s" % refs
+
+
+def test_changed_work_does_mint_a_new_ref(tmp_path):
+    """Dedupe must not cost coverage: new content is new work and needs its own ref."""
+    repo = _repo(tmp_path)
+    _dirty(repo)
+    first = wog.rescue(str(repo), "sweep 1")
+    (repo / "tracked.py").write_text("def real():\n    return 42\n\n\ndef later():\n    return 7\n")
+    second = wog.rescue(str(repo), "sweep 2")
+    assert second and not second.get("deduped")
+    assert second["ref"] != first["ref"]
+
+    blob = git(repo, "show", second["ref"] + ":tracked.py").stdout
+    assert "later" in blob
+
+
+def test_prune_keeps_recent_refs(tmp_path):
+    """Retention must never drop the newest work, whatever the age cutoff."""
+    repo = _repo(tmp_path)
+    _dirty(repo)
+    wog.rescue(str(repo), "sweep")
+    wog._prune_rescue_refs(str(repo), keep=1, max_age_days=0)
+    refs = git(repo, "for-each-ref", "--format=%(refname)", "refs/orch-rescue").stdout.split()
+    assert len(refs) == 1, "the newest rescue ref must survive pruning"
+
+
 def test_rescue_on_clean_tree_is_a_noop(tmp_path):
     repo = _repo(tmp_path)
     assert wog.rescue(str(repo), "test") is None
