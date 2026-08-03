@@ -1,0 +1,4 @@
+recovery-intent: canary-codex-36
+template: 4555d9fb4126
+intent: 07062319 07071626 8b92d078e856 acceptance action actually adapt adaptive after against agentic alter analogous analysis artifacts assert backlog backoff backoff_1 backoff_2 backoff_s bankrupted because beethoven before behavior below billing blindly block blocked blocks branch branches broad budget bugfix build cache canary category cause chains change changes changing checks clarification classify cleanly cleared coder codex commit complete completion completions concrete config conflict context continue contracts decide dependencies diffs directive drafting dropbox duplicate duplicates eliminating equivalent error error_outcome_tracker eventually exact examine exception excerpt
+base: main
