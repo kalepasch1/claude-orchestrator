@@ -1,0 +1,4 @@
+recovery-intent: recover-missing-branch-improve-immediate-auto-merge-on-test-pass-low-r-slice-1
+template: 86b13748db1e
+intent: 07062319 07071626 8b92d078e856 acceptance adapt agentic alter analysis artifacts because beethoven before behavior below blocks branch broad bugfix build category cause changes changing checks commit complete completion concrete config context continue dependencies diffs directive drafting duplicate duplicates eliminating equivalent examine existing exists expired failure files final finish first focus fresh functionality green heartbeat identify immediate implementation improve inspect install instead intent large library lines maintainability matched merge merged minimally missing module original orphaned parent pareto patch performance preserve pricinggridreconstructi pricinggridreconstruction
+base: master
