@@ -558,6 +558,46 @@ def _pids(pattern):
     return [p for p in out if p != me]
 
 
+def _etime_seconds(raw):
+    """Parse BSD ps `etime` ([[dd-]hh:]mm:ss) into seconds, or None.
+
+    macOS ps has NO `etimes` keyword — asking for it makes ps print its whole keyword list to
+    stderr and nothing to stdout. runner_guard used `ps -o etimes=`, so int() always raised
+    ValueError, the loop always `continue`d, by_start stayed empty and the duplicate-runner
+    reaper below silently never killed anything. Parse the portable `etime` format instead.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    days = 0
+    if "-" in raw:
+        d, _, raw = raw.partition("-")
+        try:
+            days = int(d)
+        except ValueError:
+            return None
+    parts = raw.split(":")
+    try:
+        nums = [int(p) for p in parts]
+    except ValueError:
+        return None
+    if len(nums) == 2:
+        h, m, s = 0, nums[0], nums[1]
+    elif len(nums) == 3:
+        h, m, s = nums
+    else:
+        return None
+    return days * 86400 + h * 3600 + m * 60 + s
+
+
+def _parent_is_job_head(pid):
+    """True if pid's parent is the ClaudeRunner.app launchd job head."""
+    ppid = sh("ps", "-o", "ppid=", "-p", str(pid)).stdout.strip()
+    if not ppid:
+        return False
+    return "ClaudeRunner" in sh("ps", "-o", "command=", "-p", ppid).stdout
+
+
 def runner_guard(st):
     runners = _pids("MacOS/Python runner.py") + _pids("python3 runner.py")
     keepalives = _pids("keepalive.sh")
@@ -574,12 +614,11 @@ def runner_guard(st):
         # keep the newest (freshest code), kill the rest
         by_start = []
         for p in runners:
-            et = sh("ps", "-o", "etimes=", "-p", p).stdout.strip()
-            try:
-                by_start.append((int(et), p))
-            except ValueError:
+            secs = _etime_seconds(sh("ps", "-o", "etime=", "-p", p).stdout)
+            if secs is None:
                 continue
-        by_start.sort()
+            by_start.append((secs, p))
+        by_start.sort()  # ascending elapsed -> [0] is the youngest/freshest, keep it
         for _, p in by_start[1:]:
             log("extra-runner-killed", p)
             sh("kill", "-9", p)
@@ -591,6 +630,14 @@ def runner_guard(st):
             pass
         for p in keepalives:
             if lock_pid and p != lock_pid:
+                # Never reap the launchd job head's own keepalive. Since ORCH_KEEPALIVE_STAY_RESIDENT
+                # keepalive.sh deliberately stays resident when it loses the supervisor-lock race
+                # (it polls and takes over later), a second keepalive is now EXPECTED and healthy.
+                # That resident one is exec'd from ClaudeRunner.app, so killing it exits the job
+                # head, and KeepAlive=true restarts the job — which is the restart churn that was
+                # killing agents mid-run in the first place. Only reap genuine strays.
+                if _parent_is_job_head(p):
+                    continue
                 log("extra-keepalive-killed", p)
                 sh("kill", "-9", p)
     # LIVENESS (not just existence): a runner process can be ALIVE but WEDGED — its main
