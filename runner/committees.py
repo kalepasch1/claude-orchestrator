@@ -1367,7 +1367,12 @@ def run(limit=8):
         upd = {"rationale": (p.get("rationale") or "")[:500] + _note(agg)}
         # AUTONOMY: a non-divergent, non-critical, high-conviction GO builds itself — no owner card.
         if agg.get("auto_ok") and not p.get("divergent"):
-            slug = "improve-" + re.sub(r"[^a-z0-9]+", "-", (p.get("title") or "")[:40].lower()).strip("-")
+            # B: full-length collision-free slug. `title[:40]` produced 48-char slugs that
+            # collided for 40.6% of proposals, silently merging distinct proposals onto one
+            # task (and letting sibling slices certify each other as landed).
+            import improvement_ledger
+            slug = improvement_ledger.make_slug(p.get("title") or "",
+                                                p.get("bottleneck_key") or "committee")
             if pid.get(p.get("app")):
                 spec = compose_spec(p.get("title"), p.get("proposal") or "", agg["panel"])
                 staged = agg.get("rollout") == "canary"
@@ -1381,13 +1386,14 @@ def run(limit=8):
                 db.insert("tasks", {"project_id": pid[p["app"]], "slug": slug, "state": "QUEUED",
                           "kind": "build", "deps": [], "base_branch": "main", "material": False,
                           "prompt": spec})
-                upd["status"] = "queued"; upd["task_slug"] = slug
+                upd["status"] = "queued"; upd["task_slug"] = slug; upd["slug_v2"] = True
                 executed += 1
                 _log_action("proposal", p["id"], p.get("title"),
                             "auto-build-canary" if staged else "auto-build", agg)
         elif agg.get("experiment") and not p.get("divergent") and pid.get(p.get("app")):
             # AUTO-EXPERIMENT: reversible deadlock -> ship a flagged A/B challenger and let data decide.
-            slug = "ab-" + re.sub(r"[^a-z0-9]+", "-", (p.get("title") or "")[:36].lower()).strip("-")
+            import improvement_ledger
+            slug = "ab-" + improvement_ledger.make_slug(p.get("title") or "", "ab")
             m0 = {r["app"]: float(r.get("mrr_usd") or 0) + float(r.get("active_users") or 0)
                   for r in (db.select("app_revenue", {"select": "app,mrr_usd,active_users"}) or [])}.get(p["app"], 0)
             db.insert("committee_experiments", {"app": p["app"], "slug": slug, "kind": "ab",
@@ -1397,7 +1403,7 @@ def run(limit=8):
                       "prompt": compose_spec(p.get("title"), (p.get("proposal") or "") +
                                "\n\nSHIP AS AN A/B EXPERIMENT behind a flag (50/50); do not enable globally.",
                                agg["panel"])})
-            upd["status"] = "queued"; upd["task_slug"] = slug
+            upd["status"] = "queued"; upd["task_slug"] = slug; upd["slug_v2"] = True
             _log_action("proposal", p["id"], p.get("title"), "auto-experiment", agg)
         elif agg.get("escalate") or p.get("divergent"):
             upd["status"] = "for_review"   # keep in front of the owner (divergent OR critical/contentious)
