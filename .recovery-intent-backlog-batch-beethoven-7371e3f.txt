@@ -1,0 +1,4 @@
+recovery-intent: backlog-batch-beethoven-7371e3f
+template: 22cc94417661
+intent: 07062319 07071626 30min 7371e3f 8b92d078e856 acceptance adapt against agentic alter analysis artifacts backlog bankrupted batch because beethoven before behavior below blocked blocks branch branches broad budget bugfix build cache capacity category cause chains changes changing checks claude cleared coder commit complete completion completions concrete config context continue dependencies diffs directive drafting duplicate duplicates eliminating equivalent examine existing exists failure files final finish first focus fresh functionality green hints identify implementation improve individually inspect install instead intent issue large library lifetime
+base: master
