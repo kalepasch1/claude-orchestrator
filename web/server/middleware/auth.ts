@@ -74,6 +74,14 @@ export default defineEventHandler(async (event) => {
   if (!path.startsWith('/api/')) return
   if (PUBLIC_ACCESS_PATHS.has(pathname)) return
 
+  // FLEET TRANSPORT RELAY (2026-08-04): /api/_fleet-relay/* carries the runner fleet's
+  // Supabase traffic because the operator's LAN blocks *.supabase.co and *.vercel.app
+  // while custom domains stay reachable. It deliberately does NOT take the Supabase
+  // session path — its callers ARE the runners, presenting their own Supabase service
+  // credentials, which the upstream enforces. The route gates itself on FLEET_RELAY_KEY
+  // and an allowlist of project refs; it stores no credentials of its own.
+  if (pathname.startsWith('/api/_fleet-relay')) return
+
   // Vercel cron requests are server-to-server and do not have a Supabase
   // session. Limit this exception to the single scheduled analytics sync and
   // require Vercel's CRON_SECRET header; all interactive callers still take
