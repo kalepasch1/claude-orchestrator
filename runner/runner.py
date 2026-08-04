@@ -25,7 +25,12 @@ _log = _log_mod.get("runner")
 
 def emit_task_log(slug: str, level: str, msg: str) -> None:
     """Log a task message at the given level (info/error/warning/debug)."""
-    log_fn = getattr(_log, level, _log.info)
+    # Resolve the logger per call (not the module-level _log binding) so test
+    # doubles patched over log.get take effect and late logging config is honored.
+    logger = _log_mod.get("runner")
+    if level not in ("debug", "info", "warning", "error", "critical"):
+        level = "info"
+    log_fn = getattr(logger, level, logger.info)
     log_fn("[%s] %s", slug, msg)
     try:
         db.insert("run_logs", {

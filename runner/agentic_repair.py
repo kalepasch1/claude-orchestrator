@@ -39,14 +39,52 @@ _DEFAULT_DIRECTIVE = (
 
 _REPAIR_CODER_FALLBACK = "claude"
 
+# Original prompts are bounded before a repair directive is appended, so N repairs can never
+# compound into an unboundedly large prompt (live tasks have reached 28 repairs).
+MAX_PROMPT_CHARS = int(os.environ.get("ORCH_REPAIR_MAX_PROMPT_CHARS", "24000"))
+
+# Categories with a concrete technical signal a coder can act on directly.
+_TECHNICAL_CATEGORIES = frozenset(
+    ("buildfail", "testfail", "timeout", "conflict", "regressfail", "missing-branch"))
+
+# Categories where the blocked mechanism must be REPLACED with a safe variant rather than
+# retried verbatim (legal posture, leaked/secret-shaped content, security findings).
+_REPLACEMENT_CATEGORIES = frozenset(("legal", "secret", "security"))
+
+
+def is_technical(category):
+    """True when the repair category carries a concrete technical failure signal."""
+    return str(category or "").lower() in _TECHNICAL_CATEGORIES
+
+
+def replacement_required(category):
+    """True when the category means the prior mechanism must not be retried verbatim."""
+    return str(category or "").lower() in _REPLACEMENT_CATEGORIES
+
+
+def _default_coder():
+    """Coder used when the task itself doesn't pin one (env override first)."""
+    env = os.environ.get("ORCH_REPAIR_CODER") or os.environ.get("ORCH_AGENTIC_REPAIR_DEFAULT_CODER")
+    if env:
+        return env
+    return os.environ.get("ORCH_REPAIR_CODER_FALLBACK", _REPAIR_CODER_FALLBACK)
+
 
 def choose_coder(task):
     """Return the coder to use for agentic repair of this task.
 
-    Priority: ORCH_AGENTIC_REPAIR_DEFAULT_CODER > agentic_coders.pick() >
+    Priority: task force_coder > task model (non-claude) >
+    ORCH_AGENTIC_REPAIR_DEFAULT_CODER > agentic_coders.pick() >
     ORCH_REPAIR_CODER_FALLBACK (default: "claude").  Never hardcodes "ollama"
     so a missing local Ollama server cannot wedge the repair queue.
     """
+    task = task or {}
+    forced = task.get("force_coder")
+    if forced:
+        return forced
+    model = task.get("model")
+    if model and not str(model).startswith("claude"):
+        return model
     default = os.environ.get("ORCH_AGENTIC_REPAIR_DEFAULT_CODER")
     if default:
         return default
@@ -71,7 +109,17 @@ def original_prompt(task):
     """
     text = str(task.get("prompt") or "")
     cut = text.find("\n\n" + MARKER + "\n")
-    return (text[:cut] if cut != -1 else text).strip()
+    return (text[:cut] if cut != -1 else text).strip()[:MAX_PROMPT_CHARS]
+
+
+# Compat aliases for callers/tests that use the underscore-private name and the
+# repair_prompt() spelling of the in-session prompt builder.
+_original_prompt = original_prompt
+
+
+def repair_prompt(task, failure, directive=None, category="rework"):
+    """Build the full repair prompt string (alias over in_session_prompt)."""
+    return in_session_prompt(task, failure, category=category, directive=directive)
 
 
 def in_session_prompt(task, failure, category="rework", directive=None):
@@ -231,6 +279,9 @@ def repair_patch(task, signal, category="rework", directive=None, prefer_non_cla
         "model": coder,
         "note": f"agentic-repair:{category}",
     }
+    # Advance attempt only when the caller selected it, mirroring the prompt rule below.
+    if "attempt" in task:
+        patch["attempt"] = int(task.get("attempt") or 0) + 1
     # Only rewrite the prompt when the caller actually selected it. Sweep jobs that query a narrow
     # column set (periodic.run_unstick used to select id,slug,note,transient_retries,project_id)
     # would otherwise get in_session_prompt()'s fallback — "Complete the task '<slug>'." — written

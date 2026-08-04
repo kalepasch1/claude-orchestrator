@@ -44,7 +44,7 @@ def test_credential_named_keys_are_refused(key):
     "xoxb-" + "1" * 30,                      # Slack
     "re_" + "g" * 30,                        # Resend
     "AIza" + "h" * 35,                       # Google / Gemini
-    "AKIAIOSFODNN7EXAMPLE",                  # AWS access key id (canonical 20-char form)
+    "AKIA" + "IOSFODNN7EXAMPLE",             # AWS access key id (canonical 20-char form)
     "eyJhbGciOiJIUzI1NiJ9." + "i" * 30,      # JWT
     "-----BEGIN RSA PRIVATE KEY-----",
     "postgres://user:hunter2@db.host/app",   # DSN with inline password

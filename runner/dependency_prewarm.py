@@ -528,9 +528,17 @@ def _ensure_locked(repo, reason="prewarm", timeout=None):
                 ignored_scripts = True
     if r.returncode != 0:
         tail = ((r.stdout or "")[-800:] + "\n" + (r.stderr or "")[-800:]).strip()
+        err = tail or f"{manager} install failed"
+        # A failed install leaves the snapshot unready; label it with the standard
+        # readiness-validation failure class so repair routing sees one error family.
+        try:
+            if not _deps_ready_local(build_root):
+                err = "installed snapshot failed dependency readiness validation: " + err
+        except Exception:
+            pass
         shutil.rmtree(build_root, ignore_errors=True)
         if lock_file: lock_file.close()
-        return {"ok": False, "manager": manager, "error": tail or f"{manager} install failed"}
+        return {"ok": False, "manager": manager, "error": err[:2000]}
     # PRISMA (2026-07-14): installs that skip lifecycle scripts (--ignore-scripts fallback,
     # pnpm script whitelisting) never run `prisma generate`, so every test importing the client
     # fails with "Cannot find module '.prisma/client/default'" — this single missing step
