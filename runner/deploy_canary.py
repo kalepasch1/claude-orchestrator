@@ -25,6 +25,14 @@ def _pending_canary(app):
 
 
 def run():
+    # Synthetic heartbeat tasks are self-directed work: they exercise the pipeline but ship
+    # nothing a user sees. Real user work already exercises the same path, and deploy_verify
+    # now proves deployment directly (DEPLOYED_AND_VERIFIED), so the heartbeat is redundant.
+    # Gated off by default; set ORCH_DEPLOY_CANARIES=1 to restore.
+    import self_work_gate
+    if not self_work_gate.allow_generator("ORCH_DEPLOY_CANARIES", "deploy_canary.run"):
+        print("deploy_canary: filed 0 canary heartbeats (suppressed)")
+        return
     apps = db.select("deploy_health", {"select": "app,vercel_project"}) or []
     filed = 0
     for a in apps:
