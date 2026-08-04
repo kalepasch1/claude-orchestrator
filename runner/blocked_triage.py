@@ -167,7 +167,59 @@ def run(limit=BATCH):
         fleet_config_secret_audit()
     except Exception:
         pass
+    try:
+        env_permission_sweep()
+    except Exception:
+        pass
     return out
+
+
+def env_permission_sweep(root=None):
+    """Keep every .env on this machine owner-only (0600).
+
+    A one-time chmod does not hold: agent worktrees under {repo}-wt/ are created and
+    destroyed continuously, and each new tree's .env lands with the default 0644 umask.
+    The 2026-08-02 sweep hardened 45 files, and 28 more had already appeared minutes
+    later. Permissions therefore have to be maintained, not fixed.
+
+    Templates (.env.example / .env.sample) are deliberately left alone — they hold no
+    secrets and are meant to be readable.
+    """
+    import stat as _stat
+    root = root or os.path.expanduser("~/Documents")
+    max_depth = int(os.environ.get("ORCH_ENV_SWEEP_DEPTH", "5"))
+    fixed, scanned = [], 0
+    root_depth = root.rstrip("/").count("/")
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        if dirpath.count("/") - root_depth >= max_depth:
+            dirnames[:] = []
+        dirnames[:] = [d for d in dirnames
+                       if d not in ("node_modules", ".git", "Library", ".venv", "venv")]
+        for fn in filenames:
+            if not fn.startswith(".env") or fn.endswith((".example", ".sample")):
+                continue
+            p = os.path.join(dirpath, fn)
+            try:
+                mode = os.stat(p).st_mode
+                scanned += 1
+                if mode & (_stat.S_IRGRP | _stat.S_IROTH | _stat.S_IWGRP | _stat.S_IWOTH):
+                    os.chmod(p, 0o600)
+                    fixed.append(p.replace(os.path.expanduser("~"), "~"))
+            except OSError:
+                continue
+
+    result = {"scanned": scanned, "hardened": len(fixed)}
+    if fixed:
+        print(f"blocked_triage.env_sweep: hardened {len(fixed)} readable .env file(s) to 0600")
+        try:
+            db.insert("coordination_tasks", {
+                "task_type": "env_permission_sweep",
+                "payload": json.dumps({"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                       **result, "paths": fixed[:40]})[:16000]}, upsert=False)
+        except Exception:
+            pass
+    return result
 
 
 def fleet_config_secret_audit():
