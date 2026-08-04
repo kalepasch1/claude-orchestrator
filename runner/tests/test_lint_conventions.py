@@ -360,3 +360,83 @@ except:
                 assert True
             finally:
                 sys.argv = old_argv
+
+
+class TestAsyncFunctionConformance:
+    """Recovered conformance lints: async functions must get the same checks as sync."""
+
+    def test_async_module_level_self_records_v2_violation(self):
+        """Async module-level function with 'self' records both legacy and v2 violations."""
+        code = """
+async def broken_handler(self, payload):
+    return payload
+"""
+        tree = __import__("ast").parse(code)
+        checker = ConventionChecker("test.py")
+        checker.visit(tree)
+        legacy = [v for v in checker.violations if v[1] == "module-singleton-pattern"]
+        assert len(legacy) == 1
+        v2 = [v for v in checker._v2_violations if v.rule == "MODULE_SINGLETON_PATTERN"]
+        assert len(v2) == 1
+        assert v2[0].severity == "error"
+
+    def test_async_camel_case_flagged(self):
+        """Async function in camelCase gets a NAMING_CONVENTION warning like sync ones."""
+        code = """
+async def fetchAllTasks():
+    return []
+"""
+        tree = __import__("ast").parse(code)
+        checker = ConventionChecker("test.py")
+        checker.visit(tree)
+        v2 = [v for v in checker._v2_violations if v.rule == "NAMING_CONVENTION"]
+        assert len(v2) == 1
+
+    def test_async_snake_case_passes(self):
+        """Well-named async function produces no violations."""
+        code = """
+async def fetch_all_tasks():
+    return []
+"""
+        tree = __import__("ast").parse(code)
+        checker = ConventionChecker("test.py")
+        checker.visit(tree)
+        assert len(checker.violations) == 0
+        assert len(checker._v2_violations) == 0
+
+
+class TestAnnotatedAssignmentSecrets:
+    """Recovered conformance lints: annotated assignments must not bypass secret detection."""
+
+    def test_annotated_secret_flagged(self):
+        """api_key: str = "sk-..." is a hardcoded secret."""
+        code = """
+api_key: str = "sk-1234567890abcdef"
+"""
+        tree = __import__("ast").parse(code)
+        checker = ConventionChecker("test.py")
+        checker.visit(tree)
+        legacy = [v for v in checker.violations if v[1] == "no-hardcoded-secrets"]
+        assert len(legacy) == 1
+        v2 = [v for v in checker._v2_violations if v.rule == "NO_HARDCODED_SECRETS"]
+        assert len(v2) == 1
+
+    def test_annotated_non_secret_passes(self):
+        """Annotated assignment without a secret-looking name/value passes."""
+        code = """
+base_url: str = "https://example.com"
+"""
+        tree = __import__("ast").parse(code)
+        checker = ConventionChecker("test.py")
+        checker.visit(tree)
+        assert len(checker.violations) == 0
+
+    def test_annotated_declaration_without_value_passes(self):
+        """Bare annotation (no value) must not crash or flag."""
+        code = """
+api_key: str
+"""
+        tree = __import__("ast").parse(code)
+        checker = ConventionChecker("test.py")
+        checker.visit(tree)
+        assert len(checker.violations) == 0

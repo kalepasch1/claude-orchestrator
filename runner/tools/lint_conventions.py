@@ -107,13 +107,31 @@ class ConventionChecker(ast.NodeVisitor):
         if self.in_module_level and node.args.args:
             first_arg = node.args.args[0].arg
             if first_arg == "self":
-                self.violations.append(
-                    (
-                        node.lineno,
-                        "module-singleton-pattern",
-                        f"Module-level async function '{node.name}' has 'self' parameter",
-                    )
+                msg = (
+                    f"Module-level async function '{node.name}' has 'self' parameter; "
+                    "use module delegation instead"
                 )
+                self.violations.append((node.lineno, "module-singleton-pattern", msg))
+                self._v2_violations.append(ConventionViolation(
+                    filepath=self.filepath,
+                    lineno=node.lineno,
+                    rule="MODULE_SINGLETON_PATTERN",
+                    severity="error",
+                    message=msg
+                ))
+
+        # Check naming convention (snake_case) — parity with sync functions
+        if not self._is_valid_identifier(node.name) and node.name.startswith("_"):
+            pass  # Private functions are OK
+        elif not self._is_snake_case(node.name):
+            msg = f"Async function '{node.name}' should use snake_case naming convention"
+            self._v2_violations.append(ConventionViolation(
+                filepath=self.filepath,
+                lineno=node.lineno,
+                rule="NAMING_CONVENTION",
+                severity="warning",
+                message=msg
+            ))
 
         self.in_module_level = False
         self.generic_visit(node)
@@ -174,6 +192,27 @@ class ConventionChecker(ast.NodeVisitor):
             ):
                 # Get the assignment target
                 for target in node.targets:
+                    # Subscript targets, e.g. os.environ["ORCH_API_KEY"] = "sk-..."
+                    if (
+                        isinstance(target, ast.Subscript)
+                        and isinstance(target.slice, ast.Constant)
+                        and isinstance(target.slice.value, str)
+                    ):
+                        key_lower = target.slice.value.lower()
+                        if any(pattern in key_lower for pattern in _SECRET_PATTERNS):
+                            msg = (
+                                "Hardcoded secret detected in subscript assignment "
+                                f"to '{target.slice.value}'"
+                            )
+                            self.violations.append((node.lineno, "no-hardcoded-secrets", msg))
+                            self._v2_violations.append(ConventionViolation(
+                                filepath=self.filepath,
+                                lineno=node.lineno,
+                                rule="NO_HARDCODED_SECRETS",
+                                severity="error",
+                                message=msg
+                            ))
+                        continue
                     if isinstance(target, ast.Name):
                         var_name = target.id.lower()
                         if any(
@@ -232,6 +271,37 @@ class ConventionChecker(ast.NodeVisitor):
                                 severity="warning",
                                 message=msg
                             ))
+
+        self.generic_visit(node)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
+        """Check annotated assignments for hardcoded secrets (Rule 2).
+
+        Annotated assignments (e.g. ``api_key: str = "sk-..."``) previously
+        bypassed the hardcoded-secret detection that plain assignments get.
+        """
+        if (
+            node.value is not None
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+            and isinstance(node.target, ast.Name)
+        ):
+            value_str = node.value.value
+            if any(
+                value_str.lower().startswith(prefix)
+                for prefix in ["sk-", "api-", "pk_", "secret_", "token_"]
+            ):
+                var_name = node.target.id.lower()
+                if any(pattern in var_name for pattern in _SECRET_PATTERNS):
+                    msg = f"Hardcoded secret detected in annotated assignment to '{node.target.id}'"
+                    self.violations.append((node.lineno, "no-hardcoded-secrets", msg))
+                    self._v2_violations.append(ConventionViolation(
+                        filepath=self.filepath,
+                        lineno=node.lineno,
+                        rule="NO_HARDCODED_SECRETS",
+                        severity="error",
+                        message=msg
+                    ))
 
         self.generic_visit(node)
 
