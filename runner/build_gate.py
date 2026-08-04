@@ -214,11 +214,17 @@ def run_build(repo, branch, build_cmd, timeout=900, vercel_context=True):
 
 
 def check(project_name, branch):
+    # E: every verdict is recorded so a build gate stuck on one answer alarms in hours.
+    # A broken parser here defaulted to False for 18 days without raising or counting.
+    import gate_liveness
     p = (db.select("projects", {"select": "*", "name": f"eq.{project_name}"}) or [{}])[0]
     repo = p.get("repo_path", "")
     if not repo or not os.path.isdir(repo):
+        gate_liveness.record("build_gate", "skipped_no_repo", branch, project_name)
         return True, "repo not on this machine (skipped)"
-    return run_build(repo, branch, build_cmd_for(p, repo))
+    ok, log = run_build(repo, branch, build_cmd_for(p, repo))
+    gate_liveness.record("build_gate", bool(ok), branch, (log or "")[:400])
+    return ok, log
 
 
 if __name__ == "__main__":
