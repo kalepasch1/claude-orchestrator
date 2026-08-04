@@ -32,8 +32,14 @@ class ConvergenceGateTest(unittest.TestCase):
         os.environ["ORCH_CONVERGENCE_GATE"] = "1"
         os.environ["ORCH_RELEASE_BACKPRESSURE"] = "0"   # isolate the gate from release state
 
+    def test_blocked_tasks_may_still_be_decomposed(self):
+        """BLOCKED is recoverable, not dead: auto_remediate decomposes blocked tasks to unblock
+        them. Gating BLOCKED would stall the remediation path that lets work reach production."""
+        ok, why = deployment_terminal.can_spawn_children({"slug": "big-feature", "state": "BLOCKED"})
+        self.assertTrue(ok, why)
+
     def test_dead_states_cannot_spawn_children(self):
-        for state in ("CLOSED", "QUARANTINED", "SHELVED", "SUPERSEDED", "BLOCKED"):
+        for state in ("CLOSED", "QUARANTINED", "SHELVED", "SUPERSEDED"):
             ok, why = deployment_terminal.can_spawn_children({"slug": "t", "state": state})
             self.assertFalse(ok, f"{state} must not be allowed to spawn children")
             self.assertIn(state, why)
@@ -121,9 +127,18 @@ class BulkUpdateGuardTest(unittest.TestCase):
             with self.assertRaises(bulk_update_guard.BulkStateChangeRefused):
                 bulk_update_guard.check("releases", {field: "success"}, 500)
 
-    def test_unknown_row_count_does_not_block(self):
-        """A failed COUNT must not wedge the whole update path."""
-        self.assertTrue(bulk_update_guard.check("tasks", {"state": "MERGED"}, None))
+    def test_unknown_row_count_is_refused(self):
+        """An undeterminable row count is NOT permission — it is exactly when the guard matters
+        most, since the write may be unbounded. db.update retries the count before giving up."""
+        with self.assertRaises(bulk_update_guard.BulkStateChangeRefused):
+            bulk_update_guard.check("tasks", {"state": "MERGED"}, None)
+
+    def test_unknown_row_count_allowed_with_explicit_override(self):
+        os.environ["ORCH_ALLOW_BULK_STATE_CHANGE"] = "operator confirmed"
+        try:
+            self.assertTrue(bulk_update_guard.check("tasks", {"state": "MERGED"}, None))
+        finally:
+            os.environ.pop("ORCH_ALLOW_BULK_STATE_CHANGE", None)
 
 
 class SelfWorkGateTest(unittest.TestCase):
