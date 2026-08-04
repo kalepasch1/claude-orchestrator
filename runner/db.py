@@ -200,26 +200,34 @@ RELEASE_FIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-", "copyfix
 REWORK_PREFIX = "rework-"
 CLAIM_SCAN_LIMIT = int(os.environ.get("ORCH_CLAIM_SCAN_LIMIT", "1000") or 1000)
 PROJECT_PRIORITY_ORDER = {
-    "orchestrator": 1,
-    "beethoven": 1,
-    "tomorrow": 2,
-    "apparently": 3,
-    "smarter": 4,
-    "pareto-2080": 5,
-    "pareto": 5,
-    "2080": 5,
-    "hisanta": 6,
-    "santas-secret-workshop": 6,
-    "galop": 7,
-    "racefeed": 7,
-    "sustainable-barks": 8,
-    "sustainablebarks": 8,
+    # Owner directive 2026-08-04: "start with apparently, apparently-law, tomorrow, the
+    # orchestrator, madeus/web, vigil + smarter + illuminati (merging into apparently),
+    # then pareto/2080."
+    "apparently": 1,
+    "apparently-law": 2,
+    "tomorrow": 3,
+    "orchestrator": 4,
+    "beethoven": 4,
+    "web": 5,
+    "madeus": 5,
+    "vigil": 6,
+    "smarter": 7,
+    "illuminati": 8,
+    "pareto-2080": 9,
+    "pareto": 9,
+    "2080": 9,
+    "hisanta": 10,
+    "santas-secret-workshop": 10,
+    "galop": 11,
+    "racefeed": 11,
+    "sustainable-barks": 12,
+    "sustainablebarks": 12,
 }
 
 
 def _project_rank_name(name):
-    """Return numeric priority for *name* (lower = higher priority, 9 = default/unknown)."""
-    return PROJECT_PRIORITY_ORDER.get(str(name or "").strip().lower(), 9)
+    """Return numeric priority for *name* (lower = higher priority, 13 = default/unknown)."""
+    return PROJECT_PRIORITY_ORDER.get(str(name or "").strip().lower(), 13)
 
 
 def localize_repo_path(repo_path):
