@@ -1044,7 +1044,19 @@ def run_fleet_e2e_audit():
     fleet_e2e_audit.run()
 
 
+def run_deployterminal():
+    """Promote verified releases' tasks to DEPLOYED_AND_VERIFIED; report red (back-pressured) projects."""
+    import deployment_terminal; return deployment_terminal.run()
+
+
+def run_shipped():
+    """owner_goals #2 telemetry: improvements actually shipped to production per day, per app."""
+    import shipped_metrics; return shipped_metrics.run()
+
+
 JOBS = {
+    "deployterminal": run_deployterminal,
+    "shipped": run_shipped,
     "spec": run_spec,
     "chaos": run_chaos,
     "txn": run_txn,
