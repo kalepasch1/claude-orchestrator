@@ -69,39 +69,56 @@ def _branch_exists_anywhere(repo, branch):
     return _branch_exists(repo, f"refs/remotes/origin/{branch}")
 
 
-def _already_integrated(repo, slug):
-    """True if this slug's work already landed in an origin integration branch. When a branch is
-    missing because it was legitimately merged (and later GC'd), rebuilding it is pure waste — this
-    lets the sweeper CLOSE the original instead of filing (and re-filing forever) recovery churn."""
+def _integration_evidence(repo, slug):
+    """Return (sha, ref, subject) proving this slug's work landed, else None.
+
+    FIX 2026-08-04 (cowork forensic audit). This used to grep `git log` for slug[:48] and
+    treat ANY hit as proof of integration. A full-history audit found 10,584 of 13,816
+    MERGED tasks (76.6%) had no real code in the repo, and this predicate was one of the
+    three causes. A first patch filtered lines containing "recovery-intent"; re-probing that
+    patched code against 400 slugs proven phantom by tree-level git ground truth, it still
+    certified 117 of them (29.2%), because grep-for-a-slug is unsound three ways:
+
+      * `Merge branch 'agent/recover-missing-branch-<slug>'` mentions <slug>, says nothing
+        about "recovery-intent", and carries none of the work — the recovery attempt
+        certified the very task it was created to recover;
+      * slug[:48] matched by PREFIX, and 5,900 MERGED slugs share a 48-char prefix with a
+        sibling slice, so slice-1 landing certified slice-2..N;
+      * empty commits (tree identical to parent) counted as delivered work.
+
+    The decision now lives in landed_evidence.find_evidence(), which requires a
+    boundary-exact slug reference on a non-scaffolding commit that actually changes the
+    tree — and returns the sha so callers can record it. See
+    tests/test_phantom_merge_loop.py for the executable reproduction.
+    """
     if not repo or not slug:
-        return False
+        return None
+    try:
+        import landed_evidence
+    except Exception:
+        # FAIL CLOSED: unable to prove integration => not integrated. The failure mode we
+        # are designing against is falsely closing real work as MERGED.
+        return None
     targets = [t for t in (os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev"),
                            os.environ.get("ORCH_CODE_MERGE_TARGET", "dev"),
                            "main", "master") if t]
-    needle = str(slug)[:48]
+    refs = []
     for tgt in targets:
         ref = f"origin/{tgt}"
-        try:
-            if subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref], cwd=repo,
-                              capture_output=True).returncode != 0:
-                continue
-            g = subprocess.run(["git", "log", "--oneline", "-30000", "--grep", needle, ref],
-                               cwd=repo, capture_output=True, text=True, timeout=60)
-            # FIX 2026-08-04 (cowork): a `recovery-intent-stub: <slug>` commit MENTIONS the slug
-            # but carries none of the work. Matching it here made the sweeper self-certify:
-            # branch lost -> stub commit filed -> stub matches the grep -> original task closed
-            # MERGED with no code. 192 of 199 "merged" tasks in the last 7 days had NULL
-            # artifact_commit because of this loop. Only real work counts as integrated.
-            if g.returncode == 0 and g.stdout.strip():
-                real = [ln for ln in g.stdout.strip().splitlines()
-                        if "recovery-intent-stub" not in ln and "recovery-intent" not in ln]
-                if not real:
-                    continue
-            if g.returncode == 0 and g.stdout.strip():
-                return True
-        except Exception:
-            continue
-    return False
+        if subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref], cwd=repo,
+                          capture_output=True).returncode == 0:
+            refs.append(ref)
+    if not refs:
+        return None
+    try:
+        return landed_evidence.find_evidence(repo, str(slug), refs=refs)
+    except Exception:
+        return None
+
+
+def _already_integrated(repo, slug):
+    """Boolean wrapper. Prefer _integration_evidence() so the sha can be persisted."""
+    return _integration_evidence(repo, slug) is not None
 
 
 def _normalize_base(repo, proj, requested):
@@ -403,11 +420,19 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
         if not _branch_exists_anywhere(repo, f"agent/{slug}"):
             # Branch gone. If the work already landed upstream, CLOSE it (no rebuild) — this is what
             # kills the phantom missing_branch recount + endless recovery churn on merged work.
-            if _already_integrated(repo, slug):
+            evidence = _integration_evidence(repo, slug)
+            if evidence:
+                # INVARIANT (2026-08-04): never write MERGED without the sha that proves it.
+                # Every phantom merge in the audit was a MERGED row with artifact_commit NULL,
+                # so recording the evidence is what makes the reconciliation detector able to
+                # tell a real merge from a manufactured one.
+                sha, ref, subject = evidence
                 if t.get("state") != "MERGED":
                     db.update("tasks", {"id": t["id"]},
                               {"state": "MERGED",
-                               "note": "integration_sweeper: work already in integration branch; closed (branch GC'd)"})
+                               "artifact_commit": sha,
+                               "note": f"integration_sweeper: work verified in {ref} at {sha[:12]} "
+                                       f"({subject[:80]}); closed (branch GC'd)"})
                 continue
             if _queue_recovery(t, proj, recovery_index=recovery_index):
                 missing += 1
