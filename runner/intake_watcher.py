@@ -267,9 +267,15 @@ def decompose_freeform(text, repo_root, default_project):
     import planner
     tasks = planner.plan(text, repo=repo_root, project=default_project)
     slug_base = _dropbox_slugify((text.strip().splitlines() or [""])[0])
+    # Wave-0 attribution (review-gate spec item 4): an optional SUBMITTED-BY: line
+    # in the PROMPT-*.md carries through decomposition onto every queued task.
+    import re as _re
+    _m = _re.search(r"^SUBMITTED-BY:\s*(.+)$", text or "", _re.M | _re.I)
+    submitted_by_label = _m.group(1).strip()[:200] if _m else None
     rendered = []
     for t in tasks:
         rendered.append({
+            "submitted_by_label": submitted_by_label,
             "project": default_project,
             "slug": f"dropbox-{slug_base}-{t['slug']}",
             # honor the workflow router's materiality stamp (governed_heavy / material work gets
@@ -302,6 +308,8 @@ def _queue_dropbox_tasks(rendered, projects_by_name):
                "base_branch": proj.get("default_base", "main"), "kind": "build",
                "state": "QUEUED", "deps": t["depends"], "material": bool(t["material"]),
                "note": pipeline_contract.note(source="intake-dropbox")}
+        if t.get("submitted_by_label"):
+            row["submitted_by_label"] = t["submitted_by_label"]
         if t.get("model"):
             row["model"] = t["model"]
         if _branch_bootstrap:

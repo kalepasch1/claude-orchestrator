@@ -427,6 +427,17 @@ def process_controls():
             db.update("fleet_control", {"id": r["id"]},
                       {"handled_by": new_handled, "done": all_done})
             done += 1
+            # Wave-0 attribution (review-gate spec item 4): every honored fleet
+            # control action becomes a steering_events row with requested_by.
+            try:
+                import steering
+                steering.record("fleet_control", project=target,
+                                actor_label=str(r.get("requested_by") or "") or None,
+                                rationale=str((params or {}).get("reason") or "") or None,
+                                payload={"action": action, "target": target, "host": HOST,
+                                         "control_id": r.get("id")})
+            except Exception:
+                pass
             if action == "git_pull" and params.get("restart", True):
                 _restart()
             if action == "restart":

@@ -7,6 +7,7 @@ export interface NavigationItem { label: string; icon: string; to: string; alias
 export const CANONICAL_NAVIGATION: readonly NavigationItem[] = Object.freeze([
   { label: 'Command Center', icon: '→', to: '/', aliases: ['/index'] },
   { label: 'Sign-offs', icon: '○', to: '/sign-offs' },
+  { label: 'Waves', icon: '≈', to: '/waves', aliases: ['/releases'] },
   { label: 'Queue', icon: '≡', to: '/queue' },
   { label: 'Orchestrators', icon: '◈', to: '/orchestrators' },
   { label: 'Business OS', icon: '◇', to: '/business' },

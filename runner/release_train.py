@@ -578,6 +578,130 @@ def _release_window_open(project, repo, ahead):
         return True  # fail-open: a broken window check must never freeze releases
 
 
+def _release_gate_slug(project, staging_sha):
+    """Stable identity for one staging batch's operator review card."""
+    return f"release:{project}:{(staging_sha or '')[:12]}"
+
+
+def _release_approval_gate(p, project, repo, prod, release_base_sha, staging_sha, ahead,
+                           qa_note=""):
+    """Wave-0 operator review gate (review-gate spec item 1): a QA/build-green staging
+    batch that met the release floors does NOT promote to prod until an operator
+    approves a kind='release' approval card. Returns None to proceed, or a hold
+    result dict. Deny keeps the batch on staging (nothing is lost; a fresh card is
+    filed when staging changes). ORCH_RELEASE_AUTOPROMOTE=true restores the old
+    fully-automatic promotion (default false)."""
+    if _truthy("ORCH_RELEASE_AUTOPROMOTE", False):
+        return None
+    slug = _release_gate_slug(project, staging_sha)
+    try:
+        cards = db.select("approvals", {"select": "id,status,decided_by,slug",
+                                        "kind": "eq.release", "slug": f"eq.{slug}",
+                                        "order": "created_at.desc", "limit": "1"}) or []
+    except Exception as e:
+        # fail-closed: if the approvals queue is unreachable we must not silently promote
+        _record_release_flow(project, "staging-gate-error", prod=prod, ahead=int(ahead),
+                             note=f"release gate could not read approvals: {str(e)[:160]}")
+        return {"project": project, "gate": "release-approval",
+                "note": "release gate could not read approvals; holding"}
+    card = cards[0] if cards else None
+    if card and str(card.get("status")) == "approved":
+        try:
+            import steering
+            steering.record_once("release_decision", card.get("id"), project=project,
+                                 actor_label=card.get("decided_by"),
+                                 rationale="release approved by operator",
+                                 payload={"staging_sha": staging_sha, "base_sha": release_base_sha,
+                                          "ahead": int(ahead), "decision": "approved"})
+        except Exception:
+            pass
+        return None
+    if card and str(card.get("status")) == "denied":
+        try:
+            import steering
+            steering.record_once("release_decision", card.get("id"), project=project,
+                                 actor_label=card.get("decided_by"),
+                                 rationale="release denied by operator; batch stays on staging",
+                                 payload={"staging_sha": staging_sha, "base_sha": release_base_sha,
+                                          "ahead": int(ahead), "decision": "denied"})
+        except Exception:
+            pass
+        _record_release_flow(project, "staging-release-denied", prod=prod, ahead=int(ahead),
+                             note="operator denied this staging batch; it stays on staging and a "
+                                  "fresh card is filed when staging changes")
+        return {"project": project, "gate": "release-approval",
+                "note": "release denied by operator; batch requeued on staging"}
+    if card:  # pending — hold without re-filing
+        _record_release_flow(project, "staging-awaiting-approval", prod=prod, ahead=int(ahead),
+                             note="release approval card pending operator decision")
+        return {"project": project, "gate": "release-approval",
+                "note": "awaiting operator release approval"}
+    # No card for this staging SHA yet: file one with the full wave summary.
+    subjects, diffstat = "", ""
+    try:
+        subjects = (_git(repo, "log", "--format=%s", "-n", "60",
+                         f"{release_base_sha}..{STAGING}").stdout or "").strip()
+        diffstat = (_git(repo, "diff", "--stat", f"{release_base_sha}..{staging_sha}").stdout or "").strip()
+    except Exception:
+        pass
+    import re as _re
+    branch_lines = []
+    for s_line in subjects.splitlines():
+        m = _re.match(r"Merge branch '([^']+)'", s_line)
+        branch_lines.append(f"- {m.group(1)}" if m else f"- {s_line[:120]}")
+    deploy_target = p.get("vercel_project") or project
+    brief = {"staging_sha": staging_sha, "base_sha": release_base_sha, "ahead": int(ahead),
+             "staging_branch": STAGING, "prod_branch": prod, "deploy_targets": [deploy_target],
+             "qa": qa_note or "QA/build gates green", "included": branch_lines[:60]}
+    try:
+        card = db.insert("approvals", {
+            "project": project, "kind": "release", "slug": slug,
+            "title": f"Release wave ready: {project} — {ahead} changes to {prod}",
+            "why": f"Staging batch on {STAGING} is QA/build green and met release floors "
+                   f"(min batch {MIN_BATCH}). Operator review required before prod promotion "
+                   f"(Wave-0 gate; ORCH_RELEASE_AUTOPROMOTE=true bypasses).",
+            "value": f"Promotes {ahead} verified changes to {prod} ({deploy_target}).",
+            "risk": "Prod deploy via Vercel; deploy_verify confirms or rolls back to last_good.",
+            "detail": ("INCLUDED WORK:\n" + "\n".join(branch_lines[:60])
+                       + "\n\nDIFFSTAT:\n" + diffstat[-2500:]
+                       + f"\n\nQA: {qa_note or 'green'}\nSTAGING {staging_sha}\nBASE {release_base_sha}"),
+            "brief_json": brief,
+        })
+    except Exception as e:
+        _record_release_flow(project, "staging-gate-error", prod=prod, ahead=int(ahead),
+                             note=f"release approval card insert failed: {str(e)[:160]}")
+        return {"project": project, "gate": "release-approval",
+                "note": "release approval card insert failed; holding"}
+    if isinstance(card, list):
+        card = card[0] if card else {}
+    card = card or {}
+    # Ready-for-review notification (spec item 2): notifications row (the source of
+    # truth every surface drains) + best-effort direct ping via scripts/notify.sh.
+    review_url = os.environ.get("ORCH_REVIEW_URL", "https://madeus.cc/waves")
+    title = f"Release ready for review: {project} ({ahead} changes)"
+    body = (f"[{project}] staging batch ready for prod promotion.\n\n"
+            f"Batch: {ahead} changes -> {prod}\nStaging SHA: {staging_sha}\n\n"
+            "WAVE SUMMARY:\n" + "\n".join(branch_lines[:25])
+            + f"\n\nReview + decide: {review_url}\n")
+    try:
+        aud = os.environ.get("APPROVAL_PUSH_EMAIL", "kalepasch@gmail.com")
+        nrow = {"channel": "email", "audience": aud, "kind": "decision", "title": title[:180],
+                "body": body[:4000], "approval_id": card.get("id"), "sent": False}
+        db.insert("notifications", nrow)
+        db.insert("notifications", {**nrow, "channel": "smarter"})
+    except Exception:
+        pass
+    try:
+        import notify
+        notify.send(f"{title}\n{review_url}")
+    except Exception:
+        pass
+    _record_release_flow(project, "staging-awaiting-approval", prod=prod, ahead=int(ahead),
+                         note="release approval card created; operator notified")
+    return {"project": project, "gate": "release-approval", "card": card.get("id"),
+            "note": f"release approval card created for {ahead} changes; awaiting operator"}
+
+
 def _run_for_unlocked(project, repo_override=None):
     p = (db.select("projects", {"select": "*", "name": f"eq.{project}"}) or [{}])[0]
     repo = repo_override or p.get("repo_path", "")
@@ -816,6 +940,14 @@ def _run_for_unlocked(project, repo_override=None):
             release_manifest.record_gate(manifest["id"], "build", True, command=bcmd)
         except Exception:
             pass
+    # WAVE-0 OPERATOR REVIEW GATE (review-gate spec item 1): staging is green and the
+    # floors are met — file/consult the kind='release' approval card instead of
+    # promoting automatically. Only an approved card (or ORCH_RELEASE_AUTOPROMOTE=true)
+    # lets the promotion below run.
+    gated = _release_approval_gate(p, project, repo, prod, release_base_sha, staging_sha,
+                                   int(ahead), qa_note=str(qa_plan.get("reason") or ""))
+    if gated:
+        return gated
     # release: record last-good, ff prod to staging, push (deploy_verify confirms/rolls back)
     held = _hold_for_open_fix(p, project, "refresh")
     if held:
