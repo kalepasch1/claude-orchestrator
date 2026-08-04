@@ -3402,7 +3402,10 @@ def main():
             _reload_t = time.time()
             try:
                 import hot_reload
-                hot_reload.maybe_reload()
+                # Pass the in-flight set: hot_reload now defers CODE swaps until the fleet is
+                # idle (drain-then-swap). Swapping modules under a running task destroyed
+                # in-flight work three times in one session.
+                hot_reload.maybe_reload(active_slugs=active)
             except Exception as e:
                 _log.debug("hook hot_reload failed: %s", e)
         # SELF-DEPLOY: graceful exec-into-new-code when self_deploy requested it (canary-gated)
