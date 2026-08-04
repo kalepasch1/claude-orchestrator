@@ -59,7 +59,17 @@ FILE_TASKS = os.environ.get("ORCH_DIVERGENT_GUARD_FILE_TASKS", "true").lower() i
 
 # Every code shape below blocks. There is no advisory tier: an add/add on a source file is
 # never safely auto-resolvable, and "warn" guards get ignored.
-BLOCKING = {"divergent_add_add", "divergent_same_symbol", "union_merge_symbol_loss"}
+#
+# FAIL-OPEN HOLE CLOSED 2026-08-04 (adversarial sweep): `guard_error` was NOT in this set, so
+# it carried severity "warn" — and gate() filters on severity == "block". A merge whose base
+# was unreachable (shallow clone, pruned ref, grafted history) therefore produced exactly one
+# `guard_error` finding, zero blocking findings, and gate() returned ok=True. Proven live:
+# gate(repo, "deadbeef…", "HEAD") returned
+#   (True, "divergent_authorship_guard: no divergent authorship between deadbeefdead and HEAD")
+# The guard reported CLEAN on a comparison it had not made. Every other guard on this path
+# fails closed; this one waved the merge through. It is blocking now.
+BLOCKING = {"divergent_add_add", "divergent_same_symbol", "union_merge_symbol_loss",
+            "guard_error"}
 
 GIT_TIMEOUT = int(os.environ.get("ORCH_DIVERGENT_GIT_TIMEOUT", "120"))
 MAX_FILES = int(os.environ.get("ORCH_DIVERGENT_MAX_FILES", "300"))
@@ -196,7 +206,30 @@ def symbols_of(path, source):
         return _py_symbols(source)
     if path.endswith(TS_EXT):
         return _ts_symbols(source)
+    if path.endswith(JSON_EXT):
+        return _json_symbols(source)
     return None
+
+
+JSON_EXT = (".json", ".jsonc")
+
+
+def _json_symbols(source):
+    """{top_level_key: normalized value} for a JSON object.
+
+    GAP CLOSED 2026-08-04: .json was not analysable, so `analysable` was False and the
+    add/add detector skipped it entirely. Two branches independently authoring
+    locales/en.json, a tsconfig, a manifest or a route map is a routine fleet shape, and a
+    line-union of two JSON objects is either invalid JSON or a silent key drop. Lockfiles and
+    other genuinely append-only paths are already excluded by _UNION_SAFE upstream.
+    """
+    try:
+        data = json.loads(source)
+    except (ValueError, TypeError, RecursionError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return {k: _norm(json.dumps(v, sort_keys=True, default=str)) for k, v in data.items()}
 
 
 _DEF_RX = (r"(^|\s)(def|class|function|const|let|var|type|interface|enum)\s+%s\b"
@@ -267,30 +300,50 @@ def _defined_or_referenced(repo, ref, path, name, result_src):
     that nothing defines -- which is the actual breakage, and which is exactly what
     route_request() did to CANARY_ENABLED in 71cfd4ca6.
     """
+    # GAP CLOSED 2026-08-04 (adversarial sweep): both fast paths below used to `return`
+    # unconditionally, so this function only ever looked INSIDE the file that lost the symbol.
+    # A symbol dropped from f.ts and still imported by u.ts scored (relocated=False,
+    # referenced=False) and the completeness detector skipped it — the merge came back clean
+    # while u.ts was broken. Proven for both .ts and .py. 71cfd4ca6 happened to be an
+    # intra-file read (route_request() read CANARY_ENABLED in the same module), which is why
+    # this never showed up before. A NEGATIVE intra-file answer now falls through to the
+    # repo-wide search instead of being treated as proof of absence.
     if result_src and path.endswith(PY_EXT):
         undefined = _undefined_names(result_src)
-        if undefined is not None:
-            return (False, True) if name in undefined else (False, False)
+        if undefined is not None and name in undefined:
+            return False, True
     if result_src and not path.endswith(PY_EXT):
         # TS/JS: require a usage shape, not a bare word. Exclude `.name` (a property of some
         # other object) and `name:` (an object-literal key).
         if re.search(r"(?<![.\w])%s\s*(?:\(|[-+*/=<>,;)\]}]|$)" % re.escape(name),
                      result_src, re.M):
             return False, True
-        return False, False
     rc, out, _ = _git(repo, "grep", "-l", "-w", "-e", name, ref)
     if rc != 0 or not out.strip():
         return False, False
     files = [ln.split(":", 1)[-1] for ln in out.splitlines() if ln.strip()]
     defined_elsewhere = False
+    referenced = False
+    esc = re.escape(name)
+    # A bare word match is not a reference — `run`, `check`, `log` occur in docstrings and as
+    # attributes of unrelated objects. Require an IMPORT of the name or a call/operator usage
+    # shape, and exclude `.name` (someone else's property) and `name:` (an object-literal key).
+    import_rx = re.compile(
+        r"^\s*(?:from\s+\S+\s+)?import\s[^\n]*\b%s\b"              # python / TS default
+        r"|import\s*\{[^}]*\b%s\b[^}]*\}\s*from" % (esc, esc), re.M)
+    usage_rx = re.compile(r"(?<![.\w])%s\s*(?:\(|[-+*/=<>,;)\]}]|$)" % esc, re.M)
     for other in files[:40]:
         if other == path:
             continue
         src = _blob(repo, ref, other)
-        if src and re.search(_DEF_RX % (re.escape(name), re.escape(name)), src, re.M):
+        if not src:
+            continue
+        if re.search(_DEF_RX % (esc, esc), src, re.M):
             defined_elsewhere = True
             break
-    return defined_elsewhere, True
+        if not referenced and (import_rx.search(src) or usage_rx.search(src)):
+            referenced = True
+    return defined_elsewhere, referenced
 
 
 def _finding(code, path, detail, fix, symbol=None):
