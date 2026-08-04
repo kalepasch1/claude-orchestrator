@@ -210,7 +210,64 @@ def _draft_slots(capacity):
     return min(PER_RUN, int(capacity.get("slots") or 0))
 
 
+def run_measured():
+    """REQUIREMENT A: the only sanctioned generation path — measured bottlenecks only.
+
+    Template/model generation (`run_template()`, below) invented ideas and let the model
+    score its own inventions. This path measures first: it detects bottlenecks from live
+    telemetry, ranks them by arithmetic headroom, refuses to fabricate a score when there
+    is no realized history, dedupes semantically against shipped AND regressed work, and
+    emits proposals that each carry a baseline, a target, an executable metric query and
+    an evaluation deadline.
+
+    Targets USER APPS by default: self-targeting still runs through self_work_gate, which
+    is off unless ORCH_SELF_IMPROVEMENT_ENABLED is set.
+    """
+    import bottleneck_detector, improvement_ledger
+    found = bottleneck_detector.detect()
+    if not found:
+        print("improvement_miner: no measurably-bad metric — emitting nothing. "
+              "This is the correct outcome, not a failure.")
+        return {"detected": 0, "queued": 0, "skipped_duplicate": 0, "suppressed": 0}
+    apps = [p["name"] for p in (db.select("projects", {"select": "name"}) or [])
+            if p["name"] not in ("smoke-test",)]
+    targets = [a for a in apps
+               if self_work_gate.allow_self_target(a, "bottleneck-derived proposal")]
+    suppressed = len(apps) - len(targets)
+    target = os.environ.get("ORCH_IMPROVE_TARGET_APP") or (targets[0] if targets else None)
+    if not target:
+        print("improvement_miner: every candidate target is gated off; emitting nothing")
+        return {"detected": len(found), "queued": 0, "skipped_duplicate": 0,
+                "suppressed": suppressed}
+    ranked = improvement_ledger.rank([dict(b, app=target) for b in found])
+    queued, dup = 0, 0
+    for b in ranked[:PER_RUN]:
+        row = improvement_ledger.build_proposal(b, target)
+        out = improvement_ledger.queue(row)
+        if out:
+            queued += 1
+            print(f"improvement_miner: queued {out['task_slug']} — baseline "
+                  f"{out['baseline_value']} -> target {out['target_value']} "
+                  f"({out['predicted_multiplier']}x of {out['headroom_multiplier']}x headroom), "
+                  f"evaluate after {out['evaluate_after']}")
+        else:
+            dup += 1
+    print(f"improvement_miner(measured): {len(found)} bottlenecks, {queued} proposals, "
+          f"{dup} deduped, {suppressed} target(s) gated off")
+    return {"detected": len(found), "queued": queued, "skipped_duplicate": dup,
+            "suppressed": suppressed, "target": target}
+
+
 def run():
+    """Dispatch entry point. Measured generation is the default; the legacy template
+    path survives only behind ORCH_IMPROVE_LEGACY_TEMPLATE=1 for comparison."""
+    if os.environ.get("ORCH_IMPROVE_LEGACY_TEMPLATE", "").lower() in ("1", "true", "yes", "on"):
+        print("improvement_miner: LEGACY template generation explicitly enabled")
+        return run_template()
+    return run_measured()
+
+
+def run_template():
     import improvement_scrutiny, improvement_optimizer
     capacity = improvement_optimizer.capacity(db)
     # proposal_only: the review/build lane is saturated, so we keep MINING (discovery never stalls)
