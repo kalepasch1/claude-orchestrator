@@ -630,6 +630,22 @@ def update(table, match, patch):
         _guard_fleet_config(table, {"key": (match or {}).get("key") or (patch or {}).get("key"),
                                     "value": (patch or {}).get("value")})
     params = {k: f"eq.{v}" for k, v in match.items()}
+    # METRIC INTEGRITY: refuse silent mass state flips. 9,236 tasks were once moved to MERGED
+    # by two bulk UPDATEs, making every downstream metric untrue. A state-changing PATCH that
+    # would touch more than ORCH_BULK_STATE_MAX rows now needs ORCH_ALLOW_BULK_STATE_CHANGE
+    # and is written to bulk_state_change_audit. Single-row updates (match on id) are unaffected.
+    try:
+        import bulk_update_guard
+        if bulk_update_guard.is_state_change(patch) and "id" not in (match or {}):
+            try:
+                _n = count(table, params)
+            except Exception:
+                _n = None
+            bulk_update_guard.check(table, patch, _n,
+                                    actor=os.environ.get("ORCH_ACTOR", "db.update"),
+                                    reason=f"db.update({table}, match={sorted((match or {}).keys())})")
+    except ImportError:
+        pass
     try:
         return _req("PATCH", f"/rest/v1/{table}", body=patch,
                     headers={"Prefer": "return=representation"}, params=params)
