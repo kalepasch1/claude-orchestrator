@@ -17,6 +17,7 @@ import os, sys, json, re
 import collections
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import self_work_gate
 
 # EVERYTHING is in scope — not just the app's product surfaces, but the whole autonomous system:
 # cross-app coordination, the orchestration layer, the individual bots, the swarm, and the hive-mind.
@@ -122,8 +123,15 @@ def _next_pairs():
         i = 0
     urgent = []
     apps = list(dict.fromkeys(apps))
-    for surface in BOTTLENECK_SURFACES:
-        urgent.append(("beethoven", surface))
+    # These bottleneck surfaces used to be force-pinned to the orchestrator's own repo every
+    # single run, which is the single largest source of self-directed proposals. Gated off by
+    # default — see self_work_gate.ORCH_SELF_IMPROVEMENT_ENABLED.
+    if self_work_gate.allow_self_target(self_work_gate.SELF_PROJECT, "improvement_miner urgent bottleneck pairs"):
+        for surface in BOTTLENECK_SURFACES:
+            urgent.append((self_work_gate.SELF_PROJECT, surface))
+    # Never rotate onto the orchestrator's own repo as a normal app either.
+    apps = [a for a in apps if self_work_gate.allow_self_target(a, "improvement_miner app rotation")]
+    pairs = [(a, s) for a in apps for s in SURFACES] or pairs
     out = []
     seen = set()
     for pair in urgent + [pairs[(i + k) % len(pairs)] for k in range(min(PER_RUN, len(pairs)))]:
@@ -230,9 +238,22 @@ def run():
     # gather + SCORE all candidates first (impact x feasibility x revenue-fit), then build highest-EV first
     cands = []
     novelty_rejected = 0
+    self_suppressed = 0
     for app0, surface in _next_pairs():
-        # meta surfaces improve the AUTONOMOUS SYSTEM itself -> target the orchestrator repo
-        app = "beethoven" if surface in META_SURFACES else app0
+        # meta surfaces improve the AUTONOMOUS SYSTEM itself -> target the orchestrator repo.
+        # Gated: when self-improvement is off we keep mining the surface but for the USER APP,
+        # so the machinery stays warm and only its target changes.
+        app = app0
+        if surface in META_SURFACES:
+            if self_work_gate.allow_self_target(self_work_gate.SELF_PROJECT,
+                                                f"meta surface '{surface}'"):
+                app = self_work_gate.SELF_PROJECT
+            elif self_work_gate.is_self_project(app0):
+                self_suppressed += 1
+                continue
+        if not self_work_gate.allow_self_target(app, f"surface '{surface}'"):
+            self_suppressed += 1
+            continue
         for it in (_mine(app, surface) or [])[:3]:
             title = (it.get("title") or "").strip()
             if not title or (app, surface, title.lower()) in seen:
@@ -287,10 +308,12 @@ def run():
                 review += int(not proposal_only)
                 deferred += int(proposal_only)
             seen.add((app, surface, title.lower()))
-    print(f"improvement_miner: queued 0 directly; {review} scrutiny-ready, {revision} need revision, {deferred} deferred")
+    print(f"improvement_miner: queued 0 directly; {review} scrutiny-ready, {revision} need revision, "
+          f"{deferred} deferred, {self_suppressed} self-targeted pairs suppressed")
     return {"queued": queued, "for_review": review, "needs_revision": revision,
             "deferred": deferred, "capacity_limited": proposal_only,
-            "novelty_rejected": novelty_rejected, "capacity": capacity}
+            "novelty_rejected": novelty_rejected, "capacity": capacity,
+            "self_suppressed": self_suppressed}
 
 
 if __name__ == "__main__":
