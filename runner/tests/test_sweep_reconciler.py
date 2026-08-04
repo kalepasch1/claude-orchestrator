@@ -45,6 +45,18 @@ class FakeDB:
         self.inserts.append((table, row))
         return [row]
 
+    def update(self, table, filters, body):
+        """Mirror db.update(table, {col: val}, body) — recorded in the same shape as
+        the old raw _req patches so existing assertions keep working."""
+        params = {k: f"eq.{v}" for k, v in (filters or {}).items()}
+        self.patches.append((f"/rest/v1/{table}", params, body))
+        if table == "tasks":
+            tid = (filters or {}).get("id")
+            for t in self.tasks.values():
+                if t["id"] == tid and body:
+                    t.update(body)
+        return [body]
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -102,11 +114,30 @@ class TestReconcileDeployed:
         stats = sr.reconcile(db_module=db)
         assert stats["deployed"] == 1
         assert stats["errors"] == 0
-        # Task patched to MERGED
+        # EVIDENCE GATE (2026-08-04): journal sha is NOT verifiable on origin base here
+        # (fake repo), so the task must go DONE — not MERGED — and no outcome is recorded.
         task_patches = [p for p in db.patches if "/tasks" in p[0]]
-        assert any(p[2].get("state") == "MERGED" for p in task_patches)
-        assert any("offline-sweep deployed abc123def456" in (p[2].get("note") or "") for p in task_patches)
-        # Outcome inserted
+        assert any(p[2].get("state") == "DONE" for p in task_patches)
+        assert not any(p[2].get("state") == "MERGED" for p in task_patches)
+        assert any("not verified on origin base" in (p[2].get("note") or "") for p in task_patches)
+        outcome_inserts = [i for i in db.inserts if i[0] == "outcomes"]
+        assert len(outcome_inserts) == 0
+
+    def test_deployed_verified_marks_merged(self, tmp_path, monkeypatch):
+        """When the journal sha IS confirmed on origin base, MERGED + artifact_commit."""
+        entries = [
+            {"at": "2026-07-10T00:00:00Z", "repo": "beethoven",
+             "branch": "agent/fix-auth", "action": "DEPLOYED", "detail": "abc123def456"},
+        ]
+        _make_journal(str(tmp_path), entries)
+        db = FakeDB(tasks=[_sample_task("fix-auth", state="DONE")])
+        monkeypatch.setattr(sr, "_sha_on_origin_base", lambda *a, **k: True)
+        stats = sr.reconcile(db_module=db)
+        assert stats["deployed"] == 1
+        assert stats["errors"] == 0
+        task_patches = [p for p in db.patches if "/tasks" in p[0]]
+        merged = [p for p in task_patches if p[2].get("state") == "MERGED"]
+        assert merged and merged[0][2].get("artifact_commit") == "abc123def456"
         outcome_inserts = [i for i in db.inserts if i[0] == "outcomes"]
         assert len(outcome_inserts) == 1
         assert outcome_inserts[0][1]["usd"] == 0
