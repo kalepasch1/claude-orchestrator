@@ -49,7 +49,7 @@ class _ConfigConsumer:
         try:
             if not key or not isinstance(key, str):
                 return default
-            env_key = f"ORCH_{key}".upper()
+            env_key = f"ORCH_{key}"
             value = os.environ.get(env_key, "").strip()
             return value if value else default
         except Exception:
