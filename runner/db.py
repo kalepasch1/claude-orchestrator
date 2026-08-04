@@ -155,6 +155,13 @@ _SECRET_PATTERNS = re.compile(
     # OpenAI keys (sk-...)
     r"sk-[A-Za-z0-9]{20,}"
     r"|"
+    # Google/Gemini API keys (AIza...) — fleet routes through Gemini; these leaked
+    # unredacted into task notes before this pattern existed
+    r"AIza[0-9A-Za-z_\-]{30,}"
+    r"|"
+    # xAI keys (xai-...)
+    r"xai-[A-Za-z0-9]{20,}"
+    r"|"
     # Generic key=value patterns
     r"(?:(?:api[_-]?key|secret[_-]?key|service[_-]?key|token|password|credential)"
     r"\s*[=:]\s*['\"]?)([A-Za-z0-9_/+\-.]{16,})"
