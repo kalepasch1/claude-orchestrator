@@ -274,9 +274,13 @@ def run():
 
         if _requeue_task(t, reason):
             requeued += 1
-            # Mark original as MERGED (terminal) so we don't process it again
+            # FIX 2026-08-04 (cowork): this used to mark the original MERGED. MERGED is the
+            # signal "code shipped", and it feeds the merge-rate metric and the release train.
+            # Using it for "we gave up and requeued a copy" manufactured 78 phantom merges in a
+            # week and made a 96%-fake merge rate read as 100%. SUPERSEDED is terminal too, but
+            # it tells the truth: this task did not ship, its replacement carries the work.
             db.update("tasks", {"id": t["id"]}, {
-                "state": "MERGED",
+                "state": "SUPERSEDED",
                 "note": f"auto-remediation: requeued as remediate-{norm} ({reason})"
             })
 

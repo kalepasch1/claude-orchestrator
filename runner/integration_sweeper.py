@@ -87,6 +87,16 @@ def _already_integrated(repo, slug):
                 continue
             g = subprocess.run(["git", "log", "--oneline", "-30000", "--grep", needle, ref],
                                cwd=repo, capture_output=True, text=True, timeout=60)
+            # FIX 2026-08-04 (cowork): a `recovery-intent-stub: <slug>` commit MENTIONS the slug
+            # but carries none of the work. Matching it here made the sweeper self-certify:
+            # branch lost -> stub commit filed -> stub matches the grep -> original task closed
+            # MERGED with no code. 192 of 199 "merged" tasks in the last 7 days had NULL
+            # artifact_commit because of this loop. Only real work counts as integrated.
+            if g.returncode == 0 and g.stdout.strip():
+                real = [ln for ln in g.stdout.strip().splitlines()
+                        if "recovery-intent-stub" not in ln and "recovery-intent" not in ln]
+                if not real:
+                    continue
             if g.returncode == 0 and g.stdout.strip():
                 return True
         except Exception:
