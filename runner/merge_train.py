@@ -957,13 +957,28 @@ def _integration_base(repo, proj, task_base):
     return dev
 
 
-def _delete_branch(repo, branch):
-    _git(repo, "branch", "-D", branch)
-    # Also clean up the remote tracking branch to prevent accumulation
+def _delete_branch(repo, branch, reason="merge-train redo"):
+    """Free the branch NAME for a clean rebuild without destroying its COMMITS.
+
+    FIX 2026-08-04 (cowork audit): both call sites are redo-on-conflict paths — a rebase
+    conflict or a base that refused to fast-forward. Neither means the work is worthless,
+    but this used to `branch -D` AND `push origin --delete`, which removed the durable copy
+    that runner._durable_share_branch() had just created at commit time. Committed work
+    then existed nowhere, and the orchestrator filed a recover-missing-branch-<slug> task to
+    generate it again from scratch (3,332 such tasks, 23.6% of all output).
+
+    branch_durability.safe_delete archives the tip under refs/archive/ first, so the redo
+    still gets a clean branch name while the original commits stay recoverable by sha.
+    """
     try:
-        _git(repo, "push", "origin", "--delete", branch)
-    except Exception:
-        pass  # Remote branch may already be gone
+        import branch_durability
+        branch_durability.safe_delete(repo, branch, reason=reason, delete_remote=True)
+        return
+    except Exception as exc:
+        # Fail SAFE, not closed: if the guard is unavailable, keep the branch rather than
+        # fall back to the destructive path. A stuck branch is recoverable; deleted work is not.
+        print(f"[merge_train] branch durability guard unavailable for {branch} "
+              f"({type(exc).__name__}: {exc}); NOT deleting")
 
 
 def _log(project, slug, outcome, extra=""):
