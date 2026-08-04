@@ -20,6 +20,15 @@ from typing import Any, Dict, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Central fleet gateway (fleet_control.py) is the ONLY sanctioned path to
+# fleet_config: its throttled tick() syncs DB -> os.environ, and
+# get_fleet_config() reads the synced ORCH_{key} value. Import fail-soft so
+# config_consumer keeps working (env/default only) when the gateway is absent.
+try:
+    import fleet_control
+except Exception:
+    fleet_control = None
+
 
 class _ConfigConsumer:
     """Thread-safe singleton for configuration consumption with caching."""
@@ -107,13 +116,16 @@ class _ConfigConsumer:
                     if time.time() - cached_time < self._cache_ttl_sec:
                         return cached_value
 
-            # Try DB fallback if available
+            # Consume via the central fleet gateway (never raw db.select — the
+            # gateway's tick() already syncs fleet_config into the environment).
             value = None
             try:
-                import db
-                rows = db.select("fleet_config", {"select": "value", "key": f"eq.{key}", "limit": "1"}) or []
-                if rows:
-                    value = str(rows[0].get("value") or "").strip()
+                if fleet_control is not None:
+                    fetched = fleet_control.get_fleet_config(key)
+                    if fetched is not None:
+                        fetched = str(fetched).strip()
+                        if fetched:
+                            value = fetched
             except Exception:
                 pass
 
