@@ -1,0 +1,4 @@
+recovery-intent: recover-missing-branch-backlog-batch-beethoven-b040840-resolve-merge-conflicts-in-darwin-kernel
+template: 2794c97af63a
+intent: 07062319 07071626 07130635 07190257 acceptance actions active adapt advice after agent agentic analysis anomaly appears apply artifacts author b040840 backlog based batch beethoven before behavior below blame bottleneck branch branches broad bugfix build build_fix cache canonical category cause change changes changing checks claim class claud claude cloud coder commit compiler completion concrete confidence config configured confirming conflict conflicting conflicts consistent context continue contract conventions coordination correctness craft cross currently custody darwin deepseek delete dependencies deployed deployfix diffs directive drafting ensuring
+base: master
