@@ -234,12 +234,40 @@ def _extract_proof_line(prompt_text):
     return m.group(1).strip().rstrip(".") if m else ""
 
 
-def _default_project_for_dropbox(text, projects_by_name):
+def _project_from_filename(filename, projects_by_name):
+    """Resolve the project from the operator's FILENAME, which is an explicit declaration.
+
+    The drop-box convention every operator prompt actually uses is `PROMPT-<project>-<topic>.md`
+    (PROMPT-apparently-treasury-tab.md, PROMPT-beethoven-madeus-platform.md, ...). Until 2026-08-04
+    that declaration was ignored and only the prose heuristic below ran — which mis-routes whenever
+    a spec MENTIONS a project with a longer name than the one it targets. Live example: the
+    beethoven/madeus prompt talks about surfacing Madeus inside Apparently, so 'apparently' (10
+    chars) beat 'beethoven' (9) and a whole beethoven initiative would have been queued against the
+    apparently repo. The filename is unambiguous, so it wins; prose stays as the fallback for files
+    that carry no project prefix (PROMPT-backlog-blitz.md and friends).
+    """
+    base = re.sub(r"\.md$", "", os.path.basename(filename or ""), flags=re.I)
+    m = re.match(r"^(?:HOLD-)?PROMPT-(.+)$", base, re.I)
+    if not m:
+        return None
+    rest = m.group(1).lower()
+    cands = [n for n in projects_by_name
+             if n and (rest == n.lower() or rest.startswith(n.lower() + "-"))]
+    return max(cands, key=len) if cands else None   # most specific project prefix wins
+
+
+def _default_project_for_dropbox(text, projects_by_name, filename=None):
     """Heuristic project resolution for freeform prompts, which don't declare PROJECT: by
     definition. Looks for a known project name mentioned early in the text; falls back to
     'beethoven' (the orchestrator's own project) since operator-authored strategic PROMPT-*.md
     drops most commonly target the orchestrator improving itself — the two real examples this
-    feature was built for (PROMPT-backlog-blitz.md, PROMPT-meta-optimizer.md) both do."""
+    feature was built for (PROMPT-backlog-blitz.md, PROMPT-meta-optimizer.md) both do.
+
+    An explicit `PROMPT-<project>-*.md` filename beats the prose heuristic — see
+    _project_from_filename() for why."""
+    by_filename = _project_from_filename(filename, projects_by_name)
+    if by_filename:
+        return by_filename
     head = (text or "")[:2000].lower()
 
     # Match project names robustly + prefer the MOST SPECIFIC. Two failure modes this guards:
@@ -397,7 +425,8 @@ def ingest_dropbox_prompts(projects_by_name):
         except Exception as e:
             print(f"intake: dropbox claim failed on {f}: {e}"); continue
 
-        default_project = _default_project_for_dropbox(text, projects_by_name)
+        default_project = _default_project_for_dropbox(text, projects_by_name,
+                                                        filename=os.path.basename(f))
         if not default_project or default_project not in projects_by_name:
             print(f"intake: dropbox {os.path.basename(f)} — no resolvable project; "
                   f"claimed at {claimed_path} but not decomposed")
@@ -411,9 +440,29 @@ def ingest_dropbox_prompts(projects_by_name):
             _flag_dropbox_failure(claimed_path, default_project, str(e))
             continue
         if not rendered:
+            # SILENT-LOSS FIX (2026-08-04): this used to `continue` with no record at all — the
+            # file was already claimed, so the objective vanished with nothing but an absent log
+            # line to show for it. Same contract as a decomposition exception: always leave a card.
+            print(f"intake: dropbox {os.path.basename(f)} — decomposition returned NO tasks "
+                  f"(claimed at {claimed_path})")
+            _flag_dropbox_failure(claimed_path, default_project,
+                                  "decomposition returned zero tasks")
             continue
         created, skipped = _queue_dropbox_tasks(rendered, projects_by_name)
         print(f"intake: dropbox {os.path.basename(f)} -> {created} queued, {skipped} skipped")
+        if created == 0:
+            # SILENT-LOSS FIX (2026-08-04): decomposition succeeded but EVERY task was refused at
+            # insert time — in production this was release back-pressure (db.insert drops tasks for
+            # a project whose last release failed, and every portfolio project was RED), which ate
+            # seven activated operator prompts on 2026-08-04 leaving no card, no task and no error.
+            # A claimed file that queued nothing is always a visible failure from here on.
+            _flag_dropbox_failure(
+                claimed_path, default_project,
+                f"decomposition produced {len(rendered)} tasks but NONE were queued "
+                f"({skipped} skipped/rejected at insert). Most likely cause: release "
+                f"back-pressure — project '{default_project}' is RED (see deployment_terminal."
+                f"project_accepts_work), or every slug already exists in a live state. "
+                f"Re-drop the claimed file once the cause clears.")
         total += created
     return total
 
