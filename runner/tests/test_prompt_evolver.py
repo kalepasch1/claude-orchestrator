@@ -62,8 +62,10 @@ class TestPromptEvolver(unittest.TestCase):
 
     @patch("prompt_evolver.db")
     def test_record_outcome_success(self, mock_db):
-        """record_outcome inserts with merge-duplicates resolution"""
-        self.evolver.record_outcome("code_gen", "chain_of_thought", merged_first_try=True)
+        """record_outcome inserts with merge-duplicates resolution; full reward
+        requires DEPLOYED_AND_VERIFIED (reward hygiene, 2026-08-04)"""
+        self.evolver.record_outcome("code_gen", "chain_of_thought",
+                                    merged_first_try=True, deployed_verified=True)
 
         mock_db.insert.assert_called_once()
         call_args = mock_db.insert.call_args
@@ -72,6 +74,23 @@ class TestPromptEvolver(unittest.TestCase):
         self.assertEqual(call_args[0][1]["total_reward"], 1.0)
         self.assertEqual(call_args[0][1]["kind"], "code_gen")
         self.assertEqual(call_args[0][1]["template_id"], "chain_of_thought")
+
+    @patch("prompt_evolver.db")
+    def test_record_outcome_merge_claim_alone_earns_nothing(self, mock_db):
+        """A bare merged_first_try claim without commit evidence has reward 0.0"""
+        self.evolver.record_outcome("code_gen", "chain_of_thought", merged_first_try=True)
+
+        call_args = mock_db.insert.call_args
+        self.assertEqual(call_args[0][1]["total_reward"], 0.0)
+
+    @patch("prompt_evolver.db")
+    def test_record_outcome_merged_with_evidence_partial_credit(self, mock_db):
+        """merged_first_try + real artifact_commit earns partial credit 0.5"""
+        self.evolver.record_outcome("code_gen", "chain_of_thought",
+                                    merged_first_try=True, artifact_commit="deadbeef")
+
+        call_args = mock_db.insert.call_args
+        self.assertEqual(call_args[0][1]["total_reward"], 0.5)
 
     @patch("prompt_evolver.db")
     def test_record_outcome_failure(self, mock_db):

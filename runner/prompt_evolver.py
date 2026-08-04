@@ -84,16 +84,30 @@ class _PromptEvolver:
         else:
             return (f"[template:{best_id}]\n{base_prompt}", best_id)
 
-    def record_outcome(self, kind: str, template_id: str, merged_first_try: bool) -> None:
+    def record_outcome(self, kind: str, template_id: str, merged_first_try: bool = False,
+                       deployed_verified: bool = False, artifact_commit: str = "") -> None:
         """
         Record the outcome of a prompt template application.
+
+        REWARD HYGIENE (2026-08-04): the UCB1 reward used to be merged_first_try alone.
+        With ~96% of MERGED rows later found to be phantoms, the bandit was optimizing
+        state-flipping, not delivery. Full reward now requires DEPLOYED_AND_VERIFIED;
+        a first-try merge backed by a real artifact_commit earns partial credit (0.5);
+        a bare merge claim earns nothing.
 
         Args:
             kind: The prompt kind.
             template_id: The template ID that was used.
             merged_first_try: Whether the prompt resulted in a first-try merge.
+            deployed_verified: Whether the task reached DEPLOYED_AND_VERIFIED.
+            artifact_commit: The task's evidence sha ('' when absent).
         """
-        reward = 1.0 if merged_first_try else 0.0
+        if deployed_verified:
+            reward = 1.0
+        elif merged_first_try and artifact_commit:
+            reward = 0.5
+        else:
+            reward = 0.0
 
         try:
             db.insert(
@@ -141,10 +155,14 @@ def select_template(kind: str, base_prompt: str) -> tuple[str, str]:
         return _get_evolver().select_template(kind, base_prompt)
 
 
-def record_outcome(kind: str, template_id: str, merged_first_try: bool) -> None:
-    """Record trial outcome. Thread-safe, swallows all exceptions."""
+def record_outcome(kind: str, template_id: str, merged_first_try: bool = False,
+                   deployed_verified: bool = False, artifact_commit: str = "") -> None:
+    """Record trial outcome. Thread-safe, swallows all exceptions.
+    Full reward requires deployed_verified; merged_first_try + artifact_commit = 0.5."""
     with _lock:
-        _get_evolver().record_outcome(kind, template_id, merged_first_try)
+        _get_evolver().record_outcome(kind, template_id, merged_first_try,
+                                      deployed_verified=deployed_verified,
+                                      artifact_commit=artifact_commit)
 
 
 def stats() -> dict:

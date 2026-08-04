@@ -1393,8 +1393,11 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
 
     _refresh_base(repo, base)                                     # (1)
     if _already_integrated(repo, branch, base):
+        # Evidence: branch tip is an ancestor of base, so that tip IS the integrated commit.
+        integrated_sha = _commit_identity(repo, branch)
         _task_patch(task, {"state": "MERGED",
-                           "note": f"train: already integrated in {base}"})
+                           "artifact_commit": integrated_sha,
+                           "note": f"train: already integrated in {base} @ {integrated_sha[:12]}"})
         db.update("approvals", {"id": card["id"]},
                   {"decided_by": f"{MARK}:ALREADY_INTEGRATED"})
         _attribute_merge_outcome(slug, task)
@@ -1574,7 +1577,12 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         _log(pname, slug, "PUSH-VERIFY-FAILED", verify_err[:120])
         return "push-pending"
 
-    _task_patch(task, {"state": "MERGED", "note": f"train: MERGED into {base}"})  # (6)
+    # (6) MERGED with evidence: current_candidate_sha is the exact snapshot that passed QA,
+    # was fast-forwarded into base, and whose presence on origin the push-verification gate
+    # (5b) just confirmed. Persist it as artifact_commit — the DB evidence gate requires it.
+    _task_patch(task, {"state": "MERGED",
+                       "artifact_commit": current_candidate_sha,
+                       "note": f"train: MERGED into {base} @ {str(current_candidate_sha)[:12]}"})
     db.update("approvals", {"id": card["id"]}, {"decided_by": f"{MARK}:MERGED"})
     _attribute_merge_outcome(slug, task)
     _attribute_train_outcome(slug, task, "merged", integrated=True)

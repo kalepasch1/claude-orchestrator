@@ -142,9 +142,13 @@ def main():
         print(f"  reclassified {moved}/{len(still)}", flush=True)
 
     print(f"\nDONE: {moved} tasks MERGED -> {NEW_STATE}; {written} reversal records written.")
-    print("Nothing was deleted. Reverse with: "
-          "UPDATE tasks t SET state='MERGED' FROM phantom_merge_audit a "
-          "WHERE a.task_id=t.id AND t.state='PHANTOM_UNVERIFIED';")
+    # NOTE (2026-08-04): this used to print a one-line bulk UPDATE that would re-mark all
+    # reclassified phantoms MERGED in one statement. That is exactly the bulk certification
+    # this audit exists to prevent — and the DB evidence gate now rejects it outright.
+    # Reversal must be PER-TASK, with evidence: find the real commit for that slug
+    # (landed_evidence.find_evidence), set artifact_commit to it, and only then set MERGED.
+    print("Nothing was deleted. Reversal is per-task only: locate real commit evidence for "
+          "the slug, set artifact_commit, then restore state — never in bulk.")
     return 0
 
 

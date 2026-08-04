@@ -5,14 +5,16 @@ Called from sentinel.on_db_recovery() when the database comes back after an outa
 scripts/git_deploy_sweep.py journals every deployment action to
 .runtime/git_deploy_sweep.jsonl while the DB is down. This module reads that journal
 and:
-  - DEPLOYED rows: mark the task MERGED with note 'offline-sweep deployed <sha>',
-    mark matching integration_cards train:MERGED, insert outcomes (usd=0, integrated=true).
+  - DEPLOYED rows: verify the journal sha is an ancestor of the project's origin base;
+    only then mark the task MERGED (artifact_commit=<sha>), mark matching
+    integration_cards train:MERGED, insert outcomes (usd=0, integrated=true).
+    Unverifiable claims go to DONE for merge_train to integrate honestly.
   - GATE-RED / CONFLICT / PUSH-FAIL rows: annotate the task with a note so the
     merge-train's redo path has context.
 
 Idempotent: tracks the last-processed byte offset in .runtime/sweep_reconciler_offset.
 """
-import json, os, re, datetime
+import json, os, re, datetime, subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -120,8 +122,39 @@ def _find_task_by_slug(db_module, slug):
         return None
 
 
+def _sha_on_origin_base(db_module, project_id, repo, sha):
+    """True only when `sha` is confirmed an ancestor of the project's origin base branch.
+    That is the evidence bar for MERGED — a journal line alone is a claim, not proof."""
+    if not sha or not repo or not os.path.isdir(repo):
+        return False
+    base = "main"
+    try:
+        rows = db_module.select("projects", {
+            "select": "base_branch,default_base",
+            "id": f"eq.{project_id}",
+        }) or []
+        if rows:
+            base = rows[0].get("base_branch") or rows[0].get("default_base") or "main"
+    except Exception:
+        pass
+    try:
+        subprocess.run(["git", "fetch", "origin", base], cwd=repo,
+                       capture_output=True, timeout=60)
+        r = subprocess.run(["git", "merge-base", "--is-ancestor", sha, f"origin/{base}"],
+                           cwd=repo, capture_output=True, text=True, timeout=30)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 def _handle_deployed(db_module, slug, detail, repo):
-    """Mark task MERGED and record an outcome row for a DEPLOYED journal entry."""
+    """Reconcile a DEPLOYED journal entry with the DB.
+
+    TRUTH FIX 2026-08-04: this used to PATCH the task straight to MERGED via raw _req with
+    no evidence — a DB outage plus one journal line could certify anything. Now the write
+    goes through db.update, and MERGED is only set when the journal row carries a sha that
+    `git merge-base --is-ancestor` confirms on the project's origin base. Otherwise the
+    task goes to DONE so merge_train integrates it for real."""
     task = _find_task_by_slug(db_module, slug)
     if not task:
         return
@@ -134,21 +167,25 @@ def _handle_deployed(db_module, slug, detail, repo):
     if current_state not in MERGEABLE_STATES:
         return
 
-    sha = detail[:12] if detail else "unknown"
-    note = f"offline-sweep deployed {sha}"
+    sha = (detail or "").strip().split()[0] if detail else ""
+    verified = _sha_on_origin_base(db_module, project_id, repo, sha)
 
-    # Mark task MERGED
-    db_module._req("PATCH", f"/rest/v1/tasks",
-                   body={"state": "MERGED", "note": note},
-                   params={"id": f"eq.{task_id}"},
-                   headers={"Prefer": "return=minimal"})
+    if verified:
+        db_module.update("tasks", {"id": task_id},
+                         {"state": "MERGED",
+                          "artifact_commit": sha,
+                          "note": f"offline-sweep deployed {sha[:12]} (verified on origin base)"})
+    else:
+        db_module.update("tasks", {"id": task_id},
+                         {"state": "DONE",
+                          "note": (f"offline-sweep claimed deployed "
+                                   f"{sha[:12] if sha else '(no sha)'} but not verified on "
+                                   f"origin base — left DONE for merge_train")})
+        return
 
-    # Mark matching integration_cards train:MERGED
+    # Verified path only: mark matching integration_cards train:MERGED
     try:
-        db_module._req("PATCH", f"/rest/v1/integration_cards",
-                       body={"train": "MERGED"},
-                       params={"task_id": f"eq.{task_id}"},
-                       headers={"Prefer": "return=minimal"})
+        db_module.update("integration_cards", {"task_id": task_id}, {"train": "MERGED"})
     except Exception:
         pass  # fail-soft: card update is best-effort
 
@@ -160,7 +197,7 @@ def _handle_deployed(db_module, slug, detail, repo):
             "slug": slug,
             "usd": 0,
             "integrated": True,
-            "note": note,
+            "note": f"offline-sweep deployed {sha[:12]} (verified on origin base)",
         }, upsert=True)
     except Exception:
         pass  # fail-soft

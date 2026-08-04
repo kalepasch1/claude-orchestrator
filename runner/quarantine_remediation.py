@@ -146,6 +146,31 @@ def _get_deployed_slugs() -> set:
     return deployed
 
 
+def _find_landed_evidence(task: dict, slug: str, norm: str):
+    """Return (sha, ref, subject) if a real commit delivering this task's slug exists
+    in the project repo, else None. Evidence, not slug-string inference."""
+    try:
+        import landed_evidence
+        rows = db.select("projects", {
+            "select": "repo_path",
+            "id": f"eq.{task.get('project_id')}",
+        }) or []
+        repo = (rows[0].get("repo_path") or "") if rows else ""
+        if hasattr(db, "localize_repo_path"):
+            repo = db.localize_repo_path(repo)
+        if not repo or not os.path.isdir(repo):
+            return None
+        for candidate in dict.fromkeys([slug, norm]):
+            if not candidate:
+                continue
+            ev = landed_evidence.find_evidence(repo, candidate)
+            if ev:
+                return ev
+    except Exception:
+        return None
+    return None
+
+
 def _requeue_task(task: dict, reason: str) -> bool:
     """Create a fresh QUEUED task from a quarantined one."""
     prompt = task.get("prompt", "")
@@ -243,14 +268,28 @@ def run():
             continue
 
         # Skip if already successfully deployed
+        # TRUTH FIX 2026-08-04: a normalized-slug match against other MERGED rows is not
+        # evidence — those rows may themselves be phantoms. Only mark MERGED when
+        # landed_evidence finds a real, tree-changing commit for THIS slug in the project
+        # repo (and persist that sha as artifact_commit). Otherwise SUPERSEDED with a note
+        # naming the slug match, which is all we actually know.
         norm = _normalize_slug(slug)
         if norm in deployed or slug in deployed:
             skipped_deployed += 1
-            # Mark as MERGED since the improvement landed via another path
-            db.update("tasks", {"id": t["id"]}, {
-                "state": "MERGED",
-                "note": f"auto-remediation: improvement already deployed via {norm}"
-            })
+            evidence = _find_landed_evidence(t, slug, norm)
+            if evidence:
+                sha, ref, subject = evidence
+                db.update("tasks", {"id": t["id"]}, {
+                    "state": "MERGED",
+                    "artifact_commit": sha,
+                    "note": f"auto-remediation: landed as {sha[:12]} on {ref} ({subject[:120]})"
+                })
+            else:
+                db.update("tasks", {"id": t["id"]}, {
+                    "state": "SUPERSEDED",
+                    "note": (f"auto-remediation: slug matches deployed '{norm}' but no "
+                             f"landed commit evidence found for this slug — superseded, not merged")
+                })
             continue
 
         # Skip if max attempts reached

@@ -34,18 +34,31 @@ def _recent_queue_stats():
     counts = {r["state"]: int(r["cnt"]) for r in rows}
     queued = counts.get("QUEUED", 0)
     running = counts.get("RUNNING", 0)
-    done = counts.get("DONE", 0) + counts.get("MERGED", 0)
+    # REWARD HYGIENE (2026-08-04): DONE+MERGED counted as "done", but ~96% of MERGED rows
+    # were phantoms — cadence was being tuned to a fabricated throughput signal. Only
+    # DEPLOYED_AND_VERIFIED counts as real delivery here.
+    done = counts.get("DEPLOYED_AND_VERIFIED", 0)
     return queued, running, done
 
 
 def _throughput_last_window():
-    """Merged tasks in the last WINDOW_H hours."""
+    """Verified deliveries in the last WINDOW_H hours.
+
+    REWARD HYGIENE (2026-08-04): previously counted DONE+MERGED, i.e. self-reported
+    throughput. Now DEPLOYED_AND_VERIFIED counts fully, and MERGED counts 0.5 only when
+    it carries a real artifact_commit (evidence of an integrated sha)."""
     cutoff = (datetime.datetime.utcnow() - datetime.timedelta(hours=WINDOW_H)).isoformat()
     try:
         rows = db.query(
-            f"SELECT count(*) as cnt FROM tasks WHERE state IN ('DONE','MERGED') AND updated_at >= '{cutoff}'"
+            f"SELECT count(*) FILTER (WHERE state = 'DEPLOYED_AND_VERIFIED') AS verified, "
+            f"count(*) FILTER (WHERE state = 'MERGED' AND coalesce(artifact_commit,'') <> '') AS merged_ev "
+            f"FROM tasks WHERE updated_at >= '{cutoff}'"
         ) or []
-        return int(rows[0]["cnt"]) if rows else 0
+        if not rows:
+            return 0
+        verified = int(rows[0].get("verified") or 0)
+        merged_ev = int(rows[0].get("merged_ev") or 0)
+        return int(verified + 0.5 * merged_ev)
     except Exception:
         return 0
 

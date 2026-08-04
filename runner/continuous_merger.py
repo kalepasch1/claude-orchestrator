@@ -114,9 +114,10 @@ def _merge_branch(repo: str, branch: str, base: str, task: dict) -> dict:
     """Attempt to merge a single branch into base.
 
     Returns:
-        {"merged": bool, "strategy": str, "error": str|None}
+        {"merged": bool, "strategy": str, "error": str|None, "sha": str|None}
+        "sha" is the integrated commit (evidence for artifact_commit) when merged.
     """
-    result = {"merged": False, "strategy": "none", "error": None}
+    result = {"merged": False, "strategy": "none", "error": None, "sha": None}
 
     # Ensure we're on base and clean
     _git(["git", "checkout", base], repo)
@@ -135,10 +136,12 @@ def _merge_branch(repo: str, branch: str, base: str, task: dict) -> dict:
     # Check if already an ancestor (already merged)
     ancestor = _git(["git", "merge-base", "--is-ancestor", branch, base], repo)
     if ancestor.returncode == 0:
-        # Already merged — just delete the branch ref
+        # Already merged — capture the integrated tip as evidence, then delete the branch ref
+        tip = _git(["git", "rev-parse", branch], repo).stdout.strip()
         _git(["git", "branch", "-D", branch], repo)
         result["merged"] = True
         result["strategy"] = "already_ancestor"
+        result["sha"] = tip or None
         return result
 
     # ALL merges — clean or conflicted — go through auto_conflict_resolver.resolve_branch,
@@ -163,6 +166,10 @@ def _merge_branch(repo: str, branch: str, base: str, task: dict) -> dict:
     acr_result = auto_conflict_resolver.resolve_branch(repo, branch, base, dry_run=False)
     if acr_result.get("merged"):
         result["merged"] = True
+        # Evidence: the merge commit sha — HEAD of the repo right after resolve_branch
+        # committed the merge on base. Persisted as tasks.artifact_commit by the caller.
+        head = _git(["git", "rev-parse", "HEAD"], repo).stdout.strip()
+        result["sha"] = head or None
         strategy = acr_result.get("strategy", "clean")
         resolved = acr_result.get("resolved_files") or []
         result["strategy"] = (f"auto_resolved ({len(resolved)} files)"
@@ -217,13 +224,24 @@ def _process_task(task: dict):
                         if "auto_resolved" in strategy:
                             _stats["auto_resolved"] += 1
 
-                    # Update task state to MERGED
+                    # Update task state to MERGED — with commit evidence. Without a sha we
+                    # cannot honestly certify MERGED (and the DB evidence gate would reject
+                    # it), so fall back to DONE for merge_train to finish the job.
                     if db:
+                        merge_sha = merge_result.get("sha") or ""
                         try:
-                            db.update("tasks", {"id": task_id},
-                                      {"state": "MERGED",
-                                       "note": f"continuous-merger: {strategy}",
-                                       "updated_at": "now()"})
+                            if merge_sha:
+                                db.update("tasks", {"id": task_id},
+                                          {"state": "MERGED",
+                                           "artifact_commit": merge_sha,
+                                           "note": f"continuous-merger: {strategy} @ {merge_sha[:12]}",
+                                           "updated_at": "now()"})
+                            else:
+                                db.update("tasks", {"id": task_id},
+                                          {"state": "DONE",
+                                           "note": f"continuous-merger: {strategy} but no merge sha "
+                                                   "captured — left DONE for merge_train",
+                                           "updated_at": "now()"})
                         except Exception:
                             pass
 

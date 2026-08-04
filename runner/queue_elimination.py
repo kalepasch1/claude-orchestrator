@@ -71,7 +71,8 @@ def try_eliminate(task, project_row=None):
             if diff_text:
                 result = _apply_and_verify(repo, diff_text, task_id)
                 if result.get("success"):
-                    _mark_done(task, name, "intent_graph_replay", replay)
+                    _mark_done(task, name, "intent_graph_replay", replay,
+                               branch=result.get("branch"))
                     return {"eliminated": True, "method": "intent_graph",
                             "reason": f"replay confidence {replay['confidence']:.0%}"}
     except Exception:
@@ -108,7 +109,8 @@ def try_eliminate(task, project_row=None):
                     if diff_text:
                         result = _apply_and_verify(repo, diff_text, task_id)
                         if result.get("success"):
-                            _mark_done(task, name, "distilled_replay", distilled)
+                            _mark_done(task, name, "distilled_replay", distilled,
+                                       branch=result.get("branch"))
                             return {"eliminated": True, "method": "distilled_replay",
                                     "reason": f"mature distillation ({distilled['merge_count']} merges)"}
             except Exception:
@@ -211,22 +213,33 @@ def _apply_and_verify(repo, diff_text, task_id):
         return {"success": False, "reason": str(e)[:200]}
 
 
-def _mark_done(task, project_name, method, context):
-    """Mark a task as DONE via queue elimination."""
+def _mark_done(task, project_name, method, context, branch=None):
+    """Mark a task as DONE via queue elimination.
+
+    TRUTH FIX 2026-08-04: this used to write state MERGED, but the cached diff only ever
+    landed on a local throwaway elim-* branch that was never merged into base nor pushed.
+    That is DONE (work produced, awaiting integration), not MERGED. We now write DONE with
+    artifact_branch set so merge_train can actually integrate the branch, and we record the
+    honest tournament outcome (merged=False — nothing has shipped yet)."""
+    update = {
+        "state": "DONE",
+        "note": f"[queue-elim] zero-token via {method}; awaiting merge_train integration",
+        "finished_at": "now()",
+    }
+    if branch:
+        update["artifact_branch"] = branch
     try:
-        db.update("tasks", {"id": task["id"]}, {
-            "state": "MERGED",
-            "note": f"[queue-elim] zero-token via {method}",
-            "finished_at": "now()",
-        })
+        db.update("tasks", {"id": task["id"]}, update)
     except Exception:
         pass
 
-    # Record in deployment tracking
+    # Record in deployment tracking — honest outcome: not merged, only a local branch exists.
     try:
         import cade_tournaments
         cade_tournaments.writeback_outcome(
-            task, {"merged": True, "method": method, "diff_summary": f"queue-eliminated via {method}"},
+            task, {"merged": False, "method": method,
+                   "diff_summary": f"queue-eliminated via {method}; local branch "
+                                   f"{branch or '(none)'} awaiting integration"},
             project=project_name, model="none", coder="zero-token",
             cost_usd=0, tokens_in=0, tokens_out=0
         )

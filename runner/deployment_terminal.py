@@ -36,6 +36,7 @@ Set any to 0 to disable (they are safety rails, so they default ON, unlike the
 self-work gates in self_work_gate.py).
 """
 import os
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -150,6 +151,21 @@ def verify_release(release, project_row=None, health=None):
 # ------------------------------------------------------------------ promotion
 
 
+def _commit_in_release(repo, artifact_commit, release_sha):
+    """Per-task evidence check: True only when artifact_commit is non-empty and git
+    confirms it is an ancestor of (or equal to) the verified release sha."""
+    if not artifact_commit or not release_sha:
+        return False
+    if not repo or not os.path.isdir(repo):
+        return False
+    try:
+        r = subprocess.run(["git", "merge-base", "--is-ancestor", artifact_commit, release_sha],
+                           cwd=repo, capture_output=True, text=True, timeout=30)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 def promote_release(release, dry_run=False):
     """Promote a release's MERGED tasks to DEPLOYED_AND_VERIFIED once the release verifies.
 
@@ -163,34 +179,56 @@ def promote_release(release, dry_run=False):
         return {"promoted": 0, "reason": result["reason"], "verify": result}
     project = release.get("project")
     try:
-        proj = (db.select("projects", {"select": "id", "name": f"eq.{project}"}) or [{}])[0]
+        proj = (db.select("projects", {"select": "id,repo_path", "name": f"eq.{project}"}) or [{}])[0]
         pid = proj.get("id")
     except Exception:
-        pid = None
+        proj, pid = {}, None
     if not pid:
         return {"promoted": 0, "reason": "unknown project", "verify": result}
+    repo = proj.get("repo_path") or ""
+    try:
+        repo = db.localize_repo_path(repo)
+    except Exception:
+        pass
     cutoff = release.get("deployed_at") or release.get("created_at")
-    q = {"select": "id,slug,state", "project_id": f"eq.{pid}", "state": "eq.MERGED", "limit": "500"}
+    q = {"select": "id,slug,state,artifact_commit", "project_id": f"eq.{pid}",
+         "state": "eq.MERGED", "limit": "500"}
     if cutoff:
         q["updated_at"] = f"lte.{cutoff}"
     try:
         tasks = db.select("tasks", q) or []
     except Exception:
-        tasks = db.select("tasks", {"select": "id,slug,state", "project_id": f"eq.{pid}",
+        tasks = db.select("tasks", {"select": "id,slug,state,artifact_commit",
+                                    "project_id": f"eq.{pid}",
                                     "state": "eq.MERGED", "limit": "500"}) or []
+    # TRUTH FIX 2026-08-04: this used to promote EVERY MERGED task of the project when one
+    # release verified — blanket certification, no per-task evidence. Now each task must
+    # carry a non-empty artifact_commit that git confirms is an ancestor of the verified
+    # release sha; anything else stays MERGED until a release that actually contains it
+    # verifies.
+    release_sha = str(result.get("sha") or "")
+    promotable = [t for t in tasks
+                  if _commit_in_release(repo, (t.get("artifact_commit") or "").strip(),
+                                        release_sha)]
     if dry_run:
-        return {"promoted": 0, "would_promote": len(tasks), "verify": result, "dry_run": True}
+        return {"promoted": 0, "would_promote": len(promotable),
+                "skipped_no_evidence": len(tasks) - len(promotable),
+                "verify": result, "dry_run": True}
     promoted = 0
-    for t in tasks:
+    for t in promotable:
         try:
             db.update("tasks", {"id": t["id"]},
                       {"state": DEPLOYED_AND_VERIFIED,
-                       "note": f"deployment verified: {result['url']} @ {str(result['sha'])[:12]} (HTTP 200, sha live)"})
+                       "note": (f"deployment verified: {result['url']} @ {release_sha[:12]} "
+                                f"(HTTP 200, sha live, contains {t['artifact_commit'][:12]})")})
             promoted += 1
         except Exception:
             pass
-    print(f"deployment_terminal: promoted {promoted} tasks for {project} to {DEPLOYED_AND_VERIFIED}")
-    return {"promoted": promoted, "verify": result}
+    skipped = len(tasks) - len(promotable)
+    print(f"deployment_terminal: promoted {promoted} tasks for {project} to "
+          f"{DEPLOYED_AND_VERIFIED} ({skipped} left MERGED: no per-task commit evidence "
+          f"in this release)")
+    return {"promoted": promoted, "skipped_no_evidence": skipped, "verify": result}
 
 
 # --------------------------------------------------------------- back-pressure
