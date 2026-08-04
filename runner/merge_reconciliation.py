@@ -49,6 +49,8 @@ MIN_MERGES = int(os.environ.get("RECON_MIN_MERGES", "3"))
 MAX_RATIO = float(os.environ.get("RECON_MAX_RATIO", "2.0"))
 STALE_HOURS = float(os.environ.get("RECON_STALE_HOURS", "12"))
 NOTIFY = os.environ.get("RECON_NOTIFY", "true").lower() in ("1", "true", "yes", "on")
+# Date the "never write MERGED without an evidence sha" invariant took effect.
+EVIDENCE_SINCE = os.environ.get("RECON_EVIDENCE_SINCE", "2026-08-04")
 
 SCAFFOLD = ("recovery-intent", "placeholder commit", "intent stub")
 
@@ -169,7 +171,14 @@ def reconcile(window_hours=None):
         ref = refs[0]  # freshest; used for reporting and the staleness test
 
         landed, total = commits_landed(repo, refs, since_iso)
-        no_evidence = sum(1 for t in claimed if not t.get("artifact_commit"))
+        # NO_EVIDENCE measures the GO-FORWARD invariant ("never write MERGED without the sha
+        # that proves it"), which took effect on EVIDENCE_SINCE. Rows merged before that date
+        # predate the invariant and never recorded a sha; counting them would make this
+        # detector fire forever on history it cannot change, and a detector that always fires
+        # is one nobody reads — which is how the original 100%-merge-rate lie survived six
+        # weeks. Backfilling historical shas is tracked separately.
+        scored = [t for t in claimed if (t.get("updated_at") or "") >= EVIDENCE_SINCE]
+        no_evidence = sum(1 for t in scored if not t.get("artifact_commit"))
         age = tip_age_hours(repo, ref)
         ratio = (len(claimed) / landed) if landed else float("inf")
 
