@@ -468,6 +468,26 @@ def _guard_fleet_config(table, row):
     fleet_config_guard.assert_writable(key, value)
 
 
+_PROJECT_NAME_CACHE = {}
+
+
+def _project_name_cached(project_id):
+    """project_id -> name, memoised. Used by the insert-path back-pressure check so it
+    costs at most one extra query per project per process."""
+    if not project_id:
+        return ""
+    if project_id in _PROJECT_NAME_CACHE:
+        return _PROJECT_NAME_CACHE[project_id]
+    name = ""
+    try:
+        rows = select("projects", {"select": "name", "id": f"eq.{project_id}"}) or []
+        name = (rows[0].get("name") or "") if rows else ""
+    except Exception:
+        name = ""
+    _PROJECT_NAME_CACHE[project_id] = name
+    return name
+
+
 def insert(table, row, upsert=False):
     """Insert a single row into *table* via PostgREST POST.  Returns the created row or None on 409 dedup."""
     _guard_fleet_config(table, row)
@@ -481,6 +501,20 @@ def insert(table, row, upsert=False):
         blocked = _queue_depth_block(row)
         if blocked:
             return None
+        # RELEASE BACK-PRESSURE: a project whose last release failed stops accepting new work
+        # until a release goes green. Healing work (deployfix-/relfix-/recover-missing-branch-)
+        # is exempt so the project can converge. 2,714 release failures previously produced no
+        # back-pressure at all. Disable with ORCH_RELEASE_BACKPRESSURE=0.
+        if not row.pop("_bypass_backpressure", False):
+            try:
+                import deployment_terminal
+                _proj = _project_name_cached(row.get("project_id"))
+                _ok, _why = deployment_terminal.project_accepts_work(_proj, row.get("slug"))
+                if not _ok:
+                    print(f"[backpressure] REJECTED task {row.get('slug')}: {_why}", flush=True)
+                    return None
+            except Exception:
+                pass    # fail-open: back-pressure must never break the insert path
     # IDEMPOTENT TASK ENQUEUE (2026-07-10): the queue has no UNIQUE(project_id, slug) constraint,
     # so ~20 different generators that db.insert("tasks", ...) directly kept creating duplicate
     # QUEUED rows (5-at-a-time, recurring — the sentinel dedupe was firing 45x/24h just cleaning up
