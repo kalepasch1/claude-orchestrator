@@ -400,7 +400,19 @@ def run():
             tr = int(t.get("transient_retries") or 0)
             cap = _bounded_int("MERGE_CONFLICT_REDO_CAP", 2, ceiling=_MAX_REDO_CAP)
             if tr < cap:
-                subprocess.run(["git", "branch", "-D", branch], cwd=repo, capture_output=True)
+                # FIX 2026-08-04 (cowork audit): a merge CONFLICT is not a reason to destroy
+                # committed work. This force-deleted the branch so the worktree would be
+                # rebuilt, taking the agent's commits with it — the redo then re-generated
+                # them from scratch as a recover-missing-branch-<slug> task. safe_delete
+                # frees the branch NAME (so the rebuild is still clean) while archiving the
+                # tip under refs/archive/, keeping the original commits recoverable by sha.
+                try:
+                    import branch_durability
+                    branch_durability.safe_delete(
+                        repo, branch, reason="approval_merge conflict redo")
+                except Exception as exc:
+                    print(f"[approval_merge] durability guard unavailable for {branch} "
+                          f"({exc}); NOT deleting")
                 patch = agentic_repair.repair_patch(
                     t, f"merge conflict integrating {branch} into {base}",
                     category="conflict",
