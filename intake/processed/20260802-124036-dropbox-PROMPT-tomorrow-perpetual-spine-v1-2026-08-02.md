@@ -1,0 +1,56 @@
+# tomorrow (+apparently/pareto bridges): Perpetual Spine v1 — unified perpetual OS, non-custodial payment rails, demand-first capacity engine, dual-workspace UI (operator directive 2026-08-02)
+
+SUBMITTED-BY: kale@smrter.us (operator) via Cowork strategy session 2026-08-02.
+
+BINDING POSTURE (restated): N4 — all indicative/predicted pricing STALE/ADVISORY, non-price-forming. N5/N6 — never a pool/CCP/mutualization; multilateral discovery only; execution = named bilateral legs, all-or-nothing consent; IOI clicks submit indications, never execute. No house/affiliate capital ever fills a leg. Zero-spread RUM revenue only (no transaction-linked comp). Registered-CTA advisory layer. Where this overlaps already-queued shards (strategy-fixes 2026-08-01 §1–§5, §9/§9b, improvements-approved-full 2026-07-30), THIS document is the binding spec — extend/verify, do not duplicate.
+
+## 1. Canonical perpetual spine (one object, all products)
+- Implement ONE perpetual contract object for every facilitated product — ECP swap, non-ECP loan-wrap, perpetual memo hedge, theme overlay, bundle leg — with one lifecycle: open → funding accrual → reset (formula-driven) → event settlement → terminate. The legal wrapper {swap | loan | overlay} is an ATTRIBUTE, not a separate system. Consolidate/refactor existing perp_* infrastructure onto this spine; migrate contract families incrementally with adapters.
+- Master-confirmation template family: ALL future resets/ratchets/funding changes are pre-agreed formulas at inception → every reset is a lifecycle event, never a new execution. ECP status = inception test + ongoing covenant; a party ceasing to qualify triggers automatic RUN-OFF mode (contract persists, accrues, settles; no amendments/upsizing). The 15-min recert sweep's role becomes covenant monitoring.
+- BUY/SELL PARITY (operator directive): every perpetual uses the SAME order semantics as all Tomorrow swaps — open a position = buy or sell direction; close = equal-and-opposite offset via the no-novation offset engine; partial closes supported. Loan wrappers map onto the same model: open = facility draw/activation; close = repay/terminate or offset-transfer. ONE blotter, ONE position model, all products, both workspaces.
+- Single event stream: every lifecycle event auto-emits twice from one pipe — (a) Part 45 record → cftc_sdr_queue, (b) funding-curve observation → data layer. Reporting and the data business are two subscribers of the same stream; no separate reporting build.
+- Two-way quote engine: every quote renders downside-only AND two-way (collar) pricing side-by-side with the funding-fee savings explicit ("Downside-only: 62bps/mo · Two-way: 31bps/mo"). Loan-form upside leg = contingent success fee / rate step-up.
+
+## 2. Ledger-separation invariant (hard, CI-enforced)
+- Platform accounts NEVER hold or pay event-contingent money. RUM ledger (subscriptions/tokens → platform_revenue) fully segregated from risk ledger (funding fees + event payouts, flowing ONLY user↔capacity). One customer bill permitted; split ledgering mandatory beneath it. CI invariant test: no code path moves risk-ledger cash through a platform account; no payout originates from an Apparently/Tomorrow account.
+
+## 3. Non-custodial payment rails — "instruct, never touch"
+- Model: Tomorrow computes net obligations and issues PAYMENT INSTRUCTIONS; money moves directly between counterparties' own bank accounts. Tomorrow never custodies: no FBO accounts, no pooled accounts, no platform settlement accounts for risk cash.
+- Netting cycle: a scheduled funding settlement date (default monthly, configurable per netting set) nets each counterparty pair's funding/payout flows across their ENTIRE book into ONE payment per pair per cycle. Event payouts above a threshold trigger off-cycle settlement. Netting is the cost lever: it collapses thousands of accruals into a handful of wires.
+- Phase A (build now, ~zero vendor cost): auto-generated wire/ACH instruction packets with unique reference codes per obligation; Plaid read access (plaid_items rails exist) verifies initiation/receipt on consenting accounts; reconciliation engine matches references → settlement_ledger; overdue nudge → grace → default workflow per master confirmation. Statement + instruction packet downloadable and API-readable.
+- Phase B (at volume, behind a vendor-abstraction layer so the provider is swappable): payment-ops API (Modern Treasury-class orchestration over each party's OWN bank account, or Dwolla/Increase-class ACH with standing payer authorization) executing debits FROM the payer's account — still non-custodial; Phase A remains the fallback path. Vendor selection is an OPERATOR item, not code.
+- Collateral (only where required — e.g., fund-side performance collateral on two-way books): custodian account titled in the PLEDGOR's name + account control agreement (tri-party); Tomorrow instructs the custodian, never holds. No collateral flows through platform accounts.
+- Payment Center UX: per-cycle net statement, instruction packet, live status chips (instructed → sent → received → reconciled), aging/overdue view, trust badge on every money surface: "Tomorrow never holds your funds."
+
+## 4. Demand-first capacity engine — book-build, then auction (the shop-period system)
+- Problem: user demand arrives before fund capacity exists; we NEVER warehouse and NEVER house-fill. Mechanism:
+- Standing conditional commitments: a user locks structure + max funding rate as a standing conditional IOI ("conditional open order"). The contract FORMS only when a named capacity provider accepts within the user's band — consent pre-given inside the band keeps this a bilateral named execution completed by the fund's acceptance. While queued, the user immediately receives full RUM value (living memo updates, monitoring, predicted pricing, exposure quantification) so the queue has standalone worth and attach revenue starts before fill.
+- Demand book: aggregated, anonymized pipeline view (notional by theme/jurisdiction/trigger-class, predicted funding rates, exposure data packs pre-built) — this is the SALES ASSET for fund outreach and renders live in the Trade workspace.
+- Periodic capacity auctions: scheduled auctions (default monthly) where funds bid funding rates on bundles of accumulated demand; fills clear at rates ≤ users' max bands; unfilled demand rolls to the next auction with honest status. Auction results feed public calibration of predicted IOIs (calibration receipts) — every auction makes the advisory prices more credible.
+- Standby capacity program: CRM workflow + doc templates for anchor-fund LOIs / right-of-first-look agreements (demand-book data-room access in exchange for auction participation commitments). Wire into crm_clients/outreach rails.
+- Honest states everywhere (N4 discipline): "In capacity queue — predicted 45bps — next auction Aug 15 — 3 capacity providers reviewing." Never imply guaranteed fill.
+- Loan side identical: applications approved-conditional pending lender capacity; same queue/auction; lender-SPV activation on fill; entity-only and licensing-matrix gates per strategy-fixes §4 unchanged.
+
+## 5. Dual-workspace UI + bucketed nav (build in full)
+- Role-based workspaces over ONE book and ONE data layer: Hedger OS (every user type — the original thesis) + Trade/capacity cockpit (role-gated, funds first). Strict neutrality enforced: same instruments, same predicted-IOI methodology, symmetric data-tier access for every role. A user/entity can hold both roles.
+- Sidenav: SEVEN collapsed buckets with dropdowns (minimal initial load): Dashboard / Hedge / Trade / Intelligence / Negotiate / Operations / Compliance.
+  - Hedge: My Exposures, Recommendations, Positions & Facilities, Perpetual Memos.
+  - Trade: Origination Feed, Demand Book, Bundle Builder (10/30/60 + linear-pro-rata-only + theme caps enforced inline), Theme Overlays, Standing Mandates, Capacity Auctions, Funding-Rate Board.
+  - Intelligence: Cohort Analytics, Seismograph/Theme Indices, Memo Confidence (priced law), Transparency Rooms.
+  - Negotiate: War Room, IOIs & Consents, Counterparty Profiles.
+  - Operations: Collateral & Margin (cross-margin benefit shown at quote time), Funding & Resets (Payment Center lives here), Settlements, Offsets/Compression, Terminations (standing termination auctions + perpetual-to-dated conversion).
+  - Compliance: Characterization Receipts, Reporting Status, ECP/Recerts & Run-off, Dealing-Bucket Telemetry (per-counterparty CFTC $8B and SEC $150M/$3B meters).
+- Aggregated Dashboard: net position across roles, funding accruals/payables and next netting date, reset calendar, queue/auction statuses, predicted IOIs on watched exposures, validation badges ("priced by N institutional counterparties"), calibration scores, alerts.
+- N4/N5/N6 enforced in ALL new surfaces: advisory prices only, IOI-submit-never-execute, named bilateral consent, no order book, no click-to-execute. The fund cockpit must NOT drift into a trading-terminal interaction model.
+
+## 6. Previously approved items folded in (verify against existing shards; extend, don't duplicate)
+- Exposure data packs (pseudonymous attribute vectors, oracle-under-NDA attestation, portfolio stratification tables); perpetual memo trigger family (environment-class triggers; entity-outcome → counsel queue); no-warranty routing (Apparently = intermediary/data provider only — no warranty issuance anywhere); born-as-index enforcement (≥10 non-affiliated references, no name >30%, top-5 ≤60%, linear pro-rata ONLY — no nth-to-default, no first-loss, no tranches; migration monitor with rebalance-in-grace); theme common-shock engine linkage (strategy-fixes §3); evergreen loan-wrapper resets; funding-curve publication (per-theme perpetual funding-rate indices as data product); transparency-room consent tiers; cohort-analytics barrier exports (k-anonymity floors, allowlist export pattern, symmetric availability); bundle optimizer (CTA module); PLOEH tranche gate stays OFF.
+
+## PROOFS
+- Vitest per module + hard invariants: ledger separation (no risk cash via platform accounts); no house fill (no execution resolves to affiliate capital); advisory-only quote objects from prediction paths; entity-only loans; reset-as-lifecycle (no reset creates a new execution record); buy/sell + offset-close parity across every wrapper type; 10/30/60/linear generator constraints.
+- E2E golden path: user generates memo → attaches perpetual add-on (RUM billed, split-ledgered) → conditional commitment queued → demand book aggregates → auction fills with named fund inside band → instruction packet issued → Plaid-verified reconciliation → monthly netted funding cycle → adverse event attested by oracle → payout user←fund direct → position closed via offset → receipts + Part 45 + funding-curve emissions all present.
+
+OPERATOR (logged, never queued):
+- Master-confirmation family drafting with derivatives counsel (formula resets, run-off covenant, band-consent conditional commitments).
+- Custodian + account-control-agreement relationship for collateral; payment-ops vendor selection at Phase B volume.
+- Anchor-fund LOI outreach using the demand book; NFA Rule 2-29 review of new pricing/queue UI language.
