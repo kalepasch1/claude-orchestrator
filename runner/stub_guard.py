@@ -45,8 +45,13 @@ FILE_TASKS = os.environ.get("ORCH_STUB_GUARD_FILE_TASKS", "true").lower() in ("1
 # fabricated_critical_return is BLOCKING while plain fabricated_constant_return stays advisory:
 # a legitimately-empty default is indistinguishable from a stub by shape alone, but not when the
 # function's NAME asserts it computes, prices, validates or enforces something. See _CRITICAL.
+#
+# FAIL-OPEN HOLE CLOSED 2026-08-04 (adversarial sweep): `guard_error` was advisory, so a repo
+# the scanner could not evaluate (unreadable tree, a re.error, a TypeError from a malformed
+# file) produced zero BLOCKING violations -> check_repo()["ok"] = True -> merge_train._stub_gate
+# returned "stub gate clean". A guard that cannot run must never report clean.
 BLOCKING = {"stub_shadows_reexport", "body_replaced_by_constant", "stub_commit_message",
-            "fabricated_critical_return"}
+            "fabricated_critical_return", "guard_error"}
 
 # How a violation ROUTES once found. A fabricated compliance/financial return escalates loudly
 # (notification + approvals card); a plain constant return is logged and files nothing, because a
@@ -80,7 +85,18 @@ _STUB_COMMIT_MSG = re.compile(
     r"|add\s+\d*\s*stub\s+exports?\b"
     r"|stubs?\s+(to|for)\s+(fix|unblock|repair|pass)\s+(the\s+)?build"
     r"|missing\s+\w+\s+stubs?\s+for\s+build"
-    r"|bulk\s+MISSING_EXPORT\s+fix",
+    r"|bulk\s+MISSING_EXPORT\s+fix"
+    # GAP CLOSED 2026-08-04: the fleet does not only say "stub". These synonyms carry the
+    # identical intent — convert a loud build failure into permanent silent loss — and all
+    # slipped past the original pattern set in the adversarial sweep.
+    r"|add\s+\d*\s*(missing\s+)?(placeholder|no-?op|shim|dummy|empty|temporary|temp)\s+"
+    r"(implementation|impl|function|export|method|composable|stub)s?\b"
+    r"|(create|generate|write|scaffold)\s+\d*\s*(no-?op|placeholder|dummy|empty)\s+"
+    r"(shim|stub|impl|implementation|export|function)s?\b"
+    r"|(placeholder|no-?op|shim|dummy)s?\s+(to|so|for)\s+"
+    r"(the\s+)?(build|ci|typecheck|tsc)\s*(passes|pass|green|compiles)?"
+    r"|(unblock|silence|satisfy|appease)\s+(the\s+)?(build|typecheck|tsc|compiler)"
+    r"|so\s+the\s+build\s+passes",
     re.I)
 
 # A single-line declaration whose whole body is a constant. This is the stub shape.
@@ -111,6 +127,13 @@ _NAMED_EXPORT = re.compile(
     r"(?m)^\s*export\s+(?:declare\s+)?(?:async\s+)?"
     r"(?:function|const|let|var|class|interface|type|enum)\s+(%s)" % _IDENT)
 _NAMED_LIST = re.compile(r"(?m)^\s*export\s*\{([^}]*)\}(?!\s*from)")
+# GAP CLOSED 2026-08-04: _NAMED_LIST deliberately EXCLUDES `export { x } from './y'` via its
+# negative lookahead, and nothing else picked those names up. So an intermediate barrel that
+# re-exports by name rather than by star contributed ZERO names to `provided`, and a stub in a
+# downstream barrel two hops away shadowed the real symbol undetected. Proven: mid.ts does
+# `export { priceLeg } from './impl'`, d.ts does `export * from './mid'; export const
+# priceLeg = () => 0;` — scan_shadowed saw nothing. A re-export IS an export.
+_REEXPORT_LIST = re.compile(r"(?m)^\s*export\s*\{([^}]*)\}\s*from\s*['\"]([^'\"]+)['\"]")
 
 # An object literal whose every value is a numeric/boolean/string literal -- the
 # computeWarrantyEconomics -> all zeros shape. Fabricated, plausible, silent.
@@ -227,6 +250,12 @@ def _exports_of(repo, path, cache, seen=None):
             nm = part.strip().split(" as ")[-1].strip()
             if re.match(r"^%s$" % _IDENT, nm):
                 names.add(nm)
+    # `export { a, b as c } from './x'` — the two-hop barrel shape (see _REEXPORT_LIST).
+    for grp, _spec in _REEXPORT_LIST.findall(txt):
+        for part in grp.split(","):
+            nm = part.strip().split(" as ")[-1].strip()
+            if re.match(r"^%s$" % _IDENT, nm):
+                names.add(nm)
     for spec in _STAR.findall(txt):
         t = _resolve(repo, path, spec)
         if t:
@@ -241,6 +270,40 @@ def _stub_symbol(line):
         if m:
             return m.group(1)
     return None
+
+
+def _structural_stubs(path, txt):
+    """[(symbol, description)] for every exported declaration whose body is a constant.
+
+    Delegates to regression_guard's TS/JS/Vue export extractor so the two guards agree on
+    what a stub looks like, and so shapes the line-based regexes cannot express (multi-line
+    bodies, `export default`, minified one-liners, function expressions, non-empty wrong
+    constants) are covered here without duplicating them. Fail-soft: an unavailable sibling
+    module degrades to the line-based scan rather than crashing the sweep, and check_repo's
+    caller is fail-closed regardless.
+    """
+    try:
+        import regression_guard as _rg
+    except Exception:                                   # noqa: BLE001
+        return []
+    try:
+        exports = _rg._ts_exports(path, txt) or {}
+        out = []
+        for name, slice_text in exports.items():
+            if not slice_text:
+                continue
+            kind = _rg._ts_stub_kind(slice_text)
+            if kind:
+                out.append((name, kind))
+        return out
+    except Exception:                                   # noqa: BLE001
+        return []
+
+
+def _line_of(txt, symbol):
+    """1-based line number of `symbol`'s declaration, best-effort."""
+    m = re.search(r"export[^\n;]{0,80}?\b%s\b" % re.escape(symbol), txt)
+    return (txt[:m.start()].count("\n") + 1) if m else 1
 
 
 def scan_shadowed(repo, files=None):
@@ -262,9 +325,38 @@ def scan_shadowed(repo, files=None):
         if not provided:
             continue
         rel = os.path.relpath(path, repo)
+        # STRUCTURAL pass (added 2026-08-04). The line-based scan below only ever matched a
+        # stub whose ENTIRE declaration fitted on one physical line and began at column 0 with
+        # `export const|function|type`. The adversarial sweep walked straight past five shapes
+        # that are just as silent and just as common:
+        #   * a multi-line body           export function assertEcpCounterparty(x: any): any {
+        #                                   return {};
+        #                                 }
+        #   * `export default function computeWarrantyEconomics() { return { npv: 0 }; }`
+        #   * a minified/one-line barrel  export * from './impl';export const f=()=>({});
+        #   * a function EXPRESSION       export const f = function () { return {}; };
+        #   * a NON-EMPTY wrong constant  export const assertEcpCounterparty = () => ({ ok: true })
+        # The last one is the worst of the set: it returns something plausible, so the
+        # regulatory gate reports success instead of merely returning nothing.
+        # regression_guard._ts_exports/_ts_stub_kind understand all five; reuse them rather
+        # than growing a sixth near-duplicate regex here.
+        for sym, kind in _structural_stubs(path, txt):
+            if sym in provided and not any(
+                    v.get("symbol") == sym and v["path"].startswith(rel) for v in out):
+                line_no = _line_of(txt, sym)
+                out.append(_violation(
+                    "stub_shadows_reexport", "%s:%d" % (rel, line_no),
+                    "`%s` is a %s, but this module already re-exports the real `%s`. ES modules "
+                    "give the LOCAL export precedence, so every caller importing from this "
+                    "barrel silently gets the stub instead of the real implementation. Nothing "
+                    "errors." % (sym, kind, sym),
+                    "Delete the local `%s` declaration at %s:%d. The re-export already provides "
+                    "the real `%s`; removing the stub restores it with no other change."
+                    % (sym, rel, line_no, sym),
+                    symbol=sym))
         for i, line in enumerate(txt.split("\n"), 1):
             sym = _stub_symbol(line)
-            if sym and sym in provided:
+            if sym and sym in provided and not any(v.get("symbol") == sym for v in out):
                 out.append(_violation(
                     "stub_shadows_reexport", "%s:%d" % (rel, i),
                     "`%s` is a constant-return stub, but this module already re-exports the real "
@@ -357,11 +449,57 @@ def scan_fabricated(repo, files=None):
     rx = re.compile(
         r"(?m)^\s*(?:export\s+)?(?:async\s+)?function\s+(%s)\s*\([^)]*\)[^{]*\{"
         r"\s*return\s*([^;{}]*?|\{[^{}]*\})\s*;?\s*\}" % _IDENT)
+    # GAP CLOSED 2026-08-04: `rx` below only ever matched the `function NAME(...) { return X }`
+    # shape. The adversarial sweep slipped these past it, all with CRITICAL names:
+    #   export const priceCollateral = () => 0;              (arrow)
+    #   export const enforceCompliance = async () => true;   (async arrow)
+    #   class Risk { computeExposure() { return 0; } }       (class method)
+    # A regulatory gate stubbed as an arrow is exactly as silent as one stubbed as a
+    # function — assertEcpCounterparty in the tomorrow/apparently incident WAS an arrow.
+    _CLASS_METHOD = re.compile(
+        r"(?m)^\s*(?:public\s+|private\s+|protected\s+|static\s+|async\s+)*"
+        r"(%s)\s*\([^)]*\)\s*(?::[^{;]*)?\{\s*return\s*([^;{}]*?|\{[^{}]*\})\s*;?\s*\}" % _IDENT)
+
+    def _extra_fabricated(path, txt, rel):
+        found = []
+        for sym, kind in _structural_stubs(path, txt):
+            if is_critical_name(sym):
+                found.append((sym, kind, _line_of(txt, sym)))
+        for m in _CLASS_METHOD.finditer(txt):
+            sym, body = m.group(1), (m.group(2) or "").strip()
+            if sym in ("if", "for", "while", "switch", "catch", "function", "return"):
+                continue
+            if not is_critical_name(sym):
+                continue
+            if not (_FABRICATED_SCALAR.match(body) or body == ""
+                    or (body.startswith("{") and _all_literal_obj(body))):
+                continue
+            found.append((sym, "constant method body `%s`" % body[:60],
+                          txt[:m.start()].count("\n") + 1))
+        return found
+
     for path in files if files is not None else _code_files(repo):
         txt = _read(path)
         rel = os.path.relpath(path, repo)
+        seen_syms = set()
+        for sym, kind, ln in _extra_fabricated(path, txt, rel):
+            if sym in seen_syms:
+                continue
+            seen_syms.add(sym)
+            out.append(_violation(
+                "fabricated_critical_return", "%s:%d" % (rel, ln),
+                "CRITICAL: `%s` has a %s. Its NAME promises a computation, a price or an "
+                "enforcement decision, so a constant body means the check no longer runs and "
+                "the number is fabricated. This is the assertEcpCounterparty shape: a "
+                "regulatory gate that stopped throwing." % (sym, kind),
+                "BLOCKING. Restore the real implementation (`git log -S %s -- %s`). If `%s` is "
+                "genuinely unimplemented it MUST throw — never return a constant from a "
+                "compliance or financial function." % (sym, rel, sym),
+                symbol=sym))
         for m in rx.finditer(txt):
             sym, body = m.group(1), (m.group(2) or "").strip()
+            if sym in seen_syms:
+                continue          # already reported by the structural pass above
             obj_stub = body.startswith("{") and _all_literal_obj(body)
             scalar_stub = bool(_FABRICATED_SCALAR.match(body)) or body == ""
             if not (obj_stub or scalar_stub):
