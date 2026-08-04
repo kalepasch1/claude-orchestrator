@@ -153,6 +153,17 @@ def mark_shipped(limit=500):
             "evaluate_after": (p.get("evaluate_after")
                                or (now + timedelta(hours=DEFAULT_WINDOW_HOURS)).isoformat()),
         })
+        # Persist the evidence sha on the TASK too, not only on the proposal.
+        # landed_evidence's contract is explicit: "Callers must persist that sha on the
+        # task. A task moved to MERGED without a sha is, by construction, a phantom."
+        # 96.4% of tasks declared shipped in the last 14 days carry artifact_commit NULL
+        # precisely because the sha was computed and then thrown away. This is the
+        # measured fix for the shipped_without_commit_pct bottleneck.
+        try:
+            db.update("tasks", {"slug": slug},
+                      {"artifact_commit": ev["sha"], "artifact_ref": ev["ref"]})
+        except Exception as exc:
+            print(f"[improvement_verify] could not persist sha on task {slug}: {exc}")
         shipped += 1
     print(f"improvement_verify.mark_shipped: {shipped} shipped with diff evidence, "
           f"{rejected} rejected for missing/empty/unreachable diff")
