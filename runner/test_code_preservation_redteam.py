@@ -281,6 +281,17 @@ class TestGuardsFailClosed(unittest.TestCase):
         finally:
             r.destroy()
 
+    def test_check_undefined_refuses_a_file_that_does_not_parse(self):
+        """pyflakes exits 1 with a syntax-error line that matches no interest pattern, so
+        this detector used to report an EMPTY undefined set — 'clean' — for a module the
+        merge had syntactically destroyed. Invisible on any machine with pyflakes installed."""
+        for use_pyflakes in (True, False):
+            with self.subTest(pyflakes=use_pyflakes):
+                out = rg.check_undefined("m.py", "x = 1\n", "def f(:\n  ???\n",
+                                         use_pyflakes=use_pyflakes)
+                self.assertTrue(out, "a syntactically broken result must never report clean")
+                self.assertEqual("unparseable", out[0]["kind"])
+
     def test_bulk_state_change_with_unknown_row_count_is_refused(self):
         """db.update() computes the count inside a bare except; None must not mean 'allow'."""
         os.environ.pop("ORCH_ALLOW_BULK_STATE_CHANGE", None)

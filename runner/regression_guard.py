@@ -341,6 +341,21 @@ def check_undefined(path, pre_src, post_src, use_pyflakes=None):
     """NEW undefined names introduced by the merge. Any hit is a hard fail."""
     if use_pyflakes is None:
         use_pyflakes = _pyflakes_available()
+    # FAIL-OPEN HOLE CLOSED 2026-08-04: when the post-merge file does not PARSE, pyflakes
+    # exits 1 with a syntax-error line that does not match _PYFLAKES_INTEREST, so
+    # _pyflakes_undefined returned an EMPTY SET rather than None — "no undefined names" —
+    # and this detector reported clean on a file it had never analysed. (The ast fallback
+    # returns None here and is handled correctly; only the pyflakes path had the hole, so it
+    # was invisible on any machine with pyflakes installed, which is all of them.) A merge
+    # that produces a syntactically broken module is a destroyed module; check up front.
+    try:
+        ast.parse(post_src)
+    except (SyntaxError, ValueError, RecursionError) as exc:
+        return [{"file": path, "symbol": "<module>", "kind": "unparseable",
+                 "detector": "undefined",
+                 "reason": "post-merge file does not parse as Python ({0}: {1}) — the merge "
+                           "produced a syntactically broken module and no name analysis is "
+                           "possible".format(type(exc).__name__, str(exc)[:120])}]
     if use_pyflakes:
         post = _pyflakes_undefined(post_src, path)
         pre = _pyflakes_undefined(pre_src, path) if pre_src is not None else set()
