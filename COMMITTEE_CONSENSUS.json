@@ -1,0 +1,52 @@
+{
+  "verdict": "conditional",
+  "score": 5,
+  "conviction": 7,
+  "opinion": "The committee acknowledges cloud-native benefits (multi-AZ resilience, horizontal scaling, cost amortization) but concludes that **architectural specification is a prerequisite to resource commitment**, not a post-decision detail. The operative standard: infrastructure migrations of this scope succeed only if the critical path item—runner redesign—is solved first, not assumed. Current architecture couples runner state (worktrees, launchd process supervision, atomic isolation) to hybrid/local execution; cloud VMs are stateless by design. That gap is not a deployment detail; it is a fundamental crash-boundary redesign. Moving forward without addressing it risks fragmenting the system's isolation guarantees and losing the operational resilience that currently prevents cascade failures. Platform Engineering estimates rearchitecture cost as 'significant'; DevOps flags 'complexity from current hybrid architecture' and requests 'component-specific architectural design.' Devil's Advocate (conviction=8) raises the sharpest objection: the proposal lacks root-cause analysis—*what specific operational bottleneck does cloud-native solve for a system already running distributed infrastructure with sophisticated pooling?* That is not a rhetorical challenge; it is a necessary forcing function. A cost model that shows ROI only when runners scale to 100+ concurrent jobs is a very different recommendation than one that saves money at current scale. The committee will support cloud-native direction contingent on these conditions being met within 21 days.",
+  "citations": [
+    {
+      "source": "Cloud Platform Engineer seat position",
+      "proposition": "Current runner architecture (worktrees, launchd isolation, state via git/DB) is deeply coupled to hybrid/local execution; cloud VM migration requires significant rearchitecture, not just infrastructure replacement.",
+      "confidence": 1.0
+    },
+    {
+      "source": "Cloud Platform Engineer seat position",
+      "proposition": "Runner rearchitecture is high-stakes: stateless cloud VMs lose launchd process supervision and atomic isolation guarantees that currently prevent cascade failures.",
+      "confidence": 0.95
+    },
+    {
+      "source": "DevOps & Reliability Lead seat position",
+      "proposition": "Proposal lacks architectural specificity on runners and database consistency strategy.",
+      "confidence": 1.0
+    },
+    {
+      "source": "DevOps & Reliability Lead seat position",
+      "proposition": "Runner state persistence, cross-AZ data consistency, and migration complexity are unresolved.",
+      "confidence": 0.95
+    },
+    {
+      "source": "Devil's Advocate seat position",
+      "proposition": "Proposal lacks root cause analysis: what specific operational bottleneck or cost problem does cloud-native solve for a system already running distributed infrastructure with sophisticated pooling?",
+      "confidence": 0.9
+    }
+  ],
+  "assumptions": [
+    "Supabase HA is lower-risk than runner rearchitecture and can proceed in parallel to unblock database scalability.",
+    "Current hybrid architecture is operationally stable enough to permit phased migration (not a crisis-driven rewrite).",
+    "The 'sophisticated pooling' mentioned by Devil's Advocate refers to the fleet-wide thread-safe singleton pattern and resource governance in use (see CLAUDE.md conventions)."
+  ],
+  "conditions": "Before proceeding to cloud VM procurement or runner code rewrite:\n1. **Runner Architecture Spec** (1 week): Define stateless runner design—how worktree isolation, state recovery, and crash containment map to cloud VMs. Show how launchd supervision is replaced (sidecar, health check, explicit shutdown sequence).\n2. **Cost Model** (1 week): Compare cloud VM costs (compute, egress, Supabase scaling) against current hybrid baseline at current load (runners per day, concurrency). Show break-even point and ROI timeline.\n3. **Database Consistency Strategy** (1 week): Specify Supabase replication model for cross-AZ state (git state, fleet_config, lease tables). Address data loss scenarios and failover semantics.\n4. **Rollback Plan**: Define how to revert to hybrid architecture if cloud migration encounters unexpected operational costs or latency penalties.\n5. **Business Case**: Articulate the specific problem cloud-native solves—cost saving, scaling ceiling hit, operational burden, or risk reduction—with measurable success criteria.",
+  "dissent": "Devil's Advocate (conviction=8, score=4): The proposal solves for architectural symmetry, not operational need. A cost model must show clear ROI at current scale, not hypothetical scale-out scenarios. If the motivation is 'cloud is fashionable' rather than 'runners hit a ceiling,' the committee should reject this and instead invest in Supabase HA, which addresses real database reliability risks at lower rearchitecture cost. The team should also audit whether current pooling/resource governance is hitting known limits (memory pressure, crash cascades, slow recovery) that cloud-native actually solves—or if the proposal is speculative.",
+  "recommendation": "Conditionally SUPPORT cloud-native direction. Create a 21-day technical design gate (due 2026-08-24): architecture spec, cost model, and database strategy, signed off by Platform Engineering and DevOps. If design shows cloud migration ROI is positive only above 50+ concurrent runners and current load is 10-20, escalate to Product/Business for prioritization decision. Proceed in parallel with Supabase HA/failover (lower risk, unblocks database scaling immediately). Do not commit cloud infrastructure resources until gate passes.",
+  "p_success": 0.65,
+  "upside": "Cloud-native architecture enables multi-region failover, removes hybrid operational complexity, and scales horizontally without re-architecting runners every 2 years.",
+  "downside": "Runner rearchitecture slips (high complexity), cloud costs exceed hybrid baseline (unforeseen egress/Supabase scaling), or migration introduces latency/reliability regressions during cutover.",
+  "reversible": false,
+  "critical": true,
+  "pre_mortem": {
+    "scenario": "90 days from now, runner cloud migration effort is 3x estimated, team is blocked waiting for architectural clarification, and cloud cost model showed 40% monthly premium vs hybrid. The committee's decision to defer pending design spec has prevented crisis commitment, but the opportunity window for cloud transformation is narrowing.",
+    "most_likely_failure_mode": "Architectural design spec takes 6 weeks instead of 1 (competing priorities, deeper dependency analysis), pushing cloud migration to Q1 2027. Cost model reveals break-even only at 100+ concurrent runners, making cloud-native a 'future state' not a near-term ROI play. DevOps team redoubles Supabase HA investment as the immediate scaling solution.",
+    "how_to_prevent": "Assign a dedicated technical lead to design spec (not part-time). Validate cost model with actual cloud vendor quotes and Supabase scaling tests, not estimation. Set hard deadline: if design gate is not passed by 2026-08-24, cloud-native is deprioritized to Q1 2027, Supabase HA becomes primary scaling path for next 6 months."
+  },
+  "notes": "Devil's Advocate position text was truncated in input; full dissent may carry additional weight. Recommend re-reading complete position before final sign-off. All three seats converged on 'conditional'—a rare alignment. The committee's conviction (7/10) is moderate because the design gap is real and addressable, not a fundamental blocker."
+}
