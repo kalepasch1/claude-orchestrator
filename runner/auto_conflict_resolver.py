@@ -315,6 +315,82 @@ def _regression_check(repo: str, pre_sha: str, branch: str) -> str:
         return f"regression guard error (fail-closed): {type(exc).__name__}: {exc}"
 
 
+def _divergent_check(repo: str, base: str, branch: str, result_ref: str = "HEAD") -> str:
+    """Divergent-authorship verification. Returns '' if clean, else the findings.
+
+    WIRING GAP CLOSED 2026-08-04 (adversarial sweep). divergent_authorship_guard was wired
+    into merge_train._divergent_gate ONLY. This module — which authored every
+    `Merge branch '...' (auto-resolved)` commit in the log, including 71cfd4ca6, the exact
+    add/add loss the guard was written for — never called it. The guard existed, was
+    importable, was tested, and was not on this path. That is the same failure the operator
+    has already been bitten by twice: a guard that exists but is not invoked.
+
+    _regression_check() alone CANNOT cover this shape. It diffs pre-merge vs post-merge, and
+    in an add/add the pre-merge tree has no version of the file at all, so there is no "symbol
+    the base had and the result lost" for it to find. 71cfd4ca6 dropped CANARY_ENABLED and
+    CANARY_PERCENT while every base-vs-result check stayed green.
+
+    FAIL-CLOSED: an import error or a guard crash rejects the merge.
+    Opt out only with ORCH_MERGE_DIVERGENT_GATE=false / ORCH_DIVERGENT_GUARD_ENABLED=false.
+    """
+    if os.environ.get("ORCH_MERGE_DIVERGENT_GATE", "true").strip().lower() in (
+            "0", "false", "no", "off"):
+        return ""
+    try:
+        import divergent_authorship_guard
+    except Exception as exc:
+        return (f"divergent authorship guard unavailable (fail-closed): "
+                f"{type(exc).__name__}: {exc}")
+    try:
+        ok, detail = divergent_authorship_guard.gate(repo, base, branch,
+                                                     result_ref=result_ref)
+        return "" if ok else detail
+    except Exception as exc:
+        return f"divergent authorship guard error (fail-closed): {type(exc).__name__}: {exc}"
+
+
+def _stub_check(repo: str, base: str, branch: str) -> str:
+    """Shadowed-stub verification on the auto-resolve path. '' if clean.
+
+    WIRING GAP CLOSED 2026-08-04: stub_guard was wired into merge_train._stub_gate only. A
+    barrel resolved here by --ours/--theirs/--union can land a constant-return stub that
+    shadows a real `export *` re-export, which compiles, tests green, and silently disables
+    whatever the real symbol enforced. FAIL-CLOSED.
+    """
+    if os.environ.get("ORCH_MERGE_STUB_GATE", "true").strip().lower() in (
+            "0", "false", "no", "off"):
+        return ""
+    try:
+        import stub_guard
+    except Exception as exc:
+        return f"stub guard unavailable (fail-closed): {type(exc).__name__}: {exc}"
+    try:
+        res = stub_guard.check_repo(repo, branch, os.path.basename(repo), base=base)
+    except Exception as exc:
+        return f"stub guard error (fail-closed): {type(exc).__name__}: {exc}"
+    if res.get("skipped"):
+        return ""
+    blocking = [v for v in res.get("violations", []) if v.get("severity") == "block"]
+    if not blocking or stub_guard.BREAK_GLASS:
+        return ""
+    return " | ".join("[%s] %s: %s" % (v["code"], v.get("path"), v.get("detail", ""))
+                      for v in blocking[:6])
+
+
+def _verify_merge(repo: str, pre_sha: str, base: str, branch: str) -> str:
+    """Every anti-loss gate this path must pass, in order. '' when all are clean."""
+    for check in (lambda: _regression_check(repo, pre_sha, branch),
+                  lambda: _divergent_check(repo, pre_sha or base, branch),
+                  lambda: _stub_check(repo, pre_sha or base, branch)):
+        try:
+            findings = check()
+        except Exception as exc:   # a crashing gate must never wave the merge through
+            return f"merge verification error (fail-closed): {type(exc).__name__}: {exc}"
+        if findings:
+            return findings
+    return ""
+
+
 def _reject_merge(repo: str, pre_sha: str, result: dict, findings: str) -> dict:
     """Undo a merge that would destroy code and route the branch to manual review.
 
@@ -347,7 +423,7 @@ def resolve_branch(repo: str, branch: str, base: str, *, dry_run: bool = False) 
     if merge_result.returncode == 0:
         # A CLEAN git merge is not evidence that nothing was lost: a branch forked before an
         # improvement landed deletes it with zero conflict. Verify BEFORE we drop the branch.
-        findings = _regression_check(repo, pre_sha, branch)
+        findings = _verify_merge(repo, pre_sha, base, branch)
         if findings:
             return _reject_merge(repo, pre_sha, result, findings)
         if dry_run:
@@ -418,7 +494,10 @@ def resolve_branch(repo: str, branch: str, base: str, *, dry_run: bool = False) 
         # which code survives. Verify the committed tree against the pre-merge tree BEFORE
         # the branch (the only other copy of that code) is deleted. On any finding the merge
         # is reset away and the branch is kept for manual/agentic repair.
-        findings = _regression_check(repo, pre_sha, branch)
+        # Also runs the divergent-authorship and shadowed-stub gates: this is the --union
+        # path, and 71cfd4ca6 (add/add, both module constants dropped) came out of exactly
+        # here with a clean base-vs-result diff.
+        findings = _verify_merge(repo, pre_sha, base, branch)
         if findings:
             return _reject_merge(repo, pre_sha, result, findings)
         result["merged"] = True
