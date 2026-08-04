@@ -31,7 +31,21 @@ MAX_TUNE_PER_RUN = 1           # blast-radius guard: at most 1 decision applied 
 
 
 def mark_shipped():
-    """Distinguish merged engineering output from verified production deployment."""
+    """REQUIREMENT B: shipped means a diff exists. Delegates to improvement_verify.
+
+    The previous body (kept below as `mark_shipped_legacy` for the record) marked a
+    proposal shipped iff a slug-matching task was MERGED and ANY later release for that
+    project had succeeded. It never looked at code, which is why 8 of the 10 "shipped"
+    proposals carried artifact_commit NULL. The replacement demands a commit sha that is
+    boundary-exact to the slug, not recovery scaffolding, tree-changing, non-empty by
+    diff, and reachable from the release ref.
+    """
+    import improvement_verify
+    return improvement_verify.mark_shipped()["shipped"]
+
+
+def mark_shipped_legacy():
+    """The unsound pre-2026-08 gate. Retained only so its behaviour stays auditable."""
     tasks = {t["slug"]: t for t in (db.select("tasks", {
         "select": "slug,state,project_id,updated_at", "state": "eq.MERGED"}) or [])}
     projects = {p["id"]: p["name"] for p in (db.select("projects", {"select": "id,name"}) or [])}
@@ -58,7 +72,33 @@ def mark_shipped():
 
 
 def surface_returns():
-    """avg realized revenue delta per surface (from merge_revenue joined by slug)."""
+    """Avg realized delta per surface.
+
+    PRIMARY source is improvement_calibration (realized metric multipliers written by
+    improvement_verify.settle). The original source, merge_revenue, has had ZERO rows
+    since inception, which is why the miner's "bias toward surfaces that have proven to
+    pay off" computed a constant 1.0 for its entire life. Revenue is now a SECONDARY
+    source: it is added when present, and its absence no longer silently zeroes the loop.
+    """
+    cal = db.select("improvement_calibration", {
+        "select": "surface,realized_multiplier", "limit": "5000"}) or []
+    agg_cal = {}
+    for r in cal:
+        m = r.get("realized_multiplier")
+        if m is None or not r.get("surface"):
+            continue
+        a = agg_cal.setdefault(r["surface"], [0.0, 0]); a[0] += float(m); a[1] += 1
+    out_cal = {}
+    for surface, (tot, cnt) in agg_cal.items():
+        avg = round(tot / cnt, 4)
+        out_cal[surface] = avg
+        db.insert("surface_returns", {"surface": surface, "avg_delta": avg, "n": cnt,
+                  "updated_at": "now()"}, upsert=True)
+    return out_cal or _surface_returns_revenue()
+
+
+def _surface_returns_revenue():
+    """Legacy revenue-based returns. Kept as a fallback; has never had data."""
     shipped = db.select("improvement_proposals", {"select": "surface,task_slug", "status": "eq.shipped"}) or []
     rev = {r["slug"]: float(r.get("revenue_delta") or 0)
            for r in (db.select("merge_revenue", {"select": "slug,revenue_delta"}) or [])}
@@ -217,6 +257,11 @@ def auto_tune(cycle_times: dict, fty: dict) -> list:
 
 def run():
     shipped = mark_shipped()
+    # C + D: close every measurement window that is due, and revert what regressed.
+    import improvement_verify, gate_liveness
+    settled = improvement_verify.settle_due()
+    # E: assert every gate is still alive. Runs last so it sees this cycle's verdicts.
+    liveness = gate_liveness.sweep()
     returns = surface_returns()
     ct = cycle_time_by_kind()
     fty = first_try_yield()
@@ -228,6 +273,8 @@ def run():
         print(f"  auto_tune decisions ({len(tuning)}): {[d['action'] for d in tuning]}")
     return {
         "shipped": shipped,
+        "settled": settled,
+        "liveness_alarms": liveness.get("alarms", []),
         "returns": returns,
         "cycle_time": ct,
         "first_try_yield": fty,
