@@ -582,13 +582,68 @@ def _commit_agent_work(wt, slug, prompt, base="main"):
         ahead = subprocess.run(["git", "rev-list", "--count", f"{base}..HEAD"], cwd=wt, env=env,
                                capture_output=True, text=True)
         try:
-            return int((ahead.stdout or "0").strip()) > 0
+            _has_work = int((ahead.stdout or "0").strip()) > 0
+            if _has_work:
+                # DURABILITY AT COMMIT TIME (root cause of 3,332 recover-missing-branch tasks,
+                # 23.6% of all output). The origin push used to happen only AFTER verification
+                # passed, so any branch whose task failed verification, crashed, was reaped, or
+                # ran on the other Mac stayed LOCAL-ONLY — and was then eligible for worktree/
+                # branch GC. The work was destroyed and re-done as a brand new task.
+                # Committed work is now shared to origin the instant it exists, before any
+                # verification, integration or GC can see it. Disable: ORCH_SHARE_AGENT_BRANCHES=0.
+                _durable_share_branch(wt, slug, env)
+            return _has_work
         except ValueError:
             # base ref not found in the worktree — fall back to "did we just stage anything?"
             return subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=wt, env=env).returncode != 0
     except Exception as e:
         print(f"[commit] {slug}: {e}")
         return False
+
+
+def _durable_share_branch(wt, slug, env=None, attempts=3):
+    """Push agent/<slug> to origin as soon as it has committed work.
+
+    A branch that exists only on one Mac's disk is not durable: worktree GC, branch GC,
+    the resource governor, a crashed runner, or simply the other Mac claiming the task all
+    destroy it, and the orchestrator then files a NEW recover-missing-branch-<slug> task that
+    re-does the work from scratch. That single failure mode produced 3,332 merged tasks
+    (23.6% of all output).
+
+    Once the ref is on origin the work survives anything local. Writes a marker file so the
+    governor/GC can tell 'shared, safe to prune locally' from 'unshared, must not touch'.
+    Fail-soft: no remote / offline keeps the previous local-only behaviour.
+    """
+    if os.environ.get("ORCH_SHARE_AGENT_BRANCHES", "true").lower() not in ("true", "1", "yes", "on"):
+        return False
+    branch = f"agent/{slug}"
+    env = env or os.environ
+    for attempt in range(attempts):
+        try:
+            pr = subprocess.run(["git", "push", "-u", "origin", f"HEAD:refs/heads/{branch}"],
+                                cwd=wt, env=env, capture_output=True, text=True, timeout=180)
+            err = (pr.stderr or "")
+            if pr.returncode == 0 or "up-to-date" in err.lower() or "already exists" in err:
+                print(f"[branch-durability] shared {branch} to origin at commit time")
+                # Marker lives OUTSIDE the worktree: anything written inside it would be
+                # swept into the next `git add -A` and pollute the agent's diff.
+                try:
+                    home = os.environ.get("CLAUDE_ORCH_HOME",
+                                          os.path.expanduser("~/.claude-orchestrator"))
+                    d = os.path.join(home, "shared-branches")
+                    os.makedirs(d, exist_ok=True)
+                    with open(os.path.join(d, slug.replace("/", "_")), "w") as fh:
+                        fh.write(branch)
+                except Exception:
+                    pass
+                return True
+            print(f"[branch-durability] push {branch} attempt {attempt+1} failed: {err[-160:]}")
+        except Exception as e:
+            print(f"[branch-durability] push {branch} attempt {attempt+1} error: {e}")
+        time.sleep(2 * (attempt + 1))
+    print(f"[branch-durability] WARNING {branch} NOT shared to origin — commit exists only on "
+          f"this disk; GC must not delete it")
+    return False
 
 
 def _must_run_agent_for_evidence(task, slug):
