@@ -866,13 +866,21 @@ def summarize(findings, limit=6):
 
 def gate(repo, base_sha, result_ref=None, **kw):
     """merge-path wrapper: honours ORCH_MERGE_REGRESSION_GUARD, returns (ok, detail)."""
+    # E: record every verdict. A fail-closed guard that starts erroring on EVERY input
+    # looks identical to "everything is genuinely regressing" — liveness tells them apart.
+    import gate_liveness
     if not enabled():
+        gate_liveness.record("regression_guard", "disabled", result_ref)
         return True, "regression guard disabled by ORCH_MERGE_REGRESSION_GUARD"
     try:
         ok, findings = check_merge(repo, base_sha, result_ref, **kw)
     except Exception as exc:
+        gate_liveness.record("regression_guard", "error", result_ref,
+                             "{0}: {1}".format(type(exc).__name__, exc))
         return False, "regression guard error (fail-closed): {0}: {1}".format(
             type(exc).__name__, exc)
+    gate_liveness.record("regression_guard", bool(ok), result_ref,
+                         "{0} finding(s)".format(len(findings)))
     if ok:
         return True, "regression guard clean ({0} advisory)".format(len(findings))
     return False, summarize(findings)
