@@ -414,6 +414,63 @@ _QUEUE_BLOCK_LOGGED = {"at": 0.0, "count": 0}
 # fix paths specifically, and those are the only tasks that genuinely unblock shipping.
 _EXEMPT_SLUG_PREFIXES = ("relfix-", "deployfix-", "buildfix-", "hotfix-")
 
+# OPERATOR-ORIGIN WORK IS NEVER REFUSED BY ADMISSION CONTROL (added 2026-08-04).
+#
+# Root cause of the operator's 120-day "none of my improvements ever land" report. Both
+# admission gates below (`_queue_depth_block` and release back-pressure) `return None` —
+# a silent drop indistinguishable from "already exists" — and NEITHER exempted work the
+# operator himself submitted. Measured at the time of the fix: 2,181 QUEUED against an
+# 800 ceiling, and all six priority projects release-RED. The exempt prefixes above are
+# the fleet's own repair churn, so the machine's self-generated cleanup work was the only
+# thing that could still enter the queue while every operator directive was refused at the
+# door. The fleet was, structurally, starving its owner out of his own queue.
+#
+# An operator directive is a business input, not throughput: it must ALWAYS be admitted and,
+# if anything is ever refused, it must be RECORDED rather than vanish (see _record_refusal).
+_OPERATOR_SLUG_PREFIXES = ("dropbox-",)
+_REFUSAL_LOGGED = {}
+
+
+def _is_operator_origin(row):
+    """True when a task came from the operator (drop-box intake or an attributed submitter)."""
+    if not isinstance(row, dict):
+        return False
+    if str(row.get("slug") or "").startswith(_OPERATOR_SLUG_PREFIXES):
+        return True
+    return bool(str(row.get("submitted_by") or "").strip()
+                or str(row.get("submitted_by_label") or "").strip())
+
+
+def _record_refusal(row, gate, reason):
+    """Make every refused task VISIBLE. A silent `return None` is how work disappeared.
+
+    Operator-origin refusals are recorded individually and loudly (they should now be
+    impossible — if one appears, that is a bug worth an alert). Machine-generated refusals
+    are rate-limited to one summary row per gate per 5 minutes so the fleet's own churn
+    cannot flood the table.
+    """
+    slug = str(row.get("slug") or "")[:200]
+    operator = _is_operator_origin(row)
+    if not operator:
+        now = time.time()
+        if now - _REFUSAL_LOGGED.get(gate, 0) < 300:
+            return
+        _REFUSAL_LOGGED[gate] = now
+    try:
+        _req("POST", "/rest/v1/admission_rejections", body={
+            "slug": slug,
+            "project_id": row.get("project_id"),
+            "gate": gate,
+            "reason": str(reason)[:500],
+            "operator_origin": operator,
+            "submitted_by": str(row.get("submitted_by")
+                                or row.get("submitted_by_label") or "")[:200] or None,
+        })
+    except Exception:
+        pass    # visibility must never break the insert path
+    if operator:
+        print(f"[admission] ALERT: refused OPERATOR task {slug} at {gate}: {reason}", flush=True)
+
 
 def _max_queue_depth():
     try:
@@ -430,6 +487,8 @@ def _queue_depth_block(row):
     slug = str(row.get("slug") or "")
     if slug.startswith(_EXEMPT_SLUG_PREFIXES):
         return False
+    if _is_operator_origin(row):
+        return False        # the operator's own directives are never throughput-capped
     if row.get("_bypass_depth_cap"):
         return False
 
@@ -515,18 +574,24 @@ def insert(table, row, upsert=False):
         row["deps"] = execution_assurance.normalize_deps(row.get("deps"))
         blocked = _queue_depth_block(row)
         if blocked:
+            _record_refusal(row, "queue_depth",
+                            f"QUEUED depth >= ceiling {_max_queue_depth()}")
             return None
         # RELEASE BACK-PRESSURE: a project whose last release failed stops accepting new work
         # until a release goes green. Healing work (deployfix-/relfix-/recover-missing-branch-)
         # is exempt so the project can converge. 2,714 release failures previously produced no
         # back-pressure at all. Disable with ORCH_RELEASE_BACKPRESSURE=0.
-        if not row.pop("_bypass_backpressure", False):
+        # Operator directives are exempt: a red release is the FLEET's failure to ship, and
+        # refusing the owner's next instruction because the machine broke its own release is
+        # exactly backwards — it makes a fleet outage look like operator silence.
+        if not row.pop("_bypass_backpressure", False) and not _is_operator_origin(row):
             try:
                 import deployment_terminal
                 _proj = _project_name_cached(row.get("project_id"))
                 _ok, _why = deployment_terminal.project_accepts_work(_proj, row.get("slug"))
                 if not _ok:
                     print(f"[backpressure] REJECTED task {row.get('slug')}: {_why}", flush=True)
+                    _record_refusal(row, "release_backpressure", _why)
                     return None
             except Exception:
                 pass    # fail-open: back-pressure must never break the insert path
@@ -554,7 +619,8 @@ def insert(table, row, upsert=False):
             logging.getLogger("db").warning(
                 "prompt-gate: rejecting task %s — %s (prompt: %.100s...)",
                 row.get("slug", "?"), _reject_reason, _prompt)
-            return None  # silently reject — caller gets None, same as "already exists"
+            _record_refusal(row, "prompt_gate", _reject_reason)
+            return None  # rejected — now RECORDED (see _record_refusal), not vanished
 
     if (table == "tasks" and isinstance(row, dict) and not upsert
             and row.get("slug") and row.get("project_id") and not row.pop("_allow_dup", False)):
