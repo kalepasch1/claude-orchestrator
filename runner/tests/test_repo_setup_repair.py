@@ -91,6 +91,40 @@ class TestRepair(unittest.TestCase):
             self.assertIn("healthy", report)
 
 
+class TestRepairGitConfig(unittest.TestCase):
+    def test_sets_repo_owner_identity_not_bot(self):
+        # Vercel blocks deploys authored by non-owner identities; the repair
+        # must install the owner identity, never a bot placeholder.
+        with tempfile.TemporaryDirectory() as d:
+            os.system(f"git init {d} >/dev/null 2>&1")
+            calls = []
+
+            def fake_run(cmd, cwd=None, timeout=30):
+                calls.append(cmd)
+                if len(cmd) == 3 and cmd[1] == "config":
+                    return "", "", 1  # key missing -> triggers repair
+                return "", "", 0
+
+            with patch.object(repo_setup_repair, "_run", side_effect=fake_run):
+                repaired = repo_setup_repair.repair_git_config(d)
+            self.assertEqual(sorted(repaired), ["user.email", "user.name"])
+            set_calls = [c for c in calls if len(c) == 4 and c[1] == "config"]
+            values = {c[2]: c[3] for c in set_calls}
+            self.assertEqual(values.get("user.name"), repo_setup_repair.GIT_IDENTITY_NAME)
+            self.assertEqual(values.get("user.email"), repo_setup_repair.GIT_IDENTITY_EMAIL)
+            self.assertNotIn("orchestrator-bot", values.values())
+            self.assertNotIn("bot@orchestrator.local", values.values())
+
+    def test_identity_env_override(self):
+        with patch.dict(os.environ, {"ORCH_GIT_USER_NAME": "someone", "ORCH_GIT_USER_EMAIL": "s@x.y"}):
+            import importlib
+            importlib.reload(repo_setup_repair)
+            self.assertEqual(repo_setup_repair.GIT_IDENTITY_NAME, "someone")
+            self.assertEqual(repo_setup_repair.GIT_IDENTITY_EMAIL, "s@x.y")
+        importlib_mod = __import__("importlib")
+        importlib_mod.reload(repo_setup_repair)  # restore defaults for other tests
+
+
 class TestRepairIndexLock(unittest.TestCase):
     def test_no_lock(self):
         with tempfile.TemporaryDirectory() as d:

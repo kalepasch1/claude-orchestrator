@@ -16,6 +16,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
+# Repo-owner identity: Vercel blocks production deploys whose commit author is
+# anyone else (see CLAUDE.md "Git identity"), so repairs must never install a
+# bot identity. Env-overridable, ORCH_ prefix per fleet config convention.
+GIT_IDENTITY_NAME = os.environ.get("ORCH_GIT_USER_NAME", "kalepasch1")
+GIT_IDENTITY_EMAIL = os.environ.get("ORCH_GIT_USER_EMAIL", "kalepasch@gmail.com")
+
 
 def _run(cmd, cwd=None, timeout=30):
     """Run a command, return (stdout, stderr, returncode)."""
@@ -71,9 +77,9 @@ def check_worktree_health(repo):
 
 
 def repair_git_config(repo):
-    """Set missing git config with safe defaults."""
+    """Set missing git config to the repo-owner identity (deploy-safe author)."""
     repaired = []
-    for key, default in [("user.name", "orchestrator-bot"), ("user.email", "bot@orchestrator.local")]:
+    for key, default in [("user.name", GIT_IDENTITY_NAME), ("user.email", GIT_IDENTITY_EMAIL)]:
         out, _, rc = _run(["git", "config", key], cwd=repo)
         if rc != 0 or not out:
             _run(["git", "config", key, default], cwd=repo)
