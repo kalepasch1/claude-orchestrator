@@ -1,0 +1,4 @@
+recovery-intent: canary-claude-27-slice-1-fix-dependencies
+template: b46bac5b26bf
+intent: 07062319 07071626 30min 8b92d078e856 acceptance adapt agentic alter analysis artifacts because beethoven before behavior below blocks branch branches broad budget bugfix build cache canary category cause changes changing checks claude commit complete completion concrete config context continue dependencies diffs directive drafting duplicate duplicates eliminating equivalent examine existing exists failure files final finish first focus fresh functionality green hints identify implementation improve inspect install instead intent large library lines local maintainability matched merged minimal minimally missing module original orphaned parent pareto
+base: main
