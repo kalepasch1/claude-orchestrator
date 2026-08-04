@@ -1,0 +1,4 @@
+recovery-intent: relfix-vercel-checks-cache-transplant-relfix-vercel-checks-patch
+template: 204af10af1db
+intent: 056af630dd5f 07062319 07071626 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 8b92d078e856 acceptance active adapt adaptation advice after agentic aider allowlist application applied author batch beethoven before behavior blocked blocker bottleneck branch build build_fix buildfail cache ce2e8dcd7954 change changes checks claim class claude cloud coder context contract coordination cross current currently custody deepseek degrades delete deployfix described detected diffs drafting during eliminate error excerpt exercises existing exists fable fails failure feedback first fixed flash focused force gemini generated google
+base: main
