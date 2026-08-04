@@ -270,7 +270,10 @@ def can_spawn_children(task, reason_out=None):
     state = str(task.get("state") or "").upper()
     slug = str(task.get("slug") or "")
 
-    if state in ("CLOSED", "QUARANTINED", "SHELVED", "SUPERSEDED", "BLOCKED"):
+    # NOTE: BLOCKED is deliberately NOT in this list. A blocked task is not dead — decomposing
+    # it is precisely how auto_remediate unblocks it, so gating BLOCKED would stall the very
+    # remediation that lets work reach the terminal state. Only genuinely dead states qualify.
+    if state in ("CLOSED", "QUARANTINED", "SHELVED", "SUPERSEDED"):
         return False, f"task {slug or task.get('id')} is {state} — cannot reach {DEPLOYED_AND_VERIFIED}, may not spawn children"
     if task.get("shadow_only"):
         return False, f"task {slug} is shadow_only — forbidden from integration, may not spawn children"
