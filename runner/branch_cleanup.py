@@ -88,11 +88,19 @@ def cleanup(repo_path, project_id=None, dry_run=True):
             removed.append(f"[dry-run] {branch}")
         else:
             try:
-                subprocess.run(
-                    ["git", "branch", "-D", branch],
-                    cwd=repo_path, capture_output=True, timeout=10,
-                )
-                removed.append(branch)
+                # FIX 2026-08-04 (cowork audit): this force-deleted anything classified
+                # "merged", "stale" or "orphaned" — a classification made purely from task
+                # state and branch age, with no check that the commits exist anywhere else.
+                # A full-history audit found 76.6% of MERGED rows are phantom (no code ever
+                # landed), so "merged" here routinely meant "never shipped", and "orphaned"
+                # means only "no task row found". Both deleted the sole copy of real work,
+                # which the orchestrator then re-generated as recover-missing-branch-<slug>.
+                # safe_delete archives the tip and pushes to origin before removing the ref.
+                import branch_durability
+                r = branch_durability.safe_delete(
+                    repo_path, branch, reason="branch_cleanup")
+                if r.get("local_deleted"):
+                    removed.append(branch)
             except Exception:
                 pass
 
