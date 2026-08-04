@@ -189,6 +189,31 @@ class ConventionChecker(ast.NodeVisitor):
                                 severity="error",
                                 message=msg
                             ))
+                    elif (
+                        isinstance(target, ast.Subscript)
+                        and isinstance(target.slice, ast.Constant)
+                        and isinstance(target.slice.value, str)
+                    ):
+                        # Subscript targets: os.environ["ORCH_API_KEY"] = "sk-...",
+                        # fleet_config["ORCH_TOKEN"] = "..." — previously invisible
+                        # because only ast.Name targets were inspected.
+                        key_lower = target.slice.value.lower()
+                        if any(
+                            pattern in key_lower
+                            for pattern in _SECRET_PATTERNS
+                        ):
+                            msg = (
+                                f"Hardcoded secret detected in assignment to "
+                                f"'{target.slice.value}'"
+                            )
+                            self.violations.append((node.lineno, "no-hardcoded-secrets", msg))
+                            self._v2_violations.append(ConventionViolation(
+                                filepath=self.filepath,
+                                lineno=node.lineno,
+                                rule="NO_HARDCODED_SECRETS",
+                                severity="error",
+                                message=msg
+                            ))
 
         # Check for magic numbers
         if isinstance(node.value, ast.Constant) and isinstance(node.value.value, (int, float)):
