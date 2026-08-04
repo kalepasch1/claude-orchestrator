@@ -1,0 +1,4 @@
+recovery-intent: canary-deepseek-70-slice-4
+template: c8b26f03cbb9
+intent: 056af630dd5f 07041728 07062319 07071626 07130635 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 acceptance active adapt advice after agentic aider allowlist analysis artifacts author barks batch beethoven before behavior below blocked blocker branch broad bugfix build buildfail canary capabilities category cause ce2e8dcd7954 change changes changing checks claim class claud code_generation coder commit complete completion concrete config context continue contract deepseek dependencies deploy diffs directive directly drafting duplicate equivalent exact excerpt executor existing failure feature files final finish first fresh green
+base: main
