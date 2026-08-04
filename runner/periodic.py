@@ -653,8 +653,23 @@ def run_selfcheck():
 
 
 def run_improve():
-    """Always-on '20-500X better?' loop: auto-queue non-divergent improvements, queue business-model ones for review."""
+    """Measured self-improvement: detect a real bottleneck, propose against a baseline+target."""
     import improvement_miner; improvement_miner.run()
+
+
+def run_bottlenecks():
+    """Measure the pipeline's own bottlenecks and rank them by arithmetic headroom."""
+    import bottleneck_detector; bottleneck_detector.run()
+
+
+def run_gateliveness():
+    """Alarm on any gate that has gone degenerate or silent (the 18-day-outage detector)."""
+    import gate_liveness; gate_liveness.run()
+
+
+def run_improvesettle():
+    """Close due measurement windows: validate against baseline, or revert and mark regressed."""
+    import improvement_verify; improvement_verify.run()
 
 
 def run_improvemeasure():
@@ -1099,6 +1114,9 @@ JOBS = {
     "legaltriage": run_legaltriage,
     "decisionbriefs": run_decisionbriefs,
     "improve": run_improve,
+    "bottlenecks": run_bottlenecks,
+    "gateliveness": run_gateliveness,
+    "improvesettle": run_improvesettle,
     "improvemeasure": run_improvemeasure,
     "cadeextras": run_cadeextras,
     "committees": run_committees,
