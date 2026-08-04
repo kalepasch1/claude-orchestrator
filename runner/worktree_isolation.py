@@ -65,15 +65,52 @@ def reclaim_reason(repo: str, slug: str, task_id: str) -> Optional[str]:
       timeout or RETRY can never present the token its own previous attempt recorded.
       Owner markers are per-machine, so a same-task marker here is our own corpse.
 
-    A marker naming a DIFFERENT task is still refused - that is the real collision the
-    guard was written for, and the branch lease remains the cross-machine authority.
+    * The marker names a task id that is no longer RUNNING - see _owner_is_live() below.
+
+    A marker naming a DIFFERENT task that is still RUNNING is refused - that is the real
+    collision the guard was written for, and the branch lease remains the cross-machine
+    authority.
     """
     claim = owner_claim(repo, slug)
     if claim is None or not any(str(c).strip() for c in claim):
         return "no owner marker (pre-guard or GC-dropped worktree)"
     if claim[0] == task_id:
         return "owned by this task under a superseded lease token"
+    if not _owner_is_live(claim[0]):
+        return "owner task %s is no longer RUNNING (stale marker for this slug)" % (
+            str(claim[0])[:12],
+        )
     return None
+
+
+def _owner_is_live(owner_task_id: str) -> bool:
+    """Is the task named in an owner marker still RUNNING?
+
+    A worktree path is derived from the SLUG, so any marker found there belongs to this
+    slug's work. But this fleet recreates task rows for the same slug with a fresh uuid
+    (decomposition, respawn, re-insert), and the new row can never present the old row's
+    id. On 2026-08-03 that wedged ~20 tasks per 20 minutes with "worktree is owned by
+    another task or lease": they claimed a lane, could not get their own checkout, and went
+    straight back to QUEUED without ever running. A dead owner is a corpse, not a collision.
+
+    Fails CLOSED. Any error, or an owner row that is genuinely RUNNING, returns True so the
+    caller refuses the reclaim exactly as it did before this change. Only a definitive "that
+    row exists and is not RUNNING", or "that row no longer exists", frees the worktree.
+    """
+    owner_task_id = str(owner_task_id or "").strip()
+    if not owner_task_id:
+        return False
+    try:
+        import db
+        rows = db.select("tasks", {"select": "id,state", "id": "eq.%s" % owner_task_id,
+                                   "limit": "1"})
+    except Exception:
+        return True   # cannot tell -> behave exactly as before
+    if rows is None:
+        return True
+    if not rows:
+        return False  # the owning row is gone; nothing left to collide with
+    return str(rows[0].get("state") or "").upper() == "RUNNING"
 
 
 def _git(repo: str, *args: str) -> subprocess.CompletedProcess[str]:
