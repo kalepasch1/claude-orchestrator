@@ -74,6 +74,27 @@ def is_on_origin(repo, branch):
     return False
 
 
+def commits_reachable_elsewhere(repo, ref):
+    """True if *ref*'s tip is contained in some OTHER origin ref (i.e. the work landed).
+
+    The honest precondition for deleting a remote branch: its commits must survive the
+    deletion. Age is not a proxy for this — an 8-day-old branch that never merged is
+    exactly the work most worth keeping.
+    """
+    rc, tip, _ = _git(repo, "rev-parse", "--verify", ref)
+    if rc != 0 or not tip:
+        return False
+    short = ref.replace("origin/", "", 1)
+    rc, out, _ = _git(repo, "branch", "-r", "--contains", tip)
+    if rc != 0:
+        return False  # fail closed
+    for line in (out or "").splitlines():
+        name = line.strip()
+        if name.startswith("origin/") and name != f"origin/{short}" and name != ref:
+            return True
+    return False
+
+
 def archive_branch(repo, branch, reason=""):
     """Copy branch tip to refs/archive/<branch>/<epoch> so the commits survive deletion.
 
