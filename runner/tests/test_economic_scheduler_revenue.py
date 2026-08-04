@@ -36,11 +36,14 @@ class EconomicScheduler:
     """Tracks and prices token usage across models."""
 
     MODELS = {
+        # Rates match actual Anthropic billing (verified against the error-report
+        # session in TestEconomicSchedulerRealWorldSession — the previous
+        # 0.80/4.0 Haiku rates under-reported real cost by 20%).
         "claude-haiku-4-5-20251001": ModelCost(
             name="claude-haiku-4-5-20251001",
-            input_rate_usd_per_mtok=0.80,
-            output_rate_usd_per_mtok=4.0,
-            cache_creation_rate_usd_per_mtok=1.0,
+            input_rate_usd_per_mtok=1.0,
+            output_rate_usd_per_mtok=5.0,
+            cache_creation_rate_usd_per_mtok=1.25,
             cache_read_rate_usd_per_mtok=0.1,
             context_window=200000,
             max_output_tokens=32000,
@@ -49,7 +52,9 @@ class EconomicScheduler:
             name="claude-sonnet-4-6",
             input_rate_usd_per_mtok=3.0,
             output_rate_usd_per_mtok=15.0,
-            cache_creation_rate_usd_per_mtok=3.75,
+            # 1-hour cache write rate (2x input); the fleet's sessions bill at
+            # the 1h tier per the error report (5m tier would be 3.75).
+            cache_creation_rate_usd_per_mtok=6.0,
             cache_read_rate_usd_per_mtok=0.30,
             context_window=200000,
             max_output_tokens=32000,
@@ -118,8 +123,8 @@ class TestEconomicSchedulerBasic:
             cache_creation_input_tokens=0,
         )
         cost = scheduler.calculate_cost("claude-haiku-4-5-20251001", usage)
-        # Haiku: 1.0M * 0.80 = 0.80 USD
-        assert cost == 0.80
+        # Haiku: 1.0M * 1.00 = 1.00 USD
+        assert cost == 1.0
 
     def test_output_tokens_only(self):
         """Only output tokens contribute to cost."""
@@ -131,8 +136,8 @@ class TestEconomicSchedulerBasic:
             cache_creation_input_tokens=0,
         )
         cost = scheduler.calculate_cost("claude-haiku-4-5-20251001", usage)
-        # Haiku: 1.0M * 4.0 = 4.0 USD
-        assert cost == 4.0
+        # Haiku: 1.0M * 5.0 = 5.0 USD
+        assert cost == 5.0
 
 
 class TestEconomicSchedulerCaching:
@@ -148,8 +153,8 @@ class TestEconomicSchedulerCaching:
             cache_creation_input_tokens=1_000_000,  # 1M tokens
         )
         cost = scheduler.calculate_cost("claude-haiku-4-5-20251001", usage)
-        # Haiku: 1.0M * 1.0 = 1.0 USD
-        assert cost == 1.0
+        # Haiku: 1.0M * 1.25 = 1.25 USD (5m cache write = 1.25x input)
+        assert cost == 1.25
 
     def test_cache_read_cost(self):
         """Cache read tokens are charged at read rate (90% discount)."""
@@ -182,8 +187,10 @@ class TestEconomicSchedulerCaching:
         )
         read_cost = scheduler.calculate_cost("claude-haiku-4-5-20251001", read_usage)
 
-        # Cache read should be 90% cheaper than creation
-        assert read_cost == creation_cost * 0.1
+        # Cache read (0.10) is 90% cheaper than the INPUT rate (1.00) and 92%
+        # cheaper than the 5m cache-write rate (1.25).
+        assert read_cost == pytest.approx(creation_cost * (0.1 / 1.25))
+        assert read_cost < creation_cost
 
 
 class TestEconomicSchedulerMultiModel:
