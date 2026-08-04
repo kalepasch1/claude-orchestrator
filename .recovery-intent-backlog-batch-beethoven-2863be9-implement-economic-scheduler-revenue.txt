@@ -1,0 +1,4 @@
+recovery-intent: backlog-batch-beethoven-2863be9-implement-economic-scheduler-revenue
+template: 04c335cf0cee
+intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 acceptance actions active adapt advice after agentic aider allowlist analysis author backward based batch beethoven before behavior blocked blocker bottleneck budget build build_fix buildfail calculate_revenue calculation cases caused ce2e8dcd7954 change cheap claim class claude clearly cloud coder codex commit compatibility concern concrete config consumer context contract convert coordination cross custody deepseek defined delete deployfix diffs directive drafting economic_scheduler ensure error excerpt existing exists expected explore fable feedback first flash
+base: master
