@@ -49,7 +49,21 @@ _METADATA_ONLY_RE = re.compile(
 
 
 def preflight_check(task: dict) -> str:
-    """Return '' if task is dispatchable, or a quarantine reason string."""
+    """Return '' if task is dispatchable, or a quarantine reason string.
+
+    E: the verdict is recorded for liveness. A preflight that starts quarantining
+    (or passing) essentially everything is a bug, and now alarms within a day.
+    """
+    verdict = _preflight_check_inner(task)
+    try:
+        import gate_liveness
+        gate_liveness.record("preflight", verdict or "pass", task.get("slug"), verdict or None)
+    except Exception:
+        pass
+    return verdict
+
+
+def _preflight_check_inner(task: dict) -> str:
     prompt = str(task.get("prompt") or "")
     note = str(task.get("note") or "")
     attempt = task.get("attempt") or 0
