@@ -183,7 +183,17 @@ def cleanup_merged_branches(repo):
             except Exception as e: # Catch other potential errors during comparison
                 print(f"git_auto_branch: Unexpected error during grace period check for slug {slug}: {e}", file=sys.stderr)
                 pass
-        _, ok = _git(["branch", "-D", branch], repo)
+        # FIX 2026-08-04 (cowork audit): this deleted branches for terminal-state slugs
+        # after a grace period, trusting a task state the audit proved wrong 3 times in 4
+        # (10,584 of 13,816 MERGED rows have no code in the repo). Deleting on the strength
+        # of a phantom MERGED destroyed the only copy of real work. Archive first.
+        try:
+            import branch_durability
+            ok = branch_durability.safe_delete(
+                repo, branch, reason="git_auto_branch grace sweep").get("local_deleted")
+        except Exception as exc:
+            _log_info(f"branch durability guard unavailable for {branch} ({exc}); NOT deleting")
+            continue
         if ok:
             removed += 1
             _log_info(f"deleted branch: {branch}")
