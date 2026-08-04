@@ -369,6 +369,190 @@ def check_undefined(path, pre_src, post_src, use_pyflakes=None):
 
 
 # ---------------------------------------------------------------------------
+# detector 1b: TypeScript / JavaScript / Vue exported-symbol regression
+# ---------------------------------------------------------------------------
+#
+# GAP FOUND 2026-08-04 (adversarial sweep): detectors 1 and 2 above were gated on
+# `path.endswith(".py")`. The fleet's apps are almost entirely TypeScript and Vue, so the
+# single most important detector in this module — "a symbol that existed before the merge is
+# gone after it" — was not running on the code it most needed to protect. A red-team merge
+# that deleted an exported `assessCredit()` from a .ts/.vue/.mjs module while another file
+# still imported it passed the guard clean. Only Python was ever covered.
+#
+# This is deliberately shallow (regex, not a TS parser): it answers "did an EXPORTED
+# top-level symbol disappear or become a constant" and nothing else. That is the loss shape;
+# anything deeper needs tsc and cannot run on the merge path.
+
+TS_EXT = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte")
+_TSID = r"[A-Za-z_$][A-Za-z0-9_$]*"
+
+# `export const x`, `export function x`, `export class x`, `export type x`, ... Anchored on a
+# statement boundary rather than ^ so MINIFIED / one-line bundles are covered too: a
+# single-line barrel `export * from './impl';export const priceLeg=()=>0;` is exactly the
+# shape a bot writes when it "fixes" a build, and a (?m)^ anchor never sees the second half.
+_TS_DECL_RX = re.compile(
+    r"(?:^|[;}\n])[ \t]*export[ \t]+(?:declare[ \t]+)?(?:abstract[ \t]+)?(?:async[ \t]+)?"
+    r"(?:function[ \t*]+|const[ \t]+|let[ \t]+|var[ \t]+|class[ \t]+|interface[ \t]+"
+    r"|type[ \t]+|enum[ \t]+)(%s)" % _TSID)
+# `export default function foo`, `export default class Foo`
+_TS_DEFAULT_RX = re.compile(
+    r"(?:^|[;}\n])[ \t]*export[ \t]+default[ \t]+(?:async[ \t]+)?"
+    r"(?:function[ \t*]+|class[ \t]+)(%s)" % _TSID)
+# `export { a, b as c }` and `export { a } from './x'` — a re-export is an export.
+_TS_LIST_RX = re.compile(r"(?:^|[;}\n])[ \t]*export[ \t]*\{([^}]*)\}")
+
+# A declaration slice whose entire payload is a constant. `() => ({})`, `{ return 0; }`,
+# `= null`, `() => ({ ok: true })` — a NON-EMPTY wrong constant counts too, because the
+# damage is identical and "returns something plausible" is the harder case to notice.
+#
+# CARE IS REQUIRED HERE. An arrow with a BLOCK body — `=> { if (!x) throw …; return true; }` —
+# is a real implementation, and an early draft of this pattern matched its braces with
+# `\{[^{}]*\}` and called it a constant. That would have reported every brace-bodied arrow
+# without nested braces as "stubbed": a false positive on real, working code, which is exactly
+# the kind of noise that gets a guard switched off. The two shapes are distinguished by the
+# PARENTHESES: `=> ({...})` returns an object literal; `=> {...}` opens a statement block, and
+# a block only counts as a stub when it is empty or contains nothing but `return <literal>`.
+_LIT = (r"\[\s*\]|null|undefined|-?\d+(?:\.\d+)?|true|false|''|\"\"|`[^`]*`")
+_TRIVIAL_BLOCK = (r"\{\s*(?:return\s*(?:\{[^{}]*\}|%s)?\s*(?:as\s+\w+\s*)?;?\s*)?\}" % _LIT)
+_TS_STUB_RX = re.compile(
+    r"^(?:"
+    # `= (args) => ({...})` / `=> 0` / `=> []` / `=> {}` / `=> { return 0; }`
+    r"=\s*(?:async\s+)?(?:\([^)]*\)|%s)\s*(?::[^=>]*)?=>\s*"
+    r"(?:\(\s*\{[^{}]*\}\s*\)|%s|%s)\s*(?:as\s+\w+\s*)?;?"
+    # `= {}` / `= null` / `= 0` — a bare constant binding
+    r"|=\s*(?:\{\s*\}|%s)\s*;?"
+    # `= function () { return {}; }` — the function EXPRESSION form, which has no `=>`.
+    r"|=\s*(?:async\s+)?function\s*\*?\s*(?:%s)?\s*\([^)]*\)\s*(?::[^{]*)?%s\s*;?"
+    # `(args): T { return 0; }` — the declaration form, `export function f(...) {...}`
+    r"|\([^)]*\)\s*(?::[^{]*)?%s"
+    r")$" % (_TSID, _LIT, _TRIVIAL_BLOCK, _LIT, _TSID, _TRIVIAL_BLOCK, _TRIVIAL_BLOCK),
+    re.S)
+
+
+def _vue_script(source):
+    """Script bodies of a .vue/.svelte SFC, or the whole file for plain TS/JS."""
+    blocks = re.findall(r"<script[^>]*>(.*?)</script>", source or "", re.S | re.I)
+    return "\n".join(blocks) if blocks else (source or "")
+
+
+def _ts_exports(path, source):
+    """{exported_name: declaration_slice} for a TS/JS/Vue module.
+
+    The slice runs from one exported declaration to the next, which is coarse but enough to
+    answer "is this now a constant". Names from `export {…}` lists map to '' (presence only).
+    """
+    if source is None:
+        return None
+    text = _vue_script(source) if path.endswith((".vue", ".svelte")) else source
+    marks = []
+    for rx in (_TS_DECL_RX, _TS_DEFAULT_RX):
+        for m in rx.finditer(text):
+            marks.append((m.end(1), m.group(1)))
+    marks.sort()
+    out = {}
+    for i, (pos, name) in enumerate(marks):
+        end = marks[i + 1][0] if i + 1 < len(marks) else len(text)
+        out.setdefault(name, re.sub(r"\s+", " ", text[pos:end]).strip())
+    for grp in _TS_LIST_RX.findall(text):
+        for part in grp.split(","):
+            nm = part.strip().split(" as ")[-1].strip()
+            if nm and re.match(r"^%s$" % _TSID, nm) and nm != "default":
+                out.setdefault(nm, "")
+    return out
+
+
+def _ts_stub_kind(slice_text):
+    """Return a stub description when a declaration slice is a bare constant, else None."""
+    s = (slice_text or "").strip()
+    if not s:
+        return None
+    # Trim a trailing fragment of the NEXT declaration that the coarse slice may have caught.
+    s = re.split(r"(?:^|[;}])\s*(?:export|import)\b", s)[0].strip()
+    m = _TS_STUB_RX.match(s)
+    return ("constant body `%s`" % s[:60]) if m else None
+
+
+def check_ts_symbols(path, pre_src, post_src, moved=None):
+    """Exported TS/JS/Vue symbols that vanished or became constants across the merge.
+
+    `moved(name) -> bool` is consulted before reporting a disappearance so a symbol RELOCATED
+    to another module in the same commit is not called a loss (the dominant benign shape).
+    """
+    findings = []
+    pre = _ts_exports(path, pre_src)
+    if not pre:
+        return findings
+    post = _ts_exports(path, post_src)
+    if post is None:
+        return findings
+    for name, pre_slice in pre.items():
+        if name not in post:
+            if moved is not None and moved(name):
+                continue
+            findings.append({
+                "file": path, "symbol": name, "kind": "missing", "detector": "symbol",
+                "reason": "exported `{0}` existed in {1} before the merge and is GONE after "
+                          "it, and no other module in the merged tree defines it. Every "
+                          "importer now fails to resolve — or, in a barrel, silently resolves "
+                          "to undefined.".format(name, path)})
+            continue
+        if not pre_slice:
+            continue
+        pre_stub, post_stub = _ts_stub_kind(pre_slice), _ts_stub_kind(post[name])
+        if post_stub and not pre_stub:
+            findings.append({
+                "file": path, "symbol": name, "kind": "stubbed", "detector": "symbol",
+                "reason": "exported `{0}` had a real body before the merge and is now a "
+                          "{1} — crash-free WRONG BEHAVIOUR. Callers keep compiling and keep "
+                          "receiving a fabricated value.".format(name, post_stub)})
+    return findings
+
+
+# ---------------------------------------------------------------------------
+# relocation check — shared by the Python and TS symbol detectors
+# ---------------------------------------------------------------------------
+
+_ANYDEF_RX = (r"(?:^|[\s;}])(?:def|class|function|const|let|var|type|interface|enum)\s+%s\b"
+              r"|(?:^|[\s;}])%s\s*[:=]")
+
+
+def _moved_checker(repo, ref, path):
+    """Return `moved(name) -> bool`: is `name` DEFINED in some other file of the merged tree?
+
+    FALSE-POSITIVE FIX 2026-08-04: a commit that lifts a helper out of a.py into b.py made
+    check_symbols report `missing` even though the symbol still exists and every caller still
+    resolves. Refactors like that are the single most common shape in real history, and a
+    guard that blocks them gets switched off — which is itself a loss vector. A symbol is
+    only LOST when nothing in the post-merge tree defines it any more.
+    """
+    cache = {}
+
+    def moved(name):
+        if name in cache:
+            return cache[name]
+        args = ["grep", "-l", "-w", "-e", name]
+        if ref:
+            args.append(ref)
+        r = _git(repo, *args)
+        hit = False
+        if r.returncode == 0:
+            files = [ln.split(":", 1)[-1] if ref else ln
+                     for ln in (r.stdout or "").splitlines() if ln.strip()]
+            for other in files[:40]:
+                if other == path:
+                    continue
+                src = _blob(repo, ref, other)
+                if src and re.search(_ANYDEF_RX % (re.escape(name), re.escape(name)),
+                                     src, re.M):
+                    hit = True
+                    break
+        cache[name] = hit
+        return hit
+
+    return moved
+
+
+# ---------------------------------------------------------------------------
 # detector 3: critical-file deletion
 # ---------------------------------------------------------------------------
 
@@ -537,13 +721,32 @@ def check_merge(repo, base_sha, result_ref=None, *, commit_message="",
         if path.endswith(".py"):
             try:
                 if pre_src is not None:
-                    findings.extend(check_symbols(path, pre_src, post_src))
+                    moved = _moved_checker(repo, result_ref, path)
+                    for f in check_symbols(path, pre_src, post_src):
+                        # A symbol lifted into another module in the same commit still exists
+                        # and every caller still resolves: that is a refactor, not a loss.
+                        if f["kind"] == "missing" and "." not in f["symbol"] \
+                                and moved(f["symbol"]):
+                            continue
+                        findings.append(f)
                 findings.extend(check_undefined(path, pre_src, post_src,
                                                 use_pyflakes=use_pyflakes))
             except Exception as exc:
                 findings.append({"file": path, "symbol": "", "kind": "guard-error",
                                  "detector": "guard",
                                  "reason": "analysis failed (fail-closed): {0}: {1}".format(
+                                     type(exc).__name__, exc)})
+
+        # --- detector 1b: TS / JS / Vue exported-symbol regression ----------
+        # The fleet's apps are TypeScript and Vue; before 2026-08-04 nothing here ran on them.
+        elif path.endswith(TS_EXT) and pre_src is not None:
+            try:
+                findings.extend(check_ts_symbols(
+                    path, pre_src, post_src, moved=_moved_checker(repo, result_ref, path)))
+            except Exception as exc:
+                findings.append({"file": path, "symbol": "", "kind": "guard-error",
+                                 "detector": "guard",
+                                 "reason": "TS analysis failed (fail-closed): {0}: {1}".format(
                                      type(exc).__name__, exc)})
 
         # --- detector 4: net-deletion heuristic -----------------------------
