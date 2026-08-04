@@ -444,15 +444,21 @@ def _ts_exports(path, source):
     if source is None:
         return None
     text = _vue_script(source) if path.endswith((".vue", ".svelte")) else source
+    # (declaration_start, name_end, name). The slice for a declaration runs from the end of
+    # its NAME to the START of the next declaration — not to the next name's end. Slicing to
+    # the next name's end drags `export function nextThing` into this declaration's body, and
+    # trimming that back off with a string split is defeated by anything in between (a
+    # comment, a blank line, a JSDoc block). Getting this wrong made a genuine stub look like
+    # a real implementation, so removing it was reported as symbol loss.
     marks = []
     for rx in (_TS_DECL_RX, _TS_DEFAULT_RX):
         for m in rx.finditer(text):
-            marks.append((m.end(1), m.group(1)))
+            marks.append((m.start(), m.end(1), m.group(1)))
     marks.sort()
     out = {}
-    for i, (pos, name) in enumerate(marks):
+    for i, (_start, name_end, name) in enumerate(marks):
         end = marks[i + 1][0] if i + 1 < len(marks) else len(text)
-        out.setdefault(name, re.sub(r"\s+", " ", text[pos:end]).strip())
+        out.setdefault(name, re.sub(r"\s+", " ", text[name_end:end]).strip())
     for grp in _TS_LIST_RX.findall(text):
         for part in grp.split(","):
             nm = part.strip().split(" as ")[-1].strip()
@@ -467,7 +473,16 @@ def _ts_stub_kind(slice_text):
     if not s:
         return None
     # Trim a trailing fragment of the NEXT declaration that the coarse slice may have caught.
-    s = re.split(r"(?:^|[;}])\s*(?:export|import)\b", s)[0].strip()
+    # The boundary char is matched with a LOOK-BEHIND, not consumed: an earlier cut used
+    # `[;}]\s*(?:export|import)` and swallowed the `}` that closed the body, so
+    # `(...args): any { return {}; } export function next` trimmed to an UNBALANCED
+    # `(...args): any { return {};` and stopped being recognised as a stub. That single
+    # missing brace was worth 102 false "missing symbol" findings on tomorrow 24dfa73b6a.
+    s = re.split(r"(?<=[;}])\s*(?=\b(?:export|import)\b)", s)[0].strip()
+    # Drop trailing comments the slice picked up before the next declaration. A JSDoc block or
+    # a `// --- Stub exports (build fix #24) ---` banner sitting between two declarations is
+    # not part of this one's body, and leaving it attached makes a stub unrecognisable.
+    s = re.sub(r"(?:/\*.*?\*/|//[^\n]*)\s*$", "", s).strip()
     m = _TS_STUB_RX.match(s)
     return ("constant body `%s`" % s[:60]) if m else None
 
@@ -485,8 +500,27 @@ def check_ts_symbols(path, pre_src, post_src, moved=None):
     post = _ts_exports(path, post_src)
     if post is None:
         return findings
+    # FALSE-POSITIVE FIX 2026-08-04: a BARREL whose explicit `export { a, b } from './x'`
+    # lists were collapsed into `export * from './x'` loses no exports at all — the star
+    # still provides every name. Measured on tomorrow 24dfa73b6a (a healthy 62-file merge),
+    # that single refactor produced 121 bogus "missing" findings and would have blocked it.
+    # When the post-merge file still has a star export, a name that only ever appeared in an
+    # `export {}` list (slice == '') is unprovable here and is left to stub_guard, which
+    # resolves the star's targets properly. A real DECLARATION that vanished is still
+    # reported, star or no star.
+    post_has_star = bool(re.search(r"(?:^|[;}\n])\s*export\s+\*", post_src or ""))
     for name, pre_slice in pre.items():
         if name not in post:
+            if post_has_star and not pre_slice:
+                continue
+            # DELETING A STUB IS THE REPAIR, NOT THE LOSS. tomorrow 24dfa73b6a removes the
+            # `export function optimizeSwaps(...args: any[]): any { return {}; }` build-fix
+            # stubs from 19 barrels — the exact 206-instance incident stub_guard exists to
+            # find — and an earlier cut of this detector called all 121 removals "missing"
+            # and would have blocked the cleanup. A guard that blocks the fix for the loss it
+            # reports is worse than no guard. The symbol had no implementation to lose.
+            if _ts_stub_kind(pre_slice):
+                continue
             if moved is not None and moved(name):
                 continue
             findings.append({
@@ -516,39 +550,63 @@ _ANYDEF_RX = (r"(?:^|[\s;}])(?:def|class|function|const|let|var|type|interface|e
               r"|(?:^|[\s;}])%s\s*[:=]")
 
 
-def _moved_checker(repo, ref, path):
-    """Return `moved(name) -> bool`: is `name` DEFINED in some other file of the merged tree?
+MOVED_BUDGET = int(os.environ.get("ORCH_REGRESSION_MOVED_BUDGET", "60"))
+
+
+def _moved_checker(repo, ref, cache=None, budget=None):
+    """Return `moved(path, name) -> bool`: is `name` DEFINED in some OTHER file of the tree?
 
     FALSE-POSITIVE FIX 2026-08-04: a commit that lifts a helper out of a.py into b.py made
     check_symbols report `missing` even though the symbol still exists and every caller still
     resolves. Refactors like that are the single most common shape in real history, and a
     guard that blocks them gets switched off — which is itself a loss vector. A symbol is
     only LOST when nothing in the post-merge tree defines it any more.
-    """
-    cache = {}
 
-    def moved(name):
+    PERFORMANCE. The first cut built a fresh checker (and a fresh cache) PER FILE and shelled
+    out to `git grep` plus one `git show` per candidate. On a 62-file TypeScript merge in the
+    tomorrow repo that took the guard from 0.2s to over a minute — and a merge gate slow
+    enough to be noticed is a merge gate somebody turns off. The cache is now shared across
+    the whole merge, `git grep -n` returns the matching LINES so the definition test needs no
+    second round-trip per file, and a budget caps the number of distinct lookups.
+
+    FAILS CLOSED: once the budget is exhausted, or if git errors, `moved` returns False —
+    i.e. the symbol is reported as LOST. An unproven relocation is not a proven one.
+    """
+    cache = {} if cache is None else cache
+    state = {"spent": 0}
+    limit = MOVED_BUDGET if budget is None else budget
+
+    def moved(path, name):
         if name in cache:
             return cache[name]
-        args = ["grep", "-l", "-w", "-e", name]
+        if state["spent"] >= limit:
+            # Budget exhausted. Do NOT claim the symbol relocated — that would hide a real
+            # loss. The merge is failed instead, via the exhausted() flag the caller reports.
+            state["exhausted"] = True
+            return False
+        state["spent"] += 1
+        args = ["grep", "-n", "-w", "-e", name]
         if ref:
             args.append(ref)
         r = _git(repo, *args)
         hit = False
         if r.returncode == 0:
-            files = [ln.split(":", 1)[-1] if ref else ln
-                     for ln in (r.stdout or "").splitlines() if ln.strip()]
-            for other in files[:40]:
+            defrx = re.compile(_ANYDEF_RX % (re.escape(name), re.escape(name)))
+            for line in (r.stdout or "").splitlines()[:4000]:
+                # "<ref>:<path>:<lineno>:<text>" with a ref, "<path>:<lineno>:<text>" without.
+                parts = line.split(":", 3 if ref else 2)
+                if len(parts) < (4 if ref else 3):
+                    continue
+                other, text = (parts[1], parts[3]) if ref else (parts[0], parts[2])
                 if other == path:
                     continue
-                src = _blob(repo, ref, other)
-                if src and re.search(_ANYDEF_RX % (re.escape(name), re.escape(name)),
-                                     src, re.M):
+                if defrx.search(text):
                     hit = True
                     break
         cache[name] = hit
         return hit
 
+    moved.exhausted = lambda: bool(state.get("exhausted"))
     return moved
 
 
@@ -686,6 +744,9 @@ def check_merge(repo, base_sha, result_ref=None, *, commit_message="",
                                    "inspected".format(max_files)})
 
     use_pyflakes = _pyflakes_available()
+    # ONE relocation checker for the whole merge: its cache is what keeps a 62-file
+    # TypeScript merge under a second instead of over a minute. See _moved_checker.
+    moved = _moved_checker(repo, result_ref)
 
     for status, path in changed:
         # --- detector 3: critical-file deletion -----------------------------
@@ -721,12 +782,11 @@ def check_merge(repo, base_sha, result_ref=None, *, commit_message="",
         if path.endswith(".py"):
             try:
                 if pre_src is not None:
-                    moved = _moved_checker(repo, result_ref, path)
                     for f in check_symbols(path, pre_src, post_src):
                         # A symbol lifted into another module in the same commit still exists
                         # and every caller still resolves: that is a refactor, not a loss.
                         if f["kind"] == "missing" and "." not in f["symbol"] \
-                                and moved(f["symbol"]):
+                                and moved(path, f["symbol"]):
                             continue
                         findings.append(f)
                 findings.extend(check_undefined(path, pre_src, post_src,
@@ -742,7 +802,8 @@ def check_merge(repo, base_sha, result_ref=None, *, commit_message="",
         elif path.endswith(TS_EXT) and pre_src is not None:
             try:
                 findings.extend(check_ts_symbols(
-                    path, pre_src, post_src, moved=_moved_checker(repo, result_ref, path)))
+                    path, pre_src, post_src,
+                    moved=lambda name, _p=path: moved(_p, name)))
             except Exception as exc:
                 findings.append({"file": path, "symbol": "", "kind": "guard-error",
                                  "detector": "guard",
@@ -759,6 +820,18 @@ def check_merge(repo, base_sha, result_ref=None, *, commit_message="",
                     "reason": "merge removed {0} net lines from {1} (threshold {2}) with no "
                               "deletion intent marker in the commit message".format(
                                   lost, path, net_delete_lines)})
+
+    if getattr(moved, "exhausted", lambda: False)():
+        # More distinct symbols disappeared than the relocation budget could verify. Every
+        # unverified one was reported as lost, so the merge already fails — but say WHY, so
+        # the operator raises ORCH_REGRESSION_MOVED_BUDGET rather than assuming the findings
+        # are noise. Never the other way round: an unchecked symbol is never assumed safe.
+        findings.append({
+            "file": "<repo>", "symbol": "", "kind": "guard-error", "detector": "guard",
+            "reason": "relocation-verification budget ({0}) exhausted; symbols beyond it "
+                      "could not be proven to still exist elsewhere and are reported as lost "
+                      "(fail-closed). Raise ORCH_REGRESSION_MOVED_BUDGET to verify "
+                      "them.".format(MOVED_BUDGET)})
 
     hard = [f for f in findings if f["kind"] != "truncated"]
     return (not hard), findings
