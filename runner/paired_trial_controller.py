@@ -9,6 +9,10 @@ def record(task,result):
  if rows and rows[0].get(other):patch.update(status='completed',completed_at='now()')
  return db.update('native_paired_shadow_trials',{'id':trial},patch)
 def sample_once(limit=1):
+ # Shadow trials duplicate every sampled task into two non-integrating clones — pure self-study
+ # output. Default OFF; set ORCH_SHADOW_TRIALS=1 (and ORCH_PAIRED_SHADOW_TRIALS=1) to restore.
+ import self_work_gate
+ if not self_work_gate.allow_generator('ORCH_SHADOW_TRIALS','paired_trial_controller.sample_once'):return {'created':0}
  if os.environ.get('ORCH_PAIRED_SHADOW_TRIALS','true').lower() not in ('1','true','yes','on'):return {'created':0}
  rate=float(os.environ.get('ORCH_PAIRED_SHADOW_RATE','0.02'));tasks=db.select('tasks',{'select':'*','state':'eq.QUEUED','shadow_only':'eq.false','order':'created_at.asc','limit':str(max(10,limit*20))}) or [];created=0
  for source in tasks:
