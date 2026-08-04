@@ -179,6 +179,24 @@ def gc_remote_branches(repo_path):
             skipped += 1; continue
         if age_days < REMOTE_GC_DAYS:
             skipped += 1; continue
+        # FIX 2026-08-04 (cowork audit): this deleted origin/agent/* on AGE ALONE — no task
+        # state, no check that the work ever landed. origin is the durable copy that
+        # runner._durable_share_branch() creates precisely so local GC cannot destroy
+        # committed work; deleting it after 7 days closed the loop and destroyed the last
+        # copy anyway. An 8-day-old branch that never merged is the work most worth keeping.
+        # Delete only once the commits are reachable from another origin ref.
+        try:
+            import branch_durability
+            if not branch_durability.commits_reachable_elsewhere(repo_path, branch):
+                _log.info("remote_branch_gc: KEEPING %s — its commits are not reachable from "
+                          "any other origin ref; deleting it would destroy the only copy",
+                          branch)
+                skipped += 1; continue
+            branch_durability.archive_branch(repo_path, branch, reason="remote_branch_gc")
+        except ImportError:
+            # Fail SAFE: without the guard we cannot prove the work survives deletion.
+            _log.warning("remote_branch_gc: durability guard unavailable; keeping %s", branch)
+            skipped += 1; continue
         remote_branch = branch.replace("origin/", "", 1)
         if REMOTE_GC_DRY_RUN:
             deleted.append({"branch": remote_branch, "age_days": round(age_days, 1), "dry_run": True})
