@@ -444,6 +444,27 @@ _TS_STUB_RX = re.compile(
     re.S)
 
 
+def _defined_symbols(path, source):
+    """Top-level symbols a source file defines — for the deleted-file detector (3b).
+
+    Python: module-level def/class names via ast (syntax errors -> conservative empty:
+    the file may be a fragment; the netdelete/protected detectors still apply elsewhere).
+    TS/JS/Vue: exported names via _ts_exports.
+    """
+    if not source:
+        return []
+    if path.endswith(".py"):
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return []
+        return [n.name for n in tree.body
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                and not n.name.startswith("_")]
+    exports = _ts_exports(path, source) or {}
+    return list(exports.keys())
+
+
 def _vue_script(source):
     """Script bodies of a .vue/.svelte SFC, or the whole file for plain TS/JS."""
     blocks = re.findall(r"<script[^>]*>(.*?)</script>", source or "", re.S | re.I)
@@ -741,7 +762,16 @@ def check_merge(repo, base_sha, result_ref=None, *, commit_message="",
         max_files = int(os.environ.get("ORCH_REGRESSION_MAX_FILES", "400"))
     if protected_extra is None:
         protected_extra = _protected_extra()
-    deliberate = bool(INTENT_MARKERS.search(commit_message or ""))
+    # Intent markers only count on HUMAN-authored subjects. Automated merge commits embed
+    # the BRANCH SLUG in the message ("Merge branch 'agent/...-cleanup-...'"), so a slug
+    # containing drop/cleanup/refactor was silently disabling every deletion detector for
+    # that whole merge (found 2026-08-04 while pinning the continuous_merger guard).
+    _msg = commit_message or ""
+    if re.match(r"\s*(?:Merge branch\b|Merge remote-tracking branch\b|"
+                r"Merge (?:pull request|origin)\b|train:|merge |self-heal:)", _msg, re.I):
+        deliberate = False
+    else:
+        deliberate = bool(INTENT_MARKERS.search(_msg))
 
     try:
         changed = _changed(repo, base_sha, result_ref)
@@ -774,6 +804,35 @@ def check_merge(repo, base_sha, result_ref=None, *, commit_message="",
                           "merge".format(path)})
             continue
         if status == "D":
+            # --- detector 3b: SOURCE-file deletion (added 2026-08-04) -------
+            # Deleting a non-protected source file was previously invisible: `continue`
+            # with no inspection at all. That is the exact silent-drop class behind the
+            # phantom-merge losses (e.g. 2a464c716 committed a tree without the file; the
+            # clean merge applied the deletion and the build stayed green). A deleted code
+            # file is only acceptable when the commit message carries an explicit
+            # deletion-intent marker, or every symbol it defined has been RELOCATED and
+            # still resolves in the result tree.
+            if not deliberate and (path.endswith(TS_EXT) or path.endswith(".py")):
+                try:
+                    pre_src = _blob(repo, base_sha, path)
+                    gone = [s for s in _defined_symbols(path, pre_src)
+                            if not moved(path, s)]
+                    if gone:
+                        findings.append({
+                            "file": path, "symbol": ", ".join(sorted(gone)[:8]),
+                            "kind": "source-file-deleted", "detector": "critical",
+                            "reason": "merge DELETED source file '{0}' defining {1} "
+                                      "symbol(s) ({2}{3}) that no longer resolve anywhere "
+                                      "in the result tree, with no deletion-intent marker "
+                                      "in the commit message".format(
+                                          path, len(gone), ", ".join(sorted(gone)[:5]),
+                                          ", ..." if len(gone) > 5 else "")})
+                except Exception as exc:
+                    findings.append({"file": path, "symbol": "", "kind": "guard-error",
+                                     "detector": "critical",
+                                     "reason": "deleted-file analysis failed "
+                                               "(fail-closed): {0}: {1}".format(
+                                                   type(exc).__name__, exc)})
             continue
 
         pre_src = _blob(repo, base_sha, path)

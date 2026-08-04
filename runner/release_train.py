@@ -490,10 +490,28 @@ def _merge_into_staging(repo, branch):
     try:
         if _git(repo, "worktree", "add", "-f", tmp, STAGING).returncode != 0:
             return False
+        pre = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp,
+                             capture_output=True, text=True).stdout.strip()
         r = subprocess.run(["git", "merge", "--no-ff", "-m", f"train: {branch}", branch],
                            cwd=tmp, capture_output=True, text=True)
         if r.returncode != 0:
             subprocess.run(["git", "merge", "--abort"], cwd=tmp, capture_output=True)
+            return False
+        # ANTI-LOSS GATE (added 2026-08-04): a CLEAN merge into staging can still silently
+        # revert improvements the branch forked before. Same fail-closed gate stack as
+        # auto_conflict_resolver; on findings roll staging back and refuse the merge (the
+        # agent branch is preserved by the caller's conflict handling).
+        findings = ""
+        try:
+            import auto_conflict_resolver as _acr
+            findings = _acr.verify_merge(tmp, pre, STAGING, branch)
+        except Exception as exc:
+            findings = f"verify_merge unavailable (fail-closed): {type(exc).__name__}: {exc}"
+        if findings:
+            if pre:
+                subprocess.run(["git", "reset", "--hard", pre], cwd=tmp, capture_output=True)
+            print(f"release_train: REGRESSION BLOCKED merging {branch} into {STAGING}: "
+                  f"{findings[:400]}")
             return False
         return True
     finally:

@@ -253,6 +253,28 @@ def _integrate(repo, branch, base, test_cmd=TEST_CMD):
     """Merge agent/<slug> into `base` correctly, regardless of what's checked out, and (optionally)
     push so Vercel deploys. Frees any leftover worktree first (the real bug)."""
     _free_branch(repo, branch)
+
+    def _verify_or_rollback(pre_base_sha):
+        """ANTI-LOSS GATE (added 2026-08-04): a clean rebase or fast-forward can still
+        silently revert improvements the branch forked before. Fail-closed: on findings
+        (or if the gate stack can't run) move `base` back and keep the branch."""
+        findings = ""
+        try:
+            import auto_conflict_resolver as _acr
+            findings = _acr.verify_merge(repo, pre_base_sha, base, branch, result_ref=base)
+        except Exception as exc:
+            findings = f"verify_merge unavailable (fail-closed): {type(exc).__name__}: {exc}"
+        if findings:
+            if pre_base_sha:
+                subprocess.run(["git", "update-ref", f"refs/heads/{base}", pre_base_sha],
+                               cwd=repo, capture_output=True)
+            print(f"approval_merge: REGRESSION BLOCKED integrating {branch} into {base}: "
+                  f"{findings[:400]}")
+            return False
+        return True
+
+    pre_base = subprocess.run(["git", "rev-parse", base], cwd=repo,
+                              capture_output=True, text=True).stdout.strip()
     # clean fast-forward if the branch is strictly ahead of base (the common case)
     ahead = subprocess.run(["git", "merge-base", "--is-ancestor", base, branch],
                            cwd=repo, capture_output=True).returncode == 0
@@ -277,6 +299,8 @@ def _integrate(repo, branch, base, test_cmd=TEST_CMD):
         finally:
             subprocess.run(["git", "worktree", "remove", "--force", tmp], cwd=repo, capture_output=True)
             shutil.rmtree(tmp, ignore_errors=True)
+    if not _verify_or_rollback(pre_base):
+        return "CONFLICT"
     # push to origin so CI/Vercel deploy — guarded: only when explicitly enabled.
     if os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() == "true":
         push = subprocess.run(["git", "push", "origin", base], cwd=repo, capture_output=True, text=True)

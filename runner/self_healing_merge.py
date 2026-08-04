@@ -358,12 +358,30 @@ def _create_sub_branch(
         result["error"] = (f"main checkout busy (branch={on_branch or 'detached'}, "
                            f"dirty={bool(dirty)}); sub-branch left for merge-train pickup")
         return result
+    pre_sha = _git(["git", "rev-parse", "HEAD"], repo).stdout.strip()
     merge = _git(["git", "merge", "--no-ff", sub_branch, "-m",
                    f"Merge self-healed clean files from {branch}"], repo)
 
     if merge.returncode == 0:
-        result["merged"] = True
-        _git(["git", "branch", "-d", sub_branch], repo)
+        # ANTI-LOSS GATE (added 2026-08-04): "merges cleanly" is NOT "loses nothing" — the
+        # clean-file selection above is made by conflict classification, which is blind to
+        # a branch that silently reverts an improvement it forked before. Run the same
+        # fail-closed gate stack as every other merge path; on findings, roll back and
+        # KEEP the sub-branch (it may be the only copy of the work).
+        findings = ""
+        try:
+            import auto_conflict_resolver as _acr
+            findings = _acr.verify_merge(repo, pre_sha, base, sub_branch)
+        except Exception as exc:
+            findings = f"verify_merge unavailable (fail-closed): {type(exc).__name__}: {exc}"
+        if findings:
+            if pre_sha:
+                _git(["git", "reset", "--hard", pre_sha], repo)
+            result["error"] = ("REGRESSION BLOCKED on self-heal sub-branch — merge rolled "
+                               f"back, sub-branch preserved: {findings[:400]}")
+        else:
+            result["merged"] = True
+            _git(["git", "branch", "-d", sub_branch], repo)
     else:
         _git(["git", "merge", "--abort"], repo)
         _git(["git", "branch", "-D", sub_branch], repo)

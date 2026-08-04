@@ -280,7 +280,7 @@ def _resolved_ok(repo: str, filepath: str) -> bool:
         return False  # SyntaxError / JSONDecodeError / YAMLError -> broken resolution
     return True
 
-def _regression_check(repo: str, pre_sha: str, branch: str) -> str:
+def _regression_check(repo: str, pre_sha: str, branch: str, result_ref: str = "HEAD") -> str:
     """Post-merge anti-regression verification. Returns '' if clean, else the findings.
 
     ADDED 2026-08-02 (operator directive: "I don't ever want to lose any improved code to
@@ -308,8 +308,8 @@ def _regression_check(repo: str, pre_sha: str, branch: str) -> str:
     except Exception as exc:
         return f"regression guard unavailable (fail-closed): {type(exc).__name__}: {exc}"
     try:
-        msg = _git(["git", "log", "-1", "--format=%s%n%b"], repo).stdout or ""
-        ok, detail = regression_guard.gate(repo, pre_sha, "HEAD", commit_message=msg)
+        msg = _git(["git", "log", "-1", "--format=%s%n%b", result_ref], repo).stdout or ""
+        ok, detail = regression_guard.gate(repo, pre_sha, result_ref, commit_message=msg)
         return "" if ok else detail
     except Exception as exc:
         return f"regression guard error (fail-closed): {type(exc).__name__}: {exc}"
@@ -377,10 +377,18 @@ def _stub_check(repo: str, base: str, branch: str) -> str:
                       for v in blocking[:6])
 
 
-def _verify_merge(repo: str, pre_sha: str, base: str, branch: str) -> str:
-    """Every anti-loss gate this path must pass, in order. '' when all are clean."""
-    for check in (lambda: _regression_check(repo, pre_sha, branch),
-                  lambda: _divergent_check(repo, pre_sha or base, branch),
+def _verify_merge(repo: str, pre_sha: str, base: str, branch: str,
+                  result_ref: str = "HEAD") -> str:
+    """Every anti-loss gate this path must pass, in order. '' when all are clean.
+
+    result_ref: the ref holding the committed merge result. "HEAD" on paths that merge in
+    the current checkout; pass the target branch name when the merge landed on a ref that
+    is NOT checked out (approval_merge's fetch/fast-forward path), otherwise the gates
+    would diff the wrong tree.
+    """
+    for check in (lambda: _regression_check(repo, pre_sha, branch, result_ref=result_ref),
+                  lambda: _divergent_check(repo, pre_sha or base, branch,
+                                           result_ref=result_ref),
                   lambda: _stub_check(repo, pre_sha or base, branch)):
         try:
             findings = check()
@@ -389,6 +397,14 @@ def _verify_merge(repo: str, pre_sha: str, base: str, branch: str) -> str:
         if findings:
             return findings
     return ""
+
+
+# Public entry point for OTHER merge paths (continuous_merger, self_healing_merge,
+# release_train, approval_merge). Every module that commits a merge — clean OR
+# conflicted — must run this before deleting the source branch. Added 2026-08-04:
+# the unguarded clean-merge paths in those modules were the primary code-loss
+# mechanism behind the phantom-merge reclassification.
+verify_merge = _verify_merge
 
 
 def _reject_merge(repo: str, pre_sha: str, result: dict, findings: str) -> dict:

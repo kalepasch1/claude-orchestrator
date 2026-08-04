@@ -141,39 +141,42 @@ def _merge_branch(repo: str, branch: str, base: str, task: dict) -> dict:
         result["strategy"] = "already_ancestor"
         return result
 
-    # Try normal merge
-    slug = task.get("slug", branch)
-    merge = _git(["git", "merge", "--no-ff", branch, "-m",
-                   f"Merge branch '{slug}' (continuous-merger)"], repo)
+    # ALL merges — clean or conflicted — go through auto_conflict_resolver.resolve_branch,
+    # which runs the fail-closed anti-loss gates (regression, divergent-authorship,
+    # shadowed-stub) on EVERY committed merge and rolls back + preserves the branch on any
+    # finding.
+    #
+    # HISTORY (fixed 2026-08-04, operator directive "improvements must never be lost to a
+    # merge"): this function used to run its own bare `git merge` for the clean case and
+    # only delegated to the resolver on conflict. A branch forked before an improvement
+    # landed merges CLEANLY while reverting that improvement; this path then deleted the
+    # branch — the only surviving copy. That unguarded clean path authored a large share of
+    # the losses behind the 2026-08-04 phantom-merge reclassification (10,598 merges,
+    # NO_EVIDENCE). FAIL-CLOSED: if the resolver (and with it the gate stack) cannot be
+    # imported, no merge happens here at all.
+    if auto_conflict_resolver is None:
+        result["error"] = ("auto_conflict_resolver unavailable — unverified merges are "
+                           "disabled (fail-closed); branch left for merge_train")
+        result["strategy"] = "blocked"
+        return result
 
-    if merge.returncode == 0:
-        _git(["git", "branch", "-d", branch], repo)
+    acr_result = auto_conflict_resolver.resolve_branch(repo, branch, base, dry_run=False)
+    if acr_result.get("merged"):
         result["merged"] = True
-        result["strategy"] = "clean"
+        strategy = acr_result.get("strategy", "clean")
+        resolved = acr_result.get("resolved_files") or []
+        result["strategy"] = (f"auto_resolved ({len(resolved)} files)"
+                              if strategy == "auto" else strategy)
         return result
 
-    # Merge failed — try auto-conflict-resolver
-    if auto_conflict_resolver:
-        # Abort the failed merge first
-        _git(["git", "merge", "--abort"], repo)
-        _git(["git", "reset", "--hard", "HEAD"], repo)
-
-        acr_result = auto_conflict_resolver.resolve_branch(
-            repo, branch, base, dry_run=False
-        )
-        if acr_result.get("merged"):
-            result["merged"] = True
-            result["strategy"] = f"auto_resolved ({len(acr_result.get('resolved_files', []))} files)"
-            return result
-        else:
-            result["error"] = f"auto-resolve failed: {acr_result.get('error') or 'manual files: ' + str(acr_result.get('manual_files', []))}"
-            result["strategy"] = "conflict"
-            return result
-    else:
-        _git(["git", "merge", "--abort"], repo)
-        result["error"] = "merge conflict, auto_conflict_resolver not available"
-        result["strategy"] = "conflict"
-        return result
+    err = acr_result.get("error")
+    if not err:
+        err = "manual files: " + str(acr_result.get("manual_files", []))
+    result["error"] = f"auto-resolve failed: {err}"
+    result["strategy"] = ("regression-blocked"
+                          if acr_result.get("strategy") == "regression-blocked"
+                          else "conflict")
+    return result
 
 
 def _process_task(task: dict):
