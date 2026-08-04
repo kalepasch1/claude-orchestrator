@@ -637,10 +637,17 @@ def update(table, match, patch):
     try:
         import bulk_update_guard
         if bulk_update_guard.is_state_change(patch) and "id" not in (match or {}):
-            try:
-                _n = count(table, params)
-            except Exception:
-                _n = None
+            # The guard now (correctly) refuses when the row count is UNKNOWN, so a transient
+            # count failure would refuse a legitimate multi-row update. Retry once before
+            # giving up, so only a genuinely undeterminable count reaches the guard as None.
+            _n = None
+            for _try in range(2):
+                try:
+                    _n = count(table, params)
+                    break
+                except Exception:
+                    if _try == 0:
+                        time.sleep(0.4)
             bulk_update_guard.check(table, patch, _n,
                                     actor=os.environ.get("ORCH_ACTOR", "db.update"),
                                     reason=f"db.update({table}, match={sorted((match or {}).keys())})")
