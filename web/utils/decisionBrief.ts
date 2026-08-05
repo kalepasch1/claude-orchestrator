@@ -1,5 +1,8 @@
 export type DecisionRisk = { category: string; severity: 'low' | 'medium' | 'high' | 'critical'; statement: string; mitigation: string }
 
+/** One decision option offered by the orchestrator, from `approvals.brief_json.options`. */
+export type DecisionOption = { label: string; detail?: string; recommended?: boolean }
+
 export type DecisionBrief = {
   classification: string
   plainLanguage: string
@@ -18,14 +21,207 @@ export type DecisionBrief = {
   confidence: number
   denyMeaning: string
   material: boolean
+
+  // ── Orchestrator-supplied content ────────────────────────────────────────
+  /**
+   * `'orchestrator'` when `approvals.prebrief` or `approvals.brief_json` supplied
+   * any of the content below, `'derived'` when the brief is purely heuristic.
+   *
+   * WHY THIS EXISTS
+   * ---------------
+   * `legal_prebrief.py` writes a plain-English brief into `approvals.prebrief`
+   * and `owner_decision_model.py` writes options / a recommended index / a model
+   * rationale into `approvals.brief_json`. This function read neither: it
+   * classified from `kind`/`title`/`why` alone, so every one of those writes was
+   * invisible in the review UI and the feature looked stalled. Both fields are
+   * now read, and orchestrator content wins over the heuristic — a model that
+   * actually read the item beats keyword matching on its title.
+   */
+  source: 'derived' | 'orchestrator'
+  /** The verbatim `approvals.prebrief` text, when present. */
+  prebrief?: string
+  /** Decision options from `brief_json.options`. */
+  options: DecisionOption[]
+  /** Index into `options` the orchestrator recommends, when it named one. */
+  recommendedIndex?: number
+  /** `brief_json.model_rationale` — why the orchestrator recommends that option. */
+  modelRationale?: string
 }
 
 type ApprovalLike = Record<string, any>
 
+// ─── Orchestrator field readers ───────────────────────────────────────────────
+
+const RECOMMENDATIONS = ['APPROVE WITH CONDITIONS', 'HOLD FOR EVIDENCE', 'ESCALATE', 'ACKNOWLEDGE'] as const
+const REVERSIBILITIES = ['reversible', 'partially_reversible', 'hard_to_reverse'] as const
+const SEVERITIES = ['low', 'medium', 'high', 'critical'] as const
+
+/**
+ * `brief_json` arrives as an object from PostgREST but as a string from any path
+ * that has round-tripped through text (CSV export, older rows, a raw fetch that
+ * did not parse jsonb). Accept both; never throw on malformed JSON.
+ */
+function readBriefJson(value: unknown): Record<string, any> | null {
+  if (!value) return null
+  if (typeof value === 'object' && !Array.isArray(value)) return value as Record<string, any>
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value)
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null
+    } catch { return null }
+  }
+  return null
+}
+
+const nonEmptyString = (v: unknown): string | undefined =>
+  typeof v === 'string' && v.trim() ? v.trim() : undefined
+
+const stringList = (v: unknown): string[] | undefined => {
+  if (!Array.isArray(v)) return undefined
+  const items = v.map(item => nonEmptyString(item)).filter((s): s is string => Boolean(s))
+  return items.length ? items : undefined
+}
+
+function readOptions(v: unknown): DecisionOption[] {
+  if (!Array.isArray(v)) return []
+  return v
+    .map((raw): DecisionOption | null => {
+      if (typeof raw === 'string') return raw.trim() ? { label: raw.trim() } : null
+      if (raw && typeof raw === 'object') {
+        const label = nonEmptyString((raw as any).label) ?? nonEmptyString((raw as any).title)
+        if (!label) return null
+        return {
+          label,
+          detail: nonEmptyString((raw as any).detail) ?? nonEmptyString((raw as any).description),
+          recommended: Boolean((raw as any).recommended),
+        }
+      }
+      return null
+    })
+    .filter((o): o is DecisionOption => o !== null)
+}
+
+function readRisks(v: unknown): DecisionRisk[] | undefined {
+  if (!Array.isArray(v)) return undefined
+  const risks = v
+    .map((raw): DecisionRisk | null => {
+      if (!raw || typeof raw !== 'object') return null
+      const statement = nonEmptyString((raw as any).statement) ?? nonEmptyString((raw as any).risk)
+      if (!statement) return null
+      const severity = (raw as any).severity
+      return {
+        category: nonEmptyString((raw as any).category) ?? 'Operational',
+        severity: SEVERITIES.includes(severity) ? severity : 'medium',
+        statement,
+        mitigation: nonEmptyString((raw as any).mitigation) ?? 'No mitigation supplied by the orchestrator.',
+      }
+    })
+    .filter((r): r is DecisionRisk => r !== null)
+  return risks.length ? risks : undefined
+}
+
+/** A confidence the orchestrator may express as 0–1 or 0–100. */
+function readConfidence(v: unknown): number | undefined {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return undefined
+  const scaled = v > 0 && v <= 1 ? v * 100 : v
+  return Math.max(0, Math.min(100, Math.round(scaled)))
+}
+
+function readIndex(bj: Record<string, any>, optionCount: number): number | undefined {
+  for (const key of ['recommended_index', 'suggested_option_index']) {
+    const raw = bj[key]
+    if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 0 && raw < optionCount) return raw
+  }
+  return undefined
+}
+
+/**
+ * Overlay whatever the orchestrator actually wrote onto the heuristic brief.
+ * Every field is optional and individually validated: a partially-populated or
+ * malformed `brief_json` degrades to the derived value rather than blanking the
+ * card, which is the failure mode that matters on a review screen.
+ */
+function applyOrchestratorContent(base: DecisionBrief, a: ApprovalLike): DecisionBrief {
+  const prebrief = nonEmptyString(a.prebrief)
+  const bj = readBriefJson(a.brief_json ?? a.briefJson)
+  if (!prebrief && !bj) return base
+
+  const brief: DecisionBrief = { ...base, source: 'orchestrator' }
+
+  // The prebrief is the human-readable summary a person wrote this feature for.
+  if (prebrief) {
+    brief.prebrief = prebrief
+    brief.plainLanguage = prebrief
+  }
+
+  if (!bj) return brief
+
+  // brief_json.plain_language outranks the prebrief only when explicitly set.
+  const plain = nonEmptyString(bj.plain_language) ?? nonEmptyString(bj.plainLanguage) ?? nonEmptyString(bj.summary)
+  if (plain) brief.plainLanguage = plain
+
+  const classification = nonEmptyString(bj.classification)
+  if (classification) brief.classification = classification
+
+  const proposedChanges = stringList(bj.proposed_changes ?? bj.proposedChanges)
+  if (proposedChanges) brief.proposedChanges = proposedChanges
+
+  const rewards = stringList(bj.rewards)
+  if (rewards) brief.rewards = rewards
+
+  const prerequisites = stringList(bj.prerequisites)
+  if (prerequisites) brief.prerequisites = prerequisites
+
+  const missingEvidence = stringList(bj.missing_evidence ?? bj.missingEvidence)
+  if (missingEvidence) brief.missingEvidence = missingEvidence
+
+  const verification = stringList(bj.verification)
+  if (verification) brief.verification = verification
+
+  const risks = readRisks(bj.risks)
+  if (risks) brief.risks = risks
+
+  const rollback = nonEmptyString(bj.rollback)
+  if (rollback) brief.rollback = rollback
+
+  const blastRadius = nonEmptyString(bj.blast_radius ?? bj.blastRadius)
+  if (blastRadius) brief.blastRadius = blastRadius
+
+  if (RECOMMENDATIONS.includes(bj.recommendation)) brief.recommendation = bj.recommendation
+  if (REVERSIBILITIES.includes(bj.reversibility)) brief.reversibility = bj.reversibility
+
+  const confidence = readConfidence(bj.confidence)
+  if (confidence !== undefined) brief.confidence = confidence
+
+  if (typeof bj.material === 'boolean') brief.material = bj.material
+
+  brief.options = readOptions(bj.options)
+  brief.recommendedIndex = readIndex(bj, brief.options.length)
+  if (brief.recommendedIndex !== undefined) {
+    brief.options = brief.options.map((o, i) => ({ ...o, recommended: i === brief.recommendedIndex }))
+  }
+
+  brief.modelRationale = nonEmptyString(bj.model_rationale) ?? nonEmptyString(bj.modelRationale) ?? nonEmptyString(bj.rationale)
+
+  return brief
+}
+
 const textOf = (a: ApprovalLike) => [a.kind, a.title, a.why, a.value, a.risk, a.detail, a.draft].filter(Boolean).join(' ').toLowerCase()
 const includesAny = (text: string, terms: string[]) => terms.some(term => text.includes(term))
 
+/**
+ * Build a decision brief for an approval card.
+ *
+ * Two layers: the keyword heuristic below, then whatever the orchestrator wrote
+ * into `approvals.prebrief` / `approvals.brief_json` overlaid on top. Cards with
+ * neither field behave exactly as before.
+ */
 export function deriveDecisionBrief(a: ApprovalLike): DecisionBrief {
+  return applyOrchestratorContent(deriveHeuristicBrief(a ?? {}), a ?? {})
+}
+
+/** Keyword classification over the card's own text. No orchestrator input. */
+function deriveHeuristicBrief(a: ApprovalLike): DecisionBrief {
   const text = textOf(a)
   const secret = includesAny(text, ['secret', 'token', 'credential', 'api key', 'client secret'])
   const oauth = includesAny(text, ['oauth', 'login', 'account consent'])
@@ -67,6 +263,8 @@ export function deriveDecisionBrief(a: ApprovalLike): DecisionBrief {
       confidence: 88,
       denyMeaning: 'No production state changes. Medium publishing remains unavailable and dependent recovery tasks stay paused; drafting and human copy/paste publishing can continue.',
       material: true,
+      source: 'derived',
+      options: [],
     }
   }
 
@@ -121,6 +319,8 @@ export function deriveDecisionBrief(a: ApprovalLike): DecisionBrief {
     confidence: Math.max(35, 82 - missingEvidence.length * 9 - (legal ? 12 : 0)),
     denyMeaning: a.risk || 'No protected state changes; dependent work remains paused until the request is revised or approved.',
     material,
+    source: 'derived',
+    options: [],
   }
 }
 
