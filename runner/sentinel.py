@@ -333,6 +333,25 @@ def stash_drift_guard(st=None):
         return
     count = len([l for l in r.stdout.splitlines() if l.strip()])
     st["stash_count"] = count
+
+    # FLEET VISIBILITY (audit addendum §C, 2026-07-30). This count is PER-MACHINE: Mac 2 holds
+    # its own independent pile that no check running here can see, which is how one session
+    # measured 592 and another 315 on "the same repo". Publish our count to the shared census so
+    # the fleet total is knowable, and refuse to bless bulk triage while any host is unaccounted
+    # for. Read-only and fail-soft — never pops, drops, or blocks the sentinel loop.
+    try:
+        import stash_census
+        report = stash_census.fleet_report()
+        st["stash_fleet_total"] = report.get("total", 0)
+        st["stash_fleet_hosts"] = report.get("per_host", {})
+        st["stash_triage_blocked"] = report.get("triage_blocked", True)
+        if report.get("triage_blocked") and count >= STASH_ALERT_THRESHOLD:
+            log("stash-census-incomplete",
+                "fleet stash census incomplete — bulk triage must not start: "
+                + "; ".join(report.get("reasons", [])))
+    except Exception:
+        pass
+
     if count >= STASH_ALERT_THRESHOLD:
         last_alert = float(st.get("stash_alert_last", 0))
         if time.time() - last_alert > STASH_ALERT_INTERVAL_S:
