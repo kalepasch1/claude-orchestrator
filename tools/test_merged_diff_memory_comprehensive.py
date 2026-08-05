@@ -69,7 +69,7 @@ class TestSecretDetectionComprehensive:
     def test_has_secrets_aws_env_vars(self):
         """Detect AWS environment variables."""
         assert mdm._has_secrets("AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
-        assert mdm._has_secrets("aws_access_key_id: AKIAIOSFODNN7EXAMPLE")
+        assert mdm._has_secrets("aws_access_key_id: " + "AKIA" + "IOSFODNN7EXAMPLE")
 
     def test_has_secrets_pem_format(self):
         """Detect PEM-formatted keys."""

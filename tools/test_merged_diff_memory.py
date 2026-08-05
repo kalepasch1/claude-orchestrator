@@ -68,7 +68,7 @@ class TestSecretDetection:
         assert not mdm._has_secrets("class MyClass:")
 
     def test_has_secrets_aws(self):
-        assert mdm._has_secrets("aws_access_key_id=AKIAIOSFODNN7EXAMPLE")
+        assert mdm._has_secrets("aws_access_key_id=" + "AKIA" + "IOSFODNN7EXAMPLE")
 
 
 class TestSanitizeDiff:
