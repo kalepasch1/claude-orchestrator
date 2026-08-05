@@ -45,10 +45,25 @@ export default defineNuxtConfig({
     pageTransition: { name: 'page', mode: 'out-in' },
     layoutTransition: { name: 'layout', mode: 'out-in' },
     head: {
-      title: 'Madeus — Outcome Orchestration',
-      meta: [{ name: 'viewport', content: 'width=device-width, initial-scale=1' }],
+      htmlAttrs: { lang: 'en' },
+      // Kept in sync with components/LegoraLanding.vue, which is the public surface.
+      title: 'Madeus — The private operating system for company building',
+      meta: [
+        { name: 'viewport', content: 'width=device-width, initial-scale=1' },
+        { name: 'theme-color', content: '#0b0c0b' },
+        { name: 'format-detection', content: 'telephone=no' },
+        {
+          name: 'description',
+          content:
+            'Madeus is the private operating system for founders running multiple companies — private intelligence, governed execution, and independently verified outcomes. By invitation.'
+        },
+        { name: 'author', content: 'Madeus' },
+        { property: 'og:site_name', content: 'Madeus' },
+        { property: 'og:locale', content: 'en_US' }
+      ],
       link: [
         { rel: 'icon', type: 'image/svg+xml', href: '/madeus-mark.svg' },
+        { rel: 'apple-touch-icon', href: '/madeus-mark.svg' },
         { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
         { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' },
         {

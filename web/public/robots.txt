@@ -1,0 +1,26 @@
+# www.madeus.cc — private, access-gated. Only the landing page is public.
+User-agent: *
+Allow: /$
+Allow: /og.png
+Allow: /madeus-mark.svg
+Disallow: /admin
+Disallow: /api
+Disallow: /auth
+Disallow: /business
+Disallow: /connectors
+Disallow: /digital-twin
+Disallow: /distribution
+Disallow: /fleet
+Disallow: /growth
+Disallow: /health
+Disallow: /hivemind
+Disallow: /inbox
+Disallow: /loops
+Disallow: /orchestrators
+Disallow: /proof
+Disallow: /queue
+Disallow: /sign-offs
+Disallow: /spend
+Disallow: /waves
+
+Sitemap: https://www.madeus.cc/sitemap.xml
