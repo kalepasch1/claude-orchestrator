@@ -1,0 +1,4 @@
+recovery-intent: dropbox-wave-c-compounding-codegen-platform-spine-pipeline-structure-contracts
+template: 9afb1c4314f0
+intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 17ed8d711728 20251001 39465ac 6f940a79484e 7f21d02 acceptance actions active adapt advice after against agentic aider allowlist application applied approved author authoritative background batch beethoven before below bottleneck build build_fix built causing change changes checks claim class claude cloud codegen coder compounding context contract contracts coordination credential cross custody deepseek define delay delete deliver depend deploy deployed deployfix describing detection diffs documents drafting dropbox establish excerpt excessive exists explicit fable failure feedback first flash focus
+base: master
