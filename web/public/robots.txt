@@ -17,7 +17,7 @@ Disallow: /hivemind
 Disallow: /inbox
 Disallow: /loops
 Disallow: /orchestrators
-Disallow: /proof
+Disallow: /proof/
 Disallow: /queue
 Disallow: /sign-offs
 Disallow: /spend

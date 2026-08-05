@@ -3,6 +3,15 @@
     <div class="auth-return__mark">M</div>
     <p>Securing your Madeus workspace…</p>
   </main>
+  <!--
+    SCOPED PROOF EXCEPTION. /proof/<token> is the one route that renders without
+    a Madeus session, because the opaque token in the path is itself the
+    credential and the server verifies it before returning any evidence. The
+    match is a single well-formed segment (see utils/proofLink.ts) — there is no
+    /proof index and no prefix wildcard — so every other route on madeus.cc
+    still falls through to the invitation-only gate directly below.
+  -->
+  <NuxtPage v-else-if="scopedProofRoute" />
   <LegoraLanding v-else-if="!user" :signing-in="signingIn" :auth-error="authError" @sign-in="signIn" />
   <template v-else>
     <NuxtLayout><NuxtPage /></NuxtLayout>
@@ -13,6 +22,7 @@
 
 <script setup lang="ts">
 import { authCallbackUrl, normalizeAuthReturnTo } from '~/utils/authRedirect'
+import { proofTokenFromPath } from '~/utils/proofLink'
 
 const supabase = useSupabaseClient<any>()
 const user = useSupabaseUser()
@@ -21,6 +31,9 @@ const signingIn = ref(false)
 const authError = ref('')
 const authResolving = ref(import.meta.client && route.path === '/auth/callback')
 const admissionRunning = ref(false)
+// True only for `/proof/<token>`. Anything else — including `/proof` itself —
+// stays behind the session gate.
+const scopedProofRoute = computed(() => proofTokenFromPath(route.path) !== null)
 
 type Admission = { mode: 'member' | 'referral'; grantToken?: string }
 

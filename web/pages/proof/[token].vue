@@ -1,7 +1,40 @@
 <script setup lang="ts">
+/**
+ * Scoped proof portal — rendered for a reviewer who has no Madeus account.
+ * Authorisation is the token in the URL, verified server-side by
+ * /api/public/proof/<token>. This page holds no database client and no key; it
+ * only renders what that endpoint chose to return.
+ */
 definePageMeta({ layout: false })
+
 const route = useRoute()
-const { data, error, status } = await useFetch<any>(`/api/public/proof/${encodeURIComponent(String(route.params.token || ''))}`)
+const token = String(route.params.token || '')
+
+// A scoped link is private correspondence, not a public page. Keep it out of
+// indexes and out of referrer headers so the token cannot leak onward.
+useHead({
+  title: 'Scoped proof — Madeus',
+  meta: [
+    { name: 'robots', content: 'noindex, nofollow, noarchive, nosnippet' },
+    { name: 'referrer', content: 'no-referrer' },
+    { name: 'description', content: 'A private, read-only evidence link.' },
+  ],
+})
+
+const { data, error, status } = await useFetch<any>(
+  () => `/api/public/proof/${encodeURIComponent(token)}`,
+  { key: `scoped-proof-${token.slice(0, 6)}`, retry: false },
+)
+
+// Unknown, malformed, expired and revoked links are one state. The copy below
+// never tells a visitor which of those it was.
+const unavailable = computed(() => !!error.value || !data.value?.proof)
+
+if (import.meta.server && unavailable.value) {
+  const event = useRequestEvent()
+  if (event) setResponseStatus(event, 404)
+}
+
 const copied = ref(false)
 async function copyDigest() {
   if (!data.value?.proof?.proof_digest || !import.meta.client) return
@@ -10,19 +43,20 @@ async function copyDigest() {
   setTimeout(() => { copied.value = false }, 1600)
 }
 function readable(value: unknown) { return String(value || 'Not recorded').replaceAll('_', ' ') }
+function when(value: unknown) { return value ? new Date(String(value)).toLocaleString() : 'Not recorded' }
 </script>
 
 <template>
   <main class="proof-page">
     <nav><NuxtLink to="/" aria-label="Madeus home"><MadeusLogo /></NuxtLink><span>Scoped proof portal</span></nav>
     <section v-if="status === 'pending'" class="state"><i /> Verifying evidence envelope…</section>
-    <section v-else-if="error" class="state invalid"><b>Proof link unavailable</b><p>This reviewer link is invalid, expired, or revoked. Request a fresh scoped link from the Madeus operator.</p></section>
+    <section v-else-if="unavailable" class="state invalid"><b>This link is not valid or has expired</b><p>Scoped proof links are private, single-purpose and time-limited. Ask the person who sent it for a fresh link.</p></section>
     <article v-else class="proof-card">
-      <header><div><span class="eyebrow">Verified execution evidence</span><h1>{{ readable(data.proof.intent || data.proof.action_type) }}</h1><p>This read-only view shares the decision proof required for review without exposing internal access, prompts, connector secrets, or raw user records.</p></div><div class="seal"><i>✓</i><b>{{ data.verification.digest_present ? 'Digest present' : 'Evidence pending' }}</b><small>Unrevoked at load</small></div></header>
-      <div class="facts"><div><span>Status</span><b>{{ readable(data.proof.status) }}</b></div><div><span>Audience</span><b>{{ data.audience }}</b></div><div><span>Created</span><b>{{ new Date(data.proof.created_at).toLocaleString() }}</b></div><div><span>Access expires</span><b>{{ new Date(data.expires_at).toLocaleString() }}</b></div></div>
+      <header><div><span class="eyebrow">Verified execution evidence</span><h1>{{ readable(data.proof.intent || data.proof.action_type) }}</h1><p>This read-only view shares the decision proof required for review. It carries no account access, no credentials, and no underlying records.</p></div><div class="seal"><i>✓</i><b>{{ data.verification.digest_present ? 'Digest present' : 'Evidence pending' }}</b><small>Unrevoked at load</small></div></header>
+      <div class="facts"><div><span>Status</span><b>{{ readable(data.proof.status) }}</b></div><div><span>Audience</span><b>{{ data.audience }}</b></div><div><span>Created</span><b>{{ when(data.proof.created_at) }}</b></div><div><span>Access expires</span><b>{{ when(data.expires_at) }}</b></div></div>
       <section><span class="eyebrow">Prediction and constraints</span><div class="evidence-grid"><pre>{{ JSON.stringify(data.proof.prediction || {}, null, 2) }}</pre><pre>{{ JSON.stringify(data.proof.rollback_plan || {}, null, 2) }}</pre></div></section>
       <section class="digest"><div><span class="eyebrow">Tamper-evident digest</span><code>{{ data.proof.proof_digest || 'No digest recorded' }}</code></div><button :disabled="!data.proof.proof_digest" @click="copyDigest">{{ copied ? 'Copied ✓' : 'Copy digest' }}</button></section>
-      <footer><span>Read-only</span><span>Least-privilege scope</span><span>No connector credentials</span><span>No raw interaction records</span></footer>
+      <footer><span>Read-only</span><span>Least-privilege scope</span><span>No credentials</span><span>No underlying records</span></footer>
     </article>
   </main>
 </template>

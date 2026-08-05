@@ -38,7 +38,18 @@ export default defineNuxtConfig({
   routeRules: {
     // The PKCE verifier lives in the browser; keep the callback entirely
     // client-rendered so no unauthenticated landing state can flash first.
-    '/auth/callback': { ssr: false }
+    '/auth/callback': { ssr: false },
+    // Scoped proof links are private correspondence sent to a named reviewer.
+    // Belt-and-braces with the page-level robots meta and robots.txt: an
+    // X-Robots-Tag keeps them out of indexes even when a crawler reaches one
+    // without parsing the HTML.
+    '/proof/**': {
+      headers: {
+        'x-robots-tag': 'noindex, nofollow',
+        'referrer-policy': 'no-referrer',
+        'cache-control': 'no-store, max-age=0'
+      }
+    }
   },
   css: ['~/assets/main.css'],
   app: {
