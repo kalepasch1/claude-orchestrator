@@ -278,7 +278,14 @@ def checkout_guard(st=None):
                 git("stash", "push", "-m", f"pre-rescue-{int(time.time())}")   # atomic handoff
                 git("checkout", "-b", hb)
                 git("stash", "pop")
-                git("add", "-A")
+                # `add -u` (tracked modifications ONLY), never `add -A`. -A swept UNTRACKED
+                # files onto the rescue branch, and the subsequent `checkout BASE_BRANCH` then
+                # removed them from the working tree — so an intake drop that landed during a
+                # rescue vanished from the drop-box and intake_watcher never saw it again. The
+                # content survived on the hotfix branch, but silently, in the wrong place: the
+                # same 2026-07-08..16 loss shape the `-u` ban already exists to prevent.
+                # Untracked files are not what blocks a branch switch, so they need no staging.
+                git("add", "-u")
                 git("-c", "user.name=kalepasch1", "-c", "user.email=kalepasch@gmail.com",
                     "commit", "-m",
                     f"rescue: operator/agent changes preserved by sentinel ({len(protected_dirty)} file(s))")
