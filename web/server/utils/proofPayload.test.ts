@@ -172,6 +172,17 @@ describe('reviewer payload is an explicit allow-list', () => {
 })
 
 describe('presentableLabel', () => {
+  it('drops the internal taxonomy namespace from a slug', () => {
+    expect(presentableLabel('constitution:institutional_case')).toBe('institutional case')
+    expect(presentableLabel('constitution:compile_policy')).toBe('compile policy')
+  })
+
+  it('leaves a prose colon intact', () => {
+    expect(presentableLabel('Renewal secured: at parity')).toBe('Renewal secured: at parity')
+    expect(presentableLabel('institutional case: Evaluate the next capability'))
+      .toBe('institutional case: Evaluate the next capability')
+  })
+
   it('caps runaway labels', () => {
     expect(presentableLabel('a'.repeat(1000)).length).toBeLessThanOrEqual(240)
   })

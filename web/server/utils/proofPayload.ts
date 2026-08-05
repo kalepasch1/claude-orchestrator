@@ -115,10 +115,22 @@ export function scrubInternalTerms(value: string): string {
   return value.replace(SECRET_PATTERN, '[redacted]').replace(INTERNAL_PATTERN, '[internal]')
 }
 
+/**
+ * Internal taxonomy namespace prefix, e.g. `constitution:institutional_case`.
+ * The namespace is a routing detail of the system, not part of the outcome a
+ * reviewer came to read, so it is dropped. A prose colon ("Renewal: parity")
+ * is left alone because the pattern requires an unbroken lowercase slug.
+ */
+const TAXONOMY_PREFIX = /^[a-z0-9_.-]+:\s*/
+
 /** Short, human-facing label: scrubbed, de-slugged, length-capped. */
 export function presentableLabel(value: unknown): string {
   if (typeof value !== 'string') return ''
-  const scrubbed = scrubInternalTerms(value).replace(/_+/g, ' ').replace(/\s+/g, ' ').trim()
+  const scrubbed = scrubInternalTerms(value)
+    .replace(TAXONOMY_PREFIX, '')
+    .replace(/_+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
   return scrubbed.length > MAX_LABEL ? `${scrubbed.slice(0, MAX_LABEL - 1)}…` : scrubbed
 }
 
