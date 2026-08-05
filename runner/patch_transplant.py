@@ -8,6 +8,12 @@ import subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import merged_diff_library
 import db
+# ONE similarity floor (Wave C, Part 4). This module used to carry two: an env-defaulted 0.18
+# in hint() and a hardcoded 0.25 in find_transplant_source(), neither of them the 0.55 the
+# spec calls for. At 0.18 the "proven patch" handed to a coder is barely related to the task —
+# that is where "adapt the proven patch beethoven/deployfix-… similarity=0.309" prompts come
+# from, and adapting an unrelated diff is worse than starting clean.
+import transplant_discipline
 
 
 MARK = "PATCH TRANSPLANT"
@@ -20,7 +26,7 @@ def hint(task):
     if not hits:
         return ""
     h = hits[0]
-    if h["similarity"] < float(os.environ.get("ORCH_PATCH_TRANSPLANT_MIN_SIM", "0.18")):
+    if not transplant_discipline.transplant_admissible(h["similarity"]):
         return ""
     return (f"{MARK}: before drafting from scratch, adapt the proven patch "
             f"{h['project']}/{h['slug']} (similarity {h['similarity']}).\n"
@@ -40,14 +46,21 @@ def pre_claim_hook(task):
         return task
 
 
-def find_transplant_source(target_task, min_similarity=0.25):
-    """Find prior patch with similarity >= min_similarity for transplant."""
+def find_transplant_source(target_task, min_similarity=None):
+    """Find prior patch with similarity >= min_similarity for transplant.
+
+    `min_similarity` defaults to the single fleet-wide floor rather than the old hardcoded
+    0.25, so this path and hint() can no longer disagree about what "similar enough" means.
+    """
+    if min_similarity is None:
+        min_similarity = transplant_discipline.MIN_TRANSPLANT_SIMILARITY
     try:
         rows = db.select("patch_history", {})
         if not rows:
             return None
         for row in rows:
-            if row.get("similarity", 0) >= min_similarity:
+            if transplant_discipline.transplant_admissible(row.get("similarity"),
+                                                           floor=min_similarity):
                 return {
                     "slug": row.get("slug"),
                     "source": row.get("source"),
