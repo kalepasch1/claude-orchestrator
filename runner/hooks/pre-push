@@ -19,4 +19,17 @@ if [ -x .husky/pre-push ]; then
   .husky/pre-push "$@" < "$input"
 fi
 
+# Identity first: it is a cheap read of `git log` and it catches the failure that is
+# INVISIBLE later — a wrong author email leaves Vercel BLOCKED with nothing failing loudly.
+# Runs even on agent/* pushes, which the production guard deliberately ignores.
+# Absent on an older checkout? Skip it rather than break every push.
+guard_dir="$(dirname "$0")/.."
+identity_guard="$guard_dir/author_identity_guard.py"
+if [ ! -f "$identity_guard" ]; then
+  identity_guard=/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/author_identity_guard.py
+fi
+if [ -f "$identity_guard" ]; then
+  python3 "$identity_guard" < "$input"
+fi
+
 python3 /Users/kpasch/Documents/beethoven/claude-orchestrator/runner/production_push_guard.py < "$input"
