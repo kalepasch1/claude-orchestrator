@@ -1,0 +1,4 @@
+recovery-intent: recover-missing-branch-remediate-improve-automated-conflict-resolution
+template: f5f5215f1c59
+intent: 08t04 193582 54d2cfd622ef 5fac0ef2b876 6096aa2b 99f45988 aaac4e acceptance adapt adding agent apparently automated automatically backlog beethoven before behavior below blocked bottleneck bottlenecks branch branches build c1486760bb7d cache canonical change commit concrete conflict conflicts context conventions conversion decomposed deployed detects diffs drafting duplicate efficiency either equivalent excerpt existing exists files first function helpers implementation improve install instead integrate integrated integration_sweeper intent library limit locate management matched matching merge mergeable merged missing module modules naming original owner patch prefer preserve prior project
+base: master
