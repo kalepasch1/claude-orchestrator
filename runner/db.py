@@ -1114,13 +1114,22 @@ def claim_task(runner_id):
 
     def _pinned_rank(t):
         # Pinned tasks claim before unpinned: rank 0 for pinned, 1 for unpinned.
-        return 0 if t.get("pinned") else 1
+        # Only treat as pinned if both pinned=True and pin_rank is set and non-zero.
+        if not t.get("pinned"):
+            return 1
+        rank = t.get("pin_rank")
+        if rank is None or rank == 0:
+            return 1  # No valid pin_rank; treat as unpinned
+        return 0
 
     def _pin_rank_order(t):
         # Among pinned tasks, lower pin_rank claims first (1 = highest priority).
+        # Negative ranks are valid (more negative = higher priority).
         # Rank 0 or missing treated as unpinned (rank 9999).
-        rank = t.get("pin_rank") or 0
-        return rank if rank > 0 else 9999
+        rank = t.get("pin_rank")
+        if rank is None or rank == 0:
+            return 9999
+        return rank
 
     thermal_rank = _thermal_rank_map()
     ev_rank = _ev_rank_map()
