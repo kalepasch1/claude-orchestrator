@@ -1,0 +1,4 @@
+recovery-intent: recover-missing-branch-remediate-fused-relfix-failure-immune-system-relfix-contract-first-verify
+template: 64733d3cec1e
+intent: 07060650 07062319 1677fc0f7242 31dd6ca9ed9d 4ff7ba380eac 6096aa2b 72092a00562d 8b92d078e856 9f821ef2b6cc a5f8e22456b6 acceptance adapt af84c7190272 affected after agent agentledger alter artifacts assertion b3cba0d3decc based because before behavior being below bf2a3f19ec30 blocks branch build builds cache canonical changes combining commit complete context contract diffs drafting duplicate duplicates eliminating equivalent examine excerpt existi existing exists failure files first focus functionality fused ident immune implementation instead integrate integrated integration_sweeper intent library matched merge merged minimal missing original overlapping pareto patch prefer preserve pricinggridreconstructi prior project
+base: master
