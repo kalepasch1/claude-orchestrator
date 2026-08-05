@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-improvement_miner.py - bakes "how can I make this 20-500X better?" into the learning loop. For each app
+improvement_miner.py - bakes "how can I make this 100-1000X better?" into the learning loop. For each app
 and each SURFACE (feature, product, api, backend, frontend, ux, function, growth), it asks a strong model
 for concrete, high-leverage improvements, then:
 
@@ -33,12 +33,12 @@ QUEUE_FLOOR = int(os.environ.get("IMPROVE_QUEUE_FLOOR", "12"))
 BOTTLENECK_SURFACES = ("integration", "reliability", "orchestration-layer", "cost-efficiency", "observability")
 
 PROMPT = """You are a world-class product+engineering+systems strategist. For the target below, propose 3
-concrete, high-leverage hypotheses to make its {surface} 20x-500x better — MORE EFFICIENT, faster, cheaper,
+concrete, high-leverage hypotheses to make its {surface} 100x-1000x better — MORE EFFICIENT, faster, cheaper,
 higher-quality, or more autonomous. This can be the app itself OR the autonomous system that builds it
 (how the bots, the swarm, the hive-mind, and the cross-app coordination work). A multiplier is a hypothesis,
 not an achieved result. Ground it in current telemetry and make it falsifiable. Return ONE JSON array; each item:
 {"title":"...","current_state":"what exists / the gap","proposal":"the concrete change to build",
- "expected_multiplier":"20x|50x|100x|500x","impact":1-10,"feasibility":1-10,"divergent":true|false,
+ "expected_multiplier":"100x|250x|500x|1000x","impact":1-10,"feasibility":1-10,"divergent":true|false,
  "multiplier_basis":"baseline math showing how the multiplier could occur",
  "baseline_metric":"named current metric and value/source","target_metric":"named target and value",
  "acceptance_tests":["deterministic test", "integration/behavior test"],

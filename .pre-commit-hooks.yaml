@@ -7,3 +7,13 @@
   pass_filenames: true
   description: Enforce conventions from CLAUDE.md on Python files
   additional_dependencies: []
+
+- id: convention-lint
+  name: Convention Lint (Phase 1)
+  entry: python tools/convention_lint.py --check-path=runner --check-path=tools
+  language: python
+  types: [python]
+  stages: [commit]
+  pass_filenames: false
+  description: Phase 1 linter for CLAUDE.md core conventions (fail-soft, secrets, singletons)
+  additional_dependencies: []

@@ -110,6 +110,16 @@ Here are the extracted conventions and DO/AVOID rules:
 ChatGPT's code sandbox has no outbound network — `git push` and DNS always fail
 there. Do not debug it. Emit a patch instead: see [CHATGPT.md](./CHATGPT.md).
 
+## Linting
+
+Convention linting ensures CLAUDE.md patterns are enforced before commit. Phase 1 focuses on 3 core rules:
+
+1. **Fail-soft error handling**: Public functions must return sensible defaults on error, not raise on bad input
+2. **Hardcoded secrets**: Config keys must not contain PASSWORD|TOKEN|SECRET without env-var indirection
+3. **Module-level singletons**: Functions delegate to singleton instances (acquire() → _pool.acquire()), not instance methods
+
+See `CONVENTION_LINT.md` for full rule definitions and examples. Pre-commit hook runs automatically; use `# noqa: RULE_NAME` to skip specific lines.
+
 ## ChatGPT / no-network sandbox handoff (2026-07-27)
 
 ChatGPT's code-execution sandbox has **no outbound network** — `git push` and DNS
