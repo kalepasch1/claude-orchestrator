@@ -146,8 +146,51 @@ def value_per_token(task: dict, provider: str, model: str) -> float:
 _VALUE_ROUTE_THRESHOLD = float(os.environ.get("ORCH_VALUE_ROUTE_THRESHOLD", "5.0"))
 
 
+def _is_coder_stage(task_class):
+    """True when this selection is for the CODER stage (triage/QA stay cheap by design)."""
+    return str(task_class or "") not in ("triage", "qa", "review", "preflight")
+
+
 def choose(task_class="build", agentic=True, need=None, prefer_free=True, sensitivity="standard",
            project_id=None, task=None):
+    """Cheapest capable route, then the §3 routing floors.
+
+    WRAPPER (operator directive 2026-08-02, §3). The selector below optimises cost per TOKEN.
+    On legal-class work that produced "0/12 merged" cycles — cost per MERGE was infinite while
+    every attempt still consumed a lane, RAM, a QA pass and a merge-train slot. The floors are
+    applied here, on the single exit path, so no branch of the selector can bypass them:
+
+      * a task that has already failed ESCALATE_AFTER_ATTEMPTS times gets the strongest coder
+        regardless of its cost score;
+      * legal-class (need >= 8) never gets a weak coder route.
+
+    Triage and QA stages are untouched and stay cheap. Fail-soft: if route_accelerators is
+    unavailable the raw selection is returned unchanged.
+    """
+    effective_need = need if need is not None else NEED.get(task_class, 6)
+    attempt = 0
+    try:
+        if isinstance(task, dict):
+            attempt = int(task.get("attempt") or 0)
+    except Exception:
+        attempt = 0
+
+    provider, model, reason = _choose_raw(
+        task_class=task_class, agentic=agentic, need=need, prefer_free=prefer_free,
+        sensitivity=sensitivity, project_id=project_id, task=task)
+
+    try:
+        import route_accelerators
+        return route_accelerators.enforce_route(
+            provider, model, task_class=task_class, need=effective_need, attempt=attempt,
+            stage=route_accelerators.CODER_STAGE if _is_coder_stage(task_class) else "other",
+            reason=reason)
+    except Exception:
+        return provider, model, reason
+
+
+def _choose_raw(task_class="build", agentic=True, need=None, prefer_free=True,
+                sensitivity="standard", project_id=None, task=None):
     """Return (provider, model, reason). Cheapest capable, subscription/free-first.
     Reads project cost_bias (0=normal, 1=cheap, 2=cheapest) from DB to tighten tier selection.
     When ORCH_VALUE_ROUTING=true and *task* is supplied, high-value hard tasks are routed to
