@@ -42,6 +42,21 @@ from typing import Iterable, List, Tuple
 #   submodule gitlinks          — they record which commit a child repo is at
 # Both are real state. They block, and they should be committed rather than
 # exempted.
+# `--ignore-submodules=dirty` is load-bearing, not cosmetic.
+#
+# Several repos have other repos embedded in them as gitlinks (smarter carries
+# `pasch` and `prediction-markets-institute/pmi`, plus dozens of agent
+# worktrees committed by the fleet). There is no .gitmodules, so these are
+# accidental embeds rather than declared submodules. Plain `git status` reports
+# the parent as dirty whenever a CHILD has uncommitted work — which is
+# permanent, because the fleet is always mid-edit somewhere. smarter was
+# unmergeable for that reason alone.
+#
+# With this flag a submodule still blocks when its PINNED COMMIT moves, which
+# is real recorded state we must not reset over. It stops blocking merely
+# because someone is editing inside it — and that child is protected by its own
+# guard when the fleet touches it directly.
+
 REGENERABLE_PATTERNS: Tuple[str, ...] = (
     # Fleet runtime state and caches
     ".orch-context-cache.json",

@@ -127,7 +127,7 @@ def _merge_branch(repo: str, branch: str, base: str, task: dict) -> dict:
     # edits in the main checkout whenever any task completed — observed three times in one
     # day against in-flight operator/agent edits, including the very commit that was fixing
     # this class of bug. A merge job has no business discarding work it did not create.
-    _porcelain = _git(["git", "status", "--porcelain", "--untracked-files=no"], repo).stdout.strip()
+    _porcelain = _git(["git", "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=dirty"], repo).stdout.strip()
     # Machine-generated artifacts are not authorship; only real edits block.
     _blocking, _regenerable = partition_dirt(_porcelain)
     if _regenerable and not _blocking:

@@ -537,7 +537,7 @@ def _dirty_tracked(repo: str) -> str:
     merges/hour fell to zero for five straight hours on 2026-08-05 while
     completions kept climbing. See runner/regenerable_artifacts.py.
     """
-    porcelain = _git(["git", "status", "--porcelain", "--untracked-files=no"], repo).stdout.strip()
+    porcelain = _git(["git", "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=dirty"], repo).stdout.strip()
     if not porcelain:
         return ""
     blocking, regenerable = partition_dirt(porcelain)
