@@ -165,6 +165,17 @@ def load_ctx():
                 ctx["approved_slugs"].add(slug)
     except Exception:
         pass
+    try:
+        ctx["app_signals"] = {}
+        for r in db.select("app_telemetry", {"select": "app,error_rate,usage_trend"}) or []:
+            app = r.get("app")
+            if app:
+                ctx["app_signals"][app] = {
+                    "error_rate": float(r.get("error_rate") or 0),
+                    "usage_trend": float(r.get("usage_trend") or 0),
+                }
+    except Exception:
+        pass
     return ctx
 
 
