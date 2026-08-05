@@ -1,0 +1,4 @@
+recovery-intent: improve-missing-branch-auto-creator-slice-3-locate-decomposition-handler
+template: 8a0af5e68728
+intent: acceptance adding branch completed completion creation decomposition ensure event eventhandlers events exact expected function handlers handles identify location logic might missing ondecompositioncomplete output owner references repository search similar
+base: master
