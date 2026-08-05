@@ -49,7 +49,14 @@ export default defineEventHandler(async (event) => {
   const token = String(getRouterParam(event, 'token') || '')
   if (!isProofToken(token)) throw linkNotAvailable()
 
-  const sb = serviceClient()
+  // A misconfigured environment must still look like an ordinary bad link to a
+  // reviewer — never a stack trace, never a 500 on a page an investor is reading.
+  let sb: ReturnType<typeof serviceClient>
+  try {
+    sb = serviceClient()
+  } catch {
+    throw linkNotAvailable()
+  }
 
   const { data: link, error: linkError } = await sb
     .from('proof_share_links')
