@@ -34,6 +34,7 @@ import re
 import subprocess
 import sys
 import time
+from regenerable_artifacts import partition_dirt, describe
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -527,8 +528,25 @@ def resolve_branch(repo: str, branch: str, base: str, *, dry_run: bool = False) 
     return result
 
 def _dirty_tracked(repo: str) -> str:
-    """Tracked-file dirt in the MAIN checkout, or '' when clean."""
-    return _git(["git", "status", "--porcelain", "--untracked-files=no"], repo).stdout.strip()
+    """Tracked-file dirt in the MAIN checkout that a reset would actually lose.
+
+    Returns '' when the only dirt is machine-generated artifacts the fleet
+    rewrites on its own (context caches, generated registries, schema dumps).
+    Those used to deadlock the merge train: they are never clean for long, so a
+    literal dirty check refused every merge in six repos indefinitely — 24
+    merges/hour fell to zero for five straight hours on 2026-08-05 while
+    completions kept climbing. See runner/regenerable_artifacts.py.
+    """
+    porcelain = _git(["git", "status", "--porcelain", "--untracked-files=no"], repo).stdout.strip()
+    if not porcelain:
+        return ""
+    blocking, regenerable = partition_dirt(porcelain)
+    if regenerable and not blocking:
+        # Visible, never silent: a silent exemption here would recreate the
+        # original disappearing-work bug in a new costume.
+        print("auto_conflict_resolver: %s proceeding — %s"
+              % (repo, describe(blocking, regenerable)), flush=True)
+    return "\n".join(blocking)
 
 
 def resolve_repo(repo: str, base: str, *, dry_run: bool = False) -> dict:

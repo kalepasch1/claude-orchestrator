@@ -38,6 +38,7 @@ import time
 import traceback
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from regenerable_artifacts import partition_dirt, describe
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -126,7 +127,13 @@ def _merge_branch(repo: str, branch: str, base: str, task: dict) -> dict:
     # edits in the main checkout whenever any task completed — observed three times in one
     # day against in-flight operator/agent edits, including the very commit that was fixing
     # this class of bug. A merge job has no business discarding work it did not create.
-    dirty = _git(["git", "status", "--porcelain", "--untracked-files=no"], repo).stdout.strip()
+    _porcelain = _git(["git", "status", "--porcelain", "--untracked-files=no"], repo).stdout.strip()
+    # Machine-generated artifacts are not authorship; only real edits block.
+    _blocking, _regenerable = partition_dirt(_porcelain)
+    if _regenerable and not _blocking:
+        print("continuous_merger: %s proceeding — %s"
+              % (repo, describe(_blocking, _regenerable)), flush=True)
+    dirty = "\n".join(_blocking)
     if dirty:
         result["error"] = ("main checkout has uncommitted changes — refusing to reset; "
                            "branch left for the merge train")
