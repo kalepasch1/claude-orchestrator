@@ -35,20 +35,12 @@ class _PromptEvolver:
         try:
             rows = db.select("prompt_templates", {"kind": f"eq.{kind}"}) or []
         except Exception as e:
-            logger.warning(f"DB error in select_template: {e}")
+            logger.warning(f"select_template failed for kind={kind}: {e}")
             return (base_prompt, "base")
 
         if not rows:
-            # Cold-start: return next template from round-robin
-            if kind not in _kind_counters:
-                _kind_counters[kind] = 0
-            idx = _kind_counters[kind] % len(TEMPLATE_IDS)
-            _kind_counters[kind] += 1
-            template_id = TEMPLATE_IDS[idx]
-            if template_id == "base":
-                return (base_prompt, "base")
-            else:
-                return (f"[template:{template_id}]\n{base_prompt}", template_id)
+            # Cold-start: return base
+            return (base_prompt, "base")
 
         # Aggregate by template_id: sum total_reward and n_trials per template
         aggregated = {}
@@ -61,6 +53,11 @@ class _PromptEvolver:
 
         # Compute UCB1 scores
         total_trials = sum(v["n_trials"] for v in aggregated.values())
+
+        # If total_trials is 0 (all arms untried), return base
+        if total_trials == 0:
+            return (base_prompt, "base")
+
         candidates = []
         for template_id, agg in aggregated.items():
             n_trials = agg["n_trials"]
