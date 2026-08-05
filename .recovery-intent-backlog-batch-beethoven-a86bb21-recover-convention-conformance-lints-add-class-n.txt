@@ -1,0 +1,4 @@
+recovery-intent: backlog-batch-beethoven-a86bb21-recover-convention-conformance-lints-add-class-n
+template: 0648b5921c3e
+intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 acceptable acceptance accepts active adapt advice after against agentic aider allowlist author batch beethoven before behavior blocked blocker build build_fix buildfail camelcase capwords ce2e8dcd7954 change check checks claim class claude cloud coder codestral confirm context contract convention conventions coordination correctly cross custody debate_compress deepseek delete deployfix diffs drafting edits ensures entire excerpt existing exists fable final first flash follow force function gemini generated google green haiku helpers implement implementation
+base: master
