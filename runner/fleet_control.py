@@ -198,6 +198,54 @@ def _target_matches(target):
     return target == "all" or target in _host_aliases()
 
 
+_RESTART_STAMP = os.path.join(
+    os.environ.get("CLAUDE_ORCH_HOME",
+                   os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                ".runtime")),
+    "last-fleet-restart")
+# One honored fleet restart per window, per host. See _restart_cooldown().
+RESTART_COOLDOWN_MIN = float(os.environ.get("ORCH_FLEET_RESTART_COOLDOWN_MIN", "90"))
+# A control row that keeps failing must stop retrying. See handle_pending().
+MAX_ACTION_ATTEMPTS = int(os.environ.get("ORCH_FLEET_ACTION_MAX_ATTEMPTS", "5"))
+
+
+def _restart_cooldown():
+    """(active, minutes_remaining) — is this host inside its restart cooldown?
+
+    THE BUG THIS FIXES (2026-08-04). The pre-existing storm guard only superseded restarts
+    that were pending SIMULTANEOUSLY. An external watchdog inserting one restart per hour
+    therefore had every single row honored: each was the newest when it arrived. Observed in
+    fleet_control at 20:28, 21:27, 22:28, 23:28, 00:28 — all acted on by this host.
+
+    That is fatal rather than merely wasteful, because it is self-reinforcing: agentic tasks
+    take minutes, the runner drains and exits mid-flight, in-flight tasks orphan back to
+    QUEUED, so the completion counters the watchdog reads stay at zero — and it requests
+    another restart. The fleet spends its life restarting and reloading config, which is why
+    thousands of "claimed" tasks produced almost nothing that shipped.
+
+    Operator-initiated restarts are unaffected: restart-fleet.sh restarts the process
+    directly and never goes through fleet_control.
+    """
+    if RESTART_COOLDOWN_MIN <= 0:
+        return False, 0.0
+    try:
+        age_min = (time.time() - os.path.getmtime(_RESTART_STAMP)) / 60.0
+    except OSError:
+        return False, 0.0
+    remaining = RESTART_COOLDOWN_MIN - age_min
+    return (remaining > 0), max(0.0, remaining)
+
+
+def _stamp_restart():
+    try:
+        os.makedirs(os.path.dirname(_RESTART_STAMP), exist_ok=True)
+        with open(_RESTART_STAMP, "a"):
+            pass
+        os.utime(_RESTART_STAMP, None)
+    except OSError:
+        pass
+
+
 def _restart():
     """Exit; keepalive.sh respawns a fresh runner with new code/config.
 
@@ -438,18 +486,38 @@ def process_controls():
                                          "control_id": r.get("id")})
             except Exception:
                 pass
-            if action == "git_pull" and params.get("restart", True):
-                _restart()
-            if action == "restart":
-                _restart()
+            if action in ("restart",) or (action == "git_pull" and params.get("restart", True)):
+                cooling, mins_left = _restart_cooldown()
+                if cooling:
+                    # Row is already acked above, so it will not be retried — we simply do
+                    # not honor the exit. This is what breaks the hourly restart storm.
+                    print(f"fleet_control: restart from '{r.get('requested_by')}' SUPPRESSED — "
+                          f"{mins_left:.0f} min left in the {RESTART_COOLDOWN_MIN:.0f} min "
+                          f"cooldown; staying up and continuing to work "
+                          f"(ORCH_FLEET_RESTART_COOLDOWN_MIN=0 disables)", flush=True)
+                else:
+                    _stamp_restart()
+                    _restart()
         except Exception as e:
             print(f"fleet_control: action '{action}' failed on {HOST}: {e}")
+            # GIVE-UP CAP (2026-08-04): without it a permanently-impossible action retries
+            # every cycle forever. Observed: one git_pull row at 247 attempts, failing on
+            # "git_pull unsafe: 3 dirty tracked files" — a condition no amount of retrying
+            # can clear. Park it after MAX_ACTION_ATTEMPTS so the queue drains and the
+            # failure is visible in last_error instead of scrolling the log forever.
+            attempts = int(r.get("attempts") or 0) + 1
+            patch = {
+                "attempts": attempts,
+                "last_error": str(e)[:1000],
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }
+            if MAX_ACTION_ATTEMPTS > 0 and attempts >= MAX_ACTION_ATTEMPTS:
+                patch["done"] = True
+                patch["last_error"] = (f"GAVE UP after {attempts} attempts: {str(e)[:900]}")
+                print(f"fleet_control: action '{action}' id={r.get('id')} GAVE UP after "
+                      f"{attempts} attempts — parking it", flush=True)
             try:
-                db.update("fleet_control", {"id": r["id"]}, {
-                    "attempts": int(r.get("attempts") or 0) + 1,
-                    "last_error": str(e)[:1000],
-                    "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                })
+                db.update("fleet_control", {"id": r["id"]}, patch)
             except Exception:
                 pass
     return done
