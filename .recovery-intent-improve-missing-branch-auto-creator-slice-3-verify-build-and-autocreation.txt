@@ -1,0 +1,4 @@
+recovery-intent: improve-missing-branch-auto-creator-slice-3-verify-build-and-autocreation
+template: e944f62ad5a5
+intent: acceptance adapt agent allow alternatively bb22a2 before branch branching build builds built canonical changes check completed completes completion confirmation correct creation decomposition diffs drafting ensure errors event excerpt existing exists first implementation initiated install instead integrate integration intent library logic manual matched merge merged missing output patch possible present previous prior process project proven provide quick racefeed rebuilding recover relevant reuse running scratch similarity solved source successfully summary syntactically tests train transplant triggers without
+base: master
