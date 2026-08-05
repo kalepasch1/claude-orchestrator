@@ -1,0 +1,4 @@
+recovery-intent: dropbox-beethoven-audit-addendum-two-session-reconciliation-read-wit-group-2
+template: 88d69a191488
+intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 10min 148d45efebad 1565ms 170834ms 20251001 25min 30min 39465ac 6f940a79484e 7f21d02 aaron acceptance actions active adapt addendum advice after agentic aider alert allocation allowlist already applied archived audit author auto_conflict_resolver batch beethoven before behavior blocked blocker bottleneck branch_lease breaches bucketed build buildfail canary cause caused causing ce2e8dcd7954 change checkout claim class classifier claude coder coherently concurrent constrains context contract contracts coordination cowork cross custody debate_compress deepseek degrading delete deployfix diffs drafting drifted dropbox duplicate email error every
+base: master
