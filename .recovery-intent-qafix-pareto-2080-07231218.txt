@@ -1,0 +1,4 @@
+recovery-intent: qafix-pareto-2080-07231218
+template: ff2149a0e364
+intent: 056af630dd5f 07062319 07130635 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 55ea9014f0a7cbe96fb98a4d37902880dbbd45c9 6f940a79484e 7f21d02 _dormant ability acceptance activate active adapt advice after agentic aider allowlist application author batch beethoven before behavior benefit blocked blocker blocking bottlenecks build build_fix buildfail causalexperimentation causing ce2e8dcd7954 change changed claim class claud claude clearer coalitions coder collectiveaction commit commitmenttrust completion confidence_gate config context continuoushouseholdintelligence contract coordinate coordination cross current custody decumulation deepseek defined delays delete deletions dependency deployfix designsourcewiring diffs drafting during effectively embedder error errors
+base: main
