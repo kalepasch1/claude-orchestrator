@@ -1271,6 +1271,24 @@ def claim_task(runner_id):
             return max(per_project_limit, int(os.environ.get("ORCH_QUARANTINE_REWORK_PER_PROJECT_CODE_LANES", "2")))
         return per_project_limit
 
+    def _operator_rank(t):
+        """0 for the operator's own directives, 1 for machine-generated work.
+
+        THE LAST STARVATION SITE (2026-08-04). Admission control and the cowork executors
+        were both fixed to stop burying operator work; this sort was the third. It ranked
+        RELEASE_FIX_PREFIXES (relfix-/qafix-/deployfix-/buildfix-/toolchain-repair-) and
+        several recovery classes ABOVE everything else, and operator drop-box asks carry
+        none of those prefixes — so with thousands of queued self-repair tasks the runner
+        provably never reached the owner's queue. Confirmed live: with 583 operator asks
+        open, a freshly restarted runner claimed `qafix-apparently-law-...` first.
+
+        Placed immediately after the explicit pin ranks: only work the operator pinned by
+        hand outranks work the operator submitted. Release fixes still hold their reserved
+        lanes below this, and there are many parallel lanes, so build-unblocking work is
+        delayed rather than denied.
+        """
+        return 0 if _is_operator_origin(t) else 1
+
     def _cooling_down(t):
         """Skip tasks that failed recently — exponential backoff based on retry_count."""
         rc = int(t.get("retry_count") or 0)
@@ -1292,6 +1310,7 @@ def claim_task(runner_id):
 
     queued.sort(key=lambda t: (_pinned_rank(t),                                 # pinned tasks claim first
                                _pin_rank_order(t),                               # among pinned, lower rank wins
+                               _operator_rank(t),                                # then the OWNER'S OWN asks
                                _evidence_reserve_rank(t),                        # reserve one vendor-evidence lane
                                _recovery_reserve_rank(t),                        # turn completed work into mergeable branches
                                _release_fix_rank(t),                             # unblock Vercel releases across the portfolio
