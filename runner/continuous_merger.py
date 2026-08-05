@@ -119,6 +119,20 @@ def _merge_branch(repo: str, branch: str, base: str, task: dict) -> dict:
     """
     result = {"merged": False, "strategy": "none", "error": None, "sha": None}
 
+    # NEVER destroy uncommitted work in the main checkout (added 2026-08-04).
+    #
+    # The `reset --hard` below used to run unconditionally. Combined with the missing
+    # cross-process lock (see _process_task), this module silently reverted uncommitted
+    # edits in the main checkout whenever any task completed — observed three times in one
+    # day against in-flight operator/agent edits, including the very commit that was fixing
+    # this class of bug. A merge job has no business discarding work it did not create.
+    dirty = _git(["git", "status", "--porcelain", "--untracked-files=no"], repo).stdout.strip()
+    if dirty:
+        result["error"] = ("main checkout has uncommitted changes — refusing to reset; "
+                           "branch left for the merge train")
+        result["strategy"] = "skipped-dirty"
+        return result
+
     # Ensure we're on base and clean
     _git(["git", "checkout", base], repo)
     _git(["git", "reset", "--hard", "HEAD"], repo)
@@ -209,9 +223,54 @@ def _process_task(task: dict):
             _stats["skipped"] += 1
         return
 
-    # Serialize git ops per project
+    # Serialize git ops per project.
+    #
+    # CROSS-PROCESS LOCK (added 2026-08-04). _project_locks is a threading.Lock, so it only
+    # serialized threads INSIDE this process. merge_train, release_train, branch_lease,
+    # runner and worktree_isolation all coordinate through repo_lock.hold(), an fcntl.flock
+    # on the repo — this module was the one merger that never took it. Two mergers could
+    # therefore drive `git checkout` / `reset --hard` / `git merge` on the SAME repo at the
+    # same instant. That is the "overlapping mergers" failure mode directly: interleaved
+    # index writes, a train's in-progress state reset out from under it, and branches
+    # deleted by one path while another was still reading them.
+    #
+    # Fail-safe by design: if another merger holds the repo we SKIP this cycle rather than
+    # block a worker thread. The task stays DONE and the periodic merge_backlog() sweep (or
+    # merge_train) picks it up on the next pass — nothing is lost by deferring.
     lock = _project_locks[project_id]
+    try:
+        import repo_lock
+    except Exception:
+        repo_lock = None
     with lock:
+        _repo_guard = (repo_lock.hold(repo, timeout=120) if repo_lock
+                       else _nullcontext_true())
+        with _repo_guard as _got_repo:
+            if repo_lock is not None and not _got_repo:
+                _log.info("continuous_merger: %s busy (another merger holds the repo lock) "
+                          "— deferring %s to the backlog sweep", repo, slug)
+                with _stats_lock:
+                    _stats["skipped"] += 1
+                return
+            return _merge_with_retries(repo, branch, base, task, slug, task_id,
+                                       project_id)
+
+
+class _nullcontext_true:
+    """Stand-in when repo_lock is unavailable: proceed, but say so loudly."""
+
+    def __enter__(self):
+        _log.warning("continuous_merger: repo_lock unavailable — merging WITHOUT the "
+                     "cross-process lock; concurrent mergers are possible")
+        return True
+
+    def __exit__(self, *exc):
+        return False
+
+
+def _merge_with_retries(repo, branch, base, task, slug, task_id, project_id):
+    """The merge attempt loop, run while holding both the thread and repo locks."""
+    if True:
         for attempt in range(MAX_RETRY + 1):
             try:
                 merge_result = _merge_branch(repo, branch, base, task)
