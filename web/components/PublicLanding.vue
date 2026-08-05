@@ -76,15 +76,15 @@ useHead({
       <div class="hero-grid" aria-hidden="true"><i v-for="n in 24" :key="n" /></div>
       <div class="hero-copy">
         <p class="kicker"><span /> The private operating system for AI-native founders</p>
-        <h1>You steer.<br><em>Your portfolio advances on multiple fronts.</em></h1>
-        <p class="hero-lead">Built for Claude- and GPT-native founders running 5+ startups at once. Madeus turns your direction into coordinated, verified work—while you remain at the helm and your full IP stays invisible to any single AI vendor.</p>
+        <h1>You set the direction.<br><em>Your portfolio advances on multiple fronts.</em></h1>
+        <p class="hero-lead">Built for Claude- and GPT-native founders running 5+ startups at once. Madeus turns your direction into coordinated, verified work—while you remain in control from strategy through execution.</p>
         <div class="hero-actions">
           <button class="button primary" :disabled="signingIn" @click="openAccess">{{ signingIn ? 'Opening workspace…' : 'Request entry' }} <span>→</span></button>
           <a class="button secondary" href="#system">See how it works <span>↓</span></a>
         </div>
         <p v-if="authError" class="auth-error" role="alert">{{ authError }}</p>
         <div class="hero-proof" aria-label="Madeus operating principles">
-          <span><i /> Member referred</span><span>5+ companies</span><span>Cross-vendor IP shielding</span><span>Verified outcomes</span>
+          <span><i /> Member referred</span><span>5+ companies</span><span>Full control, every step</span><span>Verified outcomes</span>
         </div>
       </div>
 
@@ -275,7 +275,7 @@ useHead({
     </div>
 
     <SystemStatusFooter />
-    <footer class="site-footer"><MadeusLogo /><p>Outcome orchestration for the multi-company founder.</p><div><a href="#system">Platform</a><a href="#governance">Governance</a><span>© {{ new Date().getFullYear() }} Madeus</span></div></footer>
+    <footer class="site-footer"><MadeusLogo /><p>Outcome accountability for the multi-company founder.</p><div><a href="#system">Platform</a><a href="#governance">Governance</a><span>© {{ new Date().getFullYear() }} Madeus</span></div></footer>
   </main>
 </template>
 
