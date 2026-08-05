@@ -1,0 +1,4 @@
+recovery-intent: deployfix-beethoven-07190338-fix-and-verify-vercel-production-build
+template: f8733d638220
+intent: 07041728 07190257 07190338 20251001 202fb1d6d197752dd44af004e92ac9982c8636ab above acceptance active adapt adaptive_probe advice after agent agentic allowed already analysis apply artifacts assume author authoritative barks batch beethoven before behavior below branch broad bugfix build category cause change changes changing checks claim class claude clean clear cloud coder codestral combined command commands commit committed committing complete completion concrete config configuration configured conflicts contains context continue contract coordination correct cowork cross current custody debate_compress deepseek delete dependencies deploy deployfix deployment diagnostic diffs directive directory
+base: main
