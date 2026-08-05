@@ -327,7 +327,51 @@ Extra endpoints: ORCH_SUPABASE_FALLBACK_URLS (comma-separated).
 """
 
 PROBE_TIMEOUT = float(os.environ.get("ORCH_SUPABASE_PROBE_TIMEOUT", "6"))
-_ACTIVE_BASE = {"url": None}
+
+# The winning endpoint is remembered ON DISK, not just in memory.
+#
+# Without this, every process paid the probe again: the runner, the scheduler and every
+# short-lived worker each re-tried the BLOCKED primary first, ate the timeout, then fell
+# back. With a 6s probe and a fleet that spawns workers constantly, that is minutes of
+# pure latency per hour and — worse — it makes a freshly restarted runner look silent
+# exactly when someone is checking whether the restart worked.
+#
+# The file is a hint, never authority: an unreadable/stale value costs one probe and is
+# corrected immediately. Writes are atomic (tmp + rename) because the whole fleet shares it.
+_ACTIVE_BASE_FILE = os.path.join(
+    os.environ.get("CLAUDE_ORCH_HOME",
+                   os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                ".runtime")),
+    "supabase-active-endpoint")
+
+
+def _load_active_base():
+    try:
+        with open(_ACTIVE_BASE_FILE) as fh:
+            return (fh.read().strip() or None)
+    except OSError:
+        return None
+
+
+def _save_active_base(url):
+    try:
+        os.makedirs(os.path.dirname(_ACTIVE_BASE_FILE), exist_ok=True)
+        tmp = "%s.tmp.%d" % (_ACTIVE_BASE_FILE, os.getpid())
+        with open(tmp, "w") as fh:
+            fh.write(url or "")
+        os.replace(tmp, _ACTIVE_BASE_FILE)
+    except OSError:
+        pass
+
+
+_ACTIVE_BASE = {"url": _load_active_base()}
+
+
+def _pin(base):
+    """Record the endpoint that answered, in memory and (on change) on disk."""
+    if _ACTIVE_BASE.get("url") != base:
+        _ACTIVE_BASE["url"] = base
+        _save_active_base(base)
 
 
 def _endpoints():
@@ -396,12 +440,12 @@ def _req_one(base, method, path, qs, data, h, probe_only=False):
             _to = min(HTTP_TIMEOUT, PROBE_TIMEOUT) if probe_only else HTTP_TIMEOUT
             with urllib.request.urlopen(req, timeout=_to) as r:
                 raw = r.read().decode()
-                _ACTIVE_BASE["url"] = base   # this endpoint answered; pin it
+                _pin(base)                   # this endpoint answered; pin it
                 return json.loads(raw) if raw else None
         except urllib.error.HTTPError as e:
             # An HTTP status means the endpoint IS reachable — pin it and let the existing
             # status handling decide. Never fail over on a 4xx/5xx.
-            _ACTIVE_BASE["url"] = base
+            _pin(base)
             # A flood-guard dedup rejection (HTTP 409) must NOT kill the task —
             # it means a unique constraint blocked a duplicate insert, which is
             # idempotent and safe to ignore. No callers depend on the return value
