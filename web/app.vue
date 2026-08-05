@@ -22,7 +22,7 @@
 
 <script setup lang="ts">
 import { authCallbackUrl, normalizeAuthReturnTo } from '~/utils/authRedirect'
-import { proofTokenFromPath } from '~/utils/proofLink'
+import { proofPageSegment } from '~/utils/proofLink'
 
 const supabase = useSupabaseClient<any>()
 const user = useSupabaseUser()
@@ -31,9 +31,11 @@ const signingIn = ref(false)
 const authError = ref('')
 const authResolving = ref(import.meta.client && route.path === '/auth/callback')
 const admissionRunning = ref(false)
-// True only for `/proof/<token>`. Anything else — including `/proof` itself —
-// stays behind the session gate.
-const scopedProofRoute = computed(() => proofTokenFromPath(route.path) !== null)
+// True for `/proof/<segment>` — a single segment, well-formed token or not, so
+// a truncated link lands on the portal's own "not valid" state instead of the
+// marketing site. `/proof`, `/proof/` and anything nested stay behind the
+// session gate. The page itself carries no data; the server decides.
+const scopedProofRoute = computed(() => proofPageSegment(route.path) !== null)
 
 type Admission = { mode: 'member' | 'referral'; grantToken?: string }
 

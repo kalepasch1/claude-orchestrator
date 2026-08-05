@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   isProofToken,
+  proofPageSegment,
   isPublicProofApiPath,
   isPublicProofPath,
   proofApiTokenFromPath,
@@ -64,6 +65,29 @@ describe('page route matching — only /proof/<token> opens', () => {
   it('survives a malformed percent-escape without throwing', () => {
     expect(() => proofTokenFromPath('/proof/%E0%A4%A')).not.toThrow()
     expect(proofTokenFromPath('/proof/%E0%A4%A')).toBeNull()
+  })
+})
+
+describe('page shell gate — a truncated link must never show the marketing site', () => {
+  it('opens the portal shell for any single segment, well-formed or not', () => {
+    for (const segment of [VALID, 'short', 'not-a-token', 'a'.repeat(200)]) {
+      expect(proofPageSegment(`/proof/${segment}`)).toBe(segment)
+    }
+  })
+
+  it('still refuses an index, a trailing slash and anything nested', () => {
+    for (const path of ['/proof', '/proof/', `/proof/${VALID}/raw`, `/proof/${VALID}%2Fadmin`, '/', '/fleet']) {
+      expect(proofPageSegment(path)).toBeNull()
+    }
+  })
+
+  it('refuses an absurdly long segment', () => {
+    expect(proofPageSegment(`/proof/${'a'.repeat(600)}`)).toBeNull()
+  })
+
+  it('is looser than the API gate, which still demands a real token', () => {
+    expect(proofPageSegment('/proof/short')).toBe('short')
+    expect(isPublicProofApiPath('/api/public/proof/short')).toBe(false)
   })
 })
 

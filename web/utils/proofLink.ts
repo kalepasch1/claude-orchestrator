@@ -30,18 +30,22 @@ export function isProofToken(value: unknown): value is string {
   return typeof value === 'string' && PROOF_TOKEN_PATTERN.test(value)
 }
 
+/** Longest single segment we will even look at, to keep absurd URLs out. */
+const MAX_SEGMENT = 512
+
 /**
- * Returns the token when `pathname` is `<prefix><token>` with no further
- * segments, otherwise null. Query strings must already be stripped by the
- * caller (use `route.path` / `event.path.split('?')[0]`).
+ * Returns the single path segment following `prefix`, or null when `pathname`
+ * is not `<prefix><segment>` exactly. Query strings must already be stripped by
+ * the caller (use `route.path` / `event.path.split('?')[0]`).
  */
-function singleSegmentToken(pathname: string, prefix: string): string | null {
+function singleSegment(pathname: string, prefix: string): string | null {
   if (typeof pathname !== 'string' || !pathname.startsWith(prefix)) return null
 
   const rest = pathname.slice(prefix.length)
   // Reject empty, nested, and trailing-slash forms before decoding, so an
   // encoded separator cannot smuggle a second segment past this check.
-  if (!rest || rest.includes('/') || rest.includes('?') || rest.includes('#')) return null
+  if (!rest || rest.length > MAX_SEGMENT) return null
+  if (rest.includes('/') || rest.includes('?') || rest.includes('#')) return null
 
   let decoded: string
   try {
@@ -50,7 +54,30 @@ function singleSegmentToken(pathname: string, prefix: string): string | null {
     return null
   }
 
-  return isProofToken(decoded) ? decoded : null
+  return decoded.includes('/') ? null : decoded
+}
+
+function singleSegmentToken(pathname: string, prefix: string): string | null {
+  const segment = singleSegment(pathname, prefix)
+  return segment !== null && isProofToken(segment) ? segment : null
+}
+
+/**
+ * The PAGE gate: any single segment under `/proof/`, whether or not it is a
+ * well-formed token.
+ *
+ * This is deliberately looser than the API gate. A reviewer whose link arrived
+ * truncated or line-wrapped by their mail client must land on "this link is not
+ * valid or has expired" — showing them the marketing site instead would be
+ * indistinguishable from the bug this whole change exists to fix.
+ *
+ * It is safe to be looser here because the page ships no data of its own: it
+ * renders the invalid state unless `/api/public/proof/<token>` — which still
+ * demands a well-formed token and verifies it — hands it something. `/proof`
+ * and `/proof/` remain 404s, and nothing nested can be reached.
+ */
+export function proofPageSegment(pathname: string): string | null {
+  return singleSegment(pathname, '/proof/')
 }
 
 /** `/proof/<token>` -> token, else null. */

@@ -25,7 +25,7 @@ const TOKEN = 'Yk8sQ2pWbXJUdzlfLTNhQmNEZUZnSGk'
 
 describe('client gate — /proof/<token> renders, everything else stays behind the session gate', () => {
   it('uses the shared single-segment matcher rather than an ad hoc string test', () => {
-    expect(appVue).toContain('proofTokenFromPath')
+    expect(appVue).toContain('proofPageSegment')
     expect(appVue).not.toMatch(/startsWith\(\s*['"`]\/proof/)
   })
 
@@ -101,6 +101,10 @@ describe('scoped proof pages are private, not public pages', () => {
 
   it('is absent from the sitemap', () => {
     expect(sitemap).not.toContain('/proof')
+  })
+
+  it('shows the brand mark without the internal sub-wordmark', () => {
+    expect(proofPage).toContain('<MadeusLogo compact />')
   })
 
   it('does not name internal machinery anywhere a reviewer can read it', () => {

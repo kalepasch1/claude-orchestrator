@@ -48,7 +48,7 @@ function when(value: unknown) { return value ? new Date(String(value)).toLocaleS
 
 <template>
   <main class="proof-page">
-    <nav><NuxtLink to="/" aria-label="Madeus home"><MadeusLogo /></NuxtLink><span>Scoped proof portal</span></nav>
+    <nav><NuxtLink to="/" aria-label="Madeus home"><MadeusLogo compact /></NuxtLink><span>Scoped proof portal</span></nav>
     <section v-if="status === 'pending'" class="state"><i /> Verifying evidence envelope…</section>
     <section v-else-if="unavailable" class="state invalid"><b>This link is not valid or has expired</b><p>Scoped proof links are private, single-purpose and time-limited. Ask the person who sent it for a fresh link.</p></section>
     <article v-else class="proof-card">
