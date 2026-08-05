@@ -326,6 +326,7 @@ the probing cost is paid once rather than per request.
 Extra endpoints: ORCH_SUPABASE_FALLBACK_URLS (comma-separated).
 """
 
+PROBE_TIMEOUT = float(os.environ.get("ORCH_SUPABASE_PROBE_TIMEOUT", "6"))
 _ACTIVE_BASE = {"url": None}
 
 
@@ -360,9 +361,16 @@ def _req(method, path, body=None, headers=None, params=None):
     h.update(headers or {})
     data = json.dumps(body).encode() if body is not None else None
     last_exc = None
-    for base in _base_urls():
+    bases = _base_urls()
+    for i, base in enumerate(bases):
+        # Retrying an endpoint that is REFUSING CONNECTIONS is pure latency: the whole
+        # retry budget burns against a host the network is dropping, and only then do we
+        # try a reachable one. Measured at 90s per request before this. So every endpoint
+        # except the last is probed once (probe_only); the last keeps the normal retry
+        # budget, because by then a transient blip is the likelier explanation than a block.
+        probe_only = i < len(bases) - 1
         try:
-            return _req_one(base, method, path, qs, data, h)
+            return _req_one(base, method, path, qs, data, h, probe_only=probe_only)
         except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
             last_exc = exc
             if _ACTIVE_BASE.get("url") == base:
@@ -371,7 +379,7 @@ def _req(method, path, body=None, headers=None, params=None):
     raise last_exc
 
 
-def _req_one(base, method, path, qs, data, h):
+def _req_one(base, method, path, qs, data, h, probe_only=False):
     req = urllib.request.Request(base + path + qs, data=data, method=method, headers=h)
     # Reads are idempotent, so they can safely ride out transient resolver and
     # edge failures.  Core RPC writes (branch leases, task state) also retry on transient
@@ -380,10 +388,13 @@ def _req_one(base, method, path, qs, data, h):
     # first request reached PostgREST but its response was lost. External RPC calls skip retry
     # to reduce rate-limiting cascade on non-critical paths.
     retryable = method == "GET" or (method == "POST" and _is_core_rpc(path))
+    if probe_only:
+        retryable = False
     attempts = HTTP_RETRIES + 1 if retryable else 1
     for attempt in range(attempts):
         try:
-            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+            _to = min(HTTP_TIMEOUT, PROBE_TIMEOUT) if probe_only else HTTP_TIMEOUT
+            with urllib.request.urlopen(req, timeout=_to) as r:
                 raw = r.read().decode()
                 _ACTIVE_BASE["url"] = base   # this endpoint answered; pin it
                 return json.loads(raw) if raw else None
