@@ -574,6 +574,16 @@ def run_deploysilence():
     import deploy_silence_detector; deploy_silence_detector.run()
 
 
+def run_rescuedurability():
+    """The rescue branches are the provenance record — and 34 of them were local-only.
+
+    branch_durability already archives + shares `agent/*`; nothing covered the
+    hotfix/stash-rescue-* namespace, so the only copy of twice-lost work sat on one disk.
+    """
+    import rescue_branch_durability
+    rescue_branch_durability.run()
+
+
 def run_remotegc():
     """GC stale remote agent/* branches (fills gap branch_gc.py doesn't cover)."""
     import workflow_guardrails
@@ -1156,6 +1166,7 @@ JOBS = {
     "divergent": run_divergent,
     "worktreeguard": run_worktreeguard,
     "deploysilence": run_deploysilence,
+    "rescuedurability": run_rescuedurability,
     "remotegc": run_remotegc,
     "releasetrain": run_releasetrain,
     "deployverify": run_deployverify,
