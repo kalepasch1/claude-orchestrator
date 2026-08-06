@@ -1043,9 +1043,21 @@ def export_proof_pack(det_id):
 
 def process_determination_actions(limit=10):
     """Drain the console action queue: replay / ask / approve / override / another-round. Approve+override
-    feed the owner-preference learner so the system needs the reviewer less over time."""
-    acts = db.select("determination_actions", {"select": "*", "status": "eq.pending",
-                     "order": "created_at.asc", "limit": str(limit)}) or []
+    feed the owner-preference learner so the system needs the reviewer less over time.
+
+    Fail-soft on the queue read. This was an unguarded db.select and it is the FIRST statement
+    in run(), so a transient DB outage (2026-08-06: urllib URLError [Errno 61] Connection
+    refused) propagated straight out and killed the whole committees job before it did any
+    work — 81 tracebacks, 52% of this job's failures, and the crashed holder then showed up as
+    "periodic committees: WEDGED — skipped 3 consecutive invocation(s)". A DB blip must cost
+    one skipped drain, not the job.
+    """
+    try:
+        acts = db.select("determination_actions", {"select": "*", "status": "eq.pending",
+                         "order": "created_at.asc", "limit": str(limit)}) or []
+    except Exception as e:
+        print(f"committees: determination-action queue unreadable, skipping drain ({e})", flush=True)
+        return 0
     n = 0
     for a in acts:
         act = a.get("action"); did = a.get("determination_id"); payload = a.get("payload") or {}
@@ -1342,8 +1354,15 @@ def run(limit=8):
     """Convene the committees. AUTONOMOUS BY DEFAULT: the panel self-executes clear wins and auto-clears
     routine decisions; a human is involved ONLY when the matter is critical or highly contentious."""
     process_determination_actions()   # first, fulfill any one-click reviewer actions from the console
-    reviewed = {r["subject_id"] for r in (db.select("committee_reviews", {"select": "subject_id"}) or [])}
-    project_rows = db.select("projects", {"select": "id,name,default_base"}) or []
+    # A committees run is meaningless without the DB, and an unreachable DB is a transient
+    # condition, not a defect to crash on. Report it once and skip the cycle: the alternative
+    # (seen 2026-08-06) is a traceback every 30 min plus a WEDGED lock held by the corpse.
+    try:
+        reviewed = {r["subject_id"] for r in (db.select("committee_reviews", {"select": "subject_id"}) or [])}
+        project_rows = db.select("projects", {"select": "id,name,default_base"}) or []
+    except Exception as e:
+        print(f"committees: DB unreachable, skipping this cycle ({e})", flush=True)
+        return {"skipped": "db_unavailable", "error": str(e)}
     pid = {p["name"]: p["id"] for p in project_rows}
     base_by_app = {p["name"]: (p.get("default_base") or "main") for p in project_rows}
     try:
