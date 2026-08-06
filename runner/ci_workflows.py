@@ -12,6 +12,18 @@ never from the dispatch payload.
 """
 import json
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+try:
+    import git_identity
+    _IDENTITY_NAME = git_identity.name()
+    _IDENTITY_EMAIL = git_identity.email()
+except Exception:                                   # pragma: no cover - import guard
+    # Fail-soft, but never to a bot identity: a wrong author blocks the deploy.
+    _IDENTITY_NAME = "kalepasch1"
+    _IDENTITY_EMAIL = "kalepasch@gmail.com"
 
 
 WORKFLOW_TEMPLATE = {
@@ -45,9 +57,15 @@ WORKFLOW_TEMPLATE = {
                          "echo \"Prompt: ${{ github.event.client_payload.prompt }}\"\n"
                          "# Headless coder execution placeholder\n"
                          "python3 -c \"print('agent task complete')\"")},
+                # IDENTITY (audit addendum §G, 2026-07-30). This generated workflow used to
+                # commit as `orch-agent <orch-agent@noreply>`. Vercel puts any production
+                # deployment whose commit author is not the repo owner into BLOCKED state, so
+                # every repo running this workflow would have built agent commits that could
+                # never ship — silently, since the build itself succeeds. The canonical value
+                # comes from runner/git_identity.py; it is not re-typed here.
                 {"name": "Commit and push",
-                 "run": ("git config user.name 'orch-agent'\n"
-                         "git config user.email 'orch-agent@noreply'\n"
+                 "run": (f"git config user.name '{_IDENTITY_NAME}'\n"
+                         f"git config user.email '{_IDENTITY_EMAIL}'\n"
                          "git add -A\n"
                          "git diff --cached --quiet || git commit -m "
                          "'agent/${{ github.event.client_payload.slug }}'\n"
