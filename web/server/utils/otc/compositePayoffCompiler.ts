@@ -1,10 +1,12 @@
-import {
+import type {
   RiskSpec,
   Instrument,
   CompilationResult,
   BacktestResult,
   HorizonType,
   InstrumentType,
+} from './payoffDSL';
+import {
   INSTRUMENT_ALLOWLIST,
   MIN_CONFIDENCE_THRESHOLD,
   MIN_SCENARIO_COUNT,

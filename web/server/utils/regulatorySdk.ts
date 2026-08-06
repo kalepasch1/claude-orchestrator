@@ -25,7 +25,7 @@ export function createRegulatoryPolicyClient(options: { baseUrl: string; fleetSe
       return invoke<RegulatoryGateReceipt>({ action: 'deployment_gate', ...input })
     },
     featurePolicy(input: { project_ref: string; jurisdiction?: string; features: string[] }) { return invoke({ action: 'feature_policy', ...input }) },
-    agreementPolicy(input: { agreement_control_id: string; action: Record<string, any> }) { return invoke({ action: 'agreement_policy', ...input }) },
+    agreementPolicy(input: { agreement_control_id: string; action: Record<string, any> }) { return invoke({ ...input, action: 'agreement_policy' }) },
     recordEvidence(input: Record<string, any>) { return invoke({ action: 'evidence', ...input }) },
     measureObligation(input: Record<string, any>) { return invoke({ action: 'obligation', ...input }) },
     recordAuthoritySource(input: Record<string, any>) { return invoke({ action: 'authority_source', ...input }) },

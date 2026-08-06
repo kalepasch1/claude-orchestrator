@@ -19,8 +19,8 @@ describe('regulatory proof market', () => {
 
   it('selects an eligible counterparty without performing an introduction', () => {
     const result = matchRegulatoryCounterparty({ candidates: [{ key: 'a', authority_score: 95, capacity_fit: 90, risk_score: 10, price_score: 30 }, { key: 'b', authority_score: 100, capacity_fit: 100, authority_valid: false }] })
-    expect(result.recommended_match.candidate_ref).toBe('a')
-    expect(result.recommended_match.requires_affirmative_introduction).toBe(true)
+    expect(result.recommended_match!.candidate_ref).toBe('a')
+    expect(result.recommended_match!.requires_affirmative_introduction).toBe(true)
   })
 
   it('escalates multi-provider disagreement or material gaps', () => {

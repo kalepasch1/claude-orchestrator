@@ -12,7 +12,7 @@ export default defineEventHandler(async (event) => {
   const body = await readBody<any>(event)
   const ids = [...new Set((Array.isArray(body?.providers) ? body.providers : [body?.provider]).map(String).filter(Boolean))]
   if (!ids.length || ids.length > 40) throw createError({ statusCode: 400, message: 'Choose between 1 and 40 connections.' })
-  const definitions = ids.map(id => CONNECTOR_BY_ID[id]).filter(Boolean)
+  const definitions = ids.map(id => CONNECTOR_BY_ID[id as string]).filter(Boolean)
   if (definitions.length !== ids.length) throw createError({ statusCode: 400, message: 'One or more requested connectors are not registered.' })
 
   const sb = serviceClient()

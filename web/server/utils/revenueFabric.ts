@@ -88,10 +88,10 @@ export async function fetchAppRevenue(appId: AppId, months = 6): Promise<{ reven
     const byMonth = new Map<string, { total: number; count: number; refunds: number }>()
 
     for (const row of data) {
-      const period = toYYYYMM(row[billing.dateCol])
-      const amount = Number(row[billing.amountCol]) || 0
+      const period = toYYYYMM((row as any)[billing.dateCol])
+      const amount = Number((row as any)[billing.amountCol]) || 0
       const isRefund = billing.statusCol && billing.refundStatus
-        ? row[billing.statusCol] === billing.refundStatus
+        ? (row as any)[billing.statusCol] === billing.refundStatus
         : amount < 0
 
       if (!byMonth.has(period)) {
