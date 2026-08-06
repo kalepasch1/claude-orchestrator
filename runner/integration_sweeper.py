@@ -21,7 +21,11 @@ try:
 except Exception:
     _ML_AVAILABLE = False
 
-LIMIT = int(os.environ.get("INTEGRATION_SWEEPER_LIMIT", "80"))
+# 80 was below the size of the set it scans (200 tasks in DONE/BLOCKED/RUNNING as of
+# 2026-08-06), so more than half the queue was invisible every pass. With the dual-order
+# scan below, 150 covers 300 tasks — roughly 1.5x current volume of headroom. Raise it if
+# `pipeline_funnel.py` starts reporting a stalled card stage again.
+LIMIT = int(os.environ.get("INTEGRATION_SWEEPER_LIMIT", "150"))
 RUN_TRAIN = os.environ.get("INTEGRATION_SWEEPER_RUN_TRAIN", "true").lower() in ("true", "1", "yes")
 RECOVERY_PREFIX = "recover-missing-branch-"
 PRESSURE_KEY = "merge_train_pressure"
@@ -395,10 +399,33 @@ def recovery_dedup(limit=5000):
 def sweep(limit=LIMIT, run_train=RUN_TRAIN):
     dedup = recovery_dedup()
     projects = {p["id"]: p for p in (db.select("projects") or [])}
-    rows = db.select("tasks", {"select": "id,slug,project_id,state,note,kind,prompt,base_branch,material,force_coder,model,updated_at",
-                               "state": "in.(DONE,BLOCKED,RUNNING)",
-                               "order": "updated_at.asc",
-                               "limit": str(limit)}) or []
+    # SCAN-WINDOW STARVATION, THIRD INSTANCE (2026-08-06).
+    #
+    # This took the `limit` OLDEST tasks by updated_at. Measured today: 183 tasks in the state
+    # set against a limit of 80, so 103 were never looked at — and because the order is
+    # ascending, the invisible ones are always the NEWEST. The window reached updated_at 18:26
+    # while work was still finishing at 22:22.
+    #
+    # 60 of 107 cowork-executor DONE tasks sat beyond that horizon. That is the whole reason 28
+    # finished tasks had a pushed agent/ branch, no approvals row, and no way to ever get one:
+    # the sweeper is what files their card, and it could not see them.
+    #
+    # Same shape and same fix as merge_train._pick_cards: scan both ends. The head of the
+    # backlog stays visible (that ordering is deliberate — oldest work first), and freshly
+    # finished work enters through the desc pass instead of waiting for the queue to drain
+    # below the cap. Dedup by id since the two windows overlap once the set fits in one page.
+    scan_rows, _seen_ids = [], set()
+    for _order in ("updated_at.asc", "updated_at.desc"):
+        for _r in (db.select("tasks", {"select": "id,slug,project_id,state,note,kind,prompt,base_branch,material,force_coder,model,updated_at",
+                                       "state": "in.(DONE,BLOCKED,RUNNING)",
+                                       "order": _order,
+                                       "limit": str(limit)}) or []):
+            _id = _r.get("id")
+            if _id in _seen_ids:
+                continue
+            _seen_ids.add(_id)
+            scan_rows.append(_r)
+    rows = scan_rows
     recovery_index = _active_recovery_index()
     queued = missing = skipped = recovery = 0
     for t in rows:

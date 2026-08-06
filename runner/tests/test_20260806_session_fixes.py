@@ -203,6 +203,30 @@ check("orphaned temporaries are swept", "sweep_orphaned_temporaries" in _irs, ""
 _left = _ir.sweep_orphaned_temporaries("/Users/kpasch/Documents/beethoven/claude-orchestrator")
 check("no orphaned -run- dirs remain", _left == 0, f"{_left} removed on this run")
 
+
+# 19. scan-window starvation, third instance. integration_sweeper took the `limit` OLDEST tasks
+#     by updated_at from a set of 200 with limit=80, so the NEWEST 120 were never looked at —
+#     and the sweeper is what files an integration card. 28 finished tasks had a pushed agent/
+#     branch, no approvals row, and no path to ever getting one.
+_sw = open("/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/integration_sweeper.py").read()
+check("sweeper scans both ends", '"updated_at.asc", "updated_at.desc"' in _sw, "dual-order present")
+check("sweeper limit exceeds the state set it scans",
+      int(_re.search(r'INTEGRATION_SWEEPER_LIMIT", "(\d+)"', _sw).group(1)) >= 150, "")
+_total = _db_count = None
+import db as _db
+_total = _db.count("tasks", {"state": "in.(DONE,BLOCKED,RUNNING)"})
+_one = _db.select("tasks", {"select": "id", "state": "in.(DONE,BLOCKED,RUNNING)",
+                            "order": "updated_at.asc", "limit": "150"}) or []
+_seen, _both = set(), 0
+for _o in ("updated_at.asc", "updated_at.desc"):
+    for _r in (_db.select("tasks", {"select": "id", "state": "in.(DONE,BLOCKED,RUNNING)",
+                                    "order": _o, "limit": "150"}) or []):
+        if _r["id"] not in _seen:
+            _seen.add(_r["id"]); _both += 1
+check("dual-order loses nothing the single window saw",
+      not ({_r["id"] for _r in _one} - _seen), f"total={_total} single={len(_one)} dual={_both}")
+check("dual-order covers the whole state set", _both >= _total, f"{_both} of {_total}")
+
 print("=" * 68)
 ok = 0
 for n, passed, d in RESULTS:
