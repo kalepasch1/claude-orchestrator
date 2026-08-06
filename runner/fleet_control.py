@@ -367,10 +367,31 @@ def _pull_safe():
         status = _git("status", "--porcelain")
         if status.returncode != 0:
             return False, "git status failed"
-        dirty = [l for l in (status.stdout or "").strip().splitlines()
-                 if l.strip() and not l.startswith("??")]
-        if dirty:
-            return False, f"{len(dirty)} dirty tracked files"
+        # REGENERABLE ARTIFACTS DO NOT BLOCK A PULL (2026-08-06).
+        #
+        # Counting every tracked modification was the SECOND half of the Mac-2 stale-code
+        # incident. The first half (untracked droppings) was fixed above; the fleet also
+        # rewrites *tracked* generated files every cycle — context caches, capability
+        # contracts, schema dumps, boot markers — so the checkout is essentially never clean
+        # and auto-pull refused forever. Measured today: Mac 2 was pinned on 10d9e408 while
+        # Mac 1 was 32 commits ahead, so it ran for days WITHOUT any of the merge-train,
+        # pause, conflict-repair or sweeper fixes and kept re-creating the bugs they fix.
+        #
+        # regenerable_artifacts already encodes exactly this allowlist for the merge guard;
+        # a pull that would only overwrite machine output is safe, and `--ff-only` still
+        # refuses anything that would need a real merge. Genuine human/agent edits (and
+        # lockfiles, submodule pointers) still block, which is the property worth keeping.
+        raw_dirty = [l for l in (status.stdout or "").strip().splitlines()
+                     if l.strip() and not l.startswith("??")]
+        try:
+            import regenerable_artifacts
+            blocking, regenerable = regenerable_artifacts.partition_dirt("\n".join(raw_dirty))
+        except Exception:
+            blocking, regenerable = raw_dirty, []      # fail closed: unknown => treat as dirty
+        if regenerable:
+            print(f"[fleet_control] pull: ignoring {len(regenerable)} regenerable artifact(s)")
+        if blocking:
+            return False, f"{len(blocking)} dirty tracked files"
         branch = _git("rev-parse", "--abbrev-ref", "HEAD")
         current = (branch.stdout or "").strip()
         default = os.environ.get("ORCH_DEFAULT_BRANCH", "master")
@@ -395,6 +416,25 @@ def self_update():
             print(f"fleet_control: auto-pull skipped ({reason})", flush=True)
             return False
         before = _git("rev-parse", "HEAD").stdout.strip()
+        # _pull_safe() now tolerates dirty REGENERABLE artifacts, but git itself still refuses
+        # to pull over locally-modified tracked files ("Your local changes would be
+        # overwritten"). Discard exactly those allowlisted paths first — they are machine
+        # output the fleet rebuilds on its next cycle, and nothing else is touched. Without
+        # this the relaxed check above would just move the failure from our log line into
+        # git's, leaving the host stale either way.
+        try:
+            import regenerable_artifacts
+            status2 = _git("status", "--porcelain")
+            raw2 = [l for l in (status2.stdout or "").strip().splitlines()
+                    if l.strip() and not l.startswith("??")]
+            _blocking, _regen = regenerable_artifacts.partition_dirt("\n".join(raw2))
+            if _regen and not _blocking:
+                for _p in _regen:
+                    _git("checkout", "--", _p)
+                print(f"fleet_control: reset {len(_regen)} regenerable artifact(s) to allow pull",
+                      flush=True)
+        except Exception as _rex:
+            print(f"fleet_control: regenerable reset skipped ({_rex})", flush=True)
         pulled = _git("pull", "--ff-only")
         if pulled.returncode != 0:
             msg = (pulled.stderr or pulled.stdout or "git pull failed").strip()
