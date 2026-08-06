@@ -154,16 +154,129 @@ def verify_release(release, project_row=None, health=None):
 def _commit_in_release(repo, artifact_commit, release_sha):
     """Per-task evidence check: True only when artifact_commit is non-empty and git
     confirms it is an ancestor of (or equal to) the verified release sha."""
-    if not artifact_commit or not release_sha:
-        return False
-    if not repo or not os.path.isdir(repo):
-        return False
+    return _classify_candidate(repo, artifact_commit, release_sha) == "promotable"
+
+
+# Promotion funnel buckets. Kept as constants so the log, the return value and the
+# tests all name the same thing.
+BUCKET_PROMOTABLE = "promotable"
+BUCKET_NO_COMMIT = "skipped_no_commit"
+BUCKET_NOT_ANCESTOR = "skipped_not_ancestor"
+BUCKET_COMMIT_ABSENT = "skipped_commit_absent"
+
+
+def _commit_exists(repo, sha):
+    """True when the object is present in this repo."""
     try:
-        r = subprocess.run(["git", "merge-base", "--is-ancestor", artifact_commit, release_sha],
+        r = subprocess.run(["git", "cat-file", "-e", f"{sha}^{{commit}}"],
                            cwd=repo, capture_output=True, text=True, timeout=30)
         return r.returncode == 0
     except Exception:
         return False
+
+
+def _classify_candidate(repo, artifact_commit, release_sha):
+    """Say WHY a task is or is not promotable, not merely whether it is.
+
+    The previous boolean collapsed three very different situations into False:
+    no evidence recorded, evidence that predates//diverges from this release, and
+    evidence naming a commit that never reached origin at all. Only the last is a
+    lost-work signal, and flattening it is why a stranded-on-local-disk population
+    stayed invisible. Callers need the distinction to route recovery.
+    """
+    sha = (artifact_commit or "").strip()
+    if not sha:
+        return BUCKET_NO_COMMIT
+    if not release_sha or not repo or not os.path.isdir(repo):
+        # Cannot evaluate evidence; treat as unproven rather than lost.
+        return BUCKET_NOT_ANCESTOR
+    if not _commit_exists(repo, sha):
+        return BUCKET_COMMIT_ABSENT
+    try:
+        r = subprocess.run(["git", "merge-base", "--is-ancestor", sha, release_sha],
+                           cwd=repo, capture_output=True, text=True, timeout=30)
+        return BUCKET_PROMOTABLE if r.returncode == 0 else BUCKET_NOT_ANCESTOR
+    except Exception:
+        return BUCKET_NOT_ANCESTOR
+
+
+def _select_all_merged_with_commit(pid, cutoff, page_size=None):
+    """Every MERGED task for the project that HAS artifact_commit evidence.
+
+    Server-side filter + deterministic order + pagination to exhaustion. The old
+    query took an unordered LIMIT 500 out of 1,296 MERGED rows, of which only ~146
+    even had an artifact_commit: the ~19 promotable ones could be missed entirely,
+    and two runs could promote different sets. Filtering server-side shrinks the
+    candidate set to the rows that could possibly qualify, so the window question
+    disappears instead of moving to a bigger number.
+    """
+    try:
+        page_size = int(page_size or os.environ.get("ORCH_PROMOTE_PAGE_SIZE", "500"))
+    except (TypeError, ValueError):
+        page_size = 500
+    page_size = max(1, page_size)
+
+    base = {"select": "id,slug,state,artifact_commit",
+            "project_id": f"eq.{pid}",
+            "state": "eq.MERGED",
+            "artifact_commit": "not.is.null",
+            "order": "id.asc"}
+    if cutoff:
+        base["updated_at"] = f"lte.{cutoff}"
+
+    out, offset, seen = [], 0, set()
+    while True:
+        q = dict(base, limit=str(page_size), offset=str(offset))
+        try:
+            rows = db.select("tasks", q) or []
+        except Exception:
+            # Degrade to a single unfiltered page rather than promoting nothing at all.
+            if offset == 0:
+                try:
+                    rows = db.select("tasks", {"select": "id,slug,state,artifact_commit",
+                                               "project_id": f"eq.{pid}",
+                                               "state": "eq.MERGED",
+                                               "order": "id.asc",
+                                               "limit": str(page_size)}) or []
+                except Exception:
+                    rows = []
+                out.extend(rows)
+            break
+        for r in rows:
+            rid = r.get("id")
+            if rid not in seen:
+                seen.add(rid)
+                out.append(r)
+        if len(rows) < page_size:
+            break
+        offset += page_size
+        if offset > 100000:   # pathological guard; never silently truncate quietly
+            print("deployment_terminal: promotion scan exceeded 100k rows — stopping")
+            break
+    return out
+
+
+def _route_absent_commits_to_recovery(project, absent):
+    """Hand the stranded-on-local-disk population to recovery instead of dropping it.
+
+    These tasks name a commit that no longer exists anywhere we can see: real work
+    that never reached origin. Fail-soft — recovery being unavailable must not stop
+    a promotion pass that is otherwise correct.
+    """
+    if not absent:
+        return 0
+    try:
+        import missing_branch_audit
+        fn = getattr(missing_branch_audit, "auto_recover_missing_branches", None)
+        if callable(fn):
+            fn(dry_run=True, max_recover=len(absent))
+    except Exception:
+        pass
+    for t in absent[:20]:
+        print(f"deployment_terminal: RECOVERY-CANDIDATE {project} task={t.get('slug') or t.get('id')} "
+              f"commit={(t.get('artifact_commit') or '')[:12]} — commit absent from repo, "
+              f"work may exist only on another disk")
+    return len(absent)
 
 
 def promote_release(release, dry_run=False):
@@ -191,29 +304,50 @@ def promote_release(release, dry_run=False):
     except Exception:
         pass
     cutoff = release.get("deployed_at") or release.get("created_at")
-    q = {"select": "id,slug,state,artifact_commit", "project_id": f"eq.{pid}",
-         "state": "eq.MERGED", "limit": "500"}
-    if cutoff:
-        q["updated_at"] = f"lte.{cutoff}"
-    try:
-        tasks = db.select("tasks", q) or []
-    except Exception:
-        tasks = db.select("tasks", {"select": "id,slug,state,artifact_commit",
-                                    "project_id": f"eq.{pid}",
-                                    "state": "eq.MERGED", "limit": "500"}) or []
-    # TRUTH FIX 2026-08-04: this used to promote EVERY MERGED task of the project when one
-    # release verified — blanket certification, no per-task evidence. Now each task must
-    # carry a non-empty artifact_commit that git confirms is an ancestor of the verified
-    # release sha; anything else stays MERGED until a release that actually contains it
-    # verifies.
+    # SCAN-WINDOW FIX 2026-08-06: this used to take an UNORDERED `limit: 500` out of a
+    # 1,296-row MERGED population, ~146 of which had any artifact_commit and ~19 of which
+    # were actually promotable. The promotable rows could fall entirely outside the page,
+    # so a verified green release promoted zero — and two runs could promote different
+    # sets. Filter server-side to rows that carry evidence, order deterministically, and
+    # page to exhaustion. Note the fix is NOT a bigger limit: that pattern has caused this
+    # failure five times before here.
+    tasks = _select_all_merged_with_commit(pid, cutoff)
+
+    # TRUTH FIX 2026-08-04 (preserved): promotion once blanket-certified EVERY MERGED task
+    # of a project whenever any release verified. Each task must carry an artifact_commit
+    # that git confirms is an ancestor of the verified release sha. Tasks without that
+    # evidence stay MERGED. The resulting number being low is the number being honest —
+    # do not relax this to raise it.
     release_sha = str(result.get("sha") or "")
-    promotable = [t for t in tasks
-                  if _commit_in_release(repo, (t.get("artifact_commit") or "").strip(),
-                                        release_sha)]
+    buckets = {BUCKET_PROMOTABLE: [], BUCKET_NO_COMMIT: [],
+               BUCKET_NOT_ANCESTOR: [], BUCKET_COMMIT_ABSENT: []}
+    for t in tasks:
+        buckets[_classify_candidate(repo, t.get("artifact_commit"), release_sha)].append(t)
+
+    promotable = buckets[BUCKET_PROMOTABLE]
+    funnel = {
+        "candidates": len(tasks),
+        BUCKET_NO_COMMIT: len(buckets[BUCKET_NO_COMMIT]),
+        BUCKET_NOT_ANCESTOR: len(buckets[BUCKET_NOT_ANCESTOR]),
+        BUCKET_COMMIT_ABSENT: len(buckets[BUCKET_COMMIT_ABSENT]),
+    }
+
+    def _log_funnel(promoted_n):
+        # Emitted on EVERY run, including zero-promotion runs. A pass that promotes
+        # nothing used to be indistinguishable from a pass that never ran, which is
+        # the silence that hid the release deadlock for 17 days.
+        print(f"deployment_terminal: promotion funnel for {project} @ {release_sha[:12]} — "
+              f"candidates={funnel['candidates']} promoted={promoted_n} "
+              f"skipped_no_commit={funnel[BUCKET_NO_COMMIT]} "
+              f"skipped_not_ancestor={funnel[BUCKET_NOT_ANCESTOR]} "
+              f"skipped_commit_absent={funnel[BUCKET_COMMIT_ABSENT]}")
+
     if dry_run:
+        _log_funnel(0)
         return {"promoted": 0, "would_promote": len(promotable),
                 "skipped_no_evidence": len(tasks) - len(promotable),
-                "verify": result, "dry_run": True}
+                "funnel": funnel, "verify": result, "dry_run": True}
+
     promoted = 0
     for t in promotable:
         try:
@@ -224,11 +358,15 @@ def promote_release(release, dry_run=False):
             promoted += 1
         except Exception:
             pass
-    skipped = len(tasks) - len(promotable)
-    print(f"deployment_terminal: promoted {promoted} tasks for {project} to "
-          f"{DEPLOYED_AND_VERIFIED} ({skipped} left MERGED: no per-task commit evidence "
-          f"in this release)")
-    return {"promoted": promoted, "skipped_no_evidence": skipped, "verify": result}
+
+    # Commits we cannot find are not merely unproven — they are work that never reached
+    # origin. Route them instead of dropping them on the floor.
+    _route_absent_commits_to_recovery(project, buckets[BUCKET_COMMIT_ABSENT])
+
+    _log_funnel(promoted)
+    return {"promoted": promoted,
+            "skipped_no_evidence": len(tasks) - len(promotable),
+            "funnel": funnel, "verify": result}
 
 
 # --------------------------------------------------------------- back-pressure
