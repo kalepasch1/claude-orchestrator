@@ -279,7 +279,10 @@ def run():
             evidence = _find_landed_evidence(t, slug, norm)
             if evidence:
                 sha, ref, subject = evidence
-                db.update("tasks", {"id": t["id"]}, {
+                # "landed on some ref" is not "landed on prod". merge_truth requires the sha
+                # to be an ancestor of the project's prod_branch before MERGED may be written.
+                import merge_truth
+                merge_truth.guarded_task_update(t, {
                     "state": "MERGED",
                     "artifact_commit": sha,
                     "note": f"auto-remediation: landed as {sha[:12]} on {ref} ({subject[:120]})"

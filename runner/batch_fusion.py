@@ -187,11 +187,20 @@ def distribute_outcome(batch, agent_output, merged, cost=None):
 
         try:
             state = "MERGED" if merged else "BLOCKED"
-            db.update("tasks", t["id"], {
+            patch = {
                 "state": state,
                 "note": f"[batch-fusion] {len(batch)}-task batch, cost share=${task_cost:.4f}",
                 "finished_at": "now()" if merged else None,
-            })
+            }
+            if state == "MERGED":
+                # This path wrote MERGED with NO artifact_commit at all — a merge certified by
+                # nothing but a boolean. merge_truth rejects it (an empty artifact_commit is a
+                # phantom by definition) and records PHANTOM_UNVERIFIED, so the gap is visible
+                # instead of counting as a shipped change.
+                import merge_truth
+                merge_truth.guarded_task_update(t, patch)
+            else:
+                db.update("tasks", t["id"], patch)
         except Exception:
             pass
 

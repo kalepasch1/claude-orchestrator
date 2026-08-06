@@ -435,11 +435,19 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
                 # tell a real merge from a manufactured one.
                 sha, ref, subject = evidence
                 if t.get("state") != "MERGED":
-                    db.update("tasks", {"id": t["id"]},
-                              {"state": "MERGED",
-                               "artifact_commit": sha,
-                               "note": f"integration_sweeper: work verified in {ref} at {sha[:12]} "
-                                       f"({subject[:80]}); closed (branch GC'd)"})
+                    # `evidence` proves the sha exists SOMEWHERE (a ref, a reflog, a merged
+                    # diff) — not that it reached prod. That gap is the phantom: 42% of recent
+                    # MERGED rows had a sha that was not an ancestor of master. merge_truth
+                    # demands reachability and downgrades to PHANTOM_UNVERIFIED (never
+                    # silently) when the sha did not land.
+                    import merge_truth
+                    merge_truth.guarded_task_update(
+                        t,
+                        {"state": "MERGED",
+                         "artifact_commit": sha,
+                         "note": f"integration_sweeper: work verified in {ref} at {sha[:12]} "
+                                 f"({subject[:80]}); closed (branch GC'd)"},
+                        repo=repo)
                 continue
             if _is_recovery:
                 # This IS recovery work and its branch is gone with no upstream evidence.
