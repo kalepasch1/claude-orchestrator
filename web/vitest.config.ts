@@ -22,7 +22,7 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['server/utils/**/*.test.ts', 'server/utils/**/*.spec.ts', 'server/engines/**/*.test.ts', 'server/engines/**/*.spec.ts'],
+    include: ['server/utils/**/*.test.ts', 'server/utils/**/*.spec.ts', 'server/engines/**/*.test.ts', 'server/engines/**/*.spec.ts', 'composables/**/*.test.ts', 'composables/**/*.spec.ts'],
     exclude: ['node_modules', 'dist', '.idea', '.git', '.cache'],
   },
   resolve: {
