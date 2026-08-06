@@ -1,0 +1,85 @@
+# Keys present in the production fleet_config table, captured 2026-08-06.
+#
+# The ~90 ORCH_* keys are omitted for length — they are all covered by the single
+# ORCH_ prefix, so three representatives are listed at the end and carry the same
+# test power. Every non-ORCH_ key is listed in full.
+#
+# This is the corpus test_fleet_contracts_proof.py asserts the allowlist accepts.
+# The schema declares fail_closed: True, so the day anything enforces
+# is_safe_config_key() at the write path, a key missing from SAFE_PREFIXES stops
+# being writable. That is not hypothetical — COWORK_EXECUTOR_*_LAST_RUN is the
+# fleet's own heartbeat, and an allowlist that refuses it would wedge every
+# executor while looking like a security improvement.
+#
+# Refresh with:
+#   select key from fleet_config order by key;
+# Adding a key here is a claim that it is a secret-free tuning knob. Do not add a
+# key to silence the test; add it only if that claim is true.
+AUTOPILOT_BLOCKER_INTERVAL
+AUTOPILOT_RANK_INTERVAL
+AUTOPILOT_RECOVERY_INTERVAL
+AUTOPILOT_RELEASE_BLOCKER_INTERVAL
+AUTOPILOT_RELEASE_TRAIN_ONLY_HOTLANE
+AUTOPILOT_SWEEP_LIMIT
+COMMITTEE_WEB_EVIDENCE
+CONFIDENCE_GATE
+CONFIDENCE_THRESHOLD
+COWORK_EXECUTOR_1_LAST_RUN
+COWORK_EXECUTOR_10_LAST_RUN
+COWORK_EXECUTOR_11_LAST_RUN
+COWORK_EXECUTOR_12_LAST_RUN
+COWORK_EXECUTOR_2_LAST_RUN
+COWORK_EXECUTOR_3_LAST_RUN
+COWORK_EXECUTOR_4_LAST_RUN
+COWORK_EXECUTOR_5_LAST_RUN
+COWORK_EXECUTOR_7_LAST_RUN
+COWORK_EXECUTOR_8_LAST_RUN
+COWORK_EXECUTOR_9_LAST_RUN
+cowork_executor_heartbeat
+COWORK_EXECUTOR_V6_LAST_RUN
+COWORK_EXECUTOR_V65_LAST_RUN
+cowork_heartbeat
+COWORK_LAST_RUN
+cowork-executor-v6-1784041932
+EXEC_1_LAST
+EXEC_10_LAST
+EXEC_11_LAST
+EXEC_12_LAST
+EXEC_2_LAST
+EXEC_3_LAST
+EXEC_6_LAST
+EXEC_7_LAST
+EXEC_8_LAST
+EXEC_9_LAST
+GEMINI_CHEAP_MODEL
+GEMINI_MODEL
+heartbeat
+HEARTBEAT_cowork-executor-v6-1784166604
+heartbeat_cowork-executor-v6-1784411602
+heartbeat_executor_3
+heartbeat-cowork-executor-v6-1784041932
+heartbeat-cowork-executor-v6-1784148255
+heartbeat:cowork-executor
+LEGAL_DOCKET_BATCH
+MAX_PARALLEL
+MAX_PARALLEL_CEILING
+MERGE_TRAIN_LOW_RISK_BATCH
+MERGE_TRAIN_STANDARD_BATCH
+MERGE_TRAIN_TEST_TIMEOUT
+OLLAMA_KEEP_ALIVE
+OLLAMA_STRONG_MODEL
+OPENAI_CHEAP_MODEL
+OPENAI_FAST_MODEL
+OPENAI_STRONG_MODEL
+PER_TASK_GB
+PREVIEW_FEATURE_X
+PREWARM_N
+PROMOTION_STATE
+QUEUE_GEN_CEILING
+RAM_FLOOR_GB
+RAM_HARD_PCT
+RELEASE_INTERVAL_HOURS
+RELEASE_MIN_BATCH
+ORCH_MAX_PARALLEL
+ORCH_RELEASE_HOLD_WHILE_FIX_OPEN
+ORCH_SUPABASE_RETRIES
