@@ -104,7 +104,8 @@ test('passport: verify rejects passport with invalid signature', () => {
 });
 
 test('passport: verify rejects all-expired passport', () => {
-  const past = new Date('2020-01-01');
+  // asOf strictly after the claim's expiresAt (2020-01-02) so it is genuinely expired
+  const past = new Date('2020-02-01');
   const expiredClaim: Claim = {
     kind: 'kyc_verified',
     issuer: 'galop',
@@ -177,7 +178,8 @@ test('passport: hasClaim returns false for missing claim kind', () => {
 });
 
 test('passport: hasClaim returns false for expired claim', () => {
-  const past = new Date('2020-01-01');
+  // asOf strictly after the claim's expiresAt (2020-01-02) so it is genuinely expired
+  const past = new Date('2020-02-01');
   const expiredClaim: Claim = {
     kind: 'kyc_verified',
     issuer: 'galop',
