@@ -52,6 +52,51 @@ _NETWORK = re.compile(
     r"request to https?://\S+ failed|registry\.npmjs\.org.*(?:failed|timeout)|"
     r"getaddrinfo|proxy|EPROTO|self.signed certificate", re.I)
 
+# A frozen-lockfile install (`npm ci`, `--frozen-lockfile`, `--immutable`) refuses to run when the
+# lockfile is out of sync with package.json. That is a lockfile-drift toolchain failure, not a
+# broken tree: the deploy platform regenerates node_modules the same way a non-frozen install does.
+# Retry ONCE with the non-frozen equivalent rather than reporting the tree red for the wrong reason.
+_LOCKFILE_DRIFT = re.compile(
+    r"can only install packages when your package\.json and package-lock\.json.*in sync|"
+    r"npm ci` can only install|"
+    r"lockfile.*(?:out of date|out-of-date|not up to date|does not (?:satisfy|match))|"
+    r"your lockfile needs to be updated|"
+    r"the lockfile would have been (?:modified|created)|"
+    r"cannot install with .frozen-lockfile.|"
+    r"ERR_PNPM_OUTDATED_LOCKFILE|"
+    r"YN0028|"
+    r"missing:.*from lock file", re.I)
+
+# Frozen install command -> the non-frozen equivalent that regenerates the lockfile.
+_UNFREEZE = (
+    ("npm ci", "npm install"),
+    ("--frozen-lockfile", ""),
+    ("--immutable", ""),
+)
+
+
+def unfrozen_install_command(cmd):
+    """Non-frozen equivalent of a frozen install command, or "" when there is no fallback.
+
+    Fail-soft: never raises, returns "" for anything it does not recognise.
+    """
+    try:
+        text = (cmd or "").strip()
+        if not text:
+            return ""
+        out = text
+        changed = False
+        for frozen, replacement in _UNFREEZE:
+            if frozen in out:
+                out = out.replace(frozen, replacement)
+                changed = True
+        if not changed:
+            return ""
+        out = " ".join(out.split())
+        return out if out and out != text else ""
+    except Exception:
+        return ""
+
 
 def _home():
     return os.environ.get("CLAUDE_ORCH_HOME",
@@ -239,6 +284,14 @@ def verify(repo, ref=None, project=None, force=False, cache_only=False):
         if icmd:
             rc, out = _step(icmd, work, INSTALL_TIMEOUT, env)
             parts.append("$ %s\n%s" % (icmd, out))
+            if rc != 0 and not _NETWORK.search(out) and _LOCKFILE_DRIFT.search(out):
+                fallback = unfrozen_install_command(icmd)
+                if fallback:
+                    result["install_fallback"] = fallback
+                    rc, out = _step(fallback, work, INSTALL_TIMEOUT, env)
+                    parts.append("$ %s   # lockfile drift: retried unfrozen\n%s" % (fallback, out))
+                    if rc == 0:
+                        result["install_cmd"] = fallback
             if rc != 0:
                 result["log"] = "\n\n".join(parts)
                 if _NETWORK.search(out):
