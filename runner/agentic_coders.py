@@ -23,6 +23,9 @@ Backward compatible: with no extra coders, behavior is the prior claude -> codex
 """
 import os, sys, json, re, shlex, subprocess, time, hashlib
 import contextlib
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lane_guard
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # capability a task needs by difficulty (see _task_difficulty)
@@ -916,19 +919,34 @@ def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900, **k
                 slot = local_model_slots.slot(ollama_model, operation=f"agentic:{coder}")
             except Exception:
                 slot = contextlib.nullcontext({"locked": False, "unloaded": []})
+        argv = shlex.split(cmd) if "{prompt}" not in tmpl else ["bash", "-lc", cmd]
+        # subprocess.run(timeout=) kills the DIRECT CHILD only. When the lane is
+        # `bash -lc "<coder> ..."`, that reaps the shell and reparents the coder
+        # itself to init, still holding its RAM -- which is how 64 of 66 lanes
+        # became >1h zombies on 2026-08-02. lane_guard runs the lane in its own
+        # process group and signals the GROUP, and additionally kills a lane that
+        # has produced no output for ORCH_LANE_IDLE_TIMEOUT.
         with slot:
-            proc = subprocess.run(shlex.split(cmd) if "{prompt}" not in tmpl else ["bash", "-lc", cmd],
-                                  cwd=cwd, env=_aider_env(env), capture_output=True, text=True, timeout=timeout)
+            proc = lane_guard.run_supervised(
+                argv, cwd=cwd, env=_aider_env(env), timeout=timeout,
+                task_class=kwargs.get("task_class") or kwargs.get("kind"))
         # REAL cost from aider's own output (per-message $), so paid-coder daily caps are exact; fall
         # back to the coder's nominal est_usd only when the CLI reported no cost (e.g. a free local model).
-        real = _parse_cost((proc.stdout or "") + "\n" + (proc.stderr or ""))
+        stdout = proc.get("stdout", "") or ""
+        stderr = proc.get("stderr", "") or ""
+        rc = proc.get("returncode", 1)
+        real = _parse_cost(stdout + "\n" + stderr)
         cost = real if real is not None else float((spec or {}).get("est_usd", 0.0) or 0.0)
         latency_ms = int((time.time() - t0) * 1000)
+        reaped = proc.get("timed_out") or proc.get("idle_killed")
         _agentic_event("agentic_coder_finish", coder, model, project=project, value=latency_ms,
-                       action=f"returncode={proc.returncode} cost_usd={cost}")
-        return {"text": proc.stdout, "cost_usd": cost, "input_tokens": 0, "output_tokens": 0,
-                "returncode": proc.returncode, "stderr": proc.stderr or "",
-                "coder": coder, "latency_ms": latency_ms}
+                       action=f"returncode={rc} cost_usd={cost}"
+                              + (" lane_reaped=1" if reaped else ""))
+        return {"text": stdout, "cost_usd": cost, "input_tokens": 0, "output_tokens": 0,
+                "returncode": rc, "stderr": stderr,
+                "coder": coder, "latency_ms": latency_ms,
+                "lane_timed_out": bool(proc.get("timed_out")),
+                "lane_idle_killed": bool(proc.get("idle_killed"))}
     except subprocess.TimeoutExpired:
         _agentic_event("agentic_coder_finish", coder, model, project=project,
                        value=int((time.time() - t0) * 1000), action="returncode=124 timeout")

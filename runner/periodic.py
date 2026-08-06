@@ -574,6 +574,17 @@ def run_deploysilence():
     import deploy_silence_detector; deploy_silence_detector.run()
 
 
+def run_pipelineselftest():
+    """§2: alert on a silent machine, and self-test the pipeline's own signals hourly.
+
+    Mac 2 was down half a day unnoticed and train-stale was a false alarm for days — both
+    because nothing checked that the monitors themselves were telling the truth.
+    """
+    import pipeline_selftest
+    result = pipeline_selftest.run()
+    print(pipeline_selftest.render(result), flush=True)
+
+
 def run_remotegc():
     """GC stale remote agent/* branches (fills gap branch_gc.py doesn't cover)."""
     import workflow_guardrails
@@ -1156,6 +1167,7 @@ JOBS = {
     "divergent": run_divergent,
     "worktreeguard": run_worktreeguard,
     "deploysilence": run_deploysilence,
+    "pipelineselftest": run_pipelineselftest,
     "remotegc": run_remotegc,
     "releasetrain": run_releasetrain,
     "deployverify": run_deployverify,
