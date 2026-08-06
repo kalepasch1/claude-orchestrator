@@ -38,6 +38,21 @@ _last_pull = {"t": 0.0}
 _ws_server = None
 
 
+def _huv():
+    """Lazy import of host_update_visibility so a missing/broken module can never wedge
+    the runner, and so tests can substitute it via sys.modules."""
+    import host_update_visibility
+    return host_update_visibility
+
+
+def _commits_behind():
+    """How far this host is behind origin/<default branch>; None if unknowable."""
+    try:
+        return _huv().commits_behind(repo=REPO)
+    except Exception:
+        return None
+
+
 def set_websocket_server(ws):
     """Inject a WebSocket server so update_fleet_config can publish ConfigChanged events."""
     global _ws_server
@@ -409,8 +424,21 @@ def _pull_safe():
 
 
 def self_update():
-    """Periodic git pull so every machine tracks the pushed code without manual per-Mac steps."""
+    """Periodic git pull so every machine tracks the pushed code without manual per-Mac steps.
+
+    EVERY OUTCOME IS OBSERVABLE (2026-08-06). This used to fail in silence: a host whose
+    pull broke printed one stdout line nobody reads, kept heartbeating, kept claiming, and
+    ran two-day-old code for 48h with zero rows in run_logs or runner_alerts explaining
+    why. Success, failure, and "this host will never update" are now all recorded via
+    host_update_visibility so the NEXT frozen host is visible in one cycle.
+    """
     if os.environ.get("ORCH_AUTO_PULL", "false").lower() not in ("true", "1", "yes"):
+        # A host that is never going to update must not be indistinguishable from one
+        # that just updated. Say so explicitly, once per host per day.
+        try:
+            _huv().record_auto_pull_disabled(HOST, behind=_commits_behind())
+        except Exception:
+            pass
         return False
     interval = float(os.environ.get("ORCH_AUTO_PULL_MIN", "5")) * 60
     if time.time() - _last_pull["t"] < interval:
@@ -420,6 +448,12 @@ def self_update():
         ok, reason = _pull_safe()
         if not ok:
             print(f"fleet_control: auto-pull skipped ({reason})", flush=True)
+            try:
+                _huv().record_failure(HOST, f"pull precondition unsafe: {reason}",
+                                      current_sha=_git("rev-parse", "HEAD").stdout.strip(),
+                                      behind=_commits_behind())
+            except Exception:
+                pass
             return False
         before = _git("rev-parse", "HEAD").stdout.strip()
         # _pull_safe() now tolerates dirty REGENERABLE artifacts, but git itself still refuses
@@ -448,11 +482,25 @@ def self_update():
         after = _git("rev-parse", "HEAD").stdout.strip()
         if before and after and before != after:
             print(f"fleet_control: auto-pulled {before[:8]}->{after[:8]} on {HOST}", flush=True)
+            try:
+                _huv().record_success(HOST, before, after)
+            except Exception:
+                pass
             if os.environ.get("ORCH_AUTO_PULL_RESTART", "true").lower() in ("true", "1", "yes"):
                 _restart()
             return True
     except Exception as e:
         print(f"fleet_control: auto-pull failed ({e})")
+        # RECORD, don't just print. The verbatim git stderr, the current sha, and how far
+        # behind origin we are — plus a NAMED diagnosis, because the likely causes are
+        # known from this fleet's own history (unaccepted trust dialog, expired login,
+        # dirty/diverged checkout, ORCH_AUTO_PULL unset).
+        try:
+            _huv().record_failure(HOST, str(e),
+                                  current_sha=_git("rev-parse", "HEAD").stdout.strip(),
+                                  behind=_commits_behind())
+        except Exception:
+            pass
     return False
 
 
@@ -502,6 +550,25 @@ def process_controls():
                 reason = str((r.get("params") or {}).get("reason") or "fleet pause")
                 kill_switch.pause(scope="host", project=HOST, reason=reason, by="fleet_control")
             elif action == "resume":
+                # VERIFY, THEN RESUME — never the reverse (2026-08-06).
+                #
+                # `cowork-pull-attempt` resumed a paused host at 18:36 on the basis that a
+                # pull had been ATTEMPTED. The pull had failed, the code_sha did not move,
+                # and the host went straight back to claiming work with two-day-old code —
+                # success recorded on dispatch instead of on evidence. A resume is only
+                # legitimate once this host's HEAD actually matches origin.
+                #
+                # ORCH_RESUME_REQUIRE_FRESH_SHA=false restores the old unconditional
+                # behavior for a deliberate operator override.
+                _require = os.environ.get("ORCH_RESUME_REQUIRE_FRESH_SHA", "true").lower()
+                if _require in ("true", "1", "yes"):
+                    _huv().commits_behind(repo=REPO, fetch=True)
+                    _local, _origin = _huv().local_sha(REPO), _huv().origin_sha(REPO)
+                    _allowed, _why = _huv().resume_allowed(_local, _origin)
+                    if not _allowed:
+                        _huv().record_failure(HOST, f"resume refused: {_why}",
+                                              current_sha=_local, behind=_commits_behind())
+                        raise RuntimeError(f"resume refused — {_why}")
                 kill_switch.resume(scope="host", project=HOST, by="fleet_control")
             else:
                 raise RuntimeError(f"unknown fleet action: {action}")
