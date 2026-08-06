@@ -7,8 +7,10 @@ rollback if a metric regressed. Used by the overnight deploy window instead of a
 METRICS_URL must return JSON like {"error_rate":0.4,"p95_ms":180,"conversion":3.1}.
 Thresholds via env: CANARY_MAX_ERROR_RATE, CANARY_MAX_P95_MS, CANARY_MIN_CONVERSION.
 """
-import os, sys, json, threading, urllib.request
+import logging, os, sys, json, threading, urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+_log = logging.getLogger(__name__)
 
 # RESTORED 2026-08-02: merge c502818b 'Merge branch 'agent/canary-gemini-25-...'
 # (auto-resolved)' dropped the `threading` / `http.server` imports and these two module
@@ -20,15 +22,20 @@ _metrics_server = None
 _metrics_server_lock = threading.Lock()
 
 
-def validate_canary(value):
-    """True when the input mentions a canary (case-insensitive substring).
+def validate_canary(response_text):
+    """True when 'canary' (case-insensitive) appears anywhere in response_text.
 
-    Tiny input validator for canary-tagged payloads/labels; fail-soft on
-    non-string input (returns False rather than raising).
+    Logs at INFO when the canary marker is found, WARNING when it is not.
+    Fail-soft on non-string input (returns False rather than raising).
     """
-    if not isinstance(value, str):
+    if not isinstance(response_text, str):
+        _log.warning("canary marker not found: non-string input (%s)", type(response_text).__name__)
         return False
-    return "canary" in value.lower()
+    if "canary" in response_text.lower():
+        _log.info("canary marker found in response text")
+        return True
+    _log.warning("canary marker NOT found in response text")
+    return False
 
 
 def evaluate(metrics_url=None):
