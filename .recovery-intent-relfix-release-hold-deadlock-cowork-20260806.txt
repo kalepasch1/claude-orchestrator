@@ -1,0 +1,4 @@
+recovery-intent: relfix-release-hold-deadlock-cowork-20260806
+template: feae97181206
+intent: 07161923 07281812 _aggregate_and_route _fix_lineage_root _hold_for_open_fix _lineage_age_h _lineage_birth _open_release_fix_tasks _parse_time _raise_hold_alarm after against age_h alarm alarms alone already app_critical_ops app_route_min_samples app_triage_review append apply attempting attempts authorize_config auto_merge because beethoven before behaviour below births bounded breaks broken budget build caller candidate cands cannot cases cause ceiling change cheap cheapest churn claude clean clearing clears clears_bar clock clone comment commit computed confidence_gate configured continue correct cost_rank count cover covers cowork created_at critical critical_ops currently cycle darwn datetime deadlock decides decomposed decomposes default defeat
+base: master
