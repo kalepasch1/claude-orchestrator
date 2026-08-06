@@ -25,7 +25,15 @@ export function createRegulatoryPolicyClient(options: { baseUrl: string; fleetSe
       return invoke<RegulatoryGateReceipt>({ action: 'deployment_gate', ...input })
     },
     featurePolicy(input: { project_ref: string; jurisdiction?: string; features: string[] }) { return invoke({ action: 'feature_policy', ...input }) },
-    agreementPolicy(input: { agreement_control_id: string; action: Record<string, any> }) { return invoke({ action: 'agreement_policy', ...input }) },
+    // `action` is overloaded on the wire: the runtime route uses it as the dispatch
+    // key, while this call also needs to carry the agreement action being evaluated.
+    // Spreading `input` last used to clobber the dispatch key with the payload object,
+    // so the request never reached runtimeAgreementPolicy. Send the payload under its
+    // own key and keep the dispatch key authoritative.
+    agreementPolicy(input: { agreement_control_id: string; action: Record<string, any> }) {
+      const { action: agreementAction, ...rest } = input
+      return invoke({ ...rest, action: 'agreement_policy', agreement_action: agreementAction })
+    },
     recordEvidence(input: Record<string, any>) { return invoke({ action: 'evidence', ...input }) },
     measureObligation(input: Record<string, any>) { return invoke({ action: 'obligation', ...input }) },
     recordAuthoritySource(input: Record<string, any>) { return invoke({ action: 'authority_source', ...input }) },

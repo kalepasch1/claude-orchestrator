@@ -87,7 +87,9 @@ export async function fetchAppRevenue(appId: AppId, months = 6): Promise<{ reven
     // Group by month
     const byMonth = new Map<string, { total: number; count: number; refunds: number }>()
 
-    for (const row of data) {
+    // The select list is built from a template string, so Supabase cannot infer the
+    // row shape and string indexing is rejected. The columns are config-driven.
+    for (const row of data as unknown as Array<Record<string, any>>) {
       const period = toYYYYMM(row[billing.dateCol])
       const amount = Number(row[billing.amountCol]) || 0
       const isRefund = billing.statusCol && billing.refundStatus

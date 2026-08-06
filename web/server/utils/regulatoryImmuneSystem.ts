@@ -54,8 +54,8 @@ export function priceProofPortability(input: any) {
 }
 
 export function designRegulatorEvidenceStream(input: any) {
-  const allowed = new Set((input.grant_fields || []).map(String)); const requested = (input.requested_fields || []).map(String); const delivered = requested.filter(x => allowed.has(x)); const denied = requested.filter(x => !allowed.has(x))
-  return { field_allowlist: [...allowed], source_refs: (input.source_refs || []).slice(0, 50), delivery_manifest: delivered.map(field => ({ field, mode: 'bounded_fact_or_digest', raw_record: false })), denied_fields: denied, cadence: input.cadence || 'on_change', status: input.grant_active && !denied.length ? 'active' : 'shadow' }
+  const allowed = new Set((input.grant_fields || []).map(String)); const requested = (input.requested_fields || []).map(String); const delivered = requested.filter((x: string) => allowed.has(x)); const denied = requested.filter((x: string) => !allowed.has(x))
+  return { field_allowlist: [...allowed], source_refs: (input.source_refs || []).slice(0, 50), delivery_manifest: delivered.map((field: string) => ({ field, mode: 'bounded_fact_or_digest', raw_record: false })), denied_fields: denied, cadence: input.cadence || 'on_change', status: input.grant_active && !denied.length ? 'active' : 'shadow' }
 }
 
 export function rehearseEnforcement(input: any) {

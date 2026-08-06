@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { CANONICAL_NAVIGATION, NAVIGATION_CONTRACT_VERSION } from '../../config/navigation'
 
-const V2 = [
+// The learned v1 destination set. The v2 contract must keep every one of these
+// in its original relative order while it adds /waves and /hivemind.
+const V1 = [
   ['Command Center', '/'], ['Sign-offs', '/sign-offs'], ['Queue', '/queue'],
   ['Orchestrators', '/orchestrators'], ['Business OS', '/business'], ['Connections', '/connectors'],
   ['Digital Twin', '/digital-twin'], ['Spend & ROI', '/spend'], ['Loops', '/loops'],

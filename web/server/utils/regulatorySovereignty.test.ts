@@ -27,7 +27,7 @@ describe('regulatory sovereignty network', () => {
       { jurisdiction: 'GB', license_months: 14, sponsor_available: true, sponsor_months: 2, expected_value_cents: 2_000_000 },
       { jurisdiction: 'DE', license_months: 12, acquisition_available: true, acquisition_months: 6, expected_value_cents: 3_000_000 },
     ] })
-    expect(result.jurisdiction_plan.map(x => x.route)).toEqual(['sponsor_then_local_entity', 'acquire_regulated_entity'])
+    expect(result.jurisdiction_plan.map((x: any) => x.route)).toEqual(['sponsor_then_local_entity', 'acquire_regulated_entity'])
     expect(result.expected_value_cents).toBe(5_000_000)
     expect(result.execution_requires_separate_approvals).toBe(true)
   })
