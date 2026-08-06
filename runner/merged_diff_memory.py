@@ -248,3 +248,183 @@ def invalidate() -> None:
         _invalidate_tracking()
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# File-based merged-learning memory (suite: runner/tests/test_merged_diff_memory.py)
+#
+# Captures do/avoid rules from merged commit messages into dated markdown
+# files under MEMORY_ROOT, indexed by MEMORY.md, with age-based pruning and
+# a jsonl error log under HOME. Fail-soft throughout.
+# ---------------------------------------------------------------------------
+
+import re as _re
+from datetime import datetime as _datetime, timedelta as _timedelta
+
+MEMORY_ROOT = str(MEMORY_DIR)
+HOME = str(Path.home())
+
+
+def _error_log_path() -> str:
+    """Error log lives under the (test-overridable) HOME."""
+    return os.path.join(HOME, "logs", "merged_diff_memory_errors.jsonl")
+
+
+def __getattr__(name):  # PEP 562: ERROR_LOG tracks reassignment of HOME
+    if name == "ERROR_LOG":
+        return _error_log_path()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _log_error(message: str, context: Optional[str] = None) -> None:
+    """Append an error entry to the jsonl log. Never raises."""
+    try:
+        path = _error_log_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "message": message,
+                "context": context,
+                "timestamp": _datetime.utcnow().isoformat(),
+            }) + "\n")
+    except Exception:
+        pass
+
+
+def _ensure_dirs() -> None:
+    """Create MEMORY_ROOT and the error-log directory (idempotent)."""
+    os.makedirs(MEMORY_ROOT, exist_ok=True)
+    os.makedirs(os.path.dirname(_error_log_path()), exist_ok=True)
+
+
+def _extract_rules(text: str) -> list[str]:
+    """Find bullet-point DO/AVOID rules in free text."""
+    rules: list[str] = []
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("-"):
+            continue
+        body = stripped.lstrip("-").strip()
+        if body.upper().startswith(("DO ", "DO:", "AVOID ", "AVOID:")):
+            rules.append(body)
+    return rules
+
+
+def _save_to_memory(patterns: list[dict]) -> tuple[bool, Optional[str]]:
+    """Write patterns to a dated markdown file under MEMORY_ROOT."""
+    if not patterns:
+        return True, None
+    try:
+        os.makedirs(MEMORY_ROOT, exist_ok=True)
+        today = _datetime.utcnow()
+        path = os.path.join(MEMORY_ROOT, f"merged_learning_{today.strftime('%Y%m%d')}.md")
+        lines = [f"# Merged learning — {today.date().isoformat()}", ""]
+        for pattern in patterns:
+            lines.append(f"## Commit {pattern.get('commit', 'unknown')}")
+            frameworks = sorted(pattern.get("frameworks") or [])
+            if frameworks:
+                lines.append(f"Frameworks: {', '.join(frameworks)}")
+            for rule in pattern.get("rules") or []:
+                lines.append(f"- {rule}")
+            files = [f for f in (pattern.get("files") or []) if f]
+            if files:
+                lines.append("Files: " + ", ".join(files))
+            lines.append("")
+        Path(path).write_text("\n".join(lines), encoding="utf-8")
+        return True, path
+    except Exception as e:
+        _log_error(str(e), context="_save_to_memory")
+        return False, None
+
+
+def _update_memory_index(memory_file: str) -> bool:
+    """Add (dedup) an entry for memory_file to MEMORY_ROOT/MEMORY.md."""
+    try:
+        base = os.path.basename(memory_file)
+        m = _re.search(r"(\d{4})(\d{2})(\d{2})", base)
+        date_str = "-".join(m.groups()) if m else _datetime.utcnow().date().isoformat()
+        index_path = os.path.join(MEMORY_ROOT, "MEMORY.md")
+        existing = ""
+        if os.path.exists(index_path):
+            existing = Path(index_path).read_text(encoding="utf-8", errors="replace")
+        if base in existing:
+            return True
+        if existing and not existing.endswith("\n"):
+            existing += "\n"
+        existing += f"- [Merged learning {date_str}]({base}) — {date_str}\n"
+        Path(index_path).write_text(existing, encoding="utf-8")
+        return True
+    except Exception as e:
+        _log_error(str(e), context="_update_memory_index")
+        return False
+
+
+def _prune_old_entries(index_file: str, days: int = 90) -> None:
+    """Drop index lines whose ISO date is older than the cutoff. Fail-soft."""
+    try:
+        cutoff = _datetime.utcnow().date() - _timedelta(days=days)
+        content = Path(index_file).read_text(encoding="utf-8", errors="replace")
+        kept = []
+        for line in content.splitlines():
+            dates = _re.findall(r"\d{4}-\d{2}-\d{2}", line)
+            parsed = []
+            for d in dates:
+                try:
+                    parsed.append(_datetime.strptime(d, "%Y-%m-%d").date())
+                except ValueError:
+                    pass
+            if parsed and min(parsed) < cutoff:
+                continue
+            kept.append(line)
+        Path(index_file).write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+    except Exception as e:
+        _log_error(str(e), context="_prune_old_entries")
+
+
+def run(repo: Optional[str] = None, dry_run: bool = False) -> dict:
+    """Capture DO/AVOID rules from merged commits into the learning memory.
+
+    Returns {"success", "merged_count", "patterns_count", "memory_file"};
+    never raises (errors are logged and reflected in "success").
+    """
+    result: dict = {"success": True, "merged_count": 0, "patterns_count": 0, "memory_file": None}
+    try:
+        repo = repo or os.getcwd()
+        out = _safe_run(["git", "log", "--merges", "--pretty=%H"], cwd=repo)
+        merges = [h for h in out.splitlines() if h.strip()]
+        result["merged_count"] = len(merges)
+
+        patterns = []
+        for commit in merges:
+            text = _safe_run(["git", "log", "-1", "--pretty=%B", commit], cwd=repo)
+            branch_tip = _safe_run(["git", "log", "-1", "--pretty=%B", f"{commit}^2"], cwd=repo)
+            rules = _extract_rules(text + "\n" + branch_tip)
+            if not rules:
+                continue
+            files = _safe_run(
+                ["git", "diff-tree", "--no-commit-id", "--name-only", "-r", commit], cwd=repo)
+            patterns.append({
+                "commit": commit,
+                "rules": rules,
+                "frameworks": [],
+                "files": files.splitlines() if files else [],
+                "timestamp": _datetime.utcnow().isoformat(),
+            })
+        result["patterns_count"] = len(patterns)
+
+        if patterns:
+            if dry_run:
+                result["memory_file"] = "<dry-run: no files written>"
+            else:
+                _ensure_dirs()
+                ok, memory_file = _save_to_memory(patterns)
+                if ok and memory_file:
+                    _update_memory_index(memory_file)
+                    result["memory_file"] = memory_file
+                else:
+                    result["success"] = False
+        return result
+    except Exception as e:
+        _log_error(str(e), context="run")
+        result["success"] = False
+        return result
