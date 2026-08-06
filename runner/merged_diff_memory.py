@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 import hashlib
+import logging
 import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -253,6 +254,51 @@ def _prune_old_entries(index_file, days=90):
                 f.writelines(kept)
     except Exception as e:
         _log_error(f"Failed to prune old index entries: {e}")
+
+
+def capture_to_memory(repo=".", dry_run=False):
+    """Capture merged-diff patterns into the memory system. Returns True/False.
+
+    The boolean contract for callers that only need "did it land?": True when a memory
+    file was actually written, False on ANY failure — bad git ref, not a repo, no diffs
+    to capture, file I/O error, database error. It never raises.
+
+    True is tied to a WRITTEN FILE, not to "the function completed". A run that finds no
+    merged commits returns False: nothing was persisted, so a caller that treats True as
+    "memory is now current" would be misled. That distinction is the whole point of the
+    boolean — `run()` remains available for callers that need the counts and the reason.
+
+    A dry run always returns False; it deliberately writes nothing.
+
+    Failures are reported via logging.warning rather than swallowed silently, so a
+    persistently failing capture is visible in the logs instead of looking like a
+    no-op forever.
+    """
+    try:
+        result = run(repo=repo, dry_run=dry_run)
+    except Exception as exc:            # run() is fail-soft, but never trust that here
+        logging.warning("merged_diff_memory: capture raised: %s: %s",
+                        type(exc).__name__, exc)
+        return False
+
+    if not isinstance(result, dict):
+        logging.warning("merged_diff_memory: capture returned %r, expected dict",
+                        type(result).__name__)
+        return False
+
+    if result.get("error"):
+        logging.warning("merged_diff_memory: capture failed: %s", result["error"])
+        return False
+
+    if not result.get("success") or not result.get("memory_file"):
+        logging.warning(
+            "merged_diff_memory: nothing written (success=%s, merged_count=%s, "
+            "patterns_count=%s)",
+            result.get("success"), result.get("merged_count"),
+            result.get("patterns_count"))
+        return False
+
+    return True
 
 
 def run(repo=".", dry_run=False):
