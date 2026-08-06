@@ -2007,4 +2007,39 @@ if __name__ == "__main__":
     except (BlockingIOError, OSError):
         print(json.dumps({"skipped": "another merge_train instance is running"}))
         sys.exit(0)
+
+    # SELF-ENFORCED DEADLINE (2026-08-06). The runtime cap lived only in runner.py's
+    # _reap_stale_periodic, which can only kill pids recorded in that runner's own
+    # _PERIODIC_PIDS map. Restart the runner and every train it launched is reparented to
+    # init and becomes unkillable by the fleet — while still holding the flock above.
+    #
+    # Observed today: pid 37459, ppid 1, wedged 24 minutes in pure Python with seven lines of
+    # output, holding merge-train.single.lock. No train could start on this machine at all for
+    # as long as it lived, and nothing was going to reap it. A supervisor-dependent timeout is
+    # not a timeout; the pass has to own its own budget.
+    #
+    # faulthandler dumps every thread before we go, so the NEXT wedge is diagnosable instead of
+    # being another silent kill — the previous one took a root-only profiler to even locate.
+    # SIGUSR1 does the same on demand without killing anything.
+    import faulthandler, signal, threading as _th
+    try:
+        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+    except Exception:
+        pass
+    _budget = float(os.environ.get("ORCH_MERGE_TRAIN_MAX_RUNTIME_S", "7200") or 7200)
+    if _budget > 0:
+        def _deadline():
+            time.sleep(_budget)
+            sys.stderr.write(f"merge_train: WATCHDOG — pass exceeded {_budget:.0f}s; "
+                             f"dumping all threads and exiting so the single-flight lock "
+                             f"is released for the next pass\n")
+            sys.stderr.flush()
+            try:
+                faulthandler.dump_traceback(all_threads=True)
+            except Exception:
+                pass
+            sys.stderr.flush()
+            os._exit(3)
+        _th.Thread(target=_deadline, name="merge-train-watchdog", daemon=True).start()
+
     print(json.dumps(train_run(), indent=2, default=str))

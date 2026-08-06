@@ -123,6 +123,25 @@ _rem = [l.split()[-1] for l in _sp.run(["git", "ls-remote", "origin", "refs/arch
 check("existing archive refs are now on origin too",
       _local and not (set(_local) - set(_rem)), f"local={len(_local)} origin={len(_rem)}")
 
+
+# 15. a merge_train pass must enforce its own runtime budget. The cap lived only in the
+#     launching runner's _PERIODIC_PIDS map, so a train orphaned by a runner restart (ppid 1)
+#     was unkillable AND kept holding merge-train.single.lock — observed today as pid 37459,
+#     24 minutes wedged, no train able to start on this machine at all.
+_mt_src = open("/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/merge_train.py").read()
+check("train owns its runtime budget", "merge-train-watchdog" in _mt_src and "os._exit(3)" in _mt_src,
+      "self-enforced deadline present")
+check("watchdog dumps threads before exiting", "dump_traceback(all_threads=True)" in _mt_src,
+      "next wedge is diagnosable")
+_wd = _sp.run([sys.executable, "-u", "-c",
+    "import os,sys,time,threading,faulthandler\n"
+    "def d():\n"
+    " time.sleep(1); faulthandler.dump_traceback(all_threads=True); os._exit(3)\n"
+    "threading.Thread(target=d,daemon=True).start()\n"
+    "time.sleep(30)"], capture_output=True, encoding="utf-8", timeout=30)
+check("watchdog actually kills a hung pass", _wd.returncode == 3 and "Thread" in (_wd.stderr or ""),
+      f"rc={_wd.returncode}")
+
 print("=" * 68)
 ok = 0
 for n, passed, d in RESULTS:
