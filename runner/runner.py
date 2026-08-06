@@ -3658,6 +3658,15 @@ def main():
                             _log.debug("hook failure_forecast failed: %s", e)
                     if t:
                         print(f"[claim] {t.get('slug','')} (project={t.get('project_id','?')[:8]}) active={len(active)+1}/{eff_limit}", flush=True)
+                        # SHADOW ROUTER (measurement only): record which executor a
+                        # reliability-weighted policy WOULD have chosen. It cannot write
+                        # tasks.account, reorder the queue or gate admission — the claim
+                        # above has already happened. See runner/executor_reliability.py.
+                        try:
+                            import executor_reliability
+                            executor_reliability.record_shadow_decision(t, actual_account=RUNNER_ID)
+                        except Exception as e:
+                            _log.debug("hook executor_reliability shadow failed: %s", e)
                         # REUSE-FIRST: adapt an already-solved implementation instead of rebuilding
                         try:
                             import reuse_first
