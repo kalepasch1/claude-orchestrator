@@ -51,6 +51,55 @@ class TransientDBError(Exception):
     """
     pass
 
+# Billing firewall helpers. The rule "which keys are dangerous" and the rule "is API billing
+# allowed right now" both belong to other modules; db.py's job is only to obey them. Every
+# lookup here is fail-soft in the safe direction — an unavailable authority means DO NOT inject.
+_FALLBACK_BLOCKED_API_ENV_PREFIXES = ("ANTHROPIC_API_KEY",)
+
+
+def _blocked_api_env_prefixes():
+    """Key prefixes that must never reach the environment while billing is blocked.
+
+    Sourced from the shared fleet contracts when present so the list is defined once
+    fleet-wide; the local fallback exists only so a host mid-migration still blocks the key
+    that caused the 2026-07-08 outage rather than blocking nothing.
+    """
+    try:
+        import fleet_contracts
+        prefixes = getattr(fleet_contracts, "BLOCKED_API_ENV_PREFIXES", None)
+        if prefixes:
+            return tuple(prefixes)
+    except Exception:
+        pass
+    return _FALLBACK_BLOCKED_API_ENV_PREFIXES
+
+
+def _is_blocked_api_key(name, prefixes):
+    """True for an exact prefix match or a suffixed variant (ANTHROPIC_API_KEY_2)."""
+    return any(name == p or name.startswith(p + "_") for p in prefixes)
+
+
+def _api_billing_allowed():
+    """Ask subscription_guard, the single authority on Anthropic API billing.
+
+    db.py used to re-derive the policy inline as `subscription_guard is off AND billing opted
+    in`, which is strictly looser than is_api_allowed() — that also requires purchased-credit
+    intent and can be revoked live via control_flags. Two copies of a billing rule is one copy
+    too many, and the looser copy is the one that spends money.
+
+    The import is wrapped because this runs at db import time inside every periodic subprocess:
+    if the authority cannot be consulted, the answer is no.
+    """
+    try:
+        import subscription_guard
+    except Exception:
+        return False
+    try:
+        return bool(subscription_guard.is_api_allowed())
+    except Exception:
+        return False
+
+
 # Load runner/.env directly from Python so launchd agents pick up all env vars
 # (EMBED_PROVIDER, ANTHROPIC_API_KEY, etc.) even when the shell wrapper can't
 # source the file due to macOS TCC restrictions.
@@ -90,19 +139,24 @@ def _load_env():
     for k, kept, ignored in _shadowed:
         print("db: .env defines %s twice with different values — using %r, IGNORING %r. "
               "Delete one of the definitions." % (k, kept, ignored))
-    # First pass: everything except Anthropic API keys, so an ORCH_ALLOW_API_BILLING=true set
+    # First pass: everything except blocked API keys, so an ORCH_ALLOW_API_BILLING=true set
     # only inside .env (not the shell/plist) is honored below rather than read as its old default.
-    anthropic_pairs = []
+    blocked_prefixes = _blocked_api_env_prefixes()
+    blocked_pairs = []
     for k, v in pairs:
-        if k == "ANTHROPIC_API_KEY" or k.startswith("ANTHROPIC_API_KEY_"):
-            anthropic_pairs.append((k, v))
+        if _is_blocked_api_key(k, blocked_prefixes):
+            blocked_pairs.append((k, v))
             continue
         os.environ.setdefault(k, v)
+    # Two gates, both of which must open. The local check is the conservative floor this loader
+    # has always applied; is_api_allowed() is the authority and can only make it stricter.
     sub_on = os.environ.get("ORCH_USE_SUBSCRIPTION", "true").lower() == "true"
     api_opt_in = os.environ.get("ORCH_ALLOW_API_BILLING", "false").lower() == "true"
     if sub_on and not api_opt_in:
-        return  # billing blocked: leave ANTHROPIC_API_KEY* out of the environment entirely
-    for k, v in anthropic_pairs:
+        return  # billing blocked: leave the blocked keys out of the environment entirely
+    if not _api_billing_allowed():
+        return  # subscription_guard says no (or could not be asked) — fail closed
+    for k, v in blocked_pairs:
         os.environ.setdefault(k, v)
 
 def _ensure_tool_path():
