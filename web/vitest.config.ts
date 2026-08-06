@@ -22,7 +22,10 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['server/utils/**/*.test.ts', 'server/utils/**/*.spec.ts', 'server/engines/**/*.test.ts', 'server/engines/**/*.spec.ts'],
+    // components/** added so SFC specs are collected. They render via
+    // vue/server-renderer, so `environment: 'node'` above is sufficient and no
+    // jsdom/happy-dom dependency is introduced.
+    include: ['server/utils/**/*.test.ts', 'server/utils/**/*.spec.ts', 'server/engines/**/*.test.ts', 'server/engines/**/*.spec.ts', 'components/**/*.spec.ts', 'components/**/*.test.ts'],
     exclude: ['node_modules', 'dist', '.idea', '.git', '.cache'],
   },
   resolve: {
