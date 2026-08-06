@@ -10,7 +10,9 @@ function requestSlug(names: string[]) {
 export default defineEventHandler(async (event) => {
   const user = await requireConnectorUser(event)
   const body = await readBody<any>(event)
-  const ids = [...new Set((Array.isArray(body?.providers) ? body.providers : [body?.provider]).map(String).filter(Boolean))]
+  // Annotated: body is `any`, so the Set spread widened to unknown[] and CONNECTOR_BY_ID[id]
+  // was "Type 'unknown' cannot be used as an index type" (TS2538).
+  const ids: string[] = [...new Set<string>((Array.isArray(body?.providers) ? body.providers : [body?.provider]).map((v: unknown) => String(v)).filter(Boolean))]
   if (!ids.length || ids.length > 40) throw createError({ statusCode: 400, message: 'Choose between 1 and 40 connections.' })
   const definitions = ids.map(id => CONNECTOR_BY_ID[id]).filter(Boolean)
   if (definitions.length !== ids.length) throw createError({ statusCode: 400, message: 'One or more requested connectors are not registered.' })

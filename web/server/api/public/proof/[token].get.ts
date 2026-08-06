@@ -38,7 +38,8 @@ export default defineEventHandler(async (event) => {
   })
   const rate = consumeProofLookup(client)
   if (!rate.allowed) {
-    setHeader(event, 'retry-after', String(rate.retryAfterSeconds))
+    // h3 types 'retry-after' as a number, so String() was the type error (TS2345).
+    setHeader(event, 'retry-after', rate.retryAfterSeconds)
     throw createError({
       statusCode: 429,
       statusMessage: 'Too Many Requests',

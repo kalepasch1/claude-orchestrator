@@ -5,7 +5,12 @@ export function useExperienceTelemetry(surface: string) {
     if (!import.meta.client) return
     try {
       const { data: { session } } = await supabase.auth.getSession()
-      const headers = session?.access_token ? { authorization: `Bearer ${session.access_token}` } : {}
+      // Typed as Record<string, string> so the two branches unify: the ternary otherwise
+      // produced `{authorization: string} | {authorization?: undefined}`, and the optional
+      // member makes the union incompatible with HeadersInit.
+      const headers: Record<string, string> = session?.access_token
+        ? { authorization: `Bearer ${session.access_token}` }
+        : {}
       await Promise.allSettled([
         $fetch('/api/adaptive/event', { method: 'POST', headers, body: { event, route: route.path, objective: surface, metadata: { surface, ...metadata } } }),
         $fetch('/api/product-metric', { method: 'POST', headers, body: { experiment: 'orchestrator_experience_v2', metric: `${surface}:${event}`, subject: route.path, route: route.path, value: Number(metadata.dwell_ms || 1), guardrail: event === 'guidance_dismissed' } }),

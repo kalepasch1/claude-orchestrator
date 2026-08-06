@@ -57,7 +57,11 @@ export function guideAction(candidate: GuidanceCandidate, exposure: ExposureReco
   const riskScore = Math.round(Math.min(100, REVERSIBILITY_RISK[candidate.reversibility] + BLAST_RISK[candidate.blastRadius] + concentrationRisk + (1 - confidence) * 25))
   const successProbability = Math.round(Math.max(5, Math.min(95, (confidence * .65 + (1 - riskScore / 100) * .35) * 100))) / 100
   const action: AdminAction = { id: candidate.id ?? `guidance:${candidate.actionType}`, product: candidate.product as any, domain: candidate.domain, type: candidate.actionType, actor: 'operator-guidance', confidence, reversibility: candidate.reversibility, blastRadius: candidate.blastRadius, intent: candidate.intent, amountUsd: candidate.amountUsd, ifNotDone: candidate.ifNotDone, at: new Date().toISOString() }
-  const governance = governFleetAction({ action })
+  // `constitution` is a REQUIRED property of type `Constitution | null | undefined`, so
+  // omitting it was TS2345. Passing it explicitly as undefined is byte-identical at runtime
+  // (evaluateConstitution branches on `!constitution` and returns escalate/no_constitution
+  // for both null and undefined), so this is a type fix with no behaviour change.
+  const governance = governFleetAction({ action, constitution: undefined })
   const missingEvidence: string[] = []
   if (!candidate.expectedRevenueUsd && !candidate.expectedErrorReductionPct && !candidate.expectedUxLiftPct) missingEvidence.push('No quantified outcome signal')
   if (!evidence.length) missingEvidence.push('No supporting evidence attached')

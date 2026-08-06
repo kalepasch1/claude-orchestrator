@@ -91,7 +91,9 @@ export async function recordPolicyMatch(policyId: string, success: boolean): Pro
   const now = new Date().toISOString()
 
   // Increment match count atomically
-  await sb.rpc('increment_policy_match', { policy_id: policyId, was_success: success })
+  // Promise.resolve() first: the builder's own .then() returns PromiseLike<void>, which has
+  // no .catch, so the fallback below was unreachable as written (TS2339).
+  await Promise.resolve(sb.rpc('increment_policy_match', { policy_id: policyId, was_success: success }))
     .then(() => {})
     .catch(async () => {
       // Fallback: non-atomic update if RPC doesn't exist

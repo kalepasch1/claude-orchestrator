@@ -198,7 +198,12 @@ async function runExecutionSteps(execution: PlaybookExecution, pb: Playbook): Pr
   execution.status = 'executing'
 
   for (const stepEntry of execution.steps) {
-    if (execution.status === 'aborted') {
+    // Read through the declared union, not the narrowed literal. TS narrows
+    // execution.status to 'executing' from the assignment above and then calls this
+    // comparison unreachable (TS2367) — but the whole point of the check is that another
+    // code path (abortExecution) can flip the field to 'aborted' while this loop awaits.
+    // The comparison is deliberate and must keep working; only the narrowing is wrong.
+    if ((execution.status as PlaybookExecution['status']) === 'aborted') {
       stepEntry.status = 'skipped'
       continue
     }

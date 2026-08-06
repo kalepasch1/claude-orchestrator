@@ -19,6 +19,7 @@ test('awaiting_approval transition returns decision, receipt, and state', async 
     null,
   );
   assert.equal(result.state, 'awaiting_approval');
+  assert.ok(result.decision, 'a decision must be returned');
   assert.ok(
     ['allow', 'escalate', 'deny'].includes(result.decision),
     `unexpected decision: ${result.decision}`,
@@ -44,6 +45,10 @@ test('receipts chain across consecutive transitions for the same actor+userId', 
   const action = { type: 'queue_task', actor: 'chain-agent', userId: 'chain-user' };
   const first = await transitionAction(action, 'awaiting_approval', null);
   const second = await transitionAction(action, 'approved', null);
+  // Assert presence before chaining: receipt is optional on the result type, and this test
+  // is meaningless if either is missing — better to say so than to read through undefined.
+  assert.ok(first.receipt, 'first transition must mint a receipt');
+  assert.ok(second.receipt, 'second transition must mint a receipt');
   assert.equal(second.receipt.seq, first.receipt.seq + 1, 'seq must increment');
   assert.equal(second.receipt.prevHash, first.receipt.digest, 'prevHash must equal prior digest');
   assert.equal(verifyReceipt(second.receipt), true, 'chained receipt must verify');

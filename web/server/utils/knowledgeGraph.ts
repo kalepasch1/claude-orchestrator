@@ -89,15 +89,25 @@ async function fetchUsersFromApp(appId: AppId, email: string): Promise<GraphNode
 
   try {
     // Try auth.admin to list users by email
+    // maybeSingle() over an untyped rpc widens to `{}`, so every field read below was a
+    // TS2339. The rpc contract is a single user row; name it rather than casting each access.
+    type UserRow = {
+      id?: string | null
+      display_name?: string | null
+      full_name?: string | null
+      role?: string | null
+      [key: string]: unknown
+    }
     const { data } = await client.rpc('get_user_by_email', { target_email: email }).maybeSingle()
-    if (data) {
+    const row = data as UserRow | null
+    if (row) {
       const node: GraphNode = {
-        id: makeNodeId(appId, 'user', data.id || email),
+        id: makeNodeId(appId, 'user', row.id || email),
         app: appId,
         type: 'user',
-        entityId: data.id || email,
-        label: data.display_name || data.full_name || email,
-        properties: { email, role: data.role, ...data },
+        entityId: row.id || email,
+        label: row.display_name || row.full_name || email,
+        properties: { email, role: row.role, ...row },
         lastUpdated: new Date().toISOString(),
       }
       return [node]

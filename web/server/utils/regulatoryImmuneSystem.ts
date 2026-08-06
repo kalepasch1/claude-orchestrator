@@ -26,7 +26,10 @@ export function runSupervisoryCertificationSwarm(input: any) {
   const findings = [...new Set(agents.flatMap(a => a.findings))]
   const materialRisks = findings.filter(x => ['material_incident_history','authority_coverage_below_certification_floor'].includes(x))
   const gaps = findings.filter(x => ['evidence_incomplete','insufficient_shadow_history'].includes(x))
-  const contradictions = findings.filter(x => x === 'unresolved_contradictions')
+  // string[]: the filter narrowed this to 'unresolved_contradictions'[], so pushing
+  // 'agent_assessment_divergence' below was rejected (TS2345). The list is a set of
+  // contradiction reasons, not a single literal.
+  const contradictions: string[] = findings.filter(x => x === 'unresolved_contradictions')
   const variance = Math.max(...agents.map(a => a.score)) - Math.min(...agents.map(a => a.score))
   if (variance > 25) contradictions.push('agent_assessment_divergence')
   const confidence = Number((agents.reduce((s, a) => s + a.score, 0) / agents.length / 100).toFixed(2))

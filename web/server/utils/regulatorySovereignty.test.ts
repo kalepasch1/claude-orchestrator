@@ -50,7 +50,10 @@ describe('regulatory sovereignty network', () => {
       { key: 'safe', authority_confidence: 90, evidence_completeness: 90, value_score: 65, reversibility_score: 95, critical_events: 0 },
     ] })
     expect(result.winner.key).toBe('safe')
-    expect(result.promotion_receipt.promotion_requires_approval).toBe(true)
+    // promotion_receipt is nullable (a tournament need not produce one), so assert presence
+    // before reading through it rather than letting TS18047 stand.
+    expect(result.promotion_receipt).not.toBeNull()
+    expect(result.promotion_receipt?.promotion_requires_approval).toBe(true)
   })
 
   it('prepares bounded supervisory work without delegating final judgment', () => {
