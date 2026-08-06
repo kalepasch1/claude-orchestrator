@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import kill_switch
 import config_approval
+import config_store
 
 try:
     import websockets
@@ -148,24 +149,25 @@ def update_fleet_config(key, value):
       - the new value differs from what was stored
       - a WebSocket server has been registered via set_websocket_server()
     Fail-soft: errors in event emission are swallowed.
+
+    The read-then-write pair this used to open-code against `db` now goes
+    through config_store, the storage-neutral seam: the store hands back
+    (old_row, new_row) from one write, so the separate "what was it before?"
+    SELECT is gone and swapping the backing store is a set_store() call rather
+    than an edit here. `_safe_key` is still checked first — the seam decides
+    where config lives, not what may be written.
     """
     if not _safe_key(key):
         raise ValueError(f"refusing unsafe fleet config key: {key}")
     new_value = str(value)
-    old_value = None
-    try:
-        rows = db.select("fleet_config", {"select": "value", "key": f"eq.{key}", "limit": "1"}) or []
-        if rows:
-            old_value = str(rows[0].get("value") or "")
-    except Exception:
-        pass
-    row = {
+    old, new = config_store.get_store().update_config(key, new_value, updated_by=HOST)
+    old_value = str(old.get("value") or "") if old else None
+    row = new or {
         "key": key,
         "value": new_value,
         "updated_by": HOST,
         "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
-    db.insert("fleet_config", row, upsert=True)
     if _ws_server is not None and key.upper().startswith("ORCH_") and new_value != old_value:
         try:
             _ws_server.publish_event("config/*", {
