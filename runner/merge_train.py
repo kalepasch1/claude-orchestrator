@@ -27,7 +27,7 @@ MERGE_CONFLICT_REDO_CAP). Test failures mark the task TESTFAIL — the train NEV
 Idempotent: handled cards get decided_by='train:*'; cards already handled by this train or by
 the legacy merge-handler are skipped.
 """
-import datetime, json, os, re, sys, subprocess, time
+import datetime, json, os, re, sys, subprocess, threading, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 # RESTORED 2026-07-31 (overwrite-class recovery; static_sanity gate)
@@ -119,6 +119,38 @@ def _branch_exists(repo, branch):
     return _git(repo, "rev-parse", "--verify", branch).returncode == 0
 
 
+_REMOTE_AGENT_REFS = {}          # repo -> (expires_at, {branch names}) ; None set == "unknown"
+_REMOTE_AGENT_LOCK = threading.Lock()
+REMOTE_REF_TTL_S = float(os.environ.get("MERGE_TRAIN_REMOTE_REF_TTL_S", "120"))
+
+
+def _remote_agent_branch_maybe(repo, branch):
+    """True if origin might hold `branch`; False only when we positively know it does not.
+
+    Returns True on any uncertainty (listing failed, cache cold and refresh errored) so the
+    caller falls back to its own fetch. Never returns False for a branch origin actually has,
+    which is what keeps this an optimisation rather than a merge-skipping filter.
+    """
+    now = time.monotonic()
+    with _REMOTE_AGENT_LOCK:
+        entry = _REMOTE_AGENT_REFS.get(repo)
+        if entry and entry[0] > now:
+            names = entry[1]
+            return True if names is None else (branch in names)
+    names = None
+    try:
+        r = _git(repo, "ls-remote", "--heads", "origin", "refs/heads/agent/*", timeout=90)
+        if r.returncode == 0:
+            names = {line.split("\trefs/heads/", 1)[1].strip()
+                     for line in (r.stdout or "").splitlines()
+                     if "\trefs/heads/" in line}
+    except Exception:
+        names = None
+    with _REMOTE_AGENT_LOCK:
+        _REMOTE_AGENT_REFS[repo] = (time.monotonic() + REMOTE_REF_TTL_S, names)
+    return True if names is None else (branch in names)
+
+
 def _materialize_branch(repo, branch):
     """Fleet-aware branch lookup with worktree recovery.
 
@@ -131,6 +163,24 @@ def _materialize_branch(repo, branch):
     if _branch_exists(repo, branch):
         return True
     if not repo or not os.path.isdir(repo):
+        return False
+    # THE TRAIN'S REAL WALL-CLOCK SINK (measured 2026-08-06).
+    #
+    # Cards get filed by ensure_integration_card as soon as work is approved, which is often
+    # BEFORE the agent branch exists — the task is still QUEUED. Every such card reached this
+    # line and paid a full `git fetch origin <branch>` (timeout 120s) to discover a ref that
+    # was never pushed. In the last 20,000 train lines: 2,096 WAIT outcomes against 1 MERGED,
+    # the same slugs re-fetched 60-195 times each. With ORCH_MERGE_TRAIN_MAX_RUNTIME_S=900 the
+    # pass was being killed on the not-yet-created cards before it ever reached the mergeable
+    # ones. The queue was not stalled on conflicts; it was starved of clock.
+    #
+    # One `git ls-remote --heads origin refs/heads/agent/*` answers the same question for every
+    # card in the pass. Absent from that listing => there is nothing to fetch, so skip straight
+    # to WAIT. Fail-soft: if ls-remote errors or times out we fall through to the old per-branch
+    # fetch, so the worst case is today's behaviour rather than a missed merge. The cache is
+    # per-repo with a short TTL, so a branch pushed mid-pass is simply picked up on the next
+    # pass — this can defer a merge by one cycle, never skip or overwrite one.
+    if branch.startswith("agent/") and not _remote_agent_branch_maybe(repo, branch):
         return False
     try:
         _git(repo, "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}", timeout=120)

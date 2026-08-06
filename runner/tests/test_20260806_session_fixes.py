@@ -84,6 +84,29 @@ check("narrowed scan loses nothing the wide scan saw", not _lost,
 check("narrowed scan uncovers cards the window hid", len(_new_ids) > len(_old),
       f"+{len(_new_ids) - len(_old)} previously invisible")
 
+
+# 13. WAIT-card fetch storm: cards are filed before the agent branch exists, and every one of
+#     them used to pay its own `git fetch origin <branch>` to rediscover that. One ls-remote
+#     answers it for the whole pass. The contract that matters is that the shortcut is only ever
+#     allowed to say "no" about a branch origin genuinely does not have.
+_repo = "/Users/kpasch/Documents/beethoven/claude-orchestrator"
+import subprocess as _sp
+_ls = _sp.run(["git", "ls-remote", "--heads", "origin", "refs/heads/agent/*"], cwd=_repo,
+              capture_output=True, encoding="utf-8")
+_real = [l.split("\trefs/heads/", 1)[1].strip() for l in _ls.stdout.splitlines()
+         if "\trefs/heads/" in l]
+check("remote agent refs listed in one call", _ls.returncode == 0 and len(_real) > 0,
+      f"{len(_real)} branches")
+check("shortcut never hides a branch origin has",
+      all(mt._remote_agent_branch_maybe(_repo, b) for b in _real[:40]),
+      f"checked {min(40, len(_real))}")
+check("shortcut rejects a branch origin lacks",
+      not mt._remote_agent_branch_maybe(_repo, "agent/__no_such_branch_20260806__"), "")
+import time as _time
+_t = _time.time(); [mt._remote_agent_branch_maybe(_repo, "agent/__miss_%d__" % i) for i in range(300)]
+_warm = _time.time() - _t
+check("300 misses answered from cache, not the network", _warm < 1.0, f"{_warm:.3f}s for 300")
+
 print("=" * 68)
 ok = 0
 for n, passed, d in RESULTS:
