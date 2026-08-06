@@ -24,7 +24,7 @@ def test_operator_phantom_is_requeued_with_reconcile_and_preservation_contract()
     assert values["state"] == "QUEUED"
     assert "Preserve every newer or\noverlapping improvement" in values["prompt"]
     assert values["prompt"].endswith("Implement the missing behavior")
-    assert values["submitted_by"] == "legacy-dropbox-owner"
+    assert values["submitted_by_label"] == "Kale Pasch (legacy dropbox)"
     assert values["priority"] == 10
 
 
@@ -35,5 +35,24 @@ def test_no_phantoms_is_idempotent():
     with patch.object(phantom_recovery, "db", database):
         result = phantom_recovery.recover(limit=10)
 
-    assert result == {"scanned": 0, "recovered": 0, "slugs": []}
+    assert result == {"scanned": 0, "recovered": 0, "consolidated": 0, "slugs": []}
     database.update.assert_not_called()
+
+
+def test_active_slug_consolidates_duplicate_without_second_writer():
+    database = MagicMock()
+    database.select.side_effect = [
+        [{"id": "duplicate", "slug": "dropbox-same", "state": "PHANTOM_UNVERIFIED",
+          "prompt": "Improve it", "note": "audit"}],
+        [{"id": "keeper", "slug": "dropbox-same", "state": "QUEUED"}],
+    ]
+    database.update.side_effect = [None, [{"id": "duplicate", "state": "DECOMPOSED"}]]
+
+    with patch.object(phantom_recovery, "db", database):
+        result = phantom_recovery.recover(limit=10)
+
+    assert result["recovered"] == 0
+    assert result["consolidated"] == 1
+    _match, values = database.update.call_args.args[1:]
+    assert values["state"] == "DECOMPOSED"
+    assert values["deps"] == ["dropbox-same"]
