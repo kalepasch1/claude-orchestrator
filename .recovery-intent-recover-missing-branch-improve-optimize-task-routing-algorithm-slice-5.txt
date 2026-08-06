@@ -1,4 +1,0 @@
-recovery-intent: recover-missing-branch-improve-optimize-task-routing-algorithm-slice-5
-template: d0bc0d94e387
-intent: 05ab230efefa 07060650 07062319 08t03 08t14 1677fc0f7242 28a9c8c2bdbf 3f01f94359a3 490564c811b3 4ff7ba380eac 5fac0ef2b876 6096aa2b 785478 825997 99f45988 9f821ef2b6cc a5f8e22456b6 acceptance adapt affected after agent agentledger algorithm apparently assertion automatically backlog based because beethoven before behavior being below blocked bottleneck bottlenecks branch branches brief briefly build cache canonical change commit common concrete conflict context conventions conversion crashes critical current d44b1d3c1928 database decomposed deployed diffs drafting during enhance ensure equivalent error excerpt existing exists failures first generated_at handling helpers implementation improve improvements increase inspect
-base: master

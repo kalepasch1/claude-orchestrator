@@ -1,4 +1,0 @@
-recovery-intent: canary-gpt-mini-29
-template: 1b3493976cbe
-intent: 07062319 07071626 1042d0 30min 7ba77da91bb4 8b92d078e856 acceptance adapt agent agentic already alter analysis artifacts because beethoven before behavior below bffd1c2752f8 blocks branch broad bugfix build canary category cause change changes changing checks coder commit complete completion concrete config context continue dependencies diffs directive drafting duplicate duplicates eliminating equivalent examine existing exists failure files final finish first focus fresh functionality green identify implementation improve inspect install instead institute integral intent large library lines maintainability markets matched mergeable merged minimally missing module
-base: main

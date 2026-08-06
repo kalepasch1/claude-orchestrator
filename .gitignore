@@ -37,3 +37,10 @@ runner/.preopt_cache/
 runner/*.bak.wedgefix
 intake/*.md
 node_modules
+
+# Recovery-intent stubs. patch_recovery.py writes .recovery-intent-<slug>.txt when it
+# cannot reconstruct a real patch, and regenerable_artifacts.REGENERABLE_PATTERNS already
+# declares them machine output. They were never ignored, so 67 of them were committed to
+# master — bag-of-words files carrying no work, which is exactly what landed_evidence.py
+# and merge_reconciliation.py grep commit messages to detect and reject.
+.recovery-intent-*.txt

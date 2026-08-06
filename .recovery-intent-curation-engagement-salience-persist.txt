@@ -1,4 +1,0 @@
-recovery-intent: curation-engagement-salience-persist
-template: 47b3fc5d1b51
-intent: 07062319 07071626 8b92d078e856 __tests__ acceptance acted adapt address after agent agentic alter analysis application approved artifacts assertion attempt bandit because beethoven before behavior below blocks branch branches broad bugfix build cache category cause change changes changing checks commit complete completion concrete config context continue could curatedashboard curation curationengagement curationsaliencefeedback dashboard default deleted dependencies deploy diffs directive directly drafting duplicate duplicates duration edits eliminating endpoints engagement engagementbonus equivalent examine existing exists exits extend failed failure files final finish first focus fresh
-base: main
