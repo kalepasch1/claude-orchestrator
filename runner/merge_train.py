@@ -1297,10 +1297,32 @@ def _pick_cards():
     N+1 scan is in train_run(): task resolution is now batched into one query instead of one
     per card (see _resolve_tasks_batch below).
     """
-    cards = db.select("approvals", {"select": "*", "status": "eq.approved",
-                                    "kind": f"in.({','.join(MERGE_KINDS)})",
-                                    "order": "created_at.desc",
-                                    "limit": os.environ.get("MERGE_TRAIN_SCAN_LIMIT", "3000")}) or []
+    # SCAN-WINDOW STARVATION (fixed 2026-08-06) — the real cause of months of stranded work.
+    #
+    # This scanned the NEWEST `limit` approved cards and filtered client-side. The approvals
+    # table now holds 238,177 rows, and the train stamps decided_by on every card it handles,
+    # so the newest 3,000 are almost entirely already-decided outcomes. A card that was created
+    # but not merged (branch not ready, project paused, host stale, train crashed mid-pass)
+    # ages out of that window within hours and is then INVISIBLE FOREVER — while
+    # ensure_integration_card still sees it and refuses to file a replacement, so the task can
+    # never be re-queued either. Measured: 90 finished tasks holding valid, undecided cards
+    # that the train had not looked at in up to 98 hours, with `undecided cards = 0` reported
+    # because every one of them sat outside the scan window.
+    #
+    # Scanning oldest-first as well as newest-first costs one extra query and bounds the
+    # damage permanently: the backlog head is always visible, and fresh work still enters via
+    # the desc pass. Dedup by id since the two windows overlap once the backlog is small.
+    limit = os.environ.get("MERGE_TRAIN_SCAN_LIMIT", "3000")
+    base = {"select": "*", "status": "eq.approved",
+            "kind": f"in.({','.join(MERGE_KINDS)})", "limit": limit}
+    cards, seen = [], set()
+    for order in ("created_at.asc", "created_at.desc"):
+        for c in (db.select("approvals", {**base, "order": order}) or []):
+            cid = c.get("id")
+            if cid in seen:
+                continue
+            seen.add(cid)
+            cards.append(c)
     return [c for c in cards
             if c.get("kind") in MERGE_KINDS
             and approval_merge._is_code_merge_card(c)
