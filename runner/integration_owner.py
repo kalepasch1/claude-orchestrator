@@ -91,8 +91,78 @@ def _live_hosts():
     return out
 
 
+CAPACITY_KIND = "host_capacity"
+CAPACITY_FRESH_S = int(os.environ.get("ORCH_CAPACITY_FRESH_S", "900"))
+
+
+def publish_capacity():
+    """Announce THIS host's free RAM so other hosts can see it. Best-effort.
+
+    WHY: runner_heartbeats carries active_tasks and nothing else — no free RAM, no lane
+    headroom. So no host has ever known whether another host had capacity. Each Mac sized
+    its own lanes off its own free RAM and claimed opportunistically, which meant a
+    memory-starved host (Mac 1, with 17GB stuck in fseventsd) throttled itself to 1-2 lanes
+    while other Macs sat with tens of GB free and no way to learn about it. Worse, the
+    single integration owner ran the heaviest work in the fleet — rebase + test + full
+    production build — and was chosen purely by code freshness, so those builds could land
+    on the one machine with no RAM to run them.
+
+    Published through resource_events rather than a heartbeat column so it needs no
+    migration and degrades to a no-op on hosts that have not been updated.
+    """
+    try:
+        import resource_governor as rg
+        free = rg.ram_free_gb()
+        if free is None:
+            return
+        db.insert("resource_events", {
+            "kind": CAPACITY_KIND,
+            "value": float(free),
+            "detail": f"host={HOST} free_gb={free} floor={rg.effective_floor_gb()}",
+            "action": "capacity",
+            "created_at": "now()",
+        })
+    except Exception:
+        pass
+
+
+def _capacity():
+    """{hostname: free_gb} from recent host_capacity events. Newest per host wins."""
+    import datetime
+    try:
+        rows = db.select("resource_events",
+                         {"select": "value,detail,created_at", "kind": f"eq.{CAPACITY_KIND}",
+                          "order": "created_at.desc", "limit": "60"}) or []
+    except Exception:
+        return {}
+    now = datetime.datetime.now(datetime.timezone.utc)
+    out = {}
+    for r in rows:
+        detail = str(r.get("detail") or "")
+        if "host=" not in detail:
+            continue
+        h = detail.split("host=", 1)[1].split()[0]
+        if h in out:
+            continue
+        try:
+            seen = datetime.datetime.fromisoformat(
+                str(r.get("created_at") or "").replace("Z", "+00:00"))
+            if seen.tzinfo is None:
+                seen = seen.replace(tzinfo=datetime.timezone.utc)
+            if (now - seen).total_seconds() > CAPACITY_FRESH_S:
+                continue
+        except Exception:
+            continue
+        try:
+            out[h] = float(r.get("value"))
+        except Exception:
+            continue
+    return out
+
+
 def decide(local_sha=None):
     """Return (may_integrate: bool, reason: str). Never raises."""
+    publish_capacity()
     try:
         mine = (local_sha if local_sha is not None else local_code_sha()) or ""
         override = (os.environ.get("ORCH_INTEGRATION_HOST") or "").strip()
@@ -152,12 +222,31 @@ def _is_behind(a, b):
 
 
 def _elect(live):
-    """Deterministic owner: newest code wins, hostname breaks ties. Same answer on every host."""
+    """Deterministic owner. Same answer computed independently on every host.
+
+    Order of preference:
+      1. running the newest code (never let a stale host own shared refs), then
+      2. the MOST FREE RAM among those, then
+      3. hostname, purely so ties resolve identically everywhere.
+
+    (2) is the point. Integration is the heaviest work the fleet does — rebase, full test
+    run, production build — and electing on code freshness alone could pin all of it to the
+    machine with the least RAM while other Macs idled with tens of GB spare. That is exactly
+    what happened here: Mac 1 held integration while throttled to 1-2 lanes by memory
+    pressure. Capacity is only comparable because publish_capacity() now announces it;
+    hosts that report nothing sort last rather than blocking the election.
+    """
     if not live:
         return ""
     newest = _newest_sha(live)
     candidates = [h for h, s in live.items() if s == newest] if newest else sorted(live)
-    return sorted(candidates)[0] if candidates else ""
+    if not candidates:
+        return ""
+    if len(candidates) == 1:
+        return candidates[0]
+    cap = _capacity()
+    # -free_gb so more RAM sorts first; unknown capacity -> -0.0, i.e. last among equals.
+    return sorted(candidates, key=lambda h: (-cap.get(h, 0.0), h))[0]
 
 
 if __name__ == "__main__":
@@ -165,4 +254,5 @@ if __name__ == "__main__":
     print(f"host={HOST}")
     print(f"local_sha={local_code_sha()[:10]}")
     print(f"live={ { h: s[:8] for h, s in _live_hosts().items() } }")
+    print(f"capacity_gb={_capacity()}")
     print(f"may_integrate={ok}  reason={why}")
