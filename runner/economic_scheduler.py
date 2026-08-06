@@ -23,7 +23,14 @@ import revenue_attribution
 ENABLED = os.environ.get("ORCH_ECONOMIC_SCHEDULER_ENABLED", "false").lower() in ("true", "1", "yes")
 ROI_THRESHOLD = float(os.environ.get("ORCH_ROI_THRESHOLD", "1.5"))  # only pursue if 1.5x ROI
 REVENUE_CRITICAL_LANE_SIZE = int(os.environ.get("ORCH_REVENUE_CRITICAL_LANE_SIZE", "20"))
-REVENUE_KEYWORDS = ("pricing", "payment", "stripe", "marketplace", "billing", "revenue", "monetize")
+# Intent phrases, not bare nouns. "fix stripe payment crash" is a stability task that merely
+# MENTIONS payments; "payment integration" work is revenue-moving. Matching bare "payment" /
+# "pricing" / "stripe" handed the 1.5x revenue boost to any bugfix whose stack trace happened
+# to run through the billing code, which is most of them — so the boost stopped discriminating
+# and revenue-critical work lost its lane to incidental mentions.
+REVENUE_KEYWORDS = ("payment integration", "payment processing", "pricing page", "pricing tier",
+                    "marketplace", "billing", "subscription", "revenue", "monetize",
+                    "monetization", "paywall", "checkout flow")
 
 
 def load_ctx():

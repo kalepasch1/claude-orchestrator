@@ -383,3 +383,50 @@ class TestEconomicSchedulerEdgeCases:
         """Validation returns False for unknown model."""
         scheduler = EconomicScheduler()
         assert not scheduler.validate_context_usage("unknown-model", 1000)
+
+
+# --- revenue-keyword precision (backlog-batch-beethoven-e63dfee) ---------------
+#
+# The 1.5x revenue boost keyed on bare nouns: "pricing", "payment", "stripe". Any bugfix whose
+# stack trace ran through the billing code matched, so the boost stopped discriminating and
+# revenue-critical work lost its lane to incidental mentions. The keyword list is now intent
+# phrases. These tests pin both directions — the boost must still fire for real revenue work.
+
+import economic_scheduler as _es
+
+
+def _estimate(prompt, kind="build"):
+    return _es.predict_revenue({"prompt": prompt, "kind": kind, "project": "p"},
+                                {"kind_roi": {kind: 100.0}})
+
+
+def _boosted(prompt, kind="build"):
+    """True when the 1.5x revenue multiplier fired.
+
+    predict_revenue returns (estimate, low, high); compare the estimate against a prompt with
+    no revenue signal so the assertion is about the multiplier, not the absolute number.
+    """
+    value = _estimate(prompt, kind)[0]
+    baseline = _estimate("unrelated refactor of the log formatter", kind)[0]
+    return value > baseline * 1.01
+
+
+def test_incidental_payment_mention_is_not_revenue_work():
+    """The regression: a stability bugfix that merely mentions payments."""
+    assert not _boosted("fix stripe payment crash on checkout", kind="bugfix")
+    assert not _boosted("NullPointerException in the payment retry loop", kind="bugfix")
+    assert not _boosted("update pricing docs typo", kind="mechanical")
+
+
+def test_real_revenue_work_still_boosts():
+    """Guard against over-correcting: the boost must still do its job."""
+    assert _boosted("build payment integration for the new provider")
+    assert _boosted("add a subscription billing tier")
+    assert _boosted("implement the paywall for gated content")
+    assert _boosted("revenue attribution dashboard")
+
+
+def test_keywords_are_phrases_not_bare_nouns():
+    for bare in ("payment", "pricing", "stripe"):
+        assert bare not in _es.REVENUE_KEYWORDS, (
+            f"{bare!r} is a bare noun; it over-triggers the revenue boost")
