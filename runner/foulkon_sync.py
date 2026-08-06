@@ -180,6 +180,12 @@ def run():
 
 
 if __name__ == "__main__":
+    # Single-instance lock for the scheduled sync; `verify` is read-only and stays
+    # runnable while a sync is in flight. See lane_guard for the leak this prevents.
+    if not (len(sys.argv) > 1 and sys.argv[1] == "verify") \
+            and not os.environ.get("ORCH_NO_SINGLE_INSTANCE"):
+        import lane_guard
+        _lock = lane_guard.guard_or_exit("foulkon_sync", interval_s=600)
     if len(sys.argv) > 1 and sys.argv[1] == "verify":
         print(json.dumps(verify(), indent=2))
     else:

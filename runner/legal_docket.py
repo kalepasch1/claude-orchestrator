@@ -201,4 +201,12 @@ def run(limit=BATCH):
 
 
 if __name__ == "__main__":
+    # Single-instance lock (fleet immune system, 2026-08-02). On a 30-minute interval this
+    # script leaked 14 concurrent copies, some 8-10h old, which is what starved the fleet
+    # of RAM and closed the mem-gate. A tick that finds the lock held logs and exits 0; the
+    # holder also arms an interval x1.5 self-kill so a wedged copy cannot own the lock
+    # forever. Set ORCH_NO_SINGLE_INSTANCE=1 to bypass for manual debugging.
+    import lane_guard
+    _lock = (None if os.environ.get("ORCH_NO_SINGLE_INSTANCE")
+             else lane_guard.guard_or_exit("legal_docket", interval_s=1800))
     print(json.dumps(run(int(sys.argv[1]) if len(sys.argv) > 1 else BATCH), indent=2))

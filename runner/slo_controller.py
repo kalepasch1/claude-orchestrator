@@ -56,6 +56,14 @@ def run():
     if checks["fleet_util"]["ok"] is False:
         actions.extend(_remediate_fleet_util(checks["fleet_util"]))
 
+    # SLO 6: Lane health (fleet immune system, 2026-08-02). Surfaces live lane count, the
+    # age histogram, reaps/hour and the mem-gate state on the dashboard, so "the fleet is
+    # full of dead workers" is a visible red light instead of something the operator has to
+    # discover by hand during an incident.
+    checks["lane_health"] = _check_lane_health()
+    if checks["lane_health"]["ok"] is False:
+        actions.extend(_remediate_lane_health(checks["lane_health"]))
+
     # Record SLO status (UNKNOWN counts as not-passing for status, but doesn't trigger remediation)
     passing = sum(1 for c in checks.values() if c["ok"] is True)
     total = len(checks)
@@ -87,6 +95,59 @@ def run():
         print(f"[slo] {status} ({passing}/{total}) actions={[a['action'] for a in actions]}")
 
     return {"status": status, "passing": passing, "total": total, "actions": len(actions)}
+
+
+def _check_lane_health():
+    """Lane telemetry for the SLO dashboard: count, age histogram, reaps/hour, mem-gate.
+
+    Fails when lanes exceed throttle+slack (a leak) or the mem-gate has been closed longer
+    than the alert window (RAM starvation). Both were true and invisible on 2026-08-02.
+    """
+    try:
+        import lane_guard
+        snap = lane_guard.telemetry()
+    except Exception as e:
+        return {"ok": None, "detail": "lane telemetry unavailable: {0}".format(e)}
+
+    ceiling = snap["lane_throttle"] + lane_guard.LANE_ALERT_SLACK
+    leaking = snap["lane_count"] > ceiling
+    gate_stuck = (snap["mem_gate_open"] is False
+                  and snap["mem_gate_closed_min"] >= lane_guard.MEM_GATE_ALERT_MIN)
+    return {
+        "ok": not (leaking or gate_stuck),
+        "lane_count": snap["lane_count"],
+        "lane_throttle": snap["lane_throttle"],
+        "lane_ceiling": ceiling,
+        "age_histogram": snap["lane_age_histogram"],
+        "oldest_lane_min": snap["oldest_lane_min"],
+        "reaps_last_hour": snap["reaps_last_hour"],
+        "reaps_by_reason": snap["reaps_by_reason"],
+        "mem_gate_open": snap["mem_gate_open"],
+        "mem_gate_closed_min": snap["mem_gate_closed_min"],
+        "free_ram_gb": snap["free_ram_gb"],
+        "interval_daemons": snap["interval_daemons"],
+        "detail": ("lane leak: {0} > ceiling {1}".format(snap["lane_count"], ceiling) if leaking
+                   else "mem-gate closed {0}m".format(int(snap["mem_gate_closed_min"])) if gate_stuck
+                   else "{0} lanes, gate open".format(snap["lane_count"])),
+    }
+
+
+def _remediate_lane_health(check):
+    """Sweep the zombies, then page the operator. Reaping is the fix; the alert is the record."""
+    actions = []
+    try:
+        import lane_guard
+        reaped = lane_guard.reap_zombie_lanes()
+        daemons = lane_guard.reap_stuck_daemons()
+        if reaped or daemons:
+            actions.append({"action": "lane_sweep",
+                            "detail": "reaped {0} lanes, {1} daemon copies".format(
+                                len(reaped), len(daemons))})
+        for msg in lane_guard.check_and_alert():
+            actions.append({"action": "lane_alert", "detail": msg})
+    except Exception as e:
+        print("[slo] lane remediation failed: {0}".format(e))
+    return actions
 
 
 def _check_merge_rate():

@@ -266,6 +266,12 @@ def run(limit=BATCH):
 
 
 if __name__ == "__main__":
+    # Single-instance lock for the scheduled run; `ingest` is an operator-driven one-shot
+    # and stays unlocked. See lane_guard for the leak this prevents.
+    if not (len(sys.argv) > 3 and sys.argv[1] == "ingest") \
+            and not os.environ.get("ORCH_NO_SINGLE_INSTANCE"):
+        import lane_guard
+        _lock = lane_guard.guard_or_exit("benchmark_redlines", interval_s=3600)
     if len(sys.argv) > 3 and sys.argv[1] == "ingest":
         # benchmark_redlines.py ingest <target_id> <path-to-filing.txt> [url]
         with open(sys.argv[3], "r", encoding="utf-8", errors="replace") as f:

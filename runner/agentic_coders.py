@@ -841,8 +841,18 @@ def _agentic_event(kind, coder, model="", project=None, value=0, action=""):
         pass
 
 
-def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900, **kwargs):
-    """Dispatch to the chosen agentic backend, returning claude_cli-shaped output."""
+def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=None, **kwargs):
+    """Dispatch to the chosen agentic backend, returning claude_cli-shaped output.
+
+    `timeout` defaults to the per-task-class wall clock from lane_guard (45m unless the
+    class overrides it) rather than a flat 900s. Callers that pass an explicit timeout
+    still win. Every backend below is now bounded — before the fleet immune system an
+    unbounded invocation here is what stranded lanes for hours.
+    """
+    import lane_guard
+    task_class = kwargs.get("task_class") or kwargs.get("kind")
+    if timeout is None:
+        timeout = lane_guard.class_timeout(task_class)
     # --- Cowork skill path: browser automation, document generation, etc. ---
     if coder == "cowork-skill":
         try:
@@ -899,7 +909,14 @@ def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900, **k
                 "Agent SDK installed, and no other coder is available. Install the CLI or set "
                 "CLAUDE_BIN to its absolute path in the runner environment.")
         import claude_cli
-        return claude_cli.run(prompt, model, cwd=cwd, env=env, project=project, timeout=timeout, **kwargs)
+        # Forward the task class/id so the guard can apply the right wall clock and, on a
+        # reap, name the task it freed. claude_cli.run() does not accept **kwargs, so pass
+        # only the keys it declares.
+        _cc = {k: v for k, v in kwargs.items()
+               if k in ("max_turns", "permission", "output_only")}
+        return claude_cli.run(prompt, model, cwd=cwd, env=env, project=project,
+                              timeout=timeout, task_class=task_class,
+                              task_id=kwargs.get("task_id"), **_cc)
     spec = _spec(coder)
     tmpl = _normalize_aider_cmd(spec["cmd"] if spec else "")
     if not tmpl:
@@ -917,8 +934,13 @@ def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900, **k
             except Exception:
                 slot = contextlib.nullcontext({"locked": False, "unloaded": []})
         with slot:
-            proc = subprocess.run(shlex.split(cmd) if "{prompt}" not in tmpl else ["bash", "-lc", cmd],
-                                  cwd=cwd, env=_aider_env(env), capture_output=True, text=True, timeout=timeout)
+            # Guarded like the claude path: own process group, wall clock + output
+            # heartbeat, killpg on expiry. `bash -lc` in particular spawns a shell whose
+            # child is what actually wedges — subprocess.run's kill would have left it.
+            proc = lane_guard.run_guarded(
+                shlex.split(cmd) if "{prompt}" not in tmpl else ["bash", "-lc", cmd],
+                cwd=cwd, env=_aider_env(env), timeout=timeout,
+                task_class=task_class, task_id=kwargs.get("task_id"), coder=coder)
         # REAL cost from aider's own output (per-message $), so paid-coder daily caps are exact; fall
         # back to the coder's nominal est_usd only when the CLI reported no cost (e.g. a free local model).
         real = _parse_cost((proc.stdout or "") + "\n" + (proc.stderr or ""))
@@ -932,6 +954,10 @@ def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900, **k
     except subprocess.TimeoutExpired:
         _agentic_event("agentic_coder_finish", coder, model, project=project,
                        value=int((time.time() - t0) * 1000), action="returncode=124 timeout")
+        # The process group is already dead (lane_guard killed it). Hand the task back to
+        # the queue so the slot is genuinely free rather than left RUNNING for the zombie
+        # sweeper to find 90 minutes later.
+        lane_guard.release_lane_to_retry(kwargs.get("task_id"), "wall_clock_or_heartbeat")
         return {"text": "", "cost_usd": 0.0, "input_tokens": 0, "output_tokens": 0,
                 "returncode": 124, "stderr": f"{coder} timeout", "coder": coder}
 

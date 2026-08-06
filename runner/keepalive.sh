@@ -211,6 +211,14 @@ while true; do
       printf '%s\n' "$_boot_commit" > .runner_boot_commit 2>/dev/null || true
     export ORCH_BOOT_COMMIT="$_boot_commit"
   fi
+  # Out-of-band lane backstop. The mechanism is now lane_guard inside the runner
+  # (per-invocation wall clock + heartbeat + killpg, plus the laneguard-300 sweep). This
+  # script covers the one case in-process guards structurally cannot: the runner itself
+  # being the wedged process. Idempotent — skipped when a copy is already alive.
+  if ! pgrep -f "[l]ane_medic.sh" >/dev/null 2>&1; then
+    nohup bash tools/lane_medic.sh >/dev/null 2>&1 &
+    echo "[keepalive] started lane_medic backstop at $(date)" >> "$RUNNER_LOG"
+  fi
   tmp_log="$(mktemp "${ORCH_LOG_DIR}/runner-start.XXXXXX")"
   python3 runner.py > "$tmp_log" 2>&1
   code=$?
