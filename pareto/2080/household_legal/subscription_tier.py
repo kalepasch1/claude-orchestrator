@@ -1,0 +1,159 @@
+"""Subscription tier thresholds and escalation.
+
+Decides whether a household's regime-change activity has outgrown its tier.
+Pure: no I/O, no clock reads, no side effects — an escalation is a
+RECOMMENDATION, never an automatic upgrade. Charging someone more because a
+jurisdiction changed a rule is a decision a human makes.
+"""
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+
+TIERS: List[str] = ["free", "standard", "premium"]
+
+# Regime updates per period a tier covers before it is outgrown.
+TIER_LIMITS: Dict[str, int] = {
+    "free": 1,
+    "standard": 10,
+    "premium": 1_000_000,
+}
+
+# Jurisdictions whose complexity requires at least this tier.
+JURISDICTION_FLOOR: Dict[str, str] = {
+    "CA": "standard",
+    "NY": "standard",
+}
+
+
+@dataclass
+class TierEvaluation:
+    current_tier: str
+    recommended_tier: str
+    escalate: bool
+    usage: int
+    limit: int
+    reasons: List[str]
+
+
+def normalize_tier(tier: Optional[str]) -> str:
+    """Map any input to a known tier. Unknown input reads as the LOWEST tier.
+
+    Failing upward would silently grant paid entitlements on a typo.
+    """
+    value = f"{tier or ''}".strip().lower()
+    return value if value in TIER_LIMITS else "free"
+
+
+def tier_rank(tier: Optional[str]) -> int:
+    return TIERS.index(normalize_tier(tier))
+
+
+def higher_tier(a: Optional[str], b: Optional[str]) -> str:
+    return a if tier_rank(a) >= tier_rank(b) else b  # type: ignore[return-value]
+
+
+def next_tier(tier: Optional[str]) -> str:
+    rank = tier_rank(tier)
+    return TIERS[min(rank + 1, len(TIERS) - 1)]
+
+
+def evaluate_tier(
+    current_tier: Optional[str],
+    regime_update_count: int = 0,
+    jurisdictions: Optional[List[str]] = None,
+) -> TierEvaluation:
+    """Recommend a tier for the observed usage. Never raises."""
+    tier = normalize_tier(current_tier)
+    limit = TIER_LIMITS[tier]
+    reasons: List[str] = []
+
+    try:
+        usage = int(regime_update_count)
+    except (TypeError, ValueError):
+        usage = 0
+    usage = max(0, usage)
+
+    recommended = tier
+
+    if usage > limit:
+        recommended = higher_tier(recommended, next_tier(tier))
+        reasons.append(f"{usage} regime update(s) exceeds the {tier} limit of {limit}")
+
+    for jurisdiction in (jurisdictions or []):
+        floor = JURISDICTION_FLOOR.get(f"{jurisdiction or ''}".strip().upper())
+        if floor and tier_rank(tier) < tier_rank(floor):
+            recommended = higher_tier(recommended, floor)
+            reasons.append(f"jurisdiction {jurisdiction} requires at least {floor}")
+
+    escalate = tier_rank(recommended) > tier_rank(tier)
+    if not escalate:
+        reasons.append(f"{tier} tier covers current usage ({usage}/{limit})")
+
+    return TierEvaluation(
+        current_tier=tier,
+        recommended_tier=recommended,
+        # An escalation is a recommendation for a human, never an auto-upgrade.
+        escalate=escalate,
+        usage=usage,
+        limit=limit,
+        reasons=reasons,
+    )
+
+
+# ── Monitor ──────────────────────────────────────────────────────────────────
+
+# Regime events that constitute a breach and therefore warrant remediation.
+BREACH_KINDS = ("breach", "violation", "non_compliance", "enforcement")
+
+# Tiers whose remediation is handled in-house rather than escalated out.
+IN_HOUSE_TIERS = ("standard", "premium")
+
+
+class SubscriptionTierMonitor:
+    """Decide whether a regime event escalates to licensed partners.
+
+    The split is deliberate and is the whole point of the tier: a PAID tier gets
+    in-house remediation, a FREE tier gets escalated to licensed partners.
+    Escalating a paid user would be selling them something they already bought;
+    NOT escalating a free user would be quietly performing unlicensed work on
+    their behalf, which is the more serious of the two errors.
+    """
+
+    def __init__(self, oracle=None, partner_queue=None):
+        self.oracle = oracle
+        # A caller-supplied queue lets a test observe escalations without
+        # patching. Defaults to an in-process list for this phase.
+        self.partner_queue = partner_queue if partner_queue is not None else []
+
+    def check_remediation_threshold(self, user_subscription_tier, regime_event) -> bool:
+        """True when this event must escalate to licensed partners. Never raises.
+
+        Fail-soft returns False — the SAFE direction here, because a spurious
+        escalation sends a stranger a household's legal matter. A genuine breach
+        that fails to escalate still surfaces on the next event; a wrongly
+        disclosed case cannot be recalled.
+        """
+        try:
+            from regime_consumer import normalize_regime_event
+            event = normalize_regime_event(regime_event)
+            if event is None:
+                return False
+
+            kind = " ".join(str(v).lower() for v in (
+                event.get("rule_id", ""), event.get("description", "")))
+            is_breach = any(marker in kind for marker in BREACH_KINDS)
+            if not is_breach:
+                return False
+
+            return normalize_tier(user_subscription_tier) not in IN_HOUSE_TIERS
+        except Exception:                                      # fail-soft
+            return False
+
+    def escalate_to_licensed_partners(self, user_id, case_summary) -> None:
+        """Queue a case for the licensed-partner network. Never raises."""
+        try:
+            self.partner_queue.append({
+                "user_id": f"{user_id or ''}",
+                "case_summary": f"{case_summary or ''}",
+            })
+        except Exception:                                      # fail-soft
+            pass
