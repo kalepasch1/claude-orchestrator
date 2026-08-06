@@ -107,6 +107,22 @@ _t = _time.time(); [mt._remote_agent_branch_maybe(_repo, "agent/__miss_%d__" % i
 _warm = _time.time() - _t
 check("300 misses answered from cache, not the network", _warm < 1.0, f"{_warm:.3f}s for 300")
 
+
+# 14. archive refs must leave the machine. archive_branch() wrote refs/archive/<b>/<epoch>
+#     locally and logged "archived ...", which reads as a durability guarantee it did not
+#     provide: audited today, 93 archive refs on this disk and 0 on origin.
+_bd = open("/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/branch_durability.py").read()
+check("archive_branch pushes the ref to origin",
+      'f"{ref}:{ref}"' in _bd and "ORCH_SHARE_ARCHIVE_REFS" in _bd, "push present")
+check("a failed archive push is reported, not swallowed",
+      "LOCAL-ONLY" in _bd, "log distinguishes durable from local-only")
+_local = _sp.run(["git", "for-each-ref", "--format=%(refname)", "refs/archive/"],
+                 cwd=_repo, capture_output=True, encoding="utf-8").stdout.split()
+_rem = [l.split()[-1] for l in _sp.run(["git", "ls-remote", "origin", "refs/archive/*"],
+        cwd=_repo, capture_output=True, encoding="utf-8").stdout.splitlines() if "refs/archive/" in l]
+check("existing archive refs are now on origin too",
+      _local and not (set(_local) - set(_rem)), f"local={len(_local)} origin={len(_rem)}")
+
 print("=" * 68)
 ok = 0
 for n, passed, d in RESULTS:
