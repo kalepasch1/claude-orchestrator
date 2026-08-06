@@ -91,7 +91,12 @@ def _integration_evidence(repo, slug):
     tree — and returns the sha so callers can record it. See
     tests/test_phantom_merge_loop.py for the executable reproduction.
     """
-    if not repo or not slug:
+    # os.path.isdir guard matches _branch_exists/_fetch_agent_refs above. Without it the
+    # bare subprocess.run(cwd=repo) below raises FileNotFoundError for a repo_path absent
+    # from THIS machine — and the fleet runs on two Macs that do not hold the same repos.
+    # One missing path aborted the whole sweep, so no task got integration-checked at all
+    # and every passed task then looked like a lost branch: recovery churn from a typo.
+    if not repo or not slug or not os.path.isdir(repo):
         return None
     try:
         import landed_evidence
@@ -273,6 +278,25 @@ def _handle_missing_branch(task, proj, recovery_index=None):
         force = None if (not orig or orig == "ollama") else orig
     else:
         force = orig or "ollama"
+    # ADMISSION PRECONDITION: never queue a recovery with nothing to recover from.
+    # The prompt above asks the agent to "recreate the smallest equivalent patch"; with no
+    # branch, no artifact commit and no stored diff there is no patch to recreate, so the
+    # task cannot produce code — it just re-detects as missing and queues another recovery.
+    # Fail-soft by construction: recovery_admission.enforce() returns True on any error.
+    try:
+        import recovery_admission
+        if not recovery_admission.enforce(
+                {"project_id": task.get("project_id"), "slug": recovery_slug,
+                 "submitted_by": task.get("submitted_by"),
+                 "submitted_by_label": task.get("submitted_by_label")},
+                repo=repo):
+            db.update("tasks", {"id": task["id"]},
+                      {"note": f"integration_sweeper: missing branch for {slug}, but no "
+                               f"recoverable input — recovery NOT queued (recorded in "
+                               f"admission_rejections)"})
+            return False
+    except Exception:
+        pass    # fail-open: the gate must never break the sweep
     row = {"project_id": task.get("project_id"), "slug": recovery_slug, "prompt": prompt,
            "base_branch": base, "kind": task.get("kind") or "bugfix", "state": "QUEUED",
            "deps": [], "material": bool(task.get("material")),
