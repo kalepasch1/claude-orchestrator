@@ -134,7 +134,7 @@ useHead({
         <div class="loop-stats"><span><b>YOU</b> hold the wheel</span><span><b>CADE</b> predicts the road</span><span><b>∞</b> routes compared</span></div>
       </div>
       <div class="loop-console">
-        <header><span>madeus / navigation-intelligence network</span><b>FOUNDER CONTROLLED</b></header>
+        <header><span>Founder-led guidance</span><b>YOU DECIDE</b></header>
         <ol>
           <li><time>09:41:08</time><b>DESTINATION</b><span>Founder sets outcome, constraints, and authority</span><i>✓</i></li>
           <li><time>09:41:10</time><b>TERRAIN</b><span>AI maps portfolio effects and hidden dependencies</span><i>✓</i></li>
