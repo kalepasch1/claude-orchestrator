@@ -1,1 +1,1 @@
-reason=sentinel: runner boot 3a1b22aff != HEAD 37c834d92
+endpoint failover: all configured DB endpoints blocked from this host; heretomorrow relay added 2026-08-06T01:49:25.153337

@@ -1,12 +1,12 @@
 # Cost Intelligence — Internal (full methodology, private/IP)
-_Generated 2026-08-05T12:45:07.873445+00:00 — 30-day window_
+_Generated 2026-08-06T02:00:49.731636+00:00 — 30-day window_
 
 ## Direct cost efficiency (ratios, not cumulative totals)
-- Merge rate: 0.262
-- First-pass rate: 0.325
+- Merge rate: 0.261
+- First-pass rate: 0.324
 - $/merge (all): 0.0069
 - $/merge (fresh, non-reuse only — the real per-unit cost baseline): 0.005
-- Tokens/merge: 234.8
+- Tokens/merge: 235.7
 
 ## Indirect savings from cross-project reuse
 - Zero-token replay events (already inside n_merged, cost-avoidance only): 0
@@ -21,7 +21,7 @@ _Generated 2026-08-05T12:45:07.873445+00:00 — 30-day window_
 - DeepSeek raw $/solve (our token footprint, their price): $0.0
 - Our $/solve (fresh, non-reuse): $0.005
 - **Per-token verdict: we cost more per raw token than DeepSeek — do not claim otherwise**
-- Portfolio coverage (271 units — n_merged + additive reuse): DeepSeek-with-no-reuse would cost $0.01 raw, $0.0 quality-adjusted; our actual cost was $1.81
+- Portfolio coverage (270 units — n_merged + additive reuse): DeepSeek-with-no-reuse would cost $0.01 raw, $0.0 quality-adjusted; our actual cost was $1.81
 - **Portfolio verdict: DeepSeek-with-no-reuse is still lower total cost at this volume/reuse rate — the reuse advantage has not yet overcome the per-token price gap, even after the quality/retry adjustment**
 - _portfolio_coverage assumes DeepSeek needs the SAME tokens per solve as our pipeline (generous: no build-gate/verify/merge-train means more retries in practice) and credits DeepSeek $0 orchestration/reuse-infrastructure cost (also generous). Where quality_adjustment() is passed in, deepseek_usd_per_solve_quality_adjusted/deepseek_cost_quality_adjusted instead scale DeepSeek's cost by the sourced retry_multiplier (benchmark-score ratio) — less generous to DeepSeek where our model's sourced score is higher, but still a heuristic, not a measured result. Even so, this portfolio comparison is the only place our economics can beat a cheaper-per-token model — never claim per-token parity, see raw_per_token_verdict._
 
