@@ -25,7 +25,9 @@ export function createRegulatoryPolicyClient(options: { baseUrl: string; fleetSe
       return invoke<RegulatoryGateReceipt>({ action: 'deployment_gate', ...input })
     },
     featurePolicy(input: { project_ref: string; jurisdiction?: string; features: string[] }) { return invoke({ action: 'feature_policy', ...input }) },
-    agreementPolicy(input: { agreement_control_id: string; action: Record<string, any> }) { return invoke({ action: 'agreement_policy', ...input }) },
+    // The payload's own `action` travels as `agreement_action` so it cannot
+    // clobber the runtime dispatch key (`action: 'agreement_policy'`).
+    agreementPolicy(input: { agreement_control_id: string; action: Record<string, any> }) { const { action: agreementAction, ...rest } = input; return invoke({ action: 'agreement_policy', ...rest, agreement_action: agreementAction }) },
     recordEvidence(input: Record<string, any>) { return invoke({ action: 'evidence', ...input }) },
     measureObligation(input: Record<string, any>) { return invoke({ action: 'obligation', ...input }) },
     recordAuthoritySource(input: Record<string, any>) { return invoke({ action: 'authority_source', ...input }) },

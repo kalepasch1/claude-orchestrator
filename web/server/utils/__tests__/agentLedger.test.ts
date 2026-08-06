@@ -20,11 +20,11 @@ test('awaiting_approval transition returns decision, receipt, and state', async 
   );
   assert.equal(result.state, 'awaiting_approval');
   assert.ok(
-    ['allow', 'escalate', 'deny'].includes(result.decision),
+    ['allow', 'escalate', 'deny'].includes(result.decision!),
     `unexpected decision: ${result.decision}`,
   );
   assert.ok(result.receipt, 'receipt must be present');
-  assert.equal(verifyReceipt(result.receipt), true, 'receipt signature must verify');
+  assert.equal(verifyReceipt(result.receipt!), true, 'receipt signature must verify');
 });
 
 test('approved and executing states are gated', async () => {
@@ -36,7 +36,7 @@ test('approved and executing states are gated', async () => {
     );
     assert.equal(r.state, state);
     assert.ok(r.receipt, `receipt missing for state=${state}`);
-    assert.equal(verifyReceipt(r.receipt), true);
+    assert.equal(verifyReceipt(r.receipt!), true);
   }
 });
 
@@ -44,9 +44,9 @@ test('receipts chain across consecutive transitions for the same actor+userId', 
   const action = { type: 'queue_task', actor: 'chain-agent', userId: 'chain-user' };
   const first = await transitionAction(action, 'awaiting_approval', null);
   const second = await transitionAction(action, 'approved', null);
-  assert.equal(second.receipt.seq, first.receipt.seq + 1, 'seq must increment');
-  assert.equal(second.receipt.prevHash, first.receipt.digest, 'prevHash must equal prior digest');
-  assert.equal(verifyReceipt(second.receipt), true, 'chained receipt must verify');
+  assert.equal(second.receipt!.seq, first.receipt!.seq + 1, 'seq must increment');
+  assert.equal(second.receipt!.prevHash, first.receipt!.digest, 'prevHash must equal prior digest');
+  assert.equal(verifyReceipt(second.receipt!), true, 'chained receipt must verify');
 });
 
 test('supabase.insert is called on gated transition', async () => {

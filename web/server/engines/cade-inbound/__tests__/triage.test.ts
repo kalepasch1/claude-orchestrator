@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   CADETriageEngine,
-  TriageDisposition,
-  CADEFinding,
-  ContestableUnit,
+  type TriageDisposition,
+  type CADEFinding,
+  type ContestableUnit,
   createTriageEngine
 } from '../triage'
 

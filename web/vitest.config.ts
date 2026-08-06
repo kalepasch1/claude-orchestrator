@@ -3,7 +3,7 @@ import vue from '@vitejs/plugin-vue';
 import path from 'path';
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [vue() as any],
   esbuild: {
     // Prevent Vite from resolving web/tsconfig.json which extends
     // .nuxt/tsconfig.json — that file only exists after `nuxt prepare`.

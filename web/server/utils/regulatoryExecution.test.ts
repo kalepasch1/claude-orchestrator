@@ -21,7 +21,7 @@ describe('regulatory execution network', () => {
 
   it('maps reachable and blocked regulatory markets', () => {
     const result = buildRegulatoryMarketTopology({ nodes: [{ id: 'org', available: true }, { id: 'license', available: false }, { id: 'ny', type: 'market' }, { id: 'ca', type: 'market' }], edges: [{ from: 'org', to: 'ny' }, { from: 'license', to: 'ca', blocked: true, requirement: 'CA license' }] })
-    expect(result.reachable_markets.map(x => x.id)).toContain('ny')
+    expect(result.reachable_markets.map((x: any) => x.id)).toContain('ny')
     expect(result.blocked_markets[0].missing).toContain('CA license')
   })
 
@@ -39,7 +39,7 @@ describe('regulatory execution network', () => {
 
   it('constructs a reversible launch with scoped fallback and proof-based re-entry', () => {
     const launch = constructReversibleJurisdictionLaunch({ canary_traffic_bps: 100 })
-    expect(launch.stages.map(x => x.key)).toEqual(['shadow','internal','canary','limited','general'])
+    expect(launch.stages.map((x: any) => x.key)).toEqual(['shadow','internal','canary','limited','general'])
     expect(launch.rollback_policy.scope).toContain('affected_feature_and_jurisdiction_only')
     expect(launch.reentry_policy.explicit_reentry_approval).toBe(true)
   })

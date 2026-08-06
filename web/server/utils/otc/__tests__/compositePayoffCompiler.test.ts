@@ -7,8 +7,8 @@ import {
   performStructuralBacktest,
 } from '../compositePayoffCompiler';
 import {
-  RiskSpec,
-  RiskVector,
+  type RiskSpec,
+  type RiskVector,
   INSTRUMENT_ALLOWLIST,
   MIN_CONFIDENCE_THRESHOLD,
   MIN_SCENARIO_COUNT,

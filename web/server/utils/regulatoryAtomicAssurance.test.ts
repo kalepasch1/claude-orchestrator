@@ -17,7 +17,7 @@ describe('regulatory atomic assurance', () => {
     const result = prepareAtomicRegulatoryTransaction({ steps: [{ key: 'authorize' }, { key: 'settle' }], preconditions: [{ key: 'license', satisfied: true }, { key: 'consent', satisfied: false }] })
     expect(result.status).toBe('held')
     expect(result.authorization_result.missing).toEqual(['consent'])
-    expect(result.compensation_plan.map(x => x.step)).toEqual(['settle','authorize'])
+    expect(result.compensation_plan.map((x: any) => x.step)).toEqual(['settle','authorize'])
   })
 
   it('allows inherited consent only to narrow purpose, action, and expiry', () => {
@@ -37,7 +37,7 @@ describe('regulatory atomic assurance', () => {
 
   it('allocates remediation cost using evidence-weighted causal contribution', () => {
     const result = attributeRegulatoryLiability({ remediation_cost_cents: 100000, contributors: [{ ref: 'model', type: 'model', causal_weight: .6, evidence_confidence: 1 }, { ref: 'approval', type: 'human', causal_weight: .4, evidence_confidence: 1, contractually_recoverable: true }] })
-    expect(result.allocation.map(x => x.allocated_cost_cents)).toEqual([60000,40000])
+    expect(result.allocation.map((x: any) => x.allocated_cost_cents)).toEqual([60000,40000])
     expect(result.recoverable_cost_cents).toBe(40000)
   })
 
