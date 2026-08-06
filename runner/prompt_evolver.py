@@ -50,14 +50,23 @@ class _PromptEvolver:
             else:
                 return (f"[template:{template_id}]\n{base_prompt}", template_id)
 
-        # Aggregate by template_id: sum total_reward and n_trials per template
-        aggregated = {}
+        # Aggregate by template_id: sum total_reward and n_trials per template.
+        #
+        # Seed every known template at zero trials first. Aggregating only over
+        # rows returned by the DB meant an arm that had never been tried had no
+        # row, so it never entered `candidates` and could never be selected --
+        # the bandit collapsed onto whichever template happened to be recorded
+        # first and stopped exploring for good. UCB1's regret bound assumes
+        # every arm is reachable; an unseeded arm has n_trials == 0 and scores
+        # +inf, so it is tried before any arm with history.
+        aggregated = {tid: {"total_reward": 0.0, "n_trials": 0} for tid in TEMPLATE_IDS}
         for row in rows:
             template_id = row.get("template_id", "base")
             if template_id not in aggregated:
                 aggregated[template_id] = {"total_reward": 0.0, "n_trials": 0}
-            aggregated[template_id]["total_reward"] += row.get("total_reward", 0.0)
-            aggregated[template_id]["n_trials"] += row.get("n_trials", 0)
+            # `or 0` also absorbs SQL NULLs, which .get()'s default does not.
+            aggregated[template_id]["total_reward"] += row.get("total_reward") or 0.0
+            aggregated[template_id]["n_trials"] += row.get("n_trials") or 0
 
         # Compute UCB1 scores
         total_trials = sum(v["n_trials"] for v in aggregated.values())
