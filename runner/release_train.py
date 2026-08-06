@@ -36,6 +36,11 @@ import integration_runtime
 # cowork 2026-08-02: floor lowered 10->1 so recovery mode (RELEASE_MIN_BATCH=1) can flush small batches
 MIN_BATCH = max(1, int(os.environ.get("RELEASE_MIN_BATCH", os.environ.get("ORCH_RELEASE_BATCH_MIN", "10"))))
 RELEASE_INTERVAL_HOURS = max(6.0, float(os.environ.get("RELEASE_INTERVAL_HOURS", os.environ.get("ORCH_RELEASE_INTERVAL_HOURS", "6"))))
+# Releases now run on CAPACITY, not on RELEASE_INTERVAL_HOURS (operator directive
+# 2026-08-06). The debounce is what remains of the batching: it coalesces a burst of merges
+# into one release instead of one release per commit, which is the Vercel-churn control the
+# 6h cadence was really providing. Set to 0 to release on every eligible pass.
+RELEASE_DEBOUNCE_S = float(os.environ.get("ORCH_RELEASE_DEBOUNCE_S", "60"))
 STAGING = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
 RELEASE_FIX_PREFIXES = ("relfix-", "buildfix-", "deployfix-")
 QA_FIX_PREFIXES = ("qafix-",)
@@ -55,12 +60,23 @@ _FLOW_LOCK = threading.Lock()
 
 
 def _release_decision(ahead, due, minimum=None):
-    """Release a full batch immediately or flush a partial batch on cadence."""
+    """Release whenever there is capacity and something to ship.
+
+    Operator directive 2026-08-06: releases run on CAPACITY, never on a clock. `due` no longer
+    means "the interval elapsed" — it means "this project has no release in flight and the
+    debounce has settled" (see _release_due).
+
+    MIN_BATCH is therefore no longer a hold: a project with 3 finished changes used to wait
+    for 7 more, or for a 6-hour cadence, before any of them shipped. `minimum` is still
+    accepted so callers and tests keep working, and is still used as the "ship immediately,
+    do not even wait out the debounce" threshold — a full batch is worth interrupting a
+    coalescing window for.
+    """
     minimum = MIN_BATCH if minimum is None else int(minimum)
     ahead = int(ahead or 0)
     if ahead <= 0:
         return "up-to-date"
-    if ahead >= minimum or due:
+    if due:
         return "release"
     return "hold"
 
@@ -888,16 +904,23 @@ def _run_for_unlocked(project, repo_override=None):
     staging_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
     # count staging changes vs the deployable prod tip, not necessarily a stale checked-out local branch
     ahead = _git(repo, "rev-list", "--count", f"{release_base}..{STAGING}").stdout.strip() or "0"
-    if int(ahead) < MIN_BATCH:
-        return {"project": project, "prod": prod, "staged": merged, "ahead": ahead, "note": "below batch size"}
-    due, due_note = _release_due(project)
-    # Amortize normal traffic into batches, but never strand low-volume projects
-    # forever below MIN_BATCH: cadence expiry flushes whatever is ready.
-    if _release_decision(ahead, due) == "hold":
-        _record_release_flow(project, "staging-held-batch", prod=prod, staged=merged,
-                             ahead=int(ahead), note=due_note)
+    # The MIN_BATCH early return used to live here, BEFORE _release_due was ever consulted —
+    # so the comment below ("cadence expiry flushes whatever is ready") was false: a project
+    # with 3 finished changes returned right here and never reached the cadence check at all.
+    # That was the constraint actually holding low-volume projects, not the interval. Ship on
+    # capacity instead and let _release_decision be the single place that decides.
+    due, due_note = _release_due(project, ahead=int(ahead))
+    decision = _release_decision(ahead, due)
+    # Anything that is not an explicit "release" stops here. Testing for == "hold" would let
+    # "up-to-date" (ahead == 0) fall through and cut a release with nothing in it — the
+    # MIN_BATCH early return used to mask that, since ahead=0 is always below the batch.
+    if decision != "release":
+        status = "staging-up-to-date" if decision == "up-to-date" else "staging-held-capacity"
+        note = "nothing staged to release" if decision == "up-to-date" else due_note
+        _record_release_flow(project, status, prod=prod, staged=merged,
+                             ahead=int(ahead), note=note)
         return {"project": project, "prod": prod, "staged": merged, "ahead": ahead,
-                "note": f"below batch size; {due_note}"}
+                "note": note}
     # Freeze the exact candidate, commands, dependency graph, and file set
     # before any expensive gate runs. This manifest is the release identity.
     det_cmd, has_real_tests = _detect_test_cmd(repo)
@@ -1191,24 +1214,89 @@ def _next_version():
     return v[0]["version"] if v else "v1"
 
 
-def _release_due(project):
-    if RELEASE_INTERVAL_HOURS <= 0:
-        return True, "release interval disabled"
-    rows = db.select("releases", {"select": "created_at,project,deploy_status", "project": f"eq.{project}",
-                                  "deploy_status": "in.(pending,building,success)",
-                                  "order": "created_at.desc", "limit": "1"}) or []
-    rows = [r for r in rows if str(r.get("deploy_status") or "").lower() not in ("failed", "rolled_back")]
-    if not rows:
-        return True, "first successful/pending release"
+def _recent_releases(project, limit=25):
+    """Recent release rows for a project, newest first. Fail-soft to []."""
     try:
-        last = datetime.datetime.fromisoformat(str(rows[0]["created_at"]).replace("Z", "+00:00"))
-        now = datetime.datetime.now(datetime.timezone.utc)
-        hours = (now - last).total_seconds() / 3600.0
-        if hours >= RELEASE_INTERVAL_HOURS:
-            return True, f"release interval elapsed ({hours:.1f}h)"
-        return False, f"held for bulk deploy cadence ({hours:.1f}/{RELEASE_INTERVAL_HOURS:.1f}h)"
+        return db.select("releases", {
+            "select": "created_at,project,deploy_status",
+            "project": f"eq.{project}",
+            "order": "created_at.desc",
+            "limit": str(limit),
+        }) or []
     except Exception:
-        return True, "release timestamp unreadable"
+        return []
+
+
+def _release_rate_per_hour(rows, window_h=6.0):
+    """Releases per hour over the trailing window — the cost-regression signal.
+
+    The batching this replaces existed to avoid "improvement-by-improvement Vercel churn".
+    Shipping on capacity is only safe if that churn stays observable, so every decision logs
+    this number.
+    """
+    if not rows or window_h <= 0:
+        return 0.0
+    now = datetime.datetime.now(datetime.timezone.utc)
+    n = 0
+    for r in rows:
+        try:
+            created = datetime.datetime.fromisoformat(
+                str(r.get("created_at") or "").replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if (now - created).total_seconds() <= window_h * 3600.0:
+            n += 1
+    return round(n / window_h, 3)
+
+
+def _release_due(project, ahead=0):
+    """Is there CAPACITY to release this project right now?
+
+    Operator directive 2026-08-06: never hold a release for an arbitrary interval. The old
+    implementation measured hours since the last successful/pending release, with
+    RELEASE_INTERVAL_HOURS floored at 6.0 — so ORCH_RELEASE_INTERVAL_HOURS could not actually
+    lower it, a knob that looked adjustable and was not.
+
+    Capacity now means: no release for this project is pending or building, and a short
+    debounce has settled so a burst of merges coalesces into one release rather than one
+    release per commit. That preserves the reason the batching existed (Vercel churn) without
+    holding work behind a clock. One release in flight per project, always — concurrency is
+    the capacity signal.
+    """
+    # NOT dead code, despite appearances: RELEASE_INTERVAL_HOURS is floored at 6.0 when read
+    # from the environment, but autopilot's AUTOPILOT_RELEASE_BLOCKER_FLUSH lane assigns
+    # release_train.RELEASE_INTERVAL_HOURS = 0 directly on the module, bypassing the clamp.
+    # Deleting this branch would silently break the production-blocker hot lane.
+    if RELEASE_INTERVAL_HOURS <= 0:
+        return True, "release interval disabled (blocker-flush lane)"
+
+    rows = _recent_releases(project)
+    rate = _release_rate_per_hour(rows)
+
+    in_flight = [r for r in rows
+                 if str(r.get("deploy_status") or "").lower() in ("pending", "building")]
+    if in_flight:
+        return False, (f"release already in flight for {project} "
+                       f"({in_flight[0].get('deploy_status')}); rate={rate}/h")
+
+    if not rows:
+        return True, f"no prior release for {project}; capacity free (rate={rate}/h)"
+
+    # Debounce: coalesce a burst of merges. A full batch is worth shipping immediately, so it
+    # skips the wait — the debounce exists to group trickles, not to delay real volume.
+    if RELEASE_DEBOUNCE_S > 0 and int(ahead or 0) < MIN_BATCH:
+        try:
+            last = datetime.datetime.fromisoformat(
+                str(rows[0]["created_at"]).replace("Z", "+00:00"))
+            age = (datetime.datetime.now(datetime.timezone.utc) - last).total_seconds()
+            if age < RELEASE_DEBOUNCE_S:
+                return False, (f"debouncing ({age:.0f}/{RELEASE_DEBOUNCE_S}s since last "
+                               f"release); rate={rate}/h")
+        except Exception:
+            # An unreadable timestamp must not block a release forever.
+            return True, f"release timestamp unreadable; capacity free (rate={rate}/h)"
+
+    return True, f"capacity free for {project} (rate={rate}/h)"
 
 
 def run():

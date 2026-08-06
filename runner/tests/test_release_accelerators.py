@@ -16,10 +16,25 @@ def test_failure_signature_compiles_repeated_paths_and_numbers_together():
     assert left == right
 
 
-def test_partial_release_flushes_when_cadence_is_due():
+def test_release_ships_on_capacity_not_on_batch_size():
+    """Rewritten 2026-08-06: releases run on capacity, never on a clock or a batch size.
+
+    `due` no longer means "the cadence elapsed" — it means "no release is in flight for this
+    project and the debounce has settled". Two assertions changed meaning as a result:
+
+      * a partial batch with capacity free now SHIPS (it used to wait for MIN_BATCH or a
+        6-hour cadence, which is what stranded low-volume projects);
+      * a full batch with no capacity now HOLDS. One release in flight per project, always —
+        volume must not override that, or two deploys race the same prod branch.
+    """
+    # Capacity busy: hold regardless of how much is staged.
     assert release_train._release_decision(3, False, minimum=10) == "hold"
+    assert release_train._release_decision(100, False, minimum=10) == "hold"
+    # Capacity free: ship whatever is ready, partial batch included.
     assert release_train._release_decision(3, True, minimum=10) == "release"
-    assert release_train._release_decision(100, False, minimum=10) == "release"
+    assert release_train._release_decision(1, True, minimum=10) == "release"
+    # Nothing staged is never a release.
+    assert release_train._release_decision(0, True, minimum=10) == "up-to-date"
 
 
 def test_release_train_does_not_duplicate_done_branch_ingestion(monkeypatch):
