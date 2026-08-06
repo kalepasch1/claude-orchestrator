@@ -142,6 +142,19 @@ _wd = _sp.run([sys.executable, "-u", "-c",
 check("watchdog actually kills a hung pass", _wd.returncode == 3 and "Thread" in (_wd.stderr or ""),
       f"rc={_wd.returncode}")
 
+
+# 16. the legacy-host kill switch must not disable the hosts it was never aimed at.
+#     fleet_config MERGE_TRAIN_SCAN_LIMIT=0 starves Mac 2's train (the only lever 10d9e408
+#     exposes). It was meant to be pinned away on this host; the pin silently did not take
+#     because the running runner had inherited the pre-edit pins list, and one pass here
+#     returned an all-zero summary as a result.
+_kill = _sp.run([sys.executable, "-c",
+    "import sys; sys.path.insert(0, '/Users/kpasch/Documents/beethoven/claude-orchestrator/runner');"
+    "import merge_train as m; print(len(m._pick_cards()))"],
+    capture_output=True, encoding="utf-8", env={**os.environ, "MERGE_TRAIN_SCAN_LIMIT": "0"})
+_n = int((_kill.stdout or "0").strip() or 0)
+check("current code declines the legacy kill switch", _n > 0, f"{_n} cards with the switch at 0")
+
 print("=" * 68)
 ok = 0
 for n, passed, d in RESULTS:

@@ -1380,7 +1380,27 @@ def _pick_cards():
     # The dual-order scan and the client-side filter below are both KEPT: the first so a backlog
     # larger than one page still shows its head, the second so this stays correct even if the
     # server-side predicate is dropped by the fallback path.
+    # MERGE_TRAIN_SCAN_LIMIT=0 in fleet_config is the fleet-wide kill switch for hosts too old
+    # to honour integration_owner.decide() — today, Mac 2 on 10d9e408, which cannot pull itself
+    # forward (14 dirty tracked files, and that build has no regenerable allowlist or remote
+    # escape hatch) and therefore keeps running a second merge train against the same origin.
+    # Starving _pick_cards is the only lever that build exposes.
+    #
+    # It was pinned out of the way on this host via ORCH_CONFIG_ENV_PINS, and that silently did
+    # not take: the running runner had inherited the pre-edit pins list from its parent, so
+    # os.environ.setdefault never applied the new one and THIS host quietly picked up the kill
+    # switch too — one train pass returned an all-zero summary before it was caught. A safety
+    # interlock that depends on a restart landing in the right order is not a safety interlock.
+    #
+    # Current code has integration_owner and does not need this switch to police itself, so it
+    # declines to be disabled by it. Operators wanting a genuine local override set a positive
+    # MERGE_TRAIN_SCAN_LIMIT; non-positive means "meant for the legacy hosts, not for me".
     limit = os.environ.get("MERGE_TRAIN_SCAN_LIMIT", "3000")
+    try:
+        if int(str(limit).strip().strip('"')) <= 0:
+            limit = "3000"
+    except (TypeError, ValueError):
+        limit = "3000"
     base = {"select": "*", "status": "eq.approved",
             "kind": f"in.({','.join(MERGE_KINDS)})", "limit": limit}
     unhandled = "or=(decided_by.is.null,and({}))".format(
