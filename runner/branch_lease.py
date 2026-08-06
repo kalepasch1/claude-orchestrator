@@ -28,6 +28,14 @@ def _sha(repo: str, ref: str) -> Optional[str]:
         return None
 
 
+def _lease_token(lease: dict) -> str:
+    """Normalize token access across current ("token") and legacy ("p_token")
+    lease shapes, so a legacy record can never present an empty token to the
+    lease RPCs (which would mask genuine lease loss behind the fail-soft
+    heartbeat path)."""
+    return str(lease.get("token") or lease.get("p_token") or "")
+
+
 def acquire(task: dict, repo: str, branch: str, base: str, *, owner: Optional[str] = None,
             ttl: int = DEFAULT_TTL) -> Optional[dict]:
     """Acquire and register the sole writer lease, or return ``None`` on contention."""
@@ -78,7 +86,7 @@ def heartbeat(task_id: str, branch: Optional[str] = None) -> bool:
             "p_project_id": lease["p_project_id"],
             "p_branch": lease["branch"],
             "p_task_id": lease["p_task_id"],
-            "p_token": lease["token"],
+            "p_token": _lease_token(lease),
             "p_ttl_seconds": lease["ttl"],
         }) is True for lease in leases)
     except Exception as e:
@@ -101,7 +109,7 @@ def release(task_id: str, branch: Optional[str] = None) -> bool:
                 "p_project_id": lease["p_project_id"],
                 "p_branch": lease["branch"],
                 "p_task_id": lease["p_task_id"],
-                "p_token": lease["token"],
+                "p_token": _lease_token(lease),
             }) is True) and released
         except Exception:
             # The finite TTL remains the fail-safe if the control plane is unavailable.
