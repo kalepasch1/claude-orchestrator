@@ -176,6 +176,12 @@ def load_ctx():
                 }
     except Exception:
         pass
+    try:
+        import economic_scheduler
+        tasks = db.select("tasks", {"select": "*", "state": "eq.QUEUED", "limit": "500"}) or []
+        ctx["economic_signals"] = economic_scheduler.predict_revenue_bulk(tasks, ctx)
+    except Exception:
+        pass
     return ctx
 
 
