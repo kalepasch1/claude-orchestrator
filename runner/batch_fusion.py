@@ -30,8 +30,21 @@ import os, sys, json, hashlib, re, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
-MAX_BATCH_SIZE = int(os.environ.get("ORCH_FUSION_MAX_BATCH", "5"))
-MAX_FUSED_PROMPT_LEN = int(os.environ.get("ORCH_FUSION_MAX_PROMPT", "8000"))
+def _int_env(name, default):
+    """Env ints are operator-supplied; a typo must not take the scheduler down."""
+    try:
+        v = int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return int(default)
+    return v if v > 0 else int(default)
+
+
+MAX_BATCH_SIZE = _int_env("ORCH_FUSION_MAX_BATCH", 10)
+# Target size drives how many batches N tasks split into. With MAX=10 and TARGET=5,
+# N mechanical tasks fuse into ceil(N/MAX)..ceil(N/TARGET) batches — the contract the
+# scheduler is sized against.
+TARGET_BATCH_SIZE = min(_int_env("ORCH_FUSION_TARGET_BATCH", 5), MAX_BATCH_SIZE)
+MAX_FUSED_PROMPT_LEN = _int_env("ORCH_FUSION_MAX_PROMPT", 8000)
 FUSION_ENABLED = os.environ.get("ORCH_BATCH_FUSION", "true").lower() in ("true", "1", "yes")
 
 # Task kinds that can be fused together
@@ -42,6 +55,15 @@ COMPATIBLE_KINDS = {
     frozenset({"test"}),
     frozenset({"recovery"}),
 }
+
+# Kinds cheap and low-risk enough to fuse on co-location alone. Fusion previously
+# required a non-empty file-set overlap for every pair, which meant a run of small
+# same-repo mechanical tasks touching *different* files — the exact backlog shape
+# fusion exists for — produced zero batches. Fusion was nominally enabled and
+# effectively paused. For these kinds the shared repo IS the shared context: the
+# agent pays the codebase-discovery cost once regardless of which files it edits.
+# Riskier kinds (feature/refactor/recovery) keep the stricter overlap rule below.
+MECHANICAL_KINDS = {"mechanical", "config", "chore", "docs", "lint", "format"}
 
 
 def _kinds_compatible(kind_a, kind_b):
@@ -56,7 +78,9 @@ def _kinds_compatible(kind_a, kind_b):
 
 def _extract_target_files(task):
     """Extract likely target files from a task prompt."""
-    prompt = task.get("prompt", "")
+    prompt = task.get("prompt") or ""
+    if not isinstance(prompt, str):
+        prompt = str(prompt)
     # Match file paths
     files = re.findall(r'[\w/.-]+\.\w{1,5}', prompt)
     # Also check intent graph
@@ -81,26 +105,91 @@ def _file_overlap(files_a, files_b):
     return len(intersection) / len(union) if union else 0
 
 
+def _is_usable(task):
+    """A task must be a dict with a usable id before any fusion logic touches it.
+
+    Malformed rows reach here from the DB and from callers mid-refactor. Dropping
+    them silently is right: fusion is an optimization, and a batcher that raises
+    takes the whole scheduler tick down over one bad row."""
+    try:
+        return isinstance(task, dict) and bool(task.get("id"))
+    except Exception:
+        return False
+
+
+def _chunk_evenly(tasks, max_size):
+    """Split an ordered list into ceil(len/max_size) batches of near-equal size.
+
+    Even splitting (rather than filling each batch to max_size then leaving a
+    remainder) keeps every batch above the target floor where the arithmetic allows
+    it — 11 tasks become 6+5, not 10+1. A batch of 1 costs a full agent call and
+    saves nothing, which is what fusion is supposed to avoid."""
+    n = len(tasks)
+    if n <= max_size:
+        return [list(tasks)]
+    n_batches = -(-n // max_size)  # ceil
+    base, extra = divmod(n, n_batches)
+    out, i = [], 0
+    for b in range(n_batches):
+        size = base + (1 if b < extra else 0)
+        out.append(list(tasks[i:i + size]))
+        i += size
+    return out
+
+
+def _fuse_mechanical(tasks):
+    """Fuse same-project mechanical tasks on co-location, capped at MAX_BATCH_SIZE."""
+    mech = [t for t in tasks if (t.get("kind") or "") in MECHANICAL_KINDS]
+    if len(mech) < 2:
+        return [], set()
+    batches = [b for b in _chunk_evenly(mech, MAX_BATCH_SIZE) if len(b) >= 2]
+    used = {t["id"] for b in batches for t in b}
+    return batches, used
+
+
 def find_fusible(queued_tasks):
     """Find groups of tasks that can be fused into single agent calls.
 
     Args:
         queued_tasks: list of task dicts (already filtered to QUEUED state)
 
-    Returns: list of batches, each batch is a list of task dicts
+    Returns: list of batches, each batch is a list of task dicts.
+             Always returns a list — never raises — so a malformed queue
+             degrades to "no fusion this tick" rather than a crashed scheduler.
     """
-    if not FUSION_ENABLED or len(queued_tasks) < 2:
+    try:
+        return _find_fusible(queued_tasks)
+    except Exception:
+        return []
+
+
+def _find_fusible(queued_tasks):
+    if not FUSION_ENABLED:
+        return []
+    try:
+        tasks_in = [t for t in queued_tasks if _is_usable(t)]
+    except TypeError:  # not iterable
+        return []
+    if len(tasks_in) < 2:
         return []
 
     # Group by project
     by_project = {}
-    for t in queued_tasks:
+    for t in tasks_in:
         pid = t.get("project_id", "")
         by_project.setdefault(pid, []).append(t)
 
     batches = []
 
     for pid, tasks in by_project.items():
+        if len(tasks) < 2:
+            continue
+
+        # Mechanical work fuses on co-location alone; take it out first so the
+        # overlap-sensitive pass below only sees the kinds that actually need it.
+        mech_batches, mech_used = _fuse_mechanical(tasks)
+        batches.extend(mech_batches)
+        tasks = [t for t in tasks if t["id"] not in mech_used]
         if len(tasks) < 2:
             continue
 
@@ -156,9 +245,12 @@ def fuse_prompts(batch):
     parts = ["## FUSED BATCH — resolve ALL of the following tasks in one pass:\n"]
 
     for i, t in enumerate(batch, 1):
-        parts.append(f"\n### Task {i}: {t.get('slug', t['id'][:8])}")
-        parts.append(f"Kind: {t.get('kind', 'feature')}")
-        parts.append(t.get("prompt", ""))
+        if not _is_usable(t):
+            continue
+        label = t.get("slug") or str(t.get("id", ""))[:8]
+        parts.append(f"\n### Task {i}: {label}")
+        parts.append(f"Kind: {t.get('kind') or 'feature'}")
+        parts.append(str(t.get("prompt") or ""))
         parts.append("---")
 
     parts.append(f"\nResolve all {len(batch)} tasks above. Commit each change with a clear message.")
