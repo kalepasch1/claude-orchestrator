@@ -57,9 +57,29 @@ def should_decompose(prompt: str) -> bool:
         return False
 
 
-def decompose(slug: str, prompt: str, base_branch: str = "master") -> list:
+def _emit_decomposition_completed(slug, tasks, repo_path, base_branch):
+    """Fire the decomposition_completed event (missing-branch auto-creator
+    slice 3). Fail-soft: event errors never break decomposition."""
+    try:
+        try:
+            from runner import decomposition_events  # package-style callers/tests
+        except ImportError:
+            import decomposition_events  # sys.path-style runner scripts
+        decomposition_events.on_decomposition_completed(
+            slug, tasks, repo_path=repo_path, base_branch=base_branch
+        )
+    except Exception:
+        pass
+
+
+def decompose(slug: str, prompt: str, base_branch: str = "master",
+              repo_path: str = None) -> list:
     """Auto-decompose a task into sub-tasks. Returns list of task dicts.
-    Falls back to returning the original as a single task. Fail-soft."""
+    Falls back to returning the original as a single task. Fail-soft.
+
+    When decomposition produces child slices, emits `decomposition_completed`
+    so the missing-branch auto-creator can provision agent branches for the
+    new children immediately (pass repo_path to enable provisioning)."""
     if not _ENABLED:
         return [{"slug": slug, "prompt": prompt, "deps": [], "base_branch": base_branch}]
     try:
@@ -73,6 +93,7 @@ def decompose(slug: str, prompt: str, base_branch: str = "master") -> list:
                 sub_slug = f"{slug}-item-{item['num']}"
                 tasks.append({"slug": sub_slug, "prompt": item["text"],
                               "deps": [], "base_branch": base_branch})
+            _emit_decomposition_completed(slug, tasks, repo_path, base_branch)
             return tasks
 
         # Strategy 2: split by file scope
@@ -83,6 +104,7 @@ def decompose(slug: str, prompt: str, base_branch: str = "master") -> list:
                 file_prompt = f"In file {f}:\n{prompt}"
                 tasks.append({"slug": sub_slug, "prompt": file_prompt,
                               "deps": [], "base_branch": base_branch})
+            _emit_decomposition_completed(slug, tasks, repo_path, base_branch)
             return tasks
 
         # No decomposition needed
