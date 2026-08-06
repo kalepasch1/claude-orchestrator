@@ -155,6 +155,28 @@ _kill = _sp.run([sys.executable, "-c",
 _n = int((_kill.stdout or "0").strip() or 0)
 check("current code declines the legacy kill switch", _n > 0, f"{_n} cards with the switch at 0")
 
+
+# 17. integration worktree slots were condemned for life by a build cache. "Dirty" counted any
+#     untracked byte, so a slot that had once run tests was abandoned on every pass and a fresh
+#     temporary one built instead — 21 slots, 2.2GB, and a release-train log that had become the
+#     same line repeated. The reclaim must be narrow: machine output yes, real work never.
+import regenerable_artifacts as _ra
+_cache_dirt = (" D packages/curation-core/node_modules/.vite/vitest/da39/results.json\n"
+               " D server/utils/simulation/__pycache__/generateProspectPdf.cpython-310.pyc")
+_b, _r = _ra.partition_dirt(_cache_dirt)
+check("build caches are reclaimable", not _b and len(_r) == 2, f"blocking={len(_b)} regen={len(_r)}")
+_work_dirt = " D app/pages/coverage/[org].vue\n D server/api/public/coverage/verify.get.ts"
+_b2, _r2 = _ra.partition_dirt(_work_dirt)
+check("deleted source still preserves the slot", len(_b2) == 2 and not _r2, f"blocking={len(_b2)}")
+for _p in (" M lib/commerce/coppa.ts", " M package-lock.json", " M OPPORTUNITIES.json"):
+    check(f"still blocks: {_p.strip()}", bool(_ra.partition_dirt(_p)[0]), "")
+_ir = open("/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/integration_runtime.py").read()
+check("reclaim path resets only when nothing blocks",
+      "if not existing_dirty.returncode and regen and not blocking:" in _ir
+      and 'reset", "--hard' in _ir, "guarded reset present")
+check("classification failure falls back to blocking",
+      "treating all of it as blocking" in _ir, "fail-closed")
+
 print("=" * 68)
 ok = 0
 for n, passed, d in RESULTS:

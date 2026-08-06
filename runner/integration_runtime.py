@@ -166,9 +166,39 @@ def isolated_repo(canonical_repo, owner):
     if os.path.exists(path) and os.path.realpath(path) in registered:
         existing_dirty = _git(path, "status", "--porcelain=v1", "--untracked-files=all")
         if existing_dirty.returncode or existing_dirty.stdout:
-            print(f"integration_runtime: preserving dirty worktree {path}; using a fresh temporary slot")
-            path = _temporary_worktree_path(canonical_repo)
-            temporary = True
+            # RECLAIM WHEN THE DIRT IS ONLY MACHINE OUTPUT (2026-08-06).
+            #
+            # "Dirty" was any byte of difference, including untracked build caches, so a slot
+            # that once ran a test suite was condemned for life: every pass logged "preserving
+            # dirty worktree" and built a fresh temporary one instead. Measured today — 21 slots,
+            # 2.2GB, and a release-train log consisting of nothing but that line. Three slots
+            # were stuck; one on a vitest cache and a __pycache__ .pyc.
+            #
+            # regenerable_artifacts already draws the only line that matters here: would a reset
+            # destroy something nobody can get back? If every dirty path is machine output, the
+            # slot is safe to reset and reuse. If ANY path is real work it is preserved exactly
+            # as before — including a checkout with deleted source files, which is not work but
+            # is not ours to judge either.
+            blocking, regen = ([], [])
+            try:
+                import regenerable_artifacts
+                blocking, regen = regenerable_artifacts.partition_dirt(existing_dirty.stdout or "")
+            except Exception as exc:
+                blocking = [l for l in (existing_dirty.stdout or "").splitlines() if l.strip()]
+                print(f"integration_runtime: dirt classification unavailable ({exc}); "
+                      f"treating all of it as blocking")
+            if not existing_dirty.returncode and regen and not blocking:
+                names = ", ".join(l[3:].strip() for l in regen[:5])
+                more = "" if len(regen) <= 5 else f" (+{len(regen) - 5} more)"
+                print(f"integration_runtime: reclaiming {path} — {len(regen)} regenerable "
+                      f"artifact(s) discarded, no real work present: {names}{more}")
+                _git(path, "reset", "--hard")
+                _git(path, "clean", "-fdq")
+            else:
+                print(f"integration_runtime: preserving dirty worktree {path}; using a fresh "
+                      f"temporary slot ({len(blocking)} path(s) are real work, not artifacts)")
+                path = _temporary_worktree_path(canonical_repo)
+                temporary = True
     if os.path.exists(path) and os.path.realpath(path) not in registered:
         # Stale worktree from a crashed previous run — clean up and recreate
         # rather than permanently blocking all merges for this project.
