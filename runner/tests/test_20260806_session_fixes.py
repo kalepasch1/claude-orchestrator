@@ -227,6 +227,33 @@ check("dual-order loses nothing the single window saw",
       not ({_r["id"] for _r in _one} - _seen), f"total={_total} single={len(_one)} dual={_both}")
 check("dual-order covers the whole state set", _both >= _total, f"{_both} of {_total}")
 
+
+# 20. the same scan-window bug appeared three times today in three different files. There are
+#     262 db.select call sites passing both order and limit; auditing them by hand is a guess
+#     about which sets will grow. Detect the condition instead: a query coming back EXACTLY
+#     full is the unambiguous sign it was cut off.
+_probe = _sp.run([sys.executable, "-c",
+    "import sys; sys.path.insert(0, '/Users/kpasch/Documents/beethoven/claude-orchestrator/runner');"
+    "import db;"
+    "db.select('tasks', {'select':'id','state':'eq.DONE','order':'updated_at.asc','limit':'5'});"
+    "db.select('tasks', {'select':'id','state':'eq.DONE','order':'updated_at.asc','limit':'900000'});"
+    "db.select('tasks', {'select':'id','state':'eq.DONE','limit':'5'})"],
+    capture_output=True, encoding="utf-8", timeout=120)
+_warns = [l for l in (_probe.stderr or "").splitlines() if "TRUNCATED SCAN" in l]
+check("a truncated ordered scan warns", len(_warns) == 1, f"{len(_warns)} warning(s)")
+check("an unordered or unfilled scan does not warn",
+      all("900000" not in w for w in _warns), "only the capped-and-full query warned")
+_quiet = _sp.run([sys.executable, "-c",
+    "import sys; sys.path.insert(0, '/Users/kpasch/Documents/beethoven/claude-orchestrator/runner');"
+    "import db;"
+    "db.select('tasks', {'select':'id','state':'eq.DONE','order':'updated_at.asc','limit':'5'})"],
+    capture_output=True, encoding="utf-8", timeout=120,
+    env={**os.environ, "ORCH_SCAN_TRUNCATION_WARN": "false"})
+check("the detector can be switched off",
+      "TRUNCATED SCAN" not in (_quiet.stderr or ""), "ORCH_SCAN_TRUNCATION_WARN=false")
+check("the detector never breaks the query it observes",
+      _probe.returncode == 0 and _quiet.returncode == 0, "")
+
 print("=" * 68)
 ok = 0
 for n, passed, d in RESULTS:

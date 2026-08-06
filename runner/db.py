@@ -468,9 +468,68 @@ def _req_one(base, method, path, qs, data, h, probe_only=False):
             time.sleep(min(12, 2 ** attempt) + (0.1 * attempt))
 
 
+# TRUNCATED-SCAN DETECTOR (2026-08-06)
+# ------------------------------------
+# Three separate outages today had one signature: an ordered, capped db.select over a set that
+# had outgrown the cap, so one end of the queue became structurally invisible and the work sat
+# there indefinitely. merge_train._pick_cards (90 of 569 candidates visible), the PostgREST
+# 1,000-row page ceiling behind a limit of 3,000, and integration_sweeper (80 of 200, ordered
+# oldest-first, hiding everything recent). Each looked like "the queue is slow" from outside.
+#
+# There are 262 db.select call sites passing both order and limit. Auditing them by hand is a
+# guess about which sets will grow. Instead: notice the condition that actually matters, which
+# is a query coming back EXACTLY full — the unambiguous sign it was cut off and there may be
+# more behind it. Warn once per call site so a new instance announces itself instead of being
+# discovered by an outage three months later.
+#
+# Deliberately a warning, not an error: plenty of these are honest "give me the 20 most recent"
+# reads where truncation is the point. The log line tells a human where to look; it does not
+# decide for them. ORCH_SCAN_TRUNCATION_WARN=false disables it.
+_scan_warned = set()
+_scan_warn_lock = threading.Lock()
+
+
+def _warn_if_truncated(table, params, rows):
+    try:
+        if os.environ.get("ORCH_SCAN_TRUNCATION_WARN", "true").lower() not in ("1", "true", "yes", "on"):
+            return
+        if not isinstance(rows, list) or not params:
+            return
+        order, limit = params.get("order"), params.get("limit")
+        if not order or limit is None:
+            return
+        try:
+            cap = int(str(limit).strip().strip('"'))
+        except (TypeError, ValueError):
+            return
+        if cap <= 0 or len(rows) < cap:
+            return
+        import traceback
+        site = "?"
+        for fr in reversed(traceback.extract_stack()[:-2]):
+            if not fr.filename.endswith("/db.py"):
+                site = f"{os.path.basename(fr.filename)}:{fr.lineno}"
+                break
+        key = (site, table)
+        with _scan_warn_lock:
+            if key in _scan_warned:
+                return
+            _scan_warned.add(key)
+        import sys as _sys
+        _sys.stderr.write(
+            f"[db] TRUNCATED SCAN {site} -> {table} returned exactly its limit ({cap}) "
+            f"ordered by {order}. Anything past the cap is invisible to this caller; if the "
+            f"caller acts on work, the far end of the queue is being starved. Scan both ends "
+            f"or filter server-side (see merge_train._pick_cards).\n")
+    except Exception:
+        pass  # a diagnostic must never break the query it is observing
+
+
 def select(table, params=None):
     """Fetch rows from *table* via PostgREST GET.  Returns a list of dicts."""
-    return _req("GET", f"/rest/v1/{table}", params=params or {"select": "*"})
+    rows = _req("GET", f"/rest/v1/{table}", params=params or {"select": "*"})
+    _warn_if_truncated(table, params, rows)
+    return rows
 
 
 def count(table, params=None):
