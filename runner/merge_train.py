@@ -336,6 +336,48 @@ def _divergent_gate(repo, base, branch):
         return False, f"divergent authorship guard error (fail-closed): {type(exc).__name__}: {exc}"
 
 
+def _orphan_import_gate(repo, base, branch):
+    """Refuse a candidate that adds an import no tracked file can satisfy. (ok, detail)
+
+    apparently's production build was red for five hours on
+    `Could not resolve "./kv" from "server/utils/governance.ts"`. governance.ts was committed;
+    kv.ts was not — it existed only as untracked dirt on the machine that wrote it. The build
+    gate ran in a checkout that HAD the file, so the change was green right up to shipping. The
+    defect was not in the diff; it was missing from it.
+
+    Scoped to the files the candidate touches, and only to "./" / "../" specifiers. Every repo
+    here carries pre-existing dangling imports in paths no build entry point reaches (17 in
+    apparently, 15 in tomorrow, both green), so judging the whole tree would fail every merge on
+    inherited noise. Alias forms ("~/", "@/") are excluded because resolving them means guessing
+    at srcDir and tsconfig paths — that guess produced 281 findings across four green repos.
+
+    Cheap by design: git plus a regex, no build, no network. Runs before the test and build
+    gates rather than after.
+
+    FAIL-OPEN, unlike the regression and stub gates. Those protect against destroying existing
+    code, where the cost of a false negative is unrecoverable. This one protects against
+    shipping a broken build, which the build gate downstream will also catch — so a crash here
+    must not block the queue. Opt out with ORCH_MERGE_ORPHAN_IMPORT_GATE=false.
+    """
+    if os.environ.get("ORCH_MERGE_ORPHAN_IMPORT_GATE", "true").strip().lower() in (
+            "0", "false", "no", "off"):
+        return True, "orphan-import gate disabled by ORCH_MERGE_ORPHAN_IMPORT_GATE"
+    try:
+        import orphan_imports
+        changed = _git(repo, "diff", "--name-only", f"{base}...{branch}")
+        if changed.returncode:
+            return True, "could not diff candidate (gate skipped)"
+        touched = {p.strip() for p in (changed.stdout or "").splitlines() if p.strip()}
+        if not touched:
+            return True, "no files changed"
+        found = orphan_imports.dangling_imports(repo, only_files=touched)
+        if found:
+            return False, orphan_imports.describe(found)
+        return True, "no dangling imports in the changed files"
+    except Exception as exc:
+        return True, f"orphan-import gate unavailable (fail-open): {type(exc).__name__}: {exc}"
+
+
 def _stub_gate(repo, proj, base, branch):
     """MERGE-path stub gate (2026-08-02). Returns (ok, detail).
 
@@ -1628,6 +1670,13 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         return _quarantine_regression_failure(repo, card, slug, task, pname, branch, base,
                                               "SILENT STUB / SHADOWED RE-EXPORT — " + stub_detail,
                                               _t0)
+
+    # (2f) ORPHAN-IMPORT GATE — the cheapest gate we have, so it runs before the expensive ones.
+    # Catches a candidate whose import resolves on the author's disk and nowhere in the repo.
+    oi_ok, oi_detail = _orphan_import_gate(repo, base, branch)
+    if not oi_ok:
+        return _quarantine_regression_failure(repo, card, slug, task, pname, branch, base,
+                                              "DANGLING IMPORT — " + oi_detail, _t0)
 
     ok, tail = _verified_or_run(repo, candidate_sha, test_cmd)  # (3) branch-exact and resumable
     if not ok and os.environ.get("ORCH_DIFFERENTIAL_QA", "true").lower() in ("1", "true", "yes", "on"):

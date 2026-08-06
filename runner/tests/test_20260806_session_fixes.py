@@ -254,6 +254,34 @@ check("the detector can be switched off",
 check("the detector never breaks the query it observes",
       _probe.returncode == 0 and _quiet.returncode == 0, "")
 
+
+# 21. orphan-import gate. apparently's production build was red five hours on
+#     `Could not resolve "./kv" from server/utils/governance.ts` — governance.ts was committed,
+#     kv.ts never was. The build gate ran in a checkout that HAD the file, so the defect was not
+#     in the diff, it was missing from it. Asserted against the two REAL commits rather than a
+#     fixture: worktrees at the breaking commit and at the fix.
+import orphan_imports as _oi
+_bad, _good = "/tmp/ov-bad", "/tmp/ov-good"
+if os.path.isdir(_bad) and os.path.isdir(_good):
+    _touched = {"server/utils/governance.ts"}
+    check("gate blocks the commit that took production down",
+          mt._orphan_import_gate(_bad, "4c5184b9~1", "4c5184b9")[0] is False,
+          "./kv.js unresolvable at 4c5184b9")
+    check("gate passes the commit that fixed it",
+          mt._orphan_import_gate(_good, "4c5184b9", "33f92ed2")[0] is True, "")
+    check("gate judges the diff, not the whole tree",
+          len(_oi.dangling_imports(_good)) > 0
+          and not _oi.dangling_imports(_good, only_files=_touched),
+          f"{len(_oi.dangling_imports(_good))} pre-existing, 0 in the changed file")
+else:
+    check("gate blocks the commit that took production down", False, "verification worktrees missing")
+check("gate ignores alias specifiers it would have to guess at",
+      "~/" not in _oi._IMPORT.pattern and "@/" not in _oi._IMPORT.pattern,
+      "relative-only; aliases gave 281 findings across four green repos")
+check("gate fails OPEN, unlike the overwrite guards",
+      "fail-open" in inspect.getsource(mt._orphan_import_gate),
+      "a broken build is caught downstream; destroyed code is not")
+
 print("=" * 68)
 ok = 0
 for n, passed, d in RESULTS:
