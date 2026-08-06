@@ -10,6 +10,7 @@ import {
   type Claim,
   type ClaimKind,
 } from '../src/passport/passport.ts';
+import type { ProductId } from '../src/types.ts';
 
 test('passport: builds passport with valid structure', () => {
   const claims = [
@@ -358,8 +359,8 @@ test('passport: claim expiry is checked at exact boundary', () => {
 
 test('passport: issuer field is arbitrary string', () => {
   const claims = [
-    claim('kyc_verified', 'custom_provider_xyz', 1),
-    claim('accredited', 'another-issuer-123', 1),
+    claim('kyc_verified', 'custom_provider_xyz' as ProductId, 1),
+    claim('accredited', 'another-issuer-123' as ProductId, 1),
   ];
 
   const passport = buildPassport({ subject: 'user_1', claims });
