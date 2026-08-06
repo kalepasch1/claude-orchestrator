@@ -473,6 +473,62 @@ def select(table, params=None):
     return _req("GET", f"/rest/v1/{table}", params=params or {"select": "*"})
 
 
+#: PostgREST caps a single response at 1,000 rows no matter how large `limit` is, so a
+#: bare `"limit": "5000"` does not widen the window — it only hides the truncation. A
+#: client-side scan window has now caused four outage-class failures on this fleet
+#: (merge_train._pick_cards scanning 3,000 of 238,177 approvals; ensure_integration_card
+#: producing 240 duplicates of one slug; ev_scheduler scoring an arbitrary 500 of 1,407
+#: QUEUED tasks; config_optimizer autoscaling off a queue depth structurally incapable of
+#: exceeding 1,000). Classify every large-limit read before writing it:
+#:
+#:   COUNT      -> count() below. Never len() a truncated page.
+#:   LOOKUP     -> filter server-side on the key. Never scan-and-filter client-side.
+#:   SAMPLE     -> a bounded recent window is legitimate, but it MUST carry a
+#:                 deterministic `order` so the window is reproducible.
+#:   FULL SCAN  -> select_all() below, which pages to exhaustion.
+#:
+#: Raising a limit is the same bug, later. See docs/scan-window-audit-2026-08-06.md.
+PAGE_SIZE = 1000
+
+#: Hard stop so a FULL SCAN of a runaway table can never become its own outage inside a
+#: 900s loop. Hitting it is reported, not silently absorbed.
+SELECT_ALL_MAX_ROWS = int(os.environ.get("ORCH_SELECT_ALL_MAX_ROWS", "200000"))
+
+
+def select_all(table, params=None, page_size=PAGE_SIZE, max_rows=None, order=None):
+    """Page a filtered SELECT to exhaustion. Use when the answer needs EVERY row.
+
+    Offset paging over an unordered relation may repeat or skip rows between pages, so a
+    deterministic `order` is mandatory; callers that pass none get `id.asc`.
+
+    Returns a list of dicts. `truncated` is signalled by logging, not by a silent short
+    list: if max_rows is reached the caller is told, because "we saw all of it" being
+    wrong is exactly the failure this function exists to prevent.
+    """
+    q = dict(params or {"select": "*"})
+    q.setdefault("select", "*")
+    q["order"] = order or q.get("order") or "id.asc"
+    q.pop("limit", None)
+    q.pop("offset", None)
+
+    cap = SELECT_ALL_MAX_ROWS if max_rows is None else max_rows
+    page_size = max(1, min(int(page_size), PAGE_SIZE))
+    rows, offset = [], 0
+    while True:
+        # Goes through select() rather than _req() on purpose: one HTTP path, and any test
+        # double or instrumentation installed on select() automatically covers paging too.
+        page = select(table, dict(q, limit=str(page_size), offset=str(offset))) or []
+        rows.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+        if len(rows) >= cap:
+            print(f"[db] select_all({table}) hit max_rows={cap} — result is TRUNCATED; "
+                  f"narrow the filter or raise ORCH_SELECT_ALL_MAX_ROWS", flush=True)
+            break
+    return rows[:cap]
+
+
 def count(table, params=None):
     """Exact PostgREST row count without downloading the matching rows."""
     if not URL or not KEY:
@@ -1046,11 +1102,21 @@ def _done_slugs():
         # double-check after acquiring lock
         if now - _done_cache["ts"] < _done_cache["ttl"]:
             return _done_cache["slugs"]
-        rows = select("tasks", {
+        # FULL SCAN class, and the most consequential window found in the 2026-08-06 audit.
+        # This set answers "is this task's dependency finished?" for every claim decision
+        # (see the _done_slugs() call in the claim path below), so a slug missing from it
+        # is a task whose deps ARE satisfied being held as blocked.
+        #
+        # `limit: "10000"` looked generous but PostgREST caps a response at 1,000 rows, so
+        # the cache never held more than 1,000 slugs. Measured on prod 2026-08-06: 3,908
+        # DONE/MERGED tasks against 1,379 QUEUED of which 462 carry deps — roughly 74% of
+        # all completions were invisible to dependency resolution. Tasks queued 2026-08-02
+        # sat untouched for four days. Paging to exhaustion is the fix; raising the limit
+        # would not have moved the ceiling at all.
+        rows = select_all("tasks", {
             "select": "slug,project_id",
             "state": "in.(DONE,MERGED)",
-            "limit": "10000",
-        }) or []
+        }, order="id.asc") or []
         slugs = set()
         # Build project_id -> name map for cross-project qualified entries
         _proj_names = {}
@@ -1150,7 +1216,26 @@ def claim_task(runner_id):
                                   "limit": str(CLAIM_SCAN_LIMIT)}) or []
         # Sync to local mirror on successful fetch
         try:
-            running = select("tasks", {"select": claim_fields, "state": "eq.RUNNING", "limit": "2000"}) or []
+            # FULL SCAN class — and YES, truncation here can corrupt claims. The audit
+            # question (docs/scan-window-audit-2026-08-06.md item 3) resolves as follows.
+            #
+            # This read does not decide claims directly; the remote claim is atomic. It
+            # feeds the local mirror, which is the OFFLINE fallback used when the DB is
+            # down. But local_queue labels each row by the query that produced it, and
+            # _reconcile_mirror() only evicts rows on TTL — so a RUNNING task missing from
+            # a truncated page keeps whatever mirror state it last had. If that task was
+            # ever seen in a QUEUED page, its stale QUEUED mirror row survives for up to
+            # MIRROR_TTL_HOURS, and the offline path can hand out a task that is already
+            # RUNNING on another machine: duplicate work on one branch, which is exactly
+            # the double-claim this mirror exists to prevent.
+            #
+            # It was also already broken in practice, not just in theory: PostgREST caps a
+            # response at 1,000 rows, so `limit: "2000"` never returned more than 1,000
+            # regardless. On 2026-08-02 the fleet held 64 zombie RUNNING lanes across
+            # machines; RUNNING in the four figures is reachable, and the cap was silent.
+            # Paging to exhaustion removes the window entirely.
+            running = select_all("tasks", {"select": claim_fields, "state": "eq.RUNNING"},
+                                 order="created_at.asc,id.asc")
             import local_queue
             local_queue.sync_from_remote(queued, running)
             _reset_db_failure_count()  # DB is healthy, reset failure counter

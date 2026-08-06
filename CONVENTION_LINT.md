@@ -183,6 +183,58 @@ This rule is in Phase 1 but detection is not fully implemented. The linter ident
 
 ---
 
+### Rule 4: `SCAN_WINDOW_NO_ORDER` (warning)
+
+Flags `select(..., {"limit": N})` where `N >= 100` and there is no `"order"` key.
+
+**Why this rule exists:** that exact shape has caused five outage-class failures on this
+fleet. PostgREST caps a response at **1,000 rows** no matter how large `limit` is, so a big
+literal limit does not widen the window — it hides the truncation. Without `order` the
+window is not even the same rows twice, making the defect silent *and* unreproducible.
+
+```python
+# ❌ VIOLATION: unordered 500-row window, silently truncates
+db.select("tasks", {"select": "*", "state": "eq.QUEUED", "limit": "500"})
+
+# ✓ COUNT — needs a real number
+db.count("tasks", {"state": "eq.QUEUED"})
+
+# ✓ LOOKUP — filter server-side, never scan-and-filter
+db.select("tasks", {"select": "*", "slug": "eq.the-one-we-want"})
+
+# ✓ SAMPLE — a bounded window is fine, but it must be deterministic
+db.select("outcomes", {"select": "*", "order": "created_at.desc", "limit": "500"})
+
+# ✓ FULL SCAN — page to exhaustion
+db.select_all("tasks", {"select": "*", "state": "eq.QUEUED"},
+              order="created_at.asc,id.asc")
+```
+
+**Do not just raise the limit.** A larger window is the same bug, later. Classify the read.
+
+**Exception — `SENTINEL_LIMITS`:** `fleet_stuck_alarm.py` reads `limit: "5001"` purely to
+answer "are there more than 5000?"; `len()` of that page *is* the answer. Values in
+`SENTINEL_LIMITS` are exempt by design.
+
+Severity is `warning` so the ~107 remaining historical sites are visible without failing
+CI. Full classification: `docs/scan-window-audit-2026-08-06.md`.
+
+---
+
+## Suppressing a violation
+
+`# noqa` on the offending line, either bare or rule-scoped:
+
+```python
+db.select("tasks", {"limit": "500"})   # noqa: SCAN_WINDOW_NO_ORDER
+password = "test-fixture"             # noqa
+```
+
+Comma-separated rule lists are supported (`# noqa: RULE_A, RULE_B`). Prefer fixing the
+finding; use `noqa` only for a deliberate, commented exception.
+
+---
+
 ## Output Format
 
 ### Text (Default)
