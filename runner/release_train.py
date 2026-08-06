@@ -825,6 +825,11 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
                 return False, integrated_sha, (glog or f"post-integration {gate} red")
             if manifest:
                 try:
+                    # Local import: this helper runs outside the caller's scope, where
+                    # release_manifest was imported. Without it the call raised NameError
+                    # into the bare except below, so post-integration gates were silently
+                    # never recorded on any release.
+                    import release_manifest
                     release_manifest.record_gate(
                         manifest["id"], "post-integration", True,
                         detail=f"QA+build re-verified on integrated tip {integrated_sha[:12]}")
