@@ -233,11 +233,17 @@ runner/resource_governor.py:105: HARDCODED_SECRET: Variable "api_key" contains s
 
 **Test Cases:**
 - 15+ test cases covering normal paths, edge cases, exceptions
-- `tests/test_convention_lint.py`
+- `tests/test_convention_lint.py` — checker unit tests (rules, severities, edge cases)
+- `tests/test_convention_conformance.py` — conformance sweep asserting the live
+  codebase stays clean against the enforced rules (36 cases)
 
 **Running Tests:**
 ```bash
+# checker unit tests
 python -m pytest tests/test_convention_lint.py -v
+
+# full convention surface (unit + conformance sweep)
+python -m pytest tests/ -k convention -q
 ```
 
 ---
