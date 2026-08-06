@@ -171,10 +171,17 @@ def _handle_deployed(db_module, slug, detail, repo):
     verified = _sha_on_origin_base(db_module, project_id, repo, sha)
 
     if verified:
-        db_module.update("tasks", {"id": task_id},
-                         {"state": "MERGED",
-                          "artifact_commit": sha,
-                          "note": f"offline-sweep deployed {sha[:12]} (verified on origin base)"})
+        # _sha_on_origin_base checks the BASE branch and, critically, returns False on any
+        # exception — so a fetch timeout reads identically to "not merged". merge_truth
+        # re-checks against prod_branch with a three-valued verdict, so an infra error leaves
+        # the row alone instead of certifying or downgrading it on bad information.
+        import merge_truth
+        merge_truth.guarded_task_update(
+            task,
+            {"state": "MERGED",
+             "artifact_commit": sha,
+             "note": f"offline-sweep deployed {sha[:12]} (verified on origin base)"},
+            repo=repo)
     else:
         db_module.update("tasks", {"id": task_id},
                          {"state": "DONE",

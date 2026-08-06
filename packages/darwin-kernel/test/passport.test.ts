@@ -104,7 +104,10 @@ test('passport: verify rejects passport with invalid signature', () => {
 });
 
 test('passport: verify rejects all-expired passport', () => {
-  const past = new Date('2020-01-01');
+  // asOf must be AFTER expiresAt for the claim to be expired. This previously used
+  // 2020-01-01 against a claim expiring 2020-01-02 — one day BEFORE expiry — so the
+  // implementation correctly reported the claim live and the assertion was simply wrong.
+  const past = new Date('2020-06-01');
   const expiredClaim: Claim = {
     kind: 'kyc_verified',
     issuer: 'galop',
@@ -177,7 +180,10 @@ test('passport: hasClaim returns false for missing claim kind', () => {
 });
 
 test('passport: hasClaim returns false for expired claim', () => {
-  const past = new Date('2020-01-01');
+  // asOf must be AFTER expiresAt for the claim to be expired. This previously used
+  // 2020-01-01 against a claim expiring 2020-01-02 — one day BEFORE expiry — so the
+  // implementation correctly reported the claim live and the assertion was simply wrong.
+  const past = new Date('2020-06-01');
   const expiredClaim: Claim = {
     kind: 'kyc_verified',
     issuer: 'galop',

@@ -27,7 +27,7 @@ MERGE_CONFLICT_REDO_CAP). Test failures mark the task TESTFAIL — the train NEV
 Idempotent: handled cards get decided_by='train:*'; cards already handled by this train or by
 the legacy merge-handler are skipped.
 """
-import datetime, json, os, re, sys, subprocess, time
+import datetime, json, os, re, sys, subprocess, threading, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 # RESTORED 2026-07-31 (overwrite-class recovery; static_sanity gate)
@@ -119,6 +119,38 @@ def _branch_exists(repo, branch):
     return _git(repo, "rev-parse", "--verify", branch).returncode == 0
 
 
+_REMOTE_AGENT_REFS = {}          # repo -> (expires_at, {branch names}) ; None set == "unknown"
+_REMOTE_AGENT_LOCK = threading.Lock()
+REMOTE_REF_TTL_S = float(os.environ.get("MERGE_TRAIN_REMOTE_REF_TTL_S", "120"))
+
+
+def _remote_agent_branch_maybe(repo, branch):
+    """True if origin might hold `branch`; False only when we positively know it does not.
+
+    Returns True on any uncertainty (listing failed, cache cold and refresh errored) so the
+    caller falls back to its own fetch. Never returns False for a branch origin actually has,
+    which is what keeps this an optimisation rather than a merge-skipping filter.
+    """
+    now = time.monotonic()
+    with _REMOTE_AGENT_LOCK:
+        entry = _REMOTE_AGENT_REFS.get(repo)
+        if entry and entry[0] > now:
+            names = entry[1]
+            return True if names is None else (branch in names)
+    names = None
+    try:
+        r = _git(repo, "ls-remote", "--heads", "origin", "refs/heads/agent/*", timeout=90)
+        if r.returncode == 0:
+            names = {line.split("\trefs/heads/", 1)[1].strip()
+                     for line in (r.stdout or "").splitlines()
+                     if "\trefs/heads/" in line}
+    except Exception:
+        names = None
+    with _REMOTE_AGENT_LOCK:
+        _REMOTE_AGENT_REFS[repo] = (time.monotonic() + REMOTE_REF_TTL_S, names)
+    return True if names is None else (branch in names)
+
+
 def _materialize_branch(repo, branch):
     """Fleet-aware branch lookup with worktree recovery.
 
@@ -132,6 +164,24 @@ def _materialize_branch(repo, branch):
         return True
     if not repo or not os.path.isdir(repo):
         return False
+    # THE TRAIN'S REAL WALL-CLOCK SINK (measured 2026-08-06).
+    #
+    # Cards get filed by ensure_integration_card as soon as work is approved, which is often
+    # BEFORE the agent branch exists — the task is still QUEUED. Every such card reached this
+    # line and paid a full `git fetch origin <branch>` (timeout 120s) to discover a ref that
+    # was never pushed. In the last 20,000 train lines: 2,096 WAIT outcomes against 1 MERGED,
+    # the same slugs re-fetched 60-195 times each. With ORCH_MERGE_TRAIN_MAX_RUNTIME_S=900 the
+    # pass was being killed on the not-yet-created cards before it ever reached the mergeable
+    # ones. The queue was not stalled on conflicts; it was starved of clock.
+    #
+    # One `git ls-remote --heads origin refs/heads/agent/*` answers the same question for every
+    # card in the pass. Absent from that listing => there is nothing to fetch, so skip straight
+    # to WAIT. Fail-soft: if ls-remote errors or times out we fall through to the old per-branch
+    # fetch, so the worst case is today's behaviour rather than a missed merge. The cache is
+    # per-repo with a short TTL, so a branch pushed mid-pass is simply picked up on the next
+    # pass — this can defer a merge by one cycle, never skip or overwrite one.
+    if branch.startswith("agent/") and not _remote_agent_branch_maybe(repo, branch):
+        return False
     try:
         _git(repo, "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}", timeout=120)
         if _git(repo, "rev-parse", "--verify", f"refs/remotes/origin/{branch}").returncode != 0:
@@ -142,8 +192,20 @@ def _materialize_branch(repo, branch):
         return False
 
 
-def _task_patch(task, patch):
-    db.update("tasks", {"id": task["id"]}, patch)
+def _task_patch(task, patch, repo=None, prod_branch=None):
+    """Single write point for task state in the train — so the MERGED gate cannot be bypassed.
+
+    Every MERGED written here must first be proven reachable from the project's prod_branch
+    (merge_truth). A patch that is not MERGED passes straight through. On an infrastructure
+    error the gate returns None and we write nothing, leaving the row for the next cycle
+    rather than downgrading a real merge because a fetch timed out.
+    """
+    import merge_truth
+    final = merge_truth.gate_merged_patch(task, patch, repo=repo, prod_branch=prod_branch)
+    if final is None:
+        return None
+    db.update("tasks", {"id": task["id"]}, final)
+    return final
 
 
 def _freeze_integration_identity(repo, branch, task, slug):
@@ -1312,17 +1374,70 @@ def _pick_cards():
     # Scanning oldest-first as well as newest-first costs one extra query and bounds the
     # damage permanently: the backlog head is always visible, and fresh work still enters via
     # the desc pass. Dedup by id since the two windows overlap once the backlog is small.
+    # SERVER-SIDE UNHANDLED FILTER (2026-08-06, second half of the same bug).
+    #
+    # Scanning both ends of the table bounded the damage but did not remove it. Measured today:
+    # 21,974 approved merge-kind cards exist, of which only 569 are genuinely unhandled — and
+    # PostgREST silently caps `limit` at 1,000 rows per request, so MERGE_TRAIN_SCAN_LIMIT=3000
+    # really means "the 1,000 oldest plus the 1,000 newest". The other ~20,000 rows in the middle
+    # are already-decided outcomes the train re-reads forever, while roughly 466 of the 569 real
+    # candidates sit in the middle and are structurally invisible. That is the mechanism behind
+    # "the queue never finishes": the work was never lost, it was never *looked at*.
+    #
+    # Pushing the SKIP_PREFIXES test into the query makes the window hold candidates instead of
+    # history, so all 569 fit in one page with room to spare. decided_by IS NULL has to be
+    # spelled out because SQL NOT LIKE on NULL is NULL, not true, and freshly-filed cards
+    # ("canonical-train:sweeper", an attribution marker, not a verdict) must stay visible.
+    #
+    # The dual-order scan and the client-side filter below are both KEPT: the first so a backlog
+    # larger than one page still shows its head, the second so this stays correct even if the
+    # server-side predicate is dropped by the fallback path.
+    # MERGE_TRAIN_SCAN_LIMIT=0 in fleet_config is the fleet-wide kill switch for hosts too old
+    # to honour integration_owner.decide() — today, Mac 2 on 10d9e408, which cannot pull itself
+    # forward (14 dirty tracked files, and that build has no regenerable allowlist or remote
+    # escape hatch) and therefore keeps running a second merge train against the same origin.
+    # Starving _pick_cards is the only lever that build exposes.
+    #
+    # It was pinned out of the way on this host via ORCH_CONFIG_ENV_PINS, and that silently did
+    # not take: the running runner had inherited the pre-edit pins list from its parent, so
+    # os.environ.setdefault never applied the new one and THIS host quietly picked up the kill
+    # switch too — one train pass returned an all-zero summary before it was caught. A safety
+    # interlock that depends on a restart landing in the right order is not a safety interlock.
+    #
+    # Current code has integration_owner and does not need this switch to police itself, so it
+    # declines to be disabled by it. Operators wanting a genuine local override set a positive
+    # MERGE_TRAIN_SCAN_LIMIT; non-positive means "meant for the legacy hosts, not for me".
     limit = os.environ.get("MERGE_TRAIN_SCAN_LIMIT", "3000")
+    try:
+        if int(str(limit).strip().strip('"')) <= 0:
+            limit = "3000"
+    except (TypeError, ValueError):
+        limit = "3000"
     base = {"select": "*", "status": "eq.approved",
             "kind": f"in.({','.join(MERGE_KINDS)})", "limit": limit}
+    unhandled = "or=(decided_by.is.null,and({}))".format(
+        ",".join(f"decided_by.not.like.{p}*" for p in SKIP_PREFIXES))
+    _k, _v = unhandled.split("=", 1)
+    scans = ({**base, _k: _v}, base)  # narrowed first; unfiltered only as a fallback
+
     cards, seen = [], set()
-    for order in ("created_at.asc", "created_at.desc"):
-        for c in (db.select("approvals", {**base, "order": order}) or []):
+    for params in scans:
+        try:
+            got = []
+            for order in ("created_at.asc", "created_at.desc"):
+                got.extend(db.select("approvals", {**params, "order": order}) or [])
+        except Exception as e:
+            # A server that will not accept the predicate must not take the train down with it.
+            print(f"merge_train: unhandled-card filter unavailable ({e}); "
+                  f"falling back to the unfiltered scan window", flush=True)
+            continue
+        for c in got:
             cid = c.get("id")
             if cid in seen:
                 continue
             seen.add(cid)
             cards.append(c)
+        break  # the narrowed scan succeeded; the fallback page is redundant
     return [c for c in cards
             if c.get("kind") in MERGE_KINDS
             and approval_merge._is_code_merge_card(c)
@@ -1924,4 +2039,39 @@ if __name__ == "__main__":
     except (BlockingIOError, OSError):
         print(json.dumps({"skipped": "another merge_train instance is running"}))
         sys.exit(0)
+
+    # SELF-ENFORCED DEADLINE (2026-08-06). The runtime cap lived only in runner.py's
+    # _reap_stale_periodic, which can only kill pids recorded in that runner's own
+    # _PERIODIC_PIDS map. Restart the runner and every train it launched is reparented to
+    # init and becomes unkillable by the fleet — while still holding the flock above.
+    #
+    # Observed today: pid 37459, ppid 1, wedged 24 minutes in pure Python with seven lines of
+    # output, holding merge-train.single.lock. No train could start on this machine at all for
+    # as long as it lived, and nothing was going to reap it. A supervisor-dependent timeout is
+    # not a timeout; the pass has to own its own budget.
+    #
+    # faulthandler dumps every thread before we go, so the NEXT wedge is diagnosable instead of
+    # being another silent kill — the previous one took a root-only profiler to even locate.
+    # SIGUSR1 does the same on demand without killing anything.
+    import faulthandler, signal, threading as _th
+    try:
+        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+    except Exception:
+        pass
+    _budget = float(os.environ.get("ORCH_MERGE_TRAIN_MAX_RUNTIME_S", "7200") or 7200)
+    if _budget > 0:
+        def _deadline():
+            time.sleep(_budget)
+            sys.stderr.write(f"merge_train: WATCHDOG — pass exceeded {_budget:.0f}s; "
+                             f"dumping all threads and exiting so the single-flight lock "
+                             f"is released for the next pass\n")
+            sys.stderr.flush()
+            try:
+                faulthandler.dump_traceback(all_threads=True)
+            except Exception:
+                pass
+            sys.stderr.flush()
+            os._exit(3)
+        _th.Thread(target=_deadline, name="merge-train-watchdog", daemon=True).start()
+
     print(json.dumps(train_run(), indent=2, default=str))

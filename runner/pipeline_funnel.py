@@ -34,13 +34,19 @@ Usage:
 import datetime
 import json
 import os
+import re
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 # A stage is UNHEALTHY when its oldest item is older than this. Deliberately generous:
 # these are "something is structurally wrong", not "we are busy".
+# Sentinel: the probe FAILED (not "stage is empty"). Rendered distinctly and always unhealthy,
+# so a monitor that has gone blind can never masquerade as a healthy one.
+UNMEASURABLE = "unmeasurable"
+
 THRESHOLD_H = {
     "ingest": float(os.environ.get("ORCH_FUNNEL_INGEST_H", "72")),
     "draft":  float(os.environ.get("ORCH_FUNNEL_DRAFT_H", "6")),
@@ -54,15 +60,28 @@ def _now():
 
 
 def _age_h(ts):
+    """Hours since `ts`. Returns UNMEASURABLE if it cannot be parsed — never a silent None.
+
+    Python 3.9's datetime.fromisoformat only accepts exactly 3 or 6 fractional-second digits.
+    Postgres emits however many it has, so a timestamp like
+    '2026-08-04T01:59:47.94499+00:00' (FIVE digits) raised ValueError, was swallowed, and the
+    stage rendered as an empty '-' that read as healthy. That is how a stage holding 132 items
+    for four days displayed as 'ok'. Normalise the fraction to 6 digits before parsing.
+    """
     if not ts:
         return None
+    raw = str(ts).replace("Z", "+00:00")
+    m = re.match(r"^(.*?)\.(\d+)(.*)$", raw)
+    if m:
+        frac = (m.group(2) + "000000")[:6]
+        raw = f"{m.group(1)}.{frac}{m.group(3)}"
     try:
-        t = datetime.datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        t = datetime.datetime.fromisoformat(raw)
         if t.tzinfo is None:
             t = t.replace(tzinfo=datetime.timezone.utc)
         return round((_now() - t).total_seconds() / 3600.0, 1)
     except Exception:
-        return None
+        return UNMEASURABLE
 
 
 def _count(table, params):
@@ -80,12 +99,24 @@ def _count(table, params):
 
 
 def _oldest(table, params, ts_col):
-    try:
-        rows = db.select(table, {**params, "select": ts_col, "order": f"{ts_col}.asc",
-                                 "limit": "1"}) or []
-        return _age_h(rows[0].get(ts_col)) if rows else None
-    except Exception:
-        return None
+    """Age in hours of the oldest item, None if the stage is genuinely empty.
+
+    Raises nothing, but MUST distinguish "no rows" from "could not measure". Returning None
+    for both let a transient DB error render as a healthy dash — the funnel would report `ok`
+    precisely when it had lost the ability to see anything, which is the silent-failure mode
+    this module exists to catch. A failed probe now returns the sentinel below and is treated
+    as unhealthy.
+    """
+    for attempt in range(3):                 # the shared relay rate-limits under fleet load
+        try:
+            rows = db.select(table, {**params, "select": ts_col, "order": f"{ts_col}.asc",
+                                     "limit": "1"}) or []
+            return _age_h(rows[0].get(ts_col)) if rows else None
+        except Exception:
+            if attempt == 2:
+                return UNMEASURABLE
+            time.sleep(1.5 * (attempt + 1))
+    return UNMEASURABLE
 
 
 def snapshot():
@@ -113,7 +144,11 @@ def snapshot():
 
     for s in stages:
         thr, age = s.get("threshold_h"), s.get("oldest_h")
-        s["healthy"] = not (thr and age is not None and age > thr)
+        if age == UNMEASURABLE:
+            s["healthy"] = False
+            s["note"] = "probe failed after 3 attempts — funnel is BLIND for this stage"
+        else:
+            s["healthy"] = not (thr and age is not None and age > thr)
 
     # THE INVARIANT THAT WAS MISSING: finished work with nothing queued to integrate it.
     card_stage = next(s for s in stages if s["stage"] == "card")
@@ -141,7 +176,8 @@ def main():
         print(f"pipeline funnel @ {snap['generated_at'][:19]}   merged/24h={snap['merged_24h']}")
         print(f"{'stage':<8}{'count':>8}{'oldest':>10}{'limit':>8}  status")
         for s in snap["stages"]:
-            age = "-" if s["oldest_h"] is None else f"{s['oldest_h']}h"
+            age = ("-" if s["oldest_h"] is None
+                   else "ERR" if s["oldest_h"] == UNMEASURABLE else f"{s['oldest_h']}h")
             thr = "-" if not s["threshold_h"] else f"{s['threshold_h']:.0f}h"
             print(f"{s['stage']:<8}{s['count']:>8}{age:>10}{thr:>8}  "
                   f"{'ok' if s['healthy'] else 'STALLED'}"
