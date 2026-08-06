@@ -20,19 +20,78 @@ class TestIntegrationSweeper(unittest.TestCase):
                 return [task]
             return []
 
+        # Updated 2026-08-06: the sweeper now calls ensure_integration_card_result and
+        # checks the tri-state. The old bool API could not distinguish "a card already
+        # covers this slug" from "nothing was created", and the sweeper marked the task
+        # DONE either way — see test_card_failure_does_not_mark_task_done below.
         fake.select.side_effect = select
         with patch.object(integration_sweeper, "db", fake), \
              patch.object(integration_sweeper, "_branch_exists", return_value=True), \
-             patch.object(integration_sweeper.merge_train, "ensure_integration_card", return_value=True) as ensure, \
+             patch.object(integration_sweeper.merge_train, "ensure_integration_card_result",
+                          return_value=integration_sweeper.merge_train.CARD_CREATED) as ensure, \
              patch.object(integration_sweeper.merge_train, "train_run", return_value={"merged": 1}) as train:
             out = integration_sweeper.sweep(limit=10, run_train=True)
 
         self.assertEqual(out["queued"], 1)
+        self.assertEqual(out["card_failed"], 0)
         ensure.assert_called_once()
         args, kwargs = ensure.call_args
         self.assertEqual(args[:2], ("alpha", "feat-x"))
         self.assertEqual(kwargs["status"], "approved")
         train.assert_called_once()
+
+    def test_existing_card_still_closes_the_task(self):
+        """CARD_EXISTED is success: the slug is queued, just not by this pass."""
+        fake = MagicMock()
+        project = {"id": "p1", "name": "alpha", "repo_path": "/repo"}
+        task = {"id": "t1", "slug": "feat-x", "project_id": "p1", "state": "BLOCKED",
+                "note": "verify pass", "kind": "build"}
+
+        def select(table, params=None):
+            return {"projects": [project], "tasks": [task]}.get(table, [])
+
+        fake.select.side_effect = select
+        with patch.object(integration_sweeper, "db", fake), \
+             patch.object(integration_sweeper, "_branch_exists", return_value=True), \
+             patch.object(integration_sweeper.merge_train, "ensure_integration_card_result",
+                          return_value=integration_sweeper.merge_train.CARD_EXISTED), \
+             patch.object(integration_sweeper.merge_train, "train_run", return_value={}):
+            out = integration_sweeper.sweep(limit=10, run_train=False)
+
+        self.assertEqual(out["card_failed"], 0)
+        self.assertEqual(out["queued"], 0, "no NEW card was filed")
+        states = [c.args[2].get("state") for c in fake.update.call_args_list
+                  if c.args[0] == "tasks"]
+        self.assertIn("DONE", states, "an existing live card means the task can close")
+
+    def test_card_failure_does_not_mark_task_done(self):
+        """The stranding bug at this call site: DONE was written even with no card.
+
+        A DONE task with a pushed branch and no approvals row is invisible to the
+        merge train permanently, so the failure must leave the task open.
+        """
+        fake = MagicMock()
+        project = {"id": "p1", "name": "alpha", "repo_path": "/repo"}
+        task = {"id": "t1", "slug": "feat-x", "project_id": "p1", "state": "BLOCKED",
+                "note": "verify pass", "kind": "build"}
+
+        def select(table, params=None):
+            return {"projects": [project], "tasks": [task]}.get(table, [])
+
+        fake.select.side_effect = select
+        with patch.object(integration_sweeper, "db", fake), \
+             patch.object(integration_sweeper, "_branch_exists", return_value=True), \
+             patch.object(integration_sweeper.merge_train, "ensure_integration_card_result",
+                          return_value=integration_sweeper.merge_train.CARD_FAILED), \
+             patch.object(integration_sweeper.merge_train, "train_run", return_value={}):
+            out = integration_sweeper.sweep(limit=10, run_train=False)
+
+        self.assertEqual(out["card_failed"], 1)
+        self.assertEqual(out["queued"], 0)
+        task_states = [c.args[2].get("state") for c in fake.update.call_args_list
+                       if c.args[0] == "tasks"]
+        self.assertNotIn("DONE", task_states,
+                         "must never close a task whose card could not be filed")
 
     def test_missing_branch_queues_reuse_first_recovery_task(self):
         fake = MagicMock()
