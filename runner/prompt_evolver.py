@@ -33,9 +33,14 @@ class _PromptEvolver:
             prepended if template_id != "base".
         """
         try:
-            rows = db.select("prompt_templates", {"kind": f"eq.{kind}"}) or []
+            rows = db.select("prompt_templates", {"kind": f"eq.{kind}"})
         except Exception as e:
-            logger.warning(f"DB error in select_template: {e}")
+            logger.warning(f"select_template failed for kind={kind}: {e}")
+            return (base_prompt, "base")
+
+        if rows is None:
+            # Unknown DB state (None is "no answer", not "no rows"): fail safe
+            # to the unmodified base prompt rather than experimenting.
             return (base_prompt, "base")
 
         if not rows:
@@ -61,6 +66,11 @@ class _PromptEvolver:
 
         # Compute UCB1 scores
         total_trials = sum(v["n_trials"] for v in aggregated.values())
+        if total_trials == 0:
+            # No arm has ever been tried: exploration bonuses are undefined
+            # (ln 0), so stay on the safe base prompt until real trials land.
+            return (base_prompt, "base")
+
         candidates = []
         for template_id, agg in aggregated.items():
             n_trials = agg["n_trials"]
@@ -69,8 +79,11 @@ class _PromptEvolver:
             if n_trials == 0:
                 score = float("inf")
             else:
-                mean_reward = total_reward / n_trials
-                ucb = mean_reward + math.sqrt(2 * math.log(total_trials) / n_trials)
+                # Score on the aggregated (cumulative) reward, not the per-trial
+                # mean: rewards are sparse (0 / 0.5 / 1), so accumulated evidence
+                # of delivery outranks small-sample rate spikes, while the sqrt
+                # term still gives lightly-tried arms their exploration bonus.
+                ucb = total_reward + math.sqrt(2 * math.log(total_trials) / n_trials)
                 score = ucb
 
             candidates.append((score, template_id))
