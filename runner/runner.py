@@ -106,6 +106,7 @@ if __name__ == "__main__":
 
 sys.path.insert(0, _RUNNER_DIR)
 import db, bandit, verify, caching, account_pool, cost_ledger, model_router, candidate_shared
+import provider_banner
 import prompt_assembler
 import knowledge_embed as kb
 import regression, budget, speculative, pr_integrate
@@ -189,13 +190,13 @@ POLL = int(os.environ.get("POLL_SECONDS", "5"))
 # free RAM / kernel memory pressure / disk, so the Mac can't be overrun — this just lets the
 # runner use idle headroom instead of sitting at 2. Tune MAX_PARALLEL in runner/.env per machine.
 MAX_PARALLEL = int(os.environ.get("MAX_PARALLEL", "12"))
-RATE = ("temporarily limiting", "rate limit", "429", "overloaded", "too many requests")
-EXHAUST = ("usage limit", "out of credits", "insufficient_quota", "quota",
-           "weekly limit", "hit your weekly", "limit · resets", "limit - resets",
-           "reached your usage", "usage limit reached", "upgrade to increase",
-           "5-hour limit", "hour limit reached", "session limit", "limit reached ∙ resets",
-           "spend limit", "monthly spend", "monthly limit", "hit your monthly",
-           "limit · raise it", "raise it at claude.ai")
+# Provider banner vocabulary now lives in ONE module (provider_banner). Three
+# copies of it had drifted: the phrases below were the richest set, and
+# root_cause.py's classifier knew none of them — so an exhaustion this runner
+# handled correctly was filed as "unknown" by the analyzer reading the same
+# string. Same tuples, same substring semantics; one source.
+RATE = provider_banner.RATE_SIGNALS
+EXHAUST = provider_banner.EXHAUST_SIGNALS
 # Cross-project reuse directive injected into every task: economize by reusing, not re-drafting.
 REUSE_FIRST = ("\n\n## Reuse before you draft (cost discipline)\n"
     "Before writing net-new code: (1) search THIS repo for an existing helper/component/pattern "
