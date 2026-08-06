@@ -51,6 +51,24 @@ export interface Passport {
 
 const DAY = 86_400_000;
 
+/** Canonical claim ordering so the digest is independent of caller-supplied order. */
+function sortClaims(claims: Claim[]): Claim[] {
+  return [...claims].sort(
+    (a, b) =>
+      a.kind.localeCompare(b.kind) ||
+      a.issuer.localeCompare(b.issuer) ||
+      a.issuedAt.localeCompare(b.issuedAt) ||
+      a.expiresAt.localeCompare(b.expiresAt) ||
+      a.value - b.value,
+  );
+}
+
+/** Digest body with claims in canonical order — order-independent, while the
+ *  stored passport preserves the caller-supplied claim order. */
+function canonicalBody(body: { subject: string; version: 1; claims: Claim[]; issuedAt: string }) {
+  return { ...body, claims: sortClaims(body.claims) };
+}
+
 export function buildPassport(params: {
   subject: string;
   claims: Claim[];
@@ -62,9 +80,9 @@ export function buildPassport(params: {
     claims: params.claims,
     issuedAt: params.issuedAt ?? new Date().toISOString(),
   };
-  const digest = sha256Canonical(body);
+  const digest = sha256Canonical(canonicalBody(body));
   return {
-    id: contentId('pass', body),
+    id: contentId('pass', canonicalBody(body)),
     ...body,
     digest,
     signature: signDigest(digest),
@@ -81,7 +99,7 @@ export interface PassportVerification {
 /** Stateless verify: signature + digest integrity + per-claim expiry. */
 export function verifyPassport(passport: Passport, asOf: Date = new Date()): PassportVerification {
   const { id: _id, digest, signature, ...body } = passport;
-  if (sha256Canonical(body) !== digest) {
+  if (sha256Canonical(canonicalBody(body)) !== digest) {
     return { valid: false, reason: 'digest_mismatch', liveClaims: [] };
   }
   if (!verifyDigest(digest, signature)) {
