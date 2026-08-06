@@ -1643,6 +1643,12 @@ def train_run():
     # asked for direct updates to stop because it is being absorbed into apparently/tomorrow/
     # apparently-law/pareto, task claiming stopped correctly, and the train went on merging and
     # deploying it anyway. "Paused" has to mean no writes of any kind, not just no new work.
+    # NOTE: paused project ids are collected here but the `projects` MAP IS LEFT INTACT.
+    # An earlier version of this filter deleted paused entries from `projects`, which made
+    # `projects.get(pid)` return {} further down; repo_path became "" and _record_pressure
+    # crashed the whole train with FileNotFoundError on an empty cwd. Paused projects are
+    # dropped from the per-project WORK grouping below instead, so lookups stay valid.
+    _paused_pids = set()
     try:
         _paused_names = {
             (r.get("project") or "").strip()
@@ -1651,11 +1657,10 @@ def train_run():
             if (r.get("project") or "").strip()
         }
         if _paused_names:
-            _skipped = {pid: p for pid, p in projects.items() if p.get("name") in _paused_names}
-            if _skipped:
-                projects = {pid: p for pid, p in projects.items() if pid not in _skipped}
+            _paused_pids = {pid for pid, p in projects.items() if p.get("name") in _paused_names}
+            if _paused_pids:
                 print("merge_train: skipping paused project(s): "
-                      + ", ".join(sorted(p.get("name", "?") for p in _skipped.values())))
+                      + ", ".join(sorted(projects[pid].get("name", "?") for pid in _paused_pids)))
     except Exception as _pp_exc:      # never let a control-plane read stop the whole train
         print(f"merge_train: per-project pause check failed ({_pp_exc}); continuing unpaused")
 
@@ -1675,6 +1680,12 @@ def train_run():
             db.update("approvals", {"id": c["id"]}, {"decided_by": f"{MARK}:no-task"})
             continue
         by_project.setdefault(t.get("project_id"), []).append((c, slug, t))
+
+    # Drop paused projects from the work grouping (see the pause block above). Their cards are
+    # left UNDECIDED on purpose: pausing is reversible, and marking them decided here would
+    # silently discard the queued work when the project is resumed.
+    if _paused_pids:
+        by_project = {pid: v for pid, v in by_project.items() if pid not in _paused_pids}
 
     pressure = _record_pressure(by_project, projects)
     summary = {"projects": 0, "merged": 0, "already_integrated": 0,

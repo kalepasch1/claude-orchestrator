@@ -412,9 +412,16 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
         # NESTING GUARD: never file recovery for anything that already IS recovery work,
         # including rework-* wrappers around recovery slugs — recovery-of-recovery churn
         # ("rework-missing-branch-recover-missing-branch-...") burned lanes for days.
-        if RECOVERY_PREFIX in str(slug or ""):
-            skipped += 1
-            continue
+        #
+        # SCOPE FIX (2026-08-06): this guard used to `continue` HERE, before the branch check
+        # and before ensure_integration_card. That made it skip recovery work entirely — not
+        # just the filing of new recovery, but the INTEGRATION of recovery that had already
+        # succeeded. Recovery is the fleet's largest category (4,063 tasks); when one finished
+        # it went to DONE and no card was ever filed, so the merge train could not see it.
+        # Measured at the time of the fix: 134 of the 191 DONE tasks (70%) were completed
+        # recovery work stranded this way, the oldest waiting 13 days, while the train sat idle
+        # with zero undecided cards. The guard belongs on the recovery-FILING path only.
+        _is_recovery = RECOVERY_PREFIX in str(slug or "")
         proj = projects.get(t.get("project_id")) or {}
         repo = proj.get("repo_path", "")
         if not _branch_exists_anywhere(repo, f"agent/{slug}"):
@@ -433,6 +440,16 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
                                "artifact_commit": sha,
                                "note": f"integration_sweeper: work verified in {ref} at {sha[:12]} "
                                        f"({subject[:80]}); closed (branch GC'd)"})
+                continue
+            if _is_recovery:
+                # This IS recovery work and its branch is gone with no upstream evidence.
+                # Filing recovery-for-recovery is the churn the nesting guard exists to stop,
+                # so close it instead of rebuilding a rebuild.
+                db.update("tasks", {"id": t["id"]},
+                          {"state": "QUARANTINED",
+                           "note": "integration_sweeper: recovery branch lost with no upstream "
+                                   "evidence; closed rather than filing recovery-of-recovery"})
+                skipped += 1
                 continue
             if _queue_recovery(t, proj, recovery_index=recovery_index):
                 missing += 1
