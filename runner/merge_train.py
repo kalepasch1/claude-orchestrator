@@ -1751,8 +1751,14 @@ def _paused():
         return False
 
 
-def train_run():
+def train_run(report=None):
     """Entry point: run the integration train across all projects (serialized per project).
+
+    `report` is a merge_train_report.PassReport recording, per card, why this pass
+    ended without merging it. Before it existed, a pass that merged nothing was
+    indistinguishable from a pass that never ran (see merge_train_report docstring).
+    Created here when the caller does not supply one, so direct callers and the
+    existing tests keep working unchanged.
 
     Returns a summary dict with keys:
         projects  (int)  — number of projects processed
@@ -1766,8 +1772,31 @@ def train_run():
         pressure  (dict) — per-project queue pressure snapshot
         paused    (bool) — present and True when the train is paused via fleet_config
     """
+    # _owned_report means "this frame created it, so this frame persists it". When the
+    # leased wrapper supplies one it owns persistence, so we must not write it twice.
+    _owned_report = report is None
+    if report is None:
+        try:
+            import merge_train_report
+            report = merge_train_report.PassReport(trigger="train_run")
+        except Exception:
+            report = None
+    _owned_report = _owned_report and report is not None
+
+    def _r(method, *args):
+        """Instrumentation must never be able to break the train."""
+        if report is None:
+            return
+        try:
+            getattr(report, method)(*args)
+        except Exception:
+            pass
+
     if _paused():
         print("merge_train: paused — skipping")
+        _r("not_run", "paused")
+        if _owned_report:
+            _r("persist")
         return {"paused": True}
 
     cards = _pick_cards()
@@ -1812,9 +1841,12 @@ def train_run():
         slug, t = _resolve_task(c, tasks_by_slug)
         if not slug:
             db.update("approvals", {"id": c["id"]}, {"decided_by": f"{MARK}:no-slug"})
+            _r("skipped", f"card:{c.get('id')}", "no-slug: card resolves to no task slug")
             continue
+        _r("consider", slug)
         if not t:
             db.update("approvals", {"id": c["id"]}, {"decided_by": f"{MARK}:no-task"})
+            _r("skipped", slug, "no-task: no task row for this slug")
             continue
         by_project.setdefault(t.get("project_id"), []).append((c, slug, t))
 
@@ -1822,6 +1854,10 @@ def train_run():
     # left UNDECIDED on purpose: pausing is reversible, and marking them decided here would
     # silently discard the queued work when the project is resumed.
     if _paused_pids:
+        for _pid in _paused_pids:
+            for _c, _slug, _t in by_project.get(_pid, []):
+                _r("skipped", _slug,
+                   f"project-paused: {(projects.get(_pid) or {}).get('name') or _pid}")
         by_project = {pid: v for pid, v in by_project.items() if pid not in _paused_pids}
 
     pressure = _record_pressure(by_project, projects)
@@ -1867,12 +1903,18 @@ def train_run():
         with repo_lock.hold(repo_path, timeout=lock_timeout) as got_lock:
             if not got_lock:
                 result["skipped"] += len(group)
+                for _c, _slug, _t in group:
+                    _r("skipped", _slug, "repo-lock: another train holds this project's repo lock")
                 print(f"merge_train: {proj.get('name') or pid} busy (another train holds the repo lock) — skipping this cycle")
                 return result
             try:
                 with integration_runtime.isolated_repo(repo_path, "merge_train") as integration_repo:
                     for card, slug, task, risk in _select_batch(group):
                         if used[risk] >= caps[risk] or scanned >= scan_cap:
+                            _r("skipped", slug,
+                               f"cap: {risk} batch cap {caps[risk]} reached"
+                               if used[risk] >= caps[risk]
+                               else f"cap: per-project scan cap {scan_cap} reached")
                             continue
                         scanned += 1
                         result["risk"][risk] += 1
@@ -1883,28 +1925,40 @@ def train_run():
                             used[risk] += 1
                         if outcome == "merged":
                             result["merged"] += 1
+                            _r("merged", slug)
                         elif outcome == "already-integrated":
                             result["already_integrated"] += 1
+                            _r("skipped", slug, "already-integrated: base already contains this work")
                         elif outcome == "redo":
                             result["redo"] += 1
+                            _r("failed", slug, "redo: stale-base rebase conflict, re-queued")
                         elif outcome == "testfail":
                             result["testfail"] += 1
+                            _r("failed", slug, "testfail: tests red after rebase")
                         elif outcome == "regressfail":
                             result["regressfail"] += 1
+                            _r("failed", slug, "regressfail: candidate would destroy code in base")
                         elif outcome == "buildfail":
                             result["buildfail"] += 1
+                            _r("failed", slug, "buildfail: production build red")
                         elif outcome == "conflict":
                             result["conflict"] += 1
+                            _r("failed", slug, "conflict: unresolvable merge conflict")
                         else:
                             result["skipped"] += 1
+                            _r("skipped", slug, f"other: _integrate_card returned {outcome!r}")
             except integration_runtime.IntegrationRuntimeError as exc:
                 result["skipped"] += len(group)
+                for _c, _slug, _t in group:
+                    _r("skipped", _slug, f"isolation-blocked: {str(exc)[:200]}")
                 print(f"merge_train: {proj.get('name') or pid} isolation blocked: {exc}")
             except FileNotFoundError as exc:
                 # A concurrent/killed pass removed a worktree dir mid-flight.
                 # Transient by construction — the entry-time `worktree prune`
                 # heals it next pass. Skip, don't error (2026-07-31 class).
                 result["skipped"] += len(group)
+                for _c, _slug, _t in group:
+                    _r("skipped", _slug, "worktree-vanished: transient, heals next pass")
                 print(f"merge_train: {proj.get('name') or pid} worktree vanished mid-pass "
                       f"(transient, will heal next pass): {exc}")
         return result
@@ -1934,6 +1988,9 @@ def train_run():
                         "cards_skipped": len(group)})[:8000]}, upsert=False)
             except Exception:
                 pass
+            for _c, _slug, _t in group:
+                _r("skipped", _slug,
+                   f"project-error: {type(exc).__name__}: {str(exc)[:150]}")
             return {"projects": 1, "merged": 0, "already_integrated": 0,
                     "redo": 0, "testfail": 0, "regressfail": 0, "buildfail": 0, "conflict": 0,
                     "skipped": len(group), "project_errors": 1,
@@ -1976,6 +2033,16 @@ def train_run():
           f"{summary['skipped']} skipped, {summary['project_errors']} project errors "
           f"across {summary['projects']} project(s)"
           f"{f', {auto_resolved} auto-resolved' if auto_resolved else ''}")
+
+    # A pass that merged nothing must say why, per card. Silence here is the bug.
+    if report is not None:
+        try:
+            summary["pass_report"] = report.to_dict()
+            summary["no_op_reason"] = report.no_op_reason()
+        except Exception:
+            pass
+        if _owned_report:
+            _r("persist")
     return summary
 
 
@@ -1992,19 +2059,60 @@ def train_run():
     copyfix. integration_owner elects exactly one live host to integrate (and refuses hosts
     running stale code), which is the missing cross-machine half of this lock.
     """
+    report = None
+    try:
+        import merge_train_report
+        report = merge_train_report.PassReport(trigger="scheduled")
+    except Exception:
+        pass
+
+    def _end(reason, summary):
+        """Record and persist a pass that ended before looking at any card."""
+        if report is not None:
+            try:
+                report.not_run(reason)
+                report.persist()
+            except Exception:
+                pass
+        return summary
+
     try:
         import integration_owner
         may, why = integration_owner.decide()
         if not may:
             print(f"merge_train: not the integration owner — {why}", flush=True)
-            return {"skipped": f"not integration owner: {why}"}
+            return _end(f"not-integration-owner: {why}",
+                        {"skipped": f"not integration owner: {why}"})
     except Exception as _io_exc:      # a broken owner check must never stall every host
         print(f"merge_train: integration-owner check failed ({_io_exc}); proceeding", flush=True)
+
+    # FAILURE 1 (2026-08-06): most DONE tasks never reach integrate(), so no card is
+    # ever filed and the train cannot see them. Reconcile before the pass so this
+    # cycle's scan includes work that finished on a card-less path. Fail-soft: a
+    # reconciler outage must degrade to the old behaviour, not stop integration.
+    try:
+        import done_to_merged
+        done_to_merged.reconcile_missing_cards()
+    except Exception as _rc_exc:
+        print(f"merge_train: card reconciler unavailable ({_rc_exc}); continuing", flush=True)
+
     timeout = float(os.environ.get("ORCH_INTEGRATION_LEASE_TIMEOUT_S", "0") or 0)
     with integration_runtime.global_lease("merge_train", timeout=timeout) as acquired:
         if not acquired:
-            return {"skipped": "another integration or release train owns the global lease"}
-        return _train_run_unleased()
+            return _end("lease-not-acquired",
+                        {"skipped": "another integration or release train owns the global lease"})
+        summary = _train_run_unleased(report=report)
+        if report is not None:
+            try:
+                report.persist()
+            except Exception:
+                pass
+        try:
+            import done_to_merged
+            done_to_merged.publish_health()
+        except Exception:
+            pass
+        return summary
 
 
 # scheduler-compat alias: the train IS the integration path now
