@@ -51,6 +51,33 @@ export interface Passport {
 
 const DAY = 86_400_000;
 
+/**
+ * Canonical form used for the digest and content id — NOT for storage.
+ *
+ * A passport's digest identifies its CONTENT, and a set of claims is the same set whichever
+ * order it arrives in. Digesting the claims as-given made digest and `id` order-dependent:
+ * the same subject with the same claims produced two different passports depending on array
+ * order, silently breaking dedup, caching, and any equality check built on id/digest.
+ *
+ * Only the hashed view is sorted. The stored `passport.claims` keeps the caller's order,
+ * because callers legitimately read `claims[i]` positionally and reordering the stored array
+ * would change observable behaviour to fix a hashing concern.
+ *
+ * buildPassport and verifyPassport MUST both hash through here — canonicalising on only one
+ * side makes every passport fail its own digest check.
+ */
+function canonicalBody<T extends { claims: Claim[] }>(body: T): T {
+  return {
+    ...body,
+    claims: [...body.claims].sort((a, b) =>
+      a.kind.localeCompare(b.kind) ||
+      a.issuer.localeCompare(b.issuer) ||
+      a.issuedAt.localeCompare(b.issuedAt) ||
+      a.expiresAt.localeCompare(b.expiresAt) ||
+      a.value - b.value),
+  };
+}
+
 export function buildPassport(params: {
   subject: string;
   claims: Claim[];
@@ -62,9 +89,10 @@ export function buildPassport(params: {
     claims: params.claims,
     issuedAt: params.issuedAt ?? new Date().toISOString(),
   };
-  const digest = sha256Canonical(body);
+  const canonical = canonicalBody(body);
+  const digest = sha256Canonical(canonical);
   return {
-    id: contentId('pass', body),
+    id: contentId('pass', canonical),
     ...body,
     digest,
     signature: signDigest(digest),
@@ -81,7 +109,7 @@ export interface PassportVerification {
 /** Stateless verify: signature + digest integrity + per-claim expiry. */
 export function verifyPassport(passport: Passport, asOf: Date = new Date()): PassportVerification {
   const { id: _id, digest, signature, ...body } = passport;
-  if (sha256Canonical(body) !== digest) {
+  if (sha256Canonical(canonicalBody(body)) !== digest) {
     return { valid: false, reason: 'digest_mismatch', liveClaims: [] };
   }
   if (!verifyDigest(digest, signature)) {
