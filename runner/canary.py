@@ -19,10 +19,89 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 _metrics_server = None
 _metrics_server_lock = threading.Lock()
 
+# --- Prometheus gauge -------------------------------------------------------
+# prometheus_client is OPTIONAL on purpose. This repo ships no dependency
+# manifest, the module is not installed on the runner boxes, and canary.py is
+# imported by the scheduler — so a bare `from prometheus_client import Gauge`
+# would make the whole module unimportable everywhere it currently works. That
+# is the failure mode the earlier attempt at this hit.
+#
+# So: use the real client when present, otherwise a minimal shim exposing the
+# same surface the canary uses (set/inc/dec/get + text rendering). Either way
+# `canary.canary_last_success` exists at module level and `/metrics` reports it,
+# which is the behavior callers depend on. Uses a private CollectorRegistry
+# rather than the global default so re-import under test cannot raise
+# Duplicated timeseries.
+_GAUGE_NAME = "canary_last_success"
+_GAUGE_DOC = "Indicator of the last validation result (1 for success, 0 for failure)"
+
+
+class _FallbackGauge:
+    """Prometheus-Gauge-shaped stand-in used when prometheus_client is absent."""
+
+    def __init__(self, name, documentation):
+        self._name = name
+        self._documentation = documentation
+        self._value = 0.0
+        self._lock = threading.Lock()
+
+    def set(self, value):
+        with self._lock:
+            self._value = float(value)
+
+    def inc(self, amount=1):
+        with self._lock:
+            self._value += float(amount)
+
+    def dec(self, amount=1):
+        with self._lock:
+            self._value -= float(amount)
+
+    def get(self):
+        with self._lock:
+            return self._value
+
+    def render(self):
+        return (f"# HELP {self._name} {self._documentation}\n"
+                f"# TYPE {self._name} gauge\n"
+                f"{self._name} {self.get()}\n")
+
+
+try:  # pragma: no cover - depends on the host environment
+    from prometheus_client import CollectorRegistry, Gauge, generate_latest
+
+    PROMETHEUS_AVAILABLE = True
+    CANARY_REGISTRY = CollectorRegistry()
+    canary_last_success = Gauge(_GAUGE_NAME, _GAUGE_DOC, registry=CANARY_REGISTRY)
+except Exception:  # ImportError, or a client version without these names
+    PROMETHEUS_AVAILABLE = False
+    CANARY_REGISTRY = None
+    generate_latest = None
+    canary_last_success = _FallbackGauge(_GAUGE_NAME, _GAUGE_DOC)
+
+
+def _render_metrics():
+    """Render the canary metrics exposition text. Never raises."""
+    try:
+        if PROMETHEUS_AVAILABLE and generate_latest is not None:
+            return generate_latest(CANARY_REGISTRY).decode("utf-8")
+        return canary_last_success.render()
+    except Exception:
+        return f"# {_GAUGE_NAME} unavailable\n"
+
+
+def _record_verdict(verdict):
+    """Mirror a verdict onto the gauge. Metrics must never break the canary."""
+    try:
+        canary_last_success.set(1 if verdict == "promote" else 0)
+    except Exception:
+        pass
+
 
 def evaluate(metrics_url=None):
     metrics_url = metrics_url or os.environ.get("METRICS_URL")
     if not metrics_url:
+        _record_verdict("promote")
         return {"verdict": "promote", "reason": "no metrics endpoint configured"}
     retries = int(os.environ.get("CANARY_FETCH_RETRIES", "2"))
     last_err = None
@@ -37,6 +116,7 @@ def evaluate(metrics_url=None):
                 import time
                 time.sleep(min(2 ** attempt, 8))
     else:
+        _record_verdict("rollback")
         return {"verdict": "rollback", "reason": f"metrics unreachable after {1 + retries} attempts ({last_err})"}
     fails = []
     def bad(key, val, limit, cmp):
@@ -47,7 +127,9 @@ def evaluate(metrics_url=None):
     bad("error_rate", m.get("error_rate"), _f("CANARY_MAX_ERROR_RATE"), "max")
     bad("p95_ms", m.get("p95_ms"), _f("CANARY_MAX_P95_MS"), "max")
     bad("conversion", m.get("conversion"), _f("CANARY_MIN_CONVERSION"), "min")
-    return {"verdict": "rollback" if fails else "promote",
+    verdict = "rollback" if fails else "promote"
+    _record_verdict(verdict)
+    return {"verdict": verdict,
             "reason": "; ".join(fails) or "all metrics within thresholds", "metrics": m}
 
 
@@ -72,7 +154,7 @@ def main(argv=None):
 class _MetricsHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/metrics":
-            body = b"canary_up 1\n"
+            body = ("canary_up 1\n" + _render_metrics()).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.send_header("Content-Length", str(len(body)))
