@@ -1,0 +1,3 @@
+{
+  "path/to/filename.js": "// entire file content ...\n// ... goes in between\n"
+}
