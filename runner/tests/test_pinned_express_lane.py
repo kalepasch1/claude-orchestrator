@@ -72,7 +72,34 @@ def _make_select(queued, active=None, recent=None, projects=None, done=None, con
     return _sel
 
 
-class TestPinnedExpressLane(unittest.TestCase):
+class ClaimTestCase(unittest.TestCase):
+    """Base for tests that drive claim_task against a mocked DB.
+
+    claim_task caches the projects list at module scope for five minutes and
+    derives HOST AFFINITY from it: any task whose project_id is absent from the
+    cached list is filtered out of the claim entirely. A test that declared its
+    own projects therefore inherited the PREVIOUS test's project list and had
+    every one of its tasks dropped — which is why two tests here passed alone
+    and failed in suite order. Same hazard in production: a project added or
+    repointed inside the TTL is invisible, not merely stale.
+
+    Saved and restored rather than simply invalidated on the way out: leaving
+    the TTL clock at zero would make the NEXT file's first refresh issue a
+    projects query its mock did not expect, moving the problem instead of
+    fixing it.
+    """
+
+    def setUp(self):
+        self._saved_projects = list(db._cached_projects_list)
+        self._saved_at = db._PROJECT_CACHE_TIME["at"]
+        db.invalidate_projects_cache()
+
+    def tearDown(self):
+        db._cached_projects_list = self._saved_projects
+        db._PROJECT_CACHE_TIME["at"] = self._saved_at
+
+
+class TestPinnedExpressLane(ClaimTestCase):
     """Tests for the pinned task express lane — bypass of other priority tiers."""
 
     def _claim(self, queued, active=None, done=None, controls=None, projects=None):
@@ -342,7 +369,7 @@ class TestSetPinIntegration(unittest.TestCase):
         mock_update.assert_called_once_with("tasks", {"slug": "my-task"}, {"pinned": False, "pin_rank": 0})
 
 
-class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
+class TestPinnedExpressLaneEdgeCases(ClaimTestCase):
     """Edge case tests for pinned express lane."""
 
     def _claim(self, queued, active=None, done=None, controls=None):

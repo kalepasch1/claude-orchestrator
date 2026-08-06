@@ -748,6 +748,24 @@ def _refresh_projects_cache():
             pass  # Return stale cache on error
 
 
+def invalidate_projects_cache():
+    """Drop the cached projects list so the next claim re-reads the table.
+
+    claim_task derives host affinity from this cache: `local_repo_pids` is the
+    set of project ids whose repo exists on this machine, and any task whose
+    project_id is missing from that set is filtered out of the claim. While the
+    cache is warm — five minutes — a project added or repointed in that window
+    is not merely stale, it is INVISIBLE: its tasks are silently dropped from
+    every claim cycle and the runner reports "no locally-runnable tasks".
+
+    Call after adding a project, changing a repo_path, or cloning a repo that
+    was previously absent. Mirrors invalidate_done_cache().
+    """
+    global _cached_projects_list
+    _cached_projects_list = []
+    _PROJECT_CACHE_TIME["at"] = 0.0
+
+
 def insert(table, row, upsert=False):
     """Insert a single row into *table* via PostgREST POST.  Returns the created row or None on 409 dedup."""
     _guard_fleet_config(table, row)
