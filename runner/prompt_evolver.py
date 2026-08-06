@@ -35,7 +35,7 @@ class _PromptEvolver:
         try:
             rows = db.select("prompt_templates", {"kind": f"eq.{kind}"}) or []
         except Exception as e:
-            logger.warning(f"DB error in select_template: {e}")
+            logger.warning(f"select_template failed for kind={kind!r}: {e}")
             return (base_prompt, "base")
 
         if not rows:
