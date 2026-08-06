@@ -71,6 +71,15 @@ def predict_revenue(task, ctx):
     """
     ctx = ctx if ctx is not None else load_ctx()
 
+    # FAIL-SOFT (restored 2026-08-06). The module contract has always been "missing revenue
+    # data returns 0 score, task stays queued but unprioritized" — but the guard was lost in a
+    # refactor, so a None row raised AttributeError here. ev_scheduler.load_ctx() calls this
+    # inside a bare `except Exception: pass`, so the crash did not surface as an error: it
+    # silently dropped economic_signals from the scheduling context entirely, and the queue
+    # went on being ordered as though revenue prediction did not exist.
+    if not isinstance(task, dict):
+        return (0.0, 0.0, 0.0)
+
     project = task.get("project") or ""
     kind = (task.get("kind") or "").lower()
     prompt = (task.get("prompt") or "").lower()
@@ -109,6 +118,10 @@ def cost_benefit(task, ctx):
     """
     ctx = ctx if ctx is not None else load_ctx()
 
+    if not isinstance(task, dict):   # fail-soft: see predict_revenue
+        return {"predicted_revenue": 0.0, "estimated_cost": 1.0,
+                "roi": 0.0, "worthwhile": False}
+
     predicted_revenue, _, _ = predict_revenue(task, ctx)
     estimated_cost = float(task.get("usd") or 0)
 
@@ -136,6 +149,9 @@ def score(task, ctx):
     """
     ctx = ctx if ctx is not None else load_ctx()
 
+    if not isinstance(task, dict):   # fail-soft: see predict_revenue
+        return 0.0
+
     predicted_revenue, _, _ = predict_revenue(task, ctx)
     estimated_cost = float(task.get("usd") or 0)
 
@@ -161,6 +177,8 @@ def predict_revenue_bulk(tasks, ctx=None):
     ctx = ctx if ctx is not None else load_ctx()
     results = {}
     for task in tasks or []:
+        if not isinstance(task, dict):   # fail-soft: see predict_revenue
+            continue
         task_id = task.get("id")
         if task_id:
             results[task_id] = predict_revenue(task, ctx)[0]  # point estimate
