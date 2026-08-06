@@ -1636,6 +1636,29 @@ def train_run():
     cards = _pick_cards()
     projects = {p["id"]: p for p in (db.select("projects") or [])}
 
+    # PER-PROJECT PAUSE (2026-08-06). `_paused()` above only consults the GLOBAL kill switch.
+    # Pausing a single project writes controls(scope='project', paused=true), which db.py
+    # honours when CLAIMING work -- but nothing here honoured it, so a paused project kept
+    # being merged and pushed to its production branch. Observed with illuminati: the operator
+    # asked for direct updates to stop because it is being absorbed into apparently/tomorrow/
+    # apparently-law/pareto, task claiming stopped correctly, and the train went on merging and
+    # deploying it anyway. "Paused" has to mean no writes of any kind, not just no new work.
+    try:
+        _paused_names = {
+            (r.get("project") or "").strip()
+            for r in (db.select("controls", {"select": "project,paused,scope",
+                                             "scope": "eq.project", "paused": "is.true"}) or [])
+            if (r.get("project") or "").strip()
+        }
+        if _paused_names:
+            _skipped = {pid: p for pid, p in projects.items() if p.get("name") in _paused_names}
+            if _skipped:
+                projects = {pid: p for pid, p in projects.items() if pid not in _skipped}
+                print("merge_train: skipping paused project(s): "
+                      + ", ".join(sorted(p.get("name", "?") for p in _skipped.values())))
+    except Exception as _pp_exc:      # never let a control-plane read stop the whole train
+        print(f"merge_train: per-project pause check failed ({_pp_exc}); continuing unpaused")
+
     # Resolve every card to its task, then group by project so each project is a serial train.
     # Batched (one tasks query for every card's slug) instead of one query per card -- with
     # hundreds/thousands of eligible cards per cycle the old per-card N+1 pattern serialized
