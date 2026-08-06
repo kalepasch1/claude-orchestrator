@@ -381,7 +381,13 @@ def _pull_safe():
         # a pull that would only overwrite machine output is safe, and `--ff-only` still
         # refuses anything that would need a real merge. Genuine human/agent edits (and
         # lockfiles, submodule pointers) still block, which is the property worth keeping.
-        raw_dirty = [l for l in (status.stdout or "").strip().splitlines()
+        # NB: .strip() on the WHOLE stdout eats the leading space of the FIRST porcelain line
+        # (" M path" -> "M path"), which shifts the fixed-width XY status parse by one and
+        # silently drops the first character of that path. ".runner_boot_commit" became
+        # "runner_boot_commit", stopped matching the regenerable allowlist, and was classified
+        # as a blocking edit — so the very first dirty file always blocked the pull. Strip only
+        # the trailing newline.
+        raw_dirty = [l for l in (status.stdout or "").rstrip("\n").splitlines()
                      if l.strip() and not l.startswith("??")]
         try:
             import regenerable_artifacts
@@ -425,7 +431,7 @@ def self_update():
         try:
             import regenerable_artifacts
             status2 = _git("status", "--porcelain")
-            raw2 = [l for l in (status2.stdout or "").strip().splitlines()
+            raw2 = [l for l in (status2.stdout or "").rstrip("\n").splitlines()
                     if l.strip() and not l.startswith("??")]
             _blocking, _regen = regenerable_artifacts.partition_dirt("\n".join(raw2))
             if _regen and not _blocking:
