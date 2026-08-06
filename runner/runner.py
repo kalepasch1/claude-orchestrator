@@ -317,34 +317,6 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
                 status="approved",
                 decided_by="canonical-train:runner",
             )
-            # INLINE PASS THROTTLE (2026-08-06): train_run() here runs a FULL train pass —
-            # every project, every card — per completed task, holding the machine-wide
-            # integration lease for the duration (observed 60+ min). With tasks completing
-            # constantly, the runner's inline passes monopolized the lease and the scheduled
-            # train-60 tick (every 60s) skipped for hours: 5h with zero merges while ~300
-            # DONE tasks waited. The card above is the train's queue entry, so the scheduled
-            # tick integrates it within its next pass regardless. Keep the inline full pass
-            # only as a low-frequency resilience fallback (in case the scheduler dies), at
-            # most one per ORCH_INLINE_TRAIN_COOLDOWN_S across all worker threads/restarts.
-            _inline_marker = os.path.join(
-                os.environ.get("CLAUDE_ORCH_HOME",
-                               os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                            ".runtime")),
-                "inline-train.last")
-            _inline_cool = float(os.environ.get("ORCH_INLINE_TRAIN_COOLDOWN_S", "3600") or 3600)
-            try:
-                _run_inline = (time.time() - os.path.getmtime(_inline_marker)) >= _inline_cool
-            except OSError:
-                _run_inline = True
-            if not _run_inline:
-                # Work is committed and its card is approved; the scheduled train owns
-                # integration. DONE is the train's normal pick state for carded work.
-                return "DONE"
-            try:
-                with open(_inline_marker, "w") as _imf:
-                    _imf.write(str(time.time()))
-            except OSError:
-                pass
             merge_train.train_run()
             rows = db.select("tasks", {"select": "state,note", "slug": f"eq.{slug}", "limit": "5"}) or []
             latest = next((r for r in rows if r.get("state") in ("MERGED", "TESTFAIL", "CONFLICT", "BLOCKED")),
@@ -675,23 +647,11 @@ def _durable_share_branch(wt, slug, env=None, attempts=3):
 
 
 def _must_run_agent_for_evidence(task, slug):
-    """Forced canaries exist to measure the coder, so old branches must not short-circuit them.
-
-    CONFLICT-REPAIR REBUILDS (2026-08-06): a task requeued by auto_remediate with
-    note `agentic-repair:conflict` (or `:missing-branch`) exists precisely because the
-    merge train exhausted its redo cap rebasing the EXISTING branch — the repair
-    directive says "recover on a fresh branch". The zero-spend shortcut then reused
-    that same unrebasable branch ("existing committed branch — integrating without
-    re-running the agent"), sending it straight back to the train to conflict again.
-    Observed as 6-8 slugs retried 9-15x each while holding pass time hostage and the
-    fresh DONE backlog waited. A conflict-repair task must actually re-run the agent.
-    """
-    note = str((task or {}).get("note") or "").lower()
-    if note.startswith("agentic-repair:conflict") or note.startswith("agentic-repair:missing-branch"):
-        return True
+    """Forced canaries exist to measure the coder, so old branches must not short-circuit them."""
     if not (task or {}).get("force_coder"):
         return False
     kind = str((task or {}).get("kind") or "").lower()
+    note = str((task or {}).get("note") or "").lower()
     s = str(slug or (task or {}).get("slug") or "")
     return kind == "canary" or s.startswith("canary-") or "-canary-" in s or "coder-canary" in note
 
