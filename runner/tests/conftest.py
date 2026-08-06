@@ -29,6 +29,35 @@ def _restore_environment_after_test():
     os.environ.update(before)
 
 
+@pytest.fixture(autouse=True)
+def _reset_projects_cache():
+    """A test's mocked `projects` rows must never leak into the next test.
+
+    db.claim_task reads the project list through db._refresh_projects_cache(), a
+    module-global memo with a 300s TTL. The memo is keyed on nothing but time, so
+    the FIRST test to call claim_task populates it and every later test in the same
+    session silently reuses those rows — its own patched db.select("projects") is
+    never consulted.
+
+    That is invisible until a test supplies non-default projects. Host affinity then
+    computes local_repo_pids from the STALE ids, no queued task matches, claim_task
+    filters the whole queue away and returns None. test_pinned_express_lane's
+    test_multiple_projects_with_pinned_express_lane and
+    test_paused_project_filtering_happens_before_express_lane failed exactly this way
+    — both pass in isolation, both fail in-suite, and whichever ran first was the one
+    that passed. Two red tests in the merge gate for every branch, with a symptom
+    ("no locally-runnable tasks") that points at host affinity rather than at cache
+    bleed.
+
+    Clearing the memo before each test makes the patched select authoritative again.
+    """
+    _real_db._cached_projects_list = []
+    _real_db._PROJECT_CACHE_TIME["at"] = 0
+    yield
+    _real_db._cached_projects_list = []
+    _real_db._PROJECT_CACHE_TIME["at"] = 0
+
+
 # Every control-plane module any test replaces via sys.modules[...] = ModuleType(...)
 # must be listed here, or it leaks into every module imported afterwards.
 # Keep in sync with:  grep -rhoE 'sys\.modules\["[a-z_]+"\] *=' runner/tests/*.py
