@@ -107,6 +107,45 @@ def express_lane_utilization():
     return used, capacity, min(100.0, percent)
 
 
+#: A task whose numeric priority is at or below this claims as express. `tasks.priority` is
+#: an ASCENDING rank (db.claim_task sorts on it and defaults a missing value to 1000), so
+#: "lower is more urgent" and a threshold well under the default is the express band.
+EXPRESS_PRIORITY_AT_OR_BELOW = 100
+
+
+def is_express_task(task):
+    """Is this task express, per the REAL tasks schema? Returns (bool, reason).
+
+    The original predicate was `str(task.get("priority")).lower() != "express"`, which cannot
+    ever be true: `tasks.priority` is an INTEGER column. So every task answered
+    "not_express_priority", should_use_express_lane() always returned False, and the whole
+    module was inert — which is also why nothing outside its own tests ever imported it.
+
+    The two express signals the schema actually provides:
+      * pinned=true with a non-zero pin_rank — the operator's explicit "this goes first"
+        marker, already honoured by claim ordering.
+      * priority <= EXPRESS_PRIORITY_AT_OR_BELOW — an explicitly urgent numeric rank.
+    """
+    if not isinstance(task, dict):
+        return False, "not_a_task"
+
+    if task.get("pinned"):
+        rank = task.get("pin_rank")
+        if rank not in (None, 0):
+            return True, "pinned"
+
+    raw = task.get("priority")
+    if raw is None or isinstance(raw, bool):
+        return False, "no_priority"
+    try:
+        priority = int(float(str(raw).strip()))
+    except (TypeError, ValueError):
+        return False, "priority_not_numeric"
+    if priority <= EXPRESS_PRIORITY_AT_OR_BELOW:
+        return True, "express_priority"
+    return False, "not_express_priority"
+
+
 def should_use_express_lane(task):
     """Decide if a task should be routed to the express lane.
 
@@ -115,17 +154,16 @@ def should_use_express_lane(task):
     if not is_enabled():
         return False, "express_lane_disabled"
 
-    # Check task priority
-    priority = str(task.get("priority", "")).lower()
-    if priority != "express":
-        return False, "not_express_priority"
+    express, reason = is_express_task(task)
+    if not express:
+        return False, reason
 
     # Check express lane capacity
     used, capacity, _ = express_lane_utilization()
     if used >= capacity:
         return False, "express_lane_full"
 
-    return True, "express_priority"
+    return True, reason
 
 
 def assign_task_lane(task_id, runner_id, use_express=False):
@@ -163,10 +201,20 @@ def release_lane(runner_id):
 
 
 def stats():
-    """Return comprehensive express lane statistics."""
+    """Return comprehensive express lane statistics.
+
+    DEADLOCK FIX: this held `_lock` (a plain, NON-reentrant threading.Lock) and then called
+    express_lane_utilization() -> active_express_lanes() -> `with _lock`, so the second
+    acquire could never succeed and stats() hung forever. It was reachable from any caller;
+    the pre-existing TestStats::test_stats_report never completed, which is what stalled the
+    runner test suite rather than failing it. Computed inline from the already-held state
+    instead — no re-entry.
+    """
     with _lock:
         _prune_stale_lanes()
-        express_used, express_cap, express_pct = express_lane_utilization()
+        express_cap = express_lane_capacity()
+        express_used = len(_active_lanes["express"])
+        express_pct = min(100.0, (express_used / express_cap * 100)) if express_cap > 0 else 0.0
         standard_used = len(_active_lanes["standard"])
         standard_cap = standard_lane_capacity()
 

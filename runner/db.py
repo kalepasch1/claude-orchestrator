@@ -1311,6 +1311,37 @@ def claim_task(runner_id):
             return 1  # No valid pin_rank; treat as unpinned
         return 0
 
+    def _express_rank(t):
+        """Express-priority tasks claim before standard work: 0 for express, 1 otherwise.
+
+        This is the wiring express_lane.py was missing, and it was dead twice over. The module
+        shipped with is_enabled()/capacity_percentage()/should_use_express_lane() plus a full
+        test file, but (a) nothing in the claim path ever consulted it — grep found it imported
+        only by its own tests — and (b) its predicate compared tasks.priority to the STRING
+        "express" while that column is an INTEGER, so it could not have fired even if wired.
+        express_lane.is_express_task() now reads the real schema (pinned, or a numeric priority
+        at/below the express band) and is the single definition both sides share.
+
+        Deliberately ORDERING ONLY. The module also offers lane-reservation accounting
+        (assign_task_lane / release_lane / active_express_lanes), and wiring that into the
+        dispatch loop would mean tracking a release for every claim in the fleet's hot path.
+        A missed release there leaks a lane, which is precisely the failure that filled the
+        fleet with 64 zombie lanes on 2026-08-02. Ordering delivers the feature's actual
+        promise — express work goes first — with no lane accounting to leak.
+
+        Respects express_lane.is_enabled() so ORCH_EXPRESS_LANE_ENABLED=false restores the
+        prior ordering exactly. Fail-soft: any import/attribute problem leaves ordering
+        unchanged rather than breaking the claim scan.
+        """
+        try:
+            import express_lane
+            if not express_lane.is_enabled():
+                return 1
+            express, _reason = express_lane.is_express_task(t)
+            return 0 if express else 1
+        except Exception:
+            return 1
+
     def _pin_rank_order(t):
         # Among pinned tasks, lower pin_rank claims first (1 = highest priority).
         # Negative ranks are valid (more negative = higher priority).
@@ -1508,6 +1539,7 @@ def claim_task(runner_id):
 
     queued.sort(key=lambda t: (_pinned_rank(t),                                 # pinned tasks claim first
                                _pin_rank_order(t),                               # among pinned, lower rank wins
+                               _express_rank(t),                                 # then priority='express' (express_lane)
                                _operator_rank(t),                                # then the OWNER'S OWN asks
                                _evidence_reserve_rank(t),                        # reserve one vendor-evidence lane
                                _recovery_reserve_rank(t),                        # turn completed work into mergeable branches
