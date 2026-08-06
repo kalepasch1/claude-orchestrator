@@ -33,8 +33,12 @@ ROI_THRESHOLD = float(os.environ.get("ORCH_ECONOMIC_ROI_THRESHOLD", "1.5"))
 TOP_REVENUE_TASKS = int(os.environ.get("ORCH_TOP_REVENUE_TASKS", "20"))
 
 # Revenue keywords to boost
-REVENUE_KEYWORDS = ("pricing", "payment", "stripe", "marketplace", "billing", "subscription",
-                    "revenue", "monetization", "paywall", "purchase")
+# Intent phrases, not bare nouns: "fix stripe payment crash" is a stability
+# task that merely mentions payments, while "payment integration"/"payment
+# processing" work is revenue-moving. Bare "payment"/"pricing"/"stripe"
+# over-triggered the 1.5x boost on incidental mentions (see revenue tests).
+REVENUE_KEYWORDS = ("payment integration", "payment processing", "marketplace", "billing",
+                    "subscription", "revenue", "monetization", "paywall", "purchase")
 
 # Project tags that indicate high-growth/in-flight initiatives (radar_tag in approvals)
 HIGH_GROWTH_TAGS = ("revenue-initiative", "high-growth", "strategic-growth", "priority-growth")
