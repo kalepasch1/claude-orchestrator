@@ -1,5 +1,5 @@
 # Cost Intelligence — Internal (full methodology, private/IP)
-_Generated 2026-08-06T02:00:49.731636+00:00 — 30-day window_
+_Generated 2026-08-06T04:01:14.082292+00:00 — 30-day window_
 
 ## Direct cost efficiency (ratios, not cumulative totals)
 - Merge rate: 0.261
