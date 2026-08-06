@@ -8,7 +8,7 @@
  * OFFLINE — no shared secret, no call back to the issuer. Time-boxed so a stale
  * passport is rejected.
  */
-import { sha256Canonical, contentId } from '../crypto/hash.ts';
+import { sha256Canonical, contentId, canonicalize } from '../crypto/hash.ts';
 import { signDigest, verifyDigest, type Signature } from '../crypto/signing.ts';
 import type { ProductId } from '../types.ts';
 
@@ -51,6 +51,26 @@ export interface Passport {
 
 const DAY = 86_400_000;
 
+/**
+ * Digest/id are computed over a claim-order-independent view of the body:
+ * two passports carrying the same claims in different order are the SAME
+ * credential, so they must content-address identically. The stored claims
+ * array keeps caller order (presentation concern only).
+ */
+function canonicalBody(body: {
+  subject: string;
+  version: 1;
+  claims: Claim[];
+  issuedAt: string;
+}) {
+  const claims = [...body.claims].sort((a, b) => {
+    const ka = canonicalize(a);
+    const kb = canonicalize(b);
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  });
+  return { ...body, claims };
+}
+
 export function buildPassport(params: {
   subject: string;
   claims: Claim[];
@@ -62,9 +82,10 @@ export function buildPassport(params: {
     claims: params.claims,
     issuedAt: params.issuedAt ?? new Date().toISOString(),
   };
-  const digest = sha256Canonical(body);
+  const canonical = canonicalBody(body);
+  const digest = sha256Canonical(canonical);
   return {
-    id: contentId('pass', body),
+    id: contentId('pass', canonical),
     ...body,
     digest,
     signature: signDigest(digest),
@@ -81,14 +102,20 @@ export interface PassportVerification {
 /** Stateless verify: signature + digest integrity + per-claim expiry. */
 export function verifyPassport(passport: Passport, asOf: Date = new Date()): PassportVerification {
   const { id: _id, digest, signature, ...body } = passport;
-  if (sha256Canonical(body) !== digest) {
+  if (sha256Canonical(canonicalBody(body)) !== digest) {
     return { valid: false, reason: 'digest_mismatch', liveClaims: [] };
   }
   if (!verifyDigest(digest, signature)) {
     return { valid: false, reason: 'signature_invalid', liveClaims: [] };
   }
   const now = asOf.getTime();
-  const liveClaims = passport.claims.filter((c) => Date.parse(c.expiresAt) > now);
+  // A claim that had already expired when the passport was MINTED is dead in
+  // every timeline: verifying "as of" an earlier date must not resurrect it,
+  // otherwise a backdated `asOf` turns expired credentials back on.
+  const mintedAt = Date.parse(passport.issuedAt);
+  const liveClaims = passport.claims.filter(
+    (c) => Date.parse(c.expiresAt) > now && Date.parse(c.expiresAt) > mintedAt,
+  );
   if (liveClaims.length === 0) {
     return { valid: false, reason: 'all_claims_expired', liveClaims: [] };
   }
