@@ -1,0 +1,4 @@
+recovery-intent: adversarial-second-opinion-split-the-build-task-in-slice-5-match-prior-artifact
+template: e57e1b5dcbf9
+intent: 07062319 07071626 8b92d078e856 acceptance adapt addresses adversarial agentic alter analysis artifact artifacts based because beethoven before behavior below blocks branch broad bugfix build category cause change changes changing check checks coder commit complete completion concrete config context continue dependencies diffs direct directive directly drafting duplicate duplicates eliminating equivalent examine existing exists failure files final findings finish first focus fresh functionality green identify implementation improve inspect install instead integral intent large library lines maintainability match matched merged minimally missing module opinion
+base: main
