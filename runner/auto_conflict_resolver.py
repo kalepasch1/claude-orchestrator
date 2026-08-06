@@ -378,6 +378,45 @@ def _stub_check(repo: str, base: str, branch: str) -> str:
                       for v in blocking[:6])
 
 
+def _discard_check(repo: str, pre_sha: str, branch: str, result_ref: str = "HEAD") -> str:
+    """Silent-discard verification: did the resolution keep mainline and drop the branch?
+
+    WIRING GAP CLOSED 2026-08-06. Audit of the 59 auto-resolved merges on master since
+    Aug 1: 6 (10%) discarded at least one branch edit, across 28 files, and 28 of 28 of
+    those edits were BRANCH-ORIGINAL — they existed nowhere else at merge time. Not one
+    was the benign "the branch was carrying mainline's own history" case. The dropped
+    commits were themselves fixes for silent work loss (f01601e2, ef31027d, 311d68e3,
+    9c3e7f7d, 4fe179c8): the resolver has been eating the repairs for its own problem.
+
+    None of the three gates above can see this shape, and that is structural rather than
+    unlucky:
+      * _regression_check diffs the PRE-merge tree against the result. Here the result is
+        byte-identical to the mainline parent, so pre == post for every file and the diff
+        is empty by construction.
+      * _divergent_check fires on SYMBOL loss. A branch edit that changes a function BODY
+        (9c3e7f7d is exactly that) leaves every symbol present on both sides.
+      * _stub_check looks for constant-return shadowing, a different shape again.
+
+    So this compares the RESULT against BOTH PARENTS and asks the only question that
+    distinguishes the failure: did we keep mainline's bytes verbatim while discarding a
+    branch edit that exists nowhere else? FAIL-CLOSED, like its neighbours.
+    Opt out only with ORCH_AUTOMERGE_DISCARD_GUARD=false.
+    """
+    try:
+        import automerge_discard_guard
+    except Exception as exc:
+        return (f"automerge discard guard unavailable (fail-closed): "
+                f"{type(exc).__name__}: {exc}")
+    if not pre_sha:
+        return "automerge discard guard: no pre-merge SHA to use as the mainline parent (fail-closed)"
+    try:
+        ok, detail = automerge_discard_guard.gate(repo, pre_sha, branch,
+                                                  result_ref=result_ref, branch=branch)
+        return "" if ok else detail
+    except Exception as exc:
+        return f"automerge discard guard error (fail-closed): {type(exc).__name__}: {exc}"
+
+
 def _verify_merge(repo: str, pre_sha: str, base: str, branch: str,
                   result_ref: str = "HEAD") -> str:
     """Every anti-loss gate this path must pass, in order. '' when all are clean.
@@ -390,7 +429,8 @@ def _verify_merge(repo: str, pre_sha: str, base: str, branch: str,
     for check in (lambda: _regression_check(repo, pre_sha, branch, result_ref=result_ref),
                   lambda: _divergent_check(repo, pre_sha or base, branch,
                                            result_ref=result_ref),
-                  lambda: _stub_check(repo, pre_sha or base, branch)):
+                  lambda: _stub_check(repo, pre_sha or base, branch),
+                  lambda: _discard_check(repo, pre_sha, branch, result_ref=result_ref)):
         try:
             findings = check()
         except Exception as exc:   # a crashing gate must never wave the merge through
