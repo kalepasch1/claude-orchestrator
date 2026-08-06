@@ -26,7 +26,7 @@ export function runSupervisoryCertificationSwarm(input: any) {
   const findings = [...new Set(agents.flatMap(a => a.findings))]
   const materialRisks = findings.filter(x => ['material_incident_history','authority_coverage_below_certification_floor'].includes(x))
   const gaps = findings.filter(x => ['evidence_incomplete','insufficient_shadow_history'].includes(x))
-  const contradictions = findings.filter(x => x === 'unresolved_contradictions')
+  const contradictions: string[] = findings.filter(x => x === 'unresolved_contradictions')
   const variance = Math.max(...agents.map(a => a.score)) - Math.min(...agents.map(a => a.score))
   if (variance > 25) contradictions.push('agent_assessment_divergence')
   const confidence = Number((agents.reduce((s, a) => s + a.score, 0) / agents.length / 100).toFixed(2))
@@ -54,8 +54,8 @@ export function priceProofPortability(input: any) {
 }
 
 export function designRegulatorEvidenceStream(input: any) {
-  const allowed = new Set((input.grant_fields || []).map(String)); const requested = (input.requested_fields || []).map(String); const delivered = requested.filter(x => allowed.has(x)); const denied = requested.filter(x => !allowed.has(x))
-  return { field_allowlist: [...allowed], source_refs: (input.source_refs || []).slice(0, 50), delivery_manifest: delivered.map(field => ({ field, mode: 'bounded_fact_or_digest', raw_record: false })), denied_fields: denied, cadence: input.cadence || 'on_change', status: input.grant_active && !denied.length ? 'active' : 'shadow' }
+  const allowed = new Set((input.grant_fields || []).map(String)); const requested = (input.requested_fields || []).map(String); const delivered = requested.filter((x: any) => allowed.has(x)); const denied = requested.filter((x: any) => !allowed.has(x))
+  return { field_allowlist: [...allowed], source_refs: (input.source_refs || []).slice(0, 50), delivery_manifest: delivered.map((field: any) => ({ field, mode: 'bounded_fact_or_digest', raw_record: false })), denied_fields: denied, cadence: input.cadence || 'on_change', status: input.grant_active && !denied.length ? 'active' : 'shadow' }
 }
 
 export function rehearseEnforcement(input: any) {

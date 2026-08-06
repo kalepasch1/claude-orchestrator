@@ -6,9 +6,8 @@ import {
   generateRationale,
   performStructuralBacktest,
 } from '../compositePayoffCompiler';
+import type { RiskSpec, RiskVector } from '../payoffDSL';
 import {
-  RiskSpec,
-  RiskVector,
   INSTRUMENT_ALLOWLIST,
   MIN_CONFIDENCE_THRESHOLD,
   MIN_SCENARIO_COUNT,

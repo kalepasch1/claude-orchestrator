@@ -198,7 +198,7 @@ async function runExecutionSteps(execution: PlaybookExecution, pb: Playbook): Pr
   execution.status = 'executing'
 
   for (const stepEntry of execution.steps) {
-    if (execution.status === 'aborted') {
+    if ((execution.status as string) === 'aborted') {
       stepEntry.status = 'skipped'
       continue
     }

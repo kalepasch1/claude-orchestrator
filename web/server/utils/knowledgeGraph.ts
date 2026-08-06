@@ -91,13 +91,14 @@ async function fetchUsersFromApp(appId: AppId, email: string): Promise<GraphNode
     // Try auth.admin to list users by email
     const { data } = await client.rpc('get_user_by_email', { target_email: email }).maybeSingle()
     if (data) {
+      const rec = data as Record<string, any>
       const node: GraphNode = {
-        id: makeNodeId(appId, 'user', data.id || email),
+        id: makeNodeId(appId, 'user', rec.id || email),
         app: appId,
         type: 'user',
-        entityId: data.id || email,
-        label: data.display_name || data.full_name || email,
-        properties: { email, role: data.role, ...data },
+        entityId: rec.id || email,
+        label: rec.display_name || rec.full_name || email,
+        properties: { email, role: rec.role, ...rec },
         lastUpdated: new Date().toISOString(),
       }
       return [node]

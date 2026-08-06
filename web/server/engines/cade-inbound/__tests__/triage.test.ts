@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import {
   CADETriageEngine,
+  createTriageEngine
+} from '../triage'
+import type {
   TriageDisposition,
   CADEFinding,
-  ContestableUnit,
-  createTriageEngine
+  ContestableUnit
 } from '../triage'
 
 describe('CADETriageEngine', () => {
