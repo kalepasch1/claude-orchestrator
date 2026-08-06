@@ -1312,17 +1312,50 @@ def _pick_cards():
     # Scanning oldest-first as well as newest-first costs one extra query and bounds the
     # damage permanently: the backlog head is always visible, and fresh work still enters via
     # the desc pass. Dedup by id since the two windows overlap once the backlog is small.
+    # SERVER-SIDE UNHANDLED FILTER (2026-08-06, second half of the same bug).
+    #
+    # Scanning both ends of the table bounded the damage but did not remove it. Measured today:
+    # 21,974 approved merge-kind cards exist, of which only 569 are genuinely unhandled — and
+    # PostgREST silently caps `limit` at 1,000 rows per request, so MERGE_TRAIN_SCAN_LIMIT=3000
+    # really means "the 1,000 oldest plus the 1,000 newest". The other ~20,000 rows in the middle
+    # are already-decided outcomes the train re-reads forever, while roughly 466 of the 569 real
+    # candidates sit in the middle and are structurally invisible. That is the mechanism behind
+    # "the queue never finishes": the work was never lost, it was never *looked at*.
+    #
+    # Pushing the SKIP_PREFIXES test into the query makes the window hold candidates instead of
+    # history, so all 569 fit in one page with room to spare. decided_by IS NULL has to be
+    # spelled out because SQL NOT LIKE on NULL is NULL, not true, and freshly-filed cards
+    # ("canonical-train:sweeper", an attribution marker, not a verdict) must stay visible.
+    #
+    # The dual-order scan and the client-side filter below are both KEPT: the first so a backlog
+    # larger than one page still shows its head, the second so this stays correct even if the
+    # server-side predicate is dropped by the fallback path.
     limit = os.environ.get("MERGE_TRAIN_SCAN_LIMIT", "3000")
     base = {"select": "*", "status": "eq.approved",
             "kind": f"in.({','.join(MERGE_KINDS)})", "limit": limit}
+    unhandled = "or=(decided_by.is.null,and({}))".format(
+        ",".join(f"decided_by.not.like.{p}*" for p in SKIP_PREFIXES))
+    _k, _v = unhandled.split("=", 1)
+    scans = ({**base, _k: _v}, base)  # narrowed first; unfiltered only as a fallback
+
     cards, seen = [], set()
-    for order in ("created_at.asc", "created_at.desc"):
-        for c in (db.select("approvals", {**base, "order": order}) or []):
+    for params in scans:
+        try:
+            got = []
+            for order in ("created_at.asc", "created_at.desc"):
+                got.extend(db.select("approvals", {**params, "order": order}) or [])
+        except Exception as e:
+            # A server that will not accept the predicate must not take the train down with it.
+            print(f"merge_train: unhandled-card filter unavailable ({e}); "
+                  f"falling back to the unfiltered scan window", flush=True)
+            continue
+        for c in got:
             cid = c.get("id")
             if cid in seen:
                 continue
             seen.add(cid)
             cards.append(c)
+        break  # the narrowed scan succeeded; the fallback page is redundant
     return [c for c in cards
             if c.get("kind") in MERGE_KINDS
             and approval_merge._is_code_merge_card(c)

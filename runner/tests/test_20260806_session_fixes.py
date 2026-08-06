@@ -56,6 +56,34 @@ names = [s["stage"] for s in snap["stages"]]
 check("funnel covers all stages", names == ["ingest", "draft", "card", "merge"], str(names))
 check("funnel reports age-of-oldest", any(s["oldest_h"] is not None for s in snap["stages"]), "")
 
+
+# 12. scan-window starvation, part two: the narrowed (server-side) card scan must be a strict
+#     SUPERSET of the old dual-window scan. 21,974 approved merge-kind cards exist but PostgREST
+#     caps a page at 1,000 rows, so scanning both ends still hid the middle of the table. Asserting
+#     "more cards" alone would pass on a filter that swapped one blind spot for another; the real
+#     contract is that nothing the old path could see is lost.
+check("pick_cards asks the server for unhandled only",
+      "decided_by.is.null" in src and "not.like" in src, "predicate present")
+import db as _db, approval_merge as _am
+_base = {"select": "*", "status": "eq.approved",
+         "kind": "in.(%s)" % ",".join(mt.MERGE_KINDS),
+         "limit": os.environ.get("MERGE_TRAIN_SCAN_LIMIT", "3000")}
+_seen, _old = set(), []
+for _o in ("created_at.asc", "created_at.desc"):
+    for _c in (_db.select("approvals", {**_base, "order": _o}) or []):
+        if _c.get("id") in _seen:
+            continue
+        _seen.add(_c.get("id"))
+        if (_c.get("kind") in mt.MERGE_KINDS and _am._is_code_merge_card(_c)
+                and not str(_c.get("decided_by") or "").startswith(mt.SKIP_PREFIXES)):
+            _old.append(_c)
+_new_ids = {c.get("id") for c in mt._pick_cards()}
+_lost = {c.get("id") for c in _old} - _new_ids
+check("narrowed scan loses nothing the wide scan saw", not _lost,
+      f"old={len(_old)} new={len(_new_ids)} lost={len(_lost)}")
+check("narrowed scan uncovers cards the window hid", len(_new_ids) > len(_old),
+      f"+{len(_new_ids) - len(_old)} previously invisible")
+
 print("=" * 68)
 ok = 0
 for n, passed, d in RESULTS:
