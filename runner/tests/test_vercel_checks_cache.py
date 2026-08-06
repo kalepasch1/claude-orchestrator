@@ -480,3 +480,35 @@ class TestVercelChecksCacheEnvironmentConfiguration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRelfixVercelChecksCache(unittest.TestCase):
+    """Regression: is_cached_fresh ignored the per-entry TTL stored by cache_result."""
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.cache_file = os.path.join(self.temp_dir.name, "test_cache.json")
+        self.patcher = mock.patch.object(vcc, "CACHE_FILE", self.cache_file)
+        self.patcher.start()
+
+    def tearDown(self):
+        self.patcher.stop()
+        self.temp_dir.cleanup()
+
+    def test_relfix_vercel_checks_cache(self):
+        """An entry with a short custom TTL goes stale after that TTL, not CHECK_INTERVAL."""
+        vcc.cache_result("proj-relfix", "main", "deployment_ready", {"ok": True}, ttl_seconds=10)
+        fresh, data = vcc.is_cached_fresh("proj-relfix", "main")
+        self.assertTrue(fresh)
+        self.assertEqual(data, {"ok": True})
+
+        # Age the entry past its custom TTL (10s) but well inside CHECK_INTERVAL (300s).
+        with open(self.cache_file) as f:
+            cache = json.load(f)
+        cache["proj-relfix:main"]["checked_at"] = time.time() - 60
+        with open(self.cache_file, "w") as f:
+            json.dump(cache, f)
+
+        fresh, data = vcc.is_cached_fresh("proj-relfix", "main")
+        self.assertFalse(fresh)
+        self.assertEqual(data, {"ok": True})
