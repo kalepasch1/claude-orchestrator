@@ -177,6 +177,32 @@ check("reclaim path resets only when nothing blocks",
 check("classification failure falls back to blocking",
       "treating all of it as blocking" in _ir, "fail-closed")
 
+
+# 18. temporary worktrees leaked because the mutation check raised from `finally` BEFORE the
+#     removal ran. Any canonical drift during a pass therefore stranded the slot: 57
+#     CanonicalCheckoutMutationError in merge-train.log, 10 abandoned -run- dirs, 1.5GB.
+import integration_runtime as _ir
+_base = {"top": "/r", "branch": "master", "head": "abc", "status": " M src/a.ts\n"}
+check("identical snapshots are not a mutation", not _ir._canonical_mutation(_base, dict(_base)), "")
+check("an untracked file appearing is not a mutation",
+      not _ir._canonical_mutation(_base, {**_base, "status": " M src/a.ts\n?? docs/ADR-x.md\n"}),
+      "this fired 57 times on ordinary fleet noise")
+check("regenerable tracked dirt is not a mutation",
+      not _ir._canonical_mutation(_base, {**_base, "status": " M src/a.ts\n M .runner_boot_commit\n"}), "")
+check("HEAD moving IS a mutation", "head:" in _ir._canonical_mutation(_base, {**_base, "head": "def"}), "")
+check("branch switch IS a mutation", "branch:" in _ir._canonical_mutation(_base, {**_base, "branch": "dev"}), "")
+check("a new tracked edit IS a mutation",
+      "src/b.ts" in _ir._canonical_mutation(_base, {**_base, "status": " M src/a.ts\n M src/b.ts\n"}), "")
+check("a tracked deletion IS a mutation",
+      bool(_ir._canonical_mutation(_base, {**_base, "status": " D src/a.ts\n"})), "")
+_irs = open("/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/integration_runtime.py").read()
+check("cleanup runs before the mutation raise",
+      _irs.index("worktree\", \"remove") < _irs.index("raise CanonicalCheckoutMutationError"),
+      "removal precedes the verdict")
+check("orphaned temporaries are swept", "sweep_orphaned_temporaries" in _irs, "")
+_left = _ir.sweep_orphaned_temporaries("/Users/kpasch/Documents/beethoven/claude-orchestrator")
+check("no orphaned -run- dirs remain", _left == 0, f"{_left} removed on this run")
+
 print("=" * 68)
 ok = 0
 for n, passed, d in RESULTS:

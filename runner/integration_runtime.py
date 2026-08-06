@@ -142,6 +142,77 @@ def global_lease(owner, timeout=0):
             handle.close()
 
 
+def _rmtree_if_orphaned(canonical_repo, path):
+    """Delete `path` when git no longer knows about it as a worktree.
+
+    `git worktree remove` refuses with "is not a working tree" once the registration has been
+    pruned, which is exactly the state a leaked temporary ends up in: the removal never ran, a
+    later `worktree prune` deregistered it, and the directory became invisible to every git
+    command while still occupying disk. Ten of them were sitting here at 1.5GB.
+    """
+    if not os.path.isdir(path):
+        return
+    try:
+        if os.path.realpath(path) in _registered_worktrees(canonical_repo):
+            return  # git still owns it; removing the directory behind git's back is not ours to do
+        import shutil
+        shutil.rmtree(path, ignore_errors=True)
+        if not os.path.isdir(path):
+            print(f"integration_runtime: removed orphaned temporary worktree {path}")
+    except Exception as exc:
+        print(f"integration_runtime: could not remove orphaned {path}: {exc}")
+
+
+def sweep_orphaned_temporaries(canonical_repo):
+    """Delete every -run-<pid>-<ns> directory git no longer tracks. Cheap, idempotent."""
+    import glob
+    removed = 0
+    for d in glob.glob(f"{_worktree_path(canonical_repo)}-run-*"):
+        before = os.path.isdir(d)
+        _rmtree_if_orphaned(canonical_repo, d)
+        removed += int(before and not os.path.isdir(d))
+    return removed
+
+
+def _canonical_mutation(before, after):
+    """Describe how the canonical checkout changed, or "" when nothing that matters did.
+
+    The old test was `before != after` on a snapshot whose `status` came from
+    `--untracked-files=all`. The fleet drops untracked files into the canonical checkout
+    constantly — ADR notes, reports, scratch scripts — so this fired on ordinary noise:
+    57 times in merge-train.log. An untracked file APPEARING cannot destroy anyone's work,
+    and treating it as a mutation is the same over-literal reading of "dirty" that once
+    deadlocked the merge train for five hours.
+
+    What the guard exists to catch is a pass that moves HEAD, switches branch, changes repo,
+    or edits/deletes TRACKED files in the canonical checkout. Those are still absolute.
+    Regenerable tracked dirt is exempt on the same terms as everywhere else.
+    """
+    for key in ("top", "branch", "head"):
+        if before.get(key) != after.get(key):
+            return f"{key}: {before.get(key)} -> {after.get(key)}"
+
+    def tracked_blocking(status):
+        lines = [l for l in (status or "").splitlines() if l.strip() and not l.startswith("??")]
+        try:
+            import regenerable_artifacts
+            return regenerable_artifacts.partition_dirt("\n".join(lines))[0]
+        except Exception:
+            return lines
+
+    b, a = tracked_blocking(before.get("status")), tracked_blocking(after.get("status"))
+    if b != a:
+        appeared = [l for l in a if l not in b]
+        vanished = [l for l in b if l not in a]
+        bits = []
+        if appeared:
+            bits.append("tracked dirt appeared: " + ", ".join(x[3:].strip() for x in appeared[:5]))
+        if vanished:
+            bits.append("tracked dirt vanished: " + ", ".join(x[3:].strip() for x in vanished[:5]))
+        return "; ".join(bits)
+    return ""
+
+
 @contextlib.contextmanager
 def isolated_repo(canonical_repo, owner):
     """Yield a clean detached integration worktree; never the canonical path."""
@@ -155,6 +226,13 @@ def isolated_repo(canonical_repo, owner):
     # stale registrations up front so state on disk and in git agree.
     try:
         _git(canonical_repo, "worktree", "prune")
+    except Exception:
+        pass
+    try:
+        # Prune deregisters leaked temporaries but leaves the directories on disk, where no
+        # git command can see them again. Collect them here so the tree cannot grow without
+        # bound the way it did today (24 slots / 2.4GB, 1.5GB of it abandoned -run- dirs).
+        sweep_orphaned_temporaries(canonical_repo)
     except Exception:
         pass
     registered = _registered_worktrees(canonical_repo)
@@ -261,18 +339,30 @@ def isolated_repo(canonical_repo, owner):
         completed = True
     finally:
         after = canonical_snapshot(canonical_repo)
-        if after != before:
-            raise CanonicalCheckoutMutationError(
-                f"{owner} changed canonical checkout {canonical_repo}: {before} -> {after}"
-            )
-        # This path was created solely to bypass a preserved dirty slot.  Remove
-        # it only after confirming it is clean; never force-clean a worktree
-        # that has acquired new integration evidence.
-        if temporary:
-            clean = _git(path, "status", "--porcelain=v1", "--untracked-files=all")
-            if clean.returncode == 0 and not clean.stdout:
-                _git(canonical_repo, "worktree", "remove", "--force", path)
-        elif completed:
-            # The worktree completed normally, so generated dependencies and
-            # build output are safe to rebuild on the next integration pass.
-            _purge_runtime_artifacts(path)
+        mutation = _canonical_mutation(before, after)
+        # CLEANUP BEFORE THE VERDICT (2026-08-06). The mutation check used to raise from here,
+        # BEFORE the removal below, so any canonical drift during a pass leaked the temporary
+        # worktree permanently. Measured: 57 CanonicalCheckoutMutationError in merge-train.log
+        # and 10 abandoned -run-<pid>-<ns> slots totalling 1.5GB of the 2.4GB tree — 8 of them
+        # spawned by one blocked slot that gets bypassed on every single pass.
+        #
+        # Releasing the disk is never the wrong thing to do on the way out, and the error still
+        # propagates immediately afterwards, so the guard keeps its teeth.
+        try:
+            # This path was created solely to bypass a preserved dirty slot.  Remove
+            # it only after confirming it is clean; never force-clean a worktree
+            # that has acquired new integration evidence.
+            if temporary:
+                clean = _git(path, "status", "--porcelain=v1", "--untracked-files=all")
+                if clean.returncode == 0 and not clean.stdout:
+                    _git(canonical_repo, "worktree", "remove", "--force", path)
+                    _rmtree_if_orphaned(canonical_repo, path)
+            elif completed:
+                # The worktree completed normally, so generated dependencies and
+                # build output are safe to rebuild on the next integration pass.
+                _purge_runtime_artifacts(path)
+        finally:
+            if mutation:
+                raise CanonicalCheckoutMutationError(
+                    f"{owner} changed canonical checkout {canonical_repo}: {mutation}"
+                )
