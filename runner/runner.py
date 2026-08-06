@@ -3078,12 +3078,6 @@ _PERIODIC_PIDS = {}  # job_name -> (pid, launch_time)
 # stale-reap threshold scales with how often a job is actually supposed to run, instead of a
 # single hardcoded default that's wildly wrong for fast-cadence jobs (see _is_still_running).
 _JOB_INTERVAL = {job: args for (_key, job, stype, args) in _SCHEDULE if stype == "interval"}
-_JOB_MAX_RUNTIME = {
-    "merge_train.py": int(os.environ.get("ORCH_MERGE_TRAIN_MAX_RUNTIME_S", "7200")),
-    "release_train.py": int(os.environ.get("ORCH_RELEASE_TRAIN_MAX_RUNTIME_S", "7200")),
-    "releasetrain": int(os.environ.get("ORCH_RELEASE_TRAIN_MAX_RUNTIME_S", "7200")),
-    "integration_sweeper.py": int(os.environ.get("ORCH_INTEGRATION_SWEEPER_MAX_RUNTIME_S", "7200")),
-}
 
 # Launch cadence is not an execution timeout. Integration and release jobs can
 # legitimately spend tens of minutes in isolated typecheck/build worktrees. A
@@ -3115,15 +3109,57 @@ def _is_still_running(job):
     new instance while the last one is still alive; let it finish (or let the properly-scaled
     reaper below kill it if it's truly stuck) instead of stacking duplicates."""
     info = _PERIODIC_PIDS.get(job)
-    if not info:
+    if info:
+        pid, _launch_t = info
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            del _PERIODIC_PIDS[job]
+    # _PERIODIC_PIDS is IN-PROCESS state, and keepalive restarts runner.py routinely.
+    # A fresh runner starts with an empty map, so it has no idea the previous runner
+    # left a child of this job still executing — and Popens another one on top. That
+    # is how legal_docket.py accumulated 14 concurrent copies aged 8-10h on a 30-min
+    # interval: not one runaway job, but one leaked copy per runner restart, none of
+    # them visible to the successor's bookkeeping. Ask the process table, which
+    # outlives us, before concluding nothing is running.
+    return _external_instance_running(job)
+
+
+def _external_instance_running(job):
+    """True when a copy of `job` launched by a PREVIOUS runner is still executing.
+
+    Matches on the job's own path so a substring cannot alias two different jobs, and
+    excludes our own pid and children we already track. Fail-soft: if the process
+    table cannot be read we report "not running", because wrongly reporting "running"
+    would silently stop a job forever, which is worse than one duplicate.
+    """
+    if os.environ.get("ORCH_SCHED_EXTERNAL_INSTANCE_CHECK", "true").lower() not in (
+            "1", "true", "yes", "on"):
         return False
-    pid, _launch_t = info
     try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        del _PERIODIC_PIDS[job]
+        target = os.path.join(os.path.dirname(os.path.abspath(__file__)), job)
+        out = subprocess.run(["pgrep", "-f", target], capture_output=True, text=True,
+                             timeout=10).stdout
+    except Exception:
         return False
+    mine = {os.getpid()}
+    mine.update(p for p, _ in _PERIODIC_PIDS.values())
+    for line in out.split():
+        try:
+            pid = int(line)
+        except ValueError:
+            continue
+        if pid in mine:
+            continue
+        # Adopt it so the reaper can lease-kill it if it really is wedged. Launch time
+        # is unknown across a restart; assume it started now, which gives the orphan a
+        # full lease before the reaper touches it rather than an instant kill.
+        _PERIODIC_PIDS.setdefault(job, (pid, time.time()))
+        print(f"[sched] {job} already running as pid {pid} from a previous runner — "
+              f"adopting instead of launching a duplicate", flush=True)
+        return True
+    return False
 
 
 _REAP_MULTIPLIER = {
