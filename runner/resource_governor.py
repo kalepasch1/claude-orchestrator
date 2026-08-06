@@ -588,6 +588,8 @@ def govern():
                 for m in local_model_slots.loaded_models():
                     if local_model_slots.is_heavy(m) and local_model_slots.unload(m):
                         unloaded.append(m)
+                if not unloaded and local_model_slots._kill_llama_servers():
+                    unloaded.append("orphaned-llama-server")
                 if unloaded:
                     _event("ollama_unload", free_ram, f"low memory unloaded {', '.join(unloaded)}", "unload heavy local models")
             except Exception:
@@ -608,22 +610,19 @@ def govern():
                     except Exception:
                         pass
             else:
+                # A transient RAM spike must not create a sticky global pause.
+                # Clamp admission to one lane; can_claim() already blocks unsafe
+                # starts and the clamp self-recovers without freezing the fleet.
                 set_throttle(1)
-                if cur_reason is None:  # not already paused by anyone
-                    why = ("kernel memory pressure warn/critical" if pressure_bad
-                           else f"available RAM {free_ram}GB below floor {eff_floor}GB")
+                if cur_reason == "auto:low-memory":
                     try:
                         import kill_switch
-                        kill_switch.pause(scope="global", reason="auto:low-memory", by="governor")
-                        db.insert("approvals", {"project": "ORCHESTRATOR", "kind": "self",
-                            "title": f"Low memory: {free_ram}GB free — orchestrator paused",
-                            "why": why + "; paused new work to avoid a Mac crash.",
-                            "value": "Prevents an out-of-memory restart.",
-                            "risk": "Orchestrator auto-resumes when memory recovers."})
+                        kill_switch.resume(scope="global", by="governor")
+                        print("governor: lifting stale auto:low-memory pause — clamping instead")
                     except Exception:
                         pass
                 print(f"governor: LOW MEMORY {free_ram}GB free (floor {eff_floor}, "
-                      f"pressure_bad={pressure_bad}) -> paused new claims")
+                      f"pressure_bad={pressure_bad}) -> clamped new claims")
                 return dashboard_gauge()
         elif cur_reason == "auto:low-memory" and free_ram > eff_floor + 3 and not pressure_bad:
             try:

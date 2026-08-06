@@ -198,6 +198,16 @@ def _target_matches(target):
     return target == "all" or target in _host_aliases()
 
 
+def _control_done(target, handled, params):
+    """A broadcast control is done only after every expected host acknowledges it."""
+    if target != "all":
+        return True
+    expected = set((params or {}).get("expected_hosts") or [])
+    if not expected:
+        return False
+    return expected.issubset(set(handled or []))
+
+
 _RESTART_STAMP = os.path.join(
     os.environ.get("CLAUDE_ORCH_HOME",
                    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -455,8 +465,9 @@ def process_controls():
             # `done = (target != "all")` left 'all' rows pending forever (44-row backlog).
             new_handled = list(dict.fromkeys(handled + [HOST]))
             params = r.get("params") or {}
-            all_done = target != "all"
-            if not all_done:
+            expected_hosts = (params or {}).get("expected_hosts") or []
+            all_done = _control_done(target, new_handled, params)
+            if not all_done and target == "all" and not expected_hosts:
                 try:
                     hb = db.select("runner_heartbeats", {"select": "hostname", "limit": "20"}) or []
                     live = {str(h.get("hostname") or "") for h in hb if h.get("hostname")}

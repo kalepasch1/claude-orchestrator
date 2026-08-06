@@ -39,6 +39,7 @@ RELEASE_INTERVAL_HOURS = max(6.0, float(os.environ.get("RELEASE_INTERVAL_HOURS",
 STAGING = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
 RELEASE_FIX_PREFIXES = ("relfix-", "buildfix-", "deployfix-")
 QA_FIX_PREFIXES = ("qafix-",)
+COPY_FIX_PREFIXES = ("copyfix-",)
 RED_GATE_COOLDOWN_MIN = float(os.environ.get("ORCH_RELEASE_RED_GATE_COOLDOWN_MIN", "180"))
 QA_EVIDENCE_CHARS_PER_STREAM = 12000
 
@@ -261,16 +262,41 @@ def _open_release_fix_tasks(p, gate=None):
         return []
     if gate == "qa":
         prefixes = QA_FIX_PREFIXES
+    elif gate == "copy":
+        prefixes = COPY_FIX_PREFIXES
     elif gate in ("build", "refresh", "push"):
         prefixes = RELEASE_FIX_PREFIXES
     else:
-        prefixes = QA_FIX_PREFIXES + RELEASE_FIX_PREFIXES
+        prefixes = QA_FIX_PREFIXES + RELEASE_FIX_PREFIXES + COPY_FIX_PREFIXES
+    hold_minutes = float(os.environ.get("ORCH_RELEASE_FIX_HOLD_MIN", "180"))
+    hold_states = {
+        value.strip().upper()
+        for value in os.environ.get("ORCH_RELEASE_FIX_HOLD_STATES", "RUNNING,RETRY").split(",")
+        if value.strip()
+    }
+    now = datetime.datetime.now(datetime.timezone.utc)
     out = []
     for row in rows:
         slug = str(row.get("slug") or "")
         note = str(row.get("note") or "").lower()
-        if slug.startswith(prefixes) or "release_train" in note or "vercel" in note:
-            out.append(row)
+        # A provenance note is not a gate identity.  Otherwise one stale QA task
+        # can block copy, build, and deploy forever.
+        matches_gate = slug.startswith(prefixes)
+        if gate is None:
+            matches_gate = matches_gate or "release_train" in note or "vercel" in note
+        if not matches_gate:
+            continue
+        # Queued history is not a mutex. Only a fix consuming a lane gets a
+        # bounded exclusivity window, after which the candidate may prove itself.
+        if str(row.get("state") or "").upper() not in hold_states:
+            continue
+        touched = _parse_time(row.get("updated_at") or row.get("created_at"))
+        if touched:
+            if touched.tzinfo is None:
+                touched = touched.replace(tzinfo=datetime.timezone.utc)
+            if (now - touched).total_seconds() > hold_minutes * 60:
+                continue
+        out.append(row)
     return out
 
 
@@ -470,8 +496,13 @@ def _refresh_staging_with_prod(repo, prod):
                             f"release-train: refresh {STAGING} from {prod}", prod],
                            cwd=tmp, capture_output=True, text=True, timeout=300)
         if r.returncode != 0:
+            repaired, repair_note = _repair_lockfile_only_merge(tmp)
+            if repaired:
+                return True, repair_note
             subprocess.run(["git", "merge", "--abort"], cwd=tmp, capture_output=True)
             log = ((r.stdout or "")[-1500:] + "\n" + (r.stderr or "")[-1500:]).strip()
+            if repair_note:
+                log += f"\nlockfile auto-repair: {repair_note}"
             return False, log or "staging/prod merge conflict"
         return True, "staging refreshed from prod"
     except subprocess.TimeoutExpired:
@@ -479,8 +510,66 @@ def _refresh_staging_with_prod(repo, prod):
     except Exception as e:
         return False, f"staging refresh error: {e}"
     finally:
+        _git(repo, "worktree", "unlock", tmp)
         _git(repo, "worktree", "remove", "--force", tmp)
         shutil.rmtree(tmp, ignore_errors=True)
+        _git(repo, "worktree", "prune")
+
+
+def _repair_lockfile_only_merge(worktree):
+    """Regenerate generated lockfiles when they are the only refresh conflict.
+
+    Source conflicts remain fail-closed.  This avoids sending a deterministic
+    generated-artifact conflict through an implementation or LLM repair lane.
+    """
+    unresolved = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=U"], cwd=worktree,
+        capture_output=True, text=True, timeout=30,
+    )
+    files = [name.strip() for name in (unresolved.stdout or "").splitlines() if name.strip()]
+    lockfiles = {"package-lock.json", "pnpm-lock.yaml", "yarn.lock"}
+    if unresolved.returncode != 0 or not files or any(name not in lockfiles for name in files):
+        return False, "not a lockfile-only conflict"
+    for name in files:
+        seeded = subprocess.run(
+            ["git", "checkout", "--theirs", "--", name], cwd=worktree,
+            capture_output=True, text=True, timeout=30,
+        )
+        if seeded.returncode != 0:
+            return False, f"could not seed {name} for regeneration"
+        if name == "package-lock.json":
+            command = ["npm", "install", "--package-lock-only", "--ignore-scripts",
+                       "--prefer-offline", "--no-audit", "--fund=false"]
+        elif name == "pnpm-lock.yaml":
+            command = ["pnpm", "install", "--lockfile-only", "--no-frozen-lockfile",
+                       "--ignore-scripts", "--prefer-offline"]
+        else:
+            command = ["yarn", "install", "--mode=update-lockfile", "--ignore-scripts"]
+        generated = subprocess.run(
+            command, cwd=worktree, capture_output=True, text=True, timeout=300,
+        )
+        if generated.returncode != 0:
+            message = (generated.stderr or generated.stdout or "")[-300:]
+            return False, f"{name} regeneration failed: {message}"
+    added = subprocess.run(
+        ["git", "add", "--", *files], cwd=worktree,
+        capture_output=True, text=True, timeout=30,
+    )
+    if added.returncode != 0:
+        return False, "could not stage regenerated lockfile"
+    remaining = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=U"], cwd=worktree,
+        capture_output=True, text=True, timeout=30,
+    )
+    if (remaining.stdout or "").strip():
+        return False, "unresolved files remain after lockfile regeneration"
+    committed = subprocess.run(
+        ["git", "commit", "--no-edit"], cwd=worktree,
+        capture_output=True, text=True, timeout=60,
+    )
+    if committed.returncode != 0:
+        return False, f"regenerated lockfile commit failed: {(committed.stderr or '')[-300:]}"
+    return True, "staging refreshed; lockfile-only conflict regenerated deterministically"
 
 
 def _merge_into_staging(repo, branch):

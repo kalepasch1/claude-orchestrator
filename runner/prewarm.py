@@ -19,7 +19,7 @@ _DIR = os.path.dirname(os.path.abspath(__file__))
 RECOVERY_PREFIX = "recover-missing-branch-"
 CANARY_PREFIX = "canary-"
 IMPROVEMENT_PREFIX = "improve-"
-RELEASE_FIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-")
+RELEASE_FIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-", "copyfix-")
 
 
 def _git(repo, *args, timeout=30):
@@ -77,7 +77,15 @@ def _claimable_next(limit):
             return 1
         return 9
 
+    def project_rank(t):
+        proj = projs.get(t.get("project_id"), {}) or {}
+        try:
+            return db._project_rank_name(proj.get("name"))
+        except Exception:
+            return proj.get("priority") or 9
+
     q.sort(key=lambda t: (
+                          project_rank(t),
                           0 if (release_fix_backlog and (
                               str(t.get("slug") or "").startswith(RELEASE_FIX_PREFIXES)
                               or "release_train" in str(t.get("note") or "").lower()
@@ -92,7 +100,6 @@ def _claimable_next(limit):
                           else (1 if evidence_backlog else 0),
                           0 if (improvement_backlog and str(t.get("slug") or "").startswith(IMPROVEMENT_PREFIX))
                           else (1 if improvement_backlog else 0),
-                          (projs.get(t.get("project_id"), {}) or {}).get("priority") or 5,
                           -float((projs.get(t.get("project_id"), {}) or {}).get("concurrency_weight") or 1),
                           t.get("created_at") or ""))
     return q[:limit], projs

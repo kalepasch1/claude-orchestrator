@@ -49,11 +49,16 @@ STATUS_SCAN_LIMIT = int(os.environ.get("ORCH_FLEET_STATUS_SCAN_LIMIT", "500"))
 
 
 def status():
-    rows = _live(db.select("runner_heartbeats", {"select": "*"}) or [])
-    # Collapse logical lane heartbeats back to physical machines. db.heartbeat() emits synthetic
-    # "<host> lane N" rows for dashboard lane visibility; counting those as machines made the fleet
-    # ceiling look 8-10x larger than the real hardware and hid memory pressure. Use the canonical
-    # non-lane heartbeat for active_tasks when present; lane rows are just per-lane visibility.
+    # The table accumulates rows across process restarts. Always request the
+    # freshest bounded window or an arbitrary PostgREST page can contain mostly
+    # dead runners and make a busy fleet look empty.
+    rows = db.select("runner_heartbeats", {
+        "select": "*", "order": "last_seen.desc", "limit": str(STATUS_SCAN_LIMIT),
+    }) or []
+    rows = _live(rows)
+    # Collapse logical lane heartbeats back to physical machines. The base
+    # scheduler heartbeat is authoritative when it is still current; lane rows
+    # are visibility records, not extra hardware.
     groups = {}
     for r in rows:
         h = _physical_host(r.get("hostname") or r.get("runner_id"))
@@ -61,12 +66,37 @@ def status():
     live = []
     for h, items in groups.items():
         real = [r for r in items if not _is_lane(r.get("hostname") or r.get("runner_id"))]
-        source = max(real or items, key=lambda r: r.get("last_seen") or "")
+        candidates = real or items
+        freshest = max(candidates, key=lambda r: r.get("last_seen") or "")
+        source = freshest
+        schedulers = [
+            r for r in candidates if str(r.get("runner_id") or "").endswith("-scheduler")
+        ]
+        if schedulers:
+            scheduler = max(schedulers, key=lambda r: r.get("last_seen") or "")
+            try:
+                sched_at = datetime.datetime.fromisoformat(
+                    str(scheduler.get("last_seen")).replace("Z", "+00:00")
+                )
+                fresh_at = datetime.datetime.fromisoformat(
+                    str(freshest.get("last_seen")).replace("Z", "+00:00")
+                )
+                grace = int(os.environ.get("ORCH_SCHEDULER_HEARTBEAT_GRACE_S", "60"))
+                if (fresh_at - sched_at).total_seconds() <= grace:
+                    source = scheduler
+            except Exception:
+                pass
         nr = dict(source)
         nr["hostname"] = h
-        if real:
-            nr["active_tasks"] = max(int(r.get("active_tasks") or 0) for r in real)
-        else:
+        contracts = {}
+        for item in items:
+            contract = (item.get("code_sha") or "unknown", item.get("contract_hash") or "unknown")
+            contracts[contract] = contracts.get(contract, 0) + 1
+        dominant, _count = max(contracts.items(), key=lambda pair: pair[1])
+        nr["code_sha"], nr["contract_hash"] = dominant
+        nr["contract_variants"] = len(contracts)
+        nr["contract_compatible"] = len(contracts) == 1 and dominant[1] != "unknown"
+        if not real:
             nr["active_tasks"] = sum(int(r.get("active_tasks") or 0) for r in items)
         live.append(nr)
     return {

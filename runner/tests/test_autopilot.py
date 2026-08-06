@@ -2,6 +2,7 @@ import os
 import sys
 import types
 import unittest
+import datetime
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -10,6 +11,30 @@ import autopilot
 
 
 class AutopilotTest(unittest.TestCase):
+
+    def test_recovery_sweeps_without_starting_a_second_merge_train(self):
+        sweep = MagicMock(return_value={"recovery_queued": 1})
+        module = types.SimpleNamespace(sweep=sweep)
+
+        with patch.dict(sys.modules, {"integration_sweeper": module}):
+            result = autopilot.recovery_agent()
+
+        self.assertEqual(result, {"recovery_queued": 1})
+        sweep.assert_called_once_with(limit=250, run_train=False)
+
+    def test_release_hot_lane_only_sees_latest_recent_project_failure(self):
+        now = datetime.datetime.now(datetime.timezone.utc)
+        rows = [
+            {"project": "recovered", "deploy_status": "ready", "created_at": now.isoformat()},
+            {"project": "recovered", "deploy_status": "failed", "created_at": now.isoformat()},
+            {"project": "stale", "deploy_status": "failed",
+             "created_at": (now - datetime.timedelta(days=2)).isoformat()},
+            {"project": "live", "deploy_status": "failed", "created_at": now.isoformat()},
+        ]
+
+        failures = autopilot._latest_recent_release_failures(rows)
+
+        self.assertEqual([row["project"] for row in failures], ["live"])
 
     def test_snapshot_counts_recovery_improvement_and_canary_pressure(self):
         rows = [
@@ -81,6 +106,8 @@ class AutopilotTest(unittest.TestCase):
                 run=lambda: calls.append(("janitor", None)) or 0),
             "auto_remediate": fake_mod("auto_remediate",
                 run=lambda **kw: calls.append(("remediate", kw)) or {"requeued": 1}),
+            "blocker_quarantine": fake_mod("blocker_quarantine",
+                run=lambda **kw: calls.append(("quarantine", kw)) or {"parked": 0}),
             "ev_scheduler": fake_mod("ev_scheduler",
                 run=lambda: calls.append(("rank", None)) or {"ranked": 4}),
             "prewarm": fake_mod("prewarm",
@@ -117,7 +144,7 @@ class AutopilotTest(unittest.TestCase):
              patch.object(autopilot, "_save_state"), \
              patch.object(autopilot, "IMPROVE_FLOOR", 3), \
              patch.dict(sys.modules, modules), \
-             patch.dict(os.environ, {}, clear=False):
+             patch.dict(os.environ, {"AUTOPILOT_MIN_ACTIVE_CANARIES": "4"}, clear=False):
             out = autopilot.run(force=True)
 
         called = {c[0] for c in calls}
