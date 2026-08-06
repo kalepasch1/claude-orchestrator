@@ -121,6 +121,60 @@ def _already_integrated(repo, slug):
     return _integration_evidence(repo, slug) is not None
 
 
+def _integration_targets(repo):
+    """Existing refs that count as 'upstream' for this repo, in preference order."""
+    targets = [t for t in (os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev"),
+                           os.environ.get("ORCH_CODE_MERGE_TARGET", "dev"),
+                           "main", "master") if t]
+    refs = []
+    for tgt in targets:
+        ref = f"origin/{tgt}"
+        if subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref], cwd=repo,
+                          capture_output=True).returncode == 0:
+            refs.append(ref)
+    return refs
+
+
+def _merged_branch_evidence(repo, branch):
+    """Return (sha, ref) when `branch` is fully reachable from an upstream ref, else None.
+
+    The gap this closes: the sweeper only ever asked "is the work integrated?" on the
+    branch-MISSING path. A branch that still EXISTS was counted as `passed_waiting` and
+    left open — even when it had already been merged and its tip was an ancestor of
+    master. Nothing in the loop could conclude such a task was finished, so it stayed
+    QUEUED, got re-claimed, and the missing-branch auto-creator kept filing fresh
+    `recover-missing-branch-*` rows to rebuild work that was already in production.
+    Observed repeatedly: agent/ensemble-on-hard and
+    agent/canary-claude-27-slice-1-fix-dependencies were both ancestors of origin/master
+    with an empty diff against it, and both still had live recovery tasks queued.
+
+    Reachability is tree-level ground truth, so this is immune to all three unsoundness
+    modes documented on _integration_evidence(): it does not grep commit messages, cannot
+    be satisfied by a sibling slice sharing a slug prefix, and cannot be satisfied by a
+    recovery attempt that merely NAMES the slug. If the tip commit is reachable from
+    master, every commit on the branch is in master — that is what merged means.
+
+    The returned sha is the branch tip, which satisfies the module invariant that a MERGED
+    row must carry the sha proving it.
+    """
+    if not repo or not os.path.isdir(repo) or not branch:
+        return None
+    for candidate in (branch, f"refs/remotes/origin/{branch}"):
+        rev = subprocess.run(["git", "rev-parse", "--verify", "--quiet", candidate],
+                             cwd=repo, capture_output=True, text=True)
+        if rev.returncode != 0:
+            continue
+        sha = (rev.stdout or "").strip()
+        if not sha:
+            continue
+        for ref in _integration_targets(repo):
+            merged = subprocess.run(["git", "merge-base", "--is-ancestor", sha, ref],
+                                    cwd=repo, capture_output=True)
+            if merged.returncode == 0:
+                return sha, ref
+    return None
+
+
 def _normalize_base(repo, proj, requested):
     for b in (requested, proj.get("default_base"), proj.get("prod_branch"), "main", "master"):
         if b and _branch_exists(repo, b):
@@ -424,6 +478,25 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
         _is_recovery = RECOVERY_PREFIX in str(slug or "")
         proj = projects.get(t.get("project_id")) or {}
         repo = proj.get("repo_path", "")
+
+        # A branch that still EXISTS but is already fully merged used to fall straight
+        # through to the "queue an integration card" path below and be left open, so the
+        # task was re-swept and re-claimed forever and the auto-creator kept filing
+        # recover-missing-branch rows for work that was already in production. Reachability
+        # settles it without any commit-message heuristic: if the tip is an ancestor of an
+        # upstream ref, the whole branch is upstream.
+        _merged = _merged_branch_evidence(repo, f"agent/{slug}")
+        if _merged:
+            _sha, _ref = _merged
+            if t.get("state") != "MERGED":
+                db.update("tasks", {"id": t["id"]},
+                          {"state": "MERGED",
+                           "artifact_commit": _sha,
+                           "note": f"integration_sweeper: agent/{slug} is an ancestor of {_ref} "
+                                   f"at {_sha[:12]}; already integrated, closed without rebuild"})
+            skipped += 1
+            continue
+
         if not _branch_exists_anywhere(repo, f"agent/{slug}"):
             # Branch gone. If the work already landed upstream, CLOSE it (no rebuild) — this is what
             # kills the phantom missing_branch recount + endless recovery churn on merged work.
