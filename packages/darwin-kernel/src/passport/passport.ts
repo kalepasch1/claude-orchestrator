@@ -51,6 +51,22 @@ export interface Passport {
 
 const DAY = 86_400_000;
 
+/**
+ * Canonical claim ordering so the digest (and content-addressed id) are
+ * independent of the order in which claims were supplied. Order is not
+ * semantic for a passport — [a, b] and [b, a] are the same credential.
+ */
+function sortClaims(claims: Claim[]): Claim[] {
+  return [...claims].sort(
+    (a, b) =>
+      a.kind.localeCompare(b.kind) ||
+      a.issuer.localeCompare(b.issuer) ||
+      a.issuedAt.localeCompare(b.issuedAt) ||
+      a.expiresAt.localeCompare(b.expiresAt) ||
+      a.value - b.value,
+  );
+}
+
 export function buildPassport(params: {
   subject: string;
   claims: Claim[];
@@ -62,9 +78,12 @@ export function buildPassport(params: {
     claims: params.claims,
     issuedAt: params.issuedAt ?? new Date().toISOString(),
   };
-  const digest = sha256Canonical(body);
+  // Digest/id are computed over canonically sorted claims so they are
+  // order-independent, while the passport preserves the supplied order.
+  const canonicalBody = { ...body, claims: sortClaims(body.claims) };
+  const digest = sha256Canonical(canonicalBody);
   return {
-    id: contentId('pass', body),
+    id: contentId('pass', canonicalBody),
     ...body,
     digest,
     signature: signDigest(digest),
@@ -78,17 +97,29 @@ export interface PassportVerification {
   liveClaims: Claim[];
 }
 
-/** Stateless verify: signature + digest integrity + per-claim expiry. */
+/**
+ * Stateless verify: signature + digest integrity + per-claim expiry.
+ *
+ * Expiry is fail-closed: a claim must be unexpired at `asOf` AND unexpired at
+ * the passport's own issue time. A claim that was already dead when the
+ * passport was minted can never be live, no matter what `asOf` is passed —
+ * backdating the evaluation date cannot resurrect stale claims.
+ */
 export function verifyPassport(passport: Passport, asOf: Date = new Date()): PassportVerification {
   const { id: _id, digest, signature, ...body } = passport;
-  if (sha256Canonical(body) !== digest) {
+  const canonicalBody = { ...body, claims: sortClaims(body.claims) };
+  if (sha256Canonical(canonicalBody) !== digest) {
     return { valid: false, reason: 'digest_mismatch', liveClaims: [] };
   }
   if (!verifyDigest(digest, signature)) {
     return { valid: false, reason: 'signature_invalid', liveClaims: [] };
   }
   const now = asOf.getTime();
-  const liveClaims = passport.claims.filter((c) => Date.parse(c.expiresAt) > now);
+  const mintedAt = Date.parse(passport.issuedAt);
+  const liveClaims = passport.claims.filter((c) => {
+    const exp = Date.parse(c.expiresAt);
+    return exp > now && exp > mintedAt;
+  });
   if (liveClaims.length === 0) {
     return { valid: false, reason: 'all_claims_expired', liveClaims: [] };
   }
