@@ -38,6 +38,7 @@ const stopLoading = ref(false)
 const panicLoading = ref(false)
 const rotateLoading = ref<Record<string, boolean>>({})
 const feedbackSaving = ref(false)
+const feedbackError = ref('')
 const newFeedback = reactive({ category: 'general', severity: 'low', observation: '', suggestion: '' })
 const budgets = ref<any[]>([])
 const loops = ref<any[]>([])
@@ -213,14 +214,18 @@ async function rotateKey(providerName: string, keyName: string, project: string 
 async function submitFeedback() {
   if (!newFeedback.observation.trim()) return
   feedbackSaving.value = true
+  feedbackError.value = ''
   try {
-    await supabase.from('orchestrator_feedback').insert({
+    const receipt: any = await authedFetch('/api/feedback', { method: 'POST', body: {
       category: newFeedback.category, severity: newFeedback.severity,
       observation: newFeedback.observation, suggestion: newFeedback.suggestion,
-      source: 'human', status: 'new',
-    })
+    } })
     newFeedback.observation = ''; newFeedback.suggestion = ''
     await loadAll()
+    signalOutcome('success', 'Improvement queued', `Execution task ${receipt.task.slug} is now traceable through QA, merge, and release.`)
+  } catch (error: any) {
+    feedbackError.value = error?.data?.message || error?.message || 'The improvement was not queued.'
+    signalOutcome('error', 'Improvement not queued', feedbackError.value)
   } finally { feedbackSaving.value = false }
 }
 

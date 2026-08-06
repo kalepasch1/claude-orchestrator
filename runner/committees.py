@@ -1343,12 +1343,28 @@ def run(limit=8):
     routine decisions; a human is involved ONLY when the matter is critical or highly contentious."""
     process_determination_actions()   # first, fulfill any one-click reviewer actions from the console
     reviewed = {r["subject_id"] for r in (db.select("committee_reviews", {"select": "subject_id"}) or [])}
-    pid = {p["name"]: p["id"] for p in (db.select("projects", {"select": "id,name"}) or [])}
+    project_rows = db.select("projects", {"select": "id,name,default_base"}) or []
+    pid = {p["name"]: p["id"] for p in project_rows}
+    base_by_app = {p["name"]: (p.get("default_base") or "main") for p in project_rows}
+    try:
+        operator_work_pending = bool(db.select("tasks", {
+            "select": "id", "state": "in.(QUEUED,RUNNING,DONE,RETRY)",
+            "submitted_by": "not.is.null", "limit": "1",
+        }) or db.select("tasks", {
+            "select": "id", "state": "in.(QUEUED,RUNNING,DONE,RETRY)",
+            "slug": "like.dropbox-*", "limit": "1",
+        }) or [])
+    except Exception:
+        operator_work_pending = True
     n = executed = escalated = cleared = 0
 
     for p in db.select("improvement_proposals", {"select": "id,app,surface,title,proposal,rationale,divergent",
                         "status": "eq.for_review", "limit": str(limit)}) or []:
         if p["id"] in reviewed:
+            continue
+        if operator_work_pending and str(p.get("app") or "").lower() == "beethoven":
+            # Keep the reviewed proposal intact, but do not convert speculative
+            # self-work into another task while authenticated/legacy operator work waits.
             continue
         if not p.get("divergent"):
             import improvement_scrutiny
@@ -1384,7 +1400,8 @@ def run(limit=8):
                               "pct": pct, "status": "active",
                               "note": (agg.get("premortem") or {}).get("failure_story", "")[:300]})
                 db.insert("tasks", {"project_id": pid[p["app"]], "slug": slug, "state": "QUEUED",
-                          "kind": "build", "deps": [], "base_branch": "main", "material": False,
+                          "kind": "improvement", "deps": [], "base_branch": base_by_app[p["app"]], "material": False,
+                          "note": "source:committee-improvement; qa:independent; release:verified",
                           "prompt": spec})
                 upd["status"] = "queued"; upd["task_slug"] = slug; upd["slug_v2"] = True
                 executed += 1
@@ -1399,7 +1416,8 @@ def run(limit=8):
             db.insert("committee_experiments", {"app": p["app"], "slug": slug, "kind": "ab",
                       "hypothesis": (p.get("title") or "")[:200], "status": "running", "metric_start": m0})
             db.insert("tasks", {"project_id": pid[p["app"]], "slug": slug, "state": "QUEUED", "kind": "build",
-                      "deps": [], "base_branch": "main", "material": False,
+                      "deps": [], "base_branch": base_by_app[p["app"]], "material": False,
+                      "note": "source:committee-experiment; qa:independent; release:verified",
                       "prompt": compose_spec(p.get("title"), (p.get("proposal") or "") +
                                "\n\nSHIP AS AN A/B EXPERIMENT behind a flag (50/50); do not enable globally.",
                                agg["panel"])})

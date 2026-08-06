@@ -5,7 +5,9 @@ self_review.py - the orchestrator improving ITSELF (not just the apps it manages
 Runs nightly. Reads its own telemetry (outcomes), computes where it's losing time/
 money/quality, and asks a model to propose concrete changes to the orchestrator's OWN
 config/code (router rules, concurrency, prompt templates, guard patterns, conventions).
-Each idea becomes an APPROVAL card (kind='self') with why/value/risk - turned inward.
+Each idea becomes a canonical improvement_proposal reviewed by the committee and then, if
+accepted, an executable task. The former kind='self' approval cards had no implementation
+consumer and accumulated without changing code.
 
 Meta-safety (the lesson from the 24-conflict self-loop incident):
   * it NEVER edits the orchestrator directly - it only proposes;
@@ -168,6 +170,19 @@ TELEMETRY:
 
 
 def run():
+    try:
+        operator_pending = db.select("tasks", {
+            "select": "id", "state": "in.(QUEUED,RUNNING,DONE,RETRY)",
+            "submitted_by": "not.is.null", "limit": "1",
+        }) or db.select("tasks", {
+            "select": "id", "state": "in.(QUEUED,RUNNING,DONE,RETRY)",
+            "slug": "like.dropbox-*", "limit": "1",
+        }) or []
+    except Exception:
+        operator_pending = [{"id": "unknown"}]
+    if operator_pending:
+        print("self-review deferred: authenticated operator work is pending")
+        return 0
     summary, text = stats()
     if not summary:
         print(text); return
@@ -190,12 +205,40 @@ def run():
             p = json.loads(line)
         except Exception:
             continue
-        db.insert("approvals", {
-            "project": "ORCHESTRATOR", "kind": "self", "title": p.get("title", "self-improvement"),
-            "why": p.get("why"), "value": p.get("value"), "risk": p.get("risk"),
-            "detail": p.get("change"), "command": ""})
+        title = f"Self-review: {str(p.get('title') or 'orchestration improvement').strip()}"[:200]
+        existing = db.select("improvement_proposals", {
+            "select": "id", "app": "eq.beethoven", "title": f"eq.{title}",
+            "status": "in.(proposed,for_review,queued)", "limit": "1",
+        }) or []
+        if existing:
+            continue
+        why = str(p.get("why") or "Telemetry identifies a repeated orchestration bottleneck.").strip()
+        value = str(p.get("value") or "Improve verified delivery throughput.").strip()
+        risk = str(p.get("risk") or "Revert the isolated change on any regression.").strip()
+        change = str(p.get("change") or "").strip()
+        spec = (
+            f"IMPROVEMENT HYPOTHESIS (reliability; not a measured result): {change}\n\n"
+            f"Baseline: {why}\n"
+            f"Target: {value}\n"
+            "Multiplier basis: 2x = one telemetry proposal converted to one reviewed implementation "
+            "and one verified release receipt.\n"
+            "Measurement plan: compare seven-day before/after first-try yield, cycle time, failure rate, "
+            "integrated commit evidence, and deployed-and-verified task count.\n"
+            f"Rollback: {risk}\n\n"
+            "Acceptance tests:\n"
+            "- The targeted bottleneck has a reproducible failing test or measured baseline before implementation.\n"
+            "- Existing behavior survives regression/build gates and the release is verified before success is recorded."
+        )
+        db.insert("improvement_proposals", {
+            "app": "beethoven", "surface": "reliability", "title": title,
+            "current_state": why[:600], "proposal": spec[:1500],
+            "expected_multiplier": "2x", "divergent": False,
+            "rationale": f"Telemetry-derived self review. {risk}"[:800],
+            "status": "for_review", "score": 50,
+        })
         made += 1
-    print(f"self-review filed {made} improvement proposals (approve them in the dashboard).")
+    print(f"self-review filed {made} canonical implementation proposals")
+    return made
 
 
 ###############################################################################

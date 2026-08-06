@@ -1223,7 +1223,16 @@ def _select_batch(group):
                 value_scores[key] = 0.0
     except Exception:
         value_scores = {}
-    annotated.sort(key=lambda e: ({"low": 0, "standard": 1, "sensitive": 2}[e[3]],
+    def operator_rank(entry):
+        _card, slug, task, _risk = entry
+        note = str(task.get("note") or "").lower()
+        return 0 if (task.get("submitted_by") or str(slug).startswith("dropbox-")
+                     or "source:operator-" in note or "source:intent-console" in note) else 1
+
+    # Authenticated/manual requests are attempted before speculative machine work.
+    # All normal risk caps and every regression/build/divergence gate still apply.
+    annotated.sort(key=lambda e: (operator_rank(e),
+                                  {"low": 0, "standard": 1, "sensitive": 2}[e[3]],
                                   -value_scores.get(str(e[2].get("id") or e[2].get("slug") or ""), 0),
                                   str(e[0].get("created_at") or "")))
     return annotated
@@ -1683,7 +1692,8 @@ def train_run():
         repo_path = db.localize_repo_path(proj.get("repo_path", ""))
         # FIX 2026-07-28: repo_lock.hold() takes (repo, timeout) only — the stray priority=True
         # kwarg was a second latent crash behind the missing import.
-        with repo_lock.hold(repo_path, timeout=300) as got_lock:
+        lock_timeout = float(os.environ.get("ORCH_MERGE_REPO_LOCK_TIMEOUT_S", "5"))
+        with repo_lock.hold(repo_path, timeout=lock_timeout) as got_lock:
             if not got_lock:
                 result["skipped"] += len(group)
                 print(f"merge_train: {proj.get('name') or pid} busy (another train holds the repo lock) — skipping this cycle")
