@@ -164,5 +164,46 @@ class TestLegacyKillSwitchClamp(unittest.TestCase):
         self.assertIn('limit = "3000"', src)
 
 
+class TestCaseCollisions(unittest.TestCase):
+    """An auto-resolved merge left racefeed tracking both OPPORTUNITIES.json and
+    opportunities.json. macOS APFS is case-insensitive, so only one can exist on disk and git
+    reports the other as modified in every checkout — that integration worktree was condemned
+    from the moment the merge landed. Additive damage, so no deletion or stub guard sees it."""
+
+    @classmethod
+    def setUpClass(cls):
+        import orphan_imports
+        cls.oi = orphan_imports
+        cls.repo = tempfile.mkdtemp(prefix="case-collision-test-")
+        def git(*a):
+            subprocess.run(["git", *a], cwd=cls.repo, check=True, capture_output=True)
+        git("init", "-q")
+        git("config", "user.email", "t@t"); git("config", "user.name", "t")
+        git("config", "core.ignorecase", "false")  # force both entries into the index
+        open(os.path.join(cls.repo, "a.json"), "w").write("{}")
+        open(os.path.join(cls.repo, "with space.txt"), "w").write("x")
+        git("add", "a.json", "with space.txt")
+        # Stage the second casing directly; a case-insensitive checkout cannot create both.
+        h = subprocess.run(["git", "hash-object", "-w", "--stdin"], cwd=cls.repo,
+                           input=b"{}", capture_output=True).stdout.decode().strip()
+        subprocess.run(["git", "update-index", "--add", "--cacheinfo", f"100644,{h},A.json"],
+                       cwd=cls.repo, check=True, capture_output=True)
+        git("commit", "-qm", "two spellings of the same path")
+
+    def test_collision_is_reported(self):
+        found = self.oi.case_collisions(self.repo)
+        self.assertEqual([p for _, p in found], [["A.json", "a.json"]])
+
+    def test_filenames_with_spaces_are_not_shattered(self):
+        # ls-files split on whitespace turned "assets/images/The Machine B_W.png" into
+        # fragments and invented eight collisions in a repo that had none.
+        self.assertIn("with space.txt", self.oi._ls(self.repo))
+        self.assertNotIn("with", self.oi._ls(self.repo))
+
+    def test_scoping_limits_the_verdict(self):
+        self.assertTrue(self.oi.case_collisions(self.repo, only_files={"a.json"}))
+        self.assertFalse(self.oi.case_collisions(self.repo, only_files={"unrelated.txt"}))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

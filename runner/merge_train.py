@@ -373,7 +373,18 @@ def _orphan_import_gate(repo, base, branch):
         found = orphan_imports.dangling_imports(repo, only_files=touched)
         if found:
             return False, orphan_imports.describe(found)
-        return True, "no dangling imports in the changed files"
+        # Case-colliding paths are the same shape of defect from the other direction: additive,
+        # so no deletion- or stub-based guard sees them, and permanently fatal on a
+        # case-insensitive filesystem. An auto-resolved merge left racefeed tracking both
+        # OPPORTUNITIES.json and opportunities.json; macOS can hold one of them, so git reported
+        # the other as modified in every checkout and that integration slot was condemned from
+        # the moment the merge landed.
+        clashes = orphan_imports.case_collisions(repo, only_files=touched)
+        if clashes:
+            names = "; ".join(" vs ".join(paths) for _, paths in clashes[:4])
+            return False, (f"{len(clashes)} case-colliding path(s) — unusable on a "
+                           f"case-insensitive filesystem: {names}")
+        return True, "no dangling imports or case collisions in the changed files"
     except Exception as exc:
         return True, f"orphan-import gate unavailable (fail-open): {type(exc).__name__}: {exc}"
 

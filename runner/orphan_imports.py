@@ -63,6 +63,17 @@ def _git(repo, *args):
                           encoding="utf-8", errors="replace")
 
 
+def _ls(repo, *args):
+    """Tracked/untracked paths, NUL-separated.
+
+    `git ls-files` output split on whitespace shatters any filename containing a space —
+    tomorrow has dozens (assets/images/The Machine ... B_W.png), and the first version of
+    case_collisions reported eight bogus collisions on the fragments. -z is not optional here.
+    """
+    out = _git(repo, "ls-files", "-z", *args).stdout
+    return [p for p in out.split("\0") if p]
+
+
 def _resolve_candidates(importer, spec):
     """Every path `spec` could legitimately mean, relative to the repo root."""
     base = os.path.normpath(os.path.join(os.path.dirname(importer), spec))
@@ -86,7 +97,7 @@ def _scan(repo, resolves, only_files=None):
     tree would fail every merge on inherited noise; judging the diff fails only the merge that
     actually broke something.
     """
-    tracked = set(_git(repo, "ls-files").stdout.split())
+    tracked = set(_ls(repo))
     scope = sorted(tracked if only_files is None else (tracked & set(only_files)))
     findings = []
     for f in scope:
@@ -128,7 +139,7 @@ def dangling_imports(repo, only_files=None):
 
 def orphaned_imports(repo):
     """Tracked files importing a path that exists on disk but is untracked."""
-    untracked = set(_git(repo, "ls-files", "--others", "--exclude-standard").stdout.split())
+    untracked = set(_ls(repo, "--others", "--exclude-standard"))
 
     def verdict(tracked, cands):
         if any(c in tracked for c in cands):
@@ -136,6 +147,32 @@ def orphaned_imports(repo):
         hit = next((c for c in cands if c in untracked), "")
         return f"untracked file {hit}" if hit else ""
     return _scan(repo, verdict)
+
+
+def case_collisions(repo, only_files=None):
+    """Tracked paths that differ only in case — unusable on a case-insensitive filesystem.
+
+    racefeed's integration worktree could never be clean because an auto-resolved merge left the
+    repo tracking BOTH `OPPORTUNITIES.json` and `opportunities.json`. macOS APFS is
+    case-insensitive, so only one can exist on disk and git reports the other as modified in
+    every checkout, forever. That slot was condemned from the moment the merge landed, and the
+    damage is additive — no guard looking for deletions or stubs would ever see it.
+
+    Cheap and exact, like the import check: one `git ls-files` and a dictionary.
+    """
+    tracked = _ls(repo)
+    buckets = {}
+    for path in tracked:
+        buckets.setdefault(path.lower(), []).append(path)
+    scope = set(only_files) if only_files is not None else None
+    out = []
+    for lower, paths in sorted(buckets.items()):
+        if len(paths) < 2:
+            continue
+        if scope is not None and not (set(paths) & scope):
+            continue
+        out.append((lower, sorted(paths)))
+    return out
 
 
 def describe(findings, limit=6):
