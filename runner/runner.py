@@ -2713,6 +2713,12 @@ _SCHEDULE = [
     # defect that had "Legal & Compliance" panels opining on Kubernetes. Each run puts real
     # regulatory questions through the 5-round gauntlet and mints citation-backed verdict cards.
     ("legaldocket-1800","legal_docket.py",  "interval", 1800),  # standing legal docket -> verdict cards
+    # Machine + pipeline heartbeat alerts (operator directive 2026-08-02, P0). Reads the
+    # runner_heartbeats rows every machine already writes and PAGES when one goes silent
+    # >30m — Mac 2 was down from ~10:28 with nothing saying so. Also runs the hourly
+    # consistency self-tests (pressure file vs DB row, boot-commit file, release-train env)
+    # and auto-reverts RELEASE_MIN_BATCH=1 recovery mode once the backlog is drained.
+    ("fleetheartbeat-3600", "fleet_heartbeat.py", "interval", 3600),
     # Benchmark redlines: redline REAL filed briefs in the most contentious regulatory matters +
     # draft the fully-revised addendum — the proof-of-superiority engine. Targets only activate
     # once the actual public filing text is ingested (never redlines an unheld document).
@@ -2872,6 +2878,10 @@ _sched_last: dict = {}
 # Jobs that NEVER call a model and are safe (even desirable) to run while paused:
 # protect the Mac, and keep read-only spend/health telemetry flowing.
 _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn",
+                     # Liveness monitoring must survive a pause. A paused fleet is exactly
+                     # when a machine can quietly die without anyone noticing, and the
+                     # monitor calls no models — it only reads heartbeats and files.
+                     "fleet_heartbeat.py",
                      "approval_policy.py", "queue_janitor.py",
                      "unstick", "dagfix", "dagspecunblock", "batchmech", "selftune", "cluster",
                      "governor", "costslo", "promote", "prewarm", "billingguard",
