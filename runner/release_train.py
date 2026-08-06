@@ -41,6 +41,11 @@ RELEASE_FIX_PREFIXES = ("relfix-", "buildfix-", "deployfix-")
 QA_FIX_PREFIXES = ("qafix-",)
 COPY_FIX_PREFIXES = ("copyfix-",)
 RED_GATE_COOLDOWN_MIN = float(os.environ.get("ORCH_RELEASE_RED_GATE_COOLDOWN_MIN", "180"))
+# A fix lineage gets a bounded wall-clock budget measured from its OLDEST task, not from
+# whichever sub-task was touched last. Without this ceiling a decomposed fix DAG renews its
+# own hold forever: every sub-task that goes RUNNING refreshes updated_at, so the release
+# train never retries. 0 disables the ceiling and restores the old unbounded behaviour.
+RELEASE_FIX_HOLD_MAX_H = float(os.environ.get("ORCH_RELEASE_FIX_HOLD_MAX_H", "12"))
 QA_EVIDENCE_CHARS_PER_STREAM = 12000
 
 # release_kpi writes this: the set of apps whose recent prod deploys keep failing, so we promote their
@@ -249,6 +254,27 @@ def _parse_time(value):
         return None
 
 
+def _fix_lineage_root(slug):
+    """Group a decomposed fix DAG back to the fix it came from."""
+    parts = str(slug or "").split("-")
+    return "-".join(parts[:3]) if len(parts) >= 3 else str(slug or "")
+
+
+def _lineage_birth(rows):
+    """Oldest created_at per fix lineage - the start of that lineage's hold budget."""
+    births = {}
+    for row in rows:
+        born = _parse_time(row.get("created_at"))
+        if not born:
+            continue
+        if born.tzinfo is None:
+            born = born.replace(tzinfo=datetime.timezone.utc)
+        root = _fix_lineage_root(row.get("slug"))
+        if root not in births or born < births[root]:
+            births[root] = born
+    return births
+
+
 def _open_release_fix_tasks(p, gate=None):
     """Return open fix tasks that should be allowed to clear before another release retry."""
     if not p.get("id"):
@@ -260,6 +286,7 @@ def _open_release_fix_tasks(p, gate=None):
                                    "order": "updated_at.desc", "limit": "200"}) or []
     except Exception:
         return []
+    births = _lineage_birth(rows)
     if gate == "qa":
         prefixes = QA_FIX_PREFIXES
     elif gate == "copy":
@@ -296,6 +323,14 @@ def _open_release_fix_tasks(p, gate=None):
                 touched = touched.replace(tzinfo=datetime.timezone.utc)
             if (now - touched).total_seconds() > hold_minutes * 60:
                 continue
+        # Bounded budget per lineage: sub-task churn cannot renew the hold indefinitely.
+        born = births.get(_fix_lineage_root(slug))
+        if RELEASE_FIX_HOLD_MAX_H > 0:
+            if born and (now - born).total_seconds() > RELEASE_FIX_HOLD_MAX_H * 3600:
+                continue
+        row["_lineage_age_h"] = (
+            round((now - born).total_seconds() / 3600.0, 1) if born else 0.0
+        )
         out.append(row)
     return out
 
@@ -317,6 +352,26 @@ def _self_heal_public_copy(p, project, repo, staging, findings):
         print(f"release_train: copyfix queue failed ({e})")
 
 
+def _raise_hold_alarm(project, gate, fix, age_h):
+    """Surface a long-running release hold. Fail-soft: never raise, never block the train."""
+    try:
+        detail = (f"{project}: {gate} gate held {age_h}h by fix lineage "
+                  f"{_fix_lineage_root((fix or {}).get('slug'))} "
+                  f"(hot task {(fix or {}).get('slug')}, state {(fix or {}).get('state')}); "
+                  f"ceiling {RELEASE_FIX_HOLD_MAX_H}h")
+        existing = db.select("orch_gate_alarms", {
+            "select": "id", "gate": f"eq.{gate}", "kind": "eq.release_hold",
+            "resolved_at": "is.null", "detail": f"like.{project}:%", "limit": "1"}) or []
+        if existing:
+            return
+        db.insert("orch_gate_alarms", {
+            "gate": gate, "kind": "release_hold", "verdict": "held", "n": 1,
+            "window_hours": int(RELEASE_FIX_HOLD_MAX_H), "detail": detail}, upsert=False)
+        print(f"release_train: raised release_hold alarm — {detail}")
+    except Exception as e:
+        print(f"release_train: hold alarm failed ({e})")
+
+
 def _hold_for_open_fix(p, project, gate):
     if not _truthy("ORCH_RELEASE_HOLD_WHILE_FIX_OPEN", True):
         return None
@@ -324,8 +379,15 @@ def _hold_for_open_fix(p, project, gate):
     if not fixes:
         return None
     hot = fixes[0]
+    # A silent hold is indistinguishable from an idle train — that is exactly why this
+    # ran unnoticed for 17 days. Always log; alarm once past half the ceiling.
+    age_h = float(hot.get("_lineage_age_h") or 0.0)
+    print(f"release_train: {project} gate={gate} HELD {age_h}h by fix {hot.get('slug')} "
+          f"({hot.get('state')}); ceiling {RELEASE_FIX_HOLD_MAX_H}h")
+    if RELEASE_FIX_HOLD_MAX_H > 0 and age_h >= RELEASE_FIX_HOLD_MAX_H / 2.0:
+        _raise_hold_alarm(project, gate, hot, age_h)
     return {"project": project, "gate": gate, "note": "held for open release-fix task",
-            "fix": hot.get("slug"), "fix_state": hot.get("state")}
+            "fix": hot.get("slug"), "fix_state": hot.get("state"), "held_hours": age_h}
 
 
 def _recent_failed_gate(project, staging_sha, gate):
