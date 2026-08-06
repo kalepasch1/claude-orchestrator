@@ -54,15 +54,87 @@ def _ram_hard():
     return float(os.environ.get("RAM_HARD_PCT", "82"))
 
 
+# Fleet-wide contract keys. fleet_control.load_config() pushes fleet_config rows into the
+# environment under the ORCH_ prefix, so the floor and the lane target are tuned centrally for
+# every Mac at once — no per-host constant to drift. The literals here are last-resort defaults
+# for a host that has never seen a config push, not the configured values.
+_ORCH_RAM_FLOOR_KEY = "ORCH_RAM_FLOOR_GB"
+_LEGACY_RAM_FLOOR_KEY = "RAM_FLOOR_GB"
+_DEFAULT_RAM_FLOOR_GB = 4.0
+_LANE_TARGET_MIN = 6
+_LANE_TARGET_MAX = 8
+
+# Last floor that parsed cleanly. A malformed central push must not widen the brake, so a bad
+# read falls back to the previous safe value rather than to the default (fail-soft).
+_last_good_ram_floor_gb = _DEFAULT_RAM_FLOOR_GB
+
+
+def _contract_default(name, fallback):
+    """Read a default from the shared fleet contracts module if it is present.
+
+    Import is optional and errors are swallowed: the governor is the process that keeps the
+    Mac alive, so it must never fail to start because a contracts module is mid-migration.
+    """
+    try:
+        import fleet_contracts  # noqa: F401  (optional shared contracts)
+        value = getattr(fleet_contracts, name, None)
+        return fallback if value is None else value
+    except Exception:
+        return fallback
+
+
 def _ram_floor_gb():
     """Minimum free RAM (GB) before pausing new task claims entirely.
 
     Hard low-memory brake: if fewer than this many GB are available, PAUSE new task claims
     entirely (a single heavy task — e.g. an 8GB typecheck — could otherwise crash the Mac).
-    1.5GB was too low — macOS is already swapping/thrashing by then. Default 2GB, and the
-    effective floor scales UP with machine size (see effective_floor_gb).
+    1.5GB was too low — macOS is already swapping/thrashing by then; 2GB still left the box
+    thrashing under a full lane set, so the fleet contract puts the floor at 4GB.
+
+    Read live from ORCH_RAM_FLOOR_GB (fleet_config, pushed fleet-wide), falling back to the
+    legacy per-host RAM_FLOOR_GB while hosts still set it. On an unreadable or nonsensical
+    value the previous safe floor is kept — a typo in central config must not silently remove
+    the crash brake.
     """
-    return float(os.environ.get("RAM_FLOOR_GB", "2.0"))
+    global _last_good_ram_floor_gb
+    default = float(_contract_default("RAM_FLOOR_GB", _DEFAULT_RAM_FLOOR_GB))
+    raw = os.environ.get(_ORCH_RAM_FLOOR_KEY)
+    if raw is None:
+        raw = os.environ.get(_LEGACY_RAM_FLOOR_KEY)
+    if raw is None:
+        _last_good_ram_floor_gb = default
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _last_good_ram_floor_gb
+    if value <= 0:
+        return _last_good_ram_floor_gb
+    _last_good_ram_floor_gb = value
+    return value
+
+
+def lane_target(free_gb: Optional[float] = None, ceiling: Optional[int] = None) -> int:
+    """Concurrent-lane target for this host, given free RAM.
+
+    Mac 1 should run 6–8 lanes, not the 4 it was clamped to. The target is what RAM can
+    actually fund — (free - floor) / per-task — clamped into the contract's 6–8 band and then
+    by the host ceiling. Below the band the affordable number is returned as-is, so a genuinely
+    starved box still throttles all the way down instead of being pinned at 6.
+    """
+    if ceiling is None:
+        ceiling = _ceiling()
+    if free_gb is None:
+        free_gb = ram_free_gb()
+    if free_gb is None:
+        # No RAM reading — fund the low end of the band rather than guessing high.
+        return max(1, min(_LANE_TARGET_MIN, ceiling))
+
+    per_task = _per_task_gb() or 0.15
+    affordable = int((free_gb - _ram_floor_gb()) / per_task)
+    if affordable < _LANE_TARGET_MIN:
+        return max(1, min(affordable, ceiling))
+    return max(1, min(_LANE_TARGET_MAX, affordable, ceiling))
 
 
 def _per_task_gb():
