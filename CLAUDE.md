@@ -110,6 +110,10 @@ Here are the extracted conventions and DO/AVOID rules:
 ChatGPT's code sandbox has no outbound network — `git push` and DNS always fail
 there. Do not debug it. Emit a patch instead: see [CHATGPT.md](./CHATGPT.md).
 
+## Incidents
+
+- [2026-08-06 release pipeline recovery](docs/incidents/2026-08-06-release-pipeline-recovery.md) — read before changing `release_train.py` or the merge train.
+
 ## Linting
 
 Convention linting ensures CLAUDE.md patterns are enforced before commit. Phase 1 focuses on 3 core rules:
