@@ -131,5 +131,9 @@ def start_metrics_server():
 
 
 if __name__ == "__main__":
+    # Configure logging only when run as a CLI (a module-level basicConfig
+    # would hijack the root logger for every runner that imports canary).
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO)
     sys.exit(main())
 
