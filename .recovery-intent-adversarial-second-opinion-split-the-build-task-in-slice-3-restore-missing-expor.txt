@@ -1,0 +1,4 @@
+recovery-intent: adversarial-second-opinion-split-the-build-task-in-slice-3-restore-missing-expor
+template: 72f4774c7594
+intent: 07062319 07071626 8b92d078e856 acceptance adapt adding adversarial agentic alter analysis artifacts because beethoven before behavior below blocks branch broad bugfix build category cause change changes changing checks coder commit complete completion concrete config context continue correcting dependencies diffs directive drafting duplicate duplicates eliminating equivalent examine existing exists experiencepassport expor exports failure files final finish first focus fresh functionality green identify implementation import improve inspect install instead integral intent involve large library lines maintainability matched merged minimally missing module named necessary
+base: main
