@@ -126,7 +126,11 @@ class AuthorAuditTests(unittest.TestCase):
 class NoHardcodedIdentityTests(unittest.TestCase):
     """§G enforcement: the drift happened because the value lived in a dozen places."""
 
-    NAME_LITERAL = re.compile(r"""user\.name["'\s=]+([^"'\s,\]]+)""")
+    # `\\?` tolerates a backslash-escaped quote, which is how a nested f-string writes
+    # the shell hint `git config user.name \"{canonical_name()}\"`. Without it the regex
+    # captured the lone backslash and reported it as a hardcoded name — a false positive
+    # that made slice-3 and slice-4 un-co-mergeable while each passed in isolation.
+    NAME_LITERAL = re.compile(r"""user\.name["'\s=]+\\?["']?([^"'\s,\]\\]+)""")
 
     # git_identity.py is where the value is allowed to be written down; everywhere else must
     # ask it. Excluding it is the whole point, not a carve-out.
@@ -156,17 +160,63 @@ class NoHardcodedIdentityTests(unittest.TestCase):
                 offenders.append(f"{os.path.basename(path)}: {cleaned}")
         self.assertEqual(offenders, [], f"non-canonical author name hardcoded: {offenders}")
 
+    # A module that must keep working on a checkout WITHOUT git_identity.py (the pre-push
+    # hook is exactly that case — it has to fail closed if the owner module is missing, or
+    # deleting one file silently disarms the guard) is allowed a documented fallback copy.
+    # The §G defect is DIVERGENCE, not duplication, so the fallback is pinned by
+    # FallbackIdentityDriftTests below instead of being banned outright.
+    FALLBACK_MODULES = {"author_identity_guard.py"}
+
     def test_no_runner_module_hardcodes_a_blocked_email(self):
         offenders = []
         for path in self._runner_sources():
+            name = os.path.basename(path)
+            if name in self.FALLBACK_MODULES:
+                continue
             try:
                 text = open(path, errors="replace").read()
             except OSError:
                 continue
             for blocked in gi.BLOCKED_EMAILS:
-                if blocked in text and os.path.basename(path) != "git_identity.py":
-                    offenders.append(f"{os.path.basename(path)}: {blocked}")
+                if blocked in text:
+                    offenders.append(f"{name}: {blocked}")
         self.assertEqual(offenders, [], f"blocked author email present: {offenders}")
+
+
+class FallbackIdentityDriftTests(unittest.TestCase):
+    """A sanctioned fallback copy is only safe while it still agrees with the owner.
+
+    This is the test that would have caught the original incident: two copies of the
+    identity constants that were allowed to disagree. Banning the second copy was the
+    wrong lever — it broke a guard that legitimately needs to run standalone — so pin
+    them together instead.
+    """
+
+    def _guard(self):
+        import importlib
+
+        return importlib.import_module("author_identity_guard")
+
+    def test_guard_fallback_blocked_emails_match_the_owner(self):
+        guard = self._guard()
+        self.assertEqual(
+            tuple(guard._FALLBACK_BLOCKED_EMAILS),
+            tuple(gi.BLOCKED_EMAILS),
+            "author_identity_guard fallback drifted from git_identity.BLOCKED_EMAILS",
+        )
+
+    def test_guard_fallback_name_and_email_match_the_owner(self):
+        guard = self._guard()
+        self.assertEqual(guard._FALLBACK_NAME, gi.CANONICAL_NAME)
+        self.assertEqual(guard._FALLBACK_EMAIL, gi.CANONICAL_EMAIL)
+
+    def test_guard_prefers_the_owner_module_when_present(self):
+        """Fallbacks must be unreachable when git_identity.py is importable."""
+        guard = self._guard()
+        self.assertIsNotNone(
+            guard._identity_module(),
+            "guard did not resolve git_identity even though it is on the path",
+        )
 
 
 class VerifiedFiringTests(unittest.TestCase):
