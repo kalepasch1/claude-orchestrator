@@ -19,7 +19,13 @@ Usage (replace every `subprocess.run([CLAUDE_BIN,'-p',...,'--output-format','tex
     text = r["text"]; cost = r["cost_usd"]; rc = r["returncode"]
 """
 import os, sys, json, time, subprocess, threading, logging, asyncio
+
+# Lane immune system: hard wall-clock + heartbeat + process-GROUP kill for every headless
+# session. Imported at module scope on purpose — a lazy import here would let a wedged
+# lane escape the guard if the import failed mid-incident. lane_guard itself imports its
+# heavier collaborators (db, notify, resource_governor) lazily, so there is no cycle.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lane_guard
 
 log = logging.getLogger(__name__)
 
@@ -226,7 +232,8 @@ def _run_agent_sdk(prompt, model, cwd, runenv, project, max_turns, timeout):
 # ---------------------------------------------------------------------------
 
 def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
-        permission="acceptEdits", timeout=None, output_only=True):
+        permission="acceptEdits", timeout=None, output_only=True, task_class=None,
+        task_id=None):
     """Metered Claude call. Returns {text, cost_usd, input_tokens, output_tokens, returncode, raw}."""
     if _paused(project):
         return {"text": "", "cost_usd": 0, "input_tokens": 0, "output_tokens": 0,
@@ -334,7 +341,18 @@ def run(prompt, model, cwd=None, env=None, project=None, max_turns=60,
         cmd += ["--permission-mode", permission]
     if max_turns:
         cmd += ["--max-turns", str(max_turns)]
-    proc = subprocess.run(cmd, cwd=cwd, env=runenv, capture_output=True, text=True, timeout=timeout)
+    # ROOT-CAUSE FIX (fleet immune system, 2026-08-02): this used to be a bare
+    # `subprocess.run(..., timeout=timeout)` with timeout defaulting to None — an unbounded
+    # headless session. Even when a timeout WAS passed, subprocess.run signals only the
+    # direct child, so the `claude` binary's descendants survived and kept holding RAM.
+    # That is how 64 of 66 lanes became >1h zombies. lane_guard runs the child in its own
+    # process group, enforces a per-task-class wall clock plus an output-heartbeat, and
+    # kills the whole group. It raises TimeoutExpired exactly like subprocess.run did, so
+    # every existing caller's error handling is unchanged.
+    proc = lane_guard.run_guarded(
+        cmd, cwd=cwd, env=runenv,
+        timeout=timeout or lane_guard.class_timeout(task_class),
+        task_class=task_class, task_id=task_id, coder="claude-cli")
     text, cost, itok, otok, raw = proc.stdout, 0.0, 0, 0, None
     try:
         raw = json.loads(proc.stdout)

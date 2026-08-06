@@ -564,6 +564,11 @@ def stats():
 
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "tick"
+    # Single-instance lock for the scheduled tick only — read-only subcommands (stats,
+    # roster) must stay runnable while a tick is in flight. See lane_guard for why.
+    if cmd not in ("stats", "roster") and not os.environ.get("ORCH_NO_SINGLE_INSTANCE"):
+        import lane_guard
+        _lock = lane_guard.guard_or_exit("expert_corps", interval_s=60)
     if cmd == "stats":
         print(json.dumps(stats(), indent=2))
     elif cmd == "roster":

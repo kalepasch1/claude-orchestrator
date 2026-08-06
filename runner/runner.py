@@ -2713,6 +2713,13 @@ _SCHEDULE = [
     # defect that had "Legal & Compliance" panels opining on Kubernetes. Each run puts real
     # regulatory questions through the 5-round gauntlet and mints citation-backed verdict cards.
     ("legaldocket-1800","legal_docket.py",  "interval", 1800),  # standing legal docket -> verdict cards
+    # Fleet immune system (operator directive 2026-08-02, P0): backstop sweep for lanes and
+    # interval daemons that escaped the in-process guard, plus the telemetry/alerting the
+    # SLO dashboard reads. The primary mechanism is lane_guard.run_guarded() wrapping every
+    # agentic-coder invocation; this tick exists so nothing can accumulate silently between
+    # invocations the way 64 zombie lanes did. runner/tools/lane_medic.sh stays as an
+    # out-of-band backstop launched by keepalive, in case the runner itself is the thing wedged.
+    ("laneguard-300", "lane_guard.py",      "interval", 300),
     # Benchmark redlines: redline REAL filed briefs in the most contentious regulatory matters +
     # draft the fully-revised addendum — the proof-of-superiority engine. Targets only activate
     # once the actual public filing text is ingested (never redlines an unheld document).
@@ -2872,6 +2879,11 @@ _sched_last: dict = {}
 # Jobs that NEVER call a model and are safe (even desirable) to run while paused:
 # protect the Mac, and keep read-only spend/health telemetry flowing.
 _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn",
+                     # The immune system must keep reaping while the fleet is paused —
+                     # pausing stops new claims, it does not free the lanes already wedged,
+                     # and an operator pausing during an incident is exactly when the
+                     # zombie sweep matters most.
+                     "lane_guard.py",
                      "approval_policy.py", "queue_janitor.py",
                      "unstick", "dagfix", "dagspecunblock", "batchmech", "selftune", "cluster",
                      "governor", "costslo", "promote", "prewarm", "billingguard",
@@ -3011,6 +3023,18 @@ def _fire_periodic(job: str) -> None:
     if _is_still_running(job):
         print(f"[sched] {job} still running from last cycle — skipping this launch", flush=True)
         return False
+    # Second, independent guard: the job's own flock. _is_still_running only knows about
+    # instances THIS scheduler launched, so a copy started by launchd, by hand, or by the
+    # other Mac was invisible to it — that is how legal_docket.py accumulated 14 concurrent
+    # copies on a 30-minute interval. The lock is held by the job process itself
+    # (lane_guard.guard_or_exit in its __main__), so it is visible fleet-wide on this host.
+    try:
+        import lane_guard
+        if lane_guard.lock_held(job.replace(".py", "")):
+            print(f"[sched] {job} lock held by a live instance — skipping this launch", flush=True)
+            return False
+    except Exception as e:
+        _log.debug("lane_guard lock probe failed for %s: %s", job, e)
     _dir = os.path.dirname(os.path.abspath(__file__))
     _home = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
     cmd = ([sys.executable, os.path.join(_dir, job)] if job.endswith(".py")
@@ -3034,12 +3058,17 @@ def _fire_periodic(job: str) -> None:
         except Exception:
             continue
     try:
+        # start_new_session=True gives each periodic job its own process group, so
+        # _reap_stale_periodic can take down the whole tree with killpg. Without it a kill
+        # hit only the python parent and left its children (git, claude, aider) running —
+        # the reaper reported success while the RAM stayed pinned.
         if _logpath:
             with open(_logpath + ".log", "a") as lf, open(_logpath + ".err", "a") as ef:
-                p = subprocess.Popen(cmd, stdout=lf, stderr=ef, cwd=_dir, env=os.environ.copy())
+                p = subprocess.Popen(cmd, stdout=lf, stderr=ef, cwd=_dir,
+                                     env=os.environ.copy(), start_new_session=True)
         else:
             p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             cwd=_dir, env=os.environ.copy())
+                             cwd=_dir, env=os.environ.copy(), start_new_session=True)
         _PERIODIC_PIDS[job] = (p.pid, time.time())
         return True
     except Exception as e:
@@ -3122,9 +3151,21 @@ def _reap_stale_periodic(job, expected_interval):
     max_runtime = _JOB_MAX_RUNTIME.get(job, expected_interval * 5)
     if time.time() - launch_t > max_runtime:
         try:
-            os.kill(pid, 9)
+            # Kill the PROCESS GROUP, not just the parent. Jobs are launched with
+            # start_new_session=True, so the child is its own group leader and this takes
+            # its whole tree with it. `os.kill(pid, 9)` alone orphaned every grandchild —
+            # the reaper logged a kill while the real memory hogs kept running.
+            killed_tree = False
+            try:
+                import lane_guard
+                killed_tree = lane_guard.kill_process_tree(pid, grace_s=5)
+            except Exception as e:
+                _log.debug("lane_guard tree kill unavailable: %s", e)
+            if not killed_tree:
+                os.kill(pid, 9)
             print(f"[reaper] killed stale periodic child {job} "
-                  f"(pid {pid}, ran {int(time.time()-launch_t)}s; lease {max_runtime}s)")
+                  f"(pid {pid}, ran {int(time.time()-launch_t)}s; lease {max_runtime}s; "
+                  f"tree={'yes' if killed_tree else 'no'})")
         except Exception as e:
             _log.debug("hook reap_stale failed: %s", e)
         del _PERIODIC_PIDS[job]
