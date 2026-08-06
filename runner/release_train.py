@@ -1150,6 +1150,17 @@ def _release_due(project):
 
 
 def run():
+    # CROSS-HOST GUARD (2026-08-06): releases push to production branches, so exactly one live
+    # host may run this — and never a host on stale code. Same election as merge_train; see
+    # integration_owner for why this is a pure function of heartbeats rather than a lock.
+    try:
+        import integration_owner
+        may, why = integration_owner.decide()
+        if not may:
+            print(f"release_train: not the integration owner — {why}", flush=True)
+            return {"skipped": f"not integration owner: {why}"}
+    except Exception as _io_exc:
+        print(f"release_train: integration-owner check failed ({_io_exc}); proceeding", flush=True)
     projects = [p for p in (db.select("projects", {"select": "name,auto_merge,repo_path"}) or [])
                 if p.get("name") != "smoke-test" and
                 (os.environ.get("ORCH_RELEASE_ALL_PROJECTS", "true").lower() == "true" or p.get("auto_merge"))]

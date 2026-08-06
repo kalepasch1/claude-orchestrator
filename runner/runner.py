@@ -2629,6 +2629,11 @@ _SCHEDULE = [
     ("resmesh-60",    "resilience_mesh.py", "interval", 60),    # keep local/vendor/deploy prep moving during Supabase/vendor outages
     ("train-60",      "merge_train.py",     "interval", 60),    # canonical approved-card cleanup train
     ("mergestall-900","merge_stall_monitor.py","interval",900), # alert if merges stop landing despite a real backlog (2026-07-08 incident safeguard)
+    ("funnel-600",    "pipeline_funnel.py",  "interval", 600),  # flow, not activity: per-stage count + AGE-OF-OLDEST.
+                                                                # Every 2026-08-06 failure (0 cards vs 191 DONE for months,
+                                                                # 8h of red deploys, 13-day-old stranded work, a 5h DB
+                                                                # blackout that looked like idleness) was invisible because
+                                                                # counters kept moving while individual work sat still.
     ("stuckreaper-1800","stuck_reaper",       "interval", 1800), # detect+recover RUNNING tasks stuck >2h (docstring promised this; was in
                                                                   # periodic.py's JOBS dict but never added here — 2026-07-29 fix)
     ("priorityscore-600","priority_scorer",   "interval", 600),  # score QUEUED tasks with default priority=1000 so claim order reflects

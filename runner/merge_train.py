@@ -1846,7 +1846,23 @@ _train_run_unleased = train_run
 
 
 def train_run():
-    """Run the whole merge pass under the cross-train single-flight lease."""
+    """Run the whole merge pass under the cross-train single-flight lease.
+
+    CROSS-HOST GUARD (2026-08-06): the lease below is a flock on a file under THIS machine's
+    .runtime/, so it serialises processes on one Mac and is blind to the others. With two Macs
+    both running trains against the same GitHub origin that produced 54 PUSH-VERIFY-FAILED
+    sha-mismatches — real work destroyed by a push race, including the public-landing-hero
+    copyfix. integration_owner elects exactly one live host to integrate (and refuses hosts
+    running stale code), which is the missing cross-machine half of this lock.
+    """
+    try:
+        import integration_owner
+        may, why = integration_owner.decide()
+        if not may:
+            print(f"merge_train: not the integration owner — {why}", flush=True)
+            return {"skipped": f"not integration owner: {why}"}
+    except Exception as _io_exc:      # a broken owner check must never stall every host
+        print(f"merge_train: integration-owner check failed ({_io_exc}); proceeding", flush=True)
     timeout = float(os.environ.get("ORCH_INTEGRATION_LEASE_TIMEOUT_S", "0") or 0)
     with integration_runtime.global_lease("merge_train", timeout=timeout) as acquired:
         if not acquired:
