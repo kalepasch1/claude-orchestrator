@@ -43,6 +43,68 @@ def _reward(r):
     return base / (float(r.get("usd") or 0) + 0.01)
 
 
+class BanditSelector:
+    """Stateful epsilon-greedy arm selector over an explicit, caller-supplied arm set.
+
+    The module-level `choose()` above is stateless and re-derives its statistics from
+    Supabase on every call. That is fine for routing a single task, but it cannot carry
+    per-arm state across a session, and it hard-codes its arms to MODELS. BanditSelector
+    is the object form: the caller names the arms, and the instance owns the exploration
+    parameters so several independent bandits (model routing, prompt-variant selection,
+    retry-strategy selection) can run side by side without sharing globals.
+
+    This slice is initialization only — the selection algorithm lands in a later slice.
+    What matters here is that the constructor is total and validating: an arm set that
+    is empty, non-iterable, or contains non-strings is rejected at construction rather
+    than producing a selector that silently never selects anything. Likewise epsilon
+    outside [0, 1] is a caller bug, not a value to clamp quietly, because a clamped
+    epsilon looks like it worked and then explores at a rate nobody asked for.
+
+    Attributes:
+        arm_ids: tuple of arm identifiers, deduplicated, original order preserved.
+        epsilon: probability of exploring instead of exploiting, in [0.0, 1.0].
+        decay:   per-step multiplicative decay applied to epsilon, in [0.0, 1.0].
+    """
+
+    def __init__(self, arm_ids, epsilon=0.1, decay=0.01):
+        if isinstance(arm_ids, (str, bytes)):
+            raise TypeError("arm_ids must be a sequence of strings, not a bare string")
+        try:
+            arms = list(arm_ids)
+        except TypeError:
+            raise TypeError("arm_ids must be an iterable of strings")
+        if not arms:
+            raise ValueError("arm_ids must contain at least one arm")
+        for a in arms:
+            if not isinstance(a, str) or not a:
+                raise TypeError("every arm id must be a non-empty string")
+        # Dedupe while preserving caller order: a repeated arm would otherwise get
+        # double the exploration weight purely because of how the list was built.
+        seen, ordered = set(), []
+        for a in arms:
+            if a not in seen:
+                seen.add(a)
+                ordered.append(a)
+
+        epsilon = float(epsilon)
+        decay = float(decay)
+        if not (0.0 <= epsilon <= 1.0):
+            raise ValueError("epsilon must be in [0.0, 1.0]")
+        if not (0.0 <= decay <= 1.0):
+            raise ValueError("decay must be in [0.0, 1.0]")
+
+        self.arm_ids = tuple(ordered)
+        self.epsilon = epsilon
+        self.decay = decay
+
+    def __len__(self):
+        return len(self.arm_ids)
+
+    def __repr__(self):
+        return (f"BanditSelector(arm_ids={list(self.arm_ids)!r}, "
+                f"epsilon={self.epsilon!r}, decay={self.decay!r})")
+
+
 def choose(db, task_class, prompt, candidates=None):
     candidates = candidates or MODELS
     rows = [r for r in _outcomes(db) if (r.get("kind") or "build") == task_class]
