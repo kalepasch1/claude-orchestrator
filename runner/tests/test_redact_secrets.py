@@ -13,7 +13,7 @@ class TestRedactSecrets(unittest.TestCase):
         self.assertIn("[REDACTED]", result)
 
     def test_openai_key(self):
-        text = "Using key " + "sk-" + "abcdefghijklmnopqrstuvwxyz1234567890"
+        text = "Using key sk-abcdefghijklmnopqrstuvwxyz1234567890"
         result = redact_secrets(text)
         self.assertNotIn("sk-abcdefghij", result)
         self.assertIn("[REDACTED]", result)

@@ -303,99 +303,6 @@ def _is_core_rpc(path):
     return rpc_name in CORE_RETRY_RPCS
 
 
-_ENDPOINTS_DOC = """
-TRANSPORT FAILOVER (added 2026-08-05).
-
-The operator's network drops outbound HTTPS to shifting IP ranges. Observed on ONE host
-within a few hours: *.supabase.co blocked, then *.vercel.app blocked, then madeus.cc
-blocked while the *.vercel.app relay came BACK, and apparently.cc / joinpareto.us blocked
-while heretomorrow.co and kalepasch.com stayed reachable — DNS resolving correctly and
-github.com working throughout. The second Mac was unaffected the entire time.
-
-A single SUPABASE_URL therefore cannot be relied on: whichever host is configured will
-eventually be the blocked one, and when it is, the runner goes SILENT (no heartbeat, no
-claims, no state writes) while looking perfectly healthy locally. That failure mode is
-indistinguishable from "the fleet is idle", which is exactly how outages here stayed
-invisible. Every endpoint below serves the SAME PostgREST API for the same project, so any
-reachable one is equivalent.
-
-Failover triggers on CONNECTION failure only, never on an HTTP status: a 4xx/5xx is a real
-answer from a reachable endpoint. The endpoint that answers is pinned for the process, so
-the probing cost is paid once rather than per request.
-
-Extra endpoints: ORCH_SUPABASE_FALLBACK_URLS (comma-separated).
-"""
-
-PROBE_TIMEOUT = float(os.environ.get("ORCH_SUPABASE_PROBE_TIMEOUT", "6"))
-
-# The winning endpoint is remembered ON DISK, not just in memory.
-#
-# Without this, every process paid the probe again: the runner, the scheduler and every
-# short-lived worker each re-tried the BLOCKED primary first, ate the timeout, then fell
-# back. With a 6s probe and a fleet that spawns workers constantly, that is minutes of
-# pure latency per hour and — worse — it makes a freshly restarted runner look silent
-# exactly when someone is checking whether the restart worked.
-#
-# The file is a hint, never authority: an unreadable/stale value costs one probe and is
-# corrected immediately. Writes are atomic (tmp + rename) because the whole fleet shares it.
-_ACTIVE_BASE_FILE = os.path.join(
-    os.environ.get("CLAUDE_ORCH_HOME",
-                   os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                ".runtime")),
-    "supabase-active-endpoint")
-
-
-def _load_active_base():
-    try:
-        with open(_ACTIVE_BASE_FILE) as fh:
-            return (fh.read().strip() or None)
-    except OSError:
-        return None
-
-
-def _save_active_base(url):
-    try:
-        os.makedirs(os.path.dirname(_ACTIVE_BASE_FILE), exist_ok=True)
-        tmp = "%s.tmp.%d" % (_ACTIVE_BASE_FILE, os.getpid())
-        with open(tmp, "w") as fh:
-            fh.write(url or "")
-        os.replace(tmp, _ACTIVE_BASE_FILE)
-    except OSError:
-        pass
-
-
-_ACTIVE_BASE = {"url": _load_active_base()}
-
-
-def _pin(base):
-    """Record the endpoint that answered, in memory and (on change) on disk."""
-    if _ACTIVE_BASE.get("url") != base:
-        _ACTIVE_BASE["url"] = base
-        _save_active_base(base)
-
-
-def _endpoints():
-    """Candidate base URLs, primary first, deduped with order preserved."""
-    urls = [URL]
-    extra = os.environ.get("ORCH_SUPABASE_FALLBACK_URLS", "")
-    urls += [u.strip().rstrip("/") for u in extra.split(",") if u.strip()]
-    seen, out = set(), []
-    for u in urls:
-        if u and u not in seen:
-            seen.add(u)
-            out.append(u)
-    return out
-
-
-def _base_urls():
-    """Endpoints to try, last known-good first."""
-    eps = _endpoints()
-    good = _ACTIVE_BASE.get("url")
-    if good and good in eps:
-        return [good] + [u for u in eps if u != good]
-    return eps
-
-
 def _req(method, path, body=None, headers=None, params=None):
     if not URL or not KEY:
         raise RuntimeError("set SUPABASE_URL and SUPABASE_SERVICE_KEY")
@@ -404,27 +311,7 @@ def _req(method, path, body=None, headers=None, params=None):
          "Content-Type": "application/json"}
     h.update(headers or {})
     data = json.dumps(body).encode() if body is not None else None
-    last_exc = None
-    bases = _base_urls()
-    for i, base in enumerate(bases):
-        # Retrying an endpoint that is REFUSING CONNECTIONS is pure latency: the whole
-        # retry budget burns against a host the network is dropping, and only then do we
-        # try a reachable one. Measured at 90s per request before this. So every endpoint
-        # except the last is probed once (probe_only); the last keeps the normal retry
-        # budget, because by then a transient blip is the likelier explanation than a block.
-        probe_only = i < len(bases) - 1
-        try:
-            return _req_one(base, method, path, qs, data, h, probe_only=probe_only)
-        except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
-            last_exc = exc
-            if _ACTIVE_BASE.get("url") == base:
-                _ACTIVE_BASE["url"] = None
-            continue
-    raise last_exc
-
-
-def _req_one(base, method, path, qs, data, h, probe_only=False):
-    req = urllib.request.Request(base + path + qs, data=data, method=method, headers=h)
+    req = urllib.request.Request(URL + path + qs, data=data, method=method, headers=h)
     # Reads are idempotent, so they can safely ride out transient resolver and
     # edge failures.  Core RPC writes (branch leases, task state) also retry on transient
     # errors since they are orchestrator-critical and safe to retry. Other writes deliberately
@@ -432,20 +319,13 @@ def _req_one(base, method, path, qs, data, h, probe_only=False):
     # first request reached PostgREST but its response was lost. External RPC calls skip retry
     # to reduce rate-limiting cascade on non-critical paths.
     retryable = method == "GET" or (method == "POST" and _is_core_rpc(path))
-    if probe_only:
-        retryable = False
     attempts = HTTP_RETRIES + 1 if retryable else 1
     for attempt in range(attempts):
         try:
-            _to = min(HTTP_TIMEOUT, PROBE_TIMEOUT) if probe_only else HTTP_TIMEOUT
-            with urllib.request.urlopen(req, timeout=_to) as r:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
                 raw = r.read().decode()
-                _pin(base)                   # this endpoint answered; pin it
                 return json.loads(raw) if raw else None
         except urllib.error.HTTPError as e:
-            # An HTTP status means the endpoint IS reachable — pin it and let the existing
-            # status handling decide. Never fail over on a 4xx/5xx.
-            _pin(base)
             # A flood-guard dedup rejection (HTTP 409) must NOT kill the task —
             # it means a unique constraint blocked a duplicate insert, which is
             # idempotent and safe to ignore. No callers depend on the return value
@@ -1234,22 +1114,13 @@ def claim_task(runner_id):
 
     def _pinned_rank(t):
         # Pinned tasks claim before unpinned: rank 0 for pinned, 1 for unpinned.
-        # Only treat as pinned if both pinned=True and pin_rank is set and non-zero.
-        if not t.get("pinned"):
-            return 1
-        rank = t.get("pin_rank")
-        if rank is None or rank == 0:
-            return 1  # No valid pin_rank; treat as unpinned
-        return 0
+        return 0 if t.get("pinned") else 1
 
     def _pin_rank_order(t):
         # Among pinned tasks, lower pin_rank claims first (1 = highest priority).
-        # Negative ranks are valid (more negative = higher priority).
         # Rank 0 or missing treated as unpinned (rank 9999).
-        rank = t.get("pin_rank")
-        if rank is None or rank == 0:
-            return 9999
-        return rank
+        rank = t.get("pin_rank") or 0
+        return rank if rank > 0 else 9999
 
     thermal_rank = _thermal_rank_map()
     ev_rank = _ev_rank_map()
