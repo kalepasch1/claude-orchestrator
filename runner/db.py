@@ -709,6 +709,70 @@ def _project_name_cached(project_id):
     return name
 
 
+_PROJECT_BASE_CACHE = {}
+# "main" and "master" are what a generator writes when it does not know the answer —
+# roughly thirty of them carry a literal `or "main"` fallback. Anything else
+# (medicalOnly, orchestrator/dev, fix/ci-baseline, merge-train-tmp) is a deliberate
+# choice by a caller that DID know, and is never touched by the guard below.
+_GENERIC_BASES = {"main", "master"}
+
+
+def _project_default_base_cached(project_id):
+    """project_id -> projects.default_base, memoised like _project_name_cached."""
+    if not project_id:
+        return ""
+    if project_id in _PROJECT_BASE_CACHE:
+        return _PROJECT_BASE_CACHE[project_id]
+    base = ""
+    try:
+        rows = select("projects", {"select": "default_base", "id": f"eq.{project_id}"}) or []
+        base = (rows[0].get("default_base") or "") if rows else ""
+    except Exception:
+        base = ""
+    _PROJECT_BASE_CACHE[project_id] = base
+    return base
+
+
+def _guard_task_base_branch(row):
+    """Correct a hardcoded base_branch to the project's configured default.
+
+    ~30 task generators end their base-branch expression with `or "main"`
+    (agent_market, backlog_compactor, batch_mechanical, blocker_quarantine,
+    committees, continuation_compactor, auto_remediate, ...). For every project
+    whose default_base is `master`, that fallback names a branch which does not
+    exist, so `git worktree add -B agent/<slug> origin/main` fails and each
+    executor silently falls through to whatever its own fallback happens to be.
+
+    The damage is already on disk: of tasks created in the last 30 days,
+    beethoven has 5,208 rows pointing at `main` against a `master` default (and
+    2,901 correct ones — the same queue disagreeing with itself), plus 682 in
+    apparently, 151 in illuminati, 111 in racefeed and 80 in santas-secret-workshop.
+
+    Fixing thirty generators leaves the thirty-first to be written wrong, so the
+    correction goes where the deps normalizer and the prompt gate already live:
+    the one door every task insert passes through.
+
+    Only a GENERIC base is corrected. A caller that asked for `medicalOnly` or
+    `orchestrator/dev` said something specific and is left alone. Fail-soft: any
+    error leaves the row exactly as submitted.
+    """
+    try:
+        base = (row.get("base_branch") or "").strip()
+        if base and base not in _GENERIC_BASES:
+            return                      # deliberate, non-default branch — not ours to touch
+        default_base = _project_default_base_cached(row.get("project_id"))
+        if not default_base or default_base == base:
+            return
+        row["base_branch"] = default_base
+        import logging
+        logging.getLogger("db").warning(
+            "base-branch-guard: task %s asked for base %r; project default is %r — corrected. "
+            "The caller has a hardcoded fallback.",
+            row.get("slug", "?"), base or "<unset>", default_base)
+    except Exception:
+        pass                            # never let the guard block a legitimate insert
+
+
 def _projects_cached():
     """Efficient bulk project load for claim_task() and other bulk operations.
 
@@ -758,6 +822,9 @@ def insert(table, row, upsert=False):
         import execution_assurance
         row = dict(row)
         row["deps"] = execution_assurance.normalize_deps(row.get("deps"))
+        # Same reasoning as normalize_deps directly above: a value the caller got
+        # wrong is corrected once, here, rather than in every caller.
+        _guard_task_base_branch(row)
         blocked = _queue_depth_block(row)
         if blocked:
             _record_refusal(row, "queue_depth",
