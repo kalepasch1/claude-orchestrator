@@ -3191,10 +3191,27 @@ def _reap_zombie_tasks():
         print(f"[zombie-reaper] error: {e}")
 
 
+# Scheduler keys (or job names) that must not fire, comma-separated.
+#
+# WHY THIS EXISTS (2026-08-06). Over three months the fleet ran 21,029 tasks and
+# merged 3,604 of them -- but only 198 of those merges were product feature specs
+# (slug prefix `dropbox-`). The other 94.5% was the fleet working on itself:
+# 765 recover-missing-branch, 601 canary, 523 improve, 231 rework, 225 qafix.
+# The cause is structural, not incidental: several generators are on unconditional
+# timers -- `improve` every 15 minutes ("never throttled"), `adversarial_fleet`
+# every 5, `coder_canary` every 30, `divergent` every 15 -- so each one manufactures
+# new work every cycle regardless of how much real product work is already waiting.
+# Self-improvement with no ceiling crowds out the thing being improved. There was
+# no way to turn any of it off short of editing this list, so here is the lever.
+_DISABLED_JOBS = {j.strip() for j in os.environ.get("ORCH_DISABLED_JOBS", "").split(",") if j.strip()}
+
+
 def _scheduler_tick() -> None:
     now = time.time()
     dt = datetime.datetime.now()
     for key, job, stype, args in _SCHEDULE:
+        if key in _DISABLED_JOBS or job in _DISABLED_JOBS:
+            continue
         last = _sched_last.get(key, 0)
         if stype == "interval":
             fire = (now - last) >= args
