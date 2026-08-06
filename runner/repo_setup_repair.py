@@ -40,13 +40,36 @@ def check_git(repo):
 
 
 def check_git_config(repo):
-    """Verify essential git config is set."""
+    """Verify essential git config is set (presence only)."""
     issues = []
     for key in ["user.name", "user.email"]:
         out, _, rc = _run(["git", "config", key], cwd=repo)
         if rc != 0 or not out:
             issues.append(key)
     return issues
+
+
+def check_git_identity(repo):
+    """Verify git config carries the OWNER identity, not merely *some* identity.
+
+    Presence is not health. A checkout configured with a platform/bot account
+    (e.g. mandyjustinepasch@gmail.com, kale@heretomorrow.us) passes
+    check_git_config and then produces commits Vercel puts in BLOCKED state,
+    which never deploy -- the failure the 2026-08-02 two-session audit addendum
+    recorded. Compared case-insensitively; email is the field Vercel keys on.
+
+    Returns a list of "<key>:<found-or-unset>" mismatch strings; empty == owner.
+    Fail-soft: an unreadable repo yields [] rather than raising.
+    """
+    mismatches = []
+    for key, expected in [("user.name", GIT_IDENTITY_NAME),
+                          ("user.email", GIT_IDENTITY_EMAIL)]:
+        out, _, rc = _run(["git", "config", key], cwd=repo)
+        if rc != 0 or not out:
+            continue  # absence is check_git_config's finding, not a mismatch
+        if out.strip().lower() != str(expected).strip().lower():
+            mismatches.append(f"{key}:{out.strip()}")
+    return mismatches
 
 
 def check_tool(name):
@@ -77,13 +100,25 @@ def check_worktree_health(repo):
 
 
 def repair_git_config(repo):
-    """Set missing git config to the repo-owner identity (deploy-safe author)."""
+    """Install the repo-owner identity (deploy-safe author) into repo-LOCAL config.
+
+    Repairs BOTH shapes: unset, and set-but-wrong. Only repairing "unset" left a
+    checkout carrying a bot identity looking healthy forever, because the first
+    (wrong) value it saw satisfied the presence check permanently.
+
+    Writes local config only -- never --global -- so a repair is scoped to the
+    checkout that is about to produce commits.
+    """
     repaired = []
     for key, default in [("user.name", GIT_IDENTITY_NAME), ("user.email", GIT_IDENTITY_EMAIL)]:
         out, _, rc = _run(["git", "config", key], cwd=repo)
-        if rc != 0 or not out:
+        current = out.strip() if rc == 0 else ""
+        if not current:
             _run(["git", "config", key, default], cwd=repo)
             repaired.append(key)
+        elif current.lower() != str(default).strip().lower():
+            _run(["git", "config", key, default], cwd=repo)
+            repaired.append(f"{key} (was {current})")
     return repaired
 
 
@@ -121,6 +156,13 @@ def diagnose(repo):
     config_issues = check_git_config(repo)
     if config_issues:
         report["issues"].append(f"missing git config: {', '.join(config_issues)}")
+    identity_issues = check_git_identity(repo)
+    if identity_issues:
+        # Reported separately from "missing": a wrong author is a DEPLOY blocker,
+        # not merely unconfigured setup.
+        report["issues"].append(
+            f"non-owner git identity (Vercel will BLOCK): {', '.join(identity_issues)}")
+    report["identity_ok"] = not identity_issues
     for tool in ["git", "python3", "node"]:
         if not check_tool(tool):
             report["issues"].append(f"tool not found: {tool}")
