@@ -34,7 +34,6 @@ import re
 import subprocess
 import sys
 import time
-from regenerable_artifacts import partition_dirt, describe
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -527,57 +526,9 @@ def resolve_branch(repo: str, branch: str, base: str, *, dry_run: bool = False) 
 
     return result
 
-def _dirty_tracked(repo: str) -> str:
-    """Tracked-file dirt in the MAIN checkout that a reset would actually lose.
-
-    Returns '' when the only dirt is machine-generated artifacts the fleet
-    rewrites on its own (context caches, generated registries, schema dumps).
-    Those used to deadlock the merge train: they are never clean for long, so a
-    literal dirty check refused every merge in six repos indefinitely — 24
-    merges/hour fell to zero for five straight hours on 2026-08-05 while
-    completions kept climbing. See runner/regenerable_artifacts.py.
-    """
-    porcelain = _git(["git", "status", "--porcelain", "--untracked-files=no", "--ignore-submodules=dirty"], repo).stdout.strip()
-    if not porcelain:
-        return ""
-    blocking, regenerable = partition_dirt(porcelain)
-    if regenerable and not blocking:
-        # Visible, never silent: a silent exemption here would recreate the
-        # original disappearing-work bug in a new costume.
-        print("auto_conflict_resolver: %s proceeding — %s"
-              % (repo, describe(blocking, regenerable)), flush=True)
-    return "\n".join(blocking)
-
-
 def resolve_repo(repo: str, base: str, *, dry_run: bool = False) -> dict:
     """Run auto-conflict-resolution across all agent branches in a repo.
     Iterates in passes until no more merges succeed."""
-    # ── DIRTY-CHECKOUT GUARD (2026-08-05) ────────────────────────────────────────────
-    # This function opened with an UNCONDITIONAL `git checkout base` + `git reset --hard
-    # HEAD` on the MAIN checkout, and merge_train.train_run() calls it on every cycle that
-    # has any conflict. Any uncommitted work in the shared clone — operator hotfix, agent
-    # edit mid-flight — was destroyed without warning, without a stash, and therefore
-    # without even the stash-rescue safety net that covers the other loss paths.
-    #
-    # This is the FOURTH loss path of the same family, after continuous_merger's
-    # unconditional reset, self_healing_merge's unpopped stash, and merge_train's
-    # unverified merges. Confirmed live on 2026-08-05: it silently reverted an in-progress
-    # edit to runner/db.py on the main checkout.
-    #
-    # Bulk conflict resolution is a background convenience — it can always wait a cycle.
-    # Uncommitted work cannot be recreated. So: refuse, loudly, and let the next pass run
-    # once the tree is clean. Nothing is stashed or rescued because nothing is destroyed.
-    dirty = _dirty_tracked(repo)
-    if dirty and not dry_run:
-        n = len(dirty.splitlines())
-        msg = ("auto_conflict_resolver.resolve_repo REFUSED on %s: %d uncommitted tracked "
-               "file(s) in the main checkout. Refusing to `reset --hard` work this process "
-               "did not create; resolution will retry once the tree is clean. Files: %s"
-               % (repo, n, ", ".join(ln[3:] for ln in dirty.splitlines()[:8])))
-        print(msg, flush=True)
-        return {"repo": repo, "base": base, "passes": 0, "total_merged": 0,
-                "auto_resolved": 0, "manual_remaining": 0, "skipped": 0,
-                "details": [], "refused": msg}
     _git(["git", "checkout", base], repo)
     _git(["git", "reset", "--hard", "HEAD"], repo)
     _git(["git", "config", "user.name", "kalepasch1"], repo)

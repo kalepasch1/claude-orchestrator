@@ -38,43 +38,17 @@ export default defineNuxtConfig({
   routeRules: {
     // The PKCE verifier lives in the browser; keep the callback entirely
     // client-rendered so no unauthenticated landing state can flash first.
-    '/auth/callback': { ssr: false },
-    // Scoped proof links are private correspondence sent to a named reviewer.
-    // Belt-and-braces with the page-level robots meta and robots.txt: an
-    // X-Robots-Tag keeps them out of indexes even when a crawler reaches one
-    // without parsing the HTML.
-    '/proof/**': {
-      headers: {
-        'x-robots-tag': 'noindex, nofollow',
-        'referrer-policy': 'no-referrer',
-        'cache-control': 'no-store, max-age=0'
-      }
-    }
+    '/auth/callback': { ssr: false }
   },
   css: ['~/assets/main.css'],
   app: {
     pageTransition: { name: 'page', mode: 'out-in' },
     layoutTransition: { name: 'layout', mode: 'out-in' },
     head: {
-      htmlAttrs: { lang: 'en' },
-      // Kept in sync with components/LegoraLanding.vue, which is the public surface.
-      title: 'Madeus — The private operating system for company building',
-      meta: [
-        { name: 'viewport', content: 'width=device-width, initial-scale=1' },
-        { name: 'theme-color', content: '#0b0c0b' },
-        { name: 'format-detection', content: 'telephone=no' },
-        {
-          name: 'description',
-          content:
-            'Madeus is the private operating system for founders running multiple companies — private intelligence, governed execution, and independently verified outcomes. By invitation.'
-        },
-        { name: 'author', content: 'Madeus' },
-        { property: 'og:site_name', content: 'Madeus' },
-        { property: 'og:locale', content: 'en_US' }
-      ],
+      title: 'Madeus — Outcome Orchestration',
+      meta: [{ name: 'viewport', content: 'width=device-width, initial-scale=1' }],
       link: [
         { rel: 'icon', type: 'image/svg+xml', href: '/madeus-mark.svg' },
-        { rel: 'apple-touch-icon', href: '/madeus-mark.svg' },
         { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
         { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: '' },
         {
