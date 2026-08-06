@@ -15,19 +15,28 @@ import pytest
 _RUNNER_DIR = os.path.join(os.path.dirname(__file__), "..", "runner")
 sys.path.insert(0, _RUNNER_DIR)
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import runner_modules  # noqa: E402
+
+# `runner` is ambiguous: it is both a package (runner/__init__.py) and the
+# directory containing runner.py, and whichever lands on sys.path first wins for
+# the whole session. Bind it by file path so this file behaves the same alone as
+# it does after the hisanta tests have put the repo root on sys.path.
+runner = runner_modules.load("runner")
+
 
 class TestEmitTaskLogFunction:
     """Test emit_task_log function definition and basic functionality."""
 
     def test_emit_task_log_is_defined(self):
         """Verify emit_task_log is defined in runner module."""
-        import runner
+        runner = runner_modules.load("runner")
         assert hasattr(runner, 'emit_task_log'), "emit_task_log should be defined in runner.py"
         assert callable(runner.emit_task_log), "emit_task_log should be callable"
 
     def test_emit_task_log_accepts_correct_signature(self):
         """Test that emit_task_log accepts slug, level, and msg parameters."""
-        import runner
+        runner = runner_modules.load("runner")
         import inspect
 
         sig = inspect.signature(runner.emit_task_log)
@@ -40,7 +49,7 @@ class TestEmitTaskLogFunction:
     @patch('log.get')
     def test_emit_task_log_with_info_level(self, mock_log_get):
         """Test emit_task_log with info log level."""
-        import runner
+        runner = runner_modules.load("runner")
 
         mock_logger = MagicMock()
         mock_log_get.return_value = mock_logger
@@ -53,7 +62,7 @@ class TestEmitTaskLogFunction:
     @patch('log.get')
     def test_emit_task_log_with_error_level(self, mock_log_get):
         """Test emit_task_log with error log level."""
-        import runner
+        runner = runner_modules.load("runner")
 
         mock_logger = MagicMock()
         mock_log_get.return_value = mock_logger
@@ -66,7 +75,7 @@ class TestEmitTaskLogFunction:
     @patch('log.get')
     def test_emit_task_log_with_warning_level(self, mock_log_get):
         """Test emit_task_log with warning log level."""
-        import runner
+        runner = runner_modules.load("runner")
 
         mock_logger = MagicMock()
         mock_log_get.return_value = mock_logger
@@ -79,7 +88,7 @@ class TestEmitTaskLogFunction:
     @patch('log.get')
     def test_emit_task_log_with_debug_level(self, mock_log_get):
         """Test emit_task_log with debug log level."""
-        import runner
+        runner = runner_modules.load("runner")
 
         mock_logger = MagicMock()
         mock_log_get.return_value = mock_logger
@@ -92,7 +101,7 @@ class TestEmitTaskLogFunction:
     @patch('log.get')
     def test_emit_task_log_with_unknown_level_defaults_to_info(self, mock_log_get):
         """Test emit_task_log defaults to info for unknown log levels."""
-        import runner
+        runner = runner_modules.load("runner")
 
         mock_logger = MagicMock()
         mock_log_get.return_value = mock_logger
@@ -105,7 +114,7 @@ class TestEmitTaskLogFunction:
     @patch('log.get')
     def test_emit_task_log_formats_with_slug_prefix(self, mock_log_get):
         """Test that emit_task_log includes slug in formatted message."""
-        import runner
+        runner = runner_modules.load("runner")
 
         mock_logger = MagicMock()
         mock_log_get.return_value = mock_logger
@@ -124,7 +133,7 @@ class TestEmitTaskLogFunction:
     @patch('log.get')
     def test_emit_task_log_with_empty_slug(self, mock_log_get):
         """Test emit_task_log handles empty slug gracefully."""
-        import runner
+        runner = runner_modules.load("runner")
 
         mock_logger = MagicMock()
         mock_log_get.return_value = mock_logger
@@ -136,7 +145,7 @@ class TestEmitTaskLogFunction:
     @patch('log.get')
     def test_emit_task_log_with_empty_message(self, mock_log_get):
         """Test emit_task_log handles empty message gracefully."""
-        import runner
+        runner = runner_modules.load("runner")
 
         mock_logger = MagicMock()
         mock_log_get.return_value = mock_logger
@@ -148,7 +157,7 @@ class TestEmitTaskLogFunction:
     @patch('log.get')
     def test_emit_task_log_with_special_characters_in_message(self, mock_log_get):
         """Test emit_task_log handles special characters in message."""
-        import runner
+        runner = runner_modules.load("runner")
 
         mock_logger = MagicMock()
         mock_log_get.return_value = mock_logger
@@ -161,7 +170,7 @@ class TestEmitTaskLogFunction:
     @patch('log.get')
     def test_emit_task_log_does_not_raise_on_none_inputs(self, mock_log_get):
         """Test emit_task_log behavior with None-like inputs."""
-        import runner
+        runner = runner_modules.load("runner")
 
         mock_logger = MagicMock()
         mock_log_get.return_value = mock_logger
@@ -179,7 +188,7 @@ class TestRunTaskLoggingIntegration:
 
     def test_run_task_has_access_to_emit_task_log(self):
         """Verify run_task function can access emit_task_log."""
-        import runner
+        runner = runner_modules.load("runner")
         import inspect
 
         # Get the source code of run_task
@@ -194,7 +203,7 @@ class TestRunTaskLoggingIntegration:
     @patch('runner.agentic_coders')
     def test_run_task_can_call_emit_task_log(self, mock_agentic, mock_set_state, mock_emit):
         """Test that calling emit_task_log within run_task context doesn't raise NameError."""
-        import runner
+        runner = runner_modules.load("runner")
 
         # This test verifies the function is accessible in the run_task scope
         # by verifying the mock can be called
@@ -205,7 +214,7 @@ class TestRunTaskLoggingIntegration:
 
     def test_emit_task_log_not_a_typo_or_alias(self):
         """Verify the function name is correct (not a typo like emit_task_logs)."""
-        import runner
+        runner = runner_modules.load("runner")
 
         # Check for common typos
         assert hasattr(runner, 'emit_task_log'), "Function should be 'emit_task_log' not 'emit_task_logs'"
@@ -221,7 +230,7 @@ class TestEmitTaskLogRobustness:
     @patch('log.get')
     def test_emit_task_log_with_very_long_slug(self, mock_log_get):
         """Test emit_task_log with unusually long slug."""
-        import runner
+        runner = runner_modules.load("runner")
 
         mock_logger = MagicMock()
         mock_log_get.return_value = mock_logger
@@ -234,7 +243,7 @@ class TestEmitTaskLogRobustness:
     @patch('log.get')
     def test_emit_task_log_with_very_long_message(self, mock_log_get):
         """Test emit_task_log with very long message."""
-        import runner
+        runner = runner_modules.load("runner")
 
         mock_logger = MagicMock()
         mock_log_get.return_value = mock_logger
@@ -247,7 +256,7 @@ class TestEmitTaskLogRobustness:
     @patch('log.get')
     def test_emit_task_log_is_idempotent(self, mock_log_get):
         """Test that calling emit_task_log multiple times is safe."""
-        import runner
+        runner = runner_modules.load("runner")
 
         mock_logger = MagicMock()
         mock_log_get.return_value = mock_logger
@@ -260,7 +269,7 @@ class TestEmitTaskLogRobustness:
     @patch('log.get')
     def test_emit_task_log_with_unicode_characters(self, mock_log_get):
         """Test emit_task_log with unicode in slug and message."""
-        import runner
+        runner = runner_modules.load("runner")
 
         mock_logger = MagicMock()
         mock_log_get.return_value = mock_logger
@@ -272,7 +281,7 @@ class TestEmitTaskLogRobustness:
     @patch('log.get')
     def test_emit_task_log_preserves_format_string_safety(self, mock_log_get):
         """Test that emit_task_log safely handles % characters in messages."""
-        import runner
+        runner = runner_modules.load("runner")
 
         mock_logger = MagicMock()
         mock_log_get.return_value = mock_logger
@@ -290,7 +299,7 @@ class TestLogLevelHandling:
     @patch('log.get')
     def test_all_standard_log_levels_are_supported(self, mock_log_get):
         """Test that all standard Python logging levels are supported."""
-        import runner
+        runner = runner_modules.load("runner")
 
         mock_logger = MagicMock()
         mock_log_get.return_value = mock_logger
@@ -309,7 +318,7 @@ class TestLogLevelHandling:
     @patch('log.get')
     def test_log_level_is_case_sensitive(self, mock_log_get):
         """Test that log level matching works correctly."""
-        import runner
+        runner = runner_modules.load("runner")
 
         mock_logger = MagicMock()
         mock_log_get.return_value = mock_logger
