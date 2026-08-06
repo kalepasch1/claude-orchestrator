@@ -1,0 +1,4 @@
+recovery-intent: improve-missing-branch-auto-creator-slice-3-implement-branch-auto-creation-with-
+template: 0bf19869d533
+intent: accept acceptance automate branch create creation decomposition default exist function implement improve master mocks passes patch pattern repair reusable should template verify write
+base: master
