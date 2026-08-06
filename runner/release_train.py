@@ -825,6 +825,14 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
                 return False, integrated_sha, (glog or f"post-integration {gate} red")
             if manifest:
                 try:
+                    # Imported locally, matching this module's convention for
+                    # release_manifest (see the release-cut path below). Without
+                    # it this name is undefined here: static_sanity flags it
+                    # CRITICAL and refuses to start merge_train at all, and the
+                    # surrounding `except Exception: pass` would have swallowed
+                    # the NameError at runtime — so the post-integration gate
+                    # was never recorded and nobody found out.
+                    import release_manifest
                     release_manifest.record_gate(
                         manifest["id"], "post-integration", True,
                         detail=f"QA+build re-verified on integrated tip {integrated_sha[:12]}")
