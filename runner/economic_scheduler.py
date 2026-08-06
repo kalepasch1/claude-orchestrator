@@ -58,6 +58,52 @@ def load_ctx():
     return ctx
 
 
+class _estimate(tuple):
+    """A revenue estimate readable as a 3-tuple OR by name.
+
+    There were two contracts in the tree and neither had ever met the other: the implementation
+    and all four call sites returned/unpacked (point, low, high), while 22 tests in
+    test_economic_scheduler*.py asserted result["point_estimate"]. Nothing in CI ran the tests
+    (611 runner test files, zero of them executed), so the suite sat red long enough for the
+    two to drift apart entirely.
+
+    Picking a winner means breaking the other side for no gain. A tuple subclass that also
+    answers to the field names satisfies both, keeps `a, b, c = predict_revenue(...)` working
+    unchanged at every existing call site, and costs one class.
+    """
+
+    _FIELDS = ("point_estimate", "confidence_low", "confidence_high")
+
+    def __new__(cls, point, low, high):
+        return super().__new__(cls, (float(point), float(low), float(high)))
+
+    def __getitem__(self, key):
+        if isinstance(key, str):
+            try:
+                return tuple.__getitem__(self, self._FIELDS.index(key))
+            except ValueError:
+                raise KeyError(key) from None
+        return tuple.__getitem__(self, key)
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except (KeyError, IndexError):
+            return default
+
+    @property
+    def point_estimate(self):
+        return tuple.__getitem__(self, 0)
+
+    @property
+    def confidence_low(self):
+        return tuple.__getitem__(self, 1)
+
+    @property
+    def confidence_high(self):
+        return tuple.__getitem__(self, 2)
+
+
 def predict_revenue(task, ctx):
     """Estimate $/merge impact for a task.
 
@@ -78,14 +124,16 @@ def predict_revenue(task, ctx):
     # silently dropped economic_signals from the scheduling context entirely, and the queue
     # went on being ordered as though revenue prediction did not exist.
     if not isinstance(task, dict):
-        return (0.0, 0.0, 0.0)
+        return _estimate(0.0, 0.0, 0.0)
 
     project = task.get("project") or ""
     kind = (task.get("kind") or "").lower()
     prompt = (task.get("prompt") or "").lower()
 
-    # Base: historical avg_delta for this kind
-    base_revenue = float((ctx.get("kind_roi") or {}).get(kind, 0) or 0)
+    # Base: historical avg_delta for this kind. Two spellings are honoured because two existed:
+    # the implementation read kind_roi/error_rates, the test suite supplied
+    # surface_returns/app_signals, and neither side had ever run against the other.
+    base_revenue = float((ctx.get("kind_roi") or ctx.get("surface_returns") or {}).get(kind, 0) or 0)
     estimate = max(0.0, base_revenue)
 
     # Boost for high-growth projects
@@ -97,18 +145,31 @@ def predict_revenue(task, ctx):
         estimate *= 1.5
 
     # Boost bugfix tasks if error rate spike
-    error_rate = float((ctx.get("error_rates") or {}).get(project, 0) or 0)
+    error_rate = float((ctx.get("error_rates") or ctx.get("app_signals") or {}).get(project, 0) or 0)
     if error_rate > 0.3 and kind in ("bugfix", "fix", "hotfix"):
         estimate *= 1.5
 
-    # Confidence interval: ±20% around the estimate (wider if no data)
+    # Confidence interval around the estimate (wider if no data).
+    #
+    # THE TWO TEST FILES DISAGREE, so no implementation can be green. Measured by flipping the
+    # constant and diffing the runs: test_economic_scheduler.py requires +/-20% (6 tests) and
+    # test_economic_scheduler_revenue.py requires +/-25% (2 tests). Setting 0.25 fixed those 2
+    # and broke those 6 — 14 failures became 18. That is not a stale test, it is a suite that
+    # cannot be satisfied, and it is why this module has been red for as long as it has: nothing
+    # in CI ran it, so nobody found out that its own spec contradicts itself.
+    #
+    # Left at 20% — the value the larger set encodes and the behaviour that has always shipped.
+    # Made configurable so the decision is a config change rather than another patch. Nothing
+    # outside this module reads confidence_low/confidence_high (grep: zero consumers), so this
+    # constant is inert in production either way.
+    band = float(os.environ.get("ORCH_ECONOMIC_CONFIDENCE_BAND", "0.20"))
     if base_revenue == 0:
         low, high = 0.0, estimate
     else:
-        low = estimate * 0.8
-        high = estimate * 1.2
+        low = estimate * (1.0 - band)
+        high = estimate * (1.0 + band)
 
-    return estimate, low, high
+    return _estimate(estimate, low, high)
 
 
 def cost_benefit(task, ctx):
@@ -181,7 +242,7 @@ def predict_revenue_bulk(tasks, ctx=None):
             continue
         task_id = task.get("id")
         if task_id:
-            results[task_id] = predict_revenue(task, ctx)[0]  # point estimate
+            results[task_id] = predict_revenue(task, ctx)["point_estimate"]
     return results
 
 
@@ -201,6 +262,8 @@ def apply_routing(scored):
 
     routed = 0
     for score_val, task in scored_copy:
+        if not isinstance(task, dict):   # fail-soft: see predict_revenue
+            continue
         task_id = task.get("id")
         if not task_id:
             continue
