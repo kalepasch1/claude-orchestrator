@@ -40,6 +40,7 @@ except Exception:
 import events
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
 import integration_runtime
+import paused_host_guard
 import agentic_repair
 import repo_lock        # FIX 2026-07-28: was used at the per-repo serialization site but never
                         # imported -> every train_run() crashed with NameError before integrating
@@ -2122,6 +2123,13 @@ def train_run():
     copyfix. integration_owner elects exactly one live host to integrate (and refuses hosts
     running stale code), which is the missing cross-machine half of this lock.
     """
+    # HOST PAUSE (2026-08-06): a paused host must not START a new pass. Checked before the
+    # owner election for the same reason as release_train — winning an election is not
+    # permission to run when the operator has stopped this machine. A pass already under
+    # way is never interrupted; only starting is refused.
+    _ok, _why = paused_host_guard.refuse("merge_train")
+    if not _ok:
+        return {"skipped": _why}
     try:
         import integration_owner
         may, why = integration_owner.decide()

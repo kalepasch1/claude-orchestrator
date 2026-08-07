@@ -25,6 +25,7 @@ sys.path.insert(0, RUNNER_DIR)
 import db
 import commit_overlay
 import integration_runtime
+import paused_host_guard
 
 # BATCH-DEV defaults: ship agent work to the unified staging branch quickly, but promote
 # prod in QA'd batches. This avoids improvement-by-improvement Vercel churn while keeping
@@ -413,11 +414,36 @@ def _recent_failed_gate(project, staging_sha, gate):
     return False
 
 
+def _insert_release(row):
+    """Insert a releases row stamped with the host that produced it.
+
+    `releases` recorded no host, so when a paused, stale machine started writing
+    deploy_status='failed' rows the only evidence of WHO wrote them was an npm log
+    path that happened to leak into the note ("/Users/mandypa..."). A failure that
+    flips a project RED fleet-wide should not be attributable only by accident.
+
+    Retries without `host` if the column is not present yet: code and migrations
+    deploy independently, and a lagging DB must not take releases down entirely.
+    """
+    try:
+        return db.insert("releases", dict(row, host=paused_host_guard.HOST))
+    except Exception:
+        return db.insert("releases", row)
+
+
 def _insert_failed_release(project, gate, ahead, from_sha, to_sha, note):
     """Insert one failed gate row per gate/SHA/cooldown window."""
     if _recent_failed_gate(project, to_sha, gate):
         return None
-    return db.insert("releases", {"project": project, "from_sha": from_sha or "",
+    # A gate is a new unit of work, so a paused host must not record its verdict —
+    # this is the row that flips a project RED and trips fleet-wide back-pressure.
+    ok, why = paused_host_guard.may_start(f"gate:{gate}", project=project)
+    if not ok:
+        paused_host_guard.record_rejection(
+            f"gate:{gate}", f"{why}; refused releases row deploy_status=failed "
+                            f"to_sha={(to_sha or '')[:8]}", project=project)
+        return None
+    return _insert_release({"project": project, "from_sha": from_sha or "",
                     "to_sha": to_sha or "", "n_changes": int(ahead or 0),
                     "deploy_status": "failed", "note": f"[gate:{gate}] {note}"})
 
@@ -1330,7 +1356,7 @@ def _run_for_unlocked(project, repo_override=None):
             test_cmd, require_tests, bcmd, manifest=manifest)
     ver = _next_version()
     changelog = _git(repo, "log", "--oneline", f"{last_good}..{to_sha}").stdout[:2000]
-    rel = db.insert("releases", {"project": project, "version": ver, "from_sha": last_good,
+    rel = _insert_release({"project": project, "version": ver, "from_sha": last_good,
                     "to_sha": to_sha, "n_changes": int(ahead), "changelog": changelog,
                     "deploy_status": ("building" if pushed else "failed") if push_on else "pending",
                     "note": "" if (pushed or not push_on) else (push_log or "push failed")[-160:]})
@@ -1356,6 +1382,11 @@ def run_for(project):
     before either writes its failure row. Sharing the merge-train repo lock
     makes the check/build/push sequence single-flight across processes.
     """
+    # run_for() is also called directly (scheduler, ad-hoc, dependency-aware orchestration),
+    # so the pause check cannot live only in run().
+    ok, why = paused_host_guard.refuse("release_train", project=project)
+    if not ok:
+        return {"project": project, "skipped": why}
     p = (db.select("projects", {"select": "repo_path", "name": f"eq.{project}"}) or [{}])[0]
     repo = p.get("repo_path", "")
     if not repo or not os.path.isdir(repo):
@@ -1406,6 +1437,15 @@ def run():
     # CROSS-HOST GUARD (2026-08-06): releases push to production branches, so exactly one live
     # host may run this — and never a host on stale code. Same election as merge_train; see
     # integration_owner for why this is a pure function of heartbeats rather than a lock.
+    # HOST PAUSE (2026-08-06): checked BEFORE the owner election, because a paused host
+    # must not run gates even if it would otherwise win the election. The claim guard
+    # covered tasks.account only, so a paused, 40-commits-stale host went on writing
+    # deploy_status='failed' rows that flipped projects RED and tripped release
+    # back-pressure fleet-wide. Refused at the START of a pass only — a pass already in
+    # flight is never interrupted.
+    _ok, _why = paused_host_guard.refuse("release_train")
+    if not _ok:
+        return {"skipped": _why}
     try:
         import integration_owner
         may, why = integration_owner.decide()
