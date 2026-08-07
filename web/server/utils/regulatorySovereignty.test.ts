@@ -27,7 +27,7 @@ describe('regulatory sovereignty network', () => {
       { jurisdiction: 'GB', license_months: 14, sponsor_available: true, sponsor_months: 2, expected_value_cents: 2_000_000 },
       { jurisdiction: 'DE', license_months: 12, acquisition_available: true, acquisition_months: 6, expected_value_cents: 3_000_000 },
     ] })
-    expect(result.jurisdiction_plan.map(x => x.route)).toEqual(['sponsor_then_local_entity', 'acquire_regulated_entity'])
+    expect(result.jurisdiction_plan.map((x: any) => x.route)).toEqual(['sponsor_then_local_entity', 'acquire_regulated_entity'])
     expect(result.expected_value_cents).toBe(5_000_000)
     expect(result.execution_requires_separate_approvals).toBe(true)
   })
@@ -50,7 +50,7 @@ describe('regulatory sovereignty network', () => {
       { key: 'safe', authority_confidence: 90, evidence_completeness: 90, value_score: 65, reversibility_score: 95, critical_events: 0 },
     ] })
     expect(result.winner.key).toBe('safe')
-    expect(result.promotion_receipt.promotion_requires_approval).toBe(true)
+    expect(result.promotion_receipt!.promotion_requires_approval).toBe(true)
   })
 
   it('prepares bounded supervisory work without delegating final judgment', () => {
