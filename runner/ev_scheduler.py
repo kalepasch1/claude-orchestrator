@@ -48,6 +48,131 @@ REVENUE_WORDS = ("revenue", "pricing", "growth", "conversion")
 # rate) rather than flat cost only. Default OFF so current scheduling is byte-identical.
 OUTCOME_WEIGHTING_ENABLED = os.environ.get("ORCH_EV_OUTCOME_WEIGHTING", "false").lower() in ("true", "1", "yes")
 
+# LOW-EV EARLY EXIT — refuse at the door instead of shelving later (2026-08-06).
+#
+# Low-value work is currently removed AFTER it is queued, by the queue-velocity PID
+# shelving "lowest-EV work" once its integral crosses a threshold
+# (queue_velocity.py:189). That ordering has a cost: a task with no business being queued
+# still lands in the queue, still counts toward the depth the PID integrates, and so helps
+# push the integral over the line that shelves OTHER tasks. Integral windup driven by work
+# nobody wanted queued in the first place.
+#
+# A task refused BEFORE enqueue is never in the depth, so it can never contribute to the
+# integral. That is the property the sibling fix-pid-integral-windup slice needs, and it is
+# established here at the source rather than compensated for downstream.
+#
+# Two safety properties, both deliberate and both tested:
+#   * LOW_EV_THRESHOLD defaults to 0.0 with a strict `<` comparison, so out of the box only
+#     NEGATIVE-EV tasks are refused and current scheduling is unchanged. Note this is a
+#     LOWER bar than the pre-existing ZERO_EV=0.01 parking threshold — refusing is
+#     stronger than parking, so it must be harder to trigger, not easier.
+#   * a task whose EV cannot be determined is NEVER refused. You do not discard work you
+#     could not measure; that would silently drop every task from a producer which has not
+#     adopted the EV field.
+# Escalated/pinned work bypasses the check entirely: recovery and breach-remediation exist
+# precisely for tasks whose value is not expressible as EV.
+LOW_EV_THRESHOLD = float(os.environ.get("ORCH_LOW_EV_THRESHOLD", "0"))
+LOW_EV_EARLY_EXIT = os.environ.get("ORCH_LOW_EV_EARLY_EXIT", "true").lower() in ("true", "1", "yes", "on")
+LOW_EV_SKIP_NOTE = "[ev-early-exit: expected value below LOW_EV_THRESHOLD — not enqueued]"
+# Slug prefixes whose value is not expressible as EV. Never early-exited.
+LOW_EV_EXEMPT_PREFIXES = ("recovery", "recover-missing-branch-", "breach-remediation",
+                          "canary-", "qafix-", "relfix-", "buildfix-", "deployfix-",
+                          "toolchain-repair", "rework-")
+
+_EV_FIELDS = ("ev", "expected_value", "score", "value")
+
+
+def task_ev(task):
+    """The task's expected value as a float, or None when it cannot be determined.
+
+    None is meaningfully different from 0.0: 0.0 is a measured verdict, None means no
+    producer ever supplied one. Only the former is eligible for refusal.
+    """
+    if not isinstance(task, dict):
+        return None
+    for field in _EV_FIELDS:
+        if field not in task:
+            continue
+        raw = task.get(field)
+        if raw is None or isinstance(raw, bool):
+            continue                       # bools are not EVs; True would read as 1.0
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if value != value or value in (float("inf"), float("-inf")):
+            continue                       # NaN / inf are not measurements
+        return value
+    return None
+
+
+def _low_ev_exempt(task):
+    slug = str((task or {}).get("slug") or "").lower()
+    kind = str((task or {}).get("kind") or "").lower()
+    if kind in ("recovery", "canary", "toolchain-repair"):
+        return True
+    return slug.startswith(LOW_EV_EXEMPT_PREFIXES)
+
+
+def should_enqueue(task, ev=None, threshold=None):
+    """Pre-queue gate. Returns a verdict dict; never raises.
+
+    {"enqueue": bool, "reason": str, "ev": float|None, "threshold": float,
+     "counts_toward_pid": bool}
+
+    `counts_toward_pid` is False exactly when the task is refused: a task that never
+    enters the queue must never be integrated by the queue-velocity PID. Callers that
+    keep their own PID accounting should honour it; callers that derive depth from the
+    queue itself get the property for free, because the task simply is not there.
+    """
+    limit = LOW_EV_THRESHOLD if threshold is None else float(threshold)
+    verdict = {"enqueue": True, "ev": None, "threshold": limit, "counts_toward_pid": True}
+    try:
+        if not LOW_EV_EARLY_EXIT:
+            verdict["reason"] = "early exit disabled (ORCH_LOW_EV_EARLY_EXIT)"
+            return verdict
+        if _low_ev_exempt(task):
+            verdict["reason"] = "exempt: value not expressible as EV"
+            return verdict
+        value = task_ev(task) if ev is None else ev
+        try:
+            value = None if value is None else float(value)
+        except (TypeError, ValueError):
+            value = None
+        verdict["ev"] = value
+        if value is None:
+            verdict["reason"] = "EV unknown — never refuse unmeasured work"
+            return verdict
+        if value < limit:
+            verdict.update(enqueue=False, counts_toward_pid=False,
+                           reason=f"EV {value:.4f} below threshold {limit:.4f}")
+            print(f"[ev-scheduler] early exit: not enqueuing "
+                  f"{task.get('slug') or task.get('id') or '<unknown>'} — "
+                  f"{verdict['reason']}; treated as shelved "
+                  f"(excluded from queue-velocity PID)", flush=True)
+            return verdict
+        verdict["reason"] = f"EV {value:.4f} at or above threshold {limit:.4f}"
+        return verdict
+    except Exception as e:                 # fail-open: a broken gate must not drop work
+        verdict["reason"] = f"gate error, enqueuing anyway ({e})"
+        return verdict
+
+
+def filter_enqueueable(tasks, threshold=None):
+    """Split an iterable of tasks into (enqueue, skipped_verdicts).
+
+    Skipped entries are (task, verdict) pairs so a caller can annotate them as shelved
+    without re-deriving why.
+    """
+    keep, skipped = [], []
+    for task in (tasks or []):
+        verdict = should_enqueue(task, threshold=threshold)
+        if verdict["enqueue"]:
+            keep.append(task)
+        else:
+            skipped.append((task, verdict))
+    return keep, skipped
+
 
 def outcome_weight(task, ctx):
     """Compute an outcome-based weight multiplier for a task's kind family.
@@ -271,14 +396,43 @@ def park_zero_ev(scored=None):
     return parked
 
 
+def shelve_low_ev(scored=None):
+    """Annotate already-queued tasks that the pre-queue gate would have refused.
+
+    The gate itself belongs upstream of enqueue, but rows queued BEFORE it existed (and
+    rows from producers that do not call it) still sit in the queue dragging the
+    queue-velocity PID's integral up. Marking them makes them visible and countable
+    without deleting anything: state is untouched, so this is fully reversible and no
+    work is destroyed.
+    """
+    scored = scored if scored is not None else _scored_queue()
+    shelved = 0
+    for s, t in scored:
+        if shelved >= PARK_CAP:
+            break
+        verdict = should_enqueue(t, ev=s)
+        if verdict["enqueue"]:
+            continue
+        try:
+            db.update("tasks", {"id": t["id"]},
+                      {"note": LOW_EV_SKIP_NOTE, "updated_at": "now()"})
+            shelved += 1
+        except Exception:
+            pass
+    return shelved
+
+
 def run():
     try:
         scored = _scored_queue()
         applied = apply_ranking(scored)
         parked = park_zero_ev(scored)
+        shelved = shelve_low_ev(scored)
         print(f"ev_scheduler: ranked {len(scored)} queued tasks "
-              f"(storage={applied['storage']}, wrote {applied['count']}), parked {parked}")
-        return {"ranked": len(scored), **applied, "parked": parked}
+              f"(storage={applied['storage']}, wrote {applied['count']}), "
+              f"parked {parked}, low-ev shelved {shelved}")
+        return {"ranked": len(scored), **applied, "parked": parked,
+                "low_ev_shelved": shelved}
     except Exception as e:
         print(f"ev_scheduler: skipped ({e})")
         return {"ranked": 0, "error": str(e)}
