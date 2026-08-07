@@ -7,6 +7,29 @@ import integration_sweeper
 
 class TestIntegrationSweeper(unittest.TestCase):
 
+    def test_real_sweeper_pages_the_entire_filtered_set(self):
+        """A completed task in the middle may not disappear between two scan windows."""
+        project = {"id": "p1", "name": "alpha", "repo_path": "/repo"}
+        task = {"id": "middle", "slug": "visible-ui-fix", "project_id": "p1",
+                "state": "DONE", "note": "passed tests", "kind": "build"}
+
+        def select(table, params=None):
+            return [project] if table == "projects" else []
+
+        with patch.object(integration_sweeper, "recovery_dedup", return_value={}), \
+             patch.object(integration_sweeper, "_active_recovery_index", return_value={}), \
+             patch.object(integration_sweeper, "pressure", return_value={"projects": {}}), \
+             patch.object(integration_sweeper.db, "select", side_effect=select), \
+             patch.object(integration_sweeper.db, "select_all", return_value=[task]) as select_all, \
+             patch.object(integration_sweeper, "_branch_exists_anywhere", return_value=True), \
+             patch.object(integration_sweeper.merge_train, "ensure_integration_card_result",
+                          return_value=integration_sweeper.merge_train.CARD_CREATED) as ensure:
+            out = integration_sweeper.sweep(limit=1, run_train=False)
+
+        self.assertEqual(1, out["queued"])
+        select_all.assert_called_once()
+        ensure.assert_called_once()
+
     def test_done_branch_queues_canonical_train_card(self):
         fake = MagicMock()
         project = {"id": "p1", "name": "alpha", "repo_path": "/repo"}
