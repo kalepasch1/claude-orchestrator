@@ -24,6 +24,7 @@ Backward compatible: with no extra coders, behavior is the prior claude -> codex
 import os, sys, json, re, shlex, subprocess, time, hashlib
 import contextlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lane_guard
 
 # capability a task needs by difficulty (see _task_difficulty)
 _NEED = {"easy": 5, "hard": 8}
@@ -917,17 +918,22 @@ def run(coder, prompt, model, cwd=None, env=None, project=None, timeout=900, **k
             except Exception:
                 slot = contextlib.nullcontext({"locked": False, "unloaded": []})
         with slot:
-            proc = subprocess.run(shlex.split(cmd) if "{prompt}" not in tmpl else ["bash", "-lc", cmd],
-                                  cwd=cwd, env=_aider_env(env), capture_output=True, text=True, timeout=timeout)
+            proc = lane_guard.run_supervised(
+                shlex.split(cmd) if "{prompt}" not in tmpl else ["bash", "-lc", cmd],
+                cwd=cwd, env=_aider_env(env), timeout=timeout,
+                idle_timeout=int(os.environ.get("ORCH_LANE_IDLE_TIMEOUT", "600") or 600),
+                task_class=kwargs.get("task_class") or kwargs.get("kind"),
+            )
         # REAL cost from aider's own output (per-message $), so paid-coder daily caps are exact; fall
         # back to the coder's nominal est_usd only when the CLI reported no cost (e.g. a free local model).
-        real = _parse_cost((proc.stdout or "") + "\n" + (proc.stderr or ""))
+        real = _parse_cost((proc.get("stdout") or "") + "\n" + (proc.get("stderr") or ""))
         cost = real if real is not None else float((spec or {}).get("est_usd", 0.0) or 0.0)
         latency_ms = int((time.time() - t0) * 1000)
         _agentic_event("agentic_coder_finish", coder, model, project=project, value=latency_ms,
-                       action=f"returncode={proc.returncode} cost_usd={cost}")
-        return {"text": proc.stdout, "cost_usd": cost, "input_tokens": 0, "output_tokens": 0,
-                "returncode": proc.returncode, "stderr": proc.stderr or "",
+                       action=f"returncode={proc['returncode']} cost_usd={cost}")
+        return {"text": proc.get("stdout") or "", "cost_usd": cost,
+                "input_tokens": 0, "output_tokens": 0,
+                "returncode": proc["returncode"], "stderr": proc.get("stderr") or "",
                 "coder": coder, "latency_ms": latency_ms}
     except subprocess.TimeoutExpired:
         _agentic_event("agentic_coder_finish", coder, model, project=project,

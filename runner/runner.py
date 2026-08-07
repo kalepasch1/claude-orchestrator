@@ -2746,6 +2746,12 @@ _SCHEDULE = [
     # consistency self-tests (pressure file vs DB row, boot-commit file, release-train env)
     # and auto-reverts RELEASE_MIN_BATCH=1 recovery mode once the backlog is drained.
     ("fleetheartbeat-3600", "fleet_heartbeat.py", "interval", 3600),
+    # Independent, contract-based pipeline smoke test: catches false pressure signals,
+    # stale boot code, and recovery-mode settings that otherwise survive indefinitely.
+    ("pipelineselftest-3600", "pipeline_selftest.py", "interval", 3600),
+    # Drain already-written agent branches into canonical integration cards without paying an
+    # agent to rewrite them. The CLI's bounded default prevents a first-run card flood.
+    ("bulkshelf-600", "bulk_integrate_shelf.py", "interval", 600),
     # Benchmark redlines: redline REAL filed briefs in the most contentious regulatory matters +
     # draft the fully-revised addendum — the proof-of-superiority engine. Targets only activate
     # once the actual public filing text is ingested (never redlines an unheld document).
@@ -2910,6 +2916,7 @@ _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "ro
                      # when a machine can quietly die without anyone noticing, and the
                      # monitor calls no models — it only reads heartbeats and files.
                      "fleet_heartbeat.py",
+                     "pipeline_selftest.py", "bulk_integrate_shelf.py",
                      "approval_policy.py", "queue_janitor.py",
                      "unstick", "dagfix", "dagspecunblock", "batchmech", "selftune", "cluster",
                      "governor", "costslo", "promote", "prewarm", "billingguard",

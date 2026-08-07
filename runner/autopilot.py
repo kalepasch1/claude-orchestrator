@@ -375,10 +375,10 @@ def drain_stall_agent(snap):
 def recovery_agent():
     import integration_sweeper
     limit = int(os.environ.get("AUTOPILOT_SWEEP_LIMIT", "250"))
-    # Recovery identifies and queues missing integration work.  The merge/deploy
-    # agent below is the single train owner for this cycle; starting a train here
-    # as well caused duplicate full-repository trains to contend for one lease.
-    return integration_sweeper.sweep(limit=limit, run_train=False)
+    # A recovery sweep can create the cycle's first DONE work after snapshot() has already
+    # run. Let the sweeper start the train immediately; merge_train's lease is the single-owner
+    # boundary and safely collapses a concurrent periodic train into one execution.
+    return integration_sweeper.sweep(limit=limit, run_train=True)
 
 
 def blocker_agent():

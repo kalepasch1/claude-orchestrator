@@ -57,7 +57,25 @@ def should_decompose(prompt: str) -> bool:
         return False
 
 
-def decompose(slug: str, prompt: str, base_branch: str = "master") -> list:
+def _emit_decomposition(slug, tasks, repo_path, base_branch):
+    """Notify the branch provisioner after a real decomposition. Fail-soft."""
+    if len(tasks) <= 1:
+        return tasks
+    try:
+        if __package__:
+            from . import decomposition_events
+        else:
+            import decomposition_events
+        decomposition_events.on_decomposition_completed(
+            slug, tasks, repo_path=repo_path, base_branch=base_branch
+        )
+    except Exception:
+        pass
+    return tasks
+
+
+def decompose(slug: str, prompt: str, base_branch: str = "master",
+              repo_path: str = None) -> list:
     """Auto-decompose a task into sub-tasks. Returns list of task dicts.
     Falls back to returning the original as a single task. Fail-soft."""
     if not _ENABLED:
@@ -73,7 +91,7 @@ def decompose(slug: str, prompt: str, base_branch: str = "master") -> list:
                 sub_slug = f"{slug}-item-{item['num']}"
                 tasks.append({"slug": sub_slug, "prompt": item["text"],
                               "deps": [], "base_branch": base_branch})
-            return tasks
+            return _emit_decomposition(slug, tasks, repo_path, base_branch)
 
         # Strategy 2: split by file scope
         if len(files) > _MAX_FILES:
@@ -83,7 +101,7 @@ def decompose(slug: str, prompt: str, base_branch: str = "master") -> list:
                 file_prompt = f"In file {f}:\n{prompt}"
                 tasks.append({"slug": sub_slug, "prompt": file_prompt,
                               "deps": [], "base_branch": base_branch})
-            return tasks
+            return _emit_decomposition(slug, tasks, repo_path, base_branch)
 
         # No decomposition needed
         return [{"slug": slug, "prompt": prompt, "deps": [], "base_branch": base_branch}]

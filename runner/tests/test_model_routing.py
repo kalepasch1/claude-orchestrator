@@ -666,6 +666,8 @@ class ModelRoutingTest(unittest.TestCase):
             "ORCH_AUTO_AGENTIC_CODERS": "true",
             "ORCH_USE_PAID_AGENTIC_CREDITS": "false",
             "ORCH_DISABLED_OLLAMA_AGENTIC_MODELS": "llama3.1",
+            # Keep this test about the denylist; RAM admission has its own contract tests.
+            "ORCH_MAX_HOT_OLLAMA_RAM_GB": "100",
         }
         with patch.dict(os.environ, env, clear=False), \
              patch.object(agentic_coders, "_aider_available", return_value=True), \

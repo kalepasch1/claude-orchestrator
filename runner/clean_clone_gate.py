@@ -52,6 +52,40 @@ _NETWORK = re.compile(
     r"request to https?://\S+ failed|registry\.npmjs\.org.*(?:failed|timeout)|"
     r"getaddrinfo|proxy|EPROTO|self.signed certificate", re.I)
 
+# Package managers deliberately fail frozen installs when the manifest and lockfile disagree.
+# That is repairable in a pristine export: retry once non-frozen, then let the real build prove
+# whether the resolved graph is deployable. This stays narrow so unrelated install failures do not
+# get concealed by a broad fallback.
+_LOCKFILE_DRIFT = re.compile(
+    r"package-lock\.json.*(?:in sync|up to date)|"
+    r"Missing:\s+\S+\s+from lock file|"
+    r"ERR_PNPM_OUTDATED_LOCKFILE|pnpm-lock\.yaml.*not up to date|"
+    r"lockfile would have been modified|"
+    r"lockfile needs to be updated.*--frozen-lockfile",
+    re.I | re.S,
+)
+
+
+def unfrozen_install_command(cmd):
+    """Map a known frozen package-manager install to one non-frozen retry."""
+    try:
+        normalized = " ".join(str(cmd or "").split())
+        if not normalized:
+            return ""
+        if re.match(r"^npm\s+ci(?:\s|$)", normalized):
+            return re.sub(r"^npm\s+ci\b", "npm install", normalized, count=1)
+        if re.match(r"^pnpm\s+install(?:\s|$)", normalized):
+            unfrozen = re.sub(r"(?:^|\s)--frozen-lockfile(?=\s|$)", " ", normalized)
+        elif re.match(r"^yarn\s+install(?:\s|$)", normalized):
+            unfrozen = re.sub(r"(?:^|\s)--(?:immutable|frozen-lockfile)(?=\s|$)",
+                              " ", normalized)
+        else:
+            return ""
+        unfrozen = " ".join(unfrozen.split())
+        return unfrozen if unfrozen != normalized else ""
+    except Exception:
+        return ""
+
 
 def _home():
     return os.environ.get("CLAUDE_ORCH_HOME",
@@ -240,13 +274,25 @@ def verify(repo, ref=None, project=None, force=False, cache_only=False):
             rc, out = _step(icmd, work, INSTALL_TIMEOUT, env)
             parts.append("$ %s\n%s" % (icmd, out))
             if rc != 0:
-                result["log"] = "\n\n".join(parts)
                 if _NETWORK.search(out):
+                    result["log"] = "\n\n".join(parts)
                     result["skipped"] = "install could not reach the registry (inconclusive)"
                     return result
-                result["ok"] = False
-                result["failed_step"] = "install"
-                return result
+                fallback = (unfrozen_install_command(icmd)
+                            if _LOCKFILE_DRIFT.search(out) else "")
+                if fallback:
+                    retry_rc, retry_out = _step(fallback, work, INSTALL_TIMEOUT, env)
+                    parts.append("$ %s  # one lockfile-drift recovery retry\n%s"
+                                 % (fallback, retry_out))
+                    rc, out = retry_rc, retry_out
+                if rc != 0:
+                    result["log"] = "\n\n".join(parts)
+                    if _NETWORK.search(out):
+                        result["skipped"] = "install could not reach the registry (inconclusive)"
+                        return result
+                    result["ok"] = False
+                    result["failed_step"] = "install"
+                    return result
         if bcmd:
             rc, out = _step(bcmd, work, BUILD_TIMEOUT, env)
             parts.append("$ %s\n%s" % (bcmd, out))
