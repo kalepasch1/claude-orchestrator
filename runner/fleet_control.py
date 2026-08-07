@@ -78,6 +78,68 @@ def _safe_key(k):
 #      instead of invisible. Logged on change only — this runs every loop.
 _applied_config = {}
 
+# CONFIG THAT IS STORED BUT NEVER CONSUMED (2026-08-06).
+#
+# load_config logs every key it APPLIES. It says nothing about the keys it silently
+# DROPS, so a knob pushed into fleet_config that this loader refuses looks identical to
+# one that took effect: the row is there, the dashboard shows it, and nothing happens.
+#
+# This is not hypothetical. The _SAFE_PREFIXES comment above records it happening once
+# already (OLLAMA_/COMMITTEE_/CADE_ families pushed but not applied because no prefix
+# matched, 2026-07-30). Reading the live table today, the same failure is sitting there
+# again: AUTOPILOT_BLOCKER_INTERVAL, AUTOPILOT_RANK_INTERVAL, AUTOPILOT_RECOVERY_INTERVAL,
+# AUTOPILOT_RELEASE_BLOCKER_INTERVAL, AUTOPILOT_RELEASE_TRAIN_ONLY_HOTLANE,
+# AUTOPILOT_SWEEP_LIMIT, CONFIDENCE_GATE, CONFIDENCE_THRESHOLD, GEMINI_MODEL,
+# GEMINI_CHEAP_MODEL, OPENAI_STRONG_MODEL, OPENAI_FAST_MODEL, OPENAI_CHEAP_MODEL,
+# PROMOTION_STATE, PREWARM_N and PREVIEW_FEATURE_X all match no safe prefix and are
+# therefore stored and ignored.
+#
+# The fix is reporting, not widening the allowlist: which keys are unsafe is a policy
+# question for the owner, and quietly applying them would be the security regression the
+# allowlist exists to prevent. Every non-consumed key is now named, with its reason, once
+# per process — so "I set it and nothing happened" becomes answerable.
+_reported_ignored = {}
+_last_consumption = {"applied": {}, "ignored": {}, "at": None}
+
+IGNORE_UNSAFE_KEY = "not-a-safe-key"
+IGNORE_CREDENTIAL = "credential-marker"
+IGNORE_APPROVAL_BLOCKED = "awaiting-approval"
+IGNORE_PINNED = "pinned-to-local-env"
+IGNORE_EMPTY = "null-value"
+
+
+def _classify_key(key, value, blocked, pins):
+    """Why (if at all) this fleet_config row will not reach os.environ.
+
+    Returns an IGNORE_* reason, or None when the key will be consumed. Mirrors the
+    conditions in load_config exactly — one function so the report cannot drift from
+    the behavior it describes.
+    """
+    if not key or value is None:
+        return IGNORE_EMPTY
+    if any(m in key.upper() for m in _DENY_MARKERS):
+        return IGNORE_CREDENTIAL          # checked first: it outranks any prefix match
+    if not _safe_key(key):
+        return IGNORE_UNSAFE_KEY
+    if key in blocked:
+        return IGNORE_APPROVAL_BLOCKED
+    if key.upper() in pins:
+        return IGNORE_PINNED              # deliberate, but still not consumed from the DB
+    return None
+
+
+def config_consumption():
+    """Report from the most recent load_config: what was applied, and what was not.
+
+    {"applied": {key: value}, "ignored": {key: reason}, "at": epoch_seconds}
+
+    Exists so an operator can answer "I pushed that key, why did nothing change?"
+    without reading this module.
+    """
+    return {"applied": dict(_last_consumption["applied"]),
+            "ignored": dict(_last_consumption["ignored"]),
+            "at": _last_consumption["at"]}
+
 
 def _env_pins():
     """Keys pinned to this machine's local .env value; fleet_config cannot override them."""
@@ -92,11 +154,22 @@ def load_config():
     where the local .env wins. Every change is logged to stderr with both values.
     """
     n = 0
+    applied, ignored = {}, {}
     try:
         blocked = config_approval.blocked_keys()
         pins = _env_pins()
         for row in (db.select("fleet_config", {"select": "key,value"}) or []):
             k, v = row.get("key"), row.get("value")
+            # NAME WHAT IS DROPPED. Silence here is what made a pushed-but-inert knob
+            # indistinguishable from a working one.
+            reason = _classify_key(k, v, blocked, pins)
+            if reason is not None:
+                ignored[k] = reason
+                if _reported_ignored.get(k) != reason:
+                    _reported_ignored[k] = reason
+                    sys.stderr.write(
+                        f"[fleet_control] config {k}: STORED BUT NOT APPLIED ({reason}); "
+                        f"this key has no effect on this host\n")
             if k and v is not None and _safe_key(k) and k not in blocked:
                 new = str(v)
                 if k.upper() in pins:
@@ -112,6 +185,7 @@ def load_config():
                         f"[fleet_control] config {k}: fleet_config {new!r} overrides local {cur!r}\n")
                 _applied_config[k] = new
                 os.environ[k] = new
+                applied[k] = new
                 n += 1
     except Exception as e:
         # FIX 2026-07-29: `log` was never defined — a config-load failure made the error handler
@@ -121,6 +195,7 @@ def load_config():
         # "local variable 'sys' referenced before assignment" — aborting load_config partway and
         # leaving config half-applied. sys is already imported at module scope; do not re-import.
         sys.stderr.write(f"[fleet_control] fleet_config load failed: {e}\n")
+    _last_consumption.update(applied=applied, ignored=ignored, at=time.time())
     return n
 
 
