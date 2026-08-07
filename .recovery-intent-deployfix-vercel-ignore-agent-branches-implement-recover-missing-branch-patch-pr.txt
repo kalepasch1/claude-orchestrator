@@ -1,0 +1,4 @@
+recovery-intent: deployfix-vercel-ignore-agent-branches-implement-recover-missing-branch-patch-pr
+template: 44cceb9d0d42
+intent: 9d0155 aaac4e acceptance accepted adapt adding avoid before behavior bf0ed633a9c6 breaking build c1486760bb7d changes consistency diffs directories drafting ensure excerpt existing exists files first focus function helpers implementation instead intent library limit limiting locate matched matching mergeable merged module naming owner patch possible practices preserve prior project proven rebuilding relevant reset resuming retry reuse review scope scratch similarity slots smaller smallest solved source summary template tests those transplant vigil weekly
+base: main
