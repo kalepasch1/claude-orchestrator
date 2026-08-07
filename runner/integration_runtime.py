@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -163,14 +164,60 @@ def _rmtree_if_orphaned(canonical_repo, path):
         print(f"integration_runtime: could not remove orphaned {path}: {exc}")
 
 
+def _temp_owner_alive(path):
+    """Is the process that created this temporary slot still running?
+
+    The name is `<slot>-run-<pid>-<ns>`, so the creator is recoverable from the path. A slot
+    whose creator is gone can never be cleaned up by that creator, which is the whole problem.
+    Unparseable name -> assume alive, because guessing wrong in that direction only costs disk.
+    """
+    m = re.search(r"-run-(\d+)-\d+$", os.path.basename(path))
+    if not m:
+        return True
+    try:
+        os.kill(int(m.group(1)), 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True          # exists but not ours to signal
+
+
 def sweep_orphaned_temporaries(canonical_repo):
-    """Delete every -run-<pid>-<ns> directory git no longer tracks. Cheap, idempotent."""
+    """Reclaim -run-<pid>-<ns> slots nobody can finish. Cheap, idempotent, conservative.
+
+    Two states, both created by a pass that did not reach its own cleanup:
+
+      * git no longer tracks the directory. `git worktree remove` refuses these with "is not a
+        working tree", so they were invisible to every git command while still holding disk —
+        10 of them, 1.5GB.
+      * git still tracks it, but the creating process is gone. Observed after killing a wedged
+        train: a registered, clean, 83MB temporary that nothing would ever collect, because the
+        only code that removes a temporary runs in the `finally` of the pass that made it.
+
+    Only ever touches a slot that is a temporary BY NAME, has no uncommitted content, and whose
+    creator is dead. A live pass's worktree is never eligible.
+    """
     import glob
     removed = 0
-    for d in glob.glob(f"{_worktree_path(canonical_repo)}-run-*"):
-        before = os.path.isdir(d)
+    for d in sorted(glob.glob(f"{_worktree_path(canonical_repo)}-run-*")):
+        if not os.path.isdir(d):
+            continue
+        if os.path.realpath(d) not in _registered_worktrees(canonical_repo):
+            _rmtree_if_orphaned(canonical_repo, d)
+            removed += int(not os.path.isdir(d))
+            continue
+        if _temp_owner_alive(d):
+            continue
+        status = _git(d, "status", "--porcelain=v1", "--untracked-files=all")
+        if status.returncode or status.stdout:
+            continue          # holds something; leave it for a human
+        _git(canonical_repo, "worktree", "remove", "--force", d)
         _rmtree_if_orphaned(canonical_repo, d)
-        removed += int(before and not os.path.isdir(d))
+        if not os.path.isdir(d):
+            removed += 1
+            print(f"integration_runtime: collected abandoned temporary worktree {d} "
+                  f"(creating process is gone, nothing uncommitted)")
     return removed
 
 

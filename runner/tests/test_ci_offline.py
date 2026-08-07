@@ -205,5 +205,33 @@ class TestCaseCollisions(unittest.TestCase):
         self.assertFalse(self.oi.case_collisions(self.repo, only_files={"unrelated.txt"}))
 
 
+class TestAbandonedTemporaryWorktrees(unittest.TestCase):
+    """A temporary slot is removed in the `finally` of the pass that made it — so a pass that is
+    killed leaves one nothing will ever collect. Observed after killing a wedged train: a
+    registered, clean, 83MB slot that the orphan sweep declined because git still tracked it."""
+
+    def setUp(self):
+        import integration_runtime
+        self.ir = integration_runtime
+
+    def test_dead_creator_is_detected_from_the_path(self):
+        self.assertFalse(self.ir._temp_owner_alive("/x/slot-run-999999-123"))
+
+    def test_live_creator_is_left_alone(self):
+        self.assertTrue(self.ir._temp_owner_alive(f"/x/slot-run-{os.getpid()}-123"))
+
+    def test_unparseable_name_is_assumed_live(self):
+        # Guessing wrong in this direction costs disk; the other direction deletes a live pass.
+        self.assertTrue(self.ir._temp_owner_alive("/x/slot"))
+        self.assertTrue(self.ir._temp_owner_alive("/x/slot-run-notapid-123"))
+
+    def test_sweep_only_targets_temporaries_by_name(self):
+        import inspect
+        src = inspect.getsource(self.ir.sweep_orphaned_temporaries)
+        self.assertIn("-run-*", src)
+        # Must refuse a slot holding uncommitted content, whatever its name.
+        self.assertIn("status.returncode or status.stdout", src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
