@@ -1,0 +1,4 @@
+recovery-intent: backlog-batch-beethoven-a86bb21-recover-convention-conformance-lints-add-functio
+template: d962bf907114
+intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 acceptance active adapt advice after agentic aider allowed allowlist analysis asyncfunctiondef author batch beethoven before behavior blocked blocker breaking build build_fix buildfail ce2e8dcd7954 change cheap check claim class claude cloud coder codestral commit concern concrete config configuration context contract convention convert coordination correctly cross current custody debate_compress deepseek definitions delete deployfix diffs directive drafting earlier enforces ensure established excerpt existing exists fable first flags flash follow force function functiondef
+base: master
