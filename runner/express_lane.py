@@ -45,7 +45,8 @@ def capacity_percentage():
 
 # ── State tracking ───────────────────────────────────────────────────────────
 
-_lock = threading.Lock()
+# RLock: stats() and assign paths legitimately re-enter helpers that lock
+_lock = threading.RLock()
 _active_lanes = {
     "express": {},      # runner_id -> {"task_id": "...", "claimed_at": <time>}
     "standard": {},     # runner_id -> {"task_id": "...", "claimed_at": <time>}
@@ -73,28 +74,48 @@ def standard_lane_capacity():
     return _total_lanes - express_lane_capacity()
 
 
+def _entries_of(value):
+    """Normalize a lane-map value to a list of claim entries.
+
+    Values are lists in normal operation, but a bare dict is accepted for
+    backward compatibility (tests and older callers inject single entries).
+    """
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
 def _prune_stale_lanes():
-    """Remove lanes with stale task claims (>30 min old)."""
+    """Remove lane claims with stale task claims (>30 min old)."""
     cutoff = time.time() - 1800  # 30 minutes
     for lane_type in ("express", "standard"):
-        stale = [rid for rid, data in _active_lanes[lane_type].items()
-                if data.get("claimed_at", 0) < cutoff]
-        for rid in stale:
-            del _active_lanes[lane_type][rid]
+        for rid in list(_active_lanes[lane_type].keys()):
+            fresh = [e for e in _entries_of(_active_lanes[lane_type][rid])
+                     if e.get("claimed_at", 0) >= cutoff]
+            if fresh:
+                _active_lanes[lane_type][rid] = fresh
+            else:
+                del _active_lanes[lane_type][rid]
+
+
+def _lane_count(lane_type):
+    """Count active claims in a lane (a runner may hold several claims when
+    runner ids collide, e.g. recycled thread idents)."""
+    return sum(len(_entries_of(v)) for v in _active_lanes[lane_type].values())
 
 
 def active_express_lanes():
     """Return count of currently active express lanes."""
     with _lock:
         _prune_stale_lanes()
-        return len(_active_lanes["express"])
+        return _lane_count("express")
 
 
 def active_standard_lanes():
     """Return count of currently active standard lanes."""
     with _lock:
         _prune_stale_lanes()
-        return len(_active_lanes["standard"])
+        return _lane_count("standard")
 
 
 def express_lane_utilization():
@@ -173,10 +194,15 @@ def assign_task_lane(task_id, runner_id, use_express=False):
     """
     with _lock:
         lane_type = "express" if use_express else "standard"
-        _active_lanes[lane_type][runner_id] = {
+        # Append rather than overwrite: colliding runner ids (e.g. recycled
+        # thread idents) must not silently drop an active claim.
+        existing = _active_lanes[lane_type].get(runner_id)
+        claims = _entries_of(existing) if existing is not None else []
+        claims.append({
             "task_id": task_id,
             "claimed_at": time.time(),
-        }
+        })
+        _active_lanes[lane_type][runner_id] = claims
         assignment = {
             "lane": lane_type,
             "fallback": not use_express and use_express is not None,
@@ -193,29 +219,35 @@ def get_task_lane_assignment(task_id):
 
 
 def release_lane(runner_id):
-    """Release a lane when a task completes."""
+    """Release a lane when a task completes.
+
+    Multiple claims under one runner id are released oldest-first. An unknown id is an
+    idempotent no-op: reclaiming an unrelated global claim would let a duplicate completion
+    free another task's live capacity.
+    """
     with _lock:
         for lane_type in ("express", "standard"):
             if runner_id in _active_lanes[lane_type]:
-                del _active_lanes[lane_type][runner_id]
+                claims = _entries_of(_active_lanes[lane_type][runner_id])
+                claims.pop(0)
+                if claims:
+                    _active_lanes[lane_type][runner_id] = claims
+                else:
+                    del _active_lanes[lane_type][runner_id]
 
 
 def stats():
     """Return comprehensive express lane statistics.
 
-    DEADLOCK FIX: this held `_lock` (a plain, NON-reentrant threading.Lock) and then called
-    express_lane_utilization() -> active_express_lanes() -> `with _lock`, so the second
-    acquire could never succeed and stats() hung forever. It was reachable from any caller;
-    the pre-existing TestStats::test_stats_report never completed, which is what stalled the
-    runner test suite rather than failing it. Computed inline from the already-held state
-    instead — no re-entry.
+    The lock is intentionally reentrant because express_lane_utilization() traverses
+    active_express_lanes(), which protects the same state. _lane_count() counts claims rather
+    than runner-id keys, preserving the pinned-lane accounting fix when one runner id owns
+    multiple concurrent claims.
     """
     with _lock:
         _prune_stale_lanes()
-        express_cap = express_lane_capacity()
-        express_used = len(_active_lanes["express"])
-        express_pct = min(100.0, (express_used / express_cap * 100)) if express_cap > 0 else 0.0
-        standard_used = len(_active_lanes["standard"])
+        express_used, express_cap, express_pct = express_lane_utilization()
+        standard_used = _lane_count("standard")
         standard_cap = standard_lane_capacity()
 
         return {
