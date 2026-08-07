@@ -1,0 +1,4 @@
+recovery-intent: improve-implement-real-time-monitoring-and-alert-slice-3-implement-critical-aler
+template: 929336f192b8
+intent: 0000000 07130635 100644 20251001 68c04d4 7ce8bfb active adapt advice after agentic alert alerts america analysis applicable artifacts author backlog batch beethoven before behavior below blocked blocker branch broad bugfix build build_fix calling category cause change changes changing channel checks claim class claud claude cloud coder command commit completion concrete condition config configured consolidate consolidation context continue contract coordination correct cowork created critical critical_alert cross custody deepseek delete dependencies diffs directive dispatch drafting ensure equivalent error evaluate example excerpt executor exhausted
+base: master
