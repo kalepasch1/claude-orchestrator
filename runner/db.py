@@ -2026,21 +2026,33 @@ def heartbeat(runner_id, hostname, active, model_loaded=None, memory_mb=None):
             db.insert("runner_heartbeats", row, upsert=True)
             _heartbeat_fail["n"] = 0
         except Exception as hb_err:
-            # Compatibility with remotes that have not yet applied the additive migration.
-            row_compat = {k: v for k, v in row.items()
-                         if k not in ("code_sha", "contract_hash", "contract_version",
-                                      "commits_behind")}
+            # Compatibility with remotes that have not yet applied the newest additive
+            # visibility migration.  Retry without only commits_behind first: older remotes
+            # may already support the executor identity columns, and discarding those too
+            # makes a known-current runner look anonymous to integration ownership.
+            row_without_visibility = {k: v for k, v in row.items()
+                                      if k != "commits_behind"}
             try:
-                db.insert("runner_heartbeats", row_compat, upsert=True)
+                db.insert("runner_heartbeats", row_without_visibility, upsert=True)
                 _heartbeat_fail["n"] = 0
-            except Exception:
-                # Fail-soft but SELF-REPORTING: a heartbeat that can never land is
-                # an invisible outage. Log loudly (rate-limited to once/5 min).
-                _heartbeat_fail["n"] = _heartbeat_fail.get("n", 0) + 1
-                if time.time() - _heartbeat_fail.get("t", 0) > 300:
-                    _heartbeat_fail["t"] = time.time()
-                    print(f"[heartbeat] CRITICAL: publish failing "
-                          f"({_heartbeat_fail['n']} consecutive) — {hb_err}", flush=True)
+            except Exception as identity_err:
+                # Final rolling-upgrade fallback for remotes that lack both visibility and
+                # runtime-contract columns. Liveness still lands, but only after preserving
+                # every supported identity field has been attempted.
+                row_compat = {k: v for k, v in row_without_visibility.items()
+                              if k not in ("code_sha", "contract_hash", "contract_version")}
+                try:
+                    db.insert("runner_heartbeats", row_compat, upsert=True)
+                    _heartbeat_fail["n"] = 0
+                except Exception:
+                    # Fail-soft but SELF-REPORTING: a heartbeat that can never land is
+                    # an invisible outage. Log loudly (rate-limited to once/5 min).
+                    _heartbeat_fail["n"] = _heartbeat_fail.get("n", 0) + 1
+                    if time.time() - _heartbeat_fail.get("t", 0) > 300:
+                        _heartbeat_fail["t"] = time.time()
+                        print(f"[heartbeat] CRITICAL: publish failing "
+                              f"({_heartbeat_fail['n']} consecutive) — {identity_err}; "
+                              f"full-row error: {hb_err}", flush=True)
         if os.environ.get("ORCH_LOGICAL_RUNNERS", "false").lower() not in ("true", "1", "yes"):
             _prune_stale_heartbeats()
             return
