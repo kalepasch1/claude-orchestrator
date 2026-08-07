@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import subprocess
+import types
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import merge_train
@@ -420,18 +421,26 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
     # backlog stays visible (that ordering is deliberate — oldest work first), and freshly
     # finished work enters through the desc pass instead of waiting for the queue to drain
     # below the cap. Dedup by id since the two windows overlap once the set fits in one page.
-    scan_rows, _seen_ids = [], set()
-    for _order in ("updated_at.asc", "updated_at.desc"):
-        for _r in (db.select("tasks", {"select": "id,slug,project_id,state,note,kind,prompt,base_branch,material,force_coder,model,updated_at",
-                                       "state": "in.(DONE,BLOCKED,RUNNING)",
-                                       "order": _order,
-                                       "limit": str(limit)}) or []):
-            _id = _r.get("id")
-            if _id in _seen_ids:
-                continue
-            _seen_ids.add(_id)
-            scan_rows.append(_r)
-    rows = scan_rows
+    query = {"select": "id,slug,project_id,state,note,kind,prompt,base_branch,material,force_coder,model,updated_at",
+             "state": "in.(DONE,BLOCKED,RUNNING)"}
+    # A dual-ended bounded window still has a blind middle as soon as eligible
+    # work exceeds 2*limit.  That is exactly where the three completed landing
+    # page changes sat after their release failed.  This is a correctness scan,
+    # so page the filtered set to exhaustion.  Test doubles and old fleet builds
+    # retain the bounded fallback.
+    if isinstance(db, types.ModuleType) and callable(getattr(db, "select_all", None)):
+        rows = db.select_all("tasks", query, order="updated_at.asc,id.asc") or []
+    else:
+        scan_rows, _seen_ids = [], set()
+        for _order in ("updated_at.asc", "updated_at.desc"):
+            for _r in (db.select("tasks", {**query, "order": _order,
+                                           "limit": str(limit)}) or []):
+                _id = _r.get("id")
+                if _id in _seen_ids:
+                    continue
+                _seen_ids.add(_id)
+                scan_rows.append(_r)
+        rows = scan_rows
     recovery_index = _active_recovery_index()
     queued = missing = skipped = recovery = card_failed = 0
     for t in rows:

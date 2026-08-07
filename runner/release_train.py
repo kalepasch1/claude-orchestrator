@@ -26,6 +26,7 @@ import db
 import commit_overlay
 import integration_runtime
 import paused_host_guard
+import release_manifest
 
 # BATCH-DEV defaults: ship agent work to the unified staging branch quickly, but promote
 # prod in QA'd batches. This avoids improvement-by-improvement Vercel churn while keeping
@@ -774,6 +775,34 @@ def _rerun_release_gates(repo, sha, test_cmd, require_tests, build_cmd):
     return True, "", ""
 
 
+def _persist_production_build_proof(repo, commit, build_cmd):
+    """Persist the exact proof required by the production pre-push hook.
+
+    The release train built the candidate successfully but recorded only a QA
+    proof.  The production hook deliberately accepts only ``kind=build`` (or
+    ``vercel-build``), so every otherwise-green promotion was rejected as
+    unverified.  Record and immediately read back the exact commit/command proof
+    before attempting the push; proof persistence is part of the release gate,
+    not best-effort telemetry.
+    """
+    try:
+        import build_gate
+        import proof_graph
+        guard_cmd = str(build_gate.detect_build_cmd(repo) or "").strip()
+        ran_cmd = str(build_cmd or "").strip()
+        if not guard_cmd:
+            return False, "production push guard could not detect a build command"
+        if ran_cmd != guard_cmd:
+            return False, (f"release built `{ran_cmd}` but production guard requires "
+                           f"`{guard_cmd}`; refusing to certify a command that did not run")
+        proof_graph.record_verification(repo, commit, guard_cmd, "build", True)
+        if not proof_graph.reusable_verification(repo, commit, guard_cmd, "build"):
+            return False, "exact production build proof was not durably readable after write"
+        return True, guard_cmd
+    except Exception as exc:
+        return False, f"production build proof persistence failed: {type(exc).__name__}: {exc}"
+
+
 def _withdraw_unreleased_merged(p, project, repo, prod, note):
     """A failed prod push must not leave tasks claiming MERGED.
 
@@ -804,6 +833,21 @@ def _withdraw_unreleased_merged(p, project, repo, prod, note):
                       {"state": "DONE",
                        "note": (f"MERGED withdrawn: {sha[:12]} is not on {remote} after a failed "
                                 f"release push — {(note or '')[-160:]}")})
+            # The old integration card is stamped train:MERGED and therefore terminal.
+            # Merely returning the task to DONE leaves it invisible until a bounded sweeper
+            # happens to see it; in practice the middle of that window never did.  File a
+            # fresh canonical card now.  If the write fails, the full-scan sweeper remains
+            # the retry path and the task stays honestly open in DONE.
+            try:
+                import merge_train
+                merge_train.ensure_integration_card_result(
+                    project, t.get("slug"), kind="integrate",
+                    title=f"release retry: merge of {t.get('slug')}",
+                    why=f"prior integration commit {sha[:12]} never reached {remote}",
+                    detail=(note or "failed production push")[-2000:],
+                    status="approved", decided_by="canonical-train:release-retry")
+            except Exception as exc:
+                print(f"release_train: could not re-card {t.get('slug')}: {exc}", flush=True)
             withdrawn.append(t.get("slug"))
     except Exception:
         pass
@@ -851,12 +895,22 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
                 return False, integrated_sha, (glog or f"post-integration {gate} red")
             if manifest:
                 try:
+                    # Local import: this helper runs outside the caller's scope, where
+                    # release_manifest was imported. Without it the call raised NameError
+                    # into the bare except below, so post-integration gates were silently
+                    # never recorded on any release.
+                    import release_manifest
                     release_manifest.record_gate(
                         manifest["id"], "post-integration", True,
                         detail=f"QA+build re-verified on integrated tip {integrated_sha[:12]}")
                 except Exception:
                     pass
         to_sha = integrated_sha
+        proof_ok, proof_note = _persist_production_build_proof(repo, to_sha, build_cmd)
+        if not proof_ok:
+            _insert_failed_release(project, "proof", ahead, release_base_sha, to_sha,
+                                   proof_note[-500:])
+            return False, to_sha, proof_note
         pr = _git(repo, "push", "origin", f"{STAGING}:{prod}", timeout=300)
         if pr.returncode == 0:
             # Keep local prod fresh when possible, but do not fail a good remote release
@@ -1288,6 +1342,11 @@ def _run_for_unlocked(project, repo_override=None):
         _insert_failed_release(project, "build", ahead, release_base_sha, staging_sha,
                                f"staging BUILD red — self-heal queued: {(blog or '')[-120:]}")
         return {"project": project, "build": "RED", "note": "staging build not green; build-fix task queued"}
+    proof_ok, proof_note = _persist_production_build_proof(repo, staging_sha, bcmd)
+    if not proof_ok:
+        _insert_failed_release(project, "proof", ahead, release_base_sha, staging_sha,
+                               proof_note[-500:])
+        return {"project": project, "proof": "RED", "note": proof_note}
     if manifest:
         try:
             release_manifest.record_gate(manifest["id"], "build", True, command=bcmd)

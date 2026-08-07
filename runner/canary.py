@@ -7,7 +7,7 @@ rollback if a metric regressed. Used by the overnight deploy window instead of a
 METRICS_URL must return JSON like {"error_rate":0.4,"p95_ms":180,"conversion":3.1}.
 Thresholds via env: CANARY_MAX_ERROR_RATE, CANARY_MAX_P95_MS, CANARY_MIN_CONVERSION.
 """
-import os, sys, json, threading, urllib.request
+import os, sys, json, threading, time, urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # RESTORED 2026-08-02: merge c502818b 'Merge branch 'agent/canary-gemini-25-...'
@@ -18,6 +18,45 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 # regression guard now blocks. Original shape restored from d1530ed0.
 _metrics_server = None
 _metrics_server_lock = threading.Lock()
+
+# Prometheus gauge: unix seconds of the last successful (promote) evaluation;
+# 0 = never succeeded since process start. Implemented with stdlib only —
+# prometheus_client is not a repo dependency, and /metrics already speaks the
+# Prometheus text exposition format, so a hard import would add a dep for no
+# behavior. The gauge state is module-level and lock-guarded.
+_gauges = {"canary_last_success": 0.0}
+_gauges_lock = threading.Lock()
+
+
+def set_gauge(name, value):
+    """Set a gauge value. Fail-soft: unknown names are created, bad values ignored."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return
+    with _gauges_lock:
+        _gauges[name] = v
+
+
+def get_gauge(name):
+    """Current gauge value (0.0 for unknown gauges)."""
+    with _gauges_lock:
+        return _gauges.get(name, 0.0)
+
+
+def record_success(ts=None):
+    """Mark a successful canary evaluation on the canary_last_success gauge."""
+    set_gauge("canary_last_success", time.time() if ts is None else ts)
+
+
+def render_metrics():
+    """Prometheus text exposition for GET /metrics."""
+    lines = ["canary_up 1"]
+    with _gauges_lock:
+        for name in sorted(_gauges):
+            lines.append(f"# TYPE {name} gauge")
+            lines.append(f"{name} {_gauges[name]}")
+    return ("\n".join(lines) + "\n").encode()
 
 
 def evaluate(metrics_url=None):
@@ -65,6 +104,8 @@ def main(argv=None):
     """
     argv = sys.argv[1:] if argv is None else argv
     result = evaluate(argv[0] if argv else None)
+    if result.get("verdict") == "promote":
+        record_success()
     print(json.dumps(result))
     return 0 if result.get("verdict") == "promote" else 1
 
@@ -72,7 +113,7 @@ def main(argv=None):
 class _MetricsHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/metrics":
-            body = b"canary_up 1\n"
+            body = render_metrics()
             self.send_response(200)
             self.send_header("Content-Type", "text/plain")
             self.send_header("Content-Length", str(len(body)))

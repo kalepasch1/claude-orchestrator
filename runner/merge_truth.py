@@ -1,22 +1,28 @@
 #!/usr/bin/env python3
-"""merge_truth.py — MERGED must mean the commit reached the production branch.
+"""merge_truth.py — MERGED must mean the commit reached the integration branch.
 
 ## Why this exists
 
 Measured 2026-08-06 over 24 beethoven tasks in MERGED with a non-null artifact_commit,
-each SHA checked with `git merge-base --is-ancestor <sha> origin/master`:
+each SHA was originally checked with `git merge-base --is-ancestor <sha> origin/master`:
 
     in master ................................  4  (17%)
     MERGED but commit NOT an ancestor of master 10  (42%)
     commit does not exist on origin at all .... 10  (42%)
 
-83% of recent MERGED rows were false, and 20 of the phantoms were created AFTER the
-2026-08-04 audit — so the writer is live, not historical.
+That audit found real evidence gaps, but it also exposed a state-model bug: the merge train
+integrates work into the project's staging branch and the release train later promotes a
+batch to production. Requiring a staging MERGED row to already be on production made every
+legitimate improvement phantom during the interval between those two steps. The recovery
+loop then requeued the existing code for regeneration, so it could never remain attached to
+a release manifest long enough to ship.
 
 The 2026-08-04 remediation made merges record an `artifact_commit`, and the column is now
-populated 218/218 and 169/169. That was read as proof the fix held. It is not. Populating a
-column proves a string was written; it does not prove the commit exists, nor that it reached
-the production branch. **The check must be reachability, never presence.**
+populated 218/218 and 169/169. Populating a column proves a string was written; it does not
+prove the commit exists, nor that it reached the intended branch. **The check must be exact
+reachability against the branch for the state being written, never presence.** For MERGED
+that branch is staging/integration. `deployment_terminal.py` owns the stricter and separate
+DEPLOYED_AND_VERIFIED transition after the exact release SHA is live on production.
 
 ## The gate
 
@@ -24,7 +30,7 @@ the production branch. **The check must be reachability, never presence.**
 safe to deploy:
 
     ok           artifact_commit is non-empty, the object exists, and it is an ancestor of
-                 the project's prod_branch. MERGED may be written.
+                 the project's staging/integration branch. MERGED may be written.
     phantom      one of those checks answered NO. Write PHANTOM_UNVERIFIED instead, with a
                  note naming which check failed and the SHA.
     infra_error  git itself could not answer (network down, fetch timeout, repo missing or
@@ -111,24 +117,24 @@ def invalidate_fetch_cache():
     _fetched.clear()
 
 
-def _resolve_prod_ref(repo, prod_branch):
-    """Prefer origin/<prod_branch>; fall back to the local ref if origin is not present.
+def _resolve_target_ref(repo, target_branch):
+    """Prefer origin/<target_branch>; fall back to the local ref if origin is not present.
 
     Returns (ref, err). A repo with neither is an infra error, not a phantom: it means we
     cannot ask the question, not that the answer is no.
     """
-    for ref in (f"origin/{prod_branch}", prod_branch):
+    for ref in (f"origin/{target_branch}", target_branch):
         try:
             r = _git(repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
         except (subprocess.TimeoutExpired, OSError) as exc:
             return None, f"rev-parse {ref} failed: {exc}"
         if r.returncode == 0:
             return ref, None
-    return None, f"neither origin/{prod_branch} nor {prod_branch} resolves in {repo}"
+    return None, f"neither origin/{target_branch} nor {target_branch} resolves in {repo}"
 
 
-def verify_merge_reachable(repo, sha, prod_branch, fetch=True):
-    """Is `sha` really on `prod_branch`? Returns (verdict, reason).
+def verify_merge_reachable(repo, sha, target_branch, fetch=True):
+    """Is `sha` really on `target_branch`? Returns (verdict, reason).
 
     Deliberately three-valued. Collapsing infra_error into phantom is what would let a
     network blip mass-reclassify real merges.
@@ -136,13 +142,13 @@ def verify_merge_reachable(repo, sha, prod_branch, fetch=True):
     sha = (sha or "").strip()
     if not sha:
         return PHANTOM, "artifact_commit is empty"
-    if not prod_branch:
-        return INFRA_ERROR, "project has no prod_branch configured"
+    if not target_branch:
+        return INFRA_ERROR, "project has no integration branch configured"
     if not repo or not os.path.isdir(repo):
         return INFRA_ERROR, f"repo path missing: {repo!r}"
 
     if fetch:
-        err = _fetch(repo, prod_branch)
+        err = _fetch(repo, target_branch)
         if err:
             return INFRA_ERROR, err
 
@@ -154,7 +160,7 @@ def verify_merge_reachable(repo, sha, prod_branch, fetch=True):
     if exists.returncode != 0:
         return PHANTOM, f"commit {sha[:12]} does not exist in {repo}"
 
-    ref, err = _resolve_prod_ref(repo, prod_branch)
+    ref, err = _resolve_target_ref(repo, target_branch)
     if err:
         return INFRA_ERROR, err
 
@@ -173,7 +179,7 @@ def verify_merge_reachable(repo, sha, prod_branch, fetch=True):
 def _project_row(project_id):
     try:
         rows = db.select("projects", {
-            "select": "id,name,repo_path,prod_branch,default_base",
+            "select": "id,name,repo_path,staging_branch,prod_branch,default_base",
             "id": f"eq.{project_id}",
         }) or []
         return rows[0] if rows else None
@@ -182,19 +188,28 @@ def _project_row(project_id):
 
 
 def resolve_target(task, repo=None, prod_branch=None):
-    """Resolve (repo, prod_branch) for a task, preferring explicit args.
+    """Resolve (repo, integration_branch) for a task, preferring explicit args.
 
-    prod_branch falls back to default_base — never to a hardcoded 'main'. Hardcoding is how a
-    master-branch project gets measured against a branch it does not have.
+    `prod_branch` is retained as the public keyword for backward compatibility with existing
+    callers, but an explicitly supplied value means "the branch this MERGED write targeted".
+    Without an explicit target, mirror merge_train._integration_base exactly: dev/staging
+    mode uses ORCH_STAGING_BRANCH, while an explicitly configured direct-production mode
+    uses the project's normal base. The project staging column is a fallback because older
+    rows can lag the process configuration. Never hardcode main: several projects use master
+    or a custom integration ref.
     """
     if repo and prod_branch:
         return repo, prod_branch, None
     row = _project_row(task.get("project_id"))
     if not row:
         return repo, prod_branch, f"project {task.get('project_id')!r} not resolvable"
-    return (repo or row.get("repo_path"),
-            prod_branch or row.get("prod_branch") or row.get("default_base"),
-            None)
+    mode = str(os.environ.get("ORCH_CODE_MERGE_TARGET", "dev") or "dev").lower()
+    if mode in ("dev", "staging", "integration"):
+        target = (os.environ.get("ORCH_STAGING_BRANCH") or row.get("staging_branch")
+                  or row.get("default_base") or row.get("prod_branch"))
+    else:
+        target = row.get("default_base") or row.get("prod_branch")
+    return repo or row.get("repo_path"), prod_branch or target, None
 
 
 def _hours_ago_iso(hours):
@@ -249,12 +264,12 @@ def gate_merged_patch(task, patch, repo=None, prod_branch=None, fetch=True):
         return patch
 
     sha = (patch.get("artifact_commit") or task.get("artifact_commit") or "").strip()
-    repo, prod_branch, err = resolve_target(task, repo, prod_branch)
+    repo, target_branch, err = resolve_target(task, repo, prod_branch)
     if err:
         print(f"[merge-truth] {task.get('slug')}: {err}; leaving state unchanged")
         return None
 
-    verdict, reason = verify_merge_reachable(repo, sha, prod_branch, fetch=fetch)
+    verdict, reason = verify_merge_reachable(repo, sha, target_branch, fetch=fetch)
 
     if verdict == OK:
         return patch
@@ -269,7 +284,7 @@ def gate_merged_patch(task, patch, repo=None, prod_branch=None, fetch=True):
     blocked["state"] = PHANTOM_STATE
     prior = str(patch.get("note") or "").strip()
     blocked["note"] = (f"merge-truth: MERGED blocked — {reason} "
-                       f"(prod_branch={prod_branch}, sha={sha[:12] or 'none'})"
+                       f"(integration_branch={target_branch}, sha={sha[:12] or 'none'})"
                        + (f" | {prior}" if prior else ""))[:2000]
     raise_phantom_alarm(task, sha, reason)
     print(f"[merge-truth] {task.get('slug')}: BLOCKED MERGED -> {PHANTOM_STATE} ({reason})")
@@ -308,7 +323,7 @@ def reconcile(project=None, limit=500, fetch=True, since=None):
     projects = {}
     try:
         for row in db.select("projects", {
-                "select": "id,name,repo_path,prod_branch,default_base"}) or []:
+                "select": "id,name,repo_path,staging_branch,prod_branch,default_base"}) or []:
             projects[row["id"]] = row
     except Exception as exc:
         return {"ok": False, "error": f"project query failed: {exc}"}
@@ -323,9 +338,14 @@ def reconcile(project=None, limit=500, fetch=True, since=None):
         if project and pname != project:
             continue
         repo = row.get("repo_path")
-        prod = row.get("prod_branch") or row.get("default_base")
+        mode = str(os.environ.get("ORCH_CODE_MERGE_TARGET", "dev") or "dev").lower()
+        if mode in ("dev", "staging", "integration"):
+            target = (os.environ.get("ORCH_STAGING_BRANCH") or row.get("staging_branch")
+                      or row.get("default_base") or row.get("prod_branch"))
+        else:
+            target = row.get("default_base") or row.get("prod_branch")
         verdict, reason = verify_merge_reachable(
-            repo, t.get("artifact_commit"), prod, fetch=fetch)
+            repo, t.get("artifact_commit"), target, fetch=fetch)
         counts[verdict] += 1
         bucket = per_project.setdefault(pname, {OK: 0, PHANTOM: 0, INFRA_ERROR: 0})
         bucket[verdict] += 1
@@ -350,7 +370,8 @@ def reconcile(project=None, limit=500, fetch=True, since=None):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Report which MERGED tasks really reached prod.")
+    ap = argparse.ArgumentParser(
+        description="Report which MERGED tasks really reached their integration branch.")
     ap.add_argument("--project", default=None)
     ap.add_argument("--limit", type=int, default=500)
     ap.add_argument("--since", default=None, help="ISO timestamp lower bound on updated_at")

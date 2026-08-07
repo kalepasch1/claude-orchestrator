@@ -2729,6 +2729,12 @@ _SCHEDULE = [
     # defect that had "Legal & Compliance" panels opining on Kubernetes. Each run puts real
     # regulatory questions through the 5-round gauntlet and mints citation-backed verdict cards.
     ("legaldocket-1800","legal_docket.py",  "interval", 1800),  # standing legal docket -> verdict cards
+    # Machine + pipeline heartbeat alerts (operator directive 2026-08-02, P0). Reads the
+    # runner_heartbeats rows every machine already writes and PAGES when one goes silent
+    # >30m — Mac 2 was down from ~10:28 with nothing saying so. Also runs the hourly
+    # consistency self-tests (pressure file vs DB row, boot-commit file, release-train env)
+    # and auto-reverts RELEASE_MIN_BATCH=1 recovery mode once the backlog is drained.
+    ("fleetheartbeat-3600", "fleet_heartbeat.py", "interval", 3600),
     # Benchmark redlines: redline REAL filed briefs in the most contentious regulatory matters +
     # draft the fully-revised addendum — the proof-of-superiority engine. Targets only activate
     # once the actual public filing text is ingested (never redlines an unheld document).
@@ -2888,6 +2894,10 @@ _sched_last: dict = {}
 # Jobs that NEVER call a model and are safe (even desirable) to run while paused:
 # protect the Mac, and keep read-only spend/health telemetry flowing.
 _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn",
+                     # Liveness monitoring must survive a pause. A paused fleet is exactly
+                     # when a machine can quietly die without anyone noticing, and the
+                     # monitor calls no models — it only reads heartbeats and files.
+                     "fleet_heartbeat.py",
                      "approval_policy.py", "queue_janitor.py",
                      "unstick", "dagfix", "dagspecunblock", "batchmech", "selftune", "cluster",
                      "governor", "costslo", "promote", "prewarm", "billingguard",
@@ -3068,12 +3078,6 @@ _PERIODIC_PIDS = {}  # job_name -> (pid, launch_time)
 # stale-reap threshold scales with how often a job is actually supposed to run, instead of a
 # single hardcoded default that's wildly wrong for fast-cadence jobs (see _is_still_running).
 _JOB_INTERVAL = {job: args for (_key, job, stype, args) in _SCHEDULE if stype == "interval"}
-_JOB_MAX_RUNTIME = {
-    "merge_train.py": int(os.environ.get("ORCH_MERGE_TRAIN_MAX_RUNTIME_S", "7200")),
-    "release_train.py": int(os.environ.get("ORCH_RELEASE_TRAIN_MAX_RUNTIME_S", "7200")),
-    "releasetrain": int(os.environ.get("ORCH_RELEASE_TRAIN_MAX_RUNTIME_S", "7200")),
-    "integration_sweeper.py": int(os.environ.get("ORCH_INTEGRATION_SWEEPER_MAX_RUNTIME_S", "7200")),
-}
 
 # Launch cadence is not an execution timeout. Integration and release jobs can
 # legitimately spend tens of minutes in isolated typecheck/build worktrees. A
@@ -3105,15 +3109,57 @@ def _is_still_running(job):
     new instance while the last one is still alive; let it finish (or let the properly-scaled
     reaper below kill it if it's truly stuck) instead of stacking duplicates."""
     info = _PERIODIC_PIDS.get(job)
-    if not info:
+    if info:
+        pid, _launch_t = info
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            del _PERIODIC_PIDS[job]
+    # _PERIODIC_PIDS is IN-PROCESS state, and keepalive restarts runner.py routinely.
+    # A fresh runner starts with an empty map, so it has no idea the previous runner
+    # left a child of this job still executing — and Popens another one on top. That
+    # is how legal_docket.py accumulated 14 concurrent copies aged 8-10h on a 30-min
+    # interval: not one runaway job, but one leaked copy per runner restart, none of
+    # them visible to the successor's bookkeeping. Ask the process table, which
+    # outlives us, before concluding nothing is running.
+    return _external_instance_running(job)
+
+
+def _external_instance_running(job):
+    """True when a copy of `job` launched by a PREVIOUS runner is still executing.
+
+    Matches on the job's own path so a substring cannot alias two different jobs, and
+    excludes our own pid and children we already track. Fail-soft: if the process
+    table cannot be read we report "not running", because wrongly reporting "running"
+    would silently stop a job forever, which is worse than one duplicate.
+    """
+    if os.environ.get("ORCH_SCHED_EXTERNAL_INSTANCE_CHECK", "true").lower() not in (
+            "1", "true", "yes", "on"):
         return False
-    pid, _launch_t = info
     try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        del _PERIODIC_PIDS[job]
+        target = os.path.join(os.path.dirname(os.path.abspath(__file__)), job)
+        out = subprocess.run(["pgrep", "-f", target], capture_output=True, text=True,
+                             timeout=10).stdout
+    except Exception:
         return False
+    mine = {os.getpid()}
+    mine.update(p for p, _ in _PERIODIC_PIDS.values())
+    for line in out.split():
+        try:
+            pid = int(line)
+        except ValueError:
+            continue
+        if pid in mine:
+            continue
+        # Adopt it so the reaper can lease-kill it if it really is wedged. Launch time
+        # is unknown across a restart; assume it started now, which gives the orphan a
+        # full lease before the reaper touches it rather than an instant kill.
+        _PERIODIC_PIDS.setdefault(job, (pid, time.time()))
+        print(f"[sched] {job} already running as pid {pid} from a previous runner — "
+              f"adopting instead of launching a duplicate", flush=True)
+        return True
+    return False
 
 
 _REAP_MULTIPLIER = {

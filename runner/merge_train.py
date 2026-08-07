@@ -196,10 +196,11 @@ def _materialize_branch(repo, branch):
 def _task_patch(task, patch, repo=None, prod_branch=None):
     """Single write point for task state in the train — so the MERGED gate cannot be bypassed.
 
-    Every MERGED written here must first be proven reachable from the project's prod_branch
-    (merge_truth). A patch that is not MERGED passes straight through. On an infrastructure
-    error the gate returns None and we write nothing, leaving the row for the next cycle
-    rather than downgrading a real merge because a fetch timed out.
+    Every MERGED written here must first be proven reachable from the project's integration
+    branch (merge_truth). Production reachability is deliberately checked later by the
+    release/deployment terminal. A patch that is not MERGED passes straight through. On an
+    infrastructure error the gate returns None and we write nothing, leaving the row for the
+    next cycle rather than downgrading a real merge because a fetch timed out.
     """
     import merge_truth
     final = merge_truth.gate_merged_patch(task, patch, repo=repo, prod_branch=prod_branch)
