@@ -556,11 +556,14 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
         if _merged:
             _sha, _ref = _merged
             if t.get("state") != "MERGED":
-                db.update("tasks", {"id": t["id"]},
-                          {"state": "MERGED",
-                           "artifact_commit": _sha,
-                           "note": f"integration_sweeper: agent/{slug} is an ancestor of {_ref} "
-                                   f"at {_sha[:12]}; already integrated, closed without rebuild"})
+                import merge_truth
+                merge_truth.guarded_task_update(
+                    t,
+                    {"state": "MERGED",
+                     "artifact_commit": _sha,
+                     "note": f"integration_sweeper: agent/{slug} is an ancestor of {_ref} "
+                             f"at {_sha[:12]}; already integrated, closed without rebuild"},
+                    repo=repo)
             skipped += 1
             continue
 
