@@ -1,0 +1,4 @@
+recovery-intent: backlog-batch-beethoven-22ee5bc-recover-pinned-express-lane-rework-and-integrate
+template: 8480a42289f3
+intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 acceptance active adapt adaptive_probe advice after agentic aider allowlist analysis assignment author batch beethoven before behavior blocked blocker build buildfail callable called ce2e8dcd7954 change cheap claim class claude cloud coder codestral commit compiles concern concrete conditions config context contract control convert coordination correctly criteria cross custody deepseek definable delete deployfix diffs directive drafting duplication eliminate embed ensure excerpt existing exists explore express fable feature files first flash force gemini
+base: master
