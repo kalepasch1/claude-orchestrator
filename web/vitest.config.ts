@@ -28,6 +28,9 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './'),
+      // Nuxt resolves `~` at build time; vitest does not. Without this, any test
+      // that imports an SFC fails on the component's own `~/utils/...` imports.
+      '~': path.resolve(__dirname, './'),
     },
   },
 });
