@@ -19,7 +19,7 @@ Usage:
   python3 periodic.py spec
   python3 periodic.py txn
 """
-import os, sys, subprocess, time, json
+import os, sys, subprocess, time, json, socket, urllib.error
 # Inherited NODE_ENV=production makes npm omit devDependencies in every child job (staging QA,
 # prewarm, merge/release trains) → "Could not load <module>" failures. Strip it (see runner.py).
 os.environ.pop("NODE_ENV", None)
@@ -262,13 +262,46 @@ def _terminate(job, pid):
     return not _pid_alive(pid)
 
 
+_TRANSIENT_NET_ERRORS = (
+    urllib.error.URLError,
+    socket.timeout,
+    ConnectionError,       # covers ConnectionReset/Aborted/Refused
+    TimeoutError,
+)
+
+
+def _is_transient_net_error(exc):
+    """True for errors that mean 'the network was unhappy', not 'the code is wrong'."""
+    if isinstance(exc, urllib.error.HTTPError):
+        # An HTTP status came back, so we reached the server. 5xx/429 are worth
+        # retrying; 4xx is a real client bug and must stay loud.
+        return exc.code >= 500 or exc.code == 429
+    return isinstance(exc, _TRANSIENT_NET_ERRORS)
+
+
 def _invoke_job(job):
-    """Run a job, converting a permanently-missing table into a disable rather than a crash loop."""
+    """Run a job, converting a permanently-missing table into a disable rather than a crash loop.
+
+    Transient network failures are also absorbed here. Previously only
+    MissingRelationError was caught, so a Supabase timeout escaped as an unhandled
+    URLError: the job died and wrote a full traceback on EVERY cycle. That is how
+    preflight accumulated 4970 tracebacks and quarantine 1642 with zero successful
+    runs — all of it the same "urlopen error timed out", none of it a code defect.
+    A timeout is not a reason to disable the job (it will likely work next cycle)
+    and not a reason to spam a traceback (it hides the jobs that are genuinely
+    broken). Log one line and let the next invocation retry.
+    """
     try:
         return JOBS[job]()
     except db.MissingRelationError as exc:
         _disable_job(job, str(exc))
         return None
+    except Exception as exc:
+        if _is_transient_net_error(exc):
+            print(f"periodic {job}: skipped; transient network error ({type(exc).__name__}: "
+                  f"{exc}). Not a code failure — retrying next cycle.")
+            return None
+        raise
 
 
 _DISABLED_JOBS_PATH = os.path.join(_RUNTIME, "disabled_jobs.json")

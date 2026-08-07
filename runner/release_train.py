@@ -867,6 +867,19 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
     production branch would discard whatever advanced it; if a push cannot
     fast-forward, the answer is to integrate, not to override.
     """
+    # release_manifest is used below to record the post-integration gate, but it was
+    # only ever imported inside run() further down this file — so the call at the
+    # `if manifest:` branch resolved against nothing. It sits inside `except
+    # Exception: pass`, so the NameError was swallowed and the gate was silently
+    # never recorded; static_sanity caught the undefined name and, being CRITICAL,
+    # aborted merge_train at startup on every invocation (4670 tracebacks). Import
+    # it here, in the scope that uses it, fail-soft so a missing module degrades to
+    # "no manifest recording" rather than taking the release path down.
+    try:
+        import release_manifest
+    except Exception:
+        release_manifest = None
+
     if attempts is None:
         attempts = max(1, int(os.environ.get("ORCH_RELEASE_PUSH_ATTEMPTS", "2") or 2))
     to_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
@@ -893,7 +906,7 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
                                        f"post-integration {gate} red — self-heal queued: "
                                        f"{(glog or '')[-160:]}")
                 return False, integrated_sha, (glog or f"post-integration {gate} red")
-            if manifest:
+            if manifest and release_manifest is not None:
                 try:
                     # Local import: this helper runs outside the caller's scope, where
                     # release_manifest was imported. Without it the call raised NameError
