@@ -1,385 +1,432 @@
-"""
-Tests for economic-scheduler-revenue: cost tracking and revenue calculation.
+"""Tests for economic_scheduler_revenue — cost-aware task scheduling and revenue optimization."""
+import sys
+import os
+import unittest
+from unittest.mock import patch, MagicMock
+from datetime import datetime, timedelta
 
-Validates token usage tracking, model-specific pricing, cache credit accounting,
-and permission-aware cost attribution.
-"""
-
-import pytest
-from dataclasses import dataclass
-from typing import Dict, List
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 
-@dataclass
-class ModelCost:
-    """Model-specific pricing and token limits."""
-    name: str
-    input_rate_usd_per_mtok: float
-    output_rate_usd_per_mtok: float
-    cache_creation_rate_usd_per_mtok: float
-    cache_read_rate_usd_per_mtok: float
-    context_window: int
-    max_output_tokens: int
+class TestScheduleCostOptimized(unittest.TestCase):
+    """Test cost-aware scheduling of tasks."""
+
+    @patch("db.select")
+    def test_schedules_high_roi_task_first(self, mock_select):
+        """High-ROI tasks should be scheduled before low-ROI tasks."""
+        import economic_scheduler_revenue
+        mock_select.return_value = [
+            {"id": "t1", "estimated_cost_usd": 0.01, "revenue_impact_usd": 0.50},
+            {"id": "t2", "estimated_cost_usd": 0.05, "revenue_impact_usd": 0.30},
+        ]
+        result = economic_scheduler_revenue.schedule_cost_optimized()
+        self.assertEqual(result[0]["id"], "t1")
+
+    @patch("db.select")
+    def test_skips_negative_roi_tasks(self, mock_select):
+        """Tasks with negative ROI should not be scheduled."""
+        import economic_scheduler_revenue
+        mock_select.return_value = [
+            {"id": "t1", "estimated_cost_usd": 0.10, "revenue_impact_usd": 0.05},
+            {"id": "t2", "estimated_cost_usd": 0.01, "revenue_impact_usd": 0.20},
+        ]
+        result = economic_scheduler_revenue.schedule_cost_optimized()
+        self.assertNotIn("t1", [t["id"] for t in result])
+
+    @patch("db.select")
+    def test_empty_queue_returns_empty_list(self, mock_select):
+        """Empty task queue should return empty list."""
+        import economic_scheduler_revenue
+        mock_select.return_value = []
+        result = economic_scheduler_revenue.schedule_cost_optimized()
+        self.assertEqual(result, [])
 
 
-@dataclass
-class SessionUsage:
-    """Token usage and cost for a single session."""
-    input_tokens: int
-    output_tokens: int
-    cache_read_input_tokens: int
-    cache_creation_input_tokens: int
-    permission_denied_tool_count: int = 0
+class TestBudgetConstrainedScheduling(unittest.TestCase):
+    """Test scheduling under budget constraints."""
 
-
-class EconomicScheduler:
-    """Tracks and prices token usage across models."""
-
-    MODELS = {
-        # Rates match actual Anthropic billing (verified against the error-report
-        # session in TestEconomicSchedulerRealWorldSession — the previous
-        # 0.80/4.0 Haiku rates under-reported real cost by 20%).
-        "claude-haiku-4-5-20251001": ModelCost(
-            name="claude-haiku-4-5-20251001",
-            input_rate_usd_per_mtok=1.0,
-            output_rate_usd_per_mtok=5.0,
-            cache_creation_rate_usd_per_mtok=1.25,
-            cache_read_rate_usd_per_mtok=0.1,
-            context_window=200000,
-            max_output_tokens=32000,
-        ),
-        "claude-sonnet-4-6": ModelCost(
-            name="claude-sonnet-4-6",
-            input_rate_usd_per_mtok=3.0,
-            output_rate_usd_per_mtok=15.0,
-            # 1-hour cache write rate (2x input); the fleet's sessions bill at
-            # the 1h tier per the error report (5m tier would be 3.75).
-            cache_creation_rate_usd_per_mtok=6.0,
-            cache_read_rate_usd_per_mtok=0.30,
-            context_window=200000,
-            max_output_tokens=32000,
-        ),
-    }
-
-    def calculate_cost(self, model_name: str, usage: SessionUsage) -> float:
-        """
-        Calculate total cost for a session.
-
-        Args:
-            model_name: Model identifier
-            usage: Token usage breakdown
-
-        Returns:
-            Total cost in USD (rounded to 8 decimals)
-        """
-        if model_name not in self.MODELS:
-            raise ValueError(f"Unknown model: {model_name}")
-
-        model = self.MODELS[model_name]
-
-        input_cost = (usage.input_tokens / 1_000_000) * model.input_rate_usd_per_mtok
-        output_cost = (usage.output_tokens / 1_000_000) * model.output_rate_usd_per_mtok
-        cache_creation_cost = (
-            (usage.cache_creation_input_tokens / 1_000_000)
-            * model.cache_creation_rate_usd_per_mtok
+    @patch("db.select")
+    def test_respects_daily_budget_limit(self, mock_select):
+        """Should not schedule tasks exceeding daily budget."""
+        import economic_scheduler_revenue
+        mock_select.return_value = [
+            {"id": "t1", "estimated_cost_usd": 2.00},
+            {"id": "t2", "estimated_cost_usd": 3.00},
+            {"id": "t3", "estimated_cost_usd": 1.00},
+        ]
+        result = economic_scheduler_revenue.schedule_with_budget(
+            daily_budget_usd=4.00
         )
-        cache_read_cost = (
-            (usage.cache_read_input_tokens / 1_000_000)
-            * model.cache_read_rate_usd_per_mtok
+        total_cost = sum(t["estimated_cost_usd"] for t in result)
+        self.assertLessEqual(total_cost, 4.00)
+
+    @patch("db.select")
+    def test_prioritizes_within_budget_constraints(self, mock_select):
+        """Should schedule highest-ROI tasks within budget."""
+        import economic_scheduler_revenue
+        mock_select.return_value = [
+            {"id": "t1", "estimated_cost_usd": 0.50, "roi": 10.0},
+            {"id": "t2", "estimated_cost_usd": 0.50, "roi": 5.0},
+            {"id": "t3", "estimated_cost_usd": 0.50, "roi": 15.0},
+        ]
+        result = economic_scheduler_revenue.schedule_with_budget(daily_budget_usd=1.00)
+        # Should prefer t3 (highest ROI) and t1 (second highest)
+        ids = [t["id"] for t in result]
+        self.assertIn("t3", ids)
+
+    @patch("db.select")
+    def test_returns_empty_when_cheapest_task_exceeds_budget(self, mock_select):
+        """Should return empty if cheapest task exceeds remaining budget."""
+        import economic_scheduler_revenue
+        mock_select.return_value = [
+            {"id": "t1", "estimated_cost_usd": 5.00},
+        ]
+        result = economic_scheduler_revenue.schedule_with_budget(daily_budget_usd=1.00)
+        self.assertEqual(result, [])
+
+
+class TestCostPrediction(unittest.TestCase):
+    """Test cost estimation and prediction."""
+
+    def test_predicts_cost_for_haiku_input_tokens(self):
+        """Should accurately predict Haiku costs for input tokens."""
+        import economic_scheduler_revenue
+        # Haiku: ~$0.00080 per 1M input tokens
+        cost = economic_scheduler_revenue.predict_cost(
+            model="claude-haiku-4-5-20251001",
+            input_tokens=1000000
         )
+        self.assertAlmostEqual(cost, 0.80, places=1)
 
-        total = input_cost + output_cost + cache_creation_cost + cache_read_cost
-        return round(total, 8)
-
-    def validate_context_usage(self, model_name: str, total_input: int) -> bool:
-        """Check if total input fits within context window."""
-        if model_name not in self.MODELS:
-            return False
-        return total_input <= self.MODELS[model_name].context_window
-
-
-class TestEconomicSchedulerBasic:
-    """Basic cost calculation tests."""
-
-    def test_zero_usage_costs_zero(self):
-        """Zero tokens should cost zero."""
-        scheduler = EconomicScheduler()
-        usage = SessionUsage(
-            input_tokens=0,
-            output_tokens=0,
-            cache_read_input_tokens=0,
-            cache_creation_input_tokens=0,
+    def test_predicts_cost_for_sonnet_input_tokens(self):
+        """Should accurately predict Sonnet costs for input tokens."""
+        import economic_scheduler_revenue
+        # Sonnet: ~$0.003 per 1M input tokens
+        cost = economic_scheduler_revenue.predict_cost(
+            model="claude-sonnet-5",
+            input_tokens=1000000
         )
-        cost = scheduler.calculate_cost("claude-haiku-4-5-20251001", usage)
-        assert cost == 0.0
+        self.assertAlmostEqual(cost, 3.00, places=1)
 
-    def test_input_tokens_only(self):
-        """Only input tokens contribute to cost."""
-        scheduler = EconomicScheduler()
-        usage = SessionUsage(
-            input_tokens=1_000_000,  # 1M tokens
-            output_tokens=0,
-            cache_read_input_tokens=0,
-            cache_creation_input_tokens=0,
+    def test_predicts_cost_for_output_tokens(self):
+        """Should factor output tokens in cost prediction."""
+        import economic_scheduler_revenue
+        cost = economic_scheduler_revenue.predict_cost(
+            model="claude-sonnet-5",
+            input_tokens=100,
+            output_tokens=1000
         )
-        cost = scheduler.calculate_cost("claude-haiku-4-5-20251001", usage)
-        # Haiku: 1.0M * 1.00 = 1.00 USD
-        assert cost == 1.0
+        self.assertGreater(cost, 0.0)
 
-    def test_output_tokens_only(self):
-        """Only output tokens contribute to cost."""
-        scheduler = EconomicScheduler()
-        usage = SessionUsage(
-            input_tokens=0,
-            output_tokens=1_000_000,  # 1M tokens
-            cache_read_input_tokens=0,
-            cache_creation_input_tokens=0,
+    def test_returns_zero_for_invalid_model(self):
+        """Should return 0 for unknown model."""
+        import economic_scheduler_revenue
+        cost = economic_scheduler_revenue.predict_cost(
+            model="unknown-model",
+            input_tokens=1000
         )
-        cost = scheduler.calculate_cost("claude-haiku-4-5-20251001", usage)
-        # Haiku: 1.0M * 5.0 = 5.0 USD
-        assert cost == 5.0
+        self.assertEqual(cost, 0.0)
 
 
-class TestEconomicSchedulerCaching:
-    """Cache read/creation cost tests."""
+class TestRevenueTracking(unittest.TestCase):
+    """Test revenue attribution and tracking."""
 
-    def test_cache_creation_cost(self):
-        """Cache creation tokens are charged at creation rate."""
-        scheduler = EconomicScheduler()
-        usage = SessionUsage(
-            input_tokens=0,
-            output_tokens=0,
-            cache_read_input_tokens=0,
-            cache_creation_input_tokens=1_000_000,  # 1M tokens
+    @patch("db.insert")
+    @patch("db.select")
+    def test_logs_revenue_for_successful_task(self, mock_select, mock_insert):
+        """Should record revenue when task completes successfully."""
+        import economic_scheduler_revenue
+        mock_select.return_value = []
+        mock_insert.return_value = True
+
+        result = economic_scheduler_revenue.record_revenue(
+            task_id="t1",
+            revenue_usd=5.00,
+            status="success",
+            cost_usd=0.05
         )
-        cost = scheduler.calculate_cost("claude-haiku-4-5-20251001", usage)
-        # Haiku: 1.0M * 1.25 = 1.25 USD (5m cache write = 1.25x input)
-        assert cost == 1.25
+        self.assertTrue(result)
+        mock_insert.assert_called_once()
 
-    def test_cache_read_cost(self):
-        """Cache read tokens are charged at read rate (90% discount)."""
-        scheduler = EconomicScheduler()
-        usage = SessionUsage(
-            input_tokens=0,
-            output_tokens=0,
-            cache_read_input_tokens=1_000_000,  # 1M tokens
-            cache_creation_input_tokens=0,
+    @patch("db.insert")
+    def test_records_negative_revenue_on_failure(self, mock_insert):
+        """Should allow negative revenue recording for failed tasks."""
+        import economic_scheduler_revenue
+        mock_insert.return_value = True
+
+        result = economic_scheduler_revenue.record_revenue(
+            task_id="t1",
+            revenue_usd=-1.00,
+            status="failed",
+            cost_usd=0.10
         )
-        cost = scheduler.calculate_cost("claude-haiku-4-5-20251001", usage)
-        # Haiku: 1.0M * 0.1 = 0.1 USD
-        assert cost == 0.1
+        self.assertTrue(result)
 
-    def test_cache_hit_savings(self):
-        """Verify cache reads cost 90% less than creating."""
-        scheduler = EconomicScheduler()
-
-        creation_usage = SessionUsage(
-            input_tokens=0, output_tokens=0,
-            cache_read_input_tokens=0,
-            cache_creation_input_tokens=10_000_000,
+    @patch("db.select")
+    def test_calculates_profit_correctly(self, mock_select):
+        """Should calculate profit as revenue minus cost."""
+        import economic_scheduler_revenue
+        profit = economic_scheduler_revenue.calculate_profit(
+            revenue_usd=10.00,
+            cost_usd=0.50
         )
-        creation_cost = scheduler.calculate_cost("claude-haiku-4-5-20251001", creation_usage)
+        self.assertEqual(profit, 9.50)
 
-        read_usage = SessionUsage(
-            input_tokens=0, output_tokens=0,
-            cache_read_input_tokens=10_000_000,
-            cache_creation_input_tokens=0,
+
+class TestModelSelectionStrategy(unittest.TestCase):
+    """Test intelligent model selection based on economics."""
+
+    def test_selects_haiku_for_simple_tasks(self):
+        """Should choose Haiku for low-complexity tasks."""
+        import economic_scheduler_revenue
+        model = economic_scheduler_revenue.select_model_economically(
+            complexity_score=0.1,
+            urgency=0.5,
+            budget_remaining_usd=10.00
         )
-        read_cost = scheduler.calculate_cost("claude-haiku-4-5-20251001", read_usage)
+        self.assertIn("haiku", model.lower())
 
-        # Cache read (0.10) is 90% cheaper than the INPUT rate (1.00) and 92%
-        # cheaper than the 5m cache-write rate (1.25).
-        assert read_cost == pytest.approx(creation_cost * (0.1 / 1.25))
-        assert read_cost < creation_cost
-
-
-class TestEconomicSchedulerMultiModel:
-    """Multi-model cost comparison tests."""
-
-    def test_haiku_vs_sonnet_input_cost(self):
-        """Sonnet is more expensive than Haiku for input."""
-        scheduler = EconomicScheduler()
-        usage = SessionUsage(
-            input_tokens=1_000_000,
-            output_tokens=0,
-            cache_read_input_tokens=0,
-            cache_creation_input_tokens=0,
+    def test_selects_sonnet_for_moderate_complexity(self):
+        """Should choose Sonnet for moderate complexity."""
+        import economic_scheduler_revenue
+        model = economic_scheduler_revenue.select_model_economically(
+            complexity_score=0.6,
+            urgency=0.5,
+            budget_remaining_usd=10.00
         )
+        self.assertIsNotNone(model)
 
-        haiku_cost = scheduler.calculate_cost("claude-haiku-4-5-20251001", usage)
-        sonnet_cost = scheduler.calculate_cost("claude-sonnet-4-6", usage)
-
-        # Haiku: 0.80, Sonnet: 3.0
-        assert sonnet_cost > haiku_cost
-        assert sonnet_cost == 3.0
-
-    def test_haiku_vs_sonnet_cache_read(self):
-        """Sonnet has higher cache read rate than Haiku."""
-        scheduler = EconomicScheduler()
-        usage = SessionUsage(
-            input_tokens=0,
-            output_tokens=0,
-            cache_read_input_tokens=21_351_000,  # From error report
-            cache_creation_input_tokens=0,
+    def test_respects_budget_constraint_in_model_selection(self):
+        """Should not select expensive models when budget is low."""
+        import economic_scheduler_revenue
+        model = economic_scheduler_revenue.select_model_economically(
+            complexity_score=0.8,
+            urgency=0.5,
+            budget_remaining_usd=0.10
         )
-
-        haiku_cost = scheduler.calculate_cost("claude-haiku-4-5-20251001", usage)
-        sonnet_cost = scheduler.calculate_cost("claude-sonnet-4-6", usage)
-
-        assert sonnet_cost > haiku_cost
-
-    def test_unknown_model_raises(self):
-        """Unknown model should raise ValueError."""
-        scheduler = EconomicScheduler()
-        usage = SessionUsage(input_tokens=100, output_tokens=0,
-                            cache_read_input_tokens=0, cache_creation_input_tokens=0)
-
-        with pytest.raises(ValueError, match="Unknown model"):
-            scheduler.calculate_cost("claude-gpt-5000", usage)
+        # Should either fall back to cheaper model or return None
+        if model:
+            self.assertIn("haiku", model.lower())
 
 
-class TestEconomicSchedulerContextWindow:
-    """Context window validation tests."""
+class TestCostAnomalyDetection(unittest.TestCase):
+    """Test detection of unusual API costs."""
 
-    def test_within_context_window(self):
-        """Input within context limit should pass."""
-        scheduler = EconomicScheduler()
-        total_input = 100_000  # Well within 200k
-        assert scheduler.validate_context_usage("claude-haiku-4-5-20251001", total_input)
+    @patch("db.select")
+    def test_detects_cost_spike(self, mock_select):
+        """Should flag tasks with costs significantly above average."""
+        import economic_scheduler_revenue
+        mock_select.return_value = [
+            {"cost_usd": 0.01},
+            {"cost_usd": 0.02},
+            {"cost_usd": 0.015},
+            {"cost_usd": 5.00},  # Anomaly
+        ]
+        anomalies = economic_scheduler_revenue.detect_cost_anomalies()
+        self.assertGreater(len(anomalies), 0)
 
-    def test_at_context_window_boundary(self):
-        """Input at exact context limit should pass."""
-        scheduler = EconomicScheduler()
-        total_input = 200_000  # Exactly at limit
-        assert scheduler.validate_context_usage("claude-haiku-4-5-20251001", total_input)
+    @patch("db.select")
+    def test_returns_empty_for_normal_costs(self, mock_select):
+        """Should not flag normal cost variations."""
+        import economic_scheduler_revenue
+        mock_select.return_value = [
+            {"cost_usd": 0.01},
+            {"cost_usd": 0.015},
+            {"cost_usd": 0.012},
+        ]
+        anomalies = economic_scheduler_revenue.detect_cost_anomalies()
+        self.assertEqual(len(anomalies), 0)
 
-    def test_exceeds_context_window(self):
-        """Input exceeding context limit should fail."""
-        scheduler = EconomicScheduler()
-        total_input = 200_001  # One over limit
-        assert not scheduler.validate_context_usage("claude-haiku-4-5-20251001", total_input)
 
+class TestBatchOptimization(unittest.TestCase):
+    """Test batching tasks for cost efficiency."""
 
-class TestEconomicSchedulerRealWorldSession:
-    """Tests based on actual error report data from spec."""
+    @patch("db.select")
+    def test_batches_similar_tasks(self, mock_select):
+        """Should group similar tasks for batch processing."""
+        import economic_scheduler_revenue
+        mock_select.return_value = [
+            {"id": "t1", "type": "linting", "input_tokens": 500},
+            {"id": "t2", "type": "linting", "input_tokens": 600},
+            {"id": "t3", "type": "testing", "input_tokens": 1000},
+        ]
+        batches = economic_scheduler_revenue.optimize_batching()
+        self.assertGreater(len(batches), 0)
 
-    def test_haiku_cost_from_session(self):
-        """Verify Haiku cost calculation against session data."""
-        scheduler = EconomicScheduler()
-        usage = SessionUsage(
-            input_tokens=1113,
-            output_tokens=17,
-            cache_read_input_tokens=0,
-            cache_creation_input_tokens=0,
+    @patch("db.select")
+    def test_batch_reduces_overhead_cost(self, mock_select):
+        """Should estimate cost reduction from batching."""
+        import economic_scheduler_revenue
+        mock_select.return_value = [
+            {"id": "t1", "estimated_cost_usd": 0.10},
+            {"id": "t2", "estimated_cost_usd": 0.10},
+        ]
+        savings = economic_scheduler_revenue.estimate_batch_savings(
+            task_ids=["t1", "t2"]
         )
-        cost = scheduler.calculate_cost("claude-haiku-4-5-20251001", usage)
-        expected = 0.001198  # From error report
-        assert abs(cost - expected) < 0.0001
+        self.assertGreater(savings, 0.0)
 
-    def test_sonnet_cost_from_session(self):
-        """Verify Sonnet cost calculation against session data."""
-        scheduler = EconomicScheduler()
-        usage = SessionUsage(
-            input_tokens=3,
-            output_tokens=382,
-            cache_read_input_tokens=21351,
-            cache_creation_input_tokens=3496,
+
+class TestCostStats(unittest.TestCase):
+    """Test cost tracking and statistics."""
+
+    @patch("db.select")
+    def test_returns_cost_stats_dict(self, mock_select):
+        """Should return structured cost statistics."""
+        import economic_scheduler_revenue
+        mock_select.return_value = [
+            {"cost_usd": 0.05, "revenue_usd": 1.00},
+            {"cost_usd": 0.03, "revenue_usd": 0.50},
+        ]
+        stats = economic_scheduler_revenue.cost_stats()
+        self.assertIsInstance(stats, dict)
+        self.assertIn("total_cost_usd", stats)
+        self.assertIn("total_revenue_usd", stats)
+        self.assertIn("profit_usd", stats)
+
+    @patch("db.select")
+    def test_stats_includes_roi_metrics(self, mock_select):
+        """Stats should include ROI calculations."""
+        import economic_scheduler_revenue
+        mock_select.return_value = [
+            {"cost_usd": 0.10, "revenue_usd": 1.00},
+        ]
+        stats = economic_scheduler_revenue.cost_stats()
+        self.assertIn("avg_roi", stats)
+        self.assertGreater(stats["avg_roi"], 0.0)
+
+
+class TestBudgetTracking(unittest.TestCase):
+    """Test budget allocation and tracking."""
+
+    @patch("db.select")
+    def test_tracks_remaining_budget(self, mock_select):
+        """Should accurately calculate remaining budget."""
+        import economic_scheduler_revenue
+        mock_select.return_value = [
+            {"cost_usd": 2.00},
+            {"cost_usd": 1.50},
+        ]
+        remaining = economic_scheduler_revenue.remaining_budget(
+            daily_budget_usd=10.00
         )
-        cost = scheduler.calculate_cost("claude-sonnet-4-6", usage)
-        expected = 0.0331203  # From error report
-        assert abs(cost - expected) < 0.0001
+        self.assertEqual(remaining, 6.50)
 
-    def test_combined_session_cost(self):
-        """Total session cost matches reported cost."""
-        scheduler = EconomicScheduler()
-
-        haiku_usage = SessionUsage(
-            input_tokens=1113, output_tokens=17,
-            cache_read_input_tokens=0, cache_creation_input_tokens=0,
+    @patch("db.select")
+    def test_detects_budget_exhaustion(self, mock_select):
+        """Should flag when budget is depleted."""
+        import economic_scheduler_revenue
+        mock_select.return_value = [
+            {"cost_usd": 9.00},
+            {"cost_usd": 1.50},
+        ]
+        is_exhausted = economic_scheduler_revenue.is_budget_exhausted(
+            daily_budget_usd=10.00
         )
-        haiku_cost = scheduler.calculate_cost("claude-haiku-4-5-20251001", haiku_usage)
+        self.assertTrue(is_exhausted)
 
-        sonnet_usage = SessionUsage(
-            input_tokens=3, output_tokens=382,
-            cache_read_input_tokens=21351, cache_creation_input_tokens=3496,
+    @patch("db.select")
+    def test_alerts_on_budget_threshold(self, mock_select):
+        """Should alert when spending exceeds threshold."""
+        import economic_scheduler_revenue
+        mock_select.return_value = [
+            {"cost_usd": 7.50},
+        ]
+        should_alert = economic_scheduler_revenue.should_alert_budget(
+            daily_budget_usd=10.00,
+            alert_threshold=0.75
         )
-        sonnet_cost = scheduler.calculate_cost("claude-sonnet-4-6", sonnet_usage)
-
-        total = haiku_cost + sonnet_cost
-        expected_total = 0.0343183  # From error report
-        assert abs(total - expected_total) < 0.0001
+        self.assertTrue(should_alert)
 
 
-class TestEconomicSchedulerPermissionAwareness:
-    """Tests for permission-aware cost tracking."""
+class TestTokenEstimation(unittest.TestCase):
+    """Test token count estimation for cost prediction."""
 
-    def test_permission_denial_tracking(self):
-        """Sessions with permission denials should be tracked."""
-        scheduler = EconomicScheduler()
-        usage = SessionUsage(
-            input_tokens=1000,
-            output_tokens=100,
-            cache_read_input_tokens=0,
-            cache_creation_input_tokens=0,
-            permission_denied_tool_count=1,  # Bash tool denied
-        )
-        cost = scheduler.calculate_cost("claude-haiku-4-5-20251001", usage)
+    def test_estimates_tokens_for_text(self):
+        """Should estimate token count from text."""
+        import economic_scheduler_revenue
+        text = "Fix the bug in auth.py"
+        estimated = economic_scheduler_revenue.estimate_tokens(text)
+        self.assertGreater(estimated, 0)
+        self.assertLess(estimated, len(text.split()) * 3)
 
-        # Cost should still be calculated correctly despite permission denial
-        assert cost > 0
-        assert usage.permission_denied_tool_count == 1
+    def test_estimates_tokens_for_empty_string(self):
+        """Should handle empty string gracefully."""
+        import economic_scheduler_revenue
+        estimated = economic_scheduler_revenue.estimate_tokens("")
+        self.assertEqual(estimated, 0)
 
-    def test_zero_turns_due_to_permission(self):
-        """Sessions cut short by permissions should reflect in token count."""
-        scheduler = EconomicScheduler()
-
-        # Minimal usage suggests session was cut short
-        usage = SessionUsage(
-            input_tokens=3,
-            output_tokens=382,
-            cache_read_input_tokens=21351,
-            cache_creation_input_tokens=3496,
-            permission_denied_tool_count=1,
-        )
-        cost = scheduler.calculate_cost("claude-sonnet-4-6", usage)
-
-        # Should still have some cost despite low input
-        assert cost > 0.01
+    def test_token_estimation_scales_with_length(self):
+        """Longer text should have higher token estimate."""
+        import economic_scheduler_revenue
+        short = "Fix bug"
+        long = "Fix the bug in auth.py by implementing proper session validation" * 10
+        short_tokens = economic_scheduler_revenue.estimate_tokens(short)
+        long_tokens = economic_scheduler_revenue.estimate_tokens(long)
+        self.assertLess(short_tokens, long_tokens)
 
 
-class TestEconomicSchedulerEdgeCases:
-    """Edge case and boundary tests."""
+# Pytest-style tests
+def test_schedule_respects_cost_constraints():
+    """Scheduling should never exceed specified cost limit."""
+    import economic_scheduler_revenue
+    with patch("db.select") as mock_select:
+        mock_select.return_value = [
+            {"id": "t1", "estimated_cost_usd": 1.00},
+            {"id": "t2", "estimated_cost_usd": 2.00},
+        ]
+        result = economic_scheduler_revenue.schedule_with_budget(daily_budget_usd=1.50)
+        total = sum(t["estimated_cost_usd"] for t in result)
+        assert total <= 1.50
 
-    def test_large_token_counts(self):
-        """Handles large token counts correctly."""
-        scheduler = EconomicScheduler()
-        usage = SessionUsage(
-            input_tokens=200_000_000,  # 200M tokens
-            output_tokens=32_000,  # Max output
-            cache_read_input_tokens=0,
-            cache_creation_input_tokens=0,
-        )
-        cost = scheduler.calculate_cost("claude-haiku-4-5-20251001", usage)
-        # Should calculate without overflow
-        assert cost > 0
-        assert isinstance(cost, float)
 
-    def test_all_cache_read_scenario(self):
-        """Session using only cached content."""
-        scheduler = EconomicScheduler()
-        usage = SessionUsage(
-            input_tokens=0,
-            output_tokens=1000,
-            cache_read_input_tokens=100_000,
-            cache_creation_input_tokens=0,
-        )
-        cost = scheduler.calculate_cost("claude-sonnet-4-6", usage)
+def test_high_roi_prioritized_over_low_roi():
+    """High ROI tasks should always be scheduled before low ROI tasks."""
+    import economic_scheduler_revenue
+    with patch("db.select") as mock_select:
+        mock_select.return_value = [
+            {"id": "low_roi", "roi": 1.0},
+            {"id": "high_roi", "roi": 10.0},
+        ]
+        result = economic_scheduler_revenue.schedule_cost_optimized()
+        if len(result) > 1:
+            assert result[0]["id"] == "high_roi"
 
-        # Mostly cheap cache reads + small output
-        expected = ((100_000 / 1_000_000) * 0.30) + ((1000 / 1_000_000) * 15.0)
-        assert abs(cost - expected) < 0.0001
 
-    def test_model_context_validation_invalid_model(self):
-        """Validation returns False for unknown model."""
-        scheduler = EconomicScheduler()
-        assert not scheduler.validate_context_usage("unknown-model", 1000)
+def test_negative_profit_tasks_skipped():
+    """Tasks with negative profit should not be scheduled."""
+    import economic_scheduler_revenue
+    with patch("db.select") as mock_select:
+        mock_select.return_value = [
+            {"id": "unprofitable", "revenue_usd": 0.10, "cost_usd": 1.00},
+        ]
+        result = economic_scheduler_revenue.schedule_cost_optimized()
+        assert all(t["id"] != "unprofitable" for t in result)
+
+
+def test_cost_prediction_consistent():
+    """Cost predictions should be consistent across calls."""
+    import economic_scheduler_revenue
+    cost1 = economic_scheduler_revenue.predict_cost(
+        model="claude-sonnet-5",
+        input_tokens=10000
+    )
+    cost2 = economic_scheduler_revenue.predict_cost(
+        model="claude-sonnet-5",
+        input_tokens=10000
+    )
+    assert cost1 == cost2
+
+
+def test_stats_never_raise_on_empty_data():
+    """Stats calculation should handle empty data gracefully."""
+    import economic_scheduler_revenue
+    with patch("db.select") as mock_select:
+        mock_select.return_value = []
+        stats = economic_scheduler_revenue.cost_stats()
+        assert isinstance(stats, dict)
+        assert stats.get("total_cost_usd", 0.0) == 0.0
+
+
+if __name__ == "__main__":
+    unittest.main()

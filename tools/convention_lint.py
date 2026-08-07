@@ -8,7 +8,7 @@ Detects violations of 3 core conventions:
 3. Module-level singletons: Verify functions like acquire() exist before instance methods
 
 Usage:
-    python tools/convention_lint.py [--check-path=<dir>] [--json] [--fail-on=error]
+    python tools/convention_lint.py [files...] [--check-path=<dir>] [--json] [--fail-on=error]
 
 Output:
     JSON: {"file": str, "line": int, "rule": str, "message": str, "severity": "error|warn"}
@@ -20,7 +20,7 @@ import re
 import sys
 from argparse import ArgumentParser
 from pathlib import Path
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Set
 
 
 class ConventionViolation:
@@ -44,7 +44,7 @@ class ConventionViolation:
         }
 
     def __str__(self) -> str:
-        return f"{self.filepath}:{self.lineno}: {self.rule}: {self.message}"
+        return f"{self.filepath}:{self.lineno}: [{self.rule}] {self.message}"
 
 
 class ConventionChecker(ast.NodeVisitor):
@@ -56,6 +56,21 @@ class ConventionChecker(ast.NodeVisitor):
         self.violations: List[ConventionViolation] = []
         self.function_context: List[str] = []
         self.class_depth = 0
+        self.noqa_lines = self._parse_noqa_comments()
+
+    def _parse_noqa_comments(self) -> Dict[int, Set[str]]:
+        """Parse # noqa: RULE_NAME comments from source."""
+        noqa_map: Dict[int, Set[str]] = {}
+        noqa_pattern = re.compile(r'#\s*noqa:\s*([A-Z_]+)')
+        for lineno, line in enumerate(self.source_lines, start=1):
+            matches = noqa_pattern.findall(line)
+            if matches:
+                noqa_map[lineno] = set(matches)
+        return noqa_map
+
+    def _is_rule_disabled(self, lineno: int, rule: str) -> bool:
+        """Check if a rule is disabled on a specific line."""
+        return rule in self.noqa_lines.get(lineno, set())
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         """Track class context to distinguish methods from module functions."""
@@ -67,6 +82,7 @@ class ConventionChecker(ast.NodeVisitor):
         """Check function definitions for error handling violations."""
         self.function_context.append(node.name)
         self._check_fail_soft_error_handling(node)
+        self._check_module_singletons(node)
         self.generic_visit(node)
         self.function_context.pop()
 
@@ -74,6 +90,7 @@ class ConventionChecker(ast.NodeVisitor):
         """Check async function definitions for error handling violations."""
         self.function_context.append(node.name)
         self._check_fail_soft_error_handling(node)
+        self._check_module_singletons(node)
         self.generic_visit(node)
         self.function_context.pop()
 
@@ -81,6 +98,16 @@ class ConventionChecker(ast.NodeVisitor):
         """Check for hardcoded secrets in assignments."""
         self._check_hardcoded_secrets(node)
         self.generic_visit(node)
+
+    def _has_try_except_with_return(self, node: ast.FunctionDef) -> bool:
+        """Check if function has try/except with return in handler."""
+        for child in ast.walk(node):
+            if isinstance(child, ast.Try):
+                for handler in child.handlers:
+                    for stmt in handler.body:
+                        if isinstance(stmt, ast.Return):
+                            return True
+        return False
 
     def _check_fail_soft_error_handling(self, node: ast.FunctionDef) -> None:
         """
@@ -93,6 +120,9 @@ class ConventionChecker(ast.NodeVisitor):
         if self.class_depth > 0 or node.name.startswith('_'):
             return
 
+        if self._is_rule_disabled(node.lineno, 'FAIL_SOFT_ERROR'):
+            return
+
         has_raise = False
         for child in ast.walk(node):
             if isinstance(child, ast.Raise):
@@ -101,17 +131,7 @@ class ConventionChecker(ast.NodeVisitor):
 
         if has_raise:
             # Check if there are try/except blocks that handle errors gracefully
-            has_error_handler = False
-            for child in ast.walk(node):
-                if isinstance(child, ast.Try):
-                    for handler in child.handlers:
-                        # Check if handler has a return statement (fail-soft)
-                        has_return = any(isinstance(stmt, ast.Return) for stmt in handler.body)
-                        if has_return:
-                            has_error_handler = True
-                            break
-
-            if not has_error_handler:
+            if not self._has_try_except_with_return(node):
                 self.violations.append(ConventionViolation(
                     self.filepath, node.lineno, 'FAIL_SOFT_ERROR',
                     f'Public function "{node.name}" raises on bad input; use try/except with sensible defaults instead'
@@ -123,6 +143,9 @@ class ConventionChecker(ast.NodeVisitor):
 
         Flag string literals that look like secrets (PASSWORD|TOKEN|SECRET|KEY=).
         """
+        if self._is_rule_disabled(node.lineno, 'HARDCODED_SECRET'):
+            return
+
         secret_patterns = [
             r'PASSWORD', r'TOKEN', r'SECRET', r'API_KEY', r'PRIVATE_KEY',
             r'AUTH', r'CREDENTIAL', r'KEY='
@@ -151,6 +174,27 @@ class ConventionChecker(ast.NodeVisitor):
                                 self.filepath, node.lineno, 'HARDCODED_SECRET',
                                 f'Config key "{key_name}" contains secret keyword; use environment variables instead'
                             ))
+
+    def _check_module_singletons(self, node: ast.FunctionDef) -> None:
+        """
+        Rule 3: Module-level singletons
+
+        Functions should delegate to singleton instances, not define instance methods with 'self'.
+        """
+        if self._is_rule_disabled(node.lineno, 'MODULE_SINGLETON'):
+            return
+
+        # Only check public module-level functions
+        if self.class_depth > 0 or node.name.startswith('_'):
+            return
+
+        # Check if function has 'self' parameter (should not be there)
+        if node.args.args and node.args.args[0].arg == 'self':
+            self.violations.append(ConventionViolation(
+                self.filepath, node.lineno, 'MODULE_SINGLETON',
+                f'Public module-level function "{node.name}" has "self" parameter; should delegate to singleton, not be instance method',
+                severity='warn'
+            ))
 
 
 def check_file(filepath: str) -> List[ConventionViolation]:
@@ -182,6 +226,9 @@ def check_directory(directory: str) -> List[ConventionViolation]:
     violations = []
     path = Path(directory)
 
+    if not path.exists():
+        return violations
+
     for py_file in path.rglob('*.py'):
         # Skip common directories
         if any(part in py_file.parts for part in ['.git', '__pycache__', '.pytest_cache', 'node_modules']):
@@ -194,8 +241,8 @@ def check_directory(directory: str) -> List[ConventionViolation]:
 def main() -> int:
     """Main entry point."""
     parser = ArgumentParser(description='CLAUDE.md Convention Linter')
-    parser.add_argument('paths', nargs='*', default=['runner', 'tools'],
-                        help='Files or directories to check (default: runner, tools)')
+    parser.add_argument('paths', nargs='*',
+                        help='Files or directories to check (default: stdin from pre-commit)')
     parser.add_argument('--check-path', dest='check_paths', action='append',
                         help='Additional paths to check (can be repeated)')
     parser.add_argument('--json', action='store_true',
@@ -206,16 +253,21 @@ def main() -> int:
     args = parser.parse_args()
 
     # Collect all paths to check
-    check_paths = args.paths or ['runner', 'tools']
+    check_paths = args.paths if args.paths else []
     if args.check_paths:
         check_paths.extend(args.check_paths)
+
+    # If no paths provided, use defaults
+    if not check_paths:
+        check_paths = ['runner', 'tools']
 
     # Run linter on all paths
     all_violations = []
     for path in check_paths:
-        if Path(path).is_dir():
+        path_obj = Path(path)
+        if path_obj.is_dir():
             all_violations.extend(check_directory(path))
-        elif Path(path).is_file():
+        elif path_obj.is_file():
             all_violations.extend(check_file(path))
 
     # Output results

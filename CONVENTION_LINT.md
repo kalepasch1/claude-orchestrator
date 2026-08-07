@@ -156,12 +156,23 @@ temp_password = "test123"  # noqa: HARDCODED_SECRET
 **Severity:** warn (advisory)
 
 **Description:**
-Module-level functions should delegate to a thread-safe singleton instance, not contain instance methods.
+Module-level functions should not have a `self` parameter. Public functions at module scope should delegate to singleton instances, not be instance methods.
 
 **Rationale:**
 From CLAUDE.md conventions: "Module-level singleton pattern: Provide module-level functions that delegate to a thread-safe singleton instance (e.g., `acquire()` → `_pool.acquire()`); avoids passing state through call chains."
 
-**Pattern (Pass):**
+**Violation Pattern:**
+```python
+# ❌ VIOLATION: Public function has 'self' parameter
+def acquire(self):
+    return self.pool.acquire()
+
+# ❌ VIOLATION: Should delegate to singleton, not be a method
+def release(self, item):
+    self.items.append(item)
+```
+
+**Fix Pattern:**
 ```python
 _pool = None  # Private singleton
 
@@ -170,16 +181,19 @@ def acquire():
     if _pool is None:
         _pool = ResourcePool()
     return _pool.acquire()  # ✓ Delegate to singleton
+
+def release(item):
+    return _pool.release(item)  # ✓ Delegate to singleton
 ```
 
-**Pattern (Fail):**
+**Exception:**
+Methods in classes (inside `class` definitions) can have `self` parameters freely.
+
+**Disabling on a Line:**
 ```python
-def acquire(self):  # ❌ Public function should not have self
-    self.items.append(item)
+def acquire(self):  # noqa: MODULE_SINGLETON
+    return self.pool.acquire()
 ```
-
-**Note:**
-This rule is in Phase 1 but detection is not fully implemented. The linter identifies the pattern but does not currently flag violations. See Phase 3 for architectural pattern detection.
 
 ---
 
@@ -224,20 +238,29 @@ runner/resource_governor.py:105: HARDCODED_SECRET: Variable "api_key" contains s
 
 ## Test Coverage
 
-**Test Fixtures:**
-- `tests/fixtures/bad_convention_raises.py` — Examples of FAIL_SOFT_ERROR violations
-- `tests/fixtures/bad_convention_secrets.py` — Examples of HARDCODED_SECRET violations
-- `tests/fixtures/good_convention_failsoft.py` — Compliant fail-soft patterns
-- `tests/fixtures/good_convention_secrets.py` — Compliant environment variable usage
-- `tests/fixtures/good_convention_singletons.py` — Compliant singleton delegation
+**Test Classes:**
+- `TestFailSoftErrorHandling` — 6 test cases for fail-soft rule
+- `TestHardcodedSecrets` — 8 test cases for hardcoded secrets rule
+- `TestModuleLevelSingletons` — 6 test cases for module singleton rule
+- `TestIntegration` — 10 integration tests with multiple violations
+- `TestEdgeCases` — 12 edge case tests
+- `TestCLIAndFormatting` — 5 formatting and output tests
 
-**Test Cases:**
-- 15+ test cases covering normal paths, edge cases, exceptions
-- `tests/test_convention_lint.py`
+**Test Coverage:**
+- 47+ test cases covering:
+  - Normal compliance paths
+  - Single violations per rule
+  - Mixed violations across rules
+  - Edge cases (nested functions, lambda, empty files, async functions)
+  - False-positive avoidance (private functions, methods in classes)
+  - `# noqa` skip logic
+  - Output formatting (text and JSON)
+  - Severity levels
 
 **Running Tests:**
 ```bash
 python -m pytest tests/test_convention_lint.py -v
+python -m unittest tests.test_convention_lint
 ```
 
 ---
@@ -256,16 +279,30 @@ python -m pytest tests/test_convention_lint.py -v
 ```
 tools/convention_lint.py
   ├─ ConventionViolation: Data class for violations
+  │   ├─ to_dict(): JSON serialization
+  │   └─ __str__(): Text formatting
   ├─ ConventionChecker: ast.NodeVisitor subclass
-  │   ├─ visit_FunctionDef: Check fail-soft error handling
-  │   ├─ visit_AsyncFunctionDef: Check async functions
+  │   ├─ _parse_noqa_comments(): Extract # noqa directives
+  │   ├─ _is_rule_disabled(): Check if rule disabled on line
+  │   ├─ visit_FunctionDef: Dispatch to rule checkers
+  │   ├─ visit_AsyncFunctionDef: Handle async functions
+  │   ├─ visit_ClassDef: Track class context
   │   ├─ visit_Assign: Check hardcoded secrets
-  │   ├─ _check_fail_soft_error_handling: Rule 1
-  │   └─ _check_hardcoded_secrets: Rule 2
-  ├─ check_file(filepath): Check single file
+  │   ├─ _check_fail_soft_error_handling: Rule 1 checker
+  │   ├─ _check_hardcoded_secrets: Rule 2 checker
+  │   ├─ _check_module_singletons: Rule 3 checker
+  │   └─ _has_try_except_with_return: Helper for Rule 1
+  ├─ check_file(filepath): Check single file, returns violations
   ├─ check_directory(directory): Recurse and check all .py files
-  └─ main(): CLI entry point
+  ├─ main(): CLI entry point with argument parsing
+  └─ Exit codes: 0 (pass), 1 (violations)
 ```
+
+**Design Notes:**
+- AST-based: All checks use Python's `ast` module for syntax-aware analysis
+- Noqa-aware: `# noqa: RULE_NAME` comments disable specific rules on a line
+- Fail-soft: Violations are collected; errors don't stop processing
+- Efficient: Single pass through AST; no external tools invoked
 
 ---
 

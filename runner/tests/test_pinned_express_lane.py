@@ -73,7 +73,7 @@ def _make_select(queued, active=None, recent=None, projects=None, done=None, con
 class TestPinnedExpressLane(unittest.TestCase):
     """Tests for the pinned task express lane — bypass of other priority tiers."""
 
-    def _claim(self, queued, active=None, done=None, controls=None):
+    def _claim(self, queued, active=None, done=None, controls=None, projects=None):
         """Run claim_task against a mocked DB and return the claimed slug."""
         claimed = []
 
@@ -85,7 +85,7 @@ class TestPinnedExpressLane(unittest.TestCase):
                 return [task] if task else []
             return None
 
-        sel = _make_select(queued, active=active or [], done=done or [], controls=controls or [])
+        sel = _make_select(queued, active=active or [], done=done or [], controls=controls or [], projects=projects)
         with patch.object(db, "select", side_effect=sel), \
              patch.object(db, "_req", side_effect=fake_patch):
             db.claim_task("runner-1")
@@ -103,7 +103,7 @@ class TestPinnedExpressLane(unittest.TestCase):
     def test_pinned_claims_before_recovery_tasks(self):
         """Pinned task claims before recovery (recover-*) tasks in the express lane."""
         tasks = [
-            _task("recover-missing-branch-abc", slug="recover-missing-branch-abc", created_at="2024-01-01T00:00:00"),
+            _task("recover-missing-branch-abc", created_at="2024-01-01T00:00:00"),
             _task("new-pinned", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
         ]
         self.assertEqual(self._claim(tasks), "new-pinned")
@@ -111,7 +111,7 @@ class TestPinnedExpressLane(unittest.TestCase):
     def test_pinned_claims_before_release_fix_tasks(self):
         """Pinned task claims before release fix (relfix-*, qafix-*) tasks."""
         tasks = [
-            _task("qafix-build-error", slug="qafix-build-error", created_at="2024-01-01T00:00:00"),
+            _task("qafix-build-error", created_at="2024-01-01T00:00:00"),
             _task("new-pinned", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
         ]
         self.assertEqual(self._claim(tasks), "new-pinned")
@@ -119,7 +119,7 @@ class TestPinnedExpressLane(unittest.TestCase):
     def test_pinned_claims_before_evidence_tasks(self):
         """Pinned task claims before evidence (canary-*) tasks."""
         tasks = [
-            _task("canary-gpt4", slug="canary-gpt4", created_at="2024-01-01T00:00:00"),
+            _task("canary-gpt4", created_at="2024-01-01T00:00:00"),
             _task("new-pinned", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
         ]
         self.assertEqual(self._claim(tasks), "new-pinned")
@@ -127,7 +127,7 @@ class TestPinnedExpressLane(unittest.TestCase):
     def test_pinned_claims_before_improvement_tasks(self):
         """Pinned task claims before improvement (improve-*) tasks."""
         tasks = [
-            _task("improve-claim-efficiency", slug="improve-claim-efficiency", created_at="2024-01-01T00:00:00"),
+            _task("improve-claim-efficiency", created_at="2024-01-01T00:00:00"),
             _task("new-pinned", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
         ]
         self.assertEqual(self._claim(tasks), "new-pinned")
@@ -155,10 +155,10 @@ class TestPinnedExpressLane(unittest.TestCase):
         """Pinned task claims in express lane ahead of recovery, release, evidence, and improvement."""
         tasks = [
             _task("old-normal", created_at="2024-01-01T00:00:00"),
-            _task("recover-1", slug="recover-missing-branch-1", created_at="2024-01-02T00:00:00"),
-            _task("qafix-1", slug="qafix-critical-fail", created_at="2024-01-03T00:00:00"),
-            _task("canary-1", slug="canary-gpt4", created_at="2024-01-04T00:00:00"),
-            _task("improve-1", slug="improve-queue-latency", created_at="2024-01-05T00:00:00"),
+            _task("recover-missing-branch-1", created_at="2024-01-02T00:00:00"),
+            _task("qafix-critical-fail", created_at="2024-01-03T00:00:00"),
+            _task("canary-gpt4", created_at="2024-01-04T00:00:00"),
+            _task("improve-queue-latency", created_at="2024-01-05T00:00:00"),
             _task("express-lane", pinned=True, pin_rank=1, created_at="2024-01-06T00:00:00"),
         ]
         self.assertEqual(self._claim(tasks), "express-lane")
@@ -172,7 +172,10 @@ class TestPinnedExpressLane(unittest.TestCase):
         ]
         claimed = []
         for _ in range(3):
-            claimed.append(self._claim(tasks))
+            task_slug = self._claim(tasks)
+            claimed.append(task_slug)
+            # Remove the claimed task for the next iteration
+            tasks = [t for t in tasks if t["slug"] != task_slug]
         self.assertEqual(claimed, ["pin-1", "pin-2", "pin-3"])
 
     def test_pin_rank_zero_treated_as_unpinned(self):
@@ -299,7 +302,7 @@ class TestPinnedExpressLane(unittest.TestCase):
         # The escape hatches are for pulling items outside the 1000-item limit
         # But once in the queued list, pinned tasks should still sort first
         tasks = [
-            _task("relfix-deployment-blocker", slug="relfix-deployment-blocker", created_at="2024-01-01T00:00:00"),
+            _task("relfix-deployment-blocker", created_at="2024-01-01T00:00:00"),
             _task("pinned-task", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
         ]
         self.assertEqual(self._claim(tasks), "pinned-task")
@@ -307,12 +310,17 @@ class TestPinnedExpressLane(unittest.TestCase):
     def test_paused_project_filtering_happens_before_express_lane(self):
         """Pinned tasks in paused projects are filtered out before sorting."""
         # Paused project filtering happens early, so a pinned task in a paused project won't be claimed
+        projects = [
+            {"id": "p-paused", "name": "paused", "priority": 5, "concurrency_weight": 1, "repo_path": "/repos/paused"},
+            {"id": "p-active", "name": "active", "priority": 5, "concurrency_weight": 1, "repo_path": "/repos/active"},
+        ]
         tasks = [
             _task("pinned-paused-proj", project_id="p-paused", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
             _task("unpinned-active", project_id="p-active", created_at="2024-01-01T00:00:00"),
         ]
         # This is hard to test with mocks; rely on db.py logic that filters paused projects first
-        self.assertEqual(self._claim(tasks), "unpinned-active")
+        with patch.object(db, "repo_runnable_here", return_value=True):
+            self.assertEqual(self._claim(tasks, projects=projects), "unpinned-active")
 
 
 class TestSetPinIntegration(unittest.TestCase):
@@ -335,7 +343,7 @@ class TestSetPinIntegration(unittest.TestCase):
 class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
     """Edge case tests for pinned express lane."""
 
-    def _claim(self, queued, active=None, done=None, controls=None):
+    def _claim(self, queued, active=None, done=None, controls=None, projects=None):
         """Run claim_task against a mocked DB and return the claimed slug."""
         claimed = []
 
@@ -347,7 +355,7 @@ class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
                 return [task] if task else []
             return None
 
-        sel = _make_select(queued, active=active or [], done=done or [], controls=controls or [])
+        sel = _make_select(queued, active=active or [], done=done or [], controls=controls or [], projects=projects)
         with patch.object(db, "select", side_effect=sel), \
              patch.object(db, "_req", side_effect=fake_patch):
             db.claim_task("runner-1")
@@ -402,7 +410,7 @@ class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
     def test_evidence_and_pinned_interact(self):
         """Pinned task claims before evidence (canary) tasks even with evidence_reserve_open."""
         tasks = [
-            _task("canary-gpt4", slug="canary-gpt4", created_at="2024-01-01T00:00:00"),
+            _task("canary-gpt4", created_at="2024-01-01T00:00:00"),
             _task("pinned", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
         ]
         self.assertEqual(self._claim(tasks), "pinned")
@@ -410,7 +418,7 @@ class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
     def test_churn_deprioritization_doesnt_affect_pinned(self):
         """Churn tasks (cont-*, batch-mech*) are deprioritized but pinned tasks still win."""
         tasks = [
-            _task("cont-slice-1", slug="cont-slice-1", created_at="2024-01-01T00:00:00"),
+            _task("cont-slice-1", created_at="2024-01-01T00:00:00"),
             _task("pinned", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
         ]
         self.assertEqual(self._claim(tasks), "pinned")

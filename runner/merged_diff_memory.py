@@ -1,101 +1,169 @@
 """
-Merged-diff-memory: metadata tracking for merged commits, supporting fleet recovery and operator queries.
+Merged-diff-memory: thread-safe, fail-soft metadata tracking for merged commits.
 
-Stores recent merge metadata (not full diffs) in auto-memory for auditability and recovery.
-Fail-soft on all errors; missing state returns empty list.
+Stores recent merge metadata (commit hash, author, date, message, affected files)
+in ~/.claude/projects/.../memory/merged_diff_memory.json with max 50 entries.
+
+Fail-soft on all errors; missing state returns empty list/dict.
+Module-level singleton pattern: all functions delegate to thread-safe _Pool instance.
 """
 
 import json
-import os
 import subprocess
+import threading
 from pathlib import Path
 from typing import Optional
 
-MEMORY_DIR = Path.home() / ".claude" / "projects" / "-Users-kpasch-Documents-beethoven-claude-orchestrator" / "memory"
-MERGED_DIFF_FILE = MEMORY_DIR / "merged_diff_memory.json"
 MAX_STORED_MERGES = 50
 
 
-def _safe_run(cmd: list[str], cwd: Optional[str] = None) -> str:
-    """Run command; return empty string on any error."""
+def _get_memory_dir() -> Path:
+    """Resolve memory directory dynamically. Falls back to home/.claude/projects/memory on error."""
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=5)
-        return result.stdout.strip() if result.returncode == 0 else ""
+        home = Path.home()
+        # Derive project ID from repo root path
+        cwd = Path.cwd()
+        repo_root = cwd
+        while repo_root != repo_root.parent:
+            if (repo_root / ".git").exists():
+                break
+            repo_root = repo_root.parent
+
+        # Create project id: convert absolute path to "home-relative-path-format"
+        try:
+            project_path = str(repo_root.relative_to(home)).replace("/", "-")
+            project_id = f"-{home.name}-{project_path}"
+        except ValueError:
+            # Not under home, use absolute path hash
+            project_id = "-" + str(repo_root).replace("/", "-")[1:]
+
+        memory_dir = home / ".claude" / "projects" / project_id / "memory"
+        return memory_dir
     except Exception:
-        return ""
+        return Path.home() / ".claude" / "projects" / "memory"
 
 
-def _read_memory() -> list[dict]:
-    """Load merged diff metadata from memory file. Return [] on any error."""
-    try:
-        if MERGED_DIFF_FILE.exists():
-            with open(MERGED_DIFF_FILE, encoding="utf-8", errors="replace") as f:
-                data = json.load(f)
-                return data.get("merges", [])
-    except Exception:
-        pass
-    return []
+class _Pool:
+    """Thread-safe singleton for merge metadata storage."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._stats = {"reads": 0, "writes": 0, "errors": 0}
+
+    def _safe_run(self, cmd: list[str], cwd: Optional[str] = None) -> str:
+        """Run command; return empty string on any error."""
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd, timeout=5)
+            return result.stdout.strip() if result.returncode == 0 else ""
+        except Exception:
+            return ""
+
+    def _read_memory(self) -> list[dict]:
+        """Load merged diff metadata from memory file. Return [] on any error."""
+        with self._lock:
+            self._stats["reads"] += 1
+            try:
+                memory_file = _get_memory_dir() / "merged_diff_memory.json"
+                if memory_file.exists():
+                    with open(memory_file, encoding="utf-8", errors="replace") as f:
+                        data = json.load(f)
+                        return data.get("merges", [])
+            except Exception:
+                self._stats["errors"] += 1
+            return []
+
+    def _write_memory(self, merges: list[dict]) -> None:
+        """Write merged diff metadata to memory file. Fail-soft on error."""
+        with self._lock:
+            self._stats["writes"] += 1
+            try:
+                memory_dir = _get_memory_dir()
+                memory_dir.mkdir(parents=True, exist_ok=True)
+                memory_file = memory_dir / "merged_diff_memory.json"
+                trimmed = merges[-MAX_STORED_MERGES:]
+                with open(memory_file, "w", encoding="utf-8") as f:
+                    json.dump({"merges": trimmed}, f, indent=2)
+            except Exception:
+                self._stats["errors"] += 1
+
+    def capture_merge(self, commit_hash: str, branch: str, cwd: str) -> None:
+        """Capture metadata for a merged commit."""
+        if not commit_hash or not branch or not cwd:
+            return
+
+        merges = self._read_memory()
+
+        # Skip if already recorded
+        if any(m.get("commit") == commit_hash for m in merges):
+            return
+
+        author = self._safe_run(["git", "log", "-1", "--format=%an", commit_hash], cwd=cwd)
+        date = self._safe_run(["git", "log", "-1", "--format=%ai", commit_hash], cwd=cwd)
+        message = self._safe_run(["git", "log", "-1", "--format=%B", commit_hash], cwd=cwd)
+        files = self._safe_run(["git", "diff-tree", "--no-commit-id", "--name-only", "-r", commit_hash], cwd=cwd)
+
+        merge_entry = {
+            "commit": commit_hash,
+            "branch": branch,
+            "author": author or "",
+            "date": date or "",
+            "message": (message or "")[:500],
+            "files": files.split("\n") if files else [],
+        }
+
+        merges.append(merge_entry)
+        self._write_memory(merges)
+
+    def get_recent_merges(self, limit: int = 10) -> list[dict]:
+        """Get recent merged commits. Returns newest first."""
+        if limit <= 0:
+            return []
+        merges = self._read_memory()
+        return merges[-limit:][::-1]
+
+    def stats(self) -> dict:
+        """Return operation statistics."""
+        with self._lock:
+            merges = self._read_memory()
+            return {
+                "reads": self._stats["reads"],
+                "writes": self._stats["writes"],
+                "errors": self._stats["errors"],
+                "max_capacity": MAX_STORED_MERGES,
+                "current_count": len(merges),
+                "memory_file": str(_get_memory_dir() / "merged_diff_memory.json"),
+            }
+
+    def invalidate(self) -> None:
+        """Clear all stored merge metadata."""
+        with self._lock:
+            try:
+                memory_dir = _get_memory_dir()
+                memory_file = memory_dir / "merged_diff_memory.json"
+                if memory_file.exists():
+                    memory_file.unlink()
+            except Exception:
+                self._stats["errors"] += 1
 
 
-def _write_memory(merges: list[dict]) -> None:
-    """Write merged diff metadata to memory file. Fail-soft on error."""
-    try:
-        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
-        with open(MERGED_DIFF_FILE, "w", encoding="utf-8") as f:
-            json.dump({"merges": merges[-MAX_STORED_MERGES:]}, f, indent=2)
-    except Exception:
-        pass
+_pool = _Pool()
 
 
 def capture_merge(commit_hash: str, branch: str, cwd: str) -> None:
-    """
-    Capture metadata for a merged commit.
-
-    Args:
-        commit_hash: full commit SHA
-        branch: source branch name
-        cwd: repo root for git commands
-    """
-    merges = _read_memory()
-
-    # Skip if already recorded
-    if any(m["commit"] == commit_hash for m in merges):
-        return
-
-    author = _safe_run(["git", "log", "-1", "--format=%an", commit_hash], cwd=cwd)
-    date = _safe_run(["git", "log", "-1", "--format=%aI", commit_hash], cwd=cwd)
-    message = _safe_run(["git", "log", "-1", "--format=%s", commit_hash], cwd=cwd)
-    files = _safe_run(["git", "diff-tree", "--no-commit-id", "--name-only", "-r", commit_hash], cwd=cwd)
-
-    merges.append({
-        "commit": commit_hash,
-        "branch": branch,
-        "author": author,
-        "date": date,
-        "message": message,
-        "files_affected": files.split("\n") if files else [],
-    })
-
-    _write_memory(merges)
+    """Capture metadata for a merged commit."""
+    _pool.capture_merge(commit_hash, branch, cwd)
 
 
-def get_recent_merges(limit: int = 20) -> list[dict]:
-    """Get recent merge metadata. Returns empty list on error."""
-    merges = _read_memory()
-    return merges[-limit:]
+def get_recent_merges(limit: int = 10) -> list[dict]:
+    """Get recent merged commits. Returns newest first. Empty list on error."""
+    return _pool.get_recent_merges(limit)
 
 
 def stats() -> dict:
-    """Return merge tracking stats."""
-    merges = _read_memory()
-    return {
-        "total_tracked": len(merges),
-        "max_capacity": MAX_STORED_MERGES,
-        "memory_file": str(MERGED_DIFF_FILE),
-        "file_exists": MERGED_DIFF_FILE.exists(),
-    }
+    """Return merge tracking statistics (reads, writes, errors, capacity)."""
+    return _pool.stats()
 
 
 def invalidate() -> None:
     """Clear all tracked merges."""
-    _write_memory([])
+    _pool.invalidate()
