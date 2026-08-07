@@ -533,6 +533,14 @@ def _try_semantic_merge(repo, branch, base):
         if not merge_base:
             return False
 
+        # Capture the branch tip BEFORE anything resets it. This is the conceptual
+        # "branch parent" of the resolution and the rollback target; after the
+        # `git reset --hard base` below, the branch ref no longer points at the work.
+        tip = _git(repo, "rev-parse", "--verify", f"{branch}^{{commit}}")
+        if tip.returncode != 0 or not tip.stdout.strip():
+            return False
+        branch_tip = tip.stdout.strip()
+
         # files changed on the branch side (merge-base..branch)
         branch_diff = _git(repo, "diff", "--name-only", merge_base, branch)
         base_diff = _git(repo, "diff", "--name-only", merge_base, base)
@@ -611,6 +619,32 @@ def _try_semantic_merge(repo, branch, base):
             commit = subprocess.run(["git", "commit", "--allow-empty", "-m", msg], cwd=wt,
                                     capture_output=True, timeout=30)
             if commit.returncode != 0:
+                return False
+
+            # SILENT-DISCARD GATE (2026-08-06). This is the second producer of
+            # "(auto-resolved)" commits, and the semantic merge can legitimately resolve a
+            # file to exactly mainline's bytes. When it does, and the branch side carried
+            # commits that exist nowhere else, that is not a resolution — it is a deletion
+            # wearing a merge's clothes, and nothing downstream can see it (the result IS
+            # the mainline blob, so every base-vs-result diff is empty).
+            #
+            # Note the parents deliberately: the worktree was reset to `base` and the
+            # merged content overlaid, so the new commit's git parent is base. The
+            # CONCEPTUAL branch parent is branch_tip, captured before the reset — passing
+            # the post-reset ref would compare the branch against itself and always pass.
+            try:
+                import automerge_discard_guard
+                ok, detail = automerge_discard_guard.gate(
+                    repo, base, branch_tip, result_ref="HEAD", branch=branch)
+            except Exception as exc:
+                ok, detail = False, (f"automerge discard guard error (fail-closed): "
+                                     f"{type(exc).__name__}: {exc}")
+            if not ok:
+                # Roll the branch back to where it was and let the caller fall through to
+                # the existing redo/manual path. The branch is the only copy of the work.
+                subprocess.run(["git", "reset", "--hard", branch_tip], cwd=wt,
+                               capture_output=True, timeout=30)
+                print(f"[train] semantic merge of {branch} REFUSED: {detail}")
                 return False
             return True
         finally:
