@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""MERGED must mean the commit reached the production branch.
+"""MERGED must mean the commit reached the integration branch.
 
 Measured 2026-08-06 across 24 recent beethoven MERGED rows with a non-null artifact_commit:
 17% were in master, 42% were not ancestors of master, 41% did not exist on origin at all.
-83% of MERGED was false, and 20 phantoms were created after the 2026-08-04 audit.
+The original audit correctly caught evidence-free rows, but using production as the target
+also misclassified every legitimate staging commit waiting for the release train. These
+tests pin the two-phase state model: MERGED means staging-reachable; production is certified
+later as DEPLOYED_AND_VERIFIED.
 
 The audit's fix — populate artifact_commit — did not help, because presence is not
 reachability. These tests pin reachability, and pin equally hard that an infrastructure
@@ -59,11 +62,17 @@ class TestVerifyMergeReachable(_Repo):
         self.assertEqual(v, merge_truth.OK, why)
 
     def test_commit_only_on_side_branch_is_phantom(self):
-        """42% of the audited rows were exactly this: a real commit that never reached prod."""
+        """A real commit that never reached the requested integration ref is still phantom."""
         v, why = merge_truth.verify_merge_reachable(self.repo, self.on_side, "master",
                                                     fetch=False)
         self.assertEqual(v, merge_truth.PHANTOM, why)
         self.assertIn("not an ancestor", why)
+
+    def test_commit_on_staging_is_ok_before_production(self):
+        """The release train may legitimately leave MERGED work on staging for a batch."""
+        v, why = merge_truth.verify_merge_reachable(self.repo, self.on_side, "side",
+                                                    fetch=False)
+        self.assertEqual(v, merge_truth.OK, why)
 
     def test_nonexistent_commit_is_phantom(self):
         """41% of the audited rows: a sha that exists nowhere."""
@@ -93,13 +102,13 @@ class TestVerifyMergeReachable(_Repo):
                                                   fetch=False)
         self.assertEqual(v, merge_truth.INFRA_ERROR)
 
-    def test_unknown_prod_branch_is_infra_error_not_phantom(self):
+    def test_unknown_target_branch_is_infra_error_not_phantom(self):
         """We cannot ask the question — that is not the same as the answer being no."""
         v, _ = merge_truth.verify_merge_reachable(self.repo, self.on_master, "nope",
                                                   fetch=False)
         self.assertEqual(v, merge_truth.INFRA_ERROR)
 
-    def test_missing_prod_branch_config_is_infra_error(self):
+    def test_missing_target_branch_config_is_infra_error(self):
         v, _ = merge_truth.verify_merge_reachable(self.repo, self.on_master, None, fetch=False)
         self.assertEqual(v, merge_truth.INFRA_ERROR)
 
@@ -141,6 +150,13 @@ class TestGateMergedPatch(_Repo):
         self.assertEqual(self._gate(body)["state"], "MERGED")
         self.alarm.assert_not_called()
 
+    def test_staging_reachable_merged_is_allowed_before_prod(self):
+        out = merge_truth.gate_merged_patch(
+            self.task, {"state": "MERGED", "artifact_commit": self.on_side},
+            repo=self.repo, prod_branch="side", fetch=False)
+        self.assertEqual(out["state"], "MERGED")
+        self.alarm.assert_not_called()
+
     def test_unreachable_merged_becomes_phantom_unverified(self):
         out = self._gate({"state": "MERGED", "artifact_commit": self.on_side})
         self.assertEqual(out["state"], merge_truth.PHANTOM_STATE)
@@ -166,7 +182,7 @@ class TestGateMergedPatch(_Repo):
         out = self._gate({"state": "MERGED", "artifact_commit": "0" * 40, "note": "orig"})
         self.assertIn("does not exist", out["note"])
         self.assertIn("0" * 12, out["note"])
-        self.assertIn("prod_branch=master", out["note"])
+        self.assertIn("integration_branch=master", out["note"])
         self.assertIn("orig", out["note"], "original note must be preserved")
 
     def test_falls_back_to_task_artifact_commit(self):
@@ -178,6 +194,38 @@ class TestGateMergedPatch(_Repo):
             self.task, {"state": "merged", "artifact_commit": self.on_side},
             repo=self.repo, prod_branch="master", fetch=False)
         self.assertEqual(out["state"], merge_truth.PHANTOM_STATE)
+
+
+class TestResolveTarget(unittest.TestCase):
+
+    def setUp(self):
+        self.task = {"project_id": "p1"}
+        self.project = {
+            "id": "p1", "repo_path": "/repo", "staging_branch": "stale/staging",
+            "default_base": "master", "prod_branch": "master",
+        }
+
+    def test_dev_mode_uses_runtime_staging_branch_over_stale_project_value(self):
+        with patch.object(merge_truth, "_project_row", return_value=self.project), \
+             patch.dict(os.environ, {
+                 "ORCH_CODE_MERGE_TARGET": "dev",
+                 "ORCH_STAGING_BRANCH": "orchestrator/dev",
+             }):
+            self.assertEqual(
+                merge_truth.resolve_target(self.task),
+                ("/repo", "orchestrator/dev", None),
+            )
+
+    def test_direct_prod_mode_uses_the_same_base_as_merge_train(self):
+        with patch.object(merge_truth, "_project_row", return_value=self.project), \
+             patch.dict(os.environ, {
+                 "ORCH_CODE_MERGE_TARGET": "prod",
+                 "ORCH_STAGING_BRANCH": "orchestrator/dev",
+             }):
+            self.assertEqual(
+                merge_truth.resolve_target(self.task),
+                ("/repo", "master", None),
+            )
 
 
 class TestGuardedTaskUpdate(_Repo):
@@ -206,11 +254,12 @@ class TestReconcilerIsReadOnly(_Repo):
     def test_reconcile_never_mutates(self):
         """Operators must be able to ask the question without the answer changing anything."""
         tasks = [{"id": "t1", "slug": "a", "project_id": "p1",
-                  "artifact_commit": self.on_side, "updated_at": "2026-08-06"},
+                 "artifact_commit": self.on_side, "updated_at": "2026-08-06"},
                  {"id": "t2", "slug": "b", "project_id": "p1",
-                  "artifact_commit": self.on_master, "updated_at": "2026-08-06"}]
+                  "artifact_commit": "0" * 40, "updated_at": "2026-08-06"}]
         projects = [{"id": "p1", "name": "beethoven", "repo_path": self.repo,
-                     "prod_branch": "master", "default_base": "master"}]
+                     "staging_branch": "side", "prod_branch": "master",
+                     "default_base": "master"}]
 
         def _sel(table, params=None):
             return tasks if table == "tasks" else projects
@@ -229,7 +278,7 @@ class TestReconcilerIsReadOnly(_Repo):
         self.assertEqual(report["real"], 1)
         self.assertEqual(report["phantom"], 1)
         self.assertEqual(report["real_share"], 0.5)
-        self.assertEqual(report["offenders"][0]["slug"], "a")
+        self.assertEqual(report["offenders"][0]["slug"], "b")
 
     def test_infra_errors_excluded_from_share(self):
         """Unknown is not bad. Counting infra errors as phantoms would overstate the problem."""
@@ -238,9 +287,11 @@ class TestReconcilerIsReadOnly(_Repo):
                  {"id": "t2", "slug": "b", "project_id": "p2",
                   "artifact_commit": "abc", "updated_at": "x"}]
         projects = [{"id": "p1", "name": "beethoven", "repo_path": self.repo,
-                     "prod_branch": "master", "default_base": "master"},
+                     "staging_branch": "master", "prod_branch": "master",
+                     "default_base": "master"},
                     {"id": "p2", "name": "broken", "repo_path": "/no/such/repo",
-                     "prod_branch": "main", "default_base": "main"}]
+                     "staging_branch": "orchestrator/dev", "prod_branch": "main",
+                     "default_base": "main"}]
 
         def _sel(table, params=None):
             return tasks if table == "tasks" else projects
