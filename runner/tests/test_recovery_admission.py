@@ -13,7 +13,9 @@ import os
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -147,15 +149,12 @@ class AdmissionTest(unittest.TestCase):
     def test_refusal_is_recorded_in_admission_rejections(self):
         _repo_with_branch(self.repo)
         slug = f"{recovery_admission.RECOVERY_PREFIX}build-thing"
-        import db as db_mod
         recorded = []
-        original = db_mod._record_refusal
+        db_mod = types.ModuleType("db")
         db_mod._record_refusal = lambda row, gate, reason: recorded.append((row, gate, reason))
-        try:
+        with patch.dict(sys.modules, {"db": db_mod}):
             allowed = recovery_admission.enforce(self._row(slug), repo=self.repo,
                                                  db_mod=_FakeDB())
-        finally:
-            db_mod._record_refusal = original
         self.assertFalse(allowed)
         self.assertEqual(len(recorded), 1)
         row, gate, reason = recorded[0]
