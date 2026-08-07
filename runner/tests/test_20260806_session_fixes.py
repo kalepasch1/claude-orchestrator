@@ -1,6 +1,30 @@
 """Behavioural tests for the 2026-08-06 fixes. Each asserts the BUG would be caught,
-not merely that the code runs — a test that passes on the broken version is a false positive."""
+not merely that the code runs — a test that passes on the broken version is a false positive.
+
+RUN THIS DIRECTLY: `python3 runner/tests/test_20260806_session_fixes.py`.
+
+It is a standalone verification SCRIPT, not a pytest module: the checks execute at import
+time (hitting the DB and reading source files) and the module ends in sys.exit(). Because
+it is named test_*.py, pytest tries to collect it, executes that body, and the SystemExit
+propagates out of collection as `INTERNALERROR> SystemExit: 0` — which aborts the ENTIRE
+run. That is why `pytest runner/tests/` collected 15 tests instead of thousands: one
+script killed collection for every other file. Skipping at module level under pytest
+costs nothing here and restores the whole suite.
+"""
 import os, sys, subprocess
+
+if __name__ != "__main__":
+    # Imported (i.e. being collected) rather than run. Bail out before any of the
+    # import-time work below, so neither its side effects nor its sys.exit() can
+    # take the collector down.
+    try:
+        import pytest
+        pytest.skip(
+            "standalone verification script — run it directly, not under pytest",
+            allow_module_level=True,
+        )
+    except ImportError:
+        raise SystemExit(0)
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, "/Users/kpasch/Documents/beethoven/claude-orchestrator/runner")
 RESULTS = []
