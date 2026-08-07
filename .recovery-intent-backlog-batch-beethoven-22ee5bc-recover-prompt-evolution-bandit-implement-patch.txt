@@ -1,0 +1,4 @@
+recovery-intent: backlog-batch-beethoven-22ee5bc-recover-prompt-evolution-bandit-implement-patch
+template: 72807e03b3b2
+intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 acceptance active adapt advice affect after agentic aider allowlist analysis author batch beethoven before behavior blocked blocker build build_fix buildfail ce2e8dcd7954 change changes cheap claim class claude cloud codebase coder codestral commit component concern concrete config contents context contract convert coordination cowork cross custody deepseek delete deployfix determinable diffs directive drafting ensure excerpt existing exists external f4b5aaf6893c fable first flash force function gemini generated google haiku identified implement implementation
+base: master
