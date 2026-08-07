@@ -44,6 +44,29 @@ SUPERVISOR_LOCK="$CLAUDE_ORCH_HOME/keepalive.lock"
 SUPERVISOR_LOG_THROTTLE="${CLAUDE_ORCH_HOME}/keepalive.duplicate.last"
 STAY_RESIDENT="${ORCH_KEEPALIVE_STAY_RESIDENT:-false}"
 POLL_SECONDS="${ORCH_KEEPALIVE_DUPLICATE_POLL_SECONDS:-60}"
+
+# SINGLE-SUPERVISOR IDEMPOTENCY (2026-08-06). Lock arbitration lives in one sourced helper so
+# there is exactly one implementation of "am I allowed to be the supervisor", and so it can be
+# tested without booting a real runner. It prefers a kernel-held exclusive flock
+# (`zsystem flock` on .runtime/keepalive.lock.flock) which cannot go stale, and falls back to
+# the previous mkdir directory lock — now with a grace window — if zsh/system is unavailable.
+#
+# DOCUMENTED RESET SEQUENCE (wedged fleet -> exactly one clean runner):
+#
+#     pkill -f keepalive.sh
+#     pkill -f runner.py
+#     rm -f .runtime/runner.lock
+#     rm -rf .runtime/keepalive.lock*
+#     (cd runner && nohup bash keepalive.sh &)
+#
+# The trailing glob matters: the supervisor lock is a family of paths
+# (keepalive.lock/, keepalive.lock.flock, keepalive.lock.pid).
+export SUPERVISOR_LOCK LOCK_FILE CLAUDE_ORCH_HOME
+KA_SOURCED=1
+if [[ -r "$RUNNER_DIR/ensure_single_keepalive.sh" ]]; then
+  source "$RUNNER_DIR/ensure_single_keepalive.sh"
+fi
+
 is_live_runner() {
   if [[ ! -f "$LOCK_FILE" ]]; then
     return 1
@@ -88,11 +111,24 @@ log_duplicate_exit() {
 }
 
 supervisor_lock_live() {
+  # Delegates to the shared helper when present so flock and mkdir modes agree on the answer.
+  if (( $+functions[ka_supervisor_lock_live] )); then
+    ka_supervisor_lock_live
+    return $?
+  fi
   if [[ ! -d "$SUPERVISOR_LOCK" ]]; then
     return 1
   fi
   sup_pid="$(cat "$SUPERVISOR_LOCK/pid" 2>/dev/null | tr -dc '0-9')"
   [[ -n "$sup_pid" ]] && ps -p "$sup_pid" >/dev/null 2>&1
+}
+
+release_supervisor_lock() {
+  if (( $+functions[ka_release_supervisor_lock] )); then
+    ka_release_supervisor_lock
+  else
+    rm -rf "$SUPERVISOR_LOCK"
+  fi
 }
 
 wait_for_runner_release() {
@@ -126,34 +162,41 @@ fi
 # race for the supervisor lock must NOT end the launchd job head when STAY_RESIDENT=true —
 # exiting here is what produced the "duplicate supervisor exit" + launchd-restart + SIGTERM loop.
 # Wait for the winning supervisor to go away instead, then take the lock over.
-while ! mkdir "$SUPERVISOR_LOCK" 2>/dev/null; do
+acquire_supervisor_lock() {
+  if (( $+functions[ka_acquire_supervisor_lock] )); then
+    ka_acquire_supervisor_lock
+    return $?
+  fi
+  # Helper missing (partial checkout): keep the historical mkdir behaviour rather than
+  # running with no arbitration at all.
+  if mkdir "$SUPERVISOR_LOCK" 2>/dev/null; then
+    echo "$$" > "$SUPERVISOR_LOCK/pid" 2>/dev/null
+    return 0
+  fi
   if supervisor_lock_live; then
-    if stay_resident; then
-      log_duplicate_exit
-      sleep "$POLL_SECONDS"
-      continue
-    fi
-    log_duplicate_exit
-    exit 0
+    return 1
   fi
   stale="${SUPERVISOR_LOCK}.stale.$$"
   if mv "$SUPERVISOR_LOCK" "$stale" 2>/dev/null; then
     rm -rf "$stale"
-    continue
+    if mkdir "$SUPERVISOR_LOCK" 2>/dev/null; then
+      echo "$$" > "$SUPERVISOR_LOCK/pid" 2>/dev/null
+      return 0
+    fi
   fi
+  return 1
+}
+
+while ! acquire_supervisor_lock; do
+  # Lost the race. STAY_RESIDENT=true must NOT exit here (see RESIDENT-JOB-HEAD above):
+  # poll until the winner releases, then take over.
+  log_duplicate_exit
   if stay_resident; then
-    log_duplicate_exit
     sleep "$POLL_SECONDS"
     continue
   fi
-  log_duplicate_exit
   exit 0
 done
-
-if ! echo "$$" > "$SUPERVISOR_LOCK/pid" 2>/dev/null; then
-  log_duplicate_exit
-  exit 0
-fi
 # SUPERVISOR CONSOLIDATION (2026-08-03): this used to be
 #   trap 'rm -rf "$SUPERVISOR_LOCK"' EXIT INT TERM
 # A TERM/INT trap that does not itself exit makes the script SURVIVE the signal. When launchd
@@ -186,8 +229,8 @@ term_forensics() {
     echo
   } >> "$SIGTERM_FORENSICS" 2>/dev/null
 }
-trap 'rm -rf "$SUPERVISOR_LOCK"' EXIT
-trap 'echo "[keepalive] received SIGTERM/SIGINT — releasing supervisor lock and exiting at $(date)" >> "$RUNNER_LOG"; term_forensics; rm -rf "$SUPERVISOR_LOCK"; exit 143' INT TERM
+trap 'release_supervisor_lock' EXIT
+trap 'echo "[keepalive] received SIGTERM/SIGINT — releasing supervisor lock and exiting at $(date)" >> "$RUNNER_LOG"; term_forensics; release_supervisor_lock; exit 143' INT TERM
 
 while true; do
   if is_live_runner; then
