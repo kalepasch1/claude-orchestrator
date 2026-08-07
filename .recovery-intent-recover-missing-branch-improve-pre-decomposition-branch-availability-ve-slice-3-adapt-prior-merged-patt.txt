@@ -1,0 +1,4 @@
+recovery-intent: recover-missing-branch-improve-pre-decomposition-branch-availability-ve-slice-3-adapt-prior-merged-patt
+template: 9c04f6cf23e4
+intent: 07060650 07062319 1677fc0f7242 31dd6ca9ed9d 4ff7ba380eac 6096aa2b 8b92d078e856 9f821ef2b6cc a5f8e22456b6 acceptance adapt adaptation affected after agent agentledger alter applied artifacts assertion availability based basic because before behavior being below bf2a3f19ec30 blocks bootstrap branch break build cache cached canonical changes checks codebase commit compile compiles context correctly current decomposition diffs drafting duplicate duplicates eliminating ensure equivalent errors examine excerpt existing exists files first focus functionality identify implement implementation improve improves injection install instead integrate integrated integration_sweeper intent large library lines location maintainability
+base: master
