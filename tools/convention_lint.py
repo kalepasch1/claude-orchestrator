@@ -199,6 +199,22 @@ class ConventionChecker(ast.NodeVisitor):
                     f'Public function "{node.name}" raises on bad input; use try/except with sensible defaults instead'
                 ))
 
+        # A bare `except: pass` silently swallows every error including
+        # KeyboardInterrupt/SystemExit — that is silent failure, not fail-soft
+        # (fail-soft returns a sensible default). Flag it in public functions.
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Try):
+                continue
+            for handler in child.handlers:
+                bare = handler.type is None
+                only_pass = all(isinstance(stmt, ast.Pass) for stmt in handler.body)
+                if bare and only_pass:
+                    self.violations.append(ConventionViolation(
+                        self.filepath, handler.lineno, 'FAIL_SOFT_ERROR',
+                        f'Public function "{node.name}" has a bare "except: pass"; '
+                        'catch specific exceptions and return a sensible default instead'
+                    ))
+
     def _check_hardcoded_secrets(self, node: ast.Assign) -> None:
         """
         Rule 2: Hardcoded secrets in config keys
