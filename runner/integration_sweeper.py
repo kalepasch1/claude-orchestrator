@@ -109,8 +109,14 @@ def _integration_evidence(repo, slug):
     refs = []
     for tgt in targets:
         ref = f"origin/{tgt}"
-        if subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref], cwd=repo,
-                          capture_output=True).returncode == 0:
+        try:
+            probe = subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref], cwd=repo,
+                                   capture_output=True)
+        except OSError:
+            # FAIL CLOSED: repo path missing or unspawnable => cannot prove integration.
+            # A bad repo_path must not crash the whole sweep (it strands every other project).
+            return None
+        if probe.returncode == 0:
             refs.append(ref)
     if not refs:
         return None
