@@ -54,15 +54,89 @@ def _ram_hard():
     return float(os.environ.get("RAM_HARD_PCT", "82"))
 
 
+# Fleet-wide default, overridable centrally via the ORCH_RAM_FLOOR_GB fleet_config key
+# (fleet_control.load_config() pushes ORCH_* keys into os.environ every loop). Not a secret,
+# not a per-machine constant — one number both Macs converge on.
+DEFAULT_RAM_FLOOR_GB = 4.0
+
+# Last value that parsed cleanly. A malformed central push must not hand the governor a
+# floor of 0 and let it claim the machine to death, so we keep serving the previous safe
+# floor until a good value arrives.
+_LAST_GOOD_FLOOR = [DEFAULT_RAM_FLOOR_GB]
+
+
 def _ram_floor_gb():
     """Minimum free RAM (GB) before pausing new task claims entirely.
 
     Hard low-memory brake: if fewer than this many GB are available, PAUSE new task claims
     entirely (a single heavy task — e.g. an 8GB typecheck — could otherwise crash the Mac).
-    1.5GB was too low — macOS is already swapping/thrashing by then. Default 2GB, and the
-    effective floor scales UP with machine size (see effective_floor_gb).
+
+    Read live from ORCH_RAM_FLOOR_GB (fleet_config, default 4GB), falling back to the legacy
+    per-machine RAM_FLOOR_GB for machines that still pin it in runner/.env. Fail-soft: a
+    missing, empty, non-numeric or non-positive value keeps the last known-good floor rather
+    than collapsing the brake.
     """
-    return float(os.environ.get("RAM_FLOOR_GB", "2.0"))
+    raw = None
+    for key in ("ORCH_RAM_FLOOR_GB", "RAM_FLOOR_GB"):
+        candidate = os.environ.get(key)
+        if candidate is not None and str(candidate).strip():
+            raw = str(candidate).strip()
+            break
+    if raw is None:
+        return DEFAULT_RAM_FLOOR_GB  # nothing configured anywhere -> fleet default
+    try:
+        value = float(raw)
+        if value <= 0:
+            raise ValueError("RAM floor must be positive")
+    except (TypeError, ValueError):
+        return _LAST_GOOD_FLOOR[0]  # malformed central push -> keep the previous safe floor
+    _LAST_GOOD_FLOOR[0] = value
+    return value
+
+
+def _lane_target_bounds():
+    """The concurrency band to aim for when nothing is under pressure (default 6–8 lanes).
+
+    Fleet-tunable via ORCH_LANE_TARGET_MIN / ORCH_LANE_TARGET_MAX. Fail-soft: any unusable
+    value falls back to the default band rather than producing an inverted or zero range.
+    """
+    def _read(key, default):
+        try:
+            value = int(float(os.environ.get(key, "") or default))
+            return value if value >= 1 else int(default)
+        except (TypeError, ValueError):
+            return int(default)
+    lo = _read("ORCH_LANE_TARGET_MIN", 6)
+    hi = _read("ORCH_LANE_TARGET_MAX", 8)
+    if hi < lo:
+        hi = lo
+    return lo, hi
+
+
+def lane_target(free_gb=None, ceiling=None):
+    """How many lanes to run when the machine is healthy.
+
+    Previously the healthy branch of govern() jumped straight to MAX_PARALLEL_CEILING (12),
+    which on a Mac doing real work meant repeatedly overshooting and then mem-clamping back
+    down. Aim for a steady 6–8 instead — but never above what free RAM can actually hold,
+    and never above the ceiling. When RAM is tight the memory budget wins outright.
+    """
+    lo, hi = _lane_target_bounds()
+    ceiling = _ceiling() if ceiling is None else ceiling
+    hi = max(1, min(hi, ceiling))
+    lo = max(1, min(lo, hi))
+    if free_gb is None:
+        free_gb = ram_free_gb()
+    if free_gb is None:
+        return lo  # RAM unreadable -> conservative end of the band, not the ceiling
+    per_task = max(_per_task_gb(), 0.01)
+    budget = int((free_gb - effective_floor_gb()) / per_task)
+    if budget < 1:
+        return 1
+    target = min(hi, budget)
+    if budget >= lo:
+        target = max(target, lo)
+    return max(1, target)
 
 
 def _per_task_gb():
@@ -173,7 +247,8 @@ def effective_floor_gb() -> float:
     """Flat, env-tunable RAM reserve. (Earlier this scaled to 12% of total RAM, but macOS
     normally runs with most RAM committed to cache — on a large-RAM Mac that pushed the floor
     so high the runner never claimed. The kernel memory-pressure brake is the real anti-crash
-    guard; this floor just keeps a sane emergency reserve.) Tune via RAM_FLOOR_GB in .env."""
+    guard; this floor just keeps a sane emergency reserve.) Tune fleet-wide via the
+    ORCH_RAM_FLOOR_GB fleet_config key (legacy per-machine RAM_FLOOR_GB still honoured)."""
     return _ram_floor_gb()
 
 
@@ -654,7 +729,10 @@ def govern():
         except Exception:
             pass
     elif used < disk_soft - 10 and (ram is None or ram < ram_hard - 5) and (free_ram is None or free_ram > eff_floor + 1):
-        set_throttle(ceiling); action = f"throttle->{ceiling}"
+        # Healthy: settle on the 6–8 lane band rather than slamming to the ceiling and
+        # letting the mem-clamp below drag it back down every tick.
+        _target = lane_target(free_ram, ceiling)
+        set_throttle(_target); action = f"throttle->{_target}"
     elif (ram is None or ram < ram_hard - 3) and (free_ram is None or free_ram > eff_floor + 0.5):
         set_throttle(current_limit() + 1); action = "ease up"
     else:
@@ -701,6 +779,8 @@ def stats():
         "per_task_gb": _per_task_gb(),
         "ram_floor_gb": _ram_floor_gb(),
         "effective_floor_gb": effective_floor_gb(),
+        "lane_target": lane_target(gauge.get("ram_free_gb")),
+        "lane_target_band": list(_lane_target_bounds()),
     })
     return gauge
 
