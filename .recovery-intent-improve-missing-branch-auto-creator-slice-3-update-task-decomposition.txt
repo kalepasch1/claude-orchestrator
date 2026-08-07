@@ -1,0 +1,4 @@
+recovery-intent: improve-missing-branch-auto-creator-slice-3-update-task-decomposition
+template: ccfc60e6aff8
+intent: according adapted completion decomposition event function handling identified implementation include module patterns update using
+base: master
