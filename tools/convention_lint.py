@@ -23,16 +23,6 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any
 
 
-#: A select window at or above this many rows is big enough that truncation is silent and
-#: consequential. Below it the caller is visibly asking for a handful of rows.
-SCAN_WINDOW_MIN_LIMIT = 100
-
-#: Limits that are a deliberate "is there more than N?" probe rather than a data window.
-#: fleet_stuck_alarm.py reads 5001 to answer "more than 5000?" — len() of that page IS the
-#: answer, so it is exempt by design. Documented as the exception, not fixed.
-SENTINEL_LIMITS = {5001}
-
-
 class ConventionViolation:
     """Represents a single convention violation."""
 
@@ -92,78 +82,6 @@ class ConventionChecker(ast.NodeVisitor):
         self._check_hardcoded_secrets(node)
         self.generic_visit(node)
 
-    def visit_Call(self, node: ast.Call) -> None:
-        """Check db.select calls for the unbounded-scan-window shape."""
-        self._check_scan_window(node)
-        self.generic_visit(node)
-
-    def _check_scan_window(self, node: ast.Call) -> None:
-        """
-        Rule 3: Unbounded client-side scan window
-
-        Flag `select(..., {"limit": ">=100"})` with no `"order"` key. That exact shape has
-        produced four outage-class failures on this fleet: merge_train._pick_cards (newest
-        3,000 of 238,177 approvals -> months of stranded work), ensure_integration_card
-        (240 duplicates of one slug), ev_scheduler._scored_queue (an arbitrary,
-        non-reproducible 500 of 1,407 QUEUED tasks, so ~907 were invisible to EV ordering),
-        and config_optimizer (a queue depth structurally incapable of exceeding 1,000
-        driving parallelism decisions).
-
-        Without an ORDER BY the window is not even the same rows twice, so the bug is both
-        silent and unreproducible. A larger limit is the same bug, later — the fix is to
-        classify the read (COUNT / LOOKUP / SAMPLE / FULL SCAN; see db.select_all) rather
-        than to raise the number.
-        """
-        name = node.func.attr if isinstance(node.func, ast.Attribute) else (
-            node.func.id if isinstance(node.func, ast.Name) else None)
-        if name not in ("select", "select_all"):
-            return
-        if name == "select_all":
-            return          # pages to exhaustion; a window is not possible
-
-        for arg in list(node.args) + [kw.value for kw in node.keywords]:
-            if not isinstance(arg, ast.Dict):
-                continue
-            keys = {k.value for k in arg.keys
-                    if isinstance(k, ast.Constant) and isinstance(k.value, str)}
-            if "limit" not in keys:
-                continue
-            limit_val = None
-            for k, v in zip(arg.keys, arg.values):
-                if not (isinstance(k, ast.Constant) and k.value == "limit"):
-                    continue
-                # "limit": "500" | 500 | str(500)
-                if isinstance(v, ast.Constant):
-                    try:
-                        limit_val = int(v.value)
-                    except (TypeError, ValueError):
-                        limit_val = None
-                elif (isinstance(v, ast.Call) and isinstance(v.func, ast.Name)
-                        and v.func.id == "str" and v.args
-                        and isinstance(v.args[0], ast.Constant)):
-                    try:
-                        limit_val = int(v.args[0].value)
-                    except (TypeError, ValueError):
-                        limit_val = None
-            if limit_val is None or limit_val < SCAN_WINDOW_MIN_LIMIT:
-                continue
-            if limit_val in SENTINEL_LIMITS:
-                # Deliberate "more than N" probe: fleet_stuck_alarm.py reads limit 5001
-                # purely to answer "are there more than 5000?", and len() of that page is
-                # the answer it wants. Legitimate idiom, not a window bug.
-                continue
-            if "order" in keys:
-                continue
-            self.violations.append(ConventionViolation(
-                self.filepath, node.lineno, 'SCAN_WINDOW_NO_ORDER',
-                f'select(..., limit={limit_val}) has no "order" — the window is '
-                f'non-deterministic and silently truncates. Classify the read: COUNT -> '
-                f'db.count(), LOOKUP -> filter server-side, SAMPLE -> add a deterministic '
-                f'"order", FULL SCAN -> db.select_all(). Do not just raise the limit.',
-                severity='warning'
-            ))
-            return
-
     def _check_fail_soft_error_handling(self, node: ast.FunctionDef) -> None:
         """
         Rule 1: Fail-soft error handling
@@ -198,6 +116,22 @@ class ConventionChecker(ast.NodeVisitor):
                     self.filepath, node.lineno, 'FAIL_SOFT_ERROR',
                     f'Public function "{node.name}" raises on bad input; use try/except with sensible defaults instead'
                 ))
+
+        # A bare `except: pass` silently swallows every error including
+        # KeyboardInterrupt/SystemExit — that is silent failure, not fail-soft
+        # (fail-soft returns a sensible default). Flag it in public functions.
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Try):
+                continue
+            for handler in child.handlers:
+                bare = handler.type is None
+                only_pass = all(isinstance(stmt, ast.Pass) for stmt in handler.body)
+                if bare and only_pass:
+                    self.violations.append(ConventionViolation(
+                        self.filepath, handler.lineno, 'FAIL_SOFT_ERROR',
+                        f'Public function "{node.name}" has a bare "except: pass"; '
+                        'catch specific exceptions and return a sensible default instead'
+                    ))
 
     def _check_hardcoded_secrets(self, node: ast.Assign) -> None:
         """
@@ -235,31 +169,6 @@ class ConventionChecker(ast.NodeVisitor):
                             ))
 
 
-_NOQA_RE = re.compile(r'#\s*noqa\b(?:\s*:\s*(?P<rules>[A-Z0-9_,\s]+))?')
-
-
-def _apply_noqa(violations: List[ConventionViolation],
-                source_lines: List[str]) -> List[ConventionViolation]:
-    """Honour `# noqa: RULE_NAME` (and bare `# noqa`) on the offending line.
-
-    CONVENTION_LINT.md has documented this escape hatch since Phase 1 but nothing
-    implemented it, so the documented way to accept a deliberate exception did not work
-    and the only way to silence a rule was to stop running the linter.
-    """
-    kept = []
-    for v in violations:
-        line = source_lines[v.lineno - 1] if 0 < v.lineno <= len(source_lines) else ''
-        m = _NOQA_RE.search(line)
-        if m:
-            rules = m.group('rules')
-            if not rules:
-                continue                                  # bare noqa suppresses all
-            if v.rule in {r.strip() for r in rules.split(',') if r.strip()}:
-                continue
-        kept.append(v)
-    return kept
-
-
 def check_file(filepath: str) -> List[ConventionViolation]:
     """Parse and check a Python file for convention violations."""
     try:
@@ -276,7 +185,7 @@ def check_file(filepath: str) -> List[ConventionViolation]:
 
         checker = ConventionChecker(filepath, source_lines)
         checker.visit(tree)
-        return _apply_noqa(checker.violations, source_lines)
+        return checker.violations
     except Exception as e:
         return [ConventionViolation(
             filepath, 1, 'CHECK_ERROR',

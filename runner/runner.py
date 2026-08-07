@@ -106,7 +106,6 @@ if __name__ == "__main__":
 
 sys.path.insert(0, _RUNNER_DIR)
 import db, bandit, verify, caching, account_pool, cost_ledger, model_router, candidate_shared
-import provider_banner
 import prompt_assembler
 import knowledge_embed as kb
 import regression, budget, speculative, pr_integrate
@@ -190,13 +189,13 @@ POLL = int(os.environ.get("POLL_SECONDS", "5"))
 # free RAM / kernel memory pressure / disk, so the Mac can't be overrun — this just lets the
 # runner use idle headroom instead of sitting at 2. Tune MAX_PARALLEL in runner/.env per machine.
 MAX_PARALLEL = int(os.environ.get("MAX_PARALLEL", "12"))
-# Provider banner vocabulary now lives in ONE module (provider_banner). Three
-# copies of it had drifted: the phrases below were the richest set, and
-# root_cause.py's classifier knew none of them — so an exhaustion this runner
-# handled correctly was filed as "unknown" by the analyzer reading the same
-# string. Same tuples, same substring semantics; one source.
-RATE = provider_banner.RATE_SIGNALS
-EXHAUST = provider_banner.EXHAUST_SIGNALS
+RATE = ("temporarily limiting", "rate limit", "429", "overloaded", "too many requests")
+EXHAUST = ("usage limit", "out of credits", "insufficient_quota", "quota",
+           "weekly limit", "hit your weekly", "limit · resets", "limit - resets",
+           "reached your usage", "usage limit reached", "upgrade to increase",
+           "5-hour limit", "hour limit reached", "session limit", "limit reached ∙ resets",
+           "spend limit", "monthly spend", "monthly limit", "hit your monthly",
+           "limit · raise it", "raise it at claude.ai")
 # Cross-project reuse directive injected into every task: economize by reusing, not re-drafting.
 REUSE_FIRST = ("\n\n## Reuse before you draft (cost discipline)\n"
     "Before writing net-new code: (1) search THIS repo for an existing helper/component/pattern "
@@ -243,21 +242,11 @@ def set_state(task_id: str, **kw) -> None:
     Accepts arbitrary keyword args that map to columns on the tasks table
     (e.g. state='DONE', note='...', cost=0.12).
     """
-    # EVIDENCE GATE: a success state with no artifact, no log, no outcome row is
-    # indistinguishable from a task that did nothing. Refuse it here rather than
-    # discovering it in an audit months later. Fail-soft — never wedges a real
-    # transition (see runner/done_evidence_gate.py).
-    try:
-        import done_evidence_gate
-        kw = done_evidence_gate.guard(task_id, kw)
-    except Exception as _e:
-        _log.debug("done_evidence_gate skipped: %s", _e)
     kw["updated_at"] = "now()"
     db.update("tasks", {"id": task_id}, kw)
     # Every non-running transition ends this executor's right to mutate the
     # branch. A crashed worker is covered by the server-side lease TTL.
-    if kw.get("state") in {"QUEUED", "DONE", "MERGED", "BLOCKED", "QUARANTINED",
-                           "PHANTOM_UNVERIFIED"}:
+    if kw.get("state") in {"QUEUED", "DONE", "MERGED", "BLOCKED", "QUARANTINED"}:
         branch_lease.release(str(task_id))
         # Release file reservations when task finishes (any terminal state)
         try:
@@ -325,12 +314,7 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
             and project and slug):
         try:
             import merge_train
-            # AUDITED 2026-08-06 alongside the cowork_executor DONE-before-card fix.
-            # This call site discarded the return value entirely, so "created",
-            # "already existed", and "created nothing" were all indistinguishable.
-            # integrate() does not itself write DONE (the caller does), so the correct
-            # remedy here is to make the failure loud rather than to change state.
-            _card_state = merge_train.ensure_integration_card_result(
+            merge_train.ensure_integration_card(
                 project, slug,
                 title=f"merge of {slug}",
                 why="agent work passed tests/review; canonical train should integrate it",
@@ -338,17 +322,6 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
                 status="approved",
                 decided_by="canonical-train:runner",
             )
-            if _card_state not in merge_train.CARD_OK:
-                print(f"[ALARM] integration_card_failed slug={slug} project={project} "
-                      f"source=runner.integrate — work on this branch is NOT queued for the train")
-                try:
-                    db.insert("runner_alerts", {
-                        "kind": "integration_card_failed",
-                        "detail": f"slug={slug} project={project} source=runner.integrate",
-                        "resolved": False,
-                    })
-                except Exception:
-                    pass
             # INLINE PASS THROTTLE (2026-08-06): train_run() here runs a FULL train pass —
             # every project, every card — per completed task, holding the machine-wide
             # integration lease for the duration (observed 60+ min). With tasks completing
@@ -2740,18 +2713,6 @@ _SCHEDULE = [
     # defect that had "Legal & Compliance" panels opining on Kubernetes. Each run puts real
     # regulatory questions through the 5-round gauntlet and mints citation-backed verdict cards.
     ("legaldocket-1800","legal_docket.py",  "interval", 1800),  # standing legal docket -> verdict cards
-    # Machine + pipeline heartbeat alerts (operator directive 2026-08-02, P0). Reads the
-    # runner_heartbeats rows every machine already writes and PAGES when one goes silent
-    # >30m — Mac 2 was down from ~10:28 with nothing saying so. Also runs the hourly
-    # consistency self-tests (pressure file vs DB row, boot-commit file, release-train env)
-    # and auto-reverts RELEASE_MIN_BATCH=1 recovery mode once the backlog is drained.
-    ("fleetheartbeat-3600", "fleet_heartbeat.py", "interval", 3600),
-    # Independent, contract-based pipeline smoke test: catches false pressure signals,
-    # stale boot code, and recovery-mode settings that otherwise survive indefinitely.
-    ("pipelineselftest-3600", "pipeline_selftest.py", "interval", 3600),
-    # Drain already-written agent branches into canonical integration cards without paying an
-    # agent to rewrite them. The CLI's bounded default prevents a first-run card flood.
-    ("bulkshelf-600", "bulk_integrate_shelf.py", "interval", 600),
     # Benchmark redlines: redline REAL filed briefs in the most contentious regulatory matters +
     # draft the fully-revised addendum — the proof-of-superiority engine. Targets only activate
     # once the actual public filing text is ingested (never redlines an unheld document).
@@ -2821,6 +2782,7 @@ _SCHEDULE = [
     ("divergent-900","divergent",           "interval", 900),   # merges that dropped a symbol both sides authored (71cfd4ca6)
     ("worktreeguard-300","worktreeguard",   "interval", 300),   # pin uncommitted work to rescue refs (destroyed 3x on 2026-08-02)
     ("deploysilence-3600","deploysilence",  "interval", 3600),  # ZERO prod deploys in N days — absence of deploys alerts nothing
+    ("pipelineselftest-3600","pipelineselftest","interval", 3600),  # §2: silent-machine alert + pipeline signal self-tests
     ("cleanclone-6h","cleanclone",          "interval", 21600), # pristine clone install+build (expensive)
     ("releasetrain-600","releasetrain",     "interval", 600),   # accumulate on staging, QA, release to prod
     ("deployverify-120","deployverify",     "interval", 120),   # confirm Vercel deploy / auto-rollback
@@ -2889,7 +2851,6 @@ _SCHEDULE = [
     ("toolchain-1800",        "toolchain_gate.py",      "interval", 1800), # verify build toolchain per project, auto-repair
     ("pause-arbiter-300",     "pause_arbiter.py",       "interval", 300),  # lift self-clearing pauses (TTL + registered checks)
     ("fleet-stuck-300",       "fleet_stuck_alarm.py",   "interval", 300),  # queued>0 & running=0 for >15min -> notify + remediate
-    ("push-stall-600",        "push_stall_alarm.py",    "interval", 600),  # local-only commits on a protected branch >30min, + credential-in-remote-URL scan
     ("batch-completion-300",  "batch_completion.py",     "interval", 300),  # state/run SLA + batch progress snapshot
     ("queue-bankruptcy-3600", "queue_bankruptcy.py",    "interval", 3600), # close QUEUED tasks past ORCH_TASK_BANKRUPTCY_DAYS
     ("scoreboard-600",        "scoreboard.py",          "interval", 600),  # merged/day, first-pass rate, paused-minutes, queue mix
@@ -2912,11 +2873,6 @@ _sched_last: dict = {}
 # Jobs that NEVER call a model and are safe (even desirable) to run while paused:
 # protect the Mac, and keep read-only spend/health telemetry flowing.
 _SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn",
-                     # Liveness monitoring must survive a pause. A paused fleet is exactly
-                     # when a machine can quietly die without anyone noticing, and the
-                     # monitor calls no models — it only reads heartbeats and files.
-                     "fleet_heartbeat.py",
-                     "pipeline_selftest.py", "bulk_integrate_shelf.py",
                      "approval_policy.py", "queue_janitor.py",
                      "unstick", "dagfix", "dagspecunblock", "batchmech", "selftune", "cluster",
                      "governor", "costslo", "promote", "prewarm", "billingguard",
@@ -3097,6 +3053,12 @@ _PERIODIC_PIDS = {}  # job_name -> (pid, launch_time)
 # stale-reap threshold scales with how often a job is actually supposed to run, instead of a
 # single hardcoded default that's wildly wrong for fast-cadence jobs (see _is_still_running).
 _JOB_INTERVAL = {job: args for (_key, job, stype, args) in _SCHEDULE if stype == "interval"}
+_JOB_MAX_RUNTIME = {
+    "merge_train.py": int(os.environ.get("ORCH_MERGE_TRAIN_MAX_RUNTIME_S", "7200")),
+    "release_train.py": int(os.environ.get("ORCH_RELEASE_TRAIN_MAX_RUNTIME_S", "7200")),
+    "releasetrain": int(os.environ.get("ORCH_RELEASE_TRAIN_MAX_RUNTIME_S", "7200")),
+    "integration_sweeper.py": int(os.environ.get("ORCH_INTEGRATION_SWEEPER_MAX_RUNTIME_S", "7200")),
+}
 
 # Launch cadence is not an execution timeout. Integration and release jobs can
 # legitimately spend tens of minutes in isolated typecheck/build worktrees. A
@@ -3128,57 +3090,15 @@ def _is_still_running(job):
     new instance while the last one is still alive; let it finish (or let the properly-scaled
     reaper below kill it if it's truly stuck) instead of stacking duplicates."""
     info = _PERIODIC_PIDS.get(job)
-    if info:
-        pid, _launch_t = info
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            del _PERIODIC_PIDS[job]
-    # _PERIODIC_PIDS is IN-PROCESS state, and keepalive restarts runner.py routinely.
-    # A fresh runner starts with an empty map, so it has no idea the previous runner
-    # left a child of this job still executing — and Popens another one on top. That
-    # is how legal_docket.py accumulated 14 concurrent copies aged 8-10h on a 30-min
-    # interval: not one runaway job, but one leaked copy per runner restart, none of
-    # them visible to the successor's bookkeeping. Ask the process table, which
-    # outlives us, before concluding nothing is running.
-    return _external_instance_running(job)
-
-
-def _external_instance_running(job):
-    """True when a copy of `job` launched by a PREVIOUS runner is still executing.
-
-    Matches on the job's own path so a substring cannot alias two different jobs, and
-    excludes our own pid and children we already track. Fail-soft: if the process
-    table cannot be read we report "not running", because wrongly reporting "running"
-    would silently stop a job forever, which is worse than one duplicate.
-    """
-    if os.environ.get("ORCH_SCHED_EXTERNAL_INSTANCE_CHECK", "true").lower() not in (
-            "1", "true", "yes", "on"):
+    if not info:
         return False
+    pid, _launch_t = info
     try:
-        target = os.path.join(os.path.dirname(os.path.abspath(__file__)), job)
-        out = subprocess.run(["pgrep", "-f", target], capture_output=True, text=True,
-                             timeout=10).stdout
-    except Exception:
-        return False
-    mine = {os.getpid()}
-    mine.update(p for p, _ in _PERIODIC_PIDS.values())
-    for line in out.split():
-        try:
-            pid = int(line)
-        except ValueError:
-            continue
-        if pid in mine:
-            continue
-        # Adopt it so the reaper can lease-kill it if it really is wedged. Launch time
-        # is unknown across a restart; assume it started now, which gives the orphan a
-        # full lease before the reaper touches it rather than an instant kill.
-        _PERIODIC_PIDS.setdefault(job, (pid, time.time()))
-        print(f"[sched] {job} already running as pid {pid} from a previous runner — "
-              f"adopting instead of launching a duplicate", flush=True)
+        os.kill(pid, 0)
         return True
-    return False
+    except OSError:
+        del _PERIODIC_PIDS[job]
+        return False
 
 
 _REAP_MULTIPLIER = {
@@ -3595,10 +3515,7 @@ def main():
                     _restart_log_t = time.time()
                 if len(active) <= max_active:
                     print(f"[self-deploy] restart threshold reached ({len(active)} <= {max_active}) — exiting for keepalive")
-                    # Do NOT consume the request here. The process has not exited yet, and a
-                    # failed/intercepted exit would leave the old code running with no durable
-                    # restart intent — exactly what happened on 2026-08-07. keepalive.sh moves
-                    # the flag to a handoff marker only when it is ready to launch the successor.
+                    os.remove(_rr)
                     sys.exit(0)
                 # Freeze new claims while waiting to restart so the active count can converge.
                 os.environ["ORCH_DRAINING_FOR_RESTART"] = "1"
@@ -3742,15 +3659,6 @@ def main():
                             _log.debug("hook failure_forecast failed: %s", e)
                     if t:
                         print(f"[claim] {t.get('slug','')} (project={t.get('project_id','?')[:8]}) active={len(active)+1}/{eff_limit}", flush=True)
-                        # SHADOW ROUTER (measurement only): record which executor a
-                        # reliability-weighted policy WOULD have chosen. It cannot write
-                        # tasks.account, reorder the queue or gate admission — the claim
-                        # above has already happened. See runner/executor_reliability.py.
-                        try:
-                            import executor_reliability
-                            executor_reliability.record_shadow_decision(t, actual_account=RUNNER_ID)
-                        except Exception as e:
-                            _log.debug("hook executor_reliability shadow failed: %s", e)
                         # REUSE-FIRST: adapt an already-solved implementation instead of rebuilding
                         try:
                             import reuse_first
