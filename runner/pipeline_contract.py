@@ -52,10 +52,43 @@ MIGRATION_RX = re.compile(r"\b(schema|migration|database|backfill|data model|rls
 RESEARCH_RX = re.compile(r"\b(research|investigate|ideate|concept|strategy|proposal|experiment|ab test|a/b)\b", re.I)
 MECHANICAL_RX = re.compile(r"\b(copy|typo|format|lint|rename|style|css|tailwind|docs?|changelog)\b", re.I)
 
+_ALLOWLIST_ENV_KEYS = {
+    "security": "ORCH_SECURITY_TASK_ALLOWLIST",
+    "legal": "ORCH_LEGAL_TASK_ALLOWLIST",
+}
+
+
+def _parse_allowlist(raw: Optional[str]) -> Optional[set]:
+    """Parse a comma-separated allowlist env value.
+
+    None (key unset) means "no allowlist configured" -> everything allowed.
+    An empty/whitespace-only value means "allow nothing".
+    """
+    if raw is None:
+        return None
+    return set(v.strip().lower() for v in raw.split(",") if v.strip())
+
+
+def task_allowlist(task_class: str) -> Optional[set]:
+    """Resolve the allowlist for a task class at call time.
+
+    Read live from the environment so a fleet-wide ORCH_* config push takes effect
+    without restarting the runner. Fail-soft: any error means "no allowlist".
+    """
+    try:
+        key = _ALLOWLIST_ENV_KEYS.get((task_class or "").lower())
+        if not key:
+            return None
+        return _parse_allowlist(os.environ.get(key))
+    except Exception:
+        return None
+
+
 _SECURITY_ALLOWLIST_ENV = os.environ.get("ORCH_SECURITY_TASK_ALLOWLIST")
 _LEGAL_ALLOWLIST_ENV = os.environ.get("ORCH_LEGAL_TASK_ALLOWLIST")
-SECURITY_TASK_ALLOWLIST = set(v.strip() for v in _SECURITY_ALLOWLIST_ENV.split(",") if v.strip()) if _SECURITY_ALLOWLIST_ENV is not None else None
-LEGAL_TASK_ALLOWLIST = set(v.strip() for v in _LEGAL_ALLOWLIST_ENV.split(",") if v.strip()) if _LEGAL_ALLOWLIST_ENV is not None else None
+# Import-time snapshots kept for backward compatibility with existing importers.
+SECURITY_TASK_ALLOWLIST = _parse_allowlist(_SECURITY_ALLOWLIST_ENV)
+LEGAL_TASK_ALLOWLIST = _parse_allowlist(_LEGAL_ALLOWLIST_ENV)
 RESTRICTED_OPERATIONS = {"task_security_gate", "task_legal_gate", "permission_audit", "credential_validation"}
 
 
@@ -103,12 +136,19 @@ def classify(prompt: str, kind: str = "build", material: bool = False) -> Dict[s
 
 
 def _credential_allows(task_class: str, kind: str, text: str) -> bool:
-    k = (kind or "").lower()
-    if task_class == "legal" and LEGAL_TASK_ALLOWLIST is not None and k not in LEGAL_TASK_ALLOWLIST:
-        return False
-    if task_class == "security" and SECURITY_TASK_ALLOWLIST is not None and k not in SECURITY_TASK_ALLOWLIST:
-        return False
-    return True
+    """True when `kind` is permitted to be handled as a restricted task class.
+
+    Resolves the allowlist live (see `task_allowlist`) so a fleet-wide config push
+    applies without a runner restart. Fail-soft: unknown class -> allowed.
+    """
+    try:
+        k = (kind or "").lower()
+        allowed = task_allowlist(task_class)
+        if allowed is None:
+            return True
+        return k in allowed
+    except Exception:
+        return True
 
 
 def _operation_authorized(operation: str, task_class: str) -> bool:
