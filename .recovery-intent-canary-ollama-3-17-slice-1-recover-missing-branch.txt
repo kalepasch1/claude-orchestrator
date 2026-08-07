@@ -1,0 +1,4 @@
+recovery-intent: canary-ollama-3-17-slice-1-recover-missing-branch
+template: 60a167139700
+intent: 07062319 07071626 1042d0 182e72e49502 7ba77da91bb4 8b92d078e856 acceptance actually adapt agent agentic already alter analysis artifacts attempts backlog because beethoven before behavior below blocked blocker blocks branch broad budget bugfix build canary category cause changes changing checks coder commit complete completion concrete config context continue crowding default dependencies deploy diffs directive drafting dropbox duplicate duplicates eliminating equivalent examine exhausted existing exists failure files final finish first focus fresh functional functionality generating green identify illuminati implement implementation improve infra inspect install instead
+base: main
