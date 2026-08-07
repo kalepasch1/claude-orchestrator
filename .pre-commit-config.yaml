@@ -3,7 +3,7 @@ repos:
     hooks:
       - id: lint-conventions
         name: Convention Linter
-        entry: python3 tools/convention_linter.py
+        entry: python tools/lint_conventions.py
         language: system
         types: [python]
         stages: [commit]
