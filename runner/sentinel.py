@@ -974,33 +974,11 @@ def stale_code_guard():
 # ── 6. merge-train recency (DB up only) ──────────────────────────────────────
 
 def train_guard():
-    """Fire merge_train when pressure has genuinely gone stale.
-
-    Reads BOTH sources of truth and takes the FRESHER. merge_train upserts
-    controls.merge_train_pressure and only wrote the file in its DB-failure branch, so on
-    a healthy DB the file's mtime grew without bound and this guard fired train_run on a
-    perfectly healthy train — for days. Trusting whichever source is newer means neither
-    writer can produce a false alarm on its own. fleet_heartbeat.selftest_pressure_
-    consistency() reports the divergence so it gets fixed rather than silently absorbed.
-    """
     marker = os.path.join(RUNTIME, "merge_train_pressure.json")
     try:
         age = time.time() - os.path.getmtime(marker)
     except OSError:
         age = 1e9
-    try:
-        import db
-        rows = db.select("controls", {"select": "updated_at",
-                                      "key": "eq.merge_train_pressure"}) or []
-        if rows:
-            stamp = str(rows[0].get("updated_at") or "").replace("Z", "+00:00")
-            seen = datetime.datetime.fromisoformat(stamp)
-            if seen.tzinfo is None:
-                seen = seen.replace(tzinfo=datetime.timezone.utc)
-            db_age = (datetime.datetime.now(datetime.timezone.utc) - seen).total_seconds()
-            age = min(age, db_age)
-    except Exception:
-        pass          # DB unreadable: fall back to the file, as before
     if age > TRAIN_STALE_S:
         log("train-stale", f"{int(age)}s since last train pressure write — firing train_run")
         subprocess.Popen([sys.executable, os.path.join(HERE, "merge_train.py")],
