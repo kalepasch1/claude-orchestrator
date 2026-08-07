@@ -372,13 +372,13 @@ def drain_stall_agent(snap):
     return out
 
 
-def recovery_agent():
+def recovery_agent(run_train=True):
     import integration_sweeper
     limit = int(os.environ.get("AUTOPILOT_SWEEP_LIMIT", "250"))
     # A recovery sweep can create the cycle's first DONE work after snapshot() has already
     # run. Let the sweeper start the train immediately; merge_train's lease is the single-owner
     # boundary and safely collapses a concurrent periodic train into one execution.
-    return integration_sweeper.sweep(limit=limit, run_train=True)
+    return integration_sweeper.sweep(limit=limit, run_train=bool(run_train))
 
 
 def blocker_agent():
@@ -566,13 +566,18 @@ def run(force=False):
 
     add_agent("resources", "resources", resource_agent)
 
+    merge_agent_planned = bool(snap["states"].get("DONE", 0)
+                               or snap["states"].get("MERGED", 0))
     if snap["recovery_queued"] or snap["states"].get("DONE", 0) or snap["states"].get("BLOCKED", 0):
-        add_agent("recovery", "recovery", recovery_agent)
+        # Standalone recovery starts a train, but within this cycle merge_deploy_agent owns it
+        # when the pre-sweep snapshot already proves release work exists.
+        add_agent("recovery", "recovery",
+                  lambda: recovery_agent(run_train=not merge_agent_planned))
 
     if snap.get("release_fix_queued") or snap.get("release_fix_running") or snap.get("recent_failed_releases"):
         add_agent("release_blockers", "release_blockers", release_blocker_agent)
 
-    if snap["states"].get("DONE", 0) or snap["states"].get("MERGED", 0):
+    if merge_agent_planned:
         add_agent("merge_deploy", "merge_deploy", merge_deploy_agent)
 
     if snap["queued"]:

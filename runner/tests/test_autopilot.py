@@ -17,7 +17,7 @@ class AutopilotTest(unittest.TestCase):
         module = types.SimpleNamespace(sweep=sweep)
 
         with patch.dict(sys.modules, {"integration_sweeper": module}):
-            result = autopilot.recovery_agent()
+            result = autopilot.recovery_agent(run_train=False)
 
         self.assertEqual(result, {"recovery_queued": 1})
         sweep.assert_called_once_with(limit=250, run_train=False)
