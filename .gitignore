@@ -37,3 +37,9 @@ runner/.preopt_cache/
 runner/*.bak.wedgefix
 intake/*.md
 node_modules
+
+# Machine-local release and legal-output artifacts
+_to_delete/
+runner/.restart_requested
+COMMITTEE_CONSENSUS_OPINION.json
+GC_ORGANIZER_LIABILITY_MEMO.json

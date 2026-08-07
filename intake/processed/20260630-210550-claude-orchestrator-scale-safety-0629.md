@@ -77,7 +77,7 @@ PROJECT: claude-orchestrator
   prompt: |
     The principled basis for all approval rules. Build runner/reversibility.py classifying a change as
     reversible (code/tests, behind a flag, revertible commit) vs irreversible/regulated (data migration,
-    money movement, external send/filing, schema drop, prod secret). Reversible flows freely (auto + 
+    money movement, external send/filing, schema drop, prod secret). Reversible flows freely (auto +
     rollback-gated); irreversible/regulated always stops for human. Feed the policy engine. Add
     runner/tests/test_reversibility.py: migration/money/legal => irreversible; flagged code change => reversible.
 
