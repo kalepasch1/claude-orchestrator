@@ -1353,45 +1353,115 @@ def _select_batch(group):
     return annotated
 
 
-def ensure_integration_card(project, slug, *, kind="integrate", title=None, why=None,
-                            detail=None, status="approved", decided_by="canonical-train"):
+CARD_CREATED = "created"
+CARD_EXISTED = "existed"
+CARD_FAILED = "failed"
+#: Outcomes that mean "this slug is now visible to the merge train". Callers MUST
+#: treat only these as success. CARD_FAILED means the work is not integrable and the
+#: producing task must NOT be marked DONE.
+CARD_OK = (CARD_CREATED, CARD_EXISTED)
+
+
+def _find_existing_card(slug):
+    """Targeted, server-side lookup for a live merge card carrying `slug`.
+
+    SCAN-WINDOW ANTI-PATTERN (removed 2026-08-06). This used to pull the newest
+    MERGE_CARD_DEDUP_SCAN (default 4,000) approval rows and filter CLIENT-SIDE against a
+    table of 238,177 rows. The in-code comment already recorded the consequence — "240 dupes
+    of one slug" — and the identical pattern had just caused a starvation outage in
+    _pick_cards(). A scan cannot be made correct by making the window bigger: any card older
+    than the window is invisible, so dedup silently fails and the caller files a duplicate.
+
+    Two bounded queries replace it. The first matches the `slug` column directly. The second
+    covers legacy rows written before the column existed, where the slug lives only in the
+    "merge of <slug>" title (see approval_merge._slug_from). Both are LIMIT-1 server-side
+    filters, so cost is independent of table size.
+    """
+    if not slug:
+        return None
+    kinds = f"in.({','.join(MERGE_KINDS)})"
+    common = {"select": "id,slug,title,kind,status,decided_by",
+              "kind": kinds, "status": "in.(pending,approved)"}
+    # SKIP_PREFIXES pushed into the query so the train's own outcome stamps
+    # ("train:MERGED", "merge-handler:...") never masquerade as a live card.
+    not_handled = ",".join(f"decided_by.not.like.{p}*" for p in SKIP_PREFIXES)
+    for params in (
+        dict(common, slug=f"eq.{slug}", limit="1", or_=f"(decided_by.is.null,{not_handled})"),
+        dict(common, title=f"ilike.*merge of {slug}*", limit="5"),
+    ):
+        # `or_` is spelled with a trailing underscore above only to keep it a valid kwarg
+        # name; PostgREST expects the bare key "or".
+        if "or_" in params:
+            params["or"] = params.pop("or_")
+        try:
+            rows = db.select("approvals", params) or []
+        except Exception:
+            rows = []
+        for c in rows:
+            if str(c.get("decided_by") or "").startswith(SKIP_PREFIXES):
+                continue
+            if approval_merge._slug_from(c) == slug:
+                return c
+    return None
+
+
+def ensure_integration_card_result(project, slug, *, kind="integrate", title=None, why=None,
+                                   detail=None, status="approved",
+                                   decided_by="canonical-train"):
     """Idempotently feed passed code into the single canonical integration train.
 
     Producers should not merge directly. They create/approve one code-merge card
     and let train_run serialize rebase, tests, fast-forward, and cleanup.
+
+    Returns one of CARD_CREATED / CARD_EXISTED / CARD_FAILED. The tri-state exists because
+    the historical bool return conflated "a card already covers this slug" (fine) with
+    "nothing was created and nothing exists" (a task that can never be integrated). Callers
+    that only check truthiness treated the second case as success and stranded the work.
     """
     if not slug:
-        return False
+        return CARD_FAILED
     title = title or f"merge of {slug}"
-    cards = db.select("approvals", {"select": "id,slug,title,kind,status,decided_by",
-                                    "kind": f"in.({','.join(MERGE_KINDS)})",
-                                    "status": "in.(pending,approved)",
-                                    "order": "created_at.desc",  # newest first — unordered scans missed dupes past the limit (240 dupes of one slug)
-                                    "limit": os.environ.get("MERGE_CARD_DEDUP_SCAN", "4000")}) or []
-    for c in cards:
-        if str(c.get("decided_by") or "").startswith(SKIP_PREFIXES):
-            continue
-        cslug = approval_merge._slug_from(c)
-        if cslug == slug:
-            patch = {}
-            if c.get("status") != status:
-                patch["status"] = status
-            if status == "approved" and not c.get("decided_by"):
-                patch["decided_by"] = decided_by
-            if patch:
-                db.update("approvals", {"id": c["id"]}, patch)
-            return False
+    try:
+        existing = _find_existing_card(slug)
+    except Exception:
+        existing = None
+    if existing:
+        patch = {}
+        if existing.get("status") != status:
+            patch["status"] = status
+        if status == "approved" and not existing.get("decided_by"):
+            patch["decided_by"] = decided_by
+        if patch:
+            try:
+                db.update("approvals", {"id": existing["id"]}, patch)
+            except Exception:
+                pass  # the card exists and is live; a failed status nudge is not a strand
+        return CARD_EXISTED
     row = {"project": project, "kind": kind, "slug": slug, "title": title,
            "status": status, "why": why or "passed tests; queued for canonical merge train",
            "detail": detail or "", "decided_by": decided_by if status == "approved" else None}
     try:
         db.insert("approvals", row)
+        return CARD_CREATED
     except Exception:
         # Some older approval tables may not have a slug column. The title fallback
         # keeps approval_merge._slug_from compatible with those rows.
         row.pop("slug", None)
-        db.insert("approvals", row)
-    return True
+        try:
+            db.insert("approvals", row)
+            return CARD_CREATED
+        except Exception:
+            # Do NOT swallow. The caller decides what to do, but it must be told.
+            return CARD_FAILED
+
+
+def ensure_integration_card(project, slug, **kwargs):
+    """Back-compatible wrapper: True only when a NEW card was created.
+
+    Preserved verbatim in meaning for the many existing callers that use the bool.
+    New code should call ensure_integration_card_result() and check `in CARD_OK`.
+    """
+    return ensure_integration_card_result(project, slug, **kwargs) == CARD_CREATED
 
 
 # ── the train ─────────────────────────────────────────────────────────────────

@@ -427,7 +427,7 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
             scan_rows.append(_r)
     rows = scan_rows
     recovery_index = _active_recovery_index()
-    queued = missing = skipped = recovery = 0
+    queued = missing = skipped = recovery = card_failed = 0
     for t in rows:
         if t.get("state") == "RUNNING" and "verify pass" not in (t.get("note") or "").lower():
             skipped += 1
@@ -498,7 +498,13 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
                           {"state": "QUARANTINED",
                            "note": "integration_sweeper: branch lost and recovery exhausted; closed to stop phantom missing_branch churn"})
             continue
-        created = merge_train.ensure_integration_card(
+        # SAME DEFECT AS cowork_executor (audited 2026-08-06): this call site also
+        # promoted the task to DONE without checking whether a card actually exists.
+        # `created` is False both when a card already covers the slug (fine) and when
+        # nothing was created at all (a permanent strand) — the two were indistinguishable,
+        # and DONE was written either way. Use the tri-state and only close the task once
+        # the slug is genuinely visible to the train.
+        card_state = merge_train.ensure_integration_card_result(
             proj.get("name") or str(t.get("project_id")),
             slug,
             kind="integrate",
@@ -508,18 +514,26 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
             status="approved",
             decided_by="canonical-train:sweeper",
         )
-        if created:
+        if card_state == merge_train.CARD_CREATED:
             queued += 1
+        if card_state not in merge_train.CARD_OK:
+            card_failed += 1
+            print(f"[ALARM] integration_card_failed slug={slug} "
+                  f"project={proj.get('name')} source=integration_sweeper")
+            db.update("tasks", {"id": t["id"]},
+                      {"note": "integration_sweeper: card write failed; left open for retry "
+                               "(not marked DONE — a DONE task with no card is invisible)"})
+            continue
         if t.get("state") != "DONE":
             db.update("tasks", {"id": t["id"]},
                       {"state": "DONE", "note": "integration_sweeper: queued for canonical merge train"})
     train = merge_train.train_run() if run_train and queued else {}
     press = pressure(limit=max(limit, 200))
     out = {"queued": queued, "missing_branch": missing, "recovery_queued": recovery,
-           "recovery_dedup": dedup,
+           "recovery_dedup": dedup, "card_failed": card_failed,
            "skipped": skipped, "pressure": press, "train": train}
     print(f"integration_sweeper: queued={queued} missing_branch={missing} "
-          f"recovery_queued={recovery} skipped={skipped} train={train}")
+          f"recovery_queued={recovery} skipped={skipped} card_failed={card_failed} train={train}")
     return out
 
 

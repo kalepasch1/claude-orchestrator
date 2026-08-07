@@ -314,7 +314,12 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
             and project and slug):
         try:
             import merge_train
-            merge_train.ensure_integration_card(
+            # AUDITED 2026-08-06 alongside the cowork_executor DONE-before-card fix.
+            # This call site discarded the return value entirely, so "created",
+            # "already existed", and "created nothing" were all indistinguishable.
+            # integrate() does not itself write DONE (the caller does), so the correct
+            # remedy here is to make the failure loud rather than to change state.
+            _card_state = merge_train.ensure_integration_card_result(
                 project, slug,
                 title=f"merge of {slug}",
                 why="agent work passed tests/review; canonical train should integrate it",
@@ -322,6 +327,17 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
                 status="approved",
                 decided_by="canonical-train:runner",
             )
+            if _card_state not in merge_train.CARD_OK:
+                print(f"[ALARM] integration_card_failed slug={slug} project={project} "
+                      f"source=runner.integrate — work on this branch is NOT queued for the train")
+                try:
+                    db.insert("runner_alerts", {
+                        "kind": "integration_card_failed",
+                        "detail": f"slug={slug} project={project} source=runner.integrate",
+                        "resolved": False,
+                    })
+                except Exception:
+                    pass
             # INLINE PASS THROTTLE (2026-08-06): train_run() here runs a FULL train pass —
             # every project, every card — per completed task, holding the machine-wide
             # integration lease for the duration (observed 60+ min). With tasks completing
