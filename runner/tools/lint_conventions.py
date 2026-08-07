@@ -166,6 +166,22 @@ class ConventionChecker(ast.NodeVisitor):
                         severity="error",
                         message=msg
                     ))
+            elif all(isinstance(stmt, ast.Pass) for stmt in handler.body):
+                # Specific exception silently swallowed with only `pass`:
+                # the error vanishes with no handling and no default.
+                exc_name = self._get_exception_name(handler.type)
+                msg = (
+                    f"Exception handler for '{exc_name}' swallows the error with a bare "
+                    "'pass'; handle it or return a sensible default"
+                )
+                self.violations.append((handler.lineno, "fail-soft-error-handling", msg))
+                self._v2_violations.append(ConventionViolation(
+                    filepath=self.filepath,
+                    lineno=handler.lineno,
+                    rule="FAIL_SOFT_ERROR",
+                    severity="error",
+                    message=msg
+                ))
 
         self.generic_visit(node)
 
@@ -310,6 +326,22 @@ class ConventionChecker(ast.NodeVisitor):
         # Check for raise ValueError/RuntimeError on input validation (Rule 5)
         if isinstance(node.func, ast.Name) and node.func.id == "raise":
             pass  # Handled by visit_Raise
+        elif (
+            isinstance(node.func, ast.Name)
+            and node.func.id
+            and node.func.id[0].islower()
+            and any(c.isupper() for c in node.func.id)
+        ):
+            # camelCase call site (e.g. badFunction()): the callee violates the
+            # snake_case convention even if it is defined elsewhere.
+            msg = f"Call to '{node.func.id}' violates snake_case naming convention"
+            self._v2_violations.append(ConventionViolation(
+                filepath=self.filepath,
+                lineno=node.lineno,
+                rule="NAMING_CONVENTION",
+                severity="warning",
+                message=msg
+            ))
         elif isinstance(node.func, ast.Attribute):
             # Check for os.environ assignments with hardcoded secrets
             if (
