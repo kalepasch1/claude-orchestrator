@@ -70,6 +70,17 @@ def validate_canary(value):
     return "canary" in value.lower()
 
 
+def validate_canary(value):
+    """True when the input mentions a canary (case-insensitive substring).
+
+    Tiny input validator for canary-tagged payloads/labels; fail-soft on
+    non-string input (returns False rather than raising).
+    """
+    if not isinstance(value, str):
+        return False
+    return "canary" in value.lower()
+
+
 def evaluate(metrics_url=None):
     metrics_url = metrics_url or os.environ.get("METRICS_URL")
     if not metrics_url:
