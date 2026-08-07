@@ -24,10 +24,16 @@ def _fresh_db_env(env_lines, extra_environ=None):
         with open(os.path.join(d, ".env"), "w") as f:
             f.write("\n".join(env_lines))
         shutil.copy(os.path.join(RUNNER_DIR, "db.py"), os.path.join(d, "db.py"))
+        # db.py now asks subscription_guard whether API billing is allowed instead of
+        # re-deriving the rule, so the authority has to be importable for the opt-in case.
+        shutil.copy(os.path.join(RUNNER_DIR, "subscription_guard.py"),
+                    os.path.join(d, "subscription_guard.py"))
         sys.path.insert(0, d)
         sys.modules.pop("db", None)
+        sys.modules.pop("subscription_guard", None)
         saved = {k: os.environ.pop(k, None) for k in
-                 ("ANTHROPIC_API_KEY", "ORCH_USE_SUBSCRIPTION", "ORCH_ALLOW_API_BILLING")}
+                 ("ANTHROPIC_API_KEY", "ORCH_USE_SUBSCRIPTION", "ORCH_ALLOW_API_BILLING",
+                  "ORCH_USE_PURCHASED_CREDITS", "ORCH_USE_PAID_AGENTIC_CREDITS")}
         if extra_environ:
             os.environ.update(extra_environ)
         try:
@@ -55,11 +61,15 @@ class DbEnvInterlockTest(unittest.TestCase):
         self.assertIsNone(key, "db.py must never re-inject ANTHROPIC_API_KEY while billing is blocked")
 
     def test_deliberate_fallback_set_inside_env_file_is_still_honored(self):
+        # Full consent now means what subscription_guard.is_api_allowed() means, which also
+        # requires purchased-credit intent — db.py no longer keeps its own looser copy of the
+        # rule. See runner/tests/test_db_env_loader.py.
         key = _fresh_db_env([
             "SUPABASE_URL=https://x.supabase.co",
             "SUPABASE_SERVICE_KEY=abc",
             "ORCH_USE_SUBSCRIPTION=false",
             "ORCH_ALLOW_API_BILLING=true",
+            "ORCH_USE_PURCHASED_CREDITS=true",
             "ANTHROPIC_API_KEY=fake-anthropic-key-should-load",
         ])
         self.assertEqual(key, "fake-anthropic-key-should-load")
