@@ -76,11 +76,33 @@ class TestRunSkipsUnknown(unittest.TestCase):
         mock_db.select.side_effect = ConnectionError("DB down")
         mock_db.insert.return_value = None
         import slo_controller
-        result = slo_controller.run()
+        with patch("lane_guard.telemetry", side_effect=RuntimeError("no telemetry")):
+            result = slo_controller.run()
         # No actions should be taken when all SLOs are UNKNOWN
         self.assertEqual(result["actions"], 0)
         # Nothing passes
         self.assertEqual(result["passing"], 0)
+
+    @patch("slo_controller.db")
+    def test_lane_health_survives_a_db_outage(self, mock_db):
+        """Lane health is deliberately DB-independent.
+
+        Every other SLO reads the database, so a DB outage makes them all UNKNOWN. Lane
+        health reads `ps` and the resource governor instead, which means it keeps
+        reporting exactly when the fleet is least observable. On 2026-08-02 the machine
+        was drowning while the queue looked fine; a lane check that goes dark with the DB
+        would have been useless. This asserts it stays lit.
+        """
+        mock_db.select.side_effect = ConnectionError("DB down")
+        mock_db.insert.return_value = None
+        import slo_controller
+        result = slo_controller.run()
+        self.assertEqual(result["actions"], 0)
+        self.assertGreaterEqual(result["passing"], 0)
+        check = slo_controller._check_lane_health()
+        self.assertIn("lane_count", check)
+        self.assertIsNot(check["ok"], None,
+                         "lane health went UNKNOWN without the DB — it must not depend on it")
 
 
 if __name__ == "__main__":
