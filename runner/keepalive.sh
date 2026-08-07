@@ -211,6 +211,13 @@ while true; do
       printf '%s\n' "$_boot_commit" > .runner_boot_commit 2>/dev/null || true
     export ORCH_BOOT_COMMIT="$_boot_commit"
   fi
+  # Durable restart handoff. The exiting runner deliberately leaves the request in place;
+  # consuming it before sys.exit can strand an old process if exit is intercepted or fails.
+  # Move (rather than delete) only at the supervisor's launch boundary. A request written
+  # after this move remains visible to the successor instead of being lost in a race.
+  if [[ -f "$RUNNER_DIR/.restart_requested" ]]; then
+    mv -f "$RUNNER_DIR/.restart_requested" "$CLAUDE_ORCH_HOME/restart-handoff.last" 2>/dev/null || true
+  fi
   tmp_log="$(mktemp "${ORCH_LOG_DIR}/runner-start.XXXXXX")"
   python3 runner.py > "$tmp_log" 2>&1
   code=$?

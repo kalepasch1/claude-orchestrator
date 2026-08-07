@@ -3587,7 +3587,10 @@ def main():
                     _restart_log_t = time.time()
                 if len(active) <= max_active:
                     print(f"[self-deploy] restart threshold reached ({len(active)} <= {max_active}) — exiting for keepalive")
-                    os.remove(_rr)
+                    # Do NOT consume the request here. The process has not exited yet, and a
+                    # failed/intercepted exit would leave the old code running with no durable
+                    # restart intent — exactly what happened on 2026-08-07. keepalive.sh moves
+                    # the flag to a handoff marker only when it is ready to launch the successor.
                     sys.exit(0)
                 # Freeze new claims while waiting to restart so the active count can converge.
                 os.environ["ORCH_DRAINING_FOR_RESTART"] = "1"
