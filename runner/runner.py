@@ -2883,6 +2883,7 @@ _SCHEDULE = [
     ("toolchain-1800",        "toolchain_gate.py",      "interval", 1800), # verify build toolchain per project, auto-repair
     ("pause-arbiter-300",     "pause_arbiter.py",       "interval", 300),  # lift self-clearing pauses (TTL + registered checks)
     ("fleet-stuck-300",       "fleet_stuck_alarm.py",   "interval", 300),  # queued>0 & running=0 for >15min -> notify + remediate
+    ("push-stall-600",        "push_stall_alarm.py",    "interval", 600),  # local-only commits on a protected branch >30min, + credential-in-remote-URL scan
     ("batch-completion-300",  "batch_completion.py",     "interval", 300),  # state/run SLA + batch progress snapshot
     ("queue-bankruptcy-3600", "queue_bankruptcy.py",    "interval", 3600), # close QUEUED tasks past ORCH_TASK_BANKRUPTCY_DAYS
     ("scoreboard-600",        "scoreboard.py",          "interval", 600),  # merged/day, first-pass rate, paused-minutes, queue mix

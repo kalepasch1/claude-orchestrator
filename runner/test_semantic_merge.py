@@ -40,11 +40,18 @@ def test_extract_regions_basic():
 
 def test_can_auto_merge_disabled():
     """When disabled, can_auto_merge returns mergeable=False with strategy=disabled."""
-    result = semantic_merge.can_auto_merge("base", "a", "b", "test.py")
-    assert isinstance(result, dict)
-    assert "mergeable" in result
-    assert result["mergeable"] is False
-    assert result["strategy"] == "disabled"
+    # See test_semantic_merge_disabled: _ENABLED is import-time bound, so set it explicitly
+    # instead of depending on this file winning the import race.
+    old = semantic_merge._ENABLED
+    semantic_merge._ENABLED = False
+    try:
+        result = semantic_merge.can_auto_merge("base", "a", "b", "test.py")
+        assert isinstance(result, dict)
+        assert "mergeable" in result
+        assert result["mergeable"] is False
+        assert result["strategy"] == "disabled"
+    finally:
+        semantic_merge._ENABLED = old
 
 
 def test_can_auto_merge_enabled_disjoint():
@@ -84,7 +91,17 @@ def test_can_auto_merge_null_input():
 
 def test_semantic_merge_disabled():
     """semantic_merge returns merged=None when disabled."""
-    result = semantic_merge.semantic_merge("base", "a", "b", "test.py")
-    assert isinstance(result, dict)
-    assert result["merged"] is None
-    assert "disabled" in result["conflicts"]
+    # Set _ENABLED directly rather than relying on the module-level env write above.
+    # `_ENABLED` is bound when semantic_merge is first imported, so the env write only takes
+    # effect if THIS file happens to import it first. Any other test module importing
+    # semantic_merge earlier left this test asserting against an enabled module. Same
+    # save/set/restore pattern as test_can_auto_merge_null_input.
+    old = semantic_merge._ENABLED
+    semantic_merge._ENABLED = False
+    try:
+        result = semantic_merge.semantic_merge("base", "a", "b", "test.py")
+        assert isinstance(result, dict)
+        assert result["merged"] is None
+        assert "disabled" in result["conflicts"]
+    finally:
+        semantic_merge._ENABLED = old
