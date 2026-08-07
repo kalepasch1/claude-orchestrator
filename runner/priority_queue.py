@@ -195,9 +195,19 @@ class _PriorityQueue:
             }
 
     def invalidate(self):
-        """Force config reload on next call (used in tests)."""
+        """Reset singleton state and force config reload on the next call.
+
+        This is the lifecycle/test reset for a process-wide singleton. Previously it reset
+        only the config timestamp, so counters and wait samples leaked between callers and
+        made both telemetry and tests order-dependent.
+        """
         with self._lock:
             self._last_config_load = 0
+            self._enabled = False
+            self._pinned_prefixes = []
+            self._total_pinned = 0
+            self._pinned_wait_times = []
+            self._normal_wait_times = []
 
 
 # Module-level singleton

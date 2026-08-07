@@ -1,6 +1,16 @@
 """Behavioural tests for the 2026-08-06 fixes. Each asserts the BUG would be caught,
 not merely that the code runs — a test that passes on the broken version is a false positive."""
 import os, sys, subprocess
+
+# This is a live-fleet smoke script: it queries production tables, shells out to origin,
+# prints its own 59-check report, and exits with that report's status. Pytest importing it
+# used to execute all of those side effects and then raise SystemExit during collection,
+# making the self-deploy canary structurally incapable of producing a test summary. Keep the
+# direct `python test_20260806_session_fixes.py` contract, but exclude it from unit collection.
+if __name__ != "__main__":
+    import pytest
+    pytest.skip("live-fleet smoke script; run directly", allow_module_level=True)
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, "/Users/kpasch/Documents/beethoven/claude-orchestrator/runner")
 RESULTS = []

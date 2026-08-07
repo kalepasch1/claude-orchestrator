@@ -84,9 +84,9 @@ def test_async_processor_init_default():
     proc = atp.AsyncProcessor()
     assert proc._max_concurrent == 4
     assert len(proc._queue) == 0
-    assert len(proc._active) == {}
-    assert len(proc._completed) == []
-    assert len(proc._callbacks) == []
+    assert proc._active == {}
+    assert proc._completed == []
+    assert proc._callbacks == []
 
 
 def test_async_processor_init_custom_concurrency():
@@ -510,7 +510,9 @@ def test_get_stats_failed_count():
     proc.submit("ok1", lambda: "ok")
     proc.submit("fail1", lambda: 1 / 0)
     proc.submit("ok2", lambda: "ok")
-    proc.submit("fail2", lambda: ValueError("oops"))
+    def fail2():
+        raise ValueError("oops")
+    proc.submit("fail2", fail2)
 
     proc.process_all()
 
@@ -635,8 +637,12 @@ def test_multiple_exceptions_in_sequence():
     proc = atp.AsyncProcessor()
 
     proc.submit("f1", lambda: 1 / 0)
-    proc.submit("f2", lambda: ValueError("v1"))
-    proc.submit("f3", lambda: RuntimeError("r1"))
+    def fail_value():
+        raise ValueError("v1")
+    def fail_runtime():
+        raise RuntimeError("r1")
+    proc.submit("f2", fail_value)
+    proc.submit("f3", fail_runtime)
 
     results = proc.process_all()
 

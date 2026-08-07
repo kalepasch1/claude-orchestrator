@@ -99,13 +99,11 @@ class MockDB:
         start = time.time()
         with self.lock:
             if table == "fleet_config":
-                count = len(self.fleet_config)
+                count = sum(1 for row in self.fleet_config.values()
+                            if self._matches_params(row, params))
             elif table == "tasks":
-                if params and "state" in params:
-                    state_filter = params["state"].split(".")[-1]  # extract state value
-                    count = sum(1 for t in self.tasks.values() if t.get("state") == state_filter)
-                else:
-                    count = len(self.tasks)
+                count = sum(1 for row in self.tasks.values()
+                            if self._matches_params(row, params))
             else:
                 count = 0
         elapsed = time.time() - start
@@ -114,6 +112,10 @@ class MockDB:
 
     def _query_fleet_config(self, params):
         """Query fleet_config with filtering."""
+        key_filter = (params or {}).get("key")
+        if isinstance(key_filter, str) and key_filter.startswith("eq."):
+            row = self.fleet_config.get(key_filter[3:])
+            return [row] if row is not None and self._matches_params(row, params) else []
         result = []
         for key, row in self.fleet_config.items():
             if self._matches_params(row, params):

@@ -130,7 +130,31 @@ def report_failure_if_n(task_id, db_client, notify_email=None):
     notify_email = notify_email or os.environ.get("APPROVAL_PUSH_EMAIL", "")
 
     try:
-        consecutive_count, should_report = count_consecutive_failures(task_id, db_client)
+        # Query here instead of delegating to count_consecutive_failures(), whose public
+        # fail-soft contract intentionally turns database errors into (0, False). Reporting
+        # must preserve the distinction between "no failures" and "could not read history".
+        rows = db_client.select("run_history", {
+            "select": "*",
+            "task_id": "eq." + str(task_id),
+            "order": "created_at.desc",
+            "limit": str(CONSECUTIVE_FAIL_THRESHOLD + 1),
+        }) or []
+        if not rows:
+            return {
+                "reported": False,
+                "consecutive_count": 0,
+                "signature": None,
+                "notification_id": None,
+                "error": "No run_history found"
+            }
+
+        consecutive_count = 0
+        for row in rows:
+            if _row_status(row) in TERMINAL_STATES:
+                consecutive_count += 1
+            else:
+                break
+        should_report = consecutive_count >= CONSECUTIVE_FAIL_THRESHOLD
 
         if not should_report:
             return {
@@ -139,23 +163,6 @@ def report_failure_if_n(task_id, db_client, notify_email=None):
                 "signature": None,
                 "notification_id": None,
                 "error": None
-            }
-
-        # Get the most recent failure for signature
-        rows = db_client.select("run_history", {
-            "select": "*",
-            "task_id": "eq." + str(task_id),
-            "order": "created_at.desc",
-            "limit": "1",
-        }) or []
-
-        if not rows:
-            return {
-                "reported": False,
-                "consecutive_count": consecutive_count,
-                "signature": None,
-                "notification_id": None,
-                "error": "No run_history found"
             }
 
         latest_run = rows[0]
@@ -371,12 +378,12 @@ class TestFailureStreak:
         """Old failures before a success don't count toward current streak."""
         db = MockDB()
         db.run_history = [
+            {"task_id": "task-1", "status": "failed", "created_at": 6000},
             {"task_id": "task-1", "status": "failed", "created_at": 5000},
-            {"task_id": "task-1", "status": "failed", "created_at": 4000},
+            {"task_id": "task-1", "status": "passed", "created_at": 4000},
             {"task_id": "task-1", "status": "failed", "created_at": 3000},
-            {"task_id": "task-1", "status": "passed", "created_at": 2500},
             {"task_id": "task-1", "status": "failed", "created_at": 2000},
-            {"task_id": "task-1", "status": "failed", "created_at": 1500}
+            {"task_id": "task-1", "status": "failed", "created_at": 1000}
         ]
 
         count, should_report = count_consecutive_failures("task-1", db)
