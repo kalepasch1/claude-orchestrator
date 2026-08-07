@@ -74,7 +74,20 @@ _DENY_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "PWD", "CREDENTIAL", "PAT
 
 
 def _safe_key(k):
-    ku = k.upper()
+    # Delegates to runner/fleet_contracts.py — the single declaration of this
+    # policy. Two copies of a security predicate drift, and the 2026-08-02
+    # plaintext-credential incident is what that drift cost. The local
+    # _SAFE_PREFIXES/_DENY_MARKERS above are retained only as the fail-closed
+    # fallback for the case where the contract module cannot be imported.
+    try:
+        import fleet_contracts
+        return fleet_contracts.is_safe_config_key(k)
+    except Exception:
+        pass
+    try:
+        ku = k.upper()
+    except Exception:
+        return False
     if any(m in ku for m in _DENY_MARKERS):
         return False
     return any(ku.startswith(p) for p in _SAFE_PREFIXES)
