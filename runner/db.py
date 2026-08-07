@@ -1870,13 +1870,23 @@ def heartbeat(runner_id, hostname, active, model_loaded=None, memory_mb=None):
                        if k in proof})
         except Exception:
             pass
+        # STALENESS MUST BE PUBLISHED (2026-08-06). code_sha alone does not say whether a
+        # host is current — the only way to find out used to be fetching the repo and
+        # comparing SHAs by hand, which is why one host sat 40+ commits behind for two days
+        # while heartbeating normally. commits_behind makes it a one-query answer.
+        try:
+            import host_update_visibility
+            row.update(host_update_visibility.heartbeat_fields())
+        except Exception:
+            pass
         try:
             db.insert("runner_heartbeats", row, upsert=True)
             _heartbeat_fail["n"] = 0
         except Exception as hb_err:
             # Compatibility with remotes that have not yet applied the additive migration.
             row_compat = {k: v for k, v in row.items()
-                         if k not in ("code_sha", "contract_hash", "contract_version")}
+                         if k not in ("code_sha", "contract_hash", "contract_version",
+                                      "commits_behind")}
             try:
                 db.insert("runner_heartbeats", row_compat, upsert=True)
                 _heartbeat_fail["n"] = 0
