@@ -127,6 +127,14 @@ class AdmissionTest(unittest.TestCase):
         self.assertTrue(d.allowed, d.reason)
         self.assertEqual(d.input_kind, "artifact_commit")
 
+    def test_resolved_reuse_context_allows_recovery_without_branch(self):
+        _repo_with_branch(self.repo)
+        slug = f"{recovery_admission.RECOVERY_PREFIX}build-thing"
+        row = {**self._row(slug), "_reuse_context": "PATCH TRANSPLANT: apply stored hunk"}
+        d = recovery_admission.check(row, repo=self.repo, db_mod=_FakeDB())
+        self.assertTrue(d.allowed, d.reason)
+        self.assertEqual(d.input_kind, "reuse_context")
+
     # 3. No branch, no diff, no commit -> NOT queued; refusal recorded naming the original.
     def test_no_recoverable_input_refuses_and_names_the_original_slug(self):
         _repo_with_branch(self.repo)

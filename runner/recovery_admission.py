@@ -167,6 +167,11 @@ def find_recoverable_input(row, repo=None, db_mod=None):
     slug = recovery_root(row.get("slug"))
     project_id = row.get("project_id")
 
+    # integration_sweeper resolves result-cache / patch-transplant evidence before admission.
+    # A non-empty reuse payload is the missing patch input even when the branch object is gone.
+    if str(row.get("_reuse_context") or "").strip():
+        return "reuse_context"
+
     if branch_input(repo, slug):
         return "branch"
 

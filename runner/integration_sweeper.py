@@ -353,7 +353,8 @@ def _handle_missing_branch(task, proj, recovery_index=None):
         if not recovery_admission.enforce(
                 {"project_id": task.get("project_id"), "slug": recovery_slug,
                  "submitted_by": task.get("submitted_by"),
-                 "submitted_by_label": task.get("submitted_by_label")},
+                 "submitted_by_label": task.get("submitted_by_label"),
+                 "_reuse_context": reuse},
                 repo=repo):
             db.update("tasks", {"id": task["id"]},
                       {"note": f"integration_sweeper: missing branch for {slug}, but no "
