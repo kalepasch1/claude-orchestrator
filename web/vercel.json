@@ -1,5 +1,4 @@
 {
-  "installCommand": "npm ci --ignore-scripts --prefer-offline --no-audit --no-fund",
   "git": {
     "deploymentEnabled": {
       "*": false,
