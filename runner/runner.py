@@ -243,11 +243,21 @@ def set_state(task_id: str, **kw) -> None:
     Accepts arbitrary keyword args that map to columns on the tasks table
     (e.g. state='DONE', note='...', cost=0.12).
     """
+    # EVIDENCE GATE: a success state with no artifact, no log, no outcome row is
+    # indistinguishable from a task that did nothing. Refuse it here rather than
+    # discovering it in an audit months later. Fail-soft — never wedges a real
+    # transition (see runner/done_evidence_gate.py).
+    try:
+        import done_evidence_gate
+        kw = done_evidence_gate.guard(task_id, kw)
+    except Exception as _e:
+        _log.debug("done_evidence_gate skipped: %s", _e)
     kw["updated_at"] = "now()"
     db.update("tasks", {"id": task_id}, kw)
     # Every non-running transition ends this executor's right to mutate the
     # branch. A crashed worker is covered by the server-side lease TTL.
-    if kw.get("state") in {"QUEUED", "DONE", "MERGED", "BLOCKED", "QUARANTINED"}:
+    if kw.get("state") in {"QUEUED", "DONE", "MERGED", "BLOCKED", "QUARANTINED",
+                           "PHANTOM_UNVERIFIED"}:
         branch_lease.release(str(task_id))
         # Release file reservations when task finishes (any terminal state)
         try:
