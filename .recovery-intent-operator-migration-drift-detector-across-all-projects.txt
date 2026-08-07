@@ -1,0 +1,4 @@
+recovery-intent: operator-migration-drift-detector-across-all-projects
+template: 4e27a19741ef
+intent: 07062319 07071626 510_vigil_absorption_phase_b 8b92d078e856 absorption acceptance across adapt against agentic along alter analysis apparently applied apply applying artifacts because beethoven before behavior below bitten blocks branch broad bugfix build capability catch category cause change changes changing check checks claim coder commit committed compares complete completion concrete config configured confirmed context continue create credentials database dependencies detect detection detector diffs directive drafting drift duplicate duplicates eliminating empty equivalent every exact examine exist existing exists failed failure filenames files final finish first
+base: master
