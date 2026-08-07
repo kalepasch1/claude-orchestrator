@@ -142,6 +142,126 @@ class TestRepairIndexLock(unittest.TestCase):
             self.assertTrue(removed or not os.path.exists(lock))
 
 
+GIT_ID = ["-c", "user.name=test", "-c", "user.email=test@test.local"]
+
+
+def _git(args, cwd=None):
+    import subprocess
+    subprocess.run(["git"] + GIT_ID + args, cwd=cwd, check=True, capture_output=True)
+
+
+def _make_upstream(root, branch="main"):
+    upstream = os.path.join(root, "upstream")
+    _git(["init", "-b", branch, upstream])
+    with open(os.path.join(upstream, "README.md"), "w") as f:
+        f.write("hello\n")
+    _git(["add", "."], cwd=upstream)
+    _git(["commit", "-m", "init"], cwd=upstream)
+    return upstream
+
+
+def _advance_upstream(upstream):
+    with open(os.path.join(upstream, "more.txt"), "w") as f:
+        f.write("more\n")
+    _git(["add", "."], cwd=upstream)
+    _git(["commit", "-m", "advance"], cwd=upstream)
+
+
+class TestRepairRepo(unittest.TestCase):
+    def test_structure(self):
+        result = repo_setup_repair.repair_repo("/tmp/does_not_exist_xyz_999")
+        for key in ("cloned", "fetched", "fast_forwarded", "actions",
+                    "error", "ready", "default_branch", "clean", "current"):
+            self.assertIn(key, result)
+
+    def test_missing_repo_no_remote_url(self):
+        result = repo_setup_repair.repair_repo("/tmp/does_not_exist_xyz_999")
+        self.assertFalse(result["cloned"])
+        self.assertFalse(result["ready"])
+        self.assertIn("no remote_url", result["error"])
+
+    def test_clone_success(self):
+        with tempfile.TemporaryDirectory() as root:
+            upstream = _make_upstream(root)
+            local = os.path.join(root, "local")
+            result = repo_setup_repair.repair_repo(local, remote_url=upstream)
+            self.assertTrue(result["cloned"])
+            self.assertTrue(result["ready"])
+            self.assertEqual(result["default_branch"], "main")
+            self.assertEqual(result["error"], "")
+
+    def test_clone_failure(self):
+        with tempfile.TemporaryDirectory() as root:
+            local = os.path.join(root, "local")
+            result = repo_setup_repair.repair_repo(
+                local, remote_url=os.path.join(root, "no_such_upstream"))
+            self.assertFalse(result["cloned"])
+            self.assertFalse(result["ready"])
+            self.assertIn("clone failed", result["error"])
+
+    def test_fast_forward_behind_main(self):
+        with tempfile.TemporaryDirectory() as root:
+            upstream = _make_upstream(root)
+            local = os.path.join(root, "local")
+            _git(["clone", upstream, local])
+            _advance_upstream(upstream)
+            result = repo_setup_repair.repair_repo(local)
+            self.assertTrue(result["fetched"])
+            self.assertTrue(result["fast_forwarded"])
+            self.assertTrue(result["ready"])
+            self.assertTrue(result["current"])
+
+    def test_fast_forward_behind_develop(self):
+        with tempfile.TemporaryDirectory() as root:
+            upstream = _make_upstream(root, branch="develop")
+            local = os.path.join(root, "local")
+            _git(["clone", upstream, local])
+            _advance_upstream(upstream)
+            result = repo_setup_repair.repair_repo(local)
+            self.assertTrue(result["fast_forwarded"])
+            self.assertEqual(result["default_branch"], "develop")
+            self.assertTrue(result["ready"])
+
+    def test_fast_forward_without_switching_branch(self):
+        """A repo parked on a feature branch gets main updated in place."""
+        import subprocess
+        with tempfile.TemporaryDirectory() as root:
+            upstream = _make_upstream(root)
+            local = os.path.join(root, "local")
+            _git(["clone", upstream, local])
+            _git(["checkout", "-b", "agent/feature"], cwd=local)
+            _advance_upstream(upstream)
+            result = repo_setup_repair.repair_repo(local)
+            self.assertTrue(result["fast_forwarded"])
+            head = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=local, capture_output=True, text=True).stdout.strip()
+            self.assertEqual(head, "agent/feature")
+
+    def test_dirty_tree_skips_fast_forward(self):
+        with tempfile.TemporaryDirectory() as root:
+            upstream = _make_upstream(root)
+            local = os.path.join(root, "local")
+            _git(["clone", upstream, local])
+            _advance_upstream(upstream)
+            dirty_file = os.path.join(local, "wip.txt")
+            with open(dirty_file, "w") as f:
+                f.write("uncommitted\n")
+            result = repo_setup_repair.repair_repo(local)
+            self.assertFalse(result["fast_forwarded"])
+            self.assertFalse(result["clean"])
+            self.assertTrue(os.path.exists(dirty_file))
+            self.assertTrue(any("dirty" in a for a in result["actions"]))
+
+    def test_missing_remote_fail_soft(self):
+        with tempfile.TemporaryDirectory() as root:
+            repo = _make_upstream(root)  # standalone repo, no origin
+            result = repo_setup_repair.repair_repo(repo)
+            self.assertFalse(result["fetched"])
+            self.assertIn("fetch failed", result["error"])
+            self.assertTrue(result["clean"])
+
+
 class TestRepairForTask(unittest.TestCase):
     def test_missing_project(self):
         with patch.object(repo_setup_repair, "db") as mock_db:
