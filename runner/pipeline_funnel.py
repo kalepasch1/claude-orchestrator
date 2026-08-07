@@ -135,7 +135,35 @@ def snapshot():
     add("draft",  "tasks", {"state": "eq.RUNNING"}, "updated_at")
     add("card",   "tasks", {"state": "eq.DONE"}, "updated_at",
         "finished work with no integration card is the failure that hid for months")
-    add("merge",  "approvals", {"decided_by": "is.null"}, "created_at")
+    # THE MONITOR WAS COUNTING THE WRONG THING (fixed 2026-08-06).
+    #
+    # This counted approvals with decided_by IS NULL. But ensure_integration_card stamps every
+    # card it creates with decided_by="canonical-train:sweeper" — an ATTRIBUTION marker naming
+    # who queued it, written at CREATION time, not a verdict. So a correctly filed, completely
+    # unprocessed card has a non-null decided_by and was invisible here. This stage read 0 no
+    # matter how many cards existed, which made the "stranded" invariant below fire permanently
+    # whenever any DONE task existed — that is, always.
+    #
+    # Measured today: the sweeper fix took stranded DONE-without-approvals from 43 to 8 and put
+    # 189 cards in front of the train, and this monitor went on reporting "183 tasks finished
+    # but 0 cards exist". A monitor that cries stall through a working pipeline trains everyone
+    # to ignore it, which is the same failure as one that stays green through an outage.
+    #
+    # merge_train._pick_cards already carries the correct definition and the scar tissue
+    # explaining it: only the train's own outcome prefixes mean a card has been examined. Use
+    # the same predicate so the monitor and the thing it monitors cannot drift apart.
+    _skip = ("merge-handler", "train", "auto-policy")
+    try:
+        import merge_train as _mt
+        _skip = _mt.SKIP_PREFIXES
+        _kinds = ",".join(_mt.MERGE_KINDS)
+    except Exception:
+        _kinds = "verify,material,integrate"
+    _undecided = "or=(decided_by.is.null,and({}))".format(
+        ",".join(f"decided_by.not.like.{pfx}*" for pfx in _skip))
+    _k, _v = _undecided.split("=", 1)
+    add("merge", "approvals",
+        {"status": "eq.approved", "kind": f"in.({_kinds})", _k: _v}, "created_at")
 
     merged_24h = _count("tasks", {
         "state": "eq.MERGED",

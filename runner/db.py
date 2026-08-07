@@ -502,7 +502,10 @@ def _warn_if_truncated(table, params, rows):
             cap = int(str(limit).strip().strip('"'))
         except (TypeError, ValueError):
             return
-        if cap <= 0 or len(rows) < cap:
+        # limit=1 is "give me the newest/oldest one", never a queue scan. It fills by
+        # definition, so warning on it is pure noise — pipeline_funnel's age probe tripped it
+        # on the first run. Same for 2; anything that small is a lookup, not a sweep.
+        if cap <= 2 or len(rows) < cap:
             return
         import traceback
         site = "?"

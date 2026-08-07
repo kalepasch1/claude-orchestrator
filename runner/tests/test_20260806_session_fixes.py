@@ -282,6 +282,27 @@ check("gate fails OPEN, unlike the overwrite guards",
       "fail-open" in inspect.getsource(mt._orphan_import_gate),
       "a broken build is caught downstream; destroyed code is not")
 
+
+# 22. the funnel's merge stage counted approvals with decided_by IS NULL, but
+#     ensure_integration_card stamps every card it creates with "canonical-train:sweeper" — an
+#     attribution marker, not a verdict. The stage read 0 no matter how many cards existed, so
+#     the "stranded" invariant fired permanently. It reported "183 finished, 0 cards exist" on a
+#     run where the sweeper had just put 189 cards in front of the train.
+_pf_src = open("/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/pipeline_funnel.py").read()
+check("funnel uses the train's own definition of undecided",
+      "SKIP_PREFIXES" in _pf_src and "decided_by.not.like" in _pf_src,
+      "monitor and monitored cannot drift apart")
+_snap2 = pf.snapshot()
+_merge_stage = next(s for s in _snap2["stages"] if s["stage"] == "merge")
+check("funnel now sees the cards that exist", _merge_stage["count"] > 0,
+      f"{_merge_stage['count']} undecided cards (read 0 before)")
+check("the false stranded alarm is gone", not _snap2.get("stranded"),
+      "cards exist, so the invariant must not fire")
+check("truncation detector ignores single-row lookups",
+      "if cap <= 2 or len(rows) < cap:" in open(
+          "/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/db.py").read(),
+      "limit=1 fills by definition")
+
 print("=" * 68)
 ok = 0
 for n, passed, d in RESULTS:
