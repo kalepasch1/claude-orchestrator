@@ -4,6 +4,10 @@ on:
   push:
     branches: [master]
   pull_request:
+  # Auto-sync promotes dev -> master with GITHUB_TOKEN, whose pushes never trigger
+  # workflows — so master could change with no CI run to show for it. Dispatch fills
+  # that hole: any promotion can be verified on demand against the exact master tip.
+  workflow_dispatch:
 
 jobs:
   darwin-kernel:
