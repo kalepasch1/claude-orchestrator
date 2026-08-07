@@ -43,6 +43,12 @@ class _Repo(unittest.TestCase):
 
     def setUp(self):
         merge_truth.invalidate_fetch_cache()
+        # db.py loads runner/.env in the real fleet. These ancestry fixtures create their
+        # own branch names and must not inherit the machine-wide integration fallback;
+        # tests that exercise the fallback set it explicitly in their own scope.
+        env = patch.dict(os.environ, {"ORCH_STAGING_BRANCH": ""})
+        env.start()
+        self.addCleanup(env.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.repo = os.path.join(self.tmp.name, "repo")
