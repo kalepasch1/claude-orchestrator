@@ -710,8 +710,11 @@ class TestRegressionAndEdgeCases:
             "    return True\n"
         )
 
-        # Comments preserved
-        assert source.count("#") == adapted.count("#")
+        # Comments preserved: every original comment line survives adaptation
+        # (the adapted patch adds one line of its own, so counts may grow)
+        source_comments = [l for l in source.splitlines() if l.lstrip().startswith("#")]
+        for comment in source_comments:
+            assert comment in adapted
         # Whitespace structure preserved (blank lines)
         assert source.count("\n\n") == adapted.count("\n\n")
 

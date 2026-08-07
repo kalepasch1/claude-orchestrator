@@ -232,6 +232,18 @@ def _template_adaptation(repo, slug, branch, base, project=None):
         return {"ok": False, "method": "template", "branch": branch, "reason": str(e)[:200]}
 
 
+def _apply_patch_to_branch(repo, patch, branch, base):
+    """Apply a similar merged diff (patch template) to a fresh branch off base.
+
+    Delegates to patch_template_apply so method 3 applies the FOUND template,
+    not the missing task's own stored patch (which is why method 3 ran at all).
+    """
+    import patch_template_apply
+    slug = branch.split("/", 1)[1] if branch and "/" in branch else (branch or "")
+    return patch_template_apply.apply_patch_template(repo, slug, base, patch,
+                                                     branch=branch)
+
+
 # ---------------------------------------------------------------------------
 # Standalone branch-detection and regeneration utilities (zero-agent-spend)
 # These are NOT yet wired into recover() — they are isolated utilities.
