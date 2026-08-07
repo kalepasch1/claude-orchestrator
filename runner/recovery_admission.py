@@ -225,13 +225,19 @@ def check(row, repo=None, db_mod=None):
         if not is_recovery_slug(slug):
             return Decision(True, "not a recovery-class task")
 
-        # An operator asking for a recovery is a business input, not fleet churn.
+        # An operator asking for a recovery is a business input, not fleet churn. Keep the
+        # local check authoritative too: some test/runtime loaders temporarily substitute the
+        # db module, and that must never turn an attributed human directive into machine churn.
+        operator_origin = (slug.startswith("dropbox-")
+                           or bool(str(row.get("submitted_by") or "").strip())
+                           or bool(str(row.get("submitted_by_label") or "").strip()))
         try:
             import db as _db
-            if _db._is_operator_origin(row):
-                return Decision(True, "operator origin — never gated")
+            operator_origin = operator_origin or bool(_db._is_operator_origin(row))
         except Exception:
             pass
+        if operator_origin:
+            return Decision(True, "operator origin — never gated")
 
         depth = recovery_depth(slug)
         ceiling = max_depth()
