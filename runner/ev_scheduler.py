@@ -127,6 +127,12 @@ def thermal_score(task, ctx):
     return thermal_map.score(task, ctx)
 
 
+#: Recent-outcome sample used for per-project success_rate/avg_usd. Sized at the PostgREST
+#: per-response cap on purpose: asking for more than 1,000 in one call silently gets 1,000,
+#: so the honest ceiling is stated rather than implied.
+OUTCOME_SAMPLE = 1000
+
+
 def load_ctx():
     """Build the scoring context from db. Every read is fail-soft."""
     ctx = {"revenue_by_project": {}, "surface_returns": {}, "outcome_stats": {},
@@ -138,8 +144,15 @@ def load_ctx():
         pass
     try:
         agg = {}
-        for r in db.select("outcomes", {"select": "project,usd,integrated",
-                                        "limit": "5000"}) or []:
+        # SAMPLE class: per-project success_rate/avg_usd only need a recent window, but it
+        # must be a DEFINED window. With no order, PostgREST's 1,000-row response cap made
+        # this an arbitrary 1,000 of the outcomes table — so every project's success rate
+        # was computed from a non-reproducible sample, and "limit 5000" advertised a depth
+        # it never had. created_at.desc matches every other outcomes reader
+        # (anomaly, experiment_portfolio, route_value_optimizer).
+        for r in db.select("outcomes", {"select": "project,usd,integrated,created_at",
+                                        "order": "created_at.desc",
+                                        "limit": str(OUTCOME_SAMPLE)}) or []:
             a = agg.setdefault(r.get("project") or "?", [0.0, 0, 0])
             a[0] += float(r.get("usd") or 0); a[1] += 1
             a[2] += 1 if r.get("integrated") else 0
@@ -178,18 +191,61 @@ def load_ctx():
         pass
     try:
         import economic_scheduler
-        tasks = db.select("tasks", {"select": "*", "state": "eq.QUEUED", "limit": "500"}) or []
-        ctx["economic_signals"] = economic_scheduler.predict_revenue_bulk(tasks, ctx)
+        # Same FULL SCAN as the ranking sweep: economic signals computed for only the
+        # first 500 QUEUED tasks left every other task scored without its revenue signal.
+        ctx["economic_signals"] = economic_scheduler.predict_revenue_bulk(queued_tasks(), ctx)
     except Exception:
         pass
     return ctx
 
 
-def _scored_queue(limit=500, ctx=None):
+#: Deterministic scan order for the QUEUED sweep. Oldest-first matters twice over: offset
+#: paging needs a stable order to avoid repeating/skipping rows between pages, and the
+#: tasks this scheduler was starving were the OLDEST ones.
+QUEUE_SCAN_ORDER = "created_at.asc,id.asc"
+
+
+def queued_tasks(limit=None, order=QUEUE_SCAN_ORDER):
+    """Every QUEUED task (FULL SCAN), or a deterministically-ordered SAMPLE.
+
+    Until 2026-08-06 this was `select("tasks", {"state": "eq.QUEUED", "limit": "500"})`
+    with NO order at all, inside a job that runs every 900s to rank and park the queue.
+    Measured that day: 1,407 tasks QUEUED, so ~907 of them were invisible to EV ordering
+    and to zero-EV parking entirely, and which 500 were seen was not even reproducible
+    between cycles. Tasks queued on 2026-08-02 had sat untouched for four days.
+
+    Ranking the queue is a FULL SCAN question — "where does every task belong" — so it
+    pages to exhaustion. `limit` is kept for callers that genuinely want a bounded sample
+    (rank_queue's top-N callers), and that path now carries the same deterministic order.
+    """
+    params = {"select": "*", "state": "eq.QUEUED"}
+    if limit:
+        return db.select("tasks", dict(params, order=order, limit=str(int(limit)))) or []
+    return db.select_all("tasks", params, order=order) or []
+
+
+def scan_coverage(scanned):
+    """Report scanned-vs-true queue depth so silent truncation can never return.
+
+    The old window failed silently: it logged "ranked 500 queued tasks" whether the queue
+    held 500 or 5,000. Comparing against a server-side count makes a short scan visible
+    instead of leaving throughput loss to be inferred from stale tasks days later.
+    """
+    try:
+        depth = db.count("tasks", {"state": "eq.QUEUED"})
+    except Exception:
+        return {"scanned": scanned, "queue_depth": None, "complete": None}
+    complete = depth is not None and scanned >= depth
+    if not complete:
+        print(f"ev_scheduler: INCOMPLETE SCAN — scored {scanned} of {depth} QUEUED tasks; "
+              f"the unscored remainder is invisible to EV ordering and parking", flush=True)
+    return {"scanned": scanned, "queue_depth": depth, "complete": complete}
+
+
+def _scored_queue(limit=None, ctx=None):
     """[(score, task), ...] sorted desc by score (created_at, id break ties)."""
     ctx = ctx if ctx is not None else load_ctx()
-    tasks = db.select("tasks", {"select": "*", "state": "eq.QUEUED",
-                                "limit": str(limit)}) or []
+    tasks = queued_tasks(limit=limit)
     names = {}
     try:
         names = {p["id"]: p["name"] for p in
@@ -204,8 +260,12 @@ def _scored_queue(limit=500, ctx=None):
     return scored
 
 
-def rank_queue(limit=500, ctx=None):
-    """Task ids for all QUEUED tasks, best expected value first."""
+def rank_queue(limit=None, ctx=None):
+    """Task ids for all QUEUED tasks, best expected value first.
+
+    Defaults to the full queue: the docstring already promised "all QUEUED tasks" while
+    the signature quietly capped it at 500.
+    """
     return [t["id"] for _, t in _scored_queue(limit=limit, ctx=ctx)]
 
 
@@ -274,11 +334,13 @@ def park_zero_ev(scored=None):
 def run():
     try:
         scored = _scored_queue()
+        coverage = scan_coverage(len(scored))
         applied = apply_ranking(scored)
         parked = park_zero_ev(scored)
         print(f"ev_scheduler: ranked {len(scored)} queued tasks "
-              f"(storage={applied['storage']}, wrote {applied['count']}), parked {parked}")
-        return {"ranked": len(scored), **applied, "parked": parked}
+              f"(of {coverage['queue_depth']} in queue, complete={coverage['complete']}, "
+              f"storage={applied['storage']}, wrote {applied['count']}), parked {parked}")
+        return {"ranked": len(scored), **applied, "parked": parked, "coverage": coverage}
     except Exception as e:
         print(f"ev_scheduler: skipped ({e})")
         return {"ranked": 0, "error": str(e)}
