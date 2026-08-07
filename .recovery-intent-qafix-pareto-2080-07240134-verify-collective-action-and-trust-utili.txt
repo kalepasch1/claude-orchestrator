@@ -1,0 +1,4 @@
+recovery-intent: qafix-pareto-2080-07240134-verify-collective-action-and-trust-utili
+template: 9b4130290ee7
+intent: 07041728 07130635 07240134 100644 20251001 252d2c0 51df8b0 action active adapt advice after agentic analysis analytics artifacts author barks batch before behavior below branch broad bugfix build build_fix category cause change changes changing checks claim class claud claude cloud coder codestral collective collectiveaction commit commitmenttrust completion concrete confidence_gate config context continue contract coordination cowork cross custody deepseek default definenuxtconfig delete dependencies diffs directive draft drafting ensure equivalent excerpt existing exists expected explore export fable failure files final finish first flash fonts
+base: main
