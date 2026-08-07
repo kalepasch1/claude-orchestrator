@@ -1,0 +1,4 @@
+recovery-intent: qafix-beethoven-08020135-recovered
+template: ad4abaeb6b3f
+intent: 07062319 07071626 08020135 30min 8b92d078e856 acceptance actual adapt after agent agentic alter analysis artifacts attempt because beethoven before behavior below blocks branch branches broad bugfix build buildfail cache category cause changes changing checks cloud coder codex command commit committed complete completion concrete config confirm context continue dependencies devdependencies different diffs directive drafting duplicate duplicates eliminating equivalent error errors escalated examine existing exists failed fails failure files final finish first focus fresh functionality green hints identify implementation improve inspect install instead
+base: master
