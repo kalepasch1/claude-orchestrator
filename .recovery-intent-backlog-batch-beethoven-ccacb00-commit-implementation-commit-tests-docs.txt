@@ -1,0 +1,4 @@
+recovery-intent: backlog-batch-beethoven-ccacb00-commit-implementation-commit-tests-docs
+template: ae92a40b1d18
+intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 acceptance active adapt advice after agentic aider allowlist analysis author batch beethoven before behavior blocked blocker build build_fix buildfail ce2e8dcd7954 change changes cheap claim class claude clearly coder commit completes concern concrete config confirm context contract convert coordination cowork create cross custody deepseek defined delete deployfix diffs directive documentation drafting excerpt existing exists fable files first flash force gemini generated google haiku implement implementation improvement improvement_mining improvements independent instead
+base: master
