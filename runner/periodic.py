@@ -280,28 +280,12 @@ def _is_transient_net_error(exc):
 
 
 def _invoke_job(job):
-    """Run a job, converting a permanently-missing table into a disable rather than a crash loop.
-
-    Transient network failures are also absorbed here. Previously only
-    MissingRelationError was caught, so a Supabase timeout escaped as an unhandled
-    URLError: the job died and wrote a full traceback on EVERY cycle. That is how
-    preflight accumulated 4970 tracebacks and quarantine 1642 with zero successful
-    runs — all of it the same "urlopen error timed out", none of it a code defect.
-    A timeout is not a reason to disable the job (it will likely work next cycle)
-    and not a reason to spam a traceback (it hides the jobs that are genuinely
-    broken). Log one line and let the next invocation retry.
-    """
+    """Run a job, converting a permanently-missing table into a disable rather than a crash loop."""
     try:
         return JOBS[job]()
     except db.MissingRelationError as exc:
         _disable_job(job, str(exc))
         return None
-    except Exception as exc:
-        if _is_transient_net_error(exc):
-            print(f"periodic {job}: skipped; transient network error ({type(exc).__name__}: "
-                  f"{exc}). Not a code failure — retrying next cycle.")
-            return None
-        raise
 
 
 _DISABLED_JOBS_PATH = os.path.join(_RUNTIME, "disabled_jobs.json")
@@ -1263,3 +1247,14 @@ if __name__ == "__main__":
             sys.exit(_EX_WEDGED)
         sys.exit(_EX_SKIPPED)
     sys.exit(_EX_OK)
+
+def run_pipelineselftest():
+    """§2: alert on a silent machine, and self-test the pipeline's own signals hourly.
+
+    Mac 2 was down half a day unnoticed and train-stale was a false alarm for days — both
+    because nothing checked that the monitors themselves were telling the truth.
+    """
+    import pipeline_selftest
+    result = pipeline_selftest.run()
+    print(pipeline_selftest.render(result), flush=True)
+

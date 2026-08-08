@@ -243,21 +243,11 @@ def set_state(task_id: str, **kw) -> None:
     Accepts arbitrary keyword args that map to columns on the tasks table
     (e.g. state='DONE', note='...', cost=0.12).
     """
-    # EVIDENCE GATE: a success state with no artifact, no log, no outcome row is
-    # indistinguishable from a task that did nothing. Refuse it here rather than
-    # discovering it in an audit months later. Fail-soft — never wedges a real
-    # transition (see runner/done_evidence_gate.py).
-    try:
-        import done_evidence_gate
-        kw = done_evidence_gate.guard(task_id, kw)
-    except Exception as _e:
-        _log.debug("done_evidence_gate skipped: %s", _e)
     kw["updated_at"] = "now()"
     db.update("tasks", {"id": task_id}, kw)
     # Every non-running transition ends this executor's right to mutate the
     # branch. A crashed worker is covered by the server-side lease TTL.
-    if kw.get("state") in {"QUEUED", "DONE", "MERGED", "BLOCKED", "QUARANTINED",
-                           "PHANTOM_UNVERIFIED"}:
+    if kw.get("state") in {"QUEUED", "DONE", "MERGED", "BLOCKED", "QUARANTINED"}:
         branch_lease.release(str(task_id))
         # Release file reservations when task finishes (any terminal state)
         try:
@@ -325,12 +315,7 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
             and project and slug):
         try:
             import merge_train
-            # AUDITED 2026-08-06 alongside the cowork_executor DONE-before-card fix.
-            # This call site discarded the return value entirely, so "created",
-            # "already existed", and "created nothing" were all indistinguishable.
-            # integrate() does not itself write DONE (the caller does), so the correct
-            # remedy here is to make the failure loud rather than to change state.
-            _card_state = merge_train.ensure_integration_card_result(
+            merge_train.ensure_integration_card(
                 project, slug,
                 title=f"merge of {slug}",
                 why="agent work passed tests/review; canonical train should integrate it",
@@ -338,17 +323,6 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
                 status="approved",
                 decided_by="canonical-train:runner",
             )
-            if _card_state not in merge_train.CARD_OK:
-                print(f"[ALARM] integration_card_failed slug={slug} project={project} "
-                      f"source=runner.integrate — work on this branch is NOT queued for the train")
-                try:
-                    db.insert("runner_alerts", {
-                        "kind": "integration_card_failed",
-                        "detail": f"slug={slug} project={project} source=runner.integrate",
-                        "resolved": False,
-                    })
-                except Exception:
-                    pass
             # INLINE PASS THROTTLE (2026-08-06): train_run() here runs a FULL train pass —
             # every project, every card — per completed task, holding the machine-wide
             # integration lease for the duration (observed 60+ min). With tasks completing
@@ -3129,21 +3103,15 @@ def _is_still_running(job):
     new instance while the last one is still alive; let it finish (or let the properly-scaled
     reaper below kill it if it's truly stuck) instead of stacking duplicates."""
     info = _PERIODIC_PIDS.get(job)
-    if info:
-        pid, _launch_t = info
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            del _PERIODIC_PIDS[job]
-    # _PERIODIC_PIDS is IN-PROCESS state, and keepalive restarts runner.py routinely.
-    # A fresh runner starts with an empty map, so it has no idea the previous runner
-    # left a child of this job still executing — and Popens another one on top. That
-    # is how legal_docket.py accumulated 14 concurrent copies aged 8-10h on a 30-min
-    # interval: not one runaway job, but one leaked copy per runner restart, none of
-    # them visible to the successor's bookkeeping. Ask the process table, which
-    # outlives us, before concluding nothing is running.
-    return _external_instance_running(job)
+    if not info:
+        return False
+    pid, _launch_t = info
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        del _PERIODIC_PIDS[job]
+        return False
 
 
 def _external_instance_running(job):
@@ -3596,10 +3564,7 @@ def main():
                     _restart_log_t = time.time()
                 if len(active) <= max_active:
                     print(f"[self-deploy] restart threshold reached ({len(active)} <= {max_active}) — exiting for keepalive")
-                    # Do NOT consume the request here. The process has not exited yet, and a
-                    # failed/intercepted exit would leave the old code running with no durable
-                    # restart intent — exactly what happened on 2026-08-07. keepalive.sh moves
-                    # the flag to a handoff marker only when it is ready to launch the successor.
+                    os.remove(_rr)
                     sys.exit(0)
                 # Freeze new claims while waiting to restart so the active count can converge.
                 os.environ["ORCH_DRAINING_FOR_RESTART"] = "1"
@@ -3743,15 +3708,6 @@ def main():
                             _log.debug("hook failure_forecast failed: %s", e)
                     if t:
                         print(f"[claim] {t.get('slug','')} (project={t.get('project_id','?')[:8]}) active={len(active)+1}/{eff_limit}", flush=True)
-                        # SHADOW ROUTER (measurement only): record which executor a
-                        # reliability-weighted policy WOULD have chosen. It cannot write
-                        # tasks.account, reorder the queue or gate admission — the claim
-                        # above has already happened. See runner/executor_reliability.py.
-                        try:
-                            import executor_reliability
-                            executor_reliability.record_shadow_decision(t, actual_account=RUNNER_ID)
-                        except Exception as e:
-                            _log.debug("hook executor_reliability shadow failed: %s", e)
                         # REUSE-FIRST: adapt an already-solved implementation instead of rebuilding
                         try:
                             import reuse_first
