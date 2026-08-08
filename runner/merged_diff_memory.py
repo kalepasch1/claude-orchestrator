@@ -392,22 +392,41 @@ def _read_memory() -> list[dict]:
             with open(MERGED_DIFF_FILE, encoding="utf-8", errors="replace") as f:
                 data = json.load(f)
                 return data.get("merges", [])
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("merged_diff_memory: could not read %s: %s", MERGED_DIFF_FILE, e)
     return []
 
 
-def _write_memory(merges: list[dict]) -> None:
-    """Write merged diff metadata to memory file. Fail-soft on error."""
+def _write_memory(merges: list[dict]) -> bool:
+    """Write merged diff metadata to the memory file.
+
+    Returns True if the data was persisted, False on any error. Still
+    fail-soft -- callers are never interrupted -- but a failed write is now
+    both observable by the caller and logged, rather than swallowed. A
+    silently-dropped write left the recovery memory looking populated while
+    it was actually stale, which is worse than an empty one.
+
+    The write goes to a temp file in the same directory and is then
+    os.replace()d into place, so a crash or a full disk mid-write cannot
+    leave behind a truncated file that _read_memory would discard wholesale.
+    """
+    tmp = MERGED_DIFF_FILE.with_suffix(".json.tmp")
     try:
         MEMORY_DIR.mkdir(parents=True, exist_ok=True)
-        with open(MERGED_DIFF_FILE, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"merges": merges[-MAX_STORED_MERGES:]}, f, indent=2)
-    except Exception:
-        pass
+        os.replace(tmp, MERGED_DIFF_FILE)
+        return True
+    except Exception as e:
+        logger.warning("merged_diff_memory: could not write %s: %s", MERGED_DIFF_FILE, e)
+        try:
+            tmp.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return False
 
 
-def capture_merge(commit_hash: str, branch: str, cwd: str) -> None:
+def capture_merge(commit_hash: str, branch: str, cwd: str) -> bool:
     """
     Capture metadata for a merged commit.
 
@@ -415,12 +434,18 @@ def capture_merge(commit_hash: str, branch: str, cwd: str) -> None:
         commit_hash: full commit SHA
         branch: source branch name
         cwd: repo root for git commands
+
+    Returns:
+        True if the metadata is on disk (including when the commit was
+        already recorded), False if the write failed.
     """
     merges = _read_memory()
 
-    # Skip if already recorded
-    if any(m["commit"] == commit_hash for m in merges):
-        return
+    # Skip if already recorded. .get() rather than [] -- a hand-edited or
+    # partially-written entry without a "commit" key used to raise KeyError
+    # here and abort the capture entirely.
+    if any(m.get("commit") == commit_hash for m in merges):
+        return True
 
     author = _safe_run(["git", "log", "-1", "--format=%an", commit_hash], cwd=cwd)
     date = _safe_run(["git", "log", "-1", "--format=%aI", commit_hash], cwd=cwd)
@@ -436,7 +461,7 @@ def capture_merge(commit_hash: str, branch: str, cwd: str) -> None:
         "files_affected": files.split("\n") if files else [],
     })
 
-    _write_memory(merges)
+    return _write_memory(merges)
 
 
 def get_recent_merges(limit: int = 20) -> list[dict]:
@@ -456,9 +481,9 @@ def stats() -> dict:
     }
 
 
-def invalidate() -> None:
-    """Clear all tracked merges."""
-    _write_memory([])
+def invalidate() -> bool:
+    """Clear all tracked merges. True if the clear was persisted."""
+    return _write_memory([])
 
 
 def recent(days: int = 14, limit: int = 50, repo: str = ".") -> list[dict]:
@@ -510,3 +535,12 @@ def recent(days: int = 14, limit: int = 50, repo: str = ".") -> list[dict]:
         except Exception:
             continue
     return records
+
+def write_memory_file(merges: list[dict]) -> bool:
+    """Persist merge metadata. True on success, False on any error.
+
+    Public entry point for callers that need to know whether the write
+    actually landed (e.g. before reporting a merge as recorded).
+    """
+    return _write_memory(merges)
+
