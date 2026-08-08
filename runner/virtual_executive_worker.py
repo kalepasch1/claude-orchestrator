@@ -161,3 +161,9 @@ if __name__ == "__main__":
     except db.MissingRelationError as exc:
         print(json.dumps({"skipped": "missing-relation", "detail": str(exc)}))
         sys.exit(0)
+    except db.TransientDBError as exc:
+        # Supabase unreachable. This is the other half of the same crash loop: 1,803 of these
+        # were `urllib.error.URLError: <urlopen error timed out>` escaping db.select() in
+        # predict_work(). An outage is not this worker's defect — exit 0 and run again next tick.
+        print(json.dumps({"skipped": "transient-db", "detail": str(exc)[:300]}))
+        sys.exit(0)

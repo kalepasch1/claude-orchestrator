@@ -785,4 +785,15 @@ def stats():
     return gauge
 
 if __name__ == "__main__":
-    print(json.dumps(govern()))
+    # Same crash-loop shape as batch_completion and virtual_executive_worker: this job also
+    # reads through db, and an unreachable Supabase must not stop the governor from being
+    # invocable. The governor's decisions are derived from local host metrics, so a DB outage
+    # is not a reason to fail — report the skip and exit 0.
+    try:
+        print(json.dumps(govern()))
+    except db.MissingRelationError as exc:
+        print(json.dumps({"skipped": "missing-relation", "detail": str(exc)[:300]}))
+        sys.exit(0)
+    except db.TransientDBError as exc:
+        print(json.dumps({"skipped": "transient-db", "detail": str(exc)[:300]}))
+        sys.exit(0)

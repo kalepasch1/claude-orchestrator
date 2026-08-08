@@ -280,12 +280,21 @@ def _is_transient_net_error(exc):
 
 
 def _invoke_job(job):
-    """Run a job, converting a permanently-missing table into a disable rather than a crash loop."""
+    """Run a job, converting DB-level failures into a skip or a disable rather than a crash loop.
+
+    Two distinct outcomes, deliberately kept apart:
+      * MissingRelationError — structural. Running again can never help, so disable the job.
+      * TransientDBError — the network or Supabase blipped. The job is fine; skip this cycle
+        and let the next one run. Disabling here would take a healthy job offline for the
+        duration of an outage, which is the opposite of what we want.
+    """
     try:
         return JOBS[job]()
     except db.MissingRelationError as exc:
         _disable_job(job, str(exc))
         return None
+    except db.TransientDBError as exc:
+        return {"skipped": "transient-db", "job": job, "detail": str(exc)[:300]}
 
 
 _DISABLED_JOBS_PATH = os.path.join(_RUNTIME, "disabled_jobs.json")

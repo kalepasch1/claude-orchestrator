@@ -44,10 +44,17 @@ class MissingRelationError(Exception):
 
 
 class TransientDBError(Exception):
-    """Raised when a Supabase/PostgREST request fails with a retryable HTTP status (e.g. 409 Conflict).
+    """Raised when a Supabase/PostgREST request fails for a retryable reason.
 
-    Callers can catch this to distinguish transient DB collisions from permanent errors.
-    The original urllib.error.HTTPError is chained via __cause__.
+    Two cases raise this:
+      * a retryable HTTP status (e.g. 409 Conflict) — chains urllib.error.HTTPError;
+      * every configured endpoint being unreachable after the retry budget is spent —
+        chains the last urllib.error.URLError / TimeoutError / socket.timeout.
+
+    Callers can catch this to distinguish a transient outage from a permanent error. It is
+    deliberately the counterpart of MissingRelationError: transient means "skip this cycle and
+    try again next time", structural means "this job can never succeed, disable it".
+    The original exception is chained via __cause__.
     """
     pass
 
@@ -469,12 +476,28 @@ def _req(method, path, body=None, headers=None, params=None):
         probe_only = i < len(bases) - 1
         try:
             return _req_one(base, method, path, qs, data, h, probe_only=probe_only)
+        except urllib.error.HTTPError:
+            # HTTPError subclasses URLError, so without this it would be swallowed by the
+            # failover branch below and re-raised as a connectivity problem. An HTTP status
+            # means the endpoint answered — _req_one has already pinned it and applied the
+            # 409/404/retry policy. Failing over here would contradict the "never fail over on
+            # a 4xx/5xx" rule that _req_one documents, and would relabel a server-side 500 as
+            # an unreachable-network error.
+            raise
         except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
             last_exc = exc
             if _ACTIVE_BASE.get("url") == base:
                 _ACTIVE_BASE["url"] = None
             continue
-    raise last_exc
+    # Every endpoint is unreachable. Surfacing the bare URLError here is what let the
+    # periodic jobs crash-loop through a transient outage: batch_completion (1,995 identical
+    # tracebacks) and virtual_executive_worker (1,803) both died on
+    # `urllib.error.URLError: <urlopen error timed out>` escaping db.select(). Classify it the
+    # same way MissingRelationError classifies a structurally-absent table, so callers can tell
+    # "the network blipped, skip this cycle" apart from "this job is permanently broken".
+    # crash_loop_detector already treats TransientDBError as environmental, not a real defect.
+    raise TransientDBError(
+        f"all Supabase endpoints unreachable for {method} {path}: {last_exc}") from last_exc
 
 
 def _req_one(base, method, path, qs, data, h, probe_only=False):
