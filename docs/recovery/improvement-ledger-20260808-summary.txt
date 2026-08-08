@@ -1,0 +1,15 @@
+darwn: total=870 landed=177 LOST=299 pending=74 quarantined=55 other=265
+beethoven: total=1000 landed=193 LOST=461 pending=17 quarantined=17 other=312
+smarter: total=1000 landed=70 LOST=528 pending=1 quarantined=0 other=401
+apparently: total=1000 landed=147 LOST=760 pending=10 quarantined=14 other=69
+tomorrow: total=1000 landed=287 LOST=532 pending=3 quarantined=13 other=165
+pareto-2080: total=1000 landed=167 LOST=688 pending=1 quarantined=0 other=144
+racefeed: total=515 landed=99 LOST=210 pending=18 quarantined=31 other=157
+sustainable-barks: total=230 landed=55 LOST=77 pending=20 quarantined=31 other=47
+apparently-law: total=207 landed=42 LOST=1 pending=15 quarantined=19 other=130
+santas-secret-workshop: total=322 landed=96 LOST=167 pending=14 quarantined=20 other=25
+prediction-markets-institute: total=42 landed=9 LOST=1 pending=12 quarantined=4 other=16
+kalepasch-com: total=108 landed=42 LOST=24 pending=11 quarantined=14 other=17
+vigil: total=78 landed=15 LOST=3 pending=0 quarantined=29 other=31
+illuminati: total=125 landed=12 LOST=14 pending=0 quarantined=48 other=51
+WROTE /tmp/improvement_ledger.json
