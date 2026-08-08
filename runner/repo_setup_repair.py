@@ -15,10 +15,6 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
-import repo_setup_check
-
-CLONE_TIMEOUT = int(os.environ.get("ORCH_REPO_CLONE_TIMEOUT", "300"))
-FETCH_TIMEOUT = int(os.environ.get("ORCH_REPO_FETCH_TIMEOUT", "120"))
 
 # Repo-owner identity: Vercel blocks production deploys whose commit author is
 # anyone else (see CLAUDE.md "Git identity"), so repairs must never install a
@@ -192,85 +188,6 @@ def repair(repo):
     report["post_repair_issues"] = post.get("issues", [])
     report["healthy"] = len(post.get("issues", [])) == 0
     return report
-
-
-def repair_repo(path, remote_url=None, remote="origin"):
-    """Bring a local repo to a ready state without switching branches.
-
-    Clones when the path is absent (requires remote_url), fetches the remote,
-    and fast-forwards the default branch (main, or develop if that is the
-    default). A checked-out default branch is only fast-forwarded when the
-    working tree is clean; a non-checked-out one is updated in place via
-    ``git fetch <remote> <branch>:<branch>``, which never touches the tree.
-
-    Fail-soft: returns a status dict with an ``error`` field, never raises.
-    """
-    result = {
-        "cloned": False, "fetched": False, "fast_forwarded": False,
-        "actions": [], "error": "",
-    }
-    try:
-        is_repo = bool(path) and os.path.isdir(path) and \
-            _run(["git", "rev-parse", "--is-inside-work-tree"], cwd=path)[2] == 0
-        if not is_repo:
-            if not remote_url:
-                result["error"] = f"repo missing and no remote_url to clone: {path}"
-                result.update(_final_state(path, remote))
-                return result
-            _, err, rc = _run(["git", "clone", remote_url, path], timeout=CLONE_TIMEOUT)
-            if rc != 0:
-                result["error"] = f"clone failed: {err}"
-                result.update(_final_state(path, remote))
-                return result
-            result["cloned"] = True
-            result["actions"].append(f"cloned {remote_url}")
-
-        _, err, rc = _run(["git", "fetch", remote, "--prune"], cwd=path, timeout=FETCH_TIMEOUT)
-        if rc == 0:
-            result["fetched"] = True
-        else:
-            result["error"] = f"fetch failed: {err}"
-
-        branch = repo_setup_check.detect_default_branch(path, remote)
-        if branch and _run(["git", "rev-parse", "--verify", "--quiet",
-                            f"refs/remotes/{remote}/{branch}"], cwd=path)[2] == 0:
-            behind, _, rc = _run(
-                ["git", "rev-list", "--count", f"{branch}..{remote}/{branch}"], cwd=path)
-            if rc == 0 and behind.isdigit() and int(behind) > 0:
-                current, _, _ = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=path)
-                if current == branch:
-                    dirty, _, _ = _run(["git", "status", "--porcelain"], cwd=path)
-                    if dirty:
-                        result["actions"].append(
-                            f"skipped fast-forward of {branch}: dirty working tree")
-                    else:
-                        _, err, rc = _run(
-                            ["git", "merge", "--ff-only", f"{remote}/{branch}"], cwd=path)
-                        if rc == 0:
-                            result["fast_forwarded"] = True
-                            result["actions"].append(f"fast-forwarded {branch}")
-                        elif not result["error"]:
-                            result["error"] = f"fast-forward of {branch} failed: {err}"
-                else:
-                    _, err, rc = _run(
-                        ["git", "fetch", remote, f"{branch}:{branch}"],
-                        cwd=path, timeout=FETCH_TIMEOUT)
-                    if rc == 0:
-                        result["fast_forwarded"] = True
-                        result["actions"].append(f"fast-forwarded {branch} (not checked out)")
-                    elif not result["error"]:
-                        result["error"] = f"fast-forward of {branch} failed: {err}"
-
-        result.update(_final_state(path, remote))
-    except Exception as e:
-        result["error"] = result["error"] or str(e)
-    return result
-
-
-def _final_state(path, remote):
-    state = repo_setup_check.check_repo_ready(path, remote=remote)
-    return {"ready": state["ready"], "default_branch": state["default_branch"],
-            "clean": state["clean"], "current": state["current"]}
 
 
 def repair_for_task(task):
