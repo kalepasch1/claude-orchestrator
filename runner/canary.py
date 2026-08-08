@@ -59,26 +59,36 @@ def render_metrics():
     return ("\n".join(lines) + "\n").encode()
 
 
-def validate_canary(value):
-    """True when the input mentions a canary (case-insensitive substring).
+def validate_canary(response_text):
+    """True when 'canary' (case-insensitive) appears anywhere in response_text.
 
-    Tiny input validator for canary-tagged payloads/labels; fail-soft on
-    non-string input (returns False rather than raising).
+    Logs at INFO when the canary marker is found, WARNING when it is not.
+    Fail-soft on non-string input (returns False rather than raising).
     """
-    if not isinstance(value, str):
+    if not isinstance(response_text, str):
+        _log.warning("canary marker not found: non-string input (%s)", type(response_text).__name__)
         return False
-    return "canary" in value.lower()
+    if "canary" in response_text.lower():
+        _log.info("canary marker found in response text")
+        return True
+    _log.warning("canary marker NOT found in response text")
+    return False
 
 
-def validate_canary(value):
-    """True when the input mentions a canary (case-insensitive substring).
+def validate_canary(response_text):
+    """True when 'canary' (case-insensitive) appears anywhere in response_text.
 
-    Tiny input validator for canary-tagged payloads/labels; fail-soft on
-    non-string input (returns False rather than raising).
+    Logs at INFO when the canary marker is found, WARNING when it is not.
+    Fail-soft on non-string input (returns False rather than raising).
     """
-    if not isinstance(value, str):
+    if not isinstance(response_text, str):
+        _log.warning("canary marker not found: non-string input (%s)", type(response_text).__name__)
         return False
-    return "canary" in value.lower()
+    if "canary" in response_text.lower():
+        _log.info("canary marker found in response text")
+        return True
+    _log.warning("canary marker NOT found in response text")
+    return False
 
 
 def evaluate(metrics_url=None):
