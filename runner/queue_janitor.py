@@ -23,6 +23,7 @@ duplicate cards), and audited via notes/notifications. No model spend.
 """
 import datetime, json, os, sys, glob, time, socket, subprocess
 import repo_hygiene
+import host_resume_watch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import agentic_repair
@@ -98,12 +99,14 @@ def requeue_stuck_running():
                 t,
                 "orphaned-running",
                 (t.get("note") or "") + f"\nTask was stuck RUNNING >{STUCK_RUNNING_H}h and hit the janitor retry cap. Do a final same-task repair and finish it.",
+                prefer_non_claude=True,
             )
         else:
             _repair_task(
                 {**t, "transient_retries": attempts + 1},
                 "orphaned-running",
                 (t.get("note") or "") + f"\nTask was stuck RUNNING >{STUCK_RUNNING_H}h; resume and complete, do not restart blindly.",
+                prefer_non_claude=True,
             )
         try:
             db.insert("notifications", {"channel": "digest", "audience": os.environ.get("APPROVAL_PUSH_EMAIL", "kalepasch@gmail.com"),
@@ -144,12 +147,14 @@ def release_orphaned_running():
                 t,
                 "orphaned-running",
                 (t.get("note") or "") + f"\nTask was orphaned RUNNING >{ORPHAN_RUNNING_MIN:.0f}m and hit the janitor cap. Resume/fix/commit rather than asking for manual intervention.",
+                prefer_non_claude=True,
             )
         else:
             _repair_task(
                 {**t, "transient_retries": attempts + 1},
                 "orphaned-running",
                 (t.get("note") or "") + f"\nTask was orphaned RUNNING >{ORPHAN_RUNNING_MIN:.0f}m; resume existing work and finish.",
+                prefer_non_claude=True,
             )
         fixed += 1
     return fixed
@@ -373,10 +378,16 @@ def run():
     locks = clear_stale_git_locks()
     recovery_refs, archived_objects = archive_stale_git_objects_across_projects()
     stray_js = clean_stray_js_across_projects()
+    try:
+        hosts_resumed, hosts_checked = host_resume_watch.check_and_resume()
+    except Exception as e:
+        print(f"queue_janitor: host_resume_watch failed: {e}")
+        hosts_resumed, hosts_checked = 0, 0
     print(f"queue_janitor: heartbeat={'ok' if hb else 'FAIL'} orphans-released={orphans} unstuck={stuck} "
           f"merge-released={merging} empty-agentic-repair={empty} cards-refiled={refiled} locks-cleared={locks} "
-          f"recovery-refs={recovery_refs} stale-git-objects-archived={archived_objects} stray-js-cleaned={stray_js}")
-    return orphans + stuck + merging + empty + refiled + locks + recovery_refs + archived_objects + stray_js
+          f"recovery-refs={recovery_refs} stale-git-objects-archived={archived_objects} stray-js-cleaned={stray_js} "
+          f"hosts-checked={hosts_checked} hosts-resumed={hosts_resumed}")
+    return orphans + stuck + merging + empty + refiled + locks + recovery_refs + archived_objects + stray_js + hosts_resumed
 
 
 if __name__ == "__main__":

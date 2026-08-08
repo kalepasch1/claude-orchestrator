@@ -550,7 +550,7 @@ def _stable_share(task):
     return (int(hashlib.sha1(key.encode()).hexdigest()[:8], 16) % 1000) / 1000.0
 
 
-def pick(task, slot_index=0):
+def _pick_raw(task, slot_index=0):
     """Choose an agentic coder, optimizing cost x capability x task difficulty.
 
     - COWORK SKILL dispatch: tasks needing browser/doc/visual capabilities → Cowork session.
@@ -589,9 +589,10 @@ def pick(task, slot_index=0):
     diff = _task_difficulty(task)
     need = int(task.get("_need") or 0) or (9 if diff == "critical" else _NEED[diff])
     sensitivity = _task_sensitivity(task)
+    _avoid = {str(a) for a in (task.get("_avoid_coders") or []) if a}
     usable = [c for c in pool
               if c["cap"] >= need and _within_cap(c) and _allowed_by_terms(c, sensitivity)
-              and not _heavy_ollama_saturated(c)]
+              and not _heavy_ollama_saturated(c) and c["name"] not in _avoid]
     if not usable and sensitivity in ("crown_jewel", "crown-jewel", "crownjewel"):
         # Fail closed toward local-only: prefer any local coder even if it is below ideal cap,
         # instead of leaking crown-jewel context to an external provider.
@@ -616,13 +617,13 @@ def pick(task, slot_index=0):
                      key=lambda c: (_throttle_penalty(c), adjusted_cost(c), -c["cap"]))
 
     forced = str(task.get("force_coder") or "").strip()
-    if forced:
+    if forced and forced not in _avoid:
         # "aider" names the execution seam, not a concrete pool entry. Resolve
         # it to a usable non-Claude backend instead of silently falling through
         # to a Claude subscription account.
         if forced == "aider":
             candidates = by_cost or sorted(
-                [c for c in pool if c["name"] != "claude" and _within_cap(c)],
+                [c for c in pool if c["name"] != "claude" and c["name"] not in _avoid and _within_cap(c)],
                 key=lambda c: (adjusted_cost(c), -c["cap"]),
             )
             if candidates:
@@ -648,7 +649,7 @@ def pick(task, slot_index=0):
             return by_cost[0]["name"]
         if diff == "critical":
             return "claude"
-        strongest = sorted([c for c in pool if c["name"] != "claude" and _within_cap(c)],
+        strongest = sorted([c for c in pool if c["name"] != "claude" and c["name"] not in _avoid and _within_cap(c)],
                            key=lambda c: -c["cap"])
         return strongest[0]["name"] if strongest else "claude"
 
@@ -744,6 +745,48 @@ def pick(task, slot_index=0):
     if by_cost and h < share:
         return by_cost[0]["name"]
     return "claude"
+
+
+def pick(task, slot_index=0):
+    """Public entry point. Wraps _pick_raw() to honor task["_avoid_coders"] (a list of
+    coder names that must not be reselected) without touching the routing logic itself.
+
+    Added for the "push unfinished work to another vendor" repair path: when a task is
+    being re-queued specifically because it did not finish (orphaned/stuck RUNNING),
+    agentic_repair.choose_coder() populates _avoid_coders with the coder that just
+    stalled, so it gets diversified away from instead of reselected. When the task has
+    no _avoid_coders (the overwhelming majority of calls -- normal routing), this is a
+    zero-cost passthrough to the original, unmodified selection logic.
+    """
+    avoid = {str(a) for a in (task.get("_avoid_coders") or []) if a}
+    if not avoid:
+        return _pick_raw(task, slot_index)
+
+    clean_task = dict(task)
+    if str(clean_task.get("force_coder") or "") in avoid:
+        clean_task.pop("force_coder", None)
+    if str(clean_task.get("model") or "") in avoid:
+        clean_task.pop("model", None)
+
+    result = _pick_raw(clean_task, slot_index)
+    if result not in avoid:
+        return result
+
+    # _pick_raw still landed on an avoided name -- one of its several hardcoded
+    # "claude" fallback branches, since those don't consult _avoid. Fall back to the
+    # next-best usable coder directly rather than handing back the thing we were told
+    # to avoid.
+    pool = _pool()
+    diff = _task_difficulty(clean_task)
+    need = int(clean_task.get("_need") or 0) or (9 if diff == "critical" else _NEED[diff])
+    sensitivity = _task_sensitivity(clean_task)
+    usable = [c for c in pool
+              if c["cap"] >= need and _within_cap(c) and _allowed_by_terms(c, sensitivity)
+              and not _heavy_ollama_saturated(c) and c["name"] not in avoid]
+    if usable:
+        ranked = sorted(usable, key=lambda c: (float(c["cost"]), -c["cap"]))
+        return ranked[0]["name"]
+    return result  # nothing else usable at all -- better to return something than None
 
 
 def route(task):
