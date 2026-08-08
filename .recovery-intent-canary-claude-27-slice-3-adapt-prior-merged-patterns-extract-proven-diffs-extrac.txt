@@ -1,0 +1,4 @@
+recovery-intent: canary-claude-27-slice-3-adapt-prior-merged-patterns-extract-proven-diffs-extrac
+template: 661646e303fb
+intent: 07041728 07062319 07130635 07190257 20251001 absolute acceptance active adapt advice after agentic analysis applied array artifacts author barks batch beethoven before behavior below blocked blocker branch broad bugfix build build_fix canary capture category cause change changes changing checks claim class claud claude cloud coder codestral comments commit completion concrete config containing content context continue contract coordination created cross custody debate_compress deepseek delete dependencies deployfix description diffs directive directory documented drafting ensure environment equivalent every exact excerpt existence existing exists extrac
+base: main
