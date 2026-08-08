@@ -1,0 +1,4 @@
+recovery-intent: improve-upgrade-to-a-high-performance-database-slice-3-migrate-owner-db-calls
+template: 056561785ffe
+intent: 9d0155 aaac4e acceptance adapt added adding avoid before behavior bf0ed633a9c6 boundaries build c1486760bb7d calls cannot client coding command compose configurations connection cover critical database diffs directories docker drafting during error evidence exact excerpt existing exists external files first fixture focus focused frequent function handling helpers identified implementation instead intent large library lifecycle limit limited limiting locate makes matched matching mergeable merged module naming newly owner passes patch paths patterns performance preserve preserving prior project proven provide queries rebuilding recon relevant
+base: master
