@@ -1,0 +1,4 @@
+recovery-intent: dropbox-beethoven-fleet-immune-system-throughput-accelerators-operat-contracts-e
+template: 20e1cd2dcd49
+intent: acceptance beethoven compiles contracts controller coordination create define docket docketheartbeat docketleakdetected domain event events every fixture handlers health implement inter interfaces invalid lanerecovered lanezombiedetected medic place producers reference rejected releasetrainbatchready request response round runner runnerclaimcapacitychanged runnerwentdown runtime sample schema schemas service shared signature supervisor through trainpressureupdated transports trips types typescript validation weakcodercyclereported
+base: master
