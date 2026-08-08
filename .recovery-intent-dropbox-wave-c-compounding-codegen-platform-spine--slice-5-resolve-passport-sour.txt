@@ -1,0 +1,4 @@
+recovery-intent: dropbox-wave-c-compounding-codegen-platform-spine--slice-5-resolve-passport-sour
+template: f8ad8835b89d
+intent: 07060650 07062319 1677fc0f7242 31dd6ca9ed9d 4ff7ba380eac 6096aa2b 8b92d078e856 9d0155 9f821ef2b6cc a5f8e22456b6 acceptance adapt adding affected after agentledger alter artifacts assertion avoid based because beethoven before behavior being bf0ed633a9c6 bf2a3f19ec30 blocked blocks branch build check checks codegen compounding confirm conflict conventions correct current currently darwin diffs directories drafting dropbox duplicate duplicates eliminating ensure examine excerpt existing exists exits failed files first focus function functionality helpers identify implementation improve inspect instead intent kernel large library limiting lines locate maintainability markers matched matches matching
+base: master
