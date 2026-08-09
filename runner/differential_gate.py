@@ -14,9 +14,11 @@ Pure; panel outputs/ledgers are injected so it is unit-tested without models.
 """
 from __future__ import annotations
 
+import subprocess
+
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, List, Sequence, Set
+from typing import Any, Callable, List, Optional, Sequence, Set, Tuple
 
 
 @dataclass
@@ -87,3 +89,119 @@ def differential_adjudicate(
         return DiffVerdict("route_to_human", "; ".join(reasons), agreement, disagreements, divergence)
 
     return DiffVerdict("accept", "primary matches independent panel consensus and ledger", agreement)
+
+
+# ─── Per-task commit-containment evidence PRODUCER (swarm backlog rank 1) ──────
+#
+# The missing primitive underneath every merge claim: does the commit a task
+# cites as its artifact ACTUALLY contain that task's declared change? Today a
+# borrowed/shared SHA passes evidence_gate, so ~58% of daily merges are proven
+# by a commit that never touched the task's files. This produces the per-(task,
+# sha) containment fact that a rewritten evidence_gate consumes. Pure git via
+# subprocess so it is unit-tested against a throwaway tmp repo, no network.
+
+
+@dataclass
+class ContainmentEvidence:
+    task_id: str
+    artifact_commit: str
+    evaluable: bool          # False => fail-closed: cannot prove, write NOTHING
+    contains_task_paths: bool
+    changed_paths: List[str]
+    task_paths: List[str]
+    reason: str
+
+
+def _git(repo_dir: str, *args: str) -> Tuple[int, str]:
+    proc = subprocess.run(
+        ["git", "-C", repo_dir, *args],
+        capture_output=True, text=True,
+    )
+    return proc.returncode, proc.stdout.strip()
+
+
+def _commit_changed_paths(repo_dir: str, sha: str) -> List[str]:
+    rc, out = _git(repo_dir, "show", "--name-only", "--pretty=format:", sha)
+    if rc != 0:
+        return []
+    return [ln.strip() for ln in out.splitlines() if ln.strip()]
+
+
+def _task_path_set(
+    repo_dir: str,
+    artifact_branch: Optional[str],
+    base: Optional[str],
+    declared_paths: Optional[Sequence[str]],
+) -> List[str]:
+    # Prefer the branch diff (the task's real footprint); fall back to the paths
+    # the task declared. Order-stable, de-duplicated.
+    paths: List[str] = []
+    if base and artifact_branch:
+        rc, out = _git(repo_dir, "diff", "%s...%s" % (base, artifact_branch), "--name-only")
+        if rc == 0 and out:
+            paths = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    if not paths and declared_paths:
+        paths = [p.strip() for p in declared_paths if p and p.strip()]
+    seen: Set[str] = set()
+    ordered: List[str] = []
+    for p in paths:
+        if p not in seen:
+            seen.add(p)
+            ordered.append(p)
+    return ordered
+
+
+def verify_commit_contains_task(
+    repo_dir: str,
+    task_id: str,
+    sha: str,
+    artifact_branch: str,
+    *,
+    base: Optional[str] = None,
+    declared_paths: Optional[Sequence[str]] = None,
+) -> ContainmentEvidence:
+    """Fact: does `sha` (an ancestor of `artifact_branch`) touch any path the
+    task claims to change? Fail-closed (evaluable=False) when the task declares
+    no paths and no branch diff exists -- then callers write NO evidence row."""
+    task_paths = _task_path_set(repo_dir, artifact_branch, base, declared_paths)
+    if not task_paths:
+        return ContainmentEvidence(
+            task_id, sha, False, False, [], [],
+            "fail-closed: task declares no paths and no branch diff to derive them",
+        )
+    rc_sha, _ = _git(repo_dir, "rev-parse", "--verify", "%s^{commit}" % sha)
+    if rc_sha != 0:
+        return ContainmentEvidence(
+            task_id, sha, True, False, [], task_paths,
+            "sha does not resolve to a commit",
+        )
+    rc_anc, _ = _git(repo_dir, "merge-base", "--is-ancestor", sha, artifact_branch)
+    if rc_anc != 0:
+        return ContainmentEvidence(
+            task_id, sha, True, False, [], task_paths,
+            "sha is not an ancestor of %s (borrowed/foreign commit)" % artifact_branch,
+        )
+    changed = _commit_changed_paths(repo_dir, sha)
+    task_set = set(task_paths)
+    intersect = [p for p in changed if p in task_set]
+    contains = len(intersect) > 0
+    reason = (
+        "commit touches task path(s): " + ", ".join(intersect)
+        if contains else
+        "commit touches none of the task's declared paths"
+    )
+    return ContainmentEvidence(task_id, sha, True, contains, changed, task_paths, reason)
+
+
+def verify_and_record(
+    evidence: ContainmentEvidence,
+    write_row: Callable[[ContainmentEvidence], Any],
+    *,
+    verified_by: str = "differential_gate.verify_commit_contains_task",
+) -> Optional[Any]:
+    """Persist exactly one evidence row when the fact is evaluable; write NOTHING
+    on the fail-closed path. `write_row` is injected (an upsert keyed on
+    unique(task_id, artifact_commit)) so this is unit-tested without a database."""
+    if not evidence.evaluable:
+        return None
+    return write_row(evidence)
