@@ -1,0 +1,4 @@
+recovery-intent: canary-deepseek-6-fix-build-errors
+template: e4b0836beb87
+intent: 07062319 07071626 8b92d078e856 acceptance adapt agentic alter analysis artifacts assertions because beethoven before behavior below blocks branch broad broken bugfix build canary category cause change changes changing checks coder commit compiles complete completes completion concrete config configurations context continue deepseek dependencies diagnose diffs directive drafting duplicate duplicates eliminating equivalent errors examine existing exists failure failures feature files final finish first focus fresh functionality green identify implementation imports improve inspect install instead integral intent large level library lines maintainability matched merged
+base: main
