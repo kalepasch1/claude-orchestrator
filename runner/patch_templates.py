@@ -61,6 +61,16 @@ def build(task):
         lines.append("Prior merged patterns to adapt:")
         for h in hits:
             lines.append(f"- {h.get('project')}/{h.get('slug')} sim={h.get('similarity')}: {h.get('summary')}")
+        # The prose line above says a similar patch exists; this adds WHICH files
+        # and line ranges it touched. Fail-soft: no adapter, no scaffold, same
+        # template as before.
+        try:
+            import merged_diff_adapter
+            scaffold = merged_diff_adapter.adapt(hits, target_files=task.get("target_files"))
+        except Exception:
+            scaffold = ""
+        if scaffold:
+            lines.append(scaffold)
     else:
         lines.append("Prior merged patterns to adapt: none found; keep the patch template reusable.")
     return tid, "\n".join(lines)
