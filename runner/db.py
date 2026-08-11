@@ -1517,6 +1517,24 @@ def claim_task(runner_id):
         for task in extra:
             if task.get("id") not in seen_ids:
                 queued.append(task); seen_ids.add(task.get("id"))
+
+    # Explicit pins are the strongest queue-ordering signal, but sorting can only
+    # prioritize rows that made it into the scan. The oldest-first query above is
+    # capped by PostgREST, so fetch pins independently and merge them into the same
+    # atomic claim candidate set.
+    try:
+        pinned = select("tasks", {
+            "select": claim_fields,
+            "state": "eq.QUEUED",
+            "pinned": "is.true",
+            "order": "pin_rank.asc,created_at.asc",
+            "limit": "200",
+        }) or []
+    except Exception:
+        pinned = []
+    for task in pinned:
+        if task.get("id") not in seen_ids:
+            queued.append(task); seen_ids.add(task.get("id"))
     queued = [t for t in queued if t.get("project_id") not in paused_pids]  # skip paused projects
     # Counsel-gated design specs are queue-visible but cannot enter an execution
     # lane until both approvals are explicitly stored on the task. Fail closed.
