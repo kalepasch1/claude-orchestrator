@@ -30,6 +30,20 @@ SYMBOL_HINT = re.compile(r"\b(?:api|route|component|hook|schema|migration|webhoo
 KIND_DIFF = "diff"
 KIND_SCAFFOLD = "scaffold"
 
+#: Appended by `build()` when every cited prior pattern turns out to be prose.
+#: Named rather than inlined so a planner or test can match on it exactly.
+NO_DIFF_NOTE = (
+    "NOTE: none of the patterns above contain a diff. They are scaffolds. "
+    "Do not plan work that applies, integrates, or rebases them as patches — "
+    "read them as intent and write the change yourself."
+)
+
+
+#: Last-resort copy of `patch_template_apply._DIFF_MARKERS`. This duplication is
+#: deliberate and must stay: the fallback exists precisely for the case where
+#: that module cannot be imported, so it cannot import the constant either.
+_FALLBACK_DIFF_MARKERS = ("diff --git ", "--- ", "+++ ", "@@ ")
+
 
 def _looks_like_diff(text):
     """True when `text` plausibly contains unified-diff hunks.
@@ -43,9 +57,9 @@ def _looks_like_diff(text):
         from patch_template_apply import looks_like_diff
         return looks_like_diff(text)
     except Exception:
-        if not text or not isinstance(text, str):
+        if not isinstance(text, str) or not text:
             return False
-        return any(m in text for m in ("diff --git ", "--- ", "+++ ", "@@ "))
+        return any(marker in text for marker in _FALLBACK_DIFF_MARKERS)
 
 
 def classify_body(body):
@@ -73,6 +87,21 @@ def classify_body(body):
     return KIND_DIFF if _looks_like_diff(body) else KIND_SCAFFOLD
 
 
+def _body_of(template):
+    """Coerce a lookup() dict, a body string, or a template id to a body string.
+
+    A plain string is ambiguous — it may be the body itself or just the twelve-hex
+    id that names it. Resolve that once, here, so callers do not each guess:
+    if the string already reads as a diff it *is* the body; otherwise treat it as
+    an id and resolve it. Anything else (None, int, list) has no body.
+    """
+    if isinstance(template, dict):
+        return template.get("body")
+    if isinstance(template, str):
+        return template if _looks_like_diff(template) else (lookup(template) or {}).get("body")
+    return None
+
+
 def carries_diff(template):
     """True when a template id, body string, or lookup() dict holds real hunks.
 
@@ -82,15 +111,7 @@ def carries_diff(template):
     that turns out to have a diff costs one planning pass, while spawning it for
     a scaffold costs the loop described in `classify_body`.
     """
-    if isinstance(template, dict):
-        body = template.get("body")
-    elif isinstance(template, str) and _looks_like_diff(template):
-        body = template
-    elif isinstance(template, str):
-        body = (lookup(template) or {}).get("body")
-    else:
-        body = None
-    return classify_body(body) == KIND_DIFF
+    return classify_body(_body_of(template)) == KIND_DIFF
 
 
 def _words(text):
@@ -130,17 +151,17 @@ def build(task):
         # whose summary is another scaffold reads like a patch and is not one;
         # saying so inline is what stops a planner slicing this into
         # "integrate the adapted diff" work that has nothing to integrate.
+        # Classify once per hit — carries_diff may hit the template store.
+        labelled = [(h, carries_diff(h.get("summary"))) for h in hits]
         lines.append("Prior merged patterns to adapt:")
-        for h in hits:
-            summary = h.get("summary")
-            tag = "diff" if carries_diff(summary) else "scaffold — prose only, no diff to apply"
-            lines.append(f"- [{tag}] {h.get('project')}/{h.get('slug')} sim={h.get('similarity')}: {summary}")
-        if not any(carries_diff(h.get("summary")) for h in hits):
+        for hit, is_diff in labelled:
+            tag = "diff" if is_diff else "scaffold — prose only, no diff to apply"
             lines.append(
-                "NOTE: none of the patterns above contain a diff. They are scaffolds. "
-                "Do not plan work that applies, integrates, or rebases them as patches — "
-                "read them as intent and write the change yourself."
+                f"- [{tag}] {hit.get('project')}/{hit.get('slug')} "
+                f"sim={hit.get('similarity')}: {hit.get('summary')}"
             )
+        if not any(is_diff for _, is_diff in labelled):
+            lines.append(NO_DIFF_NOTE)
     else:
         lines.append("Prior merged patterns to adapt: none found; keep the patch template reusable.")
     return tid, "\n".join(lines)
