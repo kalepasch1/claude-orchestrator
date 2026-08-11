@@ -160,6 +160,61 @@ class QueueDropboxTasksTest(unittest.TestCase):
         self.assertEqual(skipped, 1)
 
 
+class CanonicalIntakeReceiptTest(unittest.TestCase):
+    def setUp(self):
+        handle, self.path = tempfile.mkstemp(suffix=".md")
+        os.close(handle)
+        with open(self.path, "w") as fh:
+            fh.write(
+                "PROJECT: apparently\n\n"
+                "- id: chatgpt-local-reconcile-apparently-deadbeef1234\n"
+                "  title: Recover ChatGPT local work\n"
+                "  material: yes\n"
+                "  prompt: |\n"
+                "    Reconcile the preserved local evidence into the canonical repository.\n"
+            )
+        self.projects = {"apparently": {"id": "p1", "default_base": "main"}}
+
+    def tearDown(self):
+        os.unlink(self.path)
+
+    def test_chatgpt_reconciliation_is_attributed_as_operator_work(self):
+        inserted = []
+        db_mock = types.SimpleNamespace(
+            select=lambda *a, **kw: (_ for _ in ()).throw(AssertionError("shared cache must be used")),
+            insert=lambda table, row: inserted.append((table, row)) or [row],
+        )
+        with patch.object(iw, "db", db_mock), \
+             patch.object(iw.intake_gate, "should_queue", return_value=(True, "material")):
+            created, skipped = iw.ingest_file(self.path, self.projects, existing=set())
+        self.assertEqual((created, skipped), (1, 0))
+        self.assertEqual(
+            inserted[0][1]["submitted_by_label"],
+            "ChatGPT local-build audit (operator-directed)",
+        )
+
+    def test_refused_insert_raises_so_manifest_is_not_claimed(self):
+        db_mock = types.SimpleNamespace(select=lambda *a, **kw: [], insert=lambda *a, **kw: None)
+        with patch.object(iw, "db", db_mock), \
+             patch.object(iw.intake_gate, "should_queue", return_value=(True, "material")):
+            with self.assertRaisesRegex(RuntimeError, "produced no receipt"):
+                iw.ingest_file(self.path, self.projects, existing=set())
+
+    def test_existing_slug_lookup_is_server_filtered_and_batched(self):
+        calls = []
+
+        def select(table, params):
+            calls.append((table, params))
+            return [{"slug": "slug-0"}]
+
+        with patch.object(iw, "db", types.SimpleNamespace(select=select)):
+            existing = iw._existing_live_slugs([f"slug-{i}" for i in range(101)])
+        self.assertEqual(existing, {"slug-0"})
+        self.assertEqual(len(calls), 2)
+        self.assertIn("slug", calls[0][1])
+        self.assertEqual(calls[0][1]["state"], iw._LIVE_TASK_STATES)
+
+
 class IngestDropboxPromptsTest(unittest.TestCase):
     def setUp(self):
         self.repo_root = tempfile.mkdtemp()
