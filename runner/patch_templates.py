@@ -61,6 +61,15 @@ def build(task):
         lines.append("Prior merged patterns to adapt:")
         for h in hits:
             lines.append(f"- {h.get('project')}/{h.get('slug')} sim={h.get('similarity')}: {h.get('summary')}")
+        # Summaries alone make the coder reread the whole prior diff. Extract the
+        # reusable structure (helpers, owner dirs, test layout, naming) instead.
+        try:
+            import patch_adaptation
+            adapted = patch_adaptation.directive(task, hits, target_hint=task.get("slug") or tid)
+            if adapted:
+                lines.append(adapted)
+        except Exception as exc:  # fail-soft: a bad hit must not break template build
+            log.debug("patch_templates: adaptation skipped (%s)", exc)
     else:
         lines.append("Prior merged patterns to adapt: none found; keep the patch template reusable.")
     return tid, "\n".join(lines)

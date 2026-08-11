@@ -111,6 +111,29 @@ def _lookup_project(project_id: str) -> dict | None:
         return None
 
 
+def _capture_merge_memory(repo: str, branch: str, sha: str) -> bool:
+    """Record an integrated merge in merged_diff_memory. Best-effort.
+
+    WIRED 2026-08-11. `merged_diff_memory.capture_merge()` had no production
+    caller anywhere in the repo — only tests — so the memory file stayed empty
+    forever and `get_recent_merges()` / `stats()` were dead API returning
+    nothing. This is the same defect class the module's own `recent()` docstring
+    describes: a function that exists and is never reached, failing silently.
+
+    Every merge this module integrates is a proven diff, which is exactly what
+    the reuse-first path wants to read back. Capture is deliberately last and
+    fail-soft: a memory write must never fail a merge that already landed.
+    """
+    if not sha or not repo:
+        return False
+    try:
+        import merged_diff_memory
+        return bool(merged_diff_memory.capture_merge(sha, branch, repo))
+    except Exception as exc:
+        _log.debug("continuous_merger: merge-memory capture skipped (%s)", exc)
+        return False
+
+
 def _merge_branch(repo: str, branch: str, base: str, task: dict) -> dict:
     """Attempt to merge a single branch into base.
 
@@ -159,6 +182,9 @@ def _merge_branch(repo: str, branch: str, base: str, task: dict) -> dict:
     if ancestor.returncode == 0:
         # Already merged — capture the integrated tip as evidence, then delete the branch ref
         tip = _git(["git", "rev-parse", branch], repo).stdout.strip()
+        # Capture before deleting the ref: capture_merge shells out to git for
+        # author/date/message/files, and the branch name is part of the record.
+        _capture_merge_memory(repo, branch, tip)
         _git(["git", "branch", "-D", branch], repo)
         result["merged"] = True
         result["strategy"] = "already_ancestor"
@@ -191,6 +217,7 @@ def _merge_branch(repo: str, branch: str, base: str, task: dict) -> dict:
         # committed the merge on base. Persisted as tasks.artifact_commit by the caller.
         head = _git(["git", "rev-parse", "HEAD"], repo).stdout.strip()
         result["sha"] = head or None
+        _capture_merge_memory(repo, branch, head)
         strategy = acr_result.get("strategy", "clean")
         resolved = acr_result.get("resolved_files") or []
         result["strategy"] = (f"auto_resolved ({len(resolved)} files)"
