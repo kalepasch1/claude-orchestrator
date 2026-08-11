@@ -19,7 +19,7 @@ Usage:
   python3 periodic.py spec
   python3 periodic.py txn
 """
-import os, sys, subprocess, time, json
+import os, sys, subprocess, time, json, socket, urllib.error
 # Inherited NODE_ENV=production makes npm omit devDependencies in every child job (staging QA,
 # prewarm, merge/release trains) → "Could not load <module>" failures. Strip it (see runner.py).
 os.environ.pop("NODE_ENV", None)
@@ -262,13 +262,39 @@ def _terminate(job, pid):
     return not _pid_alive(pid)
 
 
+_TRANSIENT_NET_ERRORS = (
+    urllib.error.URLError,
+    socket.timeout,
+    ConnectionError,       # covers ConnectionReset/Aborted/Refused
+    TimeoutError,
+)
+
+
+def _is_transient_net_error(exc):
+    """True for errors that mean 'the network was unhappy', not 'the code is wrong'."""
+    if isinstance(exc, urllib.error.HTTPError):
+        # An HTTP status came back, so we reached the server. 5xx/429 are worth
+        # retrying; 4xx is a real client bug and must stay loud.
+        return exc.code >= 500 or exc.code == 429
+    return isinstance(exc, _TRANSIENT_NET_ERRORS)
+
+
 def _invoke_job(job):
-    """Run a job, converting a permanently-missing table into a disable rather than a crash loop."""
+    """Run a job, converting DB-level failures into a skip or a disable rather than a crash loop.
+
+    Two distinct outcomes, deliberately kept apart:
+      * MissingRelationError — structural. Running again can never help, so disable the job.
+      * TransientDBError — the network or Supabase blipped. The job is fine; skip this cycle
+        and let the next one run. Disabling here would take a healthy job offline for the
+        duration of an outage, which is the opposite of what we want.
+    """
     try:
         return JOBS[job]()
     except db.MissingRelationError as exc:
         _disable_job(job, str(exc))
         return None
+    except db.TransientDBError as exc:
+        return {"skipped": "transient-db", "job": job, "detail": str(exc)[:300]}
 
 
 _DISABLED_JOBS_PATH = os.path.join(_RUNTIME, "disabled_jobs.json")
@@ -572,6 +598,16 @@ def run_worktreeguard():
 def run_deploysilence():
     """Projects with ZERO successful production deploys in N days — absence of deploys is invisible."""
     import deploy_silence_detector; deploy_silence_detector.run()
+
+
+def run_rescuedurability():
+    """The rescue branches are the provenance record — and 34 of them were local-only.
+
+    branch_durability already archives + shares `agent/*`; nothing covered the
+    hotfix/stash-rescue-* namespace, so the only copy of twice-lost work sat on one disk.
+    """
+    import rescue_branch_durability
+    rescue_branch_durability.run()
 
 
 def run_remotegc():
@@ -1156,6 +1192,7 @@ JOBS = {
     "divergent": run_divergent,
     "worktreeguard": run_worktreeguard,
     "deploysilence": run_deploysilence,
+    "rescuedurability": run_rescuedurability,
     "remotegc": run_remotegc,
     "releasetrain": run_releasetrain,
     "deployverify": run_deployverify,
@@ -1219,3 +1256,14 @@ if __name__ == "__main__":
             sys.exit(_EX_WEDGED)
         sys.exit(_EX_SKIPPED)
     sys.exit(_EX_OK)
+
+def run_pipelineselftest():
+    """§2: alert on a silent machine, and self-test the pipeline's own signals hourly.
+
+    Mac 2 was down half a day unnoticed and train-stale was a false alarm for days — both
+    because nothing checked that the monitors themselves were telling the truth.
+    """
+    import pipeline_selftest
+    result = pipeline_selftest.run()
+    print(pipeline_selftest.render(result), flush=True)
+

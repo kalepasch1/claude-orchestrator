@@ -20,6 +20,13 @@ from typing import Any, Dict, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Optional at module level so callers and tests have a seam to patch, and so a
+# missing or broken gateway degrades to env-only config instead of an import error.
+try:
+    import fleet_control
+except Exception:
+    fleet_control = None
+
 
 class _ConfigConsumer:
     """Thread-safe singleton for configuration consumption with caching."""
@@ -107,15 +114,28 @@ class _ConfigConsumer:
                     if time.time() - cached_time < self._cache_ttl_sec:
                         return cached_value
 
-            # Try DB fallback if available
+            # Read through the fleet_control gateway. CLAUDE.md is explicit that
+            # fleet-wide config goes through that in-process gateway rather than
+            # ad-hoc table reads; this used to call db.select("fleet_config", ...)
+            # directly, which bypassed the gateway's own guards and left callers
+            # (and tests) with no seam to patch.
             value = None
-            try:
-                import db
-                rows = db.select("fleet_config", {"select": "value", "key": f"eq.{key}", "limit": "1"}) or []
-                if rows:
-                    value = str(rows[0].get("value") or "").strip()
-            except Exception:
-                pass
+            if fleet_control is not None:
+                try:
+                    got = fleet_control.get_fleet_config(key, "")
+                    if got:
+                        value = str(got).strip()
+                except Exception:
+                    value = None
+
+            if not value:  # gateway absent or empty -> direct read as a last resort
+                try:
+                    import db
+                    rows = db.select("fleet_config", {"select": "value", "key": f"eq.{key}", "limit": "1"}) or []
+                    if rows:
+                        value = str(rows[0].get("value") or "").strip()
+                except Exception:
+                    pass
 
             # Fall back to environment
             if value is None or not value:

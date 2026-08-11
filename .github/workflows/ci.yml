@@ -4,6 +4,10 @@ on:
   push:
     branches: [master]
   pull_request:
+  # Auto-sync promotes dev -> master with GITHUB_TOKEN, whose pushes never trigger
+  # workflows — so master could change with no CI run to show for it. Dispatch fills
+  # that hole: any promotion can be verified on demand against the exact master tip.
+  workflow_dispatch:
 
 jobs:
   darwin-kernel:
@@ -26,3 +30,42 @@ jobs:
 
       - name: Typecheck
         run: npx tsc --noEmit
+
+  # Nothing in CI had ever run a single one of the 611 test_*.py files under runner/. That is
+  # how 22 tests in test_economic_scheduler*.py stayed red long enough for their contract to
+  # drift out from under them unnoticed, and how three separate scan-window bugs shipped in one
+  # day. Turning all 611 on at once is not available: most need SUPABASE_URL +
+  # SUPABASE_SERVICE_KEY, and an unknown number are red today — and a CI job that is red on
+  # arrival just teaches people to ignore CI.
+  #
+  # So this is the blocking beachhead: pure-logic guards, no network, no credentials, 0.2s.
+  # It covers the failure modes that actually cost days this month. The rest of the suite gets
+  # fixed and folded in behind it rather than dumped in all at once.
+  runner-guards:
+    name: runner — offline guard tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install pytest
+        run: pip install --quiet pytest
+
+      - name: Run offline guard tests
+        working-directory: runner
+        # Deliberately unset so a test that quietly reaches for the control plane fails here
+        # instead of passing in CI and lying about what it covers.
+        env:
+          SUPABASE_URL: ''
+          SUPABASE_SERVICE_KEY: ''
+        run: python -m pytest tests/test_ci_offline.py -q --no-header
+
+      - name: Syntax-check every runner module
+        working-directory: runner
+        # Cheap and total: catches the "half-landed refactor" class that has taken the fleet
+        # down before (a bare `for` loop referencing an undefined name, a missing import that
+        # fail-soft handling masked) across all sources, not just the ones with tests.
+        run: python -m compileall -q . > /dev/null

@@ -5,6 +5,7 @@ Validates that emit_task_log is properly defined and callable in runner.py,
 and that run_task can log without raising NameError.
 """
 
+import importlib.util
 import sys
 import os
 from unittest.mock import patch, MagicMock
@@ -14,6 +15,43 @@ import pytest
 # Add runner directory to path so we can import runner.py
 _RUNNER_DIR = os.path.join(os.path.dirname(__file__), "..", "runner")
 sys.path.insert(0, _RUNNER_DIR)
+
+_RUNNER_PY = os.path.join(_RUNNER_DIR, "runner.py")
+
+
+@pytest.fixture(autouse=True, scope="module")
+def _runner_module():
+    """Bind `import runner` to runner/runner.py for this module, then restore.
+
+    `runner/` is a PACKAGE (it has __init__.py) and `runner/runner.py` is a
+    module inside it — both answer to the name `runner`. Which one you get
+    depends entirely on whether some earlier import already populated
+    sys.modules['runner'].
+
+    Run alone, sys.path[0] is the runner/ directory, `import runner` finds
+    runner.py, and all 22 tests here pass. Run as part of the suite, an earlier
+    test module has already imported the runner PACKAGE from the repo root, so
+    sys.modules['runner'] is the package — which has no emit_task_log — and
+    every test in this file fails with AttributeError. The tests were never
+    wrong; they were reading a different module than the one they name.
+
+    Loading runner.py from its explicit path removes the ambiguity, so the
+    result no longer depends on collection order. The previous binding is
+    restored on teardown so this file does not simply invert the pollution onto
+    whatever runs next.
+    """
+    saved = sys.modules.get("runner")
+    spec = importlib.util.spec_from_file_location("runner", _RUNNER_PY)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["runner"] = module
+    try:
+        spec.loader.exec_module(module)
+        yield module
+    finally:
+        if saved is not None:
+            sys.modules["runner"] = saved
+        else:
+            sys.modules.pop("runner", None)
 
 
 class TestEmitTaskLogFunction:

@@ -1,0 +1,4 @@
+recovery-intent: improve-value-aware-test-routing-early-exit-r-slice-3-resolve-shelved-low-ev-fai
+template: c5ec337005cc
+intent: acceptance artifacts aware benchmark branch caused change checkout commit concrete demonstrably early ensure example existing expected failure identify implement improve improvement increasing inspect integral integration latency measures minimal optimisation passes project provide queue reduces reproduce routing shelved suite tasks threshold value velocity worktree
+base: master

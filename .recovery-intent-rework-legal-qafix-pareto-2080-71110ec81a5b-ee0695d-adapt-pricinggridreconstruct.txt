@@ -1,0 +1,4 @@
+recovery-intent: rework-legal-qafix-pareto-2080-71110ec81a5b-ee0695d-adapt-pricinggridreconstruct
+template: 3baad6ccfb12
+intent: 07060650 07062319 1677fc0f7242 31dd6ca9ed9d 4ff7ba380eac 6096aa2b 8b92d078e856 9f821ef2b6cc a5f8e22456b6 acceptance adapt address affected after agentledger alter artifacts assertion based because before behavior being bf2a3f19ec30 blocks branch build covering diffs drafting duplicate duplicates eliminating entries entry examine excerpt existing exists first focus functionality generation handling identify implementation improve improving instead intent large library lines maintainability matched merged minimal module parent pareto patch performance preserve preserving pricing pricinggridreconstructi pricinggridreconstruction prior process proven qafix rebuilding reconstruct reconstruction redundancy redundant relevant remove reuse scratch
+base: main

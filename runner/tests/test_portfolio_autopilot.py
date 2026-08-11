@@ -9,8 +9,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import portfolio_autopilot
 
 
-def _make_app(app_id="app-1", name="testapp", enabled=True):
-    return {"id": app_id, "name": name, "enabled": enabled}
+#: growth_apps as it REALLY is: keyed on `app` (text), labelled by `display_name`.
+#: There is no `id` and no `name` column. These tests previously built {"id","name"} rows
+#: against a MagicMock that accepts any column, so they stayed green for months while the
+#: nightly job died with KeyError: 'id' on its very first row. Asserting the real schema is
+#: the only version of this file that can detect that.
+def _make_app(app="testapp", display_name="Testapp", enabled=True):
+    return {"app": app, "display_name": display_name, "enabled": enabled}
 
 
 class TestPortfolioAutopilot(unittest.TestCase):
@@ -52,10 +57,12 @@ class TestPortfolioAutopilot(unittest.TestCase):
         result = portfolio_autopilot.run()
 
         # cold_start_app should have been called
+        # Real signature: cold_start_app(p_app text, p_n integer, p_mode text).
+        # The old assertions demanded p_app_id/p_count, which cannot bind.
         rpc_calls = [c for c in self.db.rpc.call_args_list if c[0][0] == "cold_start_app"]
         self.assertEqual(len(rpc_calls), 1)
-        self.assertEqual(rpc_calls[0][0][1]["p_app_id"], "app-1")
-        self.assertEqual(rpc_calls[0][0][1]["p_count"], 3)
+        self.assertEqual(rpc_calls[0][0][1]["p_app"], "testapp")
+        self.assertEqual(rpc_calls[0][0][1]["p_n"], 3)
         self.assertEqual(rpc_calls[0][0][1]["p_mode"], "approval")
         self.assertEqual(result["cold_started"], 1)
 
@@ -98,20 +105,33 @@ class TestPortfolioAutopilot(unittest.TestCase):
 
         result = portfolio_autopilot.run()
 
+        # Real signature: auto_tune_distribution(p_cac_ceiling numeric). p_ceiling never bound.
         tune_calls = [c for c in self.db.rpc.call_args_list if c[0][0] == "auto_tune_distribution"]
         self.assertEqual(len(tune_calls), 1)
-        self.assertEqual(tune_calls[0][0][1]["p_ceiling"], 30.0)
+        self.assertEqual(tune_calls[0][0][1]["p_cac_ceiling"], 30.0)
 
     # --- zero signups flagging ---
 
     def test_flags_apps_with_zero_signups(self):
+        """A real 0 signups against real recorded human effort must escalate.
+
+        Rewritten: the old version passed NO runs at all and demanded severity=high, which
+        conflated "no data" with "zero signups". Since every app had no measurable runs,
+        every app was permanently high-severity and the flag carried no information.
+        Signups live in growth_distribution_metric and human effort in
+        growth_distribution_play.human_minutes — neither is a column on the run table.
+        """
         app = _make_app()
 
         def select_side(table, params=None):
             if table == "growth_apps":
                 return [app]
             if table == "growth_distribution_run":
-                return []  # no runs -> 0 signups
+                return [{"id": "run-1", "play_id": "play-1"}]
+            if table == "growth_distribution_play":
+                return [{"human_minutes": 90}]          # real effort was spent
+            if table == "growth_distribution_metric":
+                return [{"signups": 0}]                 # and it produced nothing
             if table == "growth_settings":
                 return [{"value": "50"}]
             return []
@@ -120,13 +140,35 @@ class TestPortfolioAutopilot(unittest.TestCase):
 
         portfolio_autopilot.run()
 
-        # Check that the digest insert has severity=high
         insert_calls = [c for c in self.db.insert.call_args_list
                         if c[0][0] == "growth_intake_suggestion"]
         self.assertTrue(len(insert_calls) >= 1)
         row = insert_calls[0][0][1]
         self.assertEqual(row["severity"], "high")
         self.assertIn("0 signups", row["detail"])
+        # growth_intake_suggestion is keyed on `app`; app_id/app_name do not exist there.
+        self.assertEqual(row["app"], "testapp")
+        self.assertNotIn("app_id", row)
+
+    def test_no_runs_is_unknown_not_a_zero_signup_alarm(self):
+        """The companion case the old test was accidentally asserting."""
+        app = _make_app()
+
+        def select_side(table, params=None):
+            if table == "growth_apps":
+                return [app]
+            if table == "growth_settings":
+                return [{"value": "50"}]
+            return []
+        self.db.select.side_effect = select_side
+        self.db.rpc.return_value = "ok"
+
+        portfolio_autopilot.run()
+
+        row = [c for c in self.db.insert.call_args_list
+               if c[0][0] == "growth_intake_suggestion"][0][0][1]
+        self.assertEqual(row["severity"], "low")
+        self.assertIn("unknown", row["detail"])
 
     # --- stats ---
 
@@ -146,7 +188,9 @@ class TestPortfolioAutopilot(unittest.TestCase):
         s = portfolio_autopilot.stats()
         self.assertTrue(s["enabled"])
         self.assertEqual(s["total_apps"], 1)
-        self.assertIn("testapp", s["zero_run_apps"])
+        # zero_run_apps is a human-facing list, so it carries display_name ("Testapp"),
+        # not the `app` key. Previously it emitted app["name"], a column that never existed.
+        self.assertIn("Testapp", s["zero_run_apps"])
         self.assertEqual(s["cac_ceiling"], "42")
 
     def test_disabled_via_env(self):

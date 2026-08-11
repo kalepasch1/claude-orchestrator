@@ -26,12 +26,26 @@ def hint(task):
     if not hits:
         return ""
     h = hits[0]
-    if not transplant_discipline.transplant_admissible(h["similarity"]):
+    # Merge note: master read `similarity` here and gated on the env-defaulted
+    # 0.18 floor. This branch replaced that with transplant_discipline, whose
+    # whole point is ONE floor (0.55) — so the union keeps master's `similarity`
+    # binding (the hint text below interpolates it) and this branch's gate.
+    #
+    # The 0.18 fallback is deliberately NOT reinstated: the rationale above says
+    # a barely-related "proven patch" is worse than starting clean, so if the
+    # discipline module cannot answer we emit no hint at all rather than
+    # silently reverting to the weaker floor. Fail closed.
+    similarity = h.get("similarity", 0)
+    try:
+        admissible = transplant_discipline.transplant_admissible(similarity)
+    except Exception:
+        admissible = False
+    if not admissible:
         return ""
     return (f"{MARK}: before drafting from scratch, adapt the proven patch "
-            f"{h['project']}/{h['slug']} (similarity {h['similarity']}).\n"
-            f"Prior intent: {h['summary']}\n"
-            f"Relevant prior diff excerpt:\n{h['diff'][:2500]}")
+            f"{h.get('project', '?')}/{h.get('slug', '?')} (similarity {similarity}).\n"
+            f"Prior intent: {h.get('summary', '')}\n"
+            f"Relevant prior diff excerpt:\n{(h.get('diff') or '')[:2500]}")
 
 
 def pre_claim_hook(task):
@@ -79,27 +93,28 @@ def adapt_patch(prior_diff, target_task, target_files=None):
     if not prior_diff:
         return None
 
+    was_bytes = isinstance(prior_diff, bytes)
     adapted = prior_diff
     if isinstance(adapted, bytes):
         adapted = adapted.decode("utf-8", errors="replace")
 
     if target_files:
-        for target_file in target_files:
-            adapted = re.sub(
-                r"--- a/\w+\.py",
-                f"--- a/{target_file}",
-                adapted
-            )
-            adapted = re.sub(
-                r"\+\+\+ b/\w+\.py",
-                f"+++ b/{target_file}",
-                adapted
-            )
+        # Rewrite headers only when the diff targets none of the requested
+        # files; rewriting per-file would clobber earlier matches.
+        current_files = re.findall(r"--- a/(\S+)", adapted)
+        already_targeted = any(
+            cf in target_files or os.path.basename(cf) in target_files
+            for cf in current_files
+        )
+        if not already_targeted:
+            target_file = target_files[0]
+            adapted = re.sub(r"--- a/\S+", f"--- a/{target_file}", adapted)
+            adapted = re.sub(r"\+\+\+ b/\S+", f"+++ b/{target_file}", adapted)
 
     if "ORCH_PIPELINE_SECURITY_GATE" in adapted and "ORCH_" not in adapted.split("ORCH_PIPELINE_SECURITY_GATE")[0][-100:]:
         pass
 
-    if isinstance(adapted, str):
+    if was_bytes:
         adapted = adapted.encode("utf-8")
 
     return adapted

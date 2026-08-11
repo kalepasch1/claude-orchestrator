@@ -107,6 +107,15 @@ def test_content_addressed_verification_proof_reuses_exact_commit(monkeypatch, t
     assert not proof_graph.reusable_verification(str(repo), "def", "npm test", "qa")
 
 
+def test_verification_proof_repo_identity_is_path_form_independent(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_ORCH_HOME", str(tmp_path / "runtime"))
+    repo = tmp_path / "repo"; repo.mkdir()
+    (repo / "package-lock.json").write_text("lock")
+    monkeypatch.chdir(repo)
+    proof_graph.record_verification(".", "abc", "npm test", "build", True)
+    assert proof_graph.reusable_verification(str(repo), "abc", "npm test", "build")
+
+
 def test_counterfactual_replay_evaluates_fifty_policies_without_calls():
     rows = [{"model": "deepseek-v4-flash", "integrated": True, "deployed": i < 3,
              "tests_passed": True, "wall_ms": 1000, "usd": 0.001} for i in range(20)]

@@ -38,6 +38,21 @@ _last_pull = {"t": 0.0}
 _ws_server = None
 
 
+def _huv():
+    """Lazy import of host_update_visibility so a missing/broken module can never wedge
+    the runner, and so tests can substitute it via sys.modules."""
+    import host_update_visibility
+    return host_update_visibility
+
+
+def _commits_behind():
+    """How far this host is behind origin/<default branch>; None if unknowable."""
+    try:
+        return _huv().commits_behind(repo=REPO)
+    except Exception:
+        return None
+
+
 def set_websocket_server(ws):
     """Inject a WebSocket server so update_fleet_config can publish ConfigChanged events."""
     global _ws_server
@@ -59,7 +74,20 @@ _DENY_MARKERS = ("KEY", "SECRET", "TOKEN", "PASSWORD", "PWD", "CREDENTIAL", "PAT
 
 
 def _safe_key(k):
-    ku = k.upper()
+    # Delegates to runner/fleet_contracts.py — the single declaration of this
+    # policy. Two copies of a security predicate drift, and the 2026-08-02
+    # plaintext-credential incident is what that drift cost. The local
+    # _SAFE_PREFIXES/_DENY_MARKERS above are retained only as the fail-closed
+    # fallback for the case where the contract module cannot be imported.
+    try:
+        import fleet_contracts
+        return fleet_contracts.is_safe_config_key(k)
+    except Exception:
+        pass
+    try:
+        ku = k.upper()
+    except Exception:
+        return False
     if any(m in ku for m in _DENY_MARKERS):
         return False
     return any(ku.startswith(p) for p in _SAFE_PREFIXES)
@@ -78,6 +106,68 @@ def _safe_key(k):
 #      instead of invisible. Logged on change only — this runs every loop.
 _applied_config = {}
 
+# CONFIG THAT IS STORED BUT NEVER CONSUMED (2026-08-06).
+#
+# load_config logs every key it APPLIES. It says nothing about the keys it silently
+# DROPS, so a knob pushed into fleet_config that this loader refuses looks identical to
+# one that took effect: the row is there, the dashboard shows it, and nothing happens.
+#
+# This is not hypothetical. The _SAFE_PREFIXES comment above records it happening once
+# already (OLLAMA_/COMMITTEE_/CADE_ families pushed but not applied because no prefix
+# matched, 2026-07-30). Reading the live table today, the same failure is sitting there
+# again: AUTOPILOT_BLOCKER_INTERVAL, AUTOPILOT_RANK_INTERVAL, AUTOPILOT_RECOVERY_INTERVAL,
+# AUTOPILOT_RELEASE_BLOCKER_INTERVAL, AUTOPILOT_RELEASE_TRAIN_ONLY_HOTLANE,
+# AUTOPILOT_SWEEP_LIMIT, CONFIDENCE_GATE, CONFIDENCE_THRESHOLD, GEMINI_MODEL,
+# GEMINI_CHEAP_MODEL, OPENAI_STRONG_MODEL, OPENAI_FAST_MODEL, OPENAI_CHEAP_MODEL,
+# PROMOTION_STATE, PREWARM_N and PREVIEW_FEATURE_X all match no safe prefix and are
+# therefore stored and ignored.
+#
+# The fix is reporting, not widening the allowlist: which keys are unsafe is a policy
+# question for the owner, and quietly applying them would be the security regression the
+# allowlist exists to prevent. Every non-consumed key is now named, with its reason, once
+# per process — so "I set it and nothing happened" becomes answerable.
+_reported_ignored = {}
+_last_consumption = {"applied": {}, "ignored": {}, "at": None}
+
+IGNORE_UNSAFE_KEY = "not-a-safe-key"
+IGNORE_CREDENTIAL = "credential-marker"
+IGNORE_APPROVAL_BLOCKED = "awaiting-approval"
+IGNORE_PINNED = "pinned-to-local-env"
+IGNORE_EMPTY = "null-value"
+
+
+def _classify_key(key, value, blocked, pins):
+    """Why (if at all) this fleet_config row will not reach os.environ.
+
+    Returns an IGNORE_* reason, or None when the key will be consumed. Mirrors the
+    conditions in load_config exactly — one function so the report cannot drift from
+    the behavior it describes.
+    """
+    if not key or value is None:
+        return IGNORE_EMPTY
+    if any(m in key.upper() for m in _DENY_MARKERS):
+        return IGNORE_CREDENTIAL          # checked first: it outranks any prefix match
+    if not _safe_key(key):
+        return IGNORE_UNSAFE_KEY
+    if key in blocked:
+        return IGNORE_APPROVAL_BLOCKED
+    if key.upper() in pins:
+        return IGNORE_PINNED              # deliberate, but still not consumed from the DB
+    return None
+
+
+def config_consumption():
+    """Report from the most recent load_config: what was applied, and what was not.
+
+    {"applied": {key: value}, "ignored": {key: reason}, "at": epoch_seconds}
+
+    Exists so an operator can answer "I pushed that key, why did nothing change?"
+    without reading this module.
+    """
+    return {"applied": dict(_last_consumption["applied"]),
+            "ignored": dict(_last_consumption["ignored"]),
+            "at": _last_consumption["at"]}
+
 
 def _env_pins():
     """Keys pinned to this machine's local .env value; fleet_config cannot override them."""
@@ -92,11 +182,22 @@ def load_config():
     where the local .env wins. Every change is logged to stderr with both values.
     """
     n = 0
+    applied, ignored = {}, {}
     try:
         blocked = config_approval.blocked_keys()
         pins = _env_pins()
         for row in (db.select("fleet_config", {"select": "key,value"}) or []):
             k, v = row.get("key"), row.get("value")
+            # NAME WHAT IS DROPPED. Silence here is what made a pushed-but-inert knob
+            # indistinguishable from a working one.
+            reason = _classify_key(k, v, blocked, pins)
+            if reason is not None:
+                ignored[k] = reason
+                if _reported_ignored.get(k) != reason:
+                    _reported_ignored[k] = reason
+                    sys.stderr.write(
+                        f"[fleet_control] config {k}: STORED BUT NOT APPLIED ({reason}); "
+                        f"this key has no effect on this host\n")
             if k and v is not None and _safe_key(k) and k not in blocked:
                 new = str(v)
                 if k.upper() in pins:
@@ -112,6 +213,7 @@ def load_config():
                         f"[fleet_control] config {k}: fleet_config {new!r} overrides local {cur!r}\n")
                 _applied_config[k] = new
                 os.environ[k] = new
+                applied[k] = new
                 n += 1
     except Exception as e:
         # FIX 2026-07-29: `log` was never defined — a config-load failure made the error handler
@@ -121,6 +223,7 @@ def load_config():
         # "local variable 'sys' referenced before assignment" — aborting load_config partway and
         # leaving config half-applied. sys is already imported at module scope; do not re-import.
         sys.stderr.write(f"[fleet_control] fleet_config load failed: {e}\n")
+    _last_consumption.update(applied=applied, ignored=ignored, at=time.time())
     return n
 
 
@@ -196,6 +299,16 @@ def _host_aliases():
 
 def _target_matches(target):
     return target == "all" or target in _host_aliases()
+
+
+def _control_done(target, handled, params):
+    """A broadcast control is done only after every expected host acknowledges it."""
+    if target != "all":
+        return True
+    expected = set((params or {}).get("expected_hosts") or [])
+    if not expected:
+        return False
+    return expected.issubset(set(handled or []))
 
 
 _RESTART_STAMP = os.path.join(
@@ -357,10 +470,37 @@ def _pull_safe():
         status = _git("status", "--porcelain")
         if status.returncode != 0:
             return False, "git status failed"
-        dirty = [l for l in (status.stdout or "").strip().splitlines()
-                 if l.strip() and not l.startswith("??")]
-        if dirty:
-            return False, f"{len(dirty)} dirty tracked files"
+        # REGENERABLE ARTIFACTS DO NOT BLOCK A PULL (2026-08-06).
+        #
+        # Counting every tracked modification was the SECOND half of the Mac-2 stale-code
+        # incident. The first half (untracked droppings) was fixed above; the fleet also
+        # rewrites *tracked* generated files every cycle — context caches, capability
+        # contracts, schema dumps, boot markers — so the checkout is essentially never clean
+        # and auto-pull refused forever. Measured today: Mac 2 was pinned on 10d9e408 while
+        # Mac 1 was 32 commits ahead, so it ran for days WITHOUT any of the merge-train,
+        # pause, conflict-repair or sweeper fixes and kept re-creating the bugs they fix.
+        #
+        # regenerable_artifacts already encodes exactly this allowlist for the merge guard;
+        # a pull that would only overwrite machine output is safe, and `--ff-only` still
+        # refuses anything that would need a real merge. Genuine human/agent edits (and
+        # lockfiles, submodule pointers) still block, which is the property worth keeping.
+        # NB: .strip() on the WHOLE stdout eats the leading space of the FIRST porcelain line
+        # (" M path" -> "M path"), which shifts the fixed-width XY status parse by one and
+        # silently drops the first character of that path. ".runner_boot_commit" became
+        # "runner_boot_commit", stopped matching the regenerable allowlist, and was classified
+        # as a blocking edit — so the very first dirty file always blocked the pull. Strip only
+        # the trailing newline.
+        raw_dirty = [l for l in (status.stdout or "").rstrip("\n").splitlines()
+                     if l.strip() and not l.startswith("??")]
+        try:
+            import regenerable_artifacts
+            blocking, regenerable = regenerable_artifacts.partition_dirt("\n".join(raw_dirty))
+        except Exception:
+            blocking, regenerable = raw_dirty, []      # fail closed: unknown => treat as dirty
+        if regenerable:
+            print(f"[fleet_control] pull: ignoring {len(regenerable)} regenerable artifact(s)")
+        if blocking:
+            return False, f"{len(blocking)} dirty tracked files"
         branch = _git("rev-parse", "--abbrev-ref", "HEAD")
         current = (branch.stdout or "").strip()
         default = os.environ.get("ORCH_DEFAULT_BRANCH", "master")
@@ -372,8 +512,21 @@ def _pull_safe():
 
 
 def self_update():
-    """Periodic git pull so every machine tracks the pushed code without manual per-Mac steps."""
+    """Periodic git pull so every machine tracks the pushed code without manual per-Mac steps.
+
+    EVERY OUTCOME IS OBSERVABLE (2026-08-06). This used to fail in silence: a host whose
+    pull broke printed one stdout line nobody reads, kept heartbeating, kept claiming, and
+    ran two-day-old code for 48h with zero rows in run_logs or runner_alerts explaining
+    why. Success, failure, and "this host will never update" are now all recorded via
+    host_update_visibility so the NEXT frozen host is visible in one cycle.
+    """
     if os.environ.get("ORCH_AUTO_PULL", "false").lower() not in ("true", "1", "yes"):
+        # A host that is never going to update must not be indistinguishable from one
+        # that just updated. Say so explicitly, once per host per day.
+        try:
+            _huv().record_auto_pull_disabled(HOST, behind=_commits_behind())
+        except Exception:
+            pass
         return False
     interval = float(os.environ.get("ORCH_AUTO_PULL_MIN", "5")) * 60
     if time.time() - _last_pull["t"] < interval:
@@ -383,8 +536,33 @@ def self_update():
         ok, reason = _pull_safe()
         if not ok:
             print(f"fleet_control: auto-pull skipped ({reason})", flush=True)
+            try:
+                _huv().record_failure(HOST, f"pull precondition unsafe: {reason}",
+                                      current_sha=_git("rev-parse", "HEAD").stdout.strip(),
+                                      behind=_commits_behind())
+            except Exception:
+                pass
             return False
         before = _git("rev-parse", "HEAD").stdout.strip()
+        # _pull_safe() now tolerates dirty REGENERABLE artifacts, but git itself still refuses
+        # to pull over locally-modified tracked files ("Your local changes would be
+        # overwritten"). Discard exactly those allowlisted paths first — they are machine
+        # output the fleet rebuilds on its next cycle, and nothing else is touched. Without
+        # this the relaxed check above would just move the failure from our log line into
+        # git's, leaving the host stale either way.
+        try:
+            import regenerable_artifacts
+            status2 = _git("status", "--porcelain")
+            raw2 = [l for l in (status2.stdout or "").rstrip("\n").splitlines()
+                    if l.strip() and not l.startswith("??")]
+            _blocking, _regen = regenerable_artifacts.partition_dirt("\n".join(raw2))
+            if _regen and not _blocking:
+                for _p in _regen:
+                    _git("checkout", "--", _p)
+                print(f"fleet_control: reset {len(_regen)} regenerable artifact(s) to allow pull",
+                      flush=True)
+        except Exception as _rex:
+            print(f"fleet_control: regenerable reset skipped ({_rex})", flush=True)
         pulled = _git("pull", "--ff-only")
         if pulled.returncode != 0:
             msg = (pulled.stderr or pulled.stdout or "git pull failed").strip()
@@ -392,11 +570,25 @@ def self_update():
         after = _git("rev-parse", "HEAD").stdout.strip()
         if before and after and before != after:
             print(f"fleet_control: auto-pulled {before[:8]}->{after[:8]} on {HOST}", flush=True)
+            try:
+                _huv().record_success(HOST, before, after)
+            except Exception:
+                pass
             if os.environ.get("ORCH_AUTO_PULL_RESTART", "true").lower() in ("true", "1", "yes"):
                 _restart()
             return True
     except Exception as e:
         print(f"fleet_control: auto-pull failed ({e})")
+        # RECORD, don't just print. The verbatim git stderr, the current sha, and how far
+        # behind origin we are — plus a NAMED diagnosis, because the likely causes are
+        # known from this fleet's own history (unaccepted trust dialog, expired login,
+        # dirty/diverged checkout, ORCH_AUTO_PULL unset).
+        try:
+            _huv().record_failure(HOST, str(e),
+                                  current_sha=_git("rev-parse", "HEAD").stdout.strip(),
+                                  behind=_commits_behind())
+        except Exception:
+            pass
     return False
 
 
@@ -446,6 +638,25 @@ def process_controls():
                 reason = str((r.get("params") or {}).get("reason") or "fleet pause")
                 kill_switch.pause(scope="host", project=HOST, reason=reason, by="fleet_control")
             elif action == "resume":
+                # VERIFY, THEN RESUME — never the reverse (2026-08-06).
+                #
+                # `cowork-pull-attempt` resumed a paused host at 18:36 on the basis that a
+                # pull had been ATTEMPTED. The pull had failed, the code_sha did not move,
+                # and the host went straight back to claiming work with two-day-old code —
+                # success recorded on dispatch instead of on evidence. A resume is only
+                # legitimate once this host's HEAD actually matches origin.
+                #
+                # ORCH_RESUME_REQUIRE_FRESH_SHA=false restores the old unconditional
+                # behavior for a deliberate operator override.
+                _require = os.environ.get("ORCH_RESUME_REQUIRE_FRESH_SHA", "true").lower()
+                if _require in ("true", "1", "yes"):
+                    _huv().commits_behind(repo=REPO, fetch=True)
+                    _local, _origin = _huv().local_sha(REPO), _huv().origin_sha(REPO)
+                    _allowed, _why = _huv().resume_allowed(_local, _origin)
+                    if not _allowed:
+                        _huv().record_failure(HOST, f"resume refused: {_why}",
+                                              current_sha=_local, behind=_commits_behind())
+                        raise RuntimeError(f"resume refused — {_why}")
                 kill_switch.resume(scope="host", project=HOST, by="fleet_control")
             else:
                 raise RuntimeError(f"unknown fleet action: {action}")
@@ -455,8 +666,9 @@ def process_controls():
             # `done = (target != "all")` left 'all' rows pending forever (44-row backlog).
             new_handled = list(dict.fromkeys(handled + [HOST]))
             params = r.get("params") or {}
-            all_done = target != "all"
-            if not all_done:
+            expected_hosts = (params or {}).get("expected_hosts") or []
+            all_done = _control_done(target, new_handled, params)
+            if not all_done and target == "all" and not expected_hosts:
                 try:
                     hb = db.select("runner_heartbeats", {"select": "hostname", "limit": "20"}) or []
                     live = {str(h.get("hostname") or "") for h in hb if h.get("hostname")}

@@ -27,7 +27,7 @@ MERGE_CONFLICT_REDO_CAP). Test failures mark the task TESTFAIL — the train NEV
 Idempotent: handled cards get decided_by='train:*'; cards already handled by this train or by
 the legacy merge-handler are skipped.
 """
-import datetime, json, os, re, sys, subprocess, time
+import datetime, json, os, re, sys, subprocess, threading, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 # RESTORED 2026-07-31 (overwrite-class recovery; static_sanity gate)
@@ -40,6 +40,7 @@ except Exception:
 import events
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
 import integration_runtime
+import paused_host_guard
 import agentic_repair
 import repo_lock        # FIX 2026-07-28: was used at the per-repo serialization site but never
                         # imported -> every train_run() crashed with NameError before integrating
@@ -119,6 +120,38 @@ def _branch_exists(repo, branch):
     return _git(repo, "rev-parse", "--verify", branch).returncode == 0
 
 
+_REMOTE_AGENT_REFS = {}          # repo -> (expires_at, {branch names}) ; None set == "unknown"
+_REMOTE_AGENT_LOCK = threading.Lock()
+REMOTE_REF_TTL_S = float(os.environ.get("MERGE_TRAIN_REMOTE_REF_TTL_S", "120"))
+
+
+def _remote_agent_branch_maybe(repo, branch):
+    """True if origin might hold `branch`; False only when we positively know it does not.
+
+    Returns True on any uncertainty (listing failed, cache cold and refresh errored) so the
+    caller falls back to its own fetch. Never returns False for a branch origin actually has,
+    which is what keeps this an optimisation rather than a merge-skipping filter.
+    """
+    now = time.monotonic()
+    with _REMOTE_AGENT_LOCK:
+        entry = _REMOTE_AGENT_REFS.get(repo)
+        if entry and entry[0] > now:
+            names = entry[1]
+            return True if names is None else (branch in names)
+    names = None
+    try:
+        r = _git(repo, "ls-remote", "--heads", "origin", "refs/heads/agent/*", timeout=90)
+        if r.returncode == 0:
+            names = {line.split("\trefs/heads/", 1)[1].strip()
+                     for line in (r.stdout or "").splitlines()
+                     if "\trefs/heads/" in line}
+    except Exception:
+        names = None
+    with _REMOTE_AGENT_LOCK:
+        _REMOTE_AGENT_REFS[repo] = (time.monotonic() + REMOTE_REF_TTL_S, names)
+    return True if names is None else (branch in names)
+
+
 def _materialize_branch(repo, branch):
     """Fleet-aware branch lookup with worktree recovery.
 
@@ -132,6 +165,24 @@ def _materialize_branch(repo, branch):
         return True
     if not repo or not os.path.isdir(repo):
         return False
+    # THE TRAIN'S REAL WALL-CLOCK SINK (measured 2026-08-06).
+    #
+    # Cards get filed by ensure_integration_card as soon as work is approved, which is often
+    # BEFORE the agent branch exists — the task is still QUEUED. Every such card reached this
+    # line and paid a full `git fetch origin <branch>` (timeout 120s) to discover a ref that
+    # was never pushed. In the last 20,000 train lines: 2,096 WAIT outcomes against 1 MERGED,
+    # the same slugs re-fetched 60-195 times each. With ORCH_MERGE_TRAIN_MAX_RUNTIME_S=900 the
+    # pass was being killed on the not-yet-created cards before it ever reached the mergeable
+    # ones. The queue was not stalled on conflicts; it was starved of clock.
+    #
+    # One `git ls-remote --heads origin refs/heads/agent/*` answers the same question for every
+    # card in the pass. Absent from that listing => there is nothing to fetch, so skip straight
+    # to WAIT. Fail-soft: if ls-remote errors or times out we fall through to the old per-branch
+    # fetch, so the worst case is today's behaviour rather than a missed merge. The cache is
+    # per-repo with a short TTL, so a branch pushed mid-pass is simply picked up on the next
+    # pass — this can defer a merge by one cycle, never skip or overwrite one.
+    if branch.startswith("agent/") and not _remote_agent_branch_maybe(repo, branch):
+        return False
     try:
         _git(repo, "fetch", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}", timeout=120)
         if _git(repo, "rev-parse", "--verify", f"refs/remotes/origin/{branch}").returncode != 0:
@@ -142,8 +193,21 @@ def _materialize_branch(repo, branch):
         return False
 
 
-def _task_patch(task, patch):
-    db.update("tasks", {"id": task["id"]}, patch)
+def _task_patch(task, patch, repo=None, prod_branch=None):
+    """Single write point for task state in the train — so the MERGED gate cannot be bypassed.
+
+    Every MERGED written here must first be proven reachable from the project's integration
+    branch (merge_truth). Production reachability is deliberately checked later by the
+    release/deployment terminal. A patch that is not MERGED passes straight through. On an
+    infrastructure error the gate returns None and we write nothing, leaving the row for the
+    next cycle rather than downgrading a real merge because a fetch timed out.
+    """
+    import merge_truth
+    final = merge_truth.gate_merged_patch(task, patch, repo=repo, prod_branch=prod_branch)
+    if final is None:
+        return None
+    db.update("tasks", {"id": task["id"]}, final)
+    return final
 
 
 def _freeze_integration_identity(repo, branch, task, slug):
@@ -272,6 +336,59 @@ def _divergent_gate(repo, base, branch):
         return divergent_authorship_guard.gate(repo, base, branch)
     except Exception as exc:
         return False, f"divergent authorship guard error (fail-closed): {type(exc).__name__}: {exc}"
+
+
+def _orphan_import_gate(repo, base, branch):
+    """Refuse a candidate that adds an import no tracked file can satisfy. (ok, detail)
+
+    apparently's production build was red for five hours on
+    `Could not resolve "./kv" from "server/utils/governance.ts"`. governance.ts was committed;
+    kv.ts was not — it existed only as untracked dirt on the machine that wrote it. The build
+    gate ran in a checkout that HAD the file, so the change was green right up to shipping. The
+    defect was not in the diff; it was missing from it.
+
+    Scoped to the files the candidate touches, and only to "./" / "../" specifiers. Every repo
+    here carries pre-existing dangling imports in paths no build entry point reaches (17 in
+    apparently, 15 in tomorrow, both green), so judging the whole tree would fail every merge on
+    inherited noise. Alias forms ("~/", "@/") are excluded because resolving them means guessing
+    at srcDir and tsconfig paths — that guess produced 281 findings across four green repos.
+
+    Cheap by design: git plus a regex, no build, no network. Runs before the test and build
+    gates rather than after.
+
+    FAIL-OPEN, unlike the regression and stub gates. Those protect against destroying existing
+    code, where the cost of a false negative is unrecoverable. This one protects against
+    shipping a broken build, which the build gate downstream will also catch — so a crash here
+    must not block the queue. Opt out with ORCH_MERGE_ORPHAN_IMPORT_GATE=false.
+    """
+    if os.environ.get("ORCH_MERGE_ORPHAN_IMPORT_GATE", "true").strip().lower() in (
+            "0", "false", "no", "off"):
+        return True, "orphan-import gate disabled by ORCH_MERGE_ORPHAN_IMPORT_GATE"
+    try:
+        import orphan_imports
+        changed = _git(repo, "diff", "--name-only", f"{base}...{branch}")
+        if changed.returncode:
+            return True, "could not diff candidate (gate skipped)"
+        touched = {p.strip() for p in (changed.stdout or "").splitlines() if p.strip()}
+        if not touched:
+            return True, "no files changed"
+        found = orphan_imports.dangling_imports(repo, only_files=touched)
+        if found:
+            return False, orphan_imports.describe(found)
+        # Case-colliding paths are the same shape of defect from the other direction: additive,
+        # so no deletion- or stub-based guard sees them, and permanently fatal on a
+        # case-insensitive filesystem. An auto-resolved merge left racefeed tracking both
+        # OPPORTUNITIES.json and opportunities.json; macOS can hold one of them, so git reported
+        # the other as modified in every checkout and that integration slot was condemned from
+        # the moment the merge landed.
+        clashes = orphan_imports.case_collisions(repo, only_files=touched)
+        if clashes:
+            names = "; ".join(" vs ".join(paths) for _, paths in clashes[:4])
+            return False, (f"{len(clashes)} case-colliding path(s) — unusable on a "
+                           f"case-insensitive filesystem: {names}")
+        return True, "no dangling imports or case collisions in the changed files"
+    except Exception as exc:
+        return True, f"orphan-import gate unavailable (fail-open): {type(exc).__name__}: {exc}"
 
 
 def _stub_gate(repo, proj, base, branch):
@@ -416,6 +533,14 @@ def _try_semantic_merge(repo, branch, base):
         if not merge_base:
             return False
 
+        # Capture the branch tip BEFORE anything resets it. This is the conceptual
+        # "branch parent" of the resolution and the rollback target; after the
+        # `git reset --hard base` below, the branch ref no longer points at the work.
+        tip = _git(repo, "rev-parse", "--verify", f"{branch}^{{commit}}")
+        if tip.returncode != 0 or not tip.stdout.strip():
+            return False
+        branch_tip = tip.stdout.strip()
+
         # files changed on the branch side (merge-base..branch)
         branch_diff = _git(repo, "diff", "--name-only", merge_base, branch)
         base_diff = _git(repo, "diff", "--name-only", merge_base, base)
@@ -494,6 +619,32 @@ def _try_semantic_merge(repo, branch, base):
             commit = subprocess.run(["git", "commit", "--allow-empty", "-m", msg], cwd=wt,
                                     capture_output=True, timeout=30)
             if commit.returncode != 0:
+                return False
+
+            # SILENT-DISCARD GATE (2026-08-06). This is the second producer of
+            # "(auto-resolved)" commits, and the semantic merge can legitimately resolve a
+            # file to exactly mainline's bytes. When it does, and the branch side carried
+            # commits that exist nowhere else, that is not a resolution — it is a deletion
+            # wearing a merge's clothes, and nothing downstream can see it (the result IS
+            # the mainline blob, so every base-vs-result diff is empty).
+            #
+            # Note the parents deliberately: the worktree was reset to `base` and the
+            # merged content overlaid, so the new commit's git parent is base. The
+            # CONCEPTUAL branch parent is branch_tip, captured before the reset — passing
+            # the post-reset ref would compare the branch against itself and always pass.
+            try:
+                import automerge_discard_guard
+                ok, detail = automerge_discard_guard.gate(
+                    repo, base, branch_tip, result_ref="HEAD", branch=branch)
+            except Exception as exc:
+                ok, detail = False, (f"automerge discard guard error (fail-closed): "
+                                     f"{type(exc).__name__}: {exc}")
+            if not ok:
+                # Roll the branch back to where it was and let the caller fall through to
+                # the existing redo/manual path. The branch is the only copy of the work.
+                subprocess.run(["git", "reset", "--hard", branch_tip], cwd=wt,
+                               capture_output=True, timeout=30)
+                print(f"[train] semantic merge of {branch} REFUSED: {detail}")
                 return False
             return True
         finally:
@@ -1223,51 +1374,130 @@ def _select_batch(group):
                 value_scores[key] = 0.0
     except Exception:
         value_scores = {}
-    annotated.sort(key=lambda e: ({"low": 0, "standard": 1, "sensitive": 2}[e[3]],
+    def operator_rank(entry):
+        _card, slug, task, _risk = entry
+        note = str(task.get("note") or "").lower()
+        return 0 if (task.get("submitted_by") or str(slug).startswith("dropbox-")
+                     or "source:operator-" in note or "source:intent-console" in note) else 1
+
+    # Authenticated/manual requests are attempted before speculative machine work.
+    # All normal risk caps and every regression/build/divergence gate still apply.
+    annotated.sort(key=lambda e: (operator_rank(e),
+                                  {"low": 0, "standard": 1, "sensitive": 2}[e[3]],
                                   -value_scores.get(str(e[2].get("id") or e[2].get("slug") or ""), 0),
                                   str(e[0].get("created_at") or "")))
     return annotated
 
 
-def ensure_integration_card(project, slug, *, kind="integrate", title=None, why=None,
-                            detail=None, status="approved", decided_by="canonical-train"):
+CARD_CREATED = "created"
+CARD_EXISTED = "existed"
+CARD_FAILED = "failed"
+#: Outcomes that mean "this slug is now visible to the merge train". Callers MUST
+#: treat only these as success. CARD_FAILED means the work is not integrable and the
+#: producing task must NOT be marked DONE.
+CARD_OK = (CARD_CREATED, CARD_EXISTED)
+
+
+def _find_existing_card(slug):
+    """Targeted, server-side lookup for a live merge card carrying `slug`.
+
+    SCAN-WINDOW ANTI-PATTERN (removed 2026-08-06). This used to pull the newest
+    MERGE_CARD_DEDUP_SCAN (default 4,000) approval rows and filter CLIENT-SIDE against a
+    table of 238,177 rows. The in-code comment already recorded the consequence — "240 dupes
+    of one slug" — and the identical pattern had just caused a starvation outage in
+    _pick_cards(). A scan cannot be made correct by making the window bigger: any card older
+    than the window is invisible, so dedup silently fails and the caller files a duplicate.
+
+    Two bounded queries replace it. The first matches the `slug` column directly. The second
+    covers legacy rows written before the column existed, where the slug lives only in the
+    "merge of <slug>" title (see approval_merge._slug_from). Both are LIMIT-1 server-side
+    filters, so cost is independent of table size.
+    """
+    if not slug:
+        return None
+    kinds = f"in.({','.join(MERGE_KINDS)})"
+    common = {"select": "id,slug,title,kind,status,decided_by",
+              "kind": kinds, "status": "in.(pending,approved)"}
+    # SKIP_PREFIXES pushed into the query so the train's own outcome stamps
+    # ("train:MERGED", "merge-handler:...") never masquerade as a live card.
+    not_handled = ",".join(f"decided_by.not.like.{p}*" for p in SKIP_PREFIXES)
+    for params in (
+        dict(common, slug=f"eq.{slug}", limit="1", or_=f"(decided_by.is.null,{not_handled})"),
+        dict(common, title=f"ilike.*merge of {slug}*", limit="5"),
+    ):
+        # `or_` is spelled with a trailing underscore above only to keep it a valid kwarg
+        # name; PostgREST expects the bare key "or".
+        if "or_" in params:
+            params["or"] = params.pop("or_")
+        try:
+            rows = db.select("approvals", params) or []
+        except Exception:
+            rows = []
+        for c in rows:
+            if str(c.get("decided_by") or "").startswith(SKIP_PREFIXES):
+                continue
+            if approval_merge._slug_from(c) == slug:
+                return c
+    return None
+
+
+def ensure_integration_card_result(project, slug, *, kind="integrate", title=None, why=None,
+                                   detail=None, status="approved",
+                                   decided_by="canonical-train"):
     """Idempotently feed passed code into the single canonical integration train.
 
     Producers should not merge directly. They create/approve one code-merge card
     and let train_run serialize rebase, tests, fast-forward, and cleanup.
+
+    Returns one of CARD_CREATED / CARD_EXISTED / CARD_FAILED. The tri-state exists because
+    the historical bool return conflated "a card already covers this slug" (fine) with
+    "nothing was created and nothing exists" (a task that can never be integrated). Callers
+    that only check truthiness treated the second case as success and stranded the work.
     """
     if not slug:
-        return False
+        return CARD_FAILED
     title = title or f"merge of {slug}"
-    cards = db.select("approvals", {"select": "id,slug,title,kind,status,decided_by",
-                                    "kind": f"in.({','.join(MERGE_KINDS)})",
-                                    "status": "in.(pending,approved)",
-                                    "order": "created_at.desc",  # newest first — unordered scans missed dupes past the limit (240 dupes of one slug)
-                                    "limit": os.environ.get("MERGE_CARD_DEDUP_SCAN", "4000")}) or []
-    for c in cards:
-        if str(c.get("decided_by") or "").startswith(SKIP_PREFIXES):
-            continue
-        cslug = approval_merge._slug_from(c)
-        if cslug == slug:
-            patch = {}
-            if c.get("status") != status:
-                patch["status"] = status
-            if status == "approved" and not c.get("decided_by"):
-                patch["decided_by"] = decided_by
-            if patch:
-                db.update("approvals", {"id": c["id"]}, patch)
-            return False
+    try:
+        existing = _find_existing_card(slug)
+    except Exception:
+        existing = None
+    if existing:
+        patch = {}
+        if existing.get("status") != status:
+            patch["status"] = status
+        if status == "approved" and not existing.get("decided_by"):
+            patch["decided_by"] = decided_by
+        if patch:
+            try:
+                db.update("approvals", {"id": existing["id"]}, patch)
+            except Exception:
+                pass  # the card exists and is live; a failed status nudge is not a strand
+        return CARD_EXISTED
     row = {"project": project, "kind": kind, "slug": slug, "title": title,
            "status": status, "why": why or "passed tests; queued for canonical merge train",
            "detail": detail or "", "decided_by": decided_by if status == "approved" else None}
     try:
         db.insert("approvals", row)
+        return CARD_CREATED
     except Exception:
         # Some older approval tables may not have a slug column. The title fallback
         # keeps approval_merge._slug_from compatible with those rows.
         row.pop("slug", None)
-        db.insert("approvals", row)
-    return True
+        try:
+            db.insert("approvals", row)
+            return CARD_CREATED
+        except Exception:
+            # Do NOT swallow. The caller decides what to do, but it must be told.
+            return CARD_FAILED
+
+
+def ensure_integration_card(project, slug, **kwargs):
+    """Back-compatible wrapper: True only when a NEW card was created.
+
+    Preserved verbatim in meaning for the many existing callers that use the bool.
+    New code should call ensure_integration_card_result() and check `in CARD_OK`.
+    """
+    return ensure_integration_card_result(project, slug, **kwargs) == CARD_CREATED
 
 
 # ── the train ─────────────────────────────────────────────────────────────────
@@ -1288,10 +1518,85 @@ def _pick_cards():
     N+1 scan is in train_run(): task resolution is now batched into one query instead of one
     per card (see _resolve_tasks_batch below).
     """
-    cards = db.select("approvals", {"select": "*", "status": "eq.approved",
-                                    "kind": f"in.({','.join(MERGE_KINDS)})",
-                                    "order": "created_at.desc",
-                                    "limit": os.environ.get("MERGE_TRAIN_SCAN_LIMIT", "3000")}) or []
+    # SCAN-WINDOW STARVATION (fixed 2026-08-06) — the real cause of months of stranded work.
+    #
+    # This scanned the NEWEST `limit` approved cards and filtered client-side. The approvals
+    # table now holds 238,177 rows, and the train stamps decided_by on every card it handles,
+    # so the newest 3,000 are almost entirely already-decided outcomes. A card that was created
+    # but not merged (branch not ready, project paused, host stale, train crashed mid-pass)
+    # ages out of that window within hours and is then INVISIBLE FOREVER — while
+    # ensure_integration_card still sees it and refuses to file a replacement, so the task can
+    # never be re-queued either. Measured: 90 finished tasks holding valid, undecided cards
+    # that the train had not looked at in up to 98 hours, with `undecided cards = 0` reported
+    # because every one of them sat outside the scan window.
+    #
+    # Scanning oldest-first as well as newest-first costs one extra query and bounds the
+    # damage permanently: the backlog head is always visible, and fresh work still enters via
+    # the desc pass. Dedup by id since the two windows overlap once the backlog is small.
+    # SERVER-SIDE UNHANDLED FILTER (2026-08-06, second half of the same bug).
+    #
+    # Scanning both ends of the table bounded the damage but did not remove it. Measured today:
+    # 21,974 approved merge-kind cards exist, of which only 569 are genuinely unhandled — and
+    # PostgREST silently caps `limit` at 1,000 rows per request, so MERGE_TRAIN_SCAN_LIMIT=3000
+    # really means "the 1,000 oldest plus the 1,000 newest". The other ~20,000 rows in the middle
+    # are already-decided outcomes the train re-reads forever, while roughly 466 of the 569 real
+    # candidates sit in the middle and are structurally invisible. That is the mechanism behind
+    # "the queue never finishes": the work was never lost, it was never *looked at*.
+    #
+    # Pushing the SKIP_PREFIXES test into the query makes the window hold candidates instead of
+    # history, so all 569 fit in one page with room to spare. decided_by IS NULL has to be
+    # spelled out because SQL NOT LIKE on NULL is NULL, not true, and freshly-filed cards
+    # ("canonical-train:sweeper", an attribution marker, not a verdict) must stay visible.
+    #
+    # The dual-order scan and the client-side filter below are both KEPT: the first so a backlog
+    # larger than one page still shows its head, the second so this stays correct even if the
+    # server-side predicate is dropped by the fallback path.
+    # MERGE_TRAIN_SCAN_LIMIT=0 in fleet_config is the fleet-wide kill switch for hosts too old
+    # to honour integration_owner.decide() — today, Mac 2 on 10d9e408, which cannot pull itself
+    # forward (14 dirty tracked files, and that build has no regenerable allowlist or remote
+    # escape hatch) and therefore keeps running a second merge train against the same origin.
+    # Starving _pick_cards is the only lever that build exposes.
+    #
+    # It was pinned out of the way on this host via ORCH_CONFIG_ENV_PINS, and that silently did
+    # not take: the running runner had inherited the pre-edit pins list from its parent, so
+    # os.environ.setdefault never applied the new one and THIS host quietly picked up the kill
+    # switch too — one train pass returned an all-zero summary before it was caught. A safety
+    # interlock that depends on a restart landing in the right order is not a safety interlock.
+    #
+    # Current code has integration_owner and does not need this switch to police itself, so it
+    # declines to be disabled by it. Operators wanting a genuine local override set a positive
+    # MERGE_TRAIN_SCAN_LIMIT; non-positive means "meant for the legacy hosts, not for me".
+    limit = os.environ.get("MERGE_TRAIN_SCAN_LIMIT", "3000")
+    try:
+        if int(str(limit).strip().strip('"')) <= 0:
+            limit = "3000"
+    except (TypeError, ValueError):
+        limit = "3000"
+    base = {"select": "*", "status": "eq.approved",
+            "kind": f"in.({','.join(MERGE_KINDS)})", "limit": limit}
+    unhandled = "or=(decided_by.is.null,and({}))".format(
+        ",".join(f"decided_by.not.like.{p}*" for p in SKIP_PREFIXES))
+    _k, _v = unhandled.split("=", 1)
+    scans = ({**base, _k: _v}, base)  # narrowed first; unfiltered only as a fallback
+
+    cards, seen = [], set()
+    for params in scans:
+        try:
+            got = []
+            for order in ("created_at.asc", "created_at.desc"):
+                got.extend(db.select("approvals", {**params, "order": order}) or [])
+        except Exception as e:
+            # A server that will not accept the predicate must not take the train down with it.
+            print(f"merge_train: unhandled-card filter unavailable ({e}); "
+                  f"falling back to the unfiltered scan window", flush=True)
+            continue
+        for c in got:
+            cid = c.get("id")
+            if cid in seen:
+                continue
+            seen.add(cid)
+            cards.append(c)
+        break  # the narrowed scan succeeded; the fallback page is redundant
     return [c for c in cards
             if c.get("kind") in MERGE_KINDS
             and approval_merge._is_code_merge_card(c)
@@ -1483,6 +1788,13 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
                                               "SILENT STUB / SHADOWED RE-EXPORT — " + stub_detail,
                                               _t0)
 
+    # (2f) ORPHAN-IMPORT GATE — the cheapest gate we have, so it runs before the expensive ones.
+    # Catches a candidate whose import resolves on the author's disk and nowhere in the repo.
+    oi_ok, oi_detail = _orphan_import_gate(repo, base, branch)
+    if not oi_ok:
+        return _quarantine_regression_failure(repo, card, slug, task, pname, branch, base,
+                                              "DANGLING IMPORT — " + oi_detail, _t0)
+
     ok, tail = _verified_or_run(repo, candidate_sha, test_cmd)  # (3) branch-exact and resumable
     if not ok and os.environ.get("ORCH_DIFFERENTIAL_QA", "true").lower() in ("1", "true", "yes", "on"):
         try:
@@ -1627,6 +1939,34 @@ def train_run():
     cards = _pick_cards()
     projects = {p["id"]: p for p in (db.select("projects") or [])}
 
+    # PER-PROJECT PAUSE (2026-08-06). `_paused()` above only consults the GLOBAL kill switch.
+    # Pausing a single project writes controls(scope='project', paused=true), which db.py
+    # honours when CLAIMING work -- but nothing here honoured it, so a paused project kept
+    # being merged and pushed to its production branch. Observed with illuminati: the operator
+    # asked for direct updates to stop because it is being absorbed into apparently/tomorrow/
+    # apparently-law/pareto, task claiming stopped correctly, and the train went on merging and
+    # deploying it anyway. "Paused" has to mean no writes of any kind, not just no new work.
+    # NOTE: paused project ids are collected here but the `projects` MAP IS LEFT INTACT.
+    # An earlier version of this filter deleted paused entries from `projects`, which made
+    # `projects.get(pid)` return {} further down; repo_path became "" and _record_pressure
+    # crashed the whole train with FileNotFoundError on an empty cwd. Paused projects are
+    # dropped from the per-project WORK grouping below instead, so lookups stay valid.
+    _paused_pids = set()
+    try:
+        _paused_names = {
+            (r.get("project") or "").strip()
+            for r in (db.select("controls", {"select": "project,paused,scope",
+                                             "scope": "eq.project", "paused": "is.true"}) or [])
+            if (r.get("project") or "").strip()
+        }
+        if _paused_names:
+            _paused_pids = {pid for pid, p in projects.items() if p.get("name") in _paused_names}
+            if _paused_pids:
+                print("merge_train: skipping paused project(s): "
+                      + ", ".join(sorted(projects[pid].get("name", "?") for pid in _paused_pids)))
+    except Exception as _pp_exc:      # never let a control-plane read stop the whole train
+        print(f"merge_train: per-project pause check failed ({_pp_exc}); continuing unpaused")
+
     # Resolve every card to its task, then group by project so each project is a serial train.
     # Batched (one tasks query for every card's slug) instead of one query per card -- with
     # hundreds/thousands of eligible cards per cycle the old per-card N+1 pattern serialized
@@ -1643,6 +1983,12 @@ def train_run():
             db.update("approvals", {"id": c["id"]}, {"decided_by": f"{MARK}:no-task"})
             continue
         by_project.setdefault(t.get("project_id"), []).append((c, slug, t))
+
+    # Drop paused projects from the work grouping (see the pause block above). Their cards are
+    # left UNDECIDED on purpose: pausing is reversible, and marking them decided here would
+    # silently discard the queued work when the project is resumed.
+    if _paused_pids:
+        by_project = {pid: v for pid, v in by_project.items() if pid not in _paused_pids}
 
     pressure = _record_pressure(by_project, projects)
     summary = {"projects": 0, "merged": 0, "already_integrated": 0,
@@ -1683,7 +2029,8 @@ def train_run():
         repo_path = db.localize_repo_path(proj.get("repo_path", ""))
         # FIX 2026-07-28: repo_lock.hold() takes (repo, timeout) only — the stray priority=True
         # kwarg was a second latent crash behind the missing import.
-        with repo_lock.hold(repo_path, timeout=300) as got_lock:
+        lock_timeout = float(os.environ.get("ORCH_MERGE_REPO_LOCK_TIMEOUT_S", "5"))
+        with repo_lock.hold(repo_path, timeout=lock_timeout) as got_lock:
             if not got_lock:
                 result["skipped"] += len(group)
                 print(f"merge_train: {proj.get('name') or pid} busy (another train holds the repo lock) — skipping this cycle")
@@ -1802,7 +2149,30 @@ _train_run_unleased = train_run
 
 
 def train_run():
-    """Run the whole merge pass under the cross-train single-flight lease."""
+    """Run the whole merge pass under the cross-train single-flight lease.
+
+    CROSS-HOST GUARD (2026-08-06): the lease below is a flock on a file under THIS machine's
+    .runtime/, so it serialises processes on one Mac and is blind to the others. With two Macs
+    both running trains against the same GitHub origin that produced 54 PUSH-VERIFY-FAILED
+    sha-mismatches — real work destroyed by a push race, including the public-landing-hero
+    copyfix. integration_owner elects exactly one live host to integrate (and refuses hosts
+    running stale code), which is the missing cross-machine half of this lock.
+    """
+    # HOST PAUSE (2026-08-06): a paused host must not START a new pass. Checked before the
+    # owner election for the same reason as release_train — winning an election is not
+    # permission to run when the operator has stopped this machine. A pass already under
+    # way is never interrupted; only starting is refused.
+    _ok, _why = paused_host_guard.refuse("merge_train")
+    if not _ok:
+        return {"skipped": _why}
+    try:
+        import integration_owner
+        may, why = integration_owner.decide()
+        if not may:
+            print(f"merge_train: not the integration owner — {why}", flush=True)
+            return {"skipped": f"not integration owner: {why}"}
+    except Exception as _io_exc:      # a broken owner check must never stall every host
+        print(f"merge_train: integration-owner check failed ({_io_exc}); proceeding", flush=True)
     timeout = float(os.environ.get("ORCH_INTEGRATION_LEASE_TIMEOUT_S", "0") or 0)
     with integration_runtime.global_lease("merge_train", timeout=timeout) as acquired:
         if not acquired:
@@ -1842,4 +2212,39 @@ if __name__ == "__main__":
     except (BlockingIOError, OSError):
         print(json.dumps({"skipped": "another merge_train instance is running"}))
         sys.exit(0)
+
+    # SELF-ENFORCED DEADLINE (2026-08-06). The runtime cap lived only in runner.py's
+    # _reap_stale_periodic, which can only kill pids recorded in that runner's own
+    # _PERIODIC_PIDS map. Restart the runner and every train it launched is reparented to
+    # init and becomes unkillable by the fleet — while still holding the flock above.
+    #
+    # Observed today: pid 37459, ppid 1, wedged 24 minutes in pure Python with seven lines of
+    # output, holding merge-train.single.lock. No train could start on this machine at all for
+    # as long as it lived, and nothing was going to reap it. A supervisor-dependent timeout is
+    # not a timeout; the pass has to own its own budget.
+    #
+    # faulthandler dumps every thread before we go, so the NEXT wedge is diagnosable instead of
+    # being another silent kill — the previous one took a root-only profiler to even locate.
+    # SIGUSR1 does the same on demand without killing anything.
+    import faulthandler, signal, threading as _th
+    try:
+        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+    except Exception:
+        pass
+    _budget = float(os.environ.get("ORCH_MERGE_TRAIN_MAX_RUNTIME_S", "7200") or 7200)
+    if _budget > 0:
+        def _deadline():
+            time.sleep(_budget)
+            sys.stderr.write(f"merge_train: WATCHDOG — pass exceeded {_budget:.0f}s; "
+                             f"dumping all threads and exiting so the single-flight lock "
+                             f"is released for the next pass\n")
+            sys.stderr.flush()
+            try:
+                faulthandler.dump_traceback(all_threads=True)
+            except Exception:
+                pass
+            sys.stderr.flush()
+            os._exit(3)
+        _th.Thread(target=_deadline, name="merge-train-watchdog", daemon=True).start()
+
     print(json.dumps(train_run(), indent=2, default=str))

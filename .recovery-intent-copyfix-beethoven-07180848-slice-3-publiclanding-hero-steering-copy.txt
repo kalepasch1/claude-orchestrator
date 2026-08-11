@@ -1,0 +1,4 @@
+recovery-intent: copyfix-beethoven-07180848-slice-3-publiclanding-hero-steering-copy
+template: 748dfd50d688
+intent: 07041728 07130635 07180848 07190257 20251001 acceptance active adapt advice after agentic analysis around artifacts author barks batch beethoven before behavior below blocked blocker branch broad bugfix build build_fix category cause change changes changing cheap checks claim class claud claude coder comments commit completion component components concrete config contains context continue contract control coordination copyfix cowork cross custody decision deepseek delete dependencies deployfix describes describing diffs direction directive drafting equivalent excerpt existing exists fable facing failure files final finish first flash
+base: main

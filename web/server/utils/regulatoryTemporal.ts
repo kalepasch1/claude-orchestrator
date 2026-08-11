@@ -295,7 +295,10 @@ export async function runtimeAgreementPolicy(organizationId: string, values: any
   const sb = serviceClient()
   const { data: control } = await sb.from('regulatory_agreement_controls').select('*').eq('id', values.agreement_control_id).eq('organization_id', organizationId).eq('status', 'active').maybeSingle()
   if (!control) return { decision: 'review', reasons: [{ reason: 'active_agreement_control_not_found' }] }
-  return { ...evaluateAgreementAction(control.executable_controls || [], values.action || {}), agreement_control_id: control.id, control_version: control.control_version }
+  // `agreement_action` is the SDK's payload key; a plain-object `action` is
+  // accepted for backward compatibility (the dispatch key is a string there).
+  const agreementAction = values.agreement_action || (typeof values.action === 'object' && values.action !== null ? values.action : {})
+  return { ...evaluateAgreementAction(control.executable_controls || [], agreementAction), agreement_control_id: control.id, control_version: control.control_version }
 }
 
 export async function recordRuntimeEvidence(organizationId: string, values: any) {

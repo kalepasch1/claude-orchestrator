@@ -124,7 +124,14 @@ class TestReconcileDeployed:
         assert len(outcome_inserts) == 0
 
     def test_deployed_verified_marks_merged(self, tmp_path, monkeypatch):
-        """When the journal sha IS confirmed on origin base, MERGED + artifact_commit."""
+        """When the journal sha IS confirmed on origin base, MERGED + artifact_commit.
+
+        Two gates now have to agree. _sha_on_origin_base checks the BASE branch and collapses
+        every failure — including a fetch timeout — into False; merge_truth independently
+        re-checks ancestry of PROD_BRANCH with a three-valued verdict. Both are stubbed here
+        so the test states its actual premise: the sha really is on prod.
+        """
+        import merge_truth
         entries = [
             {"at": "2026-07-10T00:00:00Z", "repo": "beethoven",
              "branch": "agent/fix-auth", "action": "DEPLOYED", "detail": "abc123def456"},
@@ -132,6 +139,13 @@ class TestReconcileDeployed:
         _make_journal(str(tmp_path), entries)
         db = FakeDB(tasks=[_sample_task("fix-auth", state="DONE")])
         monkeypatch.setattr(sr, "_sha_on_origin_base", lambda *a, **k: True)
+        monkeypatch.setattr(merge_truth, "verify_merge_reachable",
+                            lambda *a, **k: (merge_truth.OK, "stubbed reachable"))
+        monkeypatch.setattr(merge_truth, "db", db)
+        # FakeDB has no projects table, so resolve_target would bail before the
+        # verdict is consulted. These tests are about the verdict, not resolution.
+        monkeypatch.setattr(merge_truth, "resolve_target",
+                            lambda t, repo=None, prod_branch=None: (repo or "/tmp", "master", None))
         stats = sr.reconcile(db_module=db)
         assert stats["deployed"] == 1
         assert stats["errors"] == 0
@@ -142,6 +156,63 @@ class TestReconcileDeployed:
         assert len(outcome_inserts) == 1
         assert outcome_inserts[0][1]["usd"] == 0
         assert outcome_inserts[0][1]["integrated"] is True
+
+    def test_old_verifier_yes_but_not_on_prod_is_blocked(self, tmp_path, monkeypatch):
+        """The exact phantom this gate exists to catch.
+
+        _sha_on_origin_base said yes (it only checks the base branch, and returns False on
+        errors rather than distinguishing them), but the sha is not an ancestor of prod. That
+        combination produced 42% of the false MERGED rows measured 2026-08-06. It must now
+        land in PHANTOM_UNVERIFIED, never MERGED.
+        """
+        import merge_truth
+        entries = [
+            {"at": "2026-07-10T00:00:00Z", "repo": "beethoven",
+             "branch": "agent/fix-auth", "action": "DEPLOYED", "detail": "abc123def456"},
+        ]
+        _make_journal(str(tmp_path), entries)
+        db = FakeDB(tasks=[_sample_task("fix-auth", state="DONE")])
+        monkeypatch.setattr(sr, "_sha_on_origin_base", lambda *a, **k: True)
+        monkeypatch.setattr(merge_truth, "verify_merge_reachable",
+                            lambda *a, **k: (merge_truth.PHANTOM, "not an ancestor of master"))
+        monkeypatch.setattr(merge_truth, "raise_phantom_alarm", lambda *a, **k: True)
+        monkeypatch.setattr(merge_truth, "db", db)
+        # FakeDB has no projects table, so resolve_target would bail before the
+        # verdict is consulted. These tests are about the verdict, not resolution.
+        monkeypatch.setattr(merge_truth, "resolve_target",
+                            lambda t, repo=None, prod_branch=None: (repo or "/tmp", "master", None))
+        sr.reconcile(db_module=db)
+
+        task_patches = [p for p in db.patches if "/tasks" in p[0]]
+        assert not any(p[2].get("state") == "MERGED" for p in task_patches)
+        blocked = [p for p in task_patches
+                   if p[2].get("state") == merge_truth.PHANTOM_STATE]
+        assert blocked, "unreachable sha was not routed to PHANTOM_UNVERIFIED"
+        assert "not an ancestor" in blocked[0][2].get("note", "")
+
+    def test_infra_error_leaves_the_row_untouched(self, tmp_path, monkeypatch):
+        """A fetch timeout must not downgrade a real merge — the mirror-image failure."""
+        import merge_truth
+        entries = [
+            {"at": "2026-07-10T00:00:00Z", "repo": "beethoven",
+             "branch": "agent/fix-auth", "action": "DEPLOYED", "detail": "abc123def456"},
+        ]
+        _make_journal(str(tmp_path), entries)
+        db = FakeDB(tasks=[_sample_task("fix-auth", state="DONE")])
+        monkeypatch.setattr(sr, "_sha_on_origin_base", lambda *a, **k: True)
+        monkeypatch.setattr(merge_truth, "verify_merge_reachable",
+                            lambda *a, **k: (merge_truth.INFRA_ERROR, "fetch timed out"))
+        monkeypatch.setattr(merge_truth, "db", db)
+        # FakeDB has no projects table, so resolve_target would bail before the
+        # verdict is consulted. These tests are about the verdict, not resolution.
+        monkeypatch.setattr(merge_truth, "resolve_target",
+                            lambda t, repo=None, prod_branch=None: (repo or "/tmp", "master", None))
+        sr.reconcile(db_module=db)
+
+        task_patches = [p for p in db.patches if "/tasks" in p[0]]
+        assert not any(p[2].get("state") == "MERGED" for p in task_patches)
+        assert not any(p[2].get("state") == merge_truth.PHANTOM_STATE
+                       for p in task_patches), "downgraded a task on an infrastructure error"
 
     def test_deployed_from_running(self, tmp_path):
         entries = [

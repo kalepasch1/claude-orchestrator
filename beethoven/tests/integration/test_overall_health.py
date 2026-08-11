@@ -1,6 +1,9 @@
 """Integration tests for queue backend health against a live Redis instance."""
 import pytest
 
+pytest.importorskip("redis", reason="redis client not installed; queue backend unavailable")
+pytest.importorskip("pytest_asyncio", reason="pytest-asyncio required for async queue tests")
+
 import beethoven.app.queue.queue_backend as backend
 
 

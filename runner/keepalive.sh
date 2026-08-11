@@ -44,6 +44,18 @@ SUPERVISOR_LOCK="$CLAUDE_ORCH_HOME/keepalive.lock"
 SUPERVISOR_LOG_THROTTLE="${CLAUDE_ORCH_HOME}/keepalive.duplicate.last"
 STAY_RESIDENT="${ORCH_KEEPALIVE_STAY_RESIDENT:-false}"
 POLL_SECONDS="${ORCH_KEEPALIVE_DUPLICATE_POLL_SECONDS:-60}"
+
+# One arbitration implementation for direct launches, launchd, and recovery tools.
+KA_SOURCED=1
+source "$RUNNER_DIR/ensure_single_keepalive.sh" || exit 1
+unset KA_SOURCED
+
+# Emergency reset sequence (repository root; only after checking active work):
+#   pkill -f keepalive.sh
+#   pkill -f runner.py
+#   rm -f .runtime/runner.lock
+#   rm -rf .runtime/keepalive.lock*
+#   (cd runner && nohup bash keepalive.sh &)
 is_live_runner() {
   if [[ ! -f "$LOCK_FILE" ]]; then
     return 1
@@ -88,11 +100,7 @@ log_duplicate_exit() {
 }
 
 supervisor_lock_live() {
-  if [[ ! -d "$SUPERVISOR_LOCK" ]]; then
-    return 1
-  fi
-  sup_pid="$(cat "$SUPERVISOR_LOCK/pid" 2>/dev/null | tr -dc '0-9')"
-  [[ -n "$sup_pid" ]] && ps -p "$sup_pid" >/dev/null 2>&1
+  ka_supervisor_lock_live
 }
 
 wait_for_runner_release() {
@@ -126,7 +134,7 @@ fi
 # race for the supervisor lock must NOT end the launchd job head when STAY_RESIDENT=true —
 # exiting here is what produced the "duplicate supervisor exit" + launchd-restart + SIGTERM loop.
 # Wait for the winning supervisor to go away instead, then take the lock over.
-while ! mkdir "$SUPERVISOR_LOCK" 2>/dev/null; do
+while ! ka_acquire_supervisor_lock; do
   if supervisor_lock_live; then
     if stay_resident; then
       log_duplicate_exit
@@ -136,11 +144,6 @@ while ! mkdir "$SUPERVISOR_LOCK" 2>/dev/null; do
     log_duplicate_exit
     exit 0
   fi
-  stale="${SUPERVISOR_LOCK}.stale.$$"
-  if mv "$SUPERVISOR_LOCK" "$stale" 2>/dev/null; then
-    rm -rf "$stale"
-    continue
-  fi
   if stay_resident; then
     log_duplicate_exit
     sleep "$POLL_SECONDS"
@@ -149,11 +152,6 @@ while ! mkdir "$SUPERVISOR_LOCK" 2>/dev/null; do
   log_duplicate_exit
   exit 0
 done
-
-if ! echo "$$" > "$SUPERVISOR_LOCK/pid" 2>/dev/null; then
-  log_duplicate_exit
-  exit 0
-fi
 # SUPERVISOR CONSOLIDATION (2026-08-03): this used to be
 #   trap 'rm -rf "$SUPERVISOR_LOCK"' EXIT INT TERM
 # A TERM/INT trap that does not itself exit makes the script SURVIVE the signal. When launchd
@@ -186,8 +184,8 @@ term_forensics() {
     echo
   } >> "$SIGTERM_FORENSICS" 2>/dev/null
 }
-trap 'rm -rf "$SUPERVISOR_LOCK"' EXIT
-trap 'echo "[keepalive] received SIGTERM/SIGINT — releasing supervisor lock and exiting at $(date)" >> "$RUNNER_LOG"; term_forensics; rm -rf "$SUPERVISOR_LOCK"; exit 143' INT TERM
+trap 'ka_release_supervisor_lock' EXIT
+trap 'echo "[keepalive] received SIGTERM/SIGINT — releasing supervisor lock and exiting at $(date)" >> "$RUNNER_LOG"; term_forensics; ka_release_supervisor_lock; exit 143' INT TERM
 
 while true; do
   if is_live_runner; then
@@ -210,6 +208,13 @@ while true; do
     printf '%s\n' "$_boot_commit" > "$(dirname "$PWD")/.runner_boot_commit" 2>/dev/null || \
       printf '%s\n' "$_boot_commit" > .runner_boot_commit 2>/dev/null || true
     export ORCH_BOOT_COMMIT="$_boot_commit"
+  fi
+  # Durable restart handoff. The exiting runner deliberately leaves the request in place;
+  # consuming it before sys.exit can strand an old process if exit is intercepted or fails.
+  # Move (rather than delete) only at the supervisor's launch boundary. A request written
+  # after this move remains visible to the successor instead of being lost in a race.
+  if [[ -f "$RUNNER_DIR/.restart_requested" ]]; then
+    mv -f "$RUNNER_DIR/.restart_requested" "$CLAUDE_ORCH_HOME/restart-handoff.last" 2>/dev/null || true
   fi
   tmp_log="$(mktemp "${ORCH_LOG_DIR}/runner-start.XXXXXX")"
   python3 runner.py > "$tmp_log" 2>&1

@@ -144,8 +144,8 @@ useHead({
 </script>
 
 <template>
-  <main class="landing" data-release-surface="public-command-center">
-    <div class="announcement">The private operating system for multi-company founders <a href="#system">Explore Madeus <span>→</span></a></div>
+  <main class="landing" data-release-surface="public-command-center" data-release-marker="operator-improvements-2026-08-07">
+    <div class="announcement">You set the direction. Every holding, aligned. <a href="#system">Explore Madeus <span>→</span></a></div>
 
     <header class="nav">
       <nav aria-label="Primary navigation">
@@ -164,7 +164,7 @@ useHead({
       <div class="hero-copy">
         <p>Private intelligence. Governed execution.</p>
         <h1>Company building,<br>without limits.</h1>
-        <div class="hero-bottom"><p>Madeus understands your portfolio, coordinates the best available intelligence, and carries work from direction to independently verified outcome — across every company you run, and every function inside them.</p><button @click="open = true">Request access <span>→</span></button></div>
+        <div class="hero-bottom"><p>Madeus understands your portfolio, coordinates the best available intelligence, and carries work to independently verified outcomes — while you remain in control from strategy through execution.</p><button @click="open = true">Request access <span>→</span></button></div>
       </div>
       <div class="scroll-cue"><span>Discover Madeus</span><i /></div>
     </section>
@@ -212,7 +212,7 @@ useHead({
     </section>
 
     <section id="control" class="control">
-      <header class="section-heading"><p>Direction and control</p><h2>You remain the<br>decision-maker.</h2></header>
+      <header class="section-heading"><p>Founder-led guidance</p><h2>You decide.<br>Madeus advances.</h2></header>
       <div class="control-grid">
         <article v-for="item in controls" :key="item.index">
           <span>{{ item.index }}</span>
@@ -221,7 +221,7 @@ useHead({
           <i aria-hidden="true" />
         </article>
       </div>
-      <p class="control-note">Direction is expressed in the language of the person giving it — legal, finance, growth, or engineering. Nothing reaches production without an explicit release decision.</p>
+      <p class="control-note">Full control, every step. Direction is expressed in the language of the person giving it — legal, finance, growth, or engineering. Nothing reaches production without an explicit release decision.</p>
     </section>
 
     <section id="security" class="security">
@@ -229,9 +229,9 @@ useHead({
       <div class="security-board"><header><span>MADEUS / TRUST FABRIC</span><b><i /> Operational</b></header><article><span>Context boundary</span><b>Private</b></article><article><span>Vendor exposure</span><b>Minimized</b></article><article><span>Execution authority</span><b>Explicit</b></article><article><span>Independent verification</span><b>Required</b></article><article><span>Release authority</span><b>Operator</b></article><article><span>Cross-company sharing</span><b>Opt-in</b></article><footer>Policy travels with the work.</footer></div>
     </section>
 
-    <section class="closing"><p>Madeus</p><h2>One direction.<br>Every company in motion.</h2><button @click="open = true">Request member access <span>→</span></button></section>
+    <section class="closing"><p>Outcome accountability</p><h2>One direction.<br>Every company in motion.</h2><button @click="open = true">Request member access <span>→</span></button></section>
 
-    <footer class="footer"><a class="footer-wordmark" href="#top">MADEUS</a><p>Private intelligence and governed execution for the multi-company founder. Access is by invitation.</p><nav><a href="#system">Platform</a><a href="#capabilities">Capabilities</a><a href="#control">Control</a><a href="#security">Security</a><span>© {{ new Date().getFullYear() }} Madeus</span></nav></footer>
+    <footer class="footer"><a class="footer-wordmark" href="#top">MADEUS</a><p>Outcome accountability and governed execution for the multi-company founder. Access is by invitation.</p><nav><a href="#system">Platform</a><a href="#capabilities">Capabilities</a><a href="#control">Control</a><a href="#security">Security</a><span>© {{ new Date().getFullYear() }} Madeus</span></nav></footer>
 
     <div v-if="open" class="overlay" @click.self="open = false">
       <section class="modal" role="dialog" aria-modal="true" aria-labelledby="member-title">

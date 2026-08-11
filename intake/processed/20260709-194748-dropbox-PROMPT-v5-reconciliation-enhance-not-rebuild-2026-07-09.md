@@ -15,7 +15,7 @@ The shared `@darwin/kernel` (CADE engine, passport, identity graph, flywheel, go
 - **Calibration flywheel** (was implied "new") — ENHANCE/COMPLETE. Persona.reliability field + flywheel.ts already exist; HANDOFF §3.4 spec exists. Task = implement the outcome→`cade_calibration`→reliability write-back per product. Explicitly NOT net-new. Ref: packages/darwin-kernel/src/flywheel.ts, cade/types.ts.
 
 ## §2 Cross-app coordination — ENHANCE existing kernel primitives (NOT new infra)
-- Passport, identity graph, consent spine, flywheel ALREADY EXIST and work (passport.ts, identity/graph.ts, flywheel.ts). 
+- Passport, identity graph, consent spine, flywheel ALREADY EXIST and work (passport.ts, identity/graph.ts, flywheel.ts).
 - **B-1 onboarding graph** — ENHANCE: build cluster-scoped prefill ON the existing identity graph — do not create a parallel graph.
 - **B-2 wallet** — ENHANCE: surface over existing passport/flywheel entitlements.
 - **B-3 persona registry** — ENHANCE: promote existing cade/types Persona defs into a shared kernel store; single-source the copies.

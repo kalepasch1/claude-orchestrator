@@ -1,0 +1,4 @@
+recovery-intent: recover-missing-branch-copyfix-beethoven-07190657-slice-2-clone-missing-branch
+template: 0468d636b344
+intent: 07190657 acceptance adapt agent bb22a2 beethoven before branch clone cloning confirm copyfix correct diffs directory drafting ensure excerpt exists first implementation instead integrate intent library local matched merge merged missing patch pending pipeline prior proven racefeed rebuilding recover relevant remote repository reuse running scratch similarity slice solved source status summary train transplant trigger triggered visible
+base: master

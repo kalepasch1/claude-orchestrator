@@ -21,6 +21,10 @@ def test_get_retries_transient_dns_failure(monkeypatch):
     monkeypatch.setattr(db, "URL", "https://example.supabase.co")
     monkeypatch.setattr(db, "KEY", "test-key")
     monkeypatch.setattr(db, "HTTP_RETRIES", 2)
+    # The developer machine may configure real failover endpoints in runner/.env. This test
+    # exercises retry timing for one endpoint, so keep that external configuration out of it.
+    monkeypatch.setenv("ORCH_SUPABASE_FALLBACK_URLS", "")
+    monkeypatch.setitem(db._ACTIVE_BASE, "url", None)
     attempts = [urllib.error.URLError(socket.gaierror(8, "temporary DNS failure")), _Response()]
 
     with patch.object(db.urllib.request, "urlopen", side_effect=attempts) as open_mock, \

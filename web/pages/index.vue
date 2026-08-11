@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { deriveDecisionBrief } from '~/utils/decisionBrief'
 import type { LogLine } from '~/types/log'
+import FleetHealthBadge from '~/components/FleetHealthBadge.vue'
+import { useFleetHealth } from '~/composables/useFleetHealth'
 definePageMeta({ layout: 'default', alias: ['/index'] })
 
 const supabase = useSupabaseClient<any>()
 const user = useSupabaseUser()
+const { dbUp, refresh: refreshFleetHealth } = useFleetHealth()
 const tasks = ref<any[]>([])
 const approvals = ref<any[]>([])
 const projects = ref<any[]>([])
@@ -38,6 +41,7 @@ const stopLoading = ref(false)
 const panicLoading = ref(false)
 const rotateLoading = ref<Record<string, boolean>>({})
 const feedbackSaving = ref(false)
+const feedbackError = ref('')
 const newFeedback = reactive({ category: 'general', severity: 'low', observation: '', suggestion: '' })
 const budgets = ref<any[]>([])
 const loops = ref<any[]>([])
@@ -172,6 +176,7 @@ let refreshTimer: any
 let realtimeSub: any
 let logSub: any
 onMounted(async () => {
+  await refreshFleetHealth()
   if (user.value) await loadAll()
   refreshTimer = setInterval(() => { if (user.value) loadAll() }, 30_000)
   realtimeSub = supabase.channel('command-center-live').on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, loadAll).on('postgres_changes', { event: '*', schema: 'public', table: 'approvals' }, loadAll).subscribe()
@@ -213,14 +218,18 @@ async function rotateKey(providerName: string, keyName: string, project: string 
 async function submitFeedback() {
   if (!newFeedback.observation.trim()) return
   feedbackSaving.value = true
+  feedbackError.value = ''
   try {
-    await supabase.from('orchestrator_feedback').insert({
+    const receipt: any = await authedFetch('/api/feedback', { method: 'POST', body: {
       category: newFeedback.category, severity: newFeedback.severity,
       observation: newFeedback.observation, suggestion: newFeedback.suggestion,
-      source: 'human', status: 'new',
-    })
+    } })
     newFeedback.observation = ''; newFeedback.suggestion = ''
     await loadAll()
+    signalOutcome('success', 'Improvement queued', `Execution task ${receipt.task.slug} is now traceable through QA, merge, and release.`)
+  } catch (error: any) {
+    feedbackError.value = error?.data?.message || error?.message || 'The improvement was not queued.'
+    signalOutcome('error', 'Improvement not queued', feedbackError.value)
   } finally { feedbackSaving.value = false }
 }
 
@@ -571,6 +580,7 @@ watch(user, u => { if (u) loadAll() })
                 :class="runners.some(alive) ? 'bg-green-400 dot-breathe' : 'bg-red-400'"></span>
         </span>
         <h1 class="text-lg font-semibold">Claude Orchestrator</h1>
+        <FleetHealthBadge :db-up="dbUp" />
         <span class="text-slate-500 text-sm">
           {{ liveRunnerCount }}/{{ runnerFleetTarget }} live lanes · <span class="font-mono" :class="exactBacklogCount ? 'text-amber-300' : 'text-emerald-400'" title="Exact full-table backlog count from SQL">{{ fmtInt(exactBacklogCount) }}</span> backlog · {{ approvals.length }} pending · <span class="font-mono text-slate-300" title="Token cost covered by your Claude Max plan — not cash">${{ coveredMtd.toFixed(2) }}</span> Max-covered · <span class="font-mono text-emerald-400" title="Real out-of-pocket API cash, month-to-date">${{ cashMtd.toFixed(2) }}</span> cash · <span class="font-mono text-cyan-300" title="Estimated prompt/result cache and patch-template savings from recent resource events">{{ Math.round(savingsKpi.tokens).toLocaleString() }}</span> tok avoided · <span class="font-mono" :class="integrateKpi.overall >= 1 ? 'text-emerald-400' : 'text-amber-400'" title="Post-QA merge-rate: passed/non-churn work that actually integrated. Target is 100%; failed drafting attempts are tracked separately as attempt yield.">{{ (integrateKpi.overall * 100).toFixed(0) }}%</span> merge-rate ({{ integrateKpi.integrated }}/{{ integrateKpi.completed }}) · <span class="font-mono" :class="(integrateKpi.usdPerMerge ?? 99) <= 2 ? 'text-emerald-400' : 'text-amber-400'" title="NORTH STAR: $ per merged change. Drive this DOWN.">{{ integrateKpi.usdPerMerge == null ? '—' : ('$' + integrateKpi.usdPerMerge.toFixed(2)) }}</span>/merge
         </span>

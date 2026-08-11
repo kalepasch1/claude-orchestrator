@@ -1,0 +1,4 @@
+recovery-intent: improve-value-aware-test-routing-early-exit-r-slice-3-fix-pid-integral-windup
+template: 110ac67c2ee2
+intent: acceptance accumulated actually adjust alternatively because beyond clamp early enqueued exceeds exited gains growing hardcoded implement indicates integral longer max_integral maximum minimally mixed output overshelving prevent queue setpoint shelve shelves simulated solely tasks under update velocity windup would
+base: master

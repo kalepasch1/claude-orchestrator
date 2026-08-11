@@ -130,15 +130,15 @@ def release(conn):
     def test_violations_have_line_numbers(self):
         """Violations report accurate line numbers."""
         agent_code = """
-# Line 1
-# Line 2
-config['API_KEY'] = 'secret'  # Line 3 should be reported
-# Line 4
+# Line 2 (the snippet's leading newline makes this physical line 2)
+# Line 3
+config['API_KEY'] = 'secret'  # Line 4 should be reported
+# Line 5
 """
         violations = self._check_code(agent_code)
         config_violations = [v for v in violations if v.rule == 'CONFIG_KEY_NAMING']
         self.assertGreater(len(config_violations), 0)
-        self.assertEqual(config_violations[0].lineno, 3)
+        self.assertEqual(config_violations[0].lineno, 4)
 
 
 class TestConventionViolationDetection(unittest.TestCase):

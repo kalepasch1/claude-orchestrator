@@ -1,0 +1,4 @@
+recovery-intent: improve-upgrade-to-a-high-performance-database-slice-3-reconnoiter-repo-and-map-
+template: 11e3eb1efa96
+intent: 258e15 333b7e269c12 aaac4e acceptance access active adapt adding architecture based before behavior bottlenecks branch build c1486760bb7d capture change codebase command configured current database diffs directly drafting drivers edits error evidence exact excerpt existing exists explicitly failure files first functio function helpers highest implementation inspect instead intent layer leverage library limit lists locate markdown master matched matching mergeable merged migrations mismatch module naming objects opportunity output owner patch paths patterns performance preserve prior production project proven rebuilding record recorded relevant repair
+base: master

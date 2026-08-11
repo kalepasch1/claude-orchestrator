@@ -1,0 +1,4 @@
+recovery-intent: improve-implement-real-time-monitoring-and-alert-slice-3-setup-automated-alerts
+template: ab36de187367
+intent: 0000000 07130635 07190257 100644 20251001 53375a0cecde 68c04d4 7ce8bfb __init__ active adapt address advice after agentic alert alert_system_implementation alerts analysis apierror approach appropriate artifacts attempt author automated available b4fa25c7 backlog based batch beethoven before behavior below branch broad bugfix build build_fix category cause change changes changing checks claim class claud claude clear cloud coder commit compiled completion concrete config considerations consolidate consolidation context continue contract coordination cowork created credits critical cross currently custody debate_compress deepseek delete denied dependencies deployfix detailing diffs
+base: master

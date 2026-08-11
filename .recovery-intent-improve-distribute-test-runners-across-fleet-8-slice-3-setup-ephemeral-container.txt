@@ -1,0 +1,4 @@
+recovery-intent: improve-distribute-test-runners-across-fleet-8-slice-3-setup-ephemeral-container
+template: 5cb83cb3b3f5
+intent: 07041728 07130635 100644 20251001 252d2c0 51df8b0 across active adapt advice after agentic analysis analytics artifacts author barks batch beethoven before behavior below blocked branch broad budget bugfix build build_fix category cause change changes changing checks claim class claud claude cloud coder commit completion concrete config configurations consistency container containers context continue contract coordination cross custody deepseek default definenuxtconfig delete dependencies different diffs directive distribute drafting ensure ephemeral equivalent excerpt existing exists export failure files final finish first flakes flash fleet
+base: master

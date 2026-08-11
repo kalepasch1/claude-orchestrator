@@ -38,7 +38,7 @@ export default defineEventHandler(async (event) => {
   })
   const rate = consumeProofLookup(client)
   if (!rate.allowed) {
-    setHeader(event, 'retry-after', String(rate.retryAfterSeconds))
+    setHeader(event, 'retry-after', rate.retryAfterSeconds)
     throw createError({
       statusCode: 429,
       statusMessage: 'Too Many Requests',

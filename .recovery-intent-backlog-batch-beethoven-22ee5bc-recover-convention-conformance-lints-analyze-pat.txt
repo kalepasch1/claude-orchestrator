@@ -1,0 +1,4 @@
+recovery-intent: backlog-batch-beethoven-22ee5bc-recover-convention-conformance-lints-analyze-pat
+template: ab8e1094b5e2
+intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 89b4fe 89b4fec66f5e acceptance active adapt advice after agentic aider allowlist analysis analytical analyze author based batch beethoven before behavior blocked blocker build build_fix buildfail ce2e8dcd7954 change changes cheap claim class claude cloud coder codestral commit concern concrete config conformance context contract convention convert coordination cowork cross custody deepseek delete deployfix design diffs directive document documentation drafting excerpt existing exists explaining explore fable findings first flash force gemini generated google
+base: master

@@ -1043,9 +1043,21 @@ def export_proof_pack(det_id):
 
 def process_determination_actions(limit=10):
     """Drain the console action queue: replay / ask / approve / override / another-round. Approve+override
-    feed the owner-preference learner so the system needs the reviewer less over time."""
-    acts = db.select("determination_actions", {"select": "*", "status": "eq.pending",
-                     "order": "created_at.asc", "limit": str(limit)}) or []
+    feed the owner-preference learner so the system needs the reviewer less over time.
+
+    Fail-soft on the queue read. This was an unguarded db.select and it is the FIRST statement
+    in run(), so a transient DB outage (2026-08-06: urllib URLError [Errno 61] Connection
+    refused) propagated straight out and killed the whole committees job before it did any
+    work — 81 tracebacks, 52% of this job's failures, and the crashed holder then showed up as
+    "periodic committees: WEDGED — skipped 3 consecutive invocation(s)". A DB blip must cost
+    one skipped drain, not the job.
+    """
+    try:
+        acts = db.select("determination_actions", {"select": "*", "status": "eq.pending",
+                         "order": "created_at.asc", "limit": str(limit)}) or []
+    except Exception as e:
+        print(f"committees: determination-action queue unreadable, skipping drain ({e})", flush=True)
+        return 0
     n = 0
     for a in acts:
         act = a.get("action"); did = a.get("determination_id"); payload = a.get("payload") or {}
@@ -1342,13 +1354,36 @@ def run(limit=8):
     """Convene the committees. AUTONOMOUS BY DEFAULT: the panel self-executes clear wins and auto-clears
     routine decisions; a human is involved ONLY when the matter is critical or highly contentious."""
     process_determination_actions()   # first, fulfill any one-click reviewer actions from the console
-    reviewed = {r["subject_id"] for r in (db.select("committee_reviews", {"select": "subject_id"}) or [])}
-    pid = {p["name"]: p["id"] for p in (db.select("projects", {"select": "id,name"}) or [])}
+    # A committees run is meaningless without the DB, and an unreachable DB is a transient
+    # condition, not a defect to crash on. Report it once and skip the cycle: the alternative
+    # (seen 2026-08-06) is a traceback every 30 min plus a WEDGED lock held by the corpse.
+    try:
+        reviewed = {r["subject_id"] for r in (db.select("committee_reviews", {"select": "subject_id"}) or [])}
+        project_rows = db.select("projects", {"select": "id,name,default_base"}) or []
+    except Exception as e:
+        print(f"committees: DB unreachable, skipping this cycle ({e})", flush=True)
+        return {"skipped": "db_unavailable", "error": str(e)}
+    pid = {p["name"]: p["id"] for p in project_rows}
+    base_by_app = {p["name"]: (p.get("default_base") or "main") for p in project_rows}
+    try:
+        operator_work_pending = bool(db.select("tasks", {
+            "select": "id", "state": "in.(QUEUED,RUNNING,DONE,RETRY)",
+            "submitted_by": "not.is.null", "limit": "1",
+        }) or db.select("tasks", {
+            "select": "id", "state": "in.(QUEUED,RUNNING,DONE,RETRY)",
+            "slug": "like.dropbox-*", "limit": "1",
+        }) or [])
+    except Exception:
+        operator_work_pending = True
     n = executed = escalated = cleared = 0
 
     for p in db.select("improvement_proposals", {"select": "id,app,surface,title,proposal,rationale,divergent",
                         "status": "eq.for_review", "limit": str(limit)}) or []:
         if p["id"] in reviewed:
+            continue
+        if operator_work_pending and str(p.get("app") or "").lower() == "beethoven":
+            # Keep the reviewed proposal intact, but do not convert speculative
+            # self-work into another task while authenticated/legacy operator work waits.
             continue
         if not p.get("divergent"):
             import improvement_scrutiny
@@ -1384,7 +1419,8 @@ def run(limit=8):
                               "pct": pct, "status": "active",
                               "note": (agg.get("premortem") or {}).get("failure_story", "")[:300]})
                 db.insert("tasks", {"project_id": pid[p["app"]], "slug": slug, "state": "QUEUED",
-                          "kind": "build", "deps": [], "base_branch": "main", "material": False,
+                          "kind": "improvement", "deps": [], "base_branch": base_by_app[p["app"]], "material": False,
+                          "note": "source:committee-improvement; qa:independent; release:verified",
                           "prompt": spec})
                 upd["status"] = "queued"; upd["task_slug"] = slug; upd["slug_v2"] = True
                 executed += 1
@@ -1399,7 +1435,8 @@ def run(limit=8):
             db.insert("committee_experiments", {"app": p["app"], "slug": slug, "kind": "ab",
                       "hypothesis": (p.get("title") or "")[:200], "status": "running", "metric_start": m0})
             db.insert("tasks", {"project_id": pid[p["app"]], "slug": slug, "state": "QUEUED", "kind": "build",
-                      "deps": [], "base_branch": "main", "material": False,
+                      "deps": [], "base_branch": base_by_app[p["app"]], "material": False,
+                      "note": "source:committee-experiment; qa:independent; release:verified",
                       "prompt": compose_spec(p.get("title"), (p.get("proposal") or "") +
                                "\n\nSHIP AS AN A/B EXPERIMENT behind a flag (50/50); do not enable globally.",
                                agg["panel"])})

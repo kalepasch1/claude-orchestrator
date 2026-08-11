@@ -5,8 +5,8 @@ A) check_new_code reads the running commit from ORCH_BOOT_COMMIT (else the boot 
    and flags stale only when both commits are known and differ.
 B) request_restart writes the flag file + a digest notification — and NEVER hard-kills
    (no os.kill / os._exit anywhere in the module source).
-C) canary_gate returns True only on rc==0 and includes --timeout=120 only when
-   pytest-timeout is importable.
+C) canary_gate compiles runner code, collects the complete suite, and runs a bounded
+   critical/change-matched set. Every stage must return rc==0.
 D) maybe_deploy: restart requested ONLY when stale AND canary passes; canary failure
    files the blocked approvals card (duplicate-index errors swallowed); never raises.
 All subprocess + db calls are mocked — no network, no real pytest recursion.
@@ -110,15 +110,22 @@ class TestRequestRestart(unittest.TestCase):
 
 class TestCanaryGate(unittest.TestCase):
 
-    def test_green_suite_passes(self):
+    def test_green_bounded_gate_passes(self):
         calls = []
         def _run(cmd, **kw):
             calls.append((cmd, kw))
             return _proc(0)
-        with patch.object(self_deploy.subprocess, "run", side_effect=_run):
-            self.assertTrue(self_deploy.canary_gate("/repo"))
+        with patch.object(self_deploy, "_changed_files", return_value=["runner/self_deploy.py"]), \
+             patch.object(self_deploy, "_selected_tests",
+                          return_value=["runner/tests/test_self_deploy.py"]), \
+             patch.object(self_deploy, "_pytest_timeout_available", return_value=True), \
+             patch.object(self_deploy.subprocess, "run", side_effect=_run):
+            self.assertTrue(self_deploy.canary_gate("/repo", "aaa", "bbb"))
+        self.assertEqual(calls[0][0][:4], ["python3", "-m", "compileall", "-q"])
+        self.assertIn("--collect-only", calls[1][0])
         pytest_cmd, kw = calls[-1]
-        self.assertEqual(pytest_cmd[:4], ["python3", "-m", "pytest", "runner/tests"])
+        self.assertEqual(pytest_cmd[:4], ["python3", "-m", "pytest",
+                                          "runner/tests/test_self_deploy.py"])
         self.assertIn("-x", pytest_cmd)
         self.assertEqual(kw.get("cwd"), "/repo")
         self.assertEqual(kw.get("timeout"), self_deploy.CANARY_TIMEOUT)
@@ -128,21 +135,49 @@ class TestCanaryGate(unittest.TestCase):
         calls = []
         def _run(cmd, **kw):
             calls.append(cmd)
-            return _proc(1 if "-c" in cmd else 0)  # import probe fails
-        with patch.object(self_deploy.subprocess, "run", side_effect=_run):
-            self_deploy.canary_gate("/repo")
+            return _proc(0)
+        with patch.object(self_deploy, "_changed_files", return_value=[]), \
+             patch.object(self_deploy, "_selected_tests", return_value=["test.py"]), \
+             patch.object(self_deploy, "_pytest_timeout_available", return_value=False), \
+             patch.object(self_deploy.subprocess, "run", side_effect=_run):
+            self_deploy.canary_gate("/repo", "aaa", "bbb")
         self.assertNotIn("--timeout=120", calls[-1])
 
-    def test_red_suite_fails_gate(self):
+    def test_red_behavior_test_fails_gate(self):
         def _run(cmd, **kw):
-            return _proc(0 if "-c" in cmd else 1)  # probe ok, pytest red
-        with patch.object(self_deploy.subprocess, "run", side_effect=_run):
-            self.assertFalse(self_deploy.canary_gate("/repo"))
+            return _proc(1 if "test.py" in cmd else 0)
+        with patch.object(self_deploy, "_changed_files", return_value=[]), \
+             patch.object(self_deploy, "_selected_tests", return_value=["test.py"]), \
+             patch.object(self_deploy, "_pytest_timeout_available", return_value=False), \
+             patch.object(self_deploy.subprocess, "run", side_effect=_run):
+            self.assertFalse(self_deploy.canary_gate("/repo", "aaa", "bbb"))
+
+    def test_unknown_boot_diff_fails_closed(self):
+        with patch.object(self_deploy, "_changed_files", return_value=None), \
+             patch.object(self_deploy.subprocess, "run") as run:
+            self.assertFalse(self_deploy.canary_gate("/repo", "aaa", "bbb"))
+        run.assert_not_called()
 
     def test_subprocess_exception_fails_closed(self):
-        with patch.object(self_deploy.subprocess, "run",
+        with patch.object(self_deploy, "_changed_files", return_value=[]), \
+             patch.object(self_deploy.subprocess, "run",
                           side_effect=OSError("no python3")):
-            self.assertFalse(self_deploy.canary_gate("/repo"))
+            self.assertFalse(self_deploy.canary_gate("/repo", "aaa", "bbb"))
+
+    def test_changed_test_selection_includes_direct_and_module_match(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "runner", "tests"))
+            for rel in ("runner/tests/test_self_deploy.py",
+                        "runner/tests/test_priority_queue.py",
+                        "runner/test_direct_fix.py"):
+                path = os.path.join(d, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                open(path, "w").close()
+            selected = self_deploy._selected_tests(
+                d, ["runner/priority_queue.py", "runner/test_direct_fix.py"])
+        self.assertIn("runner/tests/test_self_deploy.py", selected)
+        self.assertIn("runner/tests/test_priority_queue.py", selected)
+        self.assertIn("runner/test_direct_fix.py", selected)
 
 
 class TestMaybeDeploy(unittest.TestCase):

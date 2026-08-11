@@ -1,0 +1,4 @@
+recovery-intent: improve-implement-real-time-sync-between-web-and-slice-2-add-websocket-server-an
+template: 34ca8406147a
+intent: acceptance asserts basic break client configurable connection connects default ensure existing implement library lifecycle listen message minimal project received runner server should starts tests using websocket ws_port
+base: master

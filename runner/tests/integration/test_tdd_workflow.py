@@ -14,12 +14,31 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 import planner
 import tdd_gate
+import workflow_router
 
 
-class PlannerTddGatingIntegrationTest(unittest.TestCase):
+class _ForceFullShardMixin(unittest.TestCase):
+    """Pin the legacy full-shard LLM planning path.
+
+    Adaptive workflow routing (2026-07-28) routes short objectives to the
+    no-shard / light-shard lanes, which never call planner.claude_cli.run —
+    so these integration tests (which mock claude_cli.run and hand the planner
+    an explicit task DAG) must force the full-shard lane explicitly.
+    """
+
+    def setUp(self):
+        self._wr_patch = patch.object(workflow_router, "profile_for", return_value=None)
+        self._wr_patch.start()
+
+    def tearDown(self):
+        self._wr_patch.stop()
+
+
+class PlannerTddGatingIntegrationTest(_ForceFullShardMixin):
     """End-to-end planner integration with TDD gating."""
 
     def tearDown(self):
+        super().tearDown()
         tdd_gate.invalidate_cache()
 
     def test_plan_inserts_write_tests_phase_for_gated_task(self):
@@ -207,10 +226,11 @@ def test_token_validation():
                 self.assertEqual(status, "PASSING")
 
 
-class RegressionTest(unittest.TestCase):
+class RegressionTest(_ForceFullShardMixin):
     """Regression tests: ensure TDD gating doesn't break existing behavior."""
 
     def tearDown(self):
+        super().tearDown()
         tdd_gate.invalidate_cache()
 
     def test_planner_still_works_without_tdd_gate_module(self):
@@ -246,10 +266,11 @@ class RegressionTest(unittest.TestCase):
             self.assertEqual(result, [original_task])
 
 
-class EdgeCaseIntegrationTest(unittest.TestCase):
+class EdgeCaseIntegrationTest(_ForceFullShardMixin):
     """Edge cases in TDD workflow integration."""
 
     def tearDown(self):
+        super().tearDown()
         tdd_gate.invalidate_cache()
 
     def test_task_with_multiple_dependencies_preserved(self):

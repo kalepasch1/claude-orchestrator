@@ -9,7 +9,18 @@ from unittest.mock import patch, MagicMock, call
 import threading
 import uuid
 from datetime import datetime, timedelta
-from runner import breach_remediation
+import pytest
+
+# runner/breach_remediation.py is not on master yet — this suite landed ahead of the
+# module it covers. A bare `from runner import breach_remediation` made that an
+# ImportError during COLLECTION, which pytest treats as fatal: one absent module
+# aborted the entire run ("Interrupted: 1 error during collection"), so no other
+# test in the repo executed either. Skip this file when the module is missing and
+# run it normally once the module lands.
+breach_remediation = pytest.importorskip(
+    "runner.breach_remediation",
+    reason="runner/breach_remediation.py not present on this branch",
+)
 
 
 class TestBreachRemediation(unittest.TestCase):

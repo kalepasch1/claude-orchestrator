@@ -18,6 +18,7 @@ and missing files.
 import os
 import sys
 import types
+import importlib.util
 from unittest.mock import MagicMock, patch, call
 
 import pytest
@@ -101,11 +102,18 @@ def runner_module(mock_db, mock_branch_lease):
     et.start = MagicMock(return_value=MagicMock(finish=MagicMock()))
     sys.modules["exec_telemetry"] = et
 
-    # Force reimport
-    if "runner" in sys.modules:
-        del sys.modules["runner"]
-
-    import runner
+    # Load the entrypoint by file path under a unique name. `import runner` is ambiguous
+    # now that runner/ is also a package: under full-suite collection it resolves to
+    # runner/__init__.py, while an isolated invocation may resolve to runner/runner.py.
+    # That order dependence made this entire file alternate between 26 passes and 26
+    # AttributeErrors depending on which test pytest collected first.
+    module_name = "runner_entrypoint_under_test"
+    runner_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "runner.py")
+    spec = importlib.util.spec_from_file_location(module_name, runner_path)
+    runner = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = runner
+    spec.loader.exec_module(runner)
     yield runner
 
     # Restore
@@ -114,7 +122,7 @@ def runner_module(mock_db, mock_branch_lease):
             sys.modules.pop(mod_name, None)
         else:
             sys.modules[mod_name] = orig
-    sys.modules.pop("runner", None)
+    sys.modules.pop(module_name, None)
 
 
 # ===========================================================================
@@ -125,7 +133,8 @@ class TestSetState:
     """Tests for runner.set_state — the central state-mutation function."""
 
     def test_set_state_updates_db(self, runner_module, mock_db):
-        runner_module.set_state("task-001", state="DONE", note="finished")
+        runner_module.set_state("task-001", state="DONE", note="finished",
+                                artifact_commit="abc123")
         mock_db.update.assert_called_once()
         args = mock_db.update.call_args
         assert args[0][0] == "tasks"
@@ -150,7 +159,8 @@ class TestSetState:
         assert patch_arg["model"] == "haiku"
 
     def test_set_state_empty_note(self, runner_module, mock_db):
-        runner_module.set_state("task-005", state="DONE", note="")
+        runner_module.set_state("task-005", state="DONE", note="",
+                                artifact_commit="abc123")
         patch_arg = mock_db.update.call_args[0][2]
         assert patch_arg["note"] == ""
 
@@ -316,4 +326,3 @@ class TestProjects:
         runner_module._projects = {}
         result = runner_module.projects()
         assert result == {}
-

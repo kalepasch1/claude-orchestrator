@@ -297,11 +297,18 @@ def _merge_with_retries(repo, branch, base, task, slug, task_id, project_id):
                         merge_sha = merge_result.get("sha") or ""
                         try:
                             if merge_sha:
-                                db.update("tasks", {"id": task_id},
-                                          {"state": "MERGED",
-                                           "artifact_commit": merge_sha,
-                                           "note": f"continuous-merger: {strategy} @ {merge_sha[:12]}",
-                                           "updated_at": "now()"})
+                                # A local merge produced this sha; that does not mean it
+                                # reached prod (it may sit on staging, or the push may have
+                                # failed after the merge succeeded). merge_truth requires
+                                # ancestry of prod_branch before MERGED is written.
+                                import merge_truth
+                                merge_truth.guarded_task_update(
+                                    {"id": task_id, "slug": slug, "project_id": project_id},
+                                    {"state": "MERGED",
+                                     "artifact_commit": merge_sha,
+                                     "note": f"continuous-merger: {strategy} @ {merge_sha[:12]}",
+                                     "updated_at": "now()"},
+                                    repo=repo)
                             else:
                                 db.update("tasks", {"id": task_id},
                                           {"state": "DONE",

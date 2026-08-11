@@ -1,0 +1,4 @@
+recovery-intent: dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-group-2-reb
+template: 8ebd7550f1c5
+intent: 07130635 07190257 20251001 53375a0cecde 5f879035 __init__ acceptance active adapt advice after agentic analysis api_credit_exhausted apierror artifacts associated author authoritative available b4fa25c7 batch beethoven before behavior below branch broad bugfix build build_fix category cause change changes changing checks claim class claud claude clean cloud coder codestral commit commits compiled complete completion concrete config conflict conflicts contains context continue contract coordination corresponding credits cross current currently custody darwin debate_compress deepseek delete denied dependencies deployfix diffs directive discard drafting dropbox edits either equivalent
+base: master

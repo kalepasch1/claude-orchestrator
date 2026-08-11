@@ -1,0 +1,4 @@
+recovery-intent: improve-competitive-scanner-slice-5-run-tests
+template: 565fd686b974
+intent: 07130635 07190257 20251001 active adapt advice after agentic analysis artifacts author batch beethoven before behavior below branch broad broken bugfix build build_fix category cause change changes changing checks claim class claud claude cloud coder codestral commit competitive completion concrete config configuration context continue contract coordination cross custody debate_compress deepseek delete dependencies deployfix diffs directive drafting ensure equivalent excerpt existing exists fable failure files final finish first flash force fresh functionality gemini generated google green haiku implementation improve improvement improvements independent
+base: main

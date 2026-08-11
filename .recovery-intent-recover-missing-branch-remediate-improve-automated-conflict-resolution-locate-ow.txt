@@ -1,0 +1,4 @@
+recovery-intent: recover-missing-branch-remediate-improve-automated-conflict-resolution-locate-ow
+template: 872013aaa4f9
+intent: aaac4e acceptance adapt adding before behavior branches build c1486760bb7d create diffs drafting ensure excerpt existing exists files first function helpers identify implementation instead intent library limit locate managing matched matching mergeable merged missing module naming owner patch preserve prior project proven rebuilding recovered relevant reset responsible resuming reuse scratch similarity slots smallest solved source summary template tests transplant vigil weekly
+base: master

@@ -22,7 +22,7 @@ ECP note (strategy Part 4.11): the $5M is the aspirational PREMIUM tier that unl
 - Proof: transfer saga tests (consent-gated, rollback, dispute open); custody grep — no platform balance/custody fields introduced.
 
 ## 5. Smarter receiver + luxury surfaces
-- Activate the dormant adapter: an authenticated endpoint (shared secret with Smarter) that receives Smarter's personal document/email events and routes through smarterDocumentAdapter.js (quarantine model preserved; Tier-C block on untrusted content stands). 
+- Activate the dormant adapter: an authenticated endpoint (shared secret with Smarter) that receives Smarter's personal document/email events and routes through smarterDocumentAdapter.js (quarantine model preserved; Tier-C block on untrusted content stands).
 - New-money aspirational surface pass: a luxury home surface (consigliere chat + envelope + upcoming plans + exchange), keeping death-timer/FIRE views as the "discipline" tab rather than the front door. Copy tone: premium, not frugal.
 - Proof: adapter contract test using Smarter's fixture envelope; SFC compile for new pages.
 

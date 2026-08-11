@@ -25,6 +25,8 @@ sys.path.insert(0, RUNNER_DIR)
 import db
 import commit_overlay
 import integration_runtime
+import paused_host_guard
+import release_manifest
 
 # BATCH-DEV defaults: ship agent work to the unified staging branch quickly, but promote
 # prod in QA'd batches. This avoids improvement-by-improvement Vercel churn while keeping
@@ -39,7 +41,13 @@ RELEASE_INTERVAL_HOURS = max(6.0, float(os.environ.get("RELEASE_INTERVAL_HOURS",
 STAGING = os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev")
 RELEASE_FIX_PREFIXES = ("relfix-", "buildfix-", "deployfix-")
 QA_FIX_PREFIXES = ("qafix-",)
+COPY_FIX_PREFIXES = ("copyfix-",)
 RED_GATE_COOLDOWN_MIN = float(os.environ.get("ORCH_RELEASE_RED_GATE_COOLDOWN_MIN", "180"))
+# A fix lineage gets a bounded wall-clock budget measured from its OLDEST task, not from
+# whichever sub-task was touched last. Without this ceiling a decomposed fix DAG renews its
+# own hold forever: every sub-task that goes RUNNING refreshes updated_at, so the release
+# train never retries. 0 disables the ceiling and restores the old unbounded behaviour.
+RELEASE_FIX_HOLD_MAX_H = float(os.environ.get("ORCH_RELEASE_FIX_HOLD_MAX_H", "12"))
 QA_EVIDENCE_CHARS_PER_STREAM = 12000
 
 # release_kpi writes this: the set of apps whose recent prod deploys keep failing, so we promote their
@@ -248,6 +256,27 @@ def _parse_time(value):
         return None
 
 
+def _fix_lineage_root(slug):
+    """Group a decomposed fix DAG back to the fix it came from."""
+    parts = str(slug or "").split("-")
+    return "-".join(parts[:3]) if len(parts) >= 3 else str(slug or "")
+
+
+def _lineage_birth(rows):
+    """Oldest created_at per fix lineage - the start of that lineage's hold budget."""
+    births = {}
+    for row in rows:
+        born = _parse_time(row.get("created_at"))
+        if not born:
+            continue
+        if born.tzinfo is None:
+            born = born.replace(tzinfo=datetime.timezone.utc)
+        root = _fix_lineage_root(row.get("slug"))
+        if root not in births or born < births[root]:
+            births[root] = born
+    return births
+
+
 def _open_release_fix_tasks(p, gate=None):
     """Return open fix tasks that should be allowed to clear before another release retry."""
     if not p.get("id"):
@@ -259,18 +288,52 @@ def _open_release_fix_tasks(p, gate=None):
                                    "order": "updated_at.desc", "limit": "200"}) or []
     except Exception:
         return []
+    births = _lineage_birth(rows)
     if gate == "qa":
         prefixes = QA_FIX_PREFIXES
+    elif gate == "copy":
+        prefixes = COPY_FIX_PREFIXES
     elif gate in ("build", "refresh", "push"):
         prefixes = RELEASE_FIX_PREFIXES
     else:
-        prefixes = QA_FIX_PREFIXES + RELEASE_FIX_PREFIXES
+        prefixes = QA_FIX_PREFIXES + RELEASE_FIX_PREFIXES + COPY_FIX_PREFIXES
+    hold_minutes = float(os.environ.get("ORCH_RELEASE_FIX_HOLD_MIN", "180"))
+    hold_states = {
+        value.strip().upper()
+        for value in os.environ.get("ORCH_RELEASE_FIX_HOLD_STATES", "RUNNING,RETRY").split(",")
+        if value.strip()
+    }
+    now = datetime.datetime.now(datetime.timezone.utc)
     out = []
     for row in rows:
         slug = str(row.get("slug") or "")
         note = str(row.get("note") or "").lower()
-        if slug.startswith(prefixes) or "release_train" in note or "vercel" in note:
-            out.append(row)
+        # A provenance note is not a gate identity.  Otherwise one stale QA task
+        # can block copy, build, and deploy forever.
+        matches_gate = slug.startswith(prefixes)
+        if gate is None:
+            matches_gate = matches_gate or "release_train" in note or "vercel" in note
+        if not matches_gate:
+            continue
+        # Queued history is not a mutex. Only a fix consuming a lane gets a
+        # bounded exclusivity window, after which the candidate may prove itself.
+        if str(row.get("state") or "").upper() not in hold_states:
+            continue
+        touched = _parse_time(row.get("updated_at") or row.get("created_at"))
+        if touched:
+            if touched.tzinfo is None:
+                touched = touched.replace(tzinfo=datetime.timezone.utc)
+            if (now - touched).total_seconds() > hold_minutes * 60:
+                continue
+        # Bounded budget per lineage: sub-task churn cannot renew the hold indefinitely.
+        born = births.get(_fix_lineage_root(slug))
+        if RELEASE_FIX_HOLD_MAX_H > 0:
+            if born and (now - born).total_seconds() > RELEASE_FIX_HOLD_MAX_H * 3600:
+                continue
+        row["_lineage_age_h"] = (
+            round((now - born).total_seconds() / 3600.0, 1) if born else 0.0
+        )
+        out.append(row)
     return out
 
 
@@ -291,6 +354,26 @@ def _self_heal_public_copy(p, project, repo, staging, findings):
         print(f"release_train: copyfix queue failed ({e})")
 
 
+def _raise_hold_alarm(project, gate, fix, age_h):
+    """Surface a long-running release hold. Fail-soft: never raise, never block the train."""
+    try:
+        detail = (f"{project}: {gate} gate held {age_h}h by fix lineage "
+                  f"{_fix_lineage_root((fix or {}).get('slug'))} "
+                  f"(hot task {(fix or {}).get('slug')}, state {(fix or {}).get('state')}); "
+                  f"ceiling {RELEASE_FIX_HOLD_MAX_H}h")
+        existing = db.select("orch_gate_alarms", {
+            "select": "id", "gate": f"eq.{gate}", "kind": "eq.release_hold",
+            "resolved_at": "is.null", "detail": f"like.{project}:%", "limit": "1"}) or []
+        if existing:
+            return
+        db.insert("orch_gate_alarms", {
+            "gate": gate, "kind": "release_hold", "verdict": "held", "n": 1,
+            "window_hours": int(RELEASE_FIX_HOLD_MAX_H), "detail": detail}, upsert=False)
+        print(f"release_train: raised release_hold alarm — {detail}")
+    except Exception as e:
+        print(f"release_train: hold alarm failed ({e})")
+
+
 def _hold_for_open_fix(p, project, gate):
     if not _truthy("ORCH_RELEASE_HOLD_WHILE_FIX_OPEN", True):
         return None
@@ -298,8 +381,15 @@ def _hold_for_open_fix(p, project, gate):
     if not fixes:
         return None
     hot = fixes[0]
+    # A silent hold is indistinguishable from an idle train — that is exactly why this
+    # ran unnoticed for 17 days. Always log; alarm once past half the ceiling.
+    age_h = float(hot.get("_lineage_age_h") or 0.0)
+    print(f"release_train: {project} gate={gate} HELD {age_h}h by fix {hot.get('slug')} "
+          f"({hot.get('state')}); ceiling {RELEASE_FIX_HOLD_MAX_H}h")
+    if RELEASE_FIX_HOLD_MAX_H > 0 and age_h >= RELEASE_FIX_HOLD_MAX_H / 2.0:
+        _raise_hold_alarm(project, gate, hot, age_h)
     return {"project": project, "gate": gate, "note": "held for open release-fix task",
-            "fix": hot.get("slug"), "fix_state": hot.get("state")}
+            "fix": hot.get("slug"), "fix_state": hot.get("state"), "held_hours": age_h}
 
 
 def _recent_failed_gate(project, staging_sha, gate):
@@ -325,11 +415,36 @@ def _recent_failed_gate(project, staging_sha, gate):
     return False
 
 
+def _insert_release(row):
+    """Insert a releases row stamped with the host that produced it.
+
+    `releases` recorded no host, so when a paused, stale machine started writing
+    deploy_status='failed' rows the only evidence of WHO wrote them was an npm log
+    path that happened to leak into the note ("/Users/mandypa..."). A failure that
+    flips a project RED fleet-wide should not be attributable only by accident.
+
+    Retries without `host` if the column is not present yet: code and migrations
+    deploy independently, and a lagging DB must not take releases down entirely.
+    """
+    try:
+        return db.insert("releases", dict(row, host=paused_host_guard.HOST))
+    except Exception:
+        return db.insert("releases", row)
+
+
 def _insert_failed_release(project, gate, ahead, from_sha, to_sha, note):
     """Insert one failed gate row per gate/SHA/cooldown window."""
     if _recent_failed_gate(project, to_sha, gate):
         return None
-    return db.insert("releases", {"project": project, "from_sha": from_sha or "",
+    # A gate is a new unit of work, so a paused host must not record its verdict —
+    # this is the row that flips a project RED and trips fleet-wide back-pressure.
+    ok, why = paused_host_guard.may_start(f"gate:{gate}", project=project)
+    if not ok:
+        paused_host_guard.record_rejection(
+            f"gate:{gate}", f"{why}; refused releases row deploy_status=failed "
+                            f"to_sha={(to_sha or '')[:8]}", project=project)
+        return None
+    return _insert_release({"project": project, "from_sha": from_sha or "",
                     "to_sha": to_sha or "", "n_changes": int(ahead or 0),
                     "deploy_status": "failed", "note": f"[gate:{gate}] {note}"})
 
@@ -470,8 +585,13 @@ def _refresh_staging_with_prod(repo, prod):
                             f"release-train: refresh {STAGING} from {prod}", prod],
                            cwd=tmp, capture_output=True, text=True, timeout=300)
         if r.returncode != 0:
+            repaired, repair_note = _repair_lockfile_only_merge(tmp)
+            if repaired:
+                return True, repair_note
             subprocess.run(["git", "merge", "--abort"], cwd=tmp, capture_output=True)
             log = ((r.stdout or "")[-1500:] + "\n" + (r.stderr or "")[-1500:]).strip()
+            if repair_note:
+                log += f"\nlockfile auto-repair: {repair_note}"
             return False, log or "staging/prod merge conflict"
         return True, "staging refreshed from prod"
     except subprocess.TimeoutExpired:
@@ -479,8 +599,66 @@ def _refresh_staging_with_prod(repo, prod):
     except Exception as e:
         return False, f"staging refresh error: {e}"
     finally:
+        _git(repo, "worktree", "unlock", tmp)
         _git(repo, "worktree", "remove", "--force", tmp)
         shutil.rmtree(tmp, ignore_errors=True)
+        _git(repo, "worktree", "prune")
+
+
+def _repair_lockfile_only_merge(worktree):
+    """Regenerate generated lockfiles when they are the only refresh conflict.
+
+    Source conflicts remain fail-closed.  This avoids sending a deterministic
+    generated-artifact conflict through an implementation or LLM repair lane.
+    """
+    unresolved = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=U"], cwd=worktree,
+        capture_output=True, text=True, timeout=30,
+    )
+    files = [name.strip() for name in (unresolved.stdout or "").splitlines() if name.strip()]
+    lockfiles = {"package-lock.json", "pnpm-lock.yaml", "yarn.lock"}
+    if unresolved.returncode != 0 or not files or any(name not in lockfiles for name in files):
+        return False, "not a lockfile-only conflict"
+    for name in files:
+        seeded = subprocess.run(
+            ["git", "checkout", "--theirs", "--", name], cwd=worktree,
+            capture_output=True, text=True, timeout=30,
+        )
+        if seeded.returncode != 0:
+            return False, f"could not seed {name} for regeneration"
+        if name == "package-lock.json":
+            command = ["npm", "install", "--package-lock-only", "--ignore-scripts",
+                       "--prefer-offline", "--no-audit", "--fund=false"]
+        elif name == "pnpm-lock.yaml":
+            command = ["pnpm", "install", "--lockfile-only", "--no-frozen-lockfile",
+                       "--ignore-scripts", "--prefer-offline"]
+        else:
+            command = ["yarn", "install", "--mode=update-lockfile", "--ignore-scripts"]
+        generated = subprocess.run(
+            command, cwd=worktree, capture_output=True, text=True, timeout=300,
+        )
+        if generated.returncode != 0:
+            message = (generated.stderr or generated.stdout or "")[-300:]
+            return False, f"{name} regeneration failed: {message}"
+    added = subprocess.run(
+        ["git", "add", "--", *files], cwd=worktree,
+        capture_output=True, text=True, timeout=30,
+    )
+    if added.returncode != 0:
+        return False, "could not stage regenerated lockfile"
+    remaining = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=U"], cwd=worktree,
+        capture_output=True, text=True, timeout=30,
+    )
+    if (remaining.stdout or "").strip():
+        return False, "unresolved files remain after lockfile regeneration"
+    committed = subprocess.run(
+        ["git", "commit", "--no-edit"], cwd=worktree,
+        capture_output=True, text=True, timeout=60,
+    )
+    if committed.returncode != 0:
+        return False, f"regenerated lockfile commit failed: {(committed.stderr or '')[-300:]}"
+    return True, "staging refreshed; lockfile-only conflict regenerated deterministically"
 
 
 def _merge_into_staging(repo, branch):
@@ -520,6 +698,248 @@ def _merge_into_staging(repo, branch):
         shutil.rmtree(tmp, ignore_errors=True)
         _git(repo, "worktree", "prune")
 
+
+
+# A push rejected because the remote tip is not an ancestor of what we are pushing.
+# git phrases this several ways depending on version and transport.
+NON_FAST_FORWARD_MARKERS = (
+    "non-fast-forward",
+    "fetch first",
+    "failed to push some refs",
+    "updates were rejected",
+    "behind its remote counterpart",
+)
+
+
+def _is_non_fast_forward(result):
+    """True when a push failed because origin/<prod> moved under us."""
+    blob = ((getattr(result, "stdout", "") or "") + "\n"
+            + (getattr(result, "stderr", "") or "")).lower()
+    return any(marker in blob for marker in NON_FAST_FORWARD_MARKERS)
+
+
+def _integrate_prod_into_staging(repo, prod):
+    """Fetch origin/<prod> and integrate it into STAGING before any prod push.
+
+    origin/<prod> advances constantly — other runners, other hosts, PRs merged
+    through GitHub — so a staging tip that contained the prod tip when the
+    gates ran is routinely stale by push time, and the push is then correctly
+    rejected as a non-fast-forward. Integrating first is the fix; forcing would
+    discard whatever advanced production.
+
+    Returns (ok, note, staging_sha, moved). `moved` is True when integration
+    changed the staging tip, in which case the caller MUST re-run the release
+    gates against the new tip before shipping it.
+    """
+    base_ref = _release_base_ref(repo, prod)
+    before = _git(repo, "rev-parse", STAGING).stdout.strip()
+    ok, note = _refresh_staging_with_prod(repo, base_ref)
+    after = _git(repo, "rev-parse", STAGING).stdout.strip()
+    return ok, note, (after or before), bool(after and before and after != before)
+
+
+def _rerun_release_gates(repo, sha, test_cmd, require_tests, build_cmd):
+    """Re-run the QA and build gates against an integrated staging tip.
+
+    Integrating new prod commits can break a batch that was green before them.
+    Shipping on the pre-integration verdict is how a green gate ends up
+    certifying a tree that was never built. Fail-closed, like the gates above.
+
+    Returns (ok, gate_name, log).
+    """
+    if test_cmd and require_tests:
+        try:
+            with commit_overlay.checkout(repo, sha, prefix="release-regate-overlay-") as overlay:
+                tmp = overlay["path"]
+                _link_shared_runtime(repo, tmp)
+                prepared, prepare_log = _prepare_generated_types(tmp)
+                if not prepared:
+                    return False, "qa", "Nuxt type preparation failed:\n" + prepare_log
+                qa = subprocess.run(["bash", "-lc", test_cmd], cwd=tmp,
+                                    capture_output=True, text=True, timeout=1800)
+                if qa.returncode != 0:
+                    return False, "qa", (
+                        (qa.stdout or "")[-QA_EVIDENCE_CHARS_PER_STREAM:] + "\n"
+                        + (qa.stderr or "")[-QA_EVIDENCE_CHARS_PER_STREAM:]).strip()
+        except Exception as exc:
+            return False, "qa", f"post-integration QA overlay failed: {type(exc).__name__}: {exc}"
+    try:
+        import build_gate
+        if not build_cmd:
+            return False, "build", "no production build command could be determined for re-gate"
+        bok, blog = build_gate.run_build(repo, sha, build_cmd)
+    except Exception as exc:
+        return False, "build", f"post-integration build gate error (fail-closed): {type(exc).__name__}: {exc}"
+    if not bok:
+        return False, "build", blog or "post-integration build red"
+    return True, "", ""
+
+
+def _persist_production_build_proof(repo, commit, build_cmd):
+    """Persist the exact proof required by the production pre-push hook.
+
+    The release train built the candidate successfully but recorded only a QA
+    proof.  The production hook deliberately accepts only ``kind=build`` (or
+    ``vercel-build``), so every otherwise-green promotion was rejected as
+    unverified.  Record and immediately read back the exact commit/command proof
+    before attempting the push; proof persistence is part of the release gate,
+    not best-effort telemetry.
+    """
+    try:
+        import build_gate
+        import proof_graph
+        guard_cmd = str(build_gate.detect_build_cmd(repo) or "").strip()
+        ran_cmd = str(build_cmd or "").strip()
+        if not guard_cmd:
+            return False, "production push guard could not detect a build command"
+        if ran_cmd != guard_cmd:
+            return False, (f"release built `{ran_cmd}` but production guard requires "
+                           f"`{guard_cmd}`; refusing to certify a command that did not run")
+        proof_graph.record_verification(repo, commit, guard_cmd, "build", True)
+        if not proof_graph.reusable_verification(repo, commit, guard_cmd, "build"):
+            return False, "exact production build proof was not durably readable after write"
+        return True, guard_cmd
+    except Exception as exc:
+        return False, f"production build proof persistence failed: {type(exc).__name__}: {exc}"
+
+
+def _withdraw_unreleased_merged(p, project, repo, prod, note):
+    """A failed prod push must not leave tasks claiming MERGED.
+
+    merge_train marks a task MERGED when its branch lands in LOCAL staging. If
+    the release push then fails, that commit exists only on this machine's
+    disk: the task reads MERGED forever, the code never reaches origin, and
+    nothing revisits it. Any MERGED task whose artifact commit is not
+    reachable from origin/<prod> goes back to DONE so a later release picks it
+    up again — branches already merged into staging are skipped by the staging
+    loop, so this costs nothing once a push finally succeeds.
+    """
+    withdrawn = []
+    try:
+        remote = f"origin/{prod}"
+        if _git(repo, "rev-parse", "--verify", remote).returncode != 0:
+            return withdrawn
+        rows = db.select("tasks", {"select": "id,slug,artifact_commit",
+                                   "project_id": f"eq.{p.get('id')}", "state": "eq.MERGED",
+                                   "order": "updated_at.desc", "limit": "200"}) or []
+        for t in rows:
+            sha = str(t.get("artifact_commit") or "").strip()
+            if not sha:
+                continue
+            # returncode != 0 covers both "not an ancestor" and "commit does not exist here"
+            if _git(repo, "merge-base", "--is-ancestor", sha, remote).returncode == 0:
+                continue
+            db.update("tasks", {"id": t["id"]},
+                      {"state": "DONE",
+                       "note": (f"MERGED withdrawn: {sha[:12]} is not on {remote} after a failed "
+                                f"release push — {(note or '')[-160:]}")})
+            # The old integration card is stamped train:MERGED and therefore terminal.
+            # Merely returning the task to DONE leaves it invisible until a bounded sweeper
+            # happens to see it; in practice the middle of that window never did.  File a
+            # fresh canonical card now.  If the write fails, the full-scan sweeper remains
+            # the retry path and the task stays honestly open in DONE.
+            try:
+                import merge_train
+                merge_train.ensure_integration_card_result(
+                    project, t.get("slug"), kind="integrate",
+                    title=f"release retry: merge of {t.get('slug')}",
+                    why=f"prior integration commit {sha[:12]} never reached {remote}",
+                    detail=(note or "failed production push")[-2000:],
+                    status="approved", decided_by="canonical-train:release-retry")
+            except Exception as exc:
+                print(f"release_train: could not re-card {t.get('slug')}: {exc}", flush=True)
+            withdrawn.append(t.get("slug"))
+    except Exception:
+        pass
+    return withdrawn
+
+
+def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, staging_sha,
+                               test_cmd, require_tests, build_cmd, manifest=None,
+                               attempts=None):
+    """Integrate origin/<prod>, re-verify the integrated tip, then fast-forward push.
+
+    Returns (pushed, to_sha, log). `pushed` is False on any failure; the caller
+    must not record a successful release, and no task may keep claiming MERGED
+    for a commit in a batch that never reached origin.
+
+    Nothing here ever forces. `--force`/`--force-with-lease` against a
+    production branch would discard whatever advanced it; if a push cannot
+    fast-forward, the answer is to integrate, not to override.
+    """
+    # release_manifest is used below to record the post-integration gate, but it was
+    # only ever imported inside run() further down this file — so the call at the
+    # `if manifest:` branch resolved against nothing. It sits inside `except
+    # Exception: pass`, so the NameError was swallowed and the gate was silently
+    # never recorded; static_sanity caught the undefined name and, being CRITICAL,
+    # aborted merge_train at startup on every invocation (4670 tracebacks). Import
+    # it here, in the scope that uses it, fail-soft so a missing module degrades to
+    # "no manifest recording" rather than taking the release path down.
+    try:
+        import release_manifest
+    except Exception:
+        release_manifest = None
+
+    if attempts is None:
+        attempts = max(1, int(os.environ.get("ORCH_RELEASE_PUSH_ATTEMPTS", "2") or 2))
+    to_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
+    for attempt in range(1, attempts + 1):
+        integrated, inote, integrated_sha, moved = _integrate_prod_into_staging(repo, prod)
+        if not integrated:
+            # A conflicting prod integration is a real problem that needs resolving, not
+            # overriding. No push is attempted.
+            _self_heal_release_conflict(p, project, repo, prod, inote)
+            _insert_failed_release(project, "refresh", ahead, release_base_sha, staging_sha,
+                                   f"prod integration conflicted before push — self-heal "
+                                   f"queued: {(inote or '')[-160:]}")
+            return False, to_sha, (inote or "prod integration conflict")
+        if moved:
+            # Gates were green on the pre-integration tip. Re-verify the tip we will ship.
+            gok, gate, glog = _rerun_release_gates(repo, integrated_sha, test_cmd,
+                                                   require_tests, build_cmd)
+            if not gok:
+                if gate == "build":
+                    _self_heal_build(p, project, repo, STAGING, glog)
+                else:
+                    _self_heal_qa(p, project, repo, STAGING, glog)
+                _insert_failed_release(project, gate, ahead, release_base_sha, integrated_sha,
+                                       f"post-integration {gate} red — self-heal queued: "
+                                       f"{(glog or '')[-160:]}")
+                return False, integrated_sha, (glog or f"post-integration {gate} red")
+            if manifest and release_manifest is not None:
+                try:
+                    # Local import: this helper runs outside the caller's scope, where
+                    # release_manifest was imported. Without it the call raised NameError
+                    # into the bare except below, so post-integration gates were silently
+                    # never recorded on any release.
+                    import release_manifest
+                    release_manifest.record_gate(
+                        manifest["id"], "post-integration", True,
+                        detail=f"QA+build re-verified on integrated tip {integrated_sha[:12]}")
+                except Exception:
+                    pass
+        to_sha = integrated_sha
+        proof_ok, proof_note = _persist_production_build_proof(repo, to_sha, build_cmd)
+        if not proof_ok:
+            _insert_failed_release(project, "proof", ahead, release_base_sha, to_sha,
+                                   proof_note[-500:])
+            return False, to_sha, proof_note
+        pr = _git(repo, "push", "origin", f"{STAGING}:{prod}", timeout=300)
+        if pr.returncode == 0:
+            # Keep local prod fresh when possible, but do not fail a good remote release
+            # just because the operator has prod checked out with edits.
+            _git(repo, "fetch", "origin", prod)
+            _git(repo, "fetch", ".", f"{STAGING}:{prod}")
+            return True, to_sha, ""
+        plog = ((pr.stdout or "")[-1000:] + "\n" + (pr.stderr or "")[-1000:]).strip()
+        if _is_non_fast_forward(pr) and attempt < attempts:
+            # origin/<prod> moved between integration and push. Re-integrate and retry.
+            continue
+        _self_heal_release_conflict(p, project, repo, prod, plog or "push staging to prod failed")
+        _insert_failed_release(project, "push", ahead, release_base_sha, to_sha,
+                               f"push {STAGING}->{prod} failed: {(plog or '')[-160:]}")
+        return False, to_sha, plog or "push staging to prod failed"
+    return False, to_sha, "push attempts exhausted"
 
 
 def _release_window_open(project, repo, ahead):
@@ -935,6 +1355,11 @@ def _run_for_unlocked(project, repo_override=None):
         _insert_failed_release(project, "build", ahead, release_base_sha, staging_sha,
                                f"staging BUILD red — self-heal queued: {(blog or '')[-120:]}")
         return {"project": project, "build": "RED", "note": "staging build not green; build-fix task queued"}
+    proof_ok, proof_note = _persist_production_build_proof(repo, staging_sha, bcmd)
+    if not proof_ok:
+        _insert_failed_release(project, "proof", ahead, release_base_sha, staging_sha,
+                               proof_note[-500:])
+        return {"project": project, "proof": "RED", "note": proof_note}
     if manifest:
         try:
             release_manifest.record_gate(manifest["id"], "build", True, command=bcmd)
@@ -971,7 +1396,13 @@ def _run_for_unlocked(project, repo_override=None):
     if push_on and not _release_window_open(project, repo, int(ahead)):
         print(f"release_train {project}: {ahead} changes staged — holding for next "
               f"release window (windows={os.environ.get('ORCH_RELEASE_WINDOWS', '09:00,13:00,18:00')} ET)")
+        # REPORTED, NOT CHANGED (see release-on-capacity-not-clock-cowork-20260806):
+        # this clock gate suppresses the push outside ORCH_RELEASE_WINDOWS even when the
+        # batch is verified and ready. It is an independent reason a green batch does not
+        # reach origin, stacked on top of the non-fast-forward bug fixed below. Removing
+        # the windows is that task's call, not this one's.
         return {"project": project, "prod": prod, "released": 0,
+                "release_window_suppressed_push": True,
                 "note": f"windowed: {ahead} changes held for next release window"}
     to_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
     if not push_on:
@@ -983,25 +1414,34 @@ def _run_for_unlocked(project, repo_override=None):
                                    "prod could not fast-forward from staging — self-heal queued")
             return {"project": project, "note": "prod could not fast-forward from staging; relfix queued"}
         to_sha = _git(repo, "rev-parse", prod).stdout.strip()
+    # NON-FAST-FORWARD FIX (2026-08-06). STAGING used to be pushed straight onto the remote
+    # prod branch with no fetch of origin/<prod> and no integration of it beforehand. Because
+    # origin/<prod> advances constantly, the push was routinely rejected — which failed the
+    # release AND stranded commits that tasks already claimed as MERGED on one machine's disk.
+    # Now: integrate, re-gate the integrated tip, then push. The release row is written after
+    # the outcome is known so it records the SHA actually shipped, not a pre-integration tip.
+    pushed = None
+    push_log = ""
+    if push_on:
+        pushed, to_sha, push_log = _integrate_regate_and_push(
+            p, project, repo, prod, ahead, release_base_sha, staging_sha,
+            test_cmd, require_tests, bcmd, manifest=manifest)
     ver = _next_version()
     changelog = _git(repo, "log", "--oneline", f"{last_good}..{to_sha}").stdout[:2000]
-    rel = db.insert("releases", {"project": project, "version": ver, "from_sha": last_good, "to_sha": to_sha,
-                    "n_changes": int(ahead), "changelog": changelog, "deploy_status": "pending"})
-    pushed = None
-    if push_on:
-        pr = _git(repo, "push", "origin", f"{STAGING}:{prod}", timeout=300)
-        pushed = pr.returncode == 0
-        if pushed:
-            # Keep local prod fresh when possible, but do not fail a good remote
-            # release just because the operator has prod checked out with edits.
-            _git(repo, "fetch", "origin", prod)
-            _git(repo, "fetch", ".", f"{STAGING}:{prod}")
-        else:
-            plog = ((pr.stdout or "")[-1000:] + "\n" + (pr.stderr or "")[-1000:]).strip()
-            _self_heal_release_conflict(p, project, repo, prod, plog or "push staging to prod failed")
-        db.update("releases", {"project": project, "to_sha": to_sha},
-                  {"deploy_status": "building" if pushed else "failed",
-                   "note": "" if pushed else ((pr.stderr or pr.stdout)[-160:] if (pr.stderr or pr.stdout) else "push failed")})
+    rel = _insert_release({"project": project, "version": ver, "from_sha": last_good,
+                    "to_sha": to_sha, "n_changes": int(ahead), "changelog": changelog,
+                    "deploy_status": ("building" if pushed else "failed") if push_on else "pending",
+                    "note": "" if (pushed or not push_on) else (push_log or "push failed")[-160:]})
+    withdrawn = []
+    if push_on and not pushed:
+        # Nothing reached origin, so no task in this batch may keep claiming MERGED.
+        withdrawn = _withdraw_unreleased_merged(p, project, repo, prod, push_log)
+        if withdrawn:
+            print(f"release_train {project}: withdrew MERGED from {len(withdrawn)} task(s) whose "
+                  f"commits never reached origin/{prod}")
+        return {"project": project, "prod": prod, "released": 0, "pushed": False,
+                "merged_withdrawn": withdrawn,
+                "note": f"release push failed; relfix queued: {(push_log or '')[-160:]}"}
     print(f"release_train {project}: staged {merged}, released {ahead} changes to {prod} "
           f"(push={'on' if pushed else 'off/local'})")
     return {"project": project, "prod": prod, "released": ahead, "pushed": pushed}
@@ -1014,6 +1454,11 @@ def run_for(project):
     before either writes its failure row. Sharing the merge-train repo lock
     makes the check/build/push sequence single-flight across processes.
     """
+    # run_for() is also called directly (scheduler, ad-hoc, dependency-aware orchestration),
+    # so the pause check cannot live only in run().
+    ok, why = paused_host_guard.refuse("release_train", project=project)
+    if not ok:
+        return {"project": project, "skipped": why}
     p = (db.select("projects", {"select": "repo_path", "name": f"eq.{project}"}) or [{}])[0]
     repo = p.get("repo_path", "")
     if not repo or not os.path.isdir(repo):
@@ -1061,6 +1506,26 @@ def _release_due(project):
 
 
 def run():
+    # CROSS-HOST GUARD (2026-08-06): releases push to production branches, so exactly one live
+    # host may run this — and never a host on stale code. Same election as merge_train; see
+    # integration_owner for why this is a pure function of heartbeats rather than a lock.
+    # HOST PAUSE (2026-08-06): checked BEFORE the owner election, because a paused host
+    # must not run gates even if it would otherwise win the election. The claim guard
+    # covered tasks.account only, so a paused, 40-commits-stale host went on writing
+    # deploy_status='failed' rows that flipped projects RED and tripped release
+    # back-pressure fleet-wide. Refused at the START of a pass only — a pass already in
+    # flight is never interrupted.
+    _ok, _why = paused_host_guard.refuse("release_train")
+    if not _ok:
+        return {"skipped": _why}
+    try:
+        import integration_owner
+        may, why = integration_owner.decide()
+        if not may:
+            print(f"release_train: not the integration owner — {why}", flush=True)
+            return {"skipped": f"not integration owner: {why}"}
+    except Exception as _io_exc:
+        print(f"release_train: integration-owner check failed ({_io_exc}); proceeding", flush=True)
     projects = [p for p in (db.select("projects", {"select": "name,auto_merge,repo_path"}) or [])
                 if p.get("name") != "smoke-test" and
                 (os.environ.get("ORCH_RELEASE_ALL_PROJECTS", "true").lower() == "true" or p.get("auto_merge"))]

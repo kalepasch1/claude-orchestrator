@@ -79,6 +79,25 @@ REGENERABLE_PATTERNS: Tuple[str, ...] = (
     # Dependency trees are never authorship; some repos track a symlink here
     "node_modules",
     "node_modules/*",
+    # Build/test caches. Added 2026-08-06 after three integration worktree slots sat
+    # permanently "dirty" on nothing but these, so every merge and release pass abandoned
+    # the slot and built a fresh temporary one — 21 slots and 2.2GB of leak, and the
+    # release-train log reduced to the same "preserving dirty worktree" line forever.
+    # A compiler cache is the cleanest possible example of "costs a regeneration, never
+    # authorship". Kept narrow on purpose: only paths a tool is known to own.
+    "__pycache__/*",
+    "*/__pycache__/*",
+    "*.pyc",
+    ".vite/*",
+    "*/.vite/*",
+    ".nuxt/*",
+    "*/.nuxt/*",
+    ".output/*",
+    "*/.output/*",
+    ".pytest_cache/*",
+    "*/.pytest_cache/*",
+    ".turbo/*",
+    "*/.turbo/*",
 )
 
 

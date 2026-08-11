@@ -39,19 +39,21 @@ def _throughput_around(timestamp_iso, window_hours=2):
         after_end = (datetime.datetime.fromisoformat(timestamp_iso)
                      + datetime.timedelta(hours=window_hours)).isoformat()
 
-        before = db.select("tasks", {
-            "select": "id", "state": "eq.DONE",
+        # COUNT class, both sides. These feed a before/after throughput comparison, and
+        # len() of a 1,000-row page silently clamps BOTH sides to 1,000 — which makes a
+        # busy window look identical to a busier one and reports "no change" from a
+        # genuine improvement.
+        before = db.count("tasks", {
+            "state": "eq.DONE",
             "updated_at": f"gte.{before_start}",
             "and": f"(updated_at.lt.{timestamp_iso})",
-            "limit": "1000"
-        }) or []
-        after = db.select("tasks", {
-            "select": "id", "state": "eq.DONE",
+        })
+        after = db.count("tasks", {
+            "state": "eq.DONE",
             "updated_at": f"gte.{timestamp_iso}",
             "and": f"(updated_at.lt.{after_end})",
-            "limit": "1000"
-        }) or []
-        return len(before), len(after)
+        })
+        return before, after
     except Exception:
         return 0, 0
 
@@ -118,11 +120,12 @@ def suggest_config_changes():
         return []
     suggestions = []
     try:
-        # Check queue depth
-        queued = db.select("tasks", {
-            "select": "id", "state": "eq.QUEUED", "limit": "1000"
-        }) or []
-        queue_depth = len(queued)
+        # COUNT class: server-side exact count, never len() of a page.
+        # Until 2026-08-06 this was `len(select(..., limit="1000"))`, so queue_depth was
+        # structurally incapable of exceeding 1,000. At the 1,407 measured that day the
+        # autoscaler believed the queue was 1,000 deep; at 10,000 it would still have
+        # believed 1,000. Every parallelism decision below reads this number.
+        queue_depth = db.count("tasks", {"state": "eq.QUEUED"})
 
         current_parallel = int(os.environ.get("MAX_PARALLEL_CEILING", "4"))
 

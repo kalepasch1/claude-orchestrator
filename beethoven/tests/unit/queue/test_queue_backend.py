@@ -3,6 +3,10 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+
+pytest.importorskip("redis", reason="redis client not installed; queue backend unavailable")
+pytest.importorskip("pytest_asyncio", reason="pytest-asyncio required for async queue tests")
+
 import redis.asyncio as aioredis
 from redis.exceptions import ConnectionError as RedisConnectionError
 

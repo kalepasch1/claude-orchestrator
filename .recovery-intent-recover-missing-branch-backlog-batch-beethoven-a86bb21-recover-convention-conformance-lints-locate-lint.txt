@@ -1,0 +1,4 @@
+recovery-intent: recover-missing-branch-backlog-batch-beethoven-a86bb21-recover-convention-conformance-lints-locate-lint
+template: f5f1c9c700a9
+intent: 07130635 07190257 20251001 a86bb21 accidental active adapt advice after agent agentic analysis artifacts author backlog batch beethoven before behavior below branch broad bugfix build build_fix cache canonical captures category cause change changes changing checks claim class claud claude cloud coder codestral commit completion concrete config confirm conformance context continue contract convention conventions coordination counts cowork cross current custody debate_compress deepseek delete dependencies deployfix devmerge diffs directive drafting equivalent everything excerpt existing exists fable failure files final finish first flash force
+base: master

@@ -21,6 +21,7 @@ import collections
 import datetime
 import json
 import os
+import signal
 import sys
 import time
 
@@ -34,7 +35,7 @@ IMPROVE_FLOOR = int(os.environ.get("AUTOPILOT_IMPROVE_FLOOR", os.environ.get("IM
 RECOVERY_PREFIX = "recover-missing-branch-"
 IMPROVE_PREFIX = "improve-"
 CANARY_PREFIX = "canary-"
-RELEASE_FIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-")
+RELEASE_FIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-", "copyfix-")
 
 _DIR = os.path.dirname(os.path.abspath(__file__))
 _ROOT = os.path.dirname(_DIR)
@@ -46,6 +47,7 @@ AGENT_INTERVALS = {
     "portfolio": int(os.environ.get("AUTOPILOT_PORTFOLIO_INTERVAL", "1800")),
     "recovery": int(os.environ.get("AUTOPILOT_RECOVERY_INTERVAL", "120")),
     "blockers": int(os.environ.get("AUTOPILOT_BLOCKER_INTERVAL", "180")),
+    "drain_stall": int(os.environ.get("AUTOPILOT_DRAIN_STALL_INTERVAL", "60")),
     "release_blockers": int(os.environ.get("AUTOPILOT_RELEASE_BLOCKER_INTERVAL", "60")),
     "merge_deploy": int(os.environ.get("AUTOPILOT_MERGE_INTERVAL", "180")),
     "ranking": int(os.environ.get("AUTOPILOT_RANK_INTERVAL", "120")),
@@ -54,6 +56,44 @@ AGENT_INTERVALS = {
     "improvements": int(os.environ.get("AUTOPILOT_IMPROVE_INTERVAL", "600")),
     "selfcheck": int(os.environ.get("AUTOPILOT_SELFCHECK_INTERVAL", "600")),
 }
+
+
+class AgentTimeout(RuntimeError):
+    pass
+
+
+def _agent_timeout_seconds(key):
+    specific = os.environ.get(f"AUTOPILOT_{key.upper()}_TIMEOUT")
+    raw = specific or os.environ.get("AUTOPILOT_AGENT_TIMEOUT", "120")
+    try:
+        return max(1, int(raw))
+    except Exception:
+        return 120
+
+
+def _run_budget_seconds():
+    try:
+        return max(30, int(os.environ.get("AUTOPILOT_RUN_BUDGET", "240")))
+    except Exception:
+        return 240
+
+
+def _call_with_timeout(key, fn):
+    seconds = _agent_timeout_seconds(key)
+    if not hasattr(signal, "SIGALRM"):
+        return fn()
+    previous = signal.getsignal(signal.SIGALRM)
+
+    def _handler(signum, frame):
+        raise AgentTimeout(f"{key} exceeded {seconds}s")
+
+    signal.signal(signal.SIGALRM, _handler)
+    signal.alarm(seconds)
+    try:
+        return fn()
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def _load_state():
@@ -88,6 +128,67 @@ def _safe_count(rows, pred):
     return sum(1 for r in rows if pred(r))
 
 
+def _exact_queue_counts():
+    try:
+        import queue_counters
+        return queue_counters.exact_counts(db_client=db)
+    except Exception as e:
+        return {"error": str(e)[:300], "states": {}}
+
+
+def _global_control():
+    try:
+        rows = db.select("controls", {"select": "paused,reason,updated_by,updated_at",
+                                      "scope": "eq.global",
+                                      "order": "updated_at.desc",
+                                      "limit": "1"}) or []
+        if rows:
+            row = rows[0]
+            paused = bool(row.get("paused"))
+            return {
+                "paused": paused,
+                "reason": (row.get("reason") or "") if paused else "",
+                "updated_by": row.get("updated_by") or "",
+                "updated_at": row.get("updated_at") or "",
+            }
+    except Exception as e:
+        return {"paused": False, "error": str(e)[:300]}
+    return {"paused": False}
+
+
+def _latest_recent_release_failures(release_rows, max_age_hours=24):
+    """Return only unresolved, recent failures from each project's latest release.
+
+    The release query is newest-first.  Counting every historical failure made the
+    hot lane run forever even after a later release succeeded.
+    """
+    latest_by_project = {}
+    for row in release_rows:
+        project = str(row.get("project") or "").strip()
+        if project and project not in latest_by_project:
+            latest_by_project[project] = row
+
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=max_age_hours)
+    failures = []
+    for row in latest_by_project.values():
+        if str(row.get("deploy_status") or "").lower() not in ("failed", "rolled_back"):
+            continue
+        raw_created_at = str(row.get("created_at") or "").strip()
+        if raw_created_at:
+            try:
+                created_at = datetime.datetime.fromisoformat(raw_created_at.replace("Z", "+00:00"))
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=datetime.timezone.utc)
+                if created_at < cutoff:
+                    continue
+            except ValueError:
+                # A malformed timestamp should remain visible rather than hiding
+                # a potentially live release blocker.
+                pass
+        failures.append(row)
+    return failures
+
+
 def snapshot(limit=SNAPSHOT_LIMIT):
     """Live queue pulse. Read-only and cheap enough to run every autopilot cycle."""
     rows = db.select("tasks", {"select": "id,slug,state,kind,note,updated_at,project_id,remediation_count",
@@ -108,34 +209,58 @@ def snapshot(limit=SNAPSHOT_LIMIT):
                                               "order": "created_at.desc", "limit": "50"}) or []
     except Exception:
         release_rows = []
-    recent_failed_releases = [
-        r for r in release_rows
-        if str(r.get("deploy_status") or "").lower() in ("failed", "rolled_back")
-    ]
+    recent_failed_releases = _latest_recent_release_failures(release_rows)
     verification_blocked_releases = [
         r for r in release_rows
         if str(r.get("deploy_status") or "").lower() == "verification_blocked"
     ]
     blocked = states.get("BLOCKED", 0) + states.get("CONFLICT", 0) + states.get("TESTFAIL", 0)
+    exact = _exact_queue_counts()
+    exact_states = exact.get("states") or {}
+    effective_states = dict(exact_states or states)
+    queued = int(exact.get("queued", states.get("QUEUED", 0)) or 0)
+    running = int(exact.get("running", states.get("RUNNING", 0)) or 0)
+    blocked_like = int(exact.get("blocked_like", blocked) or 0)
+    quarantined = int(exact.get("quarantined", states.get("QUARANTINED", 0)) or 0)
+    recovery_queued = int(exact.get("recovery_queued", recovery.get("QUEUED", 0)) or 0)
+    improvements_queued = int(exact.get("improvements_queued", improvements.get("QUEUED", 0)) or 0)
+    canaries_active = int(exact.get(
+        "canaries_active", canaries.get("QUEUED", 0) + canaries.get("RUNNING", 0)
+    ) or 0)
+    release_fix_queued = int(exact.get("release_fix_queued", release_fixes.get("QUEUED", 0)) or 0)
+    release_fix_running = int(exact.get("release_fix_running", release_fixes.get("RUNNING", 0)) or 0)
+    global_control = _global_control()
     snap = {
         "generated_at": datetime.datetime.utcnow().isoformat(),
         "sampled": len(rows),
-        "states": dict(states),
+        "states": effective_states,
+        "sample_states": dict(states),
         "recovery": dict(recovery),
         "improvements": dict(improvements),
         "canaries": dict(canaries),
         "release_fixes": dict(release_fixes),
-        "queued": states.get("QUEUED", 0),
-        "running": states.get("RUNNING", 0),
-        "blocked_like": blocked,
-        "recovery_queued": recovery.get("QUEUED", 0),
-        "improvements_queued": improvements.get("QUEUED", 0),
-        "canaries_active": canaries.get("QUEUED", 0) + canaries.get("RUNNING", 0),
-        "release_fix_queued": release_fixes.get("QUEUED", 0),
-        "release_fix_running": release_fixes.get("RUNNING", 0),
+        "sampled_queued": states.get("QUEUED", 0),
+        "sampled_running": states.get("RUNNING", 0),
+        "sampled_blocked_like": blocked,
+        "exact_queue": exact,
+        "total_tasks": exact.get("total_tasks", len(rows)),
+        "unknown_state_total": exact.get("unknown_state_total", 0),
+        "queued": queued,
+        "running": running,
+        "blocked_like": blocked_like,
+        "quarantined": quarantined,
+        "recovery_queued": recovery_queued,
+        "improvements_queued": improvements_queued,
+        "canaries_active": canaries_active,
+        "release_fix_queued": release_fix_queued,
+        "release_fix_running": release_fix_running,
+        "global_paused": bool(global_control.get("paused")),
+        "global_pause_reason": global_control.get("reason", ""),
+        "global_pause_by": global_control.get("updated_by", ""),
+        "global_pause_at": global_control.get("updated_at", ""),
         "recent_failed_releases": len(recent_failed_releases),
         "verification_blocked_releases": len(verification_blocked_releases),
-        "deep_backlog": states.get("QUEUED", 0) >= int(os.environ.get("AUTOPILOT_DEEP_BACKLOG", "500")),
+        "deep_backlog": queued >= int(os.environ.get("AUTOPILOT_DEEP_BACKLOG", "500")),
     }
     return snap
 
@@ -151,7 +276,13 @@ def _record_snapshot(state, snap, agents):
         "release_fix_queued": snap.get("release_fix_queued", 0),
         "recent_failed_releases": snap.get("recent_failed_releases", 0),
         "verification_blocked_releases": snap.get("verification_blocked_releases", 0),
+        "sampled": snap.get("sampled", 0),
+        "total_tasks": snap.get("total_tasks", 0),
+        "sampled_queued": snap.get("sampled_queued", 0),
+        "unknown_state_total": snap.get("unknown_state_total", 0),
         "agents": {a["agent"]: a["ok"] for a in agents},
+        "global_paused": snap.get("global_paused", False),
+        "global_pause_by": snap.get("global_pause_by", ""),
     })
     state["snapshots"] = state["snapshots"][-24:]
     try:
@@ -166,9 +297,12 @@ def _run_agent(state, key, label, fn, force=False):
     if not _due(state, key, AGENT_INTERVALS.get(key, 300), force=force):
         return {"agent": label, "ok": True, "skipped": "interval"}
     try:
-        result = fn()
+        result = _call_with_timeout(key, fn)
         _mark(state, key)
         return {"agent": label, "ok": True, "result": result}
+    except AgentTimeout as e:
+        _mark(state, key)
+        return {"agent": label, "ok": False, "timeout": True, "error": str(e)}
     except Exception as e:
         _mark(state, key)
         return {"agent": label, "ok": False, "error": str(e)[:500]}
@@ -203,10 +337,48 @@ def resource_agent():
     return resource_governor.govern()
 
 
-def recovery_agent():
+def drain_stall_agent(snap):
+    """Recover a queued fleet that an automatic pause left without active runners."""
+    out = {
+        "queued": snap.get("queued", 0),
+        "running": snap.get("running", 0),
+        "global_paused": snap.get("global_paused", False),
+        "global_pause_by": snap.get("global_pause_by", ""),
+        "global_pause_reason": snap.get("global_pause_reason", "")[:240],
+    }
+    reason = str(snap.get("global_pause_reason") or "").lower()
+    by = str(snap.get("global_pause_by") or "")
+    if snap.get("global_paused"):
+        if by == "billing_guard" or "billing_guard" in reason or "api key" in reason:
+            try:
+                import billing_guard
+                out["billing_guard"] = billing_guard.run()
+            except Exception as e:
+                out["billing_guard_error"] = str(e)[:300]
+        if by in ("governor", "claude_cli") or any(
+            key in reason for key in ("low-memory", "cost circuit", "call cap", "$ cap", "hourly")
+        ):
+            try:
+                import resource_governor
+                out["resource_governor"] = resource_governor.govern()
+            except Exception as e:
+                out["resource_governor_error"] = str(e)[:300]
+    if snap.get("queued", 0) and not snap.get("running", 0):
+        try:
+            import queue_janitor
+            out["queue_janitor"] = queue_janitor.run()
+        except Exception as e:
+            out["queue_janitor_error"] = str(e)[:300]
+    return out
+
+
+def recovery_agent(run_train=True):
     import integration_sweeper
     limit = int(os.environ.get("AUTOPILOT_SWEEP_LIMIT", "250"))
-    return integration_sweeper.sweep(limit=limit, run_train=True)
+    # A recovery sweep can create the cycle's first DONE work after snapshot() has already
+    # run. Let the sweeper start the train immediately; merge_train's lease is the single-owner
+    # boundary and safely collapses a concurrent periodic train into one execution.
+    return integration_sweeper.sweep(limit=limit, run_train=bool(run_train))
 
 
 def blocker_agent():
@@ -221,6 +393,13 @@ def blocker_agent():
         out["remediate"] = auto_remediate.run(limit=int(os.environ.get("AUTOPILOT_REMEDIATE_LIMIT", "500")))
     except Exception as e:
         out["remediate_error"] = str(e)[:300]
+    try:
+        import blocker_quarantine
+        out["quarantine"] = blocker_quarantine.run(
+            limit=int(os.environ.get("AUTOPILOT_QUARANTINE_LIMIT", "120"))
+        )
+    except Exception as e:
+        out["quarantine_error"] = str(e)[:300]
     return out
 
 
@@ -242,11 +421,16 @@ def release_blocker_agent():
     try:
         old_min_batch = os.environ.get("RELEASE_MIN_BATCH")
         old_interval = os.environ.get("RELEASE_INTERVAL_HOURS")
-        os.environ["RELEASE_MIN_BATCH"] = "1"
-        os.environ["RELEASE_INTERVAL_HOURS"] = "0"
+        flush_now = os.environ.get(
+            "AUTOPILOT_RELEASE_BLOCKER_FLUSH", "false"
+        ).lower() in ("1", "true", "yes", "on")
+        if flush_now:
+            os.environ["RELEASE_MIN_BATCH"] = "1"
+            os.environ["RELEASE_INTERVAL_HOURS"] = "0"
         import release_train
-        release_train.MIN_BATCH = 1
-        release_train.RELEASE_INTERVAL_HOURS = 0
+        if flush_now:
+            release_train.MIN_BATCH = 1
+            release_train.RELEASE_INTERVAL_HOURS = 0
         out["release_train"] = release_train.run()
     except Exception as e:
         out["release_train_error"] = str(e)[:300]
@@ -259,6 +443,16 @@ def release_blocker_agent():
             os.environ.pop("RELEASE_INTERVAL_HOURS", None)
         else:
             os.environ["RELEASE_INTERVAL_HOURS"] = old_interval
+        try:
+            import release_train
+            release_train.MIN_BATCH = max(1, int(os.environ.get(
+                "RELEASE_MIN_BATCH", os.environ.get("ORCH_RELEASE_BATCH_MIN", "10")
+            )))
+            release_train.RELEASE_INTERVAL_HOURS = max(6.0, float(os.environ.get(
+                "RELEASE_INTERVAL_HOURS", os.environ.get("ORCH_RELEASE_INTERVAL_HOURS", "6")
+            )))
+        except Exception:
+            pass
     try:
         import deploy_verify
         out["deploy_verify"] = deploy_verify.run()
@@ -356,42 +550,64 @@ def run(force=False):
     state = _load_state()
     snap = snapshot()
     agents = []
+    started = time.time()
 
-    agents.append(_run_agent(state, "resources", "resources", resource_agent, force=force))
-    agents.append(_run_agent(state, "selfcheck", "selfcheck", selfcheck_agent, force=force))
+    def add_agent(key, label, fn):
+        elapsed = time.time() - started
+        budget = _run_budget_seconds()
+        if elapsed >= budget:
+            agents.append({"agent": label, "ok": False, "skipped": "run_budget",
+                           "elapsed_s": int(elapsed), "budget_s": budget})
+            return
+        agents.append(_run_agent(state, key, label, fn, force=force))
 
+    if snap.get("global_paused") or (snap.get("queued", 0) and not snap.get("running", 0)):
+        add_agent("drain_stall", "drain_stall", lambda: drain_stall_agent(snap))
+
+    add_agent("resources", "resources", resource_agent)
+
+    merge_agent_planned = bool(snap["states"].get("DONE", 0)
+                               or snap["states"].get("MERGED", 0))
     if snap["recovery_queued"] or snap["states"].get("DONE", 0) or snap["states"].get("BLOCKED", 0):
-        agents.append(_run_agent(state, "recovery", "recovery", recovery_agent, force=force))
-
-    if snap["blocked_like"] or snap["running"] or snap["states"].get("BLOCKED", 0):
-        agents.append(_run_agent(state, "blockers", "blockers", blocker_agent, force=force))
+        # Standalone recovery starts a train, but within this cycle merge_deploy_agent owns it
+        # when the pre-sweep snapshot already proves release work exists.
+        add_agent("recovery", "recovery",
+                  lambda: recovery_agent(run_train=not merge_agent_planned))
 
     if snap.get("release_fix_queued") or snap.get("release_fix_running") or snap.get("recent_failed_releases"):
-        agents.append(_run_agent(state, "release_blockers", "release_blockers",
-                                 release_blocker_agent, force=force))
+        add_agent("release_blockers", "release_blockers", release_blocker_agent)
 
-    if snap["states"].get("DONE", 0) or snap["states"].get("MERGED", 0):
-        agents.append(_run_agent(state, "merge_deploy", "merge_deploy", merge_deploy_agent, force=force))
+    if merge_agent_planned:
+        add_agent("merge_deploy", "merge_deploy", merge_deploy_agent)
 
     if snap["queued"]:
-        agents.append(_run_agent(state, "ranking", "ranking", ranking_agent, force=force))
+        add_agent("ranking", "ranking", ranking_agent)
+
+    if snap["blocked_like"] or snap["running"] or snap["states"].get("BLOCKED", 0):
+        add_agent("blockers", "blockers", blocker_agent)
 
     if snap["deep_backlog"]:
-        agents.append(_run_agent(state, "dedup", "dedup", dedup_agent, force=force))
+        add_agent("dedup", "dedup", dedup_agent)
 
     if snap["canaries_active"] < int(os.environ.get("AUTOPILOT_MIN_ACTIVE_CANARIES", "4")):
-        agents.append(_run_agent(state, "samples", "samples", sample_agent, force=force))
+        add_agent("samples", "samples", sample_agent)
 
     if snap["improvements_queued"] < IMPROVE_FLOOR:
-        agents.append(_run_agent(state, "improvements", "improvements", improvement_agent, force=force))
+        add_agent("improvements", "improvements", improvement_agent)
 
-    agents.append(_run_agent(state, "portfolio", "portfolio", portfolio_attention_agent, force=force))
+    if os.environ.get("AUTOPILOT_INLINE_SELFCHECK", "false").lower() in ("1", "true", "yes", "on"):
+        add_agent("selfcheck", "selfcheck", selfcheck_agent)
+    else:
+        agents.append({"agent": "selfcheck", "ok": True, "skipped": "external_scheduler"})
+    add_agent("portfolio", "portfolio", portfolio_attention_agent)
     _record_snapshot(state, snap, agents)
     _save_state(state)
     ok = sum(1 for a in agents if a.get("ok"))
     fail = len(agents) - ok
     print(f"autopilot: queue={snap['queued']} running={snap['running']} "
+          f"sampled={snap.get('sampled', 0)}/{snap.get('total_tasks', snap.get('sampled', 0))} "
           f"blocked={snap['blocked_like']} recovery={snap['recovery_queued']} "
+          f"paused={snap.get('global_paused', False)} "
           f"release_fix={snap.get('release_fix_queued', 0)} "
           f"improve={snap['improvements_queued']} agents_ok={ok} agents_fail={fail}")
     return {"snapshot": snap, "agents": agents}

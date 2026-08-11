@@ -1,0 +1,4 @@
+recovery-intent: backlog-batch-beethoven-7371e3f-implement-economic-scheduler-revenue-add-tiered-
+template: 143e65baa18b
+intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 _load_pricing_model_config acceptance accurate across active adapt advice after agentic aider allowlist author backward based batch beethoven before behavior blocked blocker bound build build_fix buildfail calculate_revenue cases ce2e8dcd7954 change cheap claim class claude coder compatibility comprehensive config configs context contract controlled coordination cowork cross custody debate_compress deepseek delete deployfix dicts diffs drafting economic_scheduler empty ensure entirely excerpt exclusive existing exists fable first flash float force function gemini generated google haiku
+base: master

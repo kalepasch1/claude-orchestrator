@@ -112,7 +112,27 @@ def archive_branch(repo, branch, reason=""):
     if rc != 0:
         print(f"[branch-durability] WARNING could not archive {branch}: {err}")
         return None
+    # A local-only archive ref is not durability, it is a note-to-self. Audited 2026-08-06:
+    # 93 archive refs existed on this machine and ZERO on origin, so every "archived ..." line
+    # in the log was overstating the guarantee — lose the disk, lose the work it claimed to be
+    # protecting. Mirror the ref to origin so the objects survive the machine.
+    #
+    # Best-effort and non-fatal by design: archiving happens on the deletion path, and a push
+    # that fails (offline, auth, remote gone) must not stop the local archive from being made
+    # or block the caller. The log distinguishes the two outcomes so an operator can tell a
+    # genuinely durable archive from a local-only one instead of assuming.
+    shared = False
+    if os.environ.get("ORCH_SHARE_ARCHIVE_REFS", "true").lower() in ("1", "true", "yes", "on"):
+        try:
+            rc_p, _, err_p = _git(repo, "push", "origin", f"{ref}:{ref}", timeout=120)
+            shared = rc_p == 0
+            if not shared:
+                print(f"[branch-durability] WARNING archive {ref} is LOCAL-ONLY "
+                      f"(push failed: {str(err_p)[-160:]})")
+        except Exception as e:
+            print(f"[branch-durability] WARNING archive {ref} is LOCAL-ONLY (push error: {e})")
     print(f"[branch-durability] archived {branch} -> {ref} @ {tip[:12]}"
+          + (" [on origin]" if shared else " [local-only]")
           + (f" ({reason})" if reason else ""))
     return tip
 

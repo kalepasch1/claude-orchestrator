@@ -5,9 +5,15 @@
 # the gap and is safe to leave running (idempotent, logs every action).
 # Launch: nohup bash runner/tools/lane_medic.sh >/dev/null 2>&1 &
 LOG="$(cd "$(dirname "$0")/../.." && pwd)/.runtime/logs/lane-medic.log"
-MAX_LANE_MIN=100      # headless coder sessions older than this are presumed dead
-MAX_DOCKET_MIN=45     # legal_docket interval is 30m; >45m = stuck
-MAX_LANES_WARN=25     # if live lanes exceed this, log loudly (leak resurfacing)
+# Thresholds are the fleet-immune contract's, not this script's. Read the same env vars
+# runner/fleet_immune_contracts.py reads, with the same defaults, so the stopgap and the
+# durable classifier can never disagree about what "zombie" means. See
+# runner/FLEET_IMMUNE_CONTRACTS.md; tests/test_fleet_immune_contract_drift.py pins them.
+MAX_LANE_MIN=$(( ${ORCH_LANE_ZOMBIE_AFTER_S:-3600} / 60 ))   # LANE_ZOMBIE_AFTER_S
+DOCKET_INTERVAL_MIN=30                                       # legal_docket schedule
+MAX_DOCKET_MIN=$(awk -v i="$DOCKET_INTERVAL_MIN" \
+  -v f="${ORCH_DAEMON_STUCK_INTERVAL_FACTOR:-1.5}" 'BEGIN{printf "%d", i*f}')
+MAX_LANES_WARN=${ORCH_LANE_COUNT_WARN:-25}                   # LANE_COUNT_WARN
 while true; do
   ts=$(date '+%F %T')
   # 1) zombie headless coder lanes (claude --output-format) older than MAX_LANE_MIN

@@ -201,4 +201,13 @@ def run(limit=BATCH):
 
 
 if __name__ == "__main__":
-    print(json.dumps(run(int(sys.argv[1]) if len(sys.argv) > 1 else BATCH), indent=2))
+    import single_instance
+    _owned, _deadline = single_instance.guard("legal_docket", interval_s=1800)
+    if not _owned:
+        print(json.dumps({"skipped": "legal_docket already running"}))
+        raise SystemExit(0)
+    try:
+        print(json.dumps(run(int(sys.argv[1]) if len(sys.argv) > 1 else BATCH), indent=2))
+    finally:
+        if _deadline is not None:
+            _deadline.cancel()
