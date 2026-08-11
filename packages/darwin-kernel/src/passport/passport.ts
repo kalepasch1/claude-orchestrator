@@ -8,7 +8,7 @@
  * OFFLINE — no shared secret, no call back to the issuer. Time-boxed so a stale
  * passport is rejected.
  */
-import { sha256Canonical, contentId } from '../crypto/hash.ts';
+import { sha256Canonical, contentId, canonicalize } from '../crypto/hash.ts';
 import { signDigest, verifyDigest, type Signature } from '../crypto/signing.ts';
 import type { ProductId } from '../types.ts';
 
@@ -69,12 +69,11 @@ const DAY = 86_400_000;
 function canonicalBody<T extends { claims: Claim[] }>(body: T): T {
   return {
     ...body,
-    claims: [...body.claims].sort((a, b) =>
-      a.kind.localeCompare(b.kind) ||
-      a.issuer.localeCompare(b.issuer) ||
-      a.issuedAt.localeCompare(b.issuedAt) ||
-      a.expiresAt.localeCompare(b.expiresAt) ||
-      a.value - b.value),
+    claims: [...body.claims].sort((a, b) => {
+      const ka = canonicalize(a);
+      const kb = canonicalize(b);
+      return ka < kb ? -1 : ka > kb ? 1 : 0;
+    }),
   };
 }
 
@@ -116,7 +115,13 @@ export function verifyPassport(passport: Passport, asOf: Date = new Date()): Pas
     return { valid: false, reason: 'signature_invalid', liveClaims: [] };
   }
   const now = asOf.getTime();
-  const liveClaims = passport.claims.filter((c) => Date.parse(c.expiresAt) > now);
+  // A claim that had already expired when the passport was MINTED is dead in
+  // every timeline: verifying "as of" an earlier date must not resurrect it,
+  // otherwise a backdated `asOf` turns expired credentials back on.
+  const mintedAt = Date.parse(passport.issuedAt);
+  const liveClaims = passport.claims.filter(
+    (c) => Date.parse(c.expiresAt) > now && Date.parse(c.expiresAt) > mintedAt,
+  );
   if (liveClaims.length === 0) {
     return { valid: false, reason: 'all_claims_expired', liveClaims: [] };
   }

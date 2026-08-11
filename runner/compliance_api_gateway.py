@@ -79,9 +79,7 @@ class ComplianceAPIGateway:
             if method == "POST" and endpoint == ["remediations", "propose"]:
                 issue = body.get("issue", {})
                 plan = body.get("plan", {"operation": "review"})
-                result = self.remediation.remediate(body.get("app_id", "unknown"), issue,
-                    generate=lambda _: plan, validate=lambda candidate: bool(candidate.get("validated", False)),
-                    apply=lambda _: None)
+                result = self.remediation.propose(body.get("app_id", "unknown"), issue, plan)
                 return 200, asdict(result)
             return 404, {"error": "unknown endpoint"}
         except (KeyError, TypeError, ValueError) as exc:

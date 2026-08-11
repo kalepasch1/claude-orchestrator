@@ -61,7 +61,9 @@ _LOCKFILE_DRIFT = re.compile(
     r"Missing:\s+\S+\s+from lock file|"
     r"ERR_PNPM_OUTDATED_LOCKFILE|pnpm-lock\.yaml.*not up to date|"
     r"lockfile would have been modified|"
-    r"lockfile needs to be updated.*--frozen-lockfile",
+    r"lockfile needs to be updated.*--frozen-lockfile|"
+    r"can only install packages when your package\.json and package-lock\.json.*in sync|"
+    r"npm ci` can only install|YN0028|cannot install with .frozen-lockfile.",
     re.I | re.S,
 )
 
@@ -273,6 +275,14 @@ def verify(repo, ref=None, project=None, force=False, cache_only=False):
         if icmd:
             rc, out = _step(icmd, work, INSTALL_TIMEOUT, env)
             parts.append("$ %s\n%s" % (icmd, out))
+            if rc != 0 and not _NETWORK.search(out) and _LOCKFILE_DRIFT.search(out):
+                fallback = unfrozen_install_command(icmd)
+                if fallback:
+                    result["install_fallback"] = fallback
+                    rc, out = _step(fallback, work, INSTALL_TIMEOUT, env)
+                    parts.append("$ %s   # lockfile drift: retried unfrozen\n%s" % (fallback, out))
+                    if rc == 0:
+                        result["install_cmd"] = fallback
             if rc != 0:
                 if _NETWORK.search(out):
                     result["log"] = "\n\n".join(parts)

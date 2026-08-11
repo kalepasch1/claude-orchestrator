@@ -48,6 +48,8 @@ def test_gateway_and_protected_remediation_gate():
     assert status == 202
     result = AutoRemediationEngineV2().remediate("payments", {"id": "i1"}, lambda _: {"operation": "submit_filing"}, lambda _: True, lambda _: None)
     assert result.status == "approval_required"
+    status, payload = gateway.dispatch("POST", "/compliance/v1/remediations/propose", {"app_id": "payments", "issue": {"id": "i2"}, "plan": {"operation": "safe_change", "validated": True}})
+    assert status == 200 and payload["status"] == "approval_required"
 
 
 def test_scanner_and_department_scorecard():
