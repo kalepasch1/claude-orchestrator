@@ -10,6 +10,7 @@ import {
   type Claim,
   type ClaimKind,
 } from '../src/passport/passport.ts';
+import type { ProductId } from '../src/types.ts';
 
 test('passport: builds passport with valid structure', () => {
   const claims = [
@@ -393,4 +394,101 @@ test('passport: subject is preserved exactly', () => {
 
     assert.equal(passport.subject, subject);
   }
+});
+
+
+// --- canonical claim ordering -------------------------------------------------
+//
+// The existing 'claim ordering does not affect digest' test above only covers
+// claims that DIFFER on the scalar sort tuple (kind, issuer, issuedAt,
+// expiresAt, value), so it passed even while the comparator was incomplete.
+// The tests below cover the case that actually broke: claims that AGREE on all
+// five scalars and differ only in `detail`. The comparator returned 0 for those,
+// Array.prototype.sort is stable, so the canonical view kept caller order and
+// the digest became order-dependent again — the precise defect canonicalBody
+// exists to prevent. Fixed by falling through to canonicalize(), the same
+// serialization the digest is taken over.
+
+/** Two claims identical on every scalar field, distinguishable only by `detail`. */
+function detailOnlyPair(): [Claim, Claim] {
+  const base = {
+    kind: 'financial_profile' as const,
+    issuer: 'pareto' as ProductId,
+    value: 1,
+    issuedAt: '2026-01-01T00:00:00.000Z',
+    expiresAt: '2026-04-01T00:00:00.000Z',
+  };
+  return [
+    { ...base, detail: { band: 'high' } },
+    { ...base, detail: { band: 'low' } },
+  ];
+}
+
+test('passport: claims differing only in detail are still order-independent', () => {
+  const [a, b] = detailOnlyPair();
+  const iso = '2026-01-01T00:00:00.000Z';
+
+  const p1 = buildPassport({ subject: 'user_1', claims: [a, b], issuedAt: iso });
+  const p2 = buildPassport({ subject: 'user_1', claims: [b, a], issuedAt: iso });
+
+  assert.equal(p1.digest, p2.digest, 'digest must be claim-order independent');
+  assert.equal(p1.id, p2.id, 'content id must be claim-order independent');
+});
+
+test('passport: a detail-only difference still changes the digest', () => {
+  // The dual of the test above: order must not matter, but CONTENT must. A
+  // comparator that ignored `detail` entirely would pass the first test by
+  // accident while making two genuinely different passports collide.
+  const [a, b] = detailOnlyPair();
+  const iso = '2026-01-01T00:00:00.000Z';
+
+  const withA = buildPassport({ subject: 'user_1', claims: [a], issuedAt: iso });
+  const withB = buildPassport({ subject: 'user_1', claims: [b], issuedAt: iso });
+
+  assert.notEqual(withA.digest, withB.digest);
+  assert.notEqual(withA.id, withB.id);
+});
+
+test('passport: detail-only reordering still verifies', () => {
+  // Canonicalisation happens on both the build and the verify side. If only one
+  // side sorted, every passport would fail its own digest check.
+  const [a, b] = detailOnlyPair();
+  const iso = new Date().toISOString();
+  const fresh = (c: Claim): Claim => ({
+    ...c,
+    issuedAt: iso,
+    expiresAt: new Date(Date.now() + 90 * 86_400_000).toISOString(),
+  });
+
+  const passport = buildPassport({ subject: 'user_1', claims: [fresh(a), fresh(b)] });
+  const result = verifyPassport(passport);
+
+  assert.equal(result.valid, true);
+  // Stored order is the caller's, untouched — only the hashed view is sorted.
+  assert.deepEqual(passport.claims.map((c) => c.detail), [{ band: 'high' }, { band: 'low' }]);
+});
+
+test('passport: claim-order independence holds across a shuffled batch', () => {
+  // Property-style check over a batch where many claims collide on the scalar
+  // tuple, so the canonicalize() tie-break carries most of the ordering.
+  const iso = '2026-01-01T00:00:00.000Z';
+  const claims: Claim[] = Array.from({ length: 12 }, (_, i) => ({
+    kind: 'reliability' as const,
+    issuer: 'smarter' as ProductId,
+    value: 1,
+    issuedAt: iso,
+    expiresAt: '2026-04-01T00:00:00.000Z',
+    detail: { seq: i },
+  }));
+
+  const forward = buildPassport({ subject: 'user_1', claims, issuedAt: iso });
+  const reversed = buildPassport({ subject: 'user_1', claims: [...claims].reverse(), issuedAt: iso });
+  const rotated = buildPassport({
+    subject: 'user_1',
+    claims: [...claims.slice(5), ...claims.slice(0, 5)],
+    issuedAt: iso,
+  });
+
+  assert.equal(forward.id, reversed.id);
+  assert.equal(forward.id, rotated.id);
 });
