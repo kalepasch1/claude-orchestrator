@@ -1,0 +1,10 @@
+{
+  "project": "beethoven",
+  "slug": "improve-release-deploy-ui-evidence-closure",
+  "kind": "build",
+  "source": "codex-120-day-queue-remediation",
+  "submitted_by_label": "Codex operator-directed remediation",
+  "prompt": "Add end-to-end release evidence closure for queued improvements. Track each user-directed task through branch, merge commit, release-train promotion, exact Vercel deployment SHA, and route-level browser acceptance evidence for both public landing pages and authenticated user pages. A task must not be reported complete from MERGED alone. Alert and automatically create a scoped release-fix task when code is merged but the expected production route or UI assertion is absent after the SLO. Store evidence links and before/after assertions without screenshots containing secrets. Add tests for successful closure, stale merge, wrong deployed SHA, failed public assertion, and failed authenticated assertion.",
+  "proof": "A fixture improvement is traceable from queue row to exact production SHA and both public/authenticated assertions; negative fixtures create one deduplicated release-fix task and never report completion.",
+  "note": "The strongest observed symptom is that queued improvements never appeared on landing or logged-in pages despite internal merge activity."
+}

@@ -1,0 +1,10 @@
+{
+  "project": "beethoven",
+  "slug": "improve-compliance-evidence-vault",
+  "kind": "build",
+  "source": "round-8-compliance-followup",
+  "submitted_by_label": "Codex operator-directed remediation",
+  "prompt": "Implement the compliance evidence vault: a staged capture workflow for policy snapshots, filing confirmations, approval-chain exports, and risk-history exports; immutable content-addressed manifests; retention/legal-hold metadata; secret/PII redaction; and restricted retrieval. Keep evidence_collector path confinement. Add tests for staging, tamper detection, redaction, and traversal rejection.",
+  "proof": "runner/tests/test_compliance_evidence_vault.py",
+  "note": "Follow-up identified during Round 8 audit: collector now restricts paths but needs managed capture and retention infrastructure."
+}

@@ -1,0 +1,10 @@
+{
+  "project": "beethoven",
+  "slug": "improve-compliance-scheduling-observability",
+  "kind": "build",
+  "source": "round-8-compliance-followup",
+  "submitted_by_label": "Codex operator-directed remediation",
+  "prompt": "Wire compliance scanners, anomaly checks, scorecard refreshes, and evidence outbox flushing into periodic.py with documented intervals, per-job locks, metrics, alert routing, and no protected-state mutation. Add a health/readiness endpoint reporting backlog age, outbox failures, consumer lag, and data freshness. Add tests for job registration, lock behavior, and safe failure handling.",
+  "proof": "runner/tests/test_compliance_periodic_jobs.py",
+  "note": "Follow-up identified during Round 8 audit: modules have an API surface but no production periodic scheduling or operational SLOs."
+}

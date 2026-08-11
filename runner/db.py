@@ -1517,6 +1517,7 @@ def claim_task(runner_id):
         for task in extra:
             if task.get("id") not in seen_ids:
                 queued.append(task); seen_ids.add(task.get("id"))
+
     queued = [t for t in queued if t.get("project_id") not in paused_pids]  # skip paused projects
     # Counsel-gated design specs are queue-visible but cannot enter an execution
     # lane until both approvals are explicitly stored on the task. Fail closed.

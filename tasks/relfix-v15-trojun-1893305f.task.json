@@ -1,0 +1,10 @@
+{
+  "project": "illuminati",
+  "slug": "relfix-v15-trojun-1893305f",
+  "kind": "bugfix",
+  "source": "operator-v15-recovery",
+  "submitted_by_label": "Codex operator-directed remediation",
+  "material": false,
+  "prompt": "Repair the current Trojun release copy-gate blocker at legacy project SHA 1893305f. The gate flags components/GradientCard.vue around line 76 for publishing legal-strategy/disclaimer wording ('Automated analysis. Not legal advice.'). Replace the affected public copy with accurate compliance-value language that does not expose internal legal reasoning or make an advice claim. Preserve the Trojun identity, behavior, accessibility, and supported legacy routing aliases. Run the copy gate and production build, then return the commit to the release train; do not deploy directly or retire a working legacy hostname before the Trojun alias is verified.",
+  "proof": "Trojun's public-copy gate and production build pass, the canonical Trojun identity remains intact, and the release train records a successful legacy-project release newer than 1893305f."
+}

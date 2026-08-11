@@ -94,6 +94,17 @@ class LocalBuildAuditTest(unittest.TestCase):
         ))
         self.assertFalse(audit._is_scanner_output("runner/intake_watcher.py"))
 
+    def test_registry_writer_lock_is_exclusive_and_recoverable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state.json"
+            first = audit._acquire_run_lock(state)
+            self.assertIsNotNone(first)
+            self.assertIsNone(audit._acquire_run_lock(state))
+            first.close()
+            successor = audit._acquire_run_lock(state)
+            self.assertIsNotNone(successor)
+            successor.close()
+
     def test_large_ref_collections_are_digested_in_prompt(self):
         evidence = [{
             "kind": "orchestrator_rescue_refs",
