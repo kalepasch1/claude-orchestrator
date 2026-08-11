@@ -94,16 +94,40 @@ def _extract_patterns_from_commit(repo, commit_hash):
 
         full_text = f"{msg_out}\n{diff_out}"
 
-        # Apply quality gate; if rejected, do not save
-        accepted, reason = learn_from_merges.quality_gate(full_text, source=commit_hash)
-        if not accepted:
-            return None  # silently skip; quality gate already logged
-
-        # Extract patterns using learn_from_merges helpers
-        from merged_diff_library import _frameworks
-        rules = learn_from_merges._extract_rules(msg_out)  # defined below as helper
+        # FIXED 2026-08-11 — two stacked defects, the second masked by the first.
+        #
+        # (1) `quality_gate` grades a *distilled* convention list: it rejects
+        #     anything without 2+ do/avoid bullet lines, anything over 4000 chars,
+        #     anything that looks like a raw dump. It was being fed a raw commit
+        #     message plus `git show --stat`, which is by definition a raw dump.
+        #     Every commit was therefore rejected — measured: 447/447 over a
+        #     14-day window, "fewer than 2 bullet lines" — so patterns_count was
+        #     permanently 0, capture_to_memory permanently False, and the daily
+        #     rollup permanently empty. The gate belongs on the extracted rules,
+        #     which is what it was written to grade.
+        #
+        # (2) `learn_from_merges._extract_rules` and `._changed_files` do not
+        #     exist on that module; those calls would have raised AttributeError
+        #     into the `except` below. The helpers actually available are this
+        #     module's own `_extract_rules` (defined just below, as the original
+        #     comment already said) and `merged_diff_library._changed_files`.
+        #     Unreachable while (1) held, so it never surfaced.
+        from merged_diff_library import _changed_files, _frameworks
+        rules = _extract_rules(full_text)
         frameworks = _frameworks(full_text)
-        files = learn_from_merges._changed_files(repo, f"{commit_hash}^", commit_hash)
+        files = _changed_files(repo, f"{commit_hash}^", commit_hash)
+
+        if not rules and not frameworks and not files:
+            return None  # nothing learnable in this commit
+
+        # Gate the distillation, not the raw commit. Only rules are graded;
+        # frameworks and file lists are facts, not prose to be quality-checked.
+        if rules:
+            accepted, reason = learn_from_merges.quality_gate(
+                "\n".join(f"- {r}" for r in rules), source=commit_hash)
+            if not accepted:
+                _log_error(f"quality gate rejected extracted rules: {reason}", commit_hash)
+                rules = []
 
         return {
             "commit": commit_hash,
@@ -274,6 +298,16 @@ def capture_to_memory(repo=".", dry_run=False):
     persistently failing capture is visible in the logs instead of looking like a
     no-op forever.
     """
+    if dry_run:
+        # FIXED 2026-08-11. The docstring above has always promised False for a
+        # dry run, but the check below only asks whether `memory_file` is truthy
+        # — and run() fills it with the string "[dry-run] would save N patterns",
+        # which is truthy. So a dry run returned True: "a file was written" for a
+        # mode whose entire purpose is writing nothing. Unreachable until the
+        # pattern-extraction fix above, because patterns_count was always 0.
+        run(repo=repo, dry_run=True)
+        return False
+
     try:
         result = run(repo=repo, dry_run=dry_run)
     except Exception as exc:            # run() is fail-soft, but never trust that here
