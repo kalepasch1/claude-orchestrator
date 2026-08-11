@@ -153,7 +153,7 @@ def infer_artifact_project(path: Path, targets: dict[str, Path]) -> str:
     if explicit in ALIASES and ALIASES[explicit] in targets:
         return ALIASES[explicit]
     # Conventional output names such as illuminati-fixed.zip have a single dash.
-    first = re.split(r"[-_.]", explicit, 1)[0]
+    first = re.split(r"[-_.]", explicit, maxsplit=1)[0]
     if first in targets:
         return first
     if first in ALIASES and ALIASES[first] in targets:
@@ -167,8 +167,24 @@ def _changed_files(worktree: Path) -> list[str]:
                  ("ls-files", "--others", "--exclude-standard")):
         rc, out = _git(worktree, *args)
         if rc == 0:
-            names.update(line.strip() for line in out.splitlines() if line.strip())
+            names.update(
+                line.strip() for line in out.splitlines()
+                if line.strip() and not _is_scanner_output(line.strip())
+            )
     return sorted(names)
+
+
+def _is_scanner_output(name: str) -> bool:
+    """True for audit intake files emitted by this scanner itself.
+
+    Without this exclusion, an old untracked intake manifest eventually becomes
+    stale evidence in the orchestrator worktree; processing or replacing that
+    manifest then changes the dirty snapshot and recursively creates another
+    audit task.
+    """
+    normalized = str(name or "").replace("\\", "/").lstrip("./")
+    return (normalized.startswith("intake/")
+            and "chatgpt-local-audit" in Path(normalized).name)
 
 
 def _newest_file_mtime(worktree: Path, names: list[str]) -> float:
@@ -532,26 +548,55 @@ def queue_groups(
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
     state = _json_read(state_path, {"schema": 1, "queued": {}, "last_run": 0})
     state.setdefault("queued", {})
+    legacy_migration = "evidence" not in state
+    state.setdefault("evidence", {})
     queued, duplicates = [], []
     intake.mkdir(parents=True, exist_ok=True)
     for project, items in sorted(groups.items()):
         if not items:
             continue
         ordered = sorted(items, key=lambda row: (str(row.get("kind")), str(row.get("path", row.get("repo", "")))))
-        fp = _fingerprint({"project": project, "evidence": ordered})
-        slug = f"chatgpt-local-reconcile-{_slug(project, 30)}-{fp[:12]}"
-        if fp in state["queued"]:
-            duplicates.append({"project": project, "fingerprint": fp, "slug": slug})
+        legacy_fp = _fingerprint({"project": project, "evidence": ordered})
+        item_rows = [
+            (_fingerprint({"project": project, "evidence": item}), item)
+            for item in ordered
+        ]
+        if legacy_migration and legacy_fp in state["queued"]:
+            prior = state["queued"][legacy_fp]
+            for item_fp, item in item_rows:
+                state["evidence"].setdefault(item_fp, {
+                    "project": project, "slug": prior.get("slug"),
+                    "kind": item.get("kind"), "migrated_from": legacy_fp,
+                })
+            duplicates.append({"project": project, "fingerprint": legacy_fp,
+                               "slug": prior.get("slug")})
             continue
+        unseen = [(item_fp, item) for item_fp, item in item_rows
+                  if item_fp not in state["evidence"]]
+        if not unseen:
+            prior_slug = next((state["evidence"][item_fp].get("slug")
+                               for item_fp, _ in item_rows), None)
+            duplicates.append({"project": project, "fingerprint": legacy_fp,
+                               "slug": prior_slug or "already-covered"})
+            continue
+        new_items = [item for _, item in unseen]
+        fp = _fingerprint({"project": project, "evidence": new_items})
+        slug = f"chatgpt-local-reconcile-{_slug(project, 30)}-{fp[:12]}"
         filename = f"chatgpt-local-audit-{_slug(project, 40)}-{fp[:12]}.md"
         path = intake / filename
         if not path.exists():
             tmp = path.with_name(path.name + ".tmp")
-            tmp.write_text(_render_task(project, ordered, fp), encoding="utf-8")
+            tmp.write_text(_render_task(project, new_items, fp), encoding="utf-8")
             os.replace(tmp, path)
         state["queued"][fp] = {"project": project, "slug": slug, "intake": str(path),
-                                "created_at": int(time.time()), "items": len(ordered)}
+                                "created_at": int(time.time()), "items": len(new_items)}
+        for item_fp, item in unseen:
+            state["evidence"][item_fp] = {
+                "project": project, "slug": slug, "kind": item.get("kind"),
+                "intake": str(path), "created_at": int(time.time()),
+            }
         queued.append({"project": project, "fingerprint": fp, "slug": slug, "intake": str(path)})
+    state["schema"] = 2
     state["last_run"] = int(time.time())
     _atomic_json(state_path, state)
     return queued, duplicates
