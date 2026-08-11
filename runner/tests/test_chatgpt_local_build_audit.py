@@ -67,6 +67,32 @@ class LocalBuildAuditTest(unittest.TestCase):
             self.assertIn("RECOVERABLE_VALUE", text)
             saved = json.loads(state.read_text())
             self.assertEqual(len(saved["queued"]), 1)
+            self.assertEqual(len(saved["evidence"]), 1)
+
+    def test_evidence_level_registry_does_not_requeue_when_group_shrinks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            intake, state = root / "intake", root / "state.json"
+            a = {"kind": "artifact", "path": "/tmp/a.patch", "sha256": "a"}
+            b = {"kind": "artifact", "path": "/tmp/b.patch", "sha256": "b"}
+            c = {"kind": "artifact", "path": "/tmp/c.patch", "sha256": "c"}
+            first, _ = audit.queue_groups({"smarter": [a, b]}, intake, state)
+            self.assertEqual(len(first), 1)
+            second, duplicates = audit.queue_groups({"smarter": [a]}, intake, state)
+            self.assertEqual(second, [])
+            self.assertEqual(len(duplicates), 1)
+            third, _ = audit.queue_groups({"smarter": [a, c]}, intake, state)
+            self.assertEqual(len(third), 1)
+            rendered = Path(third[0]["intake"]).read_text()
+            self.assertIn("/tmp/c.patch", rendered)
+            self.assertNotIn("/tmp/a.patch", rendered)
+
+    def test_scanner_ignores_its_own_intake_manifests(self):
+        self.assertTrue(audit._is_scanner_output("intake/chatgpt-local-audit-smarter-a.md"))
+        self.assertTrue(audit._is_scanner_output(
+            "intake/processed/20260811-chatgpt-local-audit-smarter-a.md"
+        ))
+        self.assertFalse(audit._is_scanner_output("runner/intake_watcher.py"))
 
     def test_large_ref_collections_are_digested_in_prompt(self):
         evidence = [{
