@@ -185,6 +185,7 @@ class CanonicalIntakeReceiptTest(unittest.TestCase):
             insert=lambda table, row: inserted.append((table, row)) or [row],
         )
         with patch.object(iw, "db", db_mock), \
+             patch.object(iw.pipeline_contract, "wrap_prompt", side_effect=lambda p, **kw: p), \
              patch.object(iw.intake_gate, "should_queue", return_value=(True, "material")):
             created, skipped = iw.ingest_file(self.path, self.projects, existing=set())
         self.assertEqual((created, skipped), (1, 0))
@@ -196,6 +197,7 @@ class CanonicalIntakeReceiptTest(unittest.TestCase):
     def test_refused_insert_raises_so_manifest_is_not_claimed(self):
         db_mock = types.SimpleNamespace(select=lambda *a, **kw: [], insert=lambda *a, **kw: None)
         with patch.object(iw, "db", db_mock), \
+             patch.object(iw.pipeline_contract, "wrap_prompt", side_effect=lambda p, **kw: p), \
              patch.object(iw.intake_gate, "should_queue", return_value=(True, "material")):
             with self.assertRaisesRegex(RuntimeError, "produced no receipt"):
                 iw.ingest_file(self.path, self.projects, existing=set())
