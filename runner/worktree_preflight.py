@@ -106,6 +106,115 @@ def missing_tools():
     return [t for t in ("node", "npm") if not shutil.which(t)]
 
 
+#: Manifest fields whose values are file paths relative to the package root.
+_ENTRY_FIELDS = ("main", "module", "browser")
+
+
+def _entry_targets(manifest):
+    """Runtime entry points a package declares, as package-relative paths.
+
+    Type declarations (`.d.ts` / `.d.mts` / `.d.cts`) are excluded: a pruned
+    declaration breaks typecheck, not `import`, and including them buries the
+    real breakage under hundreds of harmless misses.
+    """
+    if not isinstance(manifest, dict):
+        return []
+    targets = []
+    for field in _ENTRY_FIELDS:
+        value = manifest.get(field)
+        if isinstance(value, str) and value.strip():
+            targets.append(value)
+    binv = manifest.get("bin")
+    if isinstance(binv, str):
+        targets.append(binv)
+    elif isinstance(binv, dict):
+        targets.extend(v for v in binv.values() if isinstance(v, str))
+
+    def walk(node):
+        if isinstance(node, str):
+            if node.startswith("."):
+                targets.append(node)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+        elif isinstance(node, dict):
+            for v in node.values():
+                walk(v)
+
+    walk(manifest.get("exports"))
+    return [t for t in dict.fromkeys(targets)
+            if "*" not in t and not t.endswith((".d.ts", ".d.mts", ".d.cts"))]
+
+
+def _iter_packages(node_modules):
+    """Installed package directories, expanding @scope one level."""
+    try:
+        names = os.listdir(node_modules)
+    except OSError:
+        return
+    for name in names:
+        if name.startswith("."):
+            continue
+        full = os.path.join(node_modules, name)
+        if name.startswith("@"):
+            try:
+                for inner in os.listdir(full):
+                    if not inner.startswith("."):
+                        yield os.path.join(full, inner)
+            except OSError:
+                continue
+        elif os.path.isdir(full):
+            yield full
+
+
+def partial_install(root, limit=5):
+    """Packages installed but truncated: present, with declared entry points missing.
+
+    ADDED 2026-08-11. `_install` reporting ok is not proof the tree is usable.
+    Observed in this repo: `web/node_modules/vitest@1.6.1` has its package.json,
+    README, type stubs and bin shim but no `dist/`, which is where `main`, every
+    `exports` target and the bin shim's own import point. `npm ls` calls it
+    satisfied; `npm test` dies with ERR_MODULE_NOT_FOUND. 250 packages in that
+    one tree are truncated the same way. A preflight that only asks "did install
+    exit 0" declares this GREEN and hands every task a repo that cannot run.
+
+    Returns a list of ``{"name", "missing"}``, newest-first, capped at `limit`.
+    Fail-soft: returns [] on any error.
+    """
+    broken = []
+    try:
+        node_modules = os.path.join(root, "node_modules")
+        if not os.path.isdir(node_modules):
+            return []
+        for pkg_dir in _iter_packages(node_modules):
+            try:
+                with open(os.path.join(pkg_dir, "package.json"), encoding="utf-8") as f:
+                    manifest = json.load(f)
+            except (OSError, ValueError):
+                continue
+            missing = [t for t in _entry_targets(manifest)
+                       if not os.path.exists(os.path.join(pkg_dir, t))]
+            if missing:
+                broken.append({"name": manifest.get("name") or os.path.basename(pkg_dir),
+                               "missing": missing[:3]})
+                if len(broken) >= max(1, int(limit or 1)):
+                    break
+    except Exception:
+        return []
+    return broken
+
+
+def verify_install(roots, limit=5):
+    """Reason string when any package root holds a truncated install, else None."""
+    for root in roots or []:
+        broken = partial_install(root, limit=limit)
+        if broken:
+            names = ", ".join(f"{b['name']} (missing {b['missing'][0]})" for b in broken[:3])
+            return (f"partial node_modules install in {root}: "
+                    f"{len(broken)}+ package(s) present but truncated — {names}")
+    return None
+
+
 def _block_project(project, reason):
     """Mark the project paused with an attributable reason. Best-effort."""
     try:
@@ -204,6 +313,16 @@ def preflight(project, repo_path, force=False, timeout=None):
                                    "reason": reason, "checked_at": time.time()})
             _block_project(project, reason)
             return _result(project, STATUS_BLOCKED, reason, install=install)
+
+        # An install that exits 0 can still leave a tree that cannot be imported.
+        # Verify the packages are whole before declaring the project claimable.
+        if _truthy("ORCH_WORKTREE_PREFLIGHT_VERIFY", True):
+            partial = verify_install(roots)
+            if partial:
+                _write_stamp(project, {"date": _today(), "status": STATUS_BLOCKED,
+                                       "reason": partial, "checked_at": time.time()})
+                _block_project(project, partial)
+                return _result(project, STATUS_BLOCKED, partial, install=install)
 
         _write_stamp(project, {"date": _today(), "status": STATUS_GREEN,
                                "reason": None, "checked_at": time.time()})
