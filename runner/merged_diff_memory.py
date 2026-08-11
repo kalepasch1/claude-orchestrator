@@ -31,6 +31,16 @@ MEMORY_ROOT = os.environ.get("CLAUDE_MEMORY_ROOT",
 LOOKBACK = int(os.environ.get("MERGED_MEMORY_LOOKBACK", "14"))  # days
 ERROR_LOG = os.path.join(HOME, "knowledge", "merged_diff_memory_errors.jsonl")
 
+# Module logger. `logger.warning(...)` was already being called on three error
+# paths (_read_memory, _write_memory, and the git gate in capture_merge) but the
+# name was never bound, so every one of those paths raised
+# `NameError: name 'logger' is not defined` INSTEAD of logging and failing soft.
+# Reproduced before fixing:
+#   _write_memory([...]) against an unwritable dir -> NameError, not False.
+# That inverted the whole fail-soft contract: the one branch written to keep the
+# runner alive was the branch that killed it.
+logger = logging.getLogger(__name__)
+
 _lock = threading.Lock()
 
 
@@ -437,8 +447,31 @@ def capture_merge(commit_hash: str, branch: str, cwd: str) -> bool:
 
     Returns:
         True if the metadata is on disk (including when the commit was
-        already recorded), False if the write failed.
+        already recorded), False on a git error (bad ref, not a repo) or a
+        failed write.
+
+    Error handling follows the boolean contract the sibling
+    ``capture_to_memory`` already honours (see
+    tests/test_merged_diff_memory_capture_bool.py): log with
+    ``logging.warning`` and return False on ANY error, never raise.
     """
+    try:
+        return _capture_merge_inner(commit_hash, branch, cwd)
+    except Exception as e:
+        # Broad, but LOGGED before it swallows -- the documented convention
+        # (CLAUDE.md: "a broad catch must write a diagnostic before it
+        # swallows; a silent `except Exception: pass` is the defect"). Without
+        # this, an unexpected raise from any helper wedges the caller, which is
+        # exactly what the fail-soft contract exists to prevent.
+        logger.warning(
+            "merged_diff_memory: capture_merge(%s) raised: %s: %s; fail-soft False",
+            commit_hash, type(e).__name__, e,
+        )
+        return False
+
+
+def _capture_merge_inner(commit_hash: str, branch: str, cwd: str) -> bool:
+    """The body of :func:`capture_merge`; see it for the contract."""
     merges = _read_memory()
 
     # Skip if already recorded. .get() rather than [] -- a hand-edited or
@@ -451,6 +484,27 @@ def capture_merge(commit_hash: str, branch: str, cwd: str) -> bool:
     date = _safe_run(["git", "log", "-1", "--format=%aI", commit_hash], cwd=cwd)
     message = _safe_run(["git", "log", "-1", "--format=%s", commit_hash], cwd=cwd)
     files = _safe_run(["git", "diff-tree", "--no-commit-id", "--name-only", "-r", commit_hash], cwd=cwd)
+
+    # GIT-ERROR GATE. _safe_run swallows the exit code and returns "" for a bad
+    # ref, a missing repo, or a timeout -- indistinguishable, at this level,
+    # from a successful command with no output. Author and date are the two
+    # fields git ALWAYS populates for a real commit (a message can legitimately
+    # be empty, a file list can legitimately be empty; these two cannot), so
+    # both being empty means the command did not resolve the commit.
+    #
+    # Without this gate the function appended a record with empty author/date/
+    # message and returned True -- persisting a merge that does not exist and
+    # telling the caller memory was current. That is the same "reports success
+    # because the function completed rather than because the work happened"
+    # defect the capture_bool spec exists to prevent, and a poisoned recovery
+    # memory is worse than an empty one.
+    if not author and not date:
+        logger.warning(
+            "merged_diff_memory: git could not resolve %s in %s (bad ref or not a repo); "
+            "not recording the merge",
+            commit_hash, cwd,
+        )
+        return False
 
     merges.append({
         "commit": commit_hash,
