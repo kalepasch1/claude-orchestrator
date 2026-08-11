@@ -20,6 +20,7 @@ an explicit legacy sweep.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -87,6 +88,19 @@ def _atomic_json(path: Path, value: Any) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _acquire_run_lock(state_path: Path):
+    """Hold one scanner writer per registry; return None when another run owns it."""
+    lock_path = state_path.with_name(state_path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
 
 
 def _slug(text: str, limit: int = 64) -> str:
@@ -643,6 +657,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--result-file", type=Path)
     parser.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
+
+    # launchd may start the bridge while an explicit deep audit is still walking
+    # the fleet. Both runs write the same registry at completion, so serialize the
+    # entire scan rather than relying only on atomic replace for the final write.
+    _run_lock = _acquire_run_lock(args.state)
+    if _run_lock is None:
+        print(json.dumps({"status": "already_running", "state": str(args.state)}))
+        return 0
 
     prior = _json_read(args.state, {"last_run": 0})
     due = time.time() - float(prior.get("last_run", 0)) >= args.min_interval_minutes * 60
