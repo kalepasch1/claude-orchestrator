@@ -9,6 +9,7 @@ set -uo pipefail
 DROPBOX="${CHATGPT_DROPBOX:-$HOME/Documents/chatgpt-dropbox}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APPLY="$HERE/apply-patch.sh"
+AUDIT="$HERE/local_build_audit.py"
 LOG="$DROPBOX/_logs/bridge.log"
 
 mkdir -p "$DROPBOX/_applied" "$DROPBOX/_failed" "$DROPBOX/_logs"
@@ -17,6 +18,21 @@ mkdir -p "$DROPBOX/_applied" "$DROPBOX/_failed" "$DROPBOX/_logs"
 export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 
 say() { echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG"; }
+
+register_artifact() {
+  artifact="$1"; status="$2"; result_file="$3"
+  [ -f "$AUDIT" ] || return 0
+  audit_out="$(PYTHONDONTWRITEBYTECODE=1 python3 "$AUDIT" \
+    --artifact "$artifact" --artifact-status "$status" --result-file "$result_file" 2>&1)"
+  audit_rc=$?
+  if [ "$audit_rc" -eq 0 ]; then
+    say "QUEUE-REGISTERED $status $(basename "$artifact") $audit_out"
+  else
+    # The artifact remains preserved in _applied/_failed and the periodic full
+    # audit retries it. Queue registration failure must never erase source code.
+    say "QUEUE-REGISTRATION-FAILED $status $(basename "$artifact") $audit_out"
+  fi
+}
 
 # ---- self-diagnosis: can this process actually see the drop-box and the repos? --
 # launchd is denied ~/Documents unless it runs through an app bundle holding Full
@@ -65,18 +81,35 @@ for f in "$DROPBOX"/*.patch "$DROPBOX"/*.diff "$DROPBOX"/*.zip "$DROPBOX"/*.tar.
   printf '%s\n' "$out" >> "$LOG"
 
   if [ $rc -eq 0 ]; then
-    mv -f "$f" "$DROPBOX/_applied/${stamp}--${base}"
-    printf '%s\n' "$out" > "$DROPBOX/_applied/${stamp}--${base}.result.txt"
+    applied="$DROPBOX/_applied/${stamp}--${base}"
+    result_file="$DROPBOX/_applied/${stamp}--${base}.result.txt"
+    mv -f "$f" "$applied"
+    printf '%s\n' "$out" > "$result_file"
+    register_artifact "$applied" applied "$result_file"
     say "OK $base"
     result="$(printf '%s' "$out" | tail -1)"
     osascript -e "display notification \"$result\" with title \"ChatGPT bridge: pushed\"" 2>/dev/null
   else
-    mv -f "$f" "$DROPBOX/_failed/${stamp}--${base}"
-    printf '%s\n' "$out" > "$DROPBOX/_failed/${stamp}--${base}.error.txt"
+    failed="$DROPBOX/_failed/${stamp}--${base}"
+    result_file="$DROPBOX/_failed/${stamp}--${base}.error.txt"
+    mv -f "$f" "$failed"
+    printf '%s\n' "$out" > "$result_file"
+    register_artifact "$failed" failed "$result_file"
     say "FAIL $base"
     err="$(printf '%s' "$out" | grep -m1 '^ERROR:' | cut -c1-180)"
     osascript -e "display notification \"${err:-see _failed/}\" with title \"ChatGPT bridge: FAILED $base\"" 2>/dev/null
   fi
 done
+
+# Every 30 minutes this self-rate-limits into a full legacy sweep of registered
+# repos, Codex workspaces, local-only refs, stashes, rescue refs, and output
+# bundles. Fresh work is ignored for six hours so active sessions are not stolen.
+if [ -f "$AUDIT" ]; then
+  audit_out="$(PYTHONDONTWRITEBYTECODE=1 python3 "$AUDIT" 2>&1)"
+  audit_rc=$?
+  [ "$audit_rc" -eq 0 ] \
+    && say "LOCAL-BUILD-AUDIT $audit_out" \
+    || say "LOCAL-BUILD-AUDIT-FAILED $audit_out"
+fi
 
 exit 0

@@ -47,11 +47,13 @@ A launchd agent on their Mac picks it up within 30 seconds and:
 3. commits it authored `kalepasch1 <kalepasch@gmail.com>` — **required**, Vercel blocks
    production deploys authored by anyone else,
 4. pushes a `chatgpt/<slug>` branch and opens a PR,
-5. notifies with the PR link.
+5. registers the artifact and resulting branch/failure in the orchestrator intake queue,
+6. notifies with the PR link.
 
 Nothing reaches a production branch without a human merge. If the patch does not apply
-cleanly it lands in `_failed/` with the exact error — so keep patches small, scoped, and
-based on current `origin/HEAD`.
+cleanly it lands in `_failed/` with the exact error and a recovery task is still queued —
+so failure can no longer strand the code on one Mac. A periodic legacy audit also scans
+Codex workspaces, local-only branches, stashes, rescue refs, and output bundles.
 
 ## Away from that Mac
 

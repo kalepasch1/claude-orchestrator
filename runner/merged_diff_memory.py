@@ -21,6 +21,8 @@ import hashlib
 import logging
 import threading
 
+logger = logging.getLogger(__name__)
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import learn_from_merges
@@ -577,4 +579,3 @@ def write_memory_file(merges: list[dict]) -> bool:
     actually landed (e.g. before reporting a merge as recorded).
     """
     return _write_memory(merges)
-

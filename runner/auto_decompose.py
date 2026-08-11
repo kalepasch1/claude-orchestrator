@@ -111,7 +111,11 @@ def _emit_decomposition(slug, tasks, repo_path, base_branch):
 def decompose(slug: str, prompt: str, base_branch: str = "master",
               repo_path: str = None) -> list:
     """Auto-decompose a task into sub-tasks. Returns list of task dicts.
-    Falls back to returning the original as a single task. Fail-soft."""
+    Falls back to returning the original as a single task. Fail-soft.
+
+    When decomposition produces child slices, emits `decomposition_completed`
+    so the missing-branch auto-creator can provision agent branches for the
+    new children immediately (pass repo_path to enable provisioning)."""
     single = [{"slug": slug, "prompt": prompt, "deps": [],
                "base_branch": base_branch, "dedup_key": slug}]
     if not _ENABLED:

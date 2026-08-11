@@ -139,6 +139,14 @@ class TestPushGate(GuardTestCase):
         # remote already has the bad commit; this push adds only the good one
         self.assertEqual(guard.check(self.repo, self.line(good, remote=already), out), 0)
 
+    def test_new_branch_excludes_history_already_on_a_remote(self):
+        already = _commit(self.repo, "bad-but-already-on-origin", "x", "someone@example.com")
+        _run(self.repo, "update-ref", "refs/remotes/origin/master", already)
+        good = _commit(self.repo, "good-new-branch-tip", guard.canonical_name(), guard.canonical_email())
+        out = io.StringIO()
+        self.assertEqual(guard.check(self.repo, self.line(good, remote=ZERO), out), 0)
+        self.assertNotIn("BLOCKED-EMAIL", out.getvalue())
+
     def test_warn_mode_reports_without_refusing(self):
         bad = _commit(self.repo, "bad", "x", "someone@example.com")
         guard.ORCH_AUTHOR_IDENTITY_GUARD = "warn"
