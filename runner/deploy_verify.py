@@ -201,11 +201,26 @@ def _file_auth_issue(project, vercel_project, error):
 
 
 def _age_minutes(row):
+    """Age of a release row in minutes, or None when `created_at` is unusable.
+
+    This returned 0 on any parse failure, which reads as "brand new". The only
+    consumer is the stuck-deploy check `state is None and age_min > stuck_min`, so a
+    release whose created_at was NULL or malformed could never exceed the threshold —
+    it was permanently pinned at zero minutes old and a genuinely wedged deploy was
+    never detected, silently, for as long as the row existed. Unknown is not zero:
+    None makes the caller decide, and the caller now says so out loud instead of
+    quietly treating the release as healthy.
+    """
+    raw = row.get("created_at") if hasattr(row, "get") else None
+    if raw in (None, ""):
+        return None
     try:
-        created = datetime.datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
-        return (datetime.datetime.now(datetime.timezone.utc) - created).total_seconds() / 60
+        created = datetime.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
     except Exception:
-        return 0
+        return None
+    if created.tzinfo is None:                      # naive timestamps are UTC here
+        created = created.replace(tzinfo=datetime.timezone.utc)
+    return (datetime.datetime.now(datetime.timezone.utc) - created).total_seconds() / 60
 
 
 def _attribute_deploy_to_outcomes(project):
@@ -269,6 +284,15 @@ def run():
             continue
 
         age_min = _age_minutes(release)
+        if state is None and age_min is None:
+            # Unknown state AND unknown age: this used to look like a 0-minute-old
+            # release and fall through as healthy forever. Surface it instead — an
+            # unreadable created_at is a data bug, not a passing deploy. No rollback:
+            # we have not confirmed a bad deploy, only that we cannot judge this one.
+            print(f"deploy_verify: {project} release {release.get('id')} has an unusable "
+                  f"created_at ({release.get('created_at')!r}); cannot age-out a stuck "
+                  f"deploy — skipping (not treating as healthy)")
+            continue
         if state in TERMINAL_BAD or (state is None and age_min > stuck_min):
             log_tail = _deployment_events((dep or {}).get("uid") or (dep or {}).get("id"))
             _queue_deploy_fix(p, release, state, vproj, log_tail=log_tail)
