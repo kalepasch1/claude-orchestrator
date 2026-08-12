@@ -255,7 +255,10 @@ def test_merge_train_repo_lock_parameters():
     import merge_train
     import inspect
 
-    source = inspect.getsource(merge_train.train_run)
+    # Inspect the implementation, not the lease wrapper. `train_run` only takes the
+    # cross-train lease and delegates; the repo_lock.hold() call this guard exists to
+    # protect lives in `_train_run_unleased`.
+    source = inspect.getsource(merge_train._train_run_unleased)
 
     # Verify the correct parameter usage
     # The fix changed: with repo_lock.hold(repo_path, timeout=300, priority=True)
@@ -272,6 +275,27 @@ def test_merge_train_repo_lock_parameters():
     # Check that we can actually import and call it
     assert hasattr(merge_train.repo_lock, 'hold'), \
         "repo_lock module must be imported and hold() must exist"
+
+
+def test_merge_train_no_shadowed_train_run():
+    """`train_run` must be defined exactly once — a second def hides the implementation.
+
+    Regression: merge_train.py carried two top-level `def train_run` with an
+    `_train_run_unleased = train_run` alias between them. Runtime behaviour was fine, but
+    `inspect.getsource(merge_train.train_run)` then returned the lease wrapper, so
+    test_merge_train_repo_lock_parameters stopped inspecting the code it guards.
+    """
+    import ast
+    import os
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "merge_train.py")
+    with open(path) as fh:
+        tree = ast.parse(fh.read())
+    names = [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
+    assert names.count("train_run") == 1, \
+        f"train_run must be defined once, found {names.count('train_run')}"
+    assert names.count("_train_run_unleased") == 1, \
+        "_train_run_unleased must be a real def, not an alias to a shadowed function"
 
 
 def test_merge_train_train_run_executable():
