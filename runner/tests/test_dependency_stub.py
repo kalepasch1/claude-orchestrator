@@ -258,6 +258,67 @@ class PatchTemplateGateTest(unittest.TestCase):
                 self.assertIsNone(ds._try_patch_template(repo, "dep-a", "main"))
 
 
+class AuthenticatedFetchTest(unittest.TestCase):
+    """The one remote operation must go through the authenticated helper.
+
+    Every other git call in this module is local (branch, rev-parse, config,
+    reflog) and correctly uses the bare `_git`. The fetch is not: against a
+    private origin an unauthenticated fetch fails, the caller's bare `except`
+    swallows it, and synthesize_stub falls through to an identity stub — the
+    dependency reports resolved while its real changes are absent.
+    """
+
+    def test_fetch_uses_git_auth_run_git(self):
+        import git_auth
+        calls = []
+
+        def fake_run_git(args, repo, timeout=60):
+            calls.append((args, repo))
+            return 0, "", ""
+
+        with _Repo() as repo:
+            with patch.object(git_auth, "run_git", fake_run_git):
+                self.assertTrue(ds._fetch(repo, "agent/dep-a"))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][0][0], "fetch")
+        self.assertIn("+refs/heads/agent/dep-a:refs/remotes/origin/agent/dep-a", calls[0][0])
+
+    def test_a_failed_fetch_is_reported_not_raised(self):
+        import git_auth
+        with _Repo() as repo:
+            with patch.object(git_auth, "run_git", return_value=(128, "", "auth failed")):
+                self.assertFalse(ds._fetch(repo, "agent/dep-a"))
+
+    def test_falls_back_to_plain_git_when_the_helper_is_unavailable(self):
+        import git_auth
+        with _Repo() as repo:
+            with patch.object(git_auth, "run_git", side_effect=RuntimeError("no helper")):
+                # No origin configured, so the plain fetch fails — but it must not raise.
+                self.assertIsInstance(ds._fetch(repo, "agent/dep-a"), bool)
+
+    def test_remote_recovery_returns_none_when_nothing_was_fetched(self):
+        with _Repo() as repo:
+            with patch.object(ds, "_fetch", return_value=False):
+                self.assertIsNone(ds._try_remote_recovery(repo, "agent/dep-a"))
+
+    def test_remote_recovery_returns_the_fetched_commit(self):
+        with _Repo() as repo:
+            head = _run(repo, "rev-parse", "HEAD").stdout.strip()
+            _run(repo, "update-ref", "refs/remotes/origin/agent/dep-a", head)
+            with patch.object(ds, "_fetch", return_value=True):
+                self.assertEqual(ds._try_remote_recovery(repo, "agent/dep-a"), head)
+
+    def test_local_operations_do_not_use_the_auth_helper(self):
+        # Auth is needed for the remote only; routing local calls through it would
+        # add process env setup to every branch/rev-parse in the hot path.
+        import git_auth
+        with _Repo() as repo:
+            with patch.object(git_auth, "run_git",
+                              side_effect=AssertionError("local op used the auth helper")):
+                self.assertTrue(ds._branch_exists(repo, "main"))
+                self.assertFalse(ds.is_stub(repo, "main"))
+
+
 class StatsTest(unittest.TestCase):
     def test_stats_reports_the_toggle_and_ttl(self):
         s = ds.stats()
