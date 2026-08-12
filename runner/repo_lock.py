@@ -24,7 +24,9 @@ unlocked rather than wedge the runner -- a missed lock is a lot cheaper than a s
 import contextlib
 import fcntl
 import hashlib
+import json
 import os
+import socket
 import time
 
 LOCK_DIR = os.environ.get(
@@ -38,8 +40,58 @@ def _lock_path(repo):
     return os.path.join(LOCK_DIR, f"repo-{key}.lock")
 
 
+def _write_holder(handle, repo, purpose):
+    """Stamp who holds the lock. Called only while the flock is held."""
+    try:
+        handle.seek(0)
+        handle.truncate()
+        handle.write(json.dumps({
+            "pid": os.getpid(),
+            "host": socket.gethostname(),
+            "purpose": purpose or "",
+            "repo": str(repo or ""),
+            "acquired_at": time.time(),
+        }))
+        handle.flush()
+    except Exception:
+        pass  # diagnostics only; never let bookkeeping break the lock
+
+
+def describe_holder(repo):
+    """Best-effort description of the last process to take this repo's lock.
+
+    Waiters call this on timeout so the failure names a culprit. A bare
+    "repository isolation lock unavailable" is undiagnosable: it cannot
+    distinguish a long-running merge-train rebase (wait longer) from a wedged
+    holder (intervene). Returns '' when nothing is known.
+    """
+    try:
+        with open(_lock_path(repo), "r") as fh:
+            info = json.loads(fh.read() or "{}")
+    except Exception:
+        return ""
+    if not isinstance(info, dict) or not info.get("pid"):
+        return ""
+    held = ""
+    try:
+        held = " for {0:.0f}s".format(max(0.0, time.time() - float(info["acquired_at"])))
+    except Exception:
+        pass
+    alive = ""
+    try:
+        os.kill(int(info["pid"]), 0)
+        alive = "alive"
+    except ProcessLookupError:
+        alive = "DEAD (lock already released by the kernel)"
+    except Exception:
+        alive = "unknown"
+    return "last holder pid={0} host={1} purpose={2}{3} ({4})".format(
+        info.get("pid"), info.get("host") or "?",
+        info.get("purpose") or "unspecified", held, alive)
+
+
 @contextlib.contextmanager
-def hold(repo, timeout=None):
+def hold(repo, timeout=None, purpose=None):
     """Exclusive lock scoped to `repo`. Yields True if the lock was acquired, False if the
     lock could not be obtained within `timeout` -- callers should skip their git-mutating
     work on False rather than proceed unprotected. If the locking infrastructure itself is
@@ -69,6 +121,7 @@ def hold(repo, timeout=None):
         else:
             fcntl.flock(f, fcntl.LOCK_EX)
             acquired = True
+        _write_holder(f, repo, purpose)
         yield True
     finally:
         if acquired:

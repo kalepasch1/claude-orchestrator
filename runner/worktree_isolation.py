@@ -12,6 +12,17 @@ from typing import Optional
 
 log = logging.getLogger(__name__)
 
+# Seconds to wait for the per-repo isolation lock before giving up. ORCH_-prefixed
+# so it is fleet-pushable through fleet_control.py rather than requiring a deploy;
+# it was a bare 120 inline, which is exactly the magic-number shape CLAUDE.md calls
+# out. A merge-train rebase on a large repo can legitimately exceed two minutes.
+try:
+    ISOLATION_LOCK_TIMEOUT = int(os.environ.get("ORCH_ISOLATION_LOCK_TIMEOUT", "120"))
+except (TypeError, ValueError):
+    ISOLATION_LOCK_TIMEOUT = 120
+if ISOLATION_LOCK_TIMEOUT <= 0:
+    ISOLATION_LOCK_TIMEOUT = 120
+
 
 class WorktreeIsolationError(RuntimeError):
     """An isolated task checkout could not be proven safe."""
@@ -219,9 +230,17 @@ def ensure_task_worktree(repo: str, slug: str, base: str, setup_script: str, *,
                          task_id: Optional[str] = None, lease_token: Optional[str] = None) -> str:
     """Create or reuse a task worktree while holding the repository lock."""
     wt = task_worktree_path(repo, slug)
-    with repo_lock.hold(repo, timeout=120) as acquired:
+    with repo_lock.hold(repo, timeout=ISOLATION_LOCK_TIMEOUT,
+                        purpose=f"ensure_task_worktree:{slug}") as acquired:
         if not acquired:
-            raise WorktreeIsolationError("repository isolation lock unavailable")
+            # Name the culprit. The bare message this replaced could not tell a
+            # long-running merge-train rebase (wait) from a wedged holder
+            # (intervene), so every occurrence read as an unexplained toolchain
+            # failure and the task was retried into the same wall.
+            holder = repo_lock.describe_holder(repo)
+            raise WorktreeIsolationError(
+                "repository isolation lock unavailable after {0}s{1}".format(
+                    ISOLATION_LOCK_TIMEOUT, "; " + holder if holder else ""))
 
         if not task_id or not lease_token:
             raise WorktreeIsolationError("task and branch-lease identity are required")
