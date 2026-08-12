@@ -21,13 +21,21 @@ Fail-soft: any error here is swallowed after logging; a broken monitor must neve
 be able to wedge the runner. Dedup: re-alerting is throttled by RENOTIFY_HOURS so a
 persistent stall pages once per window instead of every cycle.
 """
-import datetime, os, sys
+import datetime, os, subprocess, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
 ALERT_HOURS = float(os.environ.get("ORCH_MERGE_STALL_ALERT_HOURS", "3"))
 RENOTIFY_HOURS = float(os.environ.get("ORCH_MERGE_STALL_RENOTIFY_HOURS", "6"))
 MIN_BACKLOG = int(os.environ.get("ORCH_MERGE_STALL_MIN_BACKLOG", "3"))
+
+# Branch the merge train lands agent work into (see MERGE_STRATEGY in
+# orchestration_pipeline_config.py).
+INTEGRATION_BRANCH = os.environ.get("ORCH_MERGE_INTEGRATION_BRANCH", "orchestrator/dev")
+
+# How long an agent branch may sit on origin unlanded before it counts as a
+# stalled integration.
+UNINTEGRATED_ALERT_HOURS = float(os.environ.get("ORCH_UNINTEGRATED_BRANCH_ALERT_HOURS", "6"))
 
 
 def _now():
@@ -68,6 +76,76 @@ def _backlog_size():
     return len(cards) + len(done)
 
 
+def _git(args, repo=".", quiet=False):
+    """Run a git command; return stdout, or None on any failure (fail-soft).
+
+    ``quiet`` suppresses the diagnostic for commands whose non-zero exit is a
+    normal answer rather than a fault (``merge-base --is-ancestor`` returns 1
+    to mean "no").
+    """
+    try:
+        return subprocess.check_output(["git"] + list(args), cwd=repo, text=True,
+                                       errors="replace", timeout=30,
+                                       stderr=subprocess.DEVNULL)
+    except Exception as e:
+        if not quiet:
+            print(f"[merge_stall_monitor] git {' '.join(args)} failed (fail-soft): {e}")
+        return None
+
+
+def unintegrated_agent_branches(repo=".", integration_branch=None, min_age_hours=None):
+    """Agent branches pushed to origin that the merge train never landed.
+
+    The existing stall signal is fleet-wide: it fires only when *nothing* has
+    reached MERGED. A single branch that the train silently skips -- the failure
+    mode behind every "recover-missing-branch" task in the queue -- is invisible
+    to it, because other branches keep landing and the age check stays green.
+    This walks refs/remotes/origin/agent/* and reports every ref that is not an
+    ancestor of the integration branch and is older than ``min_age_hours``.
+
+    Returns a list of ``{"branch", "age_hours"}`` sorted oldest first, or [] if
+    the repo cannot be read. Never raises.
+    """
+    integration = integration_branch or INTEGRATION_BRANCH
+    threshold = UNINTEGRATED_ALERT_HOURS if min_age_hours is None else float(min_age_hours)
+
+    target = None
+    for candidate in (f"origin/{integration}", integration):
+        if _git(["rev-parse", "--verify", "--quiet", candidate], repo, quiet=True):
+            target = candidate
+            break
+    if not target:
+        print(f"[merge_stall_monitor] integration branch {integration!r} not found; "
+              f"skipping unintegrated-branch scan")
+        return []
+
+    out = _git(["for-each-ref", "--format=%(refname:short)\t%(committerdate:unix)",
+                "refs/remotes/origin/agent"], repo)
+    if not out:
+        return []
+
+    now = _now().timestamp()
+    stalled = []
+    for line in out.splitlines():
+        if "\t" not in line:
+            continue
+        ref, _, ts = line.partition("\t")
+        ref = ref.strip()
+        try:
+            age_hours = (now - float(ts.strip())) / 3600.0
+        except Exception:
+            continue
+        if age_hours < threshold:
+            continue
+        # Ancestor of the integration branch == already landed.
+        if _git(["merge-base", "--is-ancestor", ref, target], repo, quiet=True) is not None:
+            continue
+        stalled.append({"branch": ref, "age_hours": round(age_hours, 2)})
+
+    stalled.sort(key=lambda b: -b["age_hours"])
+    return stalled
+
+
 def _existing_open_alert():
     rows = db.select("approvals", {"select": "id,created_at", "kind": "eq.merge_stall",
                                     "status": "in.(pending,approved)", "order": "created_at.desc",
@@ -75,16 +153,24 @@ def _existing_open_alert():
     return rows[0] if rows else None
 
 
-def check():
+def check(repo="."):
     try:
+        # Per-branch integration health is reported regardless of the fleet-wide
+        # stall verdict: branches can rot on origin while the train keeps
+        # landing others, and that case used to be reported as "ok".
+        stalled_branches = unintegrated_agent_branches(repo)
+
         backlog = _backlog_size()
         if backlog < MIN_BACKLOG:
-            return {"status": "ok", "reason": "no meaningful backlog waiting to merge", "backlog": backlog}
+            return {"status": "ok", "reason": "no meaningful backlog waiting to merge",
+                    "backlog": backlog, "unintegrated_branches": stalled_branches}
         age_h = _last_merge_age_hours()
         if age_h is None:
-            return {"status": "ok", "reason": "no merge history yet -- not a stall signal"}
+            return {"status": "ok", "reason": "no merge history yet -- not a stall signal",
+                    "unintegrated_branches": stalled_branches}
         if age_h < ALERT_HOURS:
-            return {"status": "ok", "age_hours": round(age_h, 2), "backlog": backlog}
+            return {"status": "ok", "age_hours": round(age_h, 2), "backlog": backlog,
+                    "unintegrated_branches": stalled_branches}
 
         existing = _existing_open_alert()
         if existing:
@@ -97,6 +183,11 @@ def check():
                   f"it cannot ship -- check merge_train.py logs and repo_lock contention first "
                   f"(the 2026-07-08 incident's root cause), then transient_retries exhaustion "
                   f"on repeatedly-repaired tasks.")
+        if stalled_branches:
+            oldest = ", ".join(f"{b['branch']} ({b['age_hours']:.0f}h)"
+                               for b in stalled_branches[:5])
+            detail += (f" {len(stalled_branches)} agent branch(es) are on origin but not in "
+                       f"{INTEGRATION_BRANCH}; oldest: {oldest}.")
         try:
             db.insert("approvals", {"project": "beethoven", "kind": "merge_stall",
                                      "title": f"Merge stall: 0 merges in {age_h:.1f}h with {backlog} waiting",
@@ -117,7 +208,8 @@ def check():
                        "action": "approval+notify"})
         except Exception:
             pass
-        return {"status": "alerted", "age_hours": round(age_h, 2), "backlog": backlog}
+        return {"status": "alerted", "age_hours": round(age_h, 2), "backlog": backlog,
+                "unintegrated_branches": stalled_branches}
     except Exception as e:
         print(f"[merge_stall_monitor] check failed (fail-soft): {e}")
         return {"status": "error", "error": str(e)}
