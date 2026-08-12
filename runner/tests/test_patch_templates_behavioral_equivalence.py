@@ -138,7 +138,10 @@ class BuildOutputTest(unittest.TestCase):
             tid, body = pt.build(TASK)
         self.assertEqual(tid, pt._id(TASK))
         self.assertIn("Prior merged patterns to adapt:", body)
-        self.assertIn("- p/s sim=0.5: prior", body)
+        # Match the hit payload, not the whole line: a sibling slice labels each hit
+        # with whether it carries a real diff, and that prefix is an intended change.
+        # Pinning the full line here would turn this equivalence test into a veto on it.
+        self.assertIn("p/s sim=0.5: prior", body)
 
 
 class LookupContractTest(unittest.TestCase):
