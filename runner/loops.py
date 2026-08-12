@@ -130,5 +130,31 @@ def run_due():
     return fired
 
 
+def main():
+    """Scheduled entry point (runner.py runs this module every 300s).
+
+    A transient Supabase/DNS outage must not surface as an unhandled traceback.
+    `ensure_all()` opens with an unguarded `db.select`, so when the network is
+    down the very first call raises and the whole job dies at import-time depth
+    — which is how this one cause produced 1331 tracebacks, 79% of everything
+    this job has ever logged to .runtime/logs/loops.err. None of them were
+    actionable: there is no defect to fix in loops.py when DNS cannot resolve.
+
+    The per-loop dispatch inside run_due() is already fail-soft; only the entry
+    point was not. Following the repo convention, the broad catch WRITES A
+    DIAGNOSTIC before it swallows — a silent `except: pass` is the defect, a
+    logged one is the convention — so a real outage is still visible in the log,
+    as one line instead of a 30-line stack.
+
+    Deliberately narrow: only TransientDBError (retryable, by its own docstring)
+    is absorbed. A genuine programming error still raises and still fails loudly.
+    """
+    try:
+        return run_due()
+    except db.TransientDBError as exc:
+        print(f"loops: skipped this cycle — Supabase unreachable ({exc})", flush=True)
+        return 0
+
+
 if __name__ == "__main__":
-    run_due()
+    main()
