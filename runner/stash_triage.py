@@ -160,6 +160,133 @@ def triage(repo=".", limit=None):
     }
 
 
+# ── recorded baseline (audit addendum §D) ───────────────────────────────────
+#
+# The classifier above is the rule. This is what the rule returned on a known
+# input, recorded so nobody spends another hour of read-only git archaeology
+# rediscovering a number that was already written down — which is exactly what
+# the two-session reconciliation found happening. Dated, so it can be
+# invalidated rather than trusted forever.
+#
+# ARITHMETIC NOTE: the four buckets sum to 288, not the stated 315 — 27
+# stashes are in the pile and in no bucket. "Start from this, don't recompute"
+# is still right for the 288 that WERE classified; it is the 27 that need a
+# pass. The gap is recorded rather than quietly rescaling a bucket to make the
+# numbers close: a triage that silently balances is a triage nobody can audit.
+# `unaccounted()` is derived, never hand-entered, so it cannot go stale.
+BASELINE = {
+    "host": "mac1",
+    "measured_at": "2026-07-30",
+    "total": 315,
+    "counts": {EMPTY: 119, ALREADY_LANDED: 37, RECOVERABLE: 12, CONFLICTED: 120},
+    "conflicted_touching_runner": 76,
+    "recovery_script": "recover_stashes.sh",
+    # Positional refs as originally vetted. Retained ONLY as provenance for
+    # what the 2026-07-30 pass looked at — `stash@{N}` is a reflog index, not
+    # an identity, so never resolve these on a live repo. triage() addresses
+    # stashes by SHA for exactly this reason.
+    "recoverable_refs_historical": [
+        "stash@{2}", "stash@{37}", "stash@{39}", "stash@{64}", "stash@{65}", "stash@{69}",
+        "stash@{70}", "stash@{97}", "stash@{161}", "stash@{220}", "stash@{221}", "stash@{259}",
+    ],
+}
+
+#: Not recoverable. Stated once so it stops being searched for.
+PERMANENT_LOSS = {
+    "batches": 282,
+    "window": "2026-07-08..2026-07-16",
+    "cause": "the old destructive `git stash push -u` in sentinel.checkout_guard",
+    "status": "not in any stash, not in the reflog, not recoverable",
+    "root_cause_fixed": True,
+}
+
+
+def unaccounted(baseline=None):
+    """Baseline stashes that landed in no bucket. Derived, so it cannot go stale.
+
+    `is None`, not falsiness: an explicitly-empty baseline means "nothing was
+    recorded", and substituting the module default there would report a
+    27-stash gap for a pile that was never measured.
+    """
+    baseline = BASELINE if baseline is None else baseline
+    try:
+        return int(baseline.get("total") or 0) - sum(baseline.get("counts", {}).values())
+    except Exception:
+        return 0
+
+
+def summary_line(baseline=None):
+    """The recorded result as one line. Never raises."""
+    baseline = baseline or BASELINE
+    try:
+        counts = baseline.get("counts", {})
+        return (f"{counts.get(EMPTY, 0)} empty · {counts.get(ALREADY_LANDED, 0)} already-landed · "
+                f"{counts.get(RECOVERABLE, 0)} recoverable · {counts.get(CONFLICTED, 0)} conflicted")
+    except Exception:
+        return ""
+
+
+def real_work(baseline=None):
+    """The count needing a human or agent: the conflicted set. Never raises."""
+    baseline = baseline or BASELINE
+    try:
+        return int(baseline.get("counts", {}).get(CONFLICTED, 0))
+    except Exception:
+        return 0
+
+
+def compare_to_baseline(observed_total, baseline=None):
+    """Has the pile moved since the baseline was measured? Never raises.
+
+    The recommendation is the point: an unchanged pile means the recorded
+    numbers still hold and a full re-triage reproduces a known result.
+    """
+    baseline = baseline or BASELINE
+    result = {"changed": True, "baseline_total": baseline.get("total"),
+              "observed_total": None, "delta": None, "recommendation": ""}
+    try:
+        observed = int(observed_total)
+        result["observed_total"] = observed
+        result["delta"] = observed - int(baseline.get("total") or 0)
+        result["changed"] = result["delta"] != 0
+        if not result["changed"]:
+            result["recommendation"] = (
+                f"pile unchanged since {baseline.get('measured_at')} — use the recorded triage "
+                f"({summary_line(baseline)}); do NOT recompute")
+        elif result["delta"] > 0:
+            result["recommendation"] = (
+                f"{result['delta']} new stash(es) since {baseline.get('measured_at')} — triage "
+                f"ONLY the new ones; the rest of the baseline still holds")
+        else:
+            result["recommendation"] = (
+                f"{abs(result['delta'])} stash(es) fewer than the baseline — something dropped "
+                f"them; explain that before triaging")
+        return result
+    except Exception:
+        result["recommendation"] = "observed total unreadable — recompute nothing on a guess"
+        return result
+
+
+def format_baseline(baseline=None):
+    """Operator summary of the recorded triage. Never raises."""
+    baseline = baseline or BASELINE
+    try:
+        gap = unaccounted(baseline)
+        lines = [
+            f"recorded triage — {baseline.get('measured_at')} on {baseline.get('host')}",
+            f"  total ............... {baseline.get('total')}",
+            f"  {summary_line(baseline)}",
+            f"  needs judgment ...... {real_work(baseline)}",
+        ]
+        if gap:
+            lines.append(f"  UNACCOUNTED ......... {gap}  (in the pile, in no bucket)")
+        lines.append(f"  permanently lost .... {PERMANENT_LOSS['batches']} batches "
+                     f"({PERMANENT_LOSS['window']}) — not recoverable")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def format_report(report):
     c = report["counts"]
     lines = [
@@ -194,10 +321,30 @@ def main(argv=None):
     ap.add_argument("--repo", default=".")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--baseline", action="store_true",
+                    help="Print the recorded 2026-07-30 triage without scanning. "
+                         "Start here: the result already exists.")
+    ap.add_argument("--compare", action="store_true",
+                    help="Scan, then report whether the pile moved since the baseline.")
     args = ap.parse_args(argv)
+
+    if args.baseline:
+        payload = {"baseline": BASELINE, "unaccounted": unaccounted(),
+                   "permanent_loss": PERMANENT_LOSS}
+        print(json.dumps(payload, indent=2, sort_keys=True) if args.json
+              else format_baseline())
+        return 0
+
     report = triage(args.repo, limit=args.limit)
-    print(json.dumps(report, indent=2, sort_keys=True) if args.json
-          else format_report(report))
+    if args.compare:
+        report["baseline_comparison"] = compare_to_baseline(report.get("total"))
+    if args.json:
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(format_report(report))
+        if args.compare:
+            print("")
+            print(f"  vs baseline: {report['baseline_comparison']['recommendation']}")
     return 0
 
 
