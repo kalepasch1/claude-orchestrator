@@ -80,6 +80,37 @@ def make_plan(task, prompt, project=None):
     return None, None
 
 
+def council_plan(task, prompt, repo_path, candidates=None, project=None, **kw):
+    """Escalate to the frontier planning council for broad/material objectives.
+
+    Returns (contract_brief_text, "council:<hash>") when a council convened, or
+    (None, None) so the caller falls straight through to the single-planner
+    path above. Fail-soft: the council never raises into the pipeline.
+    """
+    try:
+        import frontier_council as fc
+        if not fc.should_convene(task, prompt):
+            return None, None
+
+        def _ask(provider, model, ask_prompt, operation="council", timeout=60):
+            import model_gateway
+            return model_gateway.complete(provider, model, ask_prompt,
+                                          project=project, operation=operation,
+                                          task_class="plan", timeout=timeout)
+
+        if candidates is None:
+            import model_catalog
+            candidates = [(c["provider"], c["model"])
+                          for c in (model_catalog.ranked(task_class="plan",
+                                                         need=8) or [])]
+        signed = fc.convene(task, prompt, repo_path, _ask, candidates, **kw)
+        if not signed.get("convened"):
+            return None, None
+        return fc.contract_brief(signed), f"council:{signed['contract_hash'][:12]}"
+    except Exception:
+        return None, None
+
+
 def inject(prompt, plan_text, model_label):
     """Prepend the strategy plan to the draft prompt (or return prompt unchanged)."""
     if not plan_text:
