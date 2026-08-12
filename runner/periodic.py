@@ -1043,9 +1043,44 @@ def run_priority_scorer():
 
 
 def run_rtmon():
-    """Realtime approval monitor polling fallback (every 5 min)."""
-    import realtime_approval_monitor
-    realtime_approval_monitor.run()
+    """
+    Runner-side half of the real-time sync channel (every 5 min).
+
+    The web half already works: the client subscribes to Supabase Realtime and
+    Postgres replicates row changes to it (see web/composables/useFleetWebSocket.ts).
+    The runner half was written but never reachable — `run_rtmon` was defined
+    here and left out of JOBS, and realtime_sync/realtime_monitor sat at zero
+    callers because their only entry points were long-lived threads and this
+    fleet runs everything as short-lived `periodic.py <job>` invocations.
+
+    Order matters: drain the change feed first so the monitor snapshot that the
+    dashboard reads is taken after the newest task/config rows have landed.
+    Each step is independently fail-soft — one dead module must not stop the
+    other two.
+    """
+    results = {}
+
+    try:
+        import realtime_sync
+        results["sync"] = realtime_sync.poll_once()
+    except Exception as e:
+        results["sync_error"] = str(e)
+
+    try:
+        import realtime_approval_monitor
+        results["approvals"] = realtime_approval_monitor.run()
+    except Exception as e:
+        results["approvals_error"] = str(e)
+
+    try:
+        import realtime_monitor
+        realtime_monitor.run()
+        results["monitor"] = realtime_monitor.stats()
+    except Exception as e:
+        results["monitor_error"] = str(e)
+
+    print(f"periodic rtmon: {results}")
+    return results
 
 
 def run_quarantine_gc():
@@ -1233,6 +1268,9 @@ JOBS = {
     "priority_scorer": run_priority_scorer,
     "quarantine_gc": run_quarantine_gc,
     "portfolioautopilot": run_portfolio_autopilot,
+    # run_rtmon has existed since the real-time sync slice landed but was never
+    # registered here, so the runner half of the channel was unreachable.
+    "rtmon": run_rtmon,
 }
 
 if __name__ == "__main__":
