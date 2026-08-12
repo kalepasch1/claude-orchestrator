@@ -234,7 +234,8 @@ class CanonicalIntakeReceiptTest(unittest.TestCase):
         )
         with patch.object(iw, "db", db_mock), \
              patch.object(iw.pipeline_contract, "wrap_prompt", side_effect=lambda p, **kw: p), \
-             patch.object(iw.intake_gate, "should_queue", return_value=(True, "operator")):
+             patch.object(iw.intake_gate, "should_queue",
+                          side_effect=AssertionError("operator work bypasses the EV gate")):
             iw.ingest_file(self.path, self.projects, existing=set())
         self.assertEqual(inserted[0]["submitted_by_label"],
                          "Codex operator-directed remediation")

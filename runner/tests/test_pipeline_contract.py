@@ -42,6 +42,19 @@ class PipelineContractTest(unittest.TestCase):
         text = f"## {pipeline_contract.MARKER}\n- x\n## END {pipeline_contract.MARKER}\n\nbody"
         self.assertEqual(pipeline_contract.wrap_prompt(text, project="x"), text)
 
+    def test_deferred_intake_contract_performs_no_live_plan_lookup(self):
+        with patch.object(pipeline_contract, "build_plan",
+                          side_effect=AssertionError("live plan must be deferred")):
+            wrapped = pipeline_contract.wrap_prompt(
+                "Implement the queued operator improvement with tests.",
+                project="beethoven",
+                source="intake-file",
+                slug="operator-improvement",
+                resolve_live_routes=False,
+            )
+        self.assertIn("selected-at-claim", wrapped)
+        self.assertIn("intake-file", wrapped)
+
     def test_control_prompts_are_not_wrapped(self):
         text = "ROTATE_KEY:openai:primary"
         self.assertEqual(pipeline_contract.wrap_prompt(text, project="x"), text)

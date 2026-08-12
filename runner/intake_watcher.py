@@ -227,7 +227,10 @@ def ingest_file(path, projects_by_name, existing=None):
                 skipped += 1; continue
         if t["slug"] in existing:
             skipped += 1; continue
-        ok, reason = intake_gate.should_queue(t, proj)
+        if t.get("submitted_by_label"):
+            ok, reason = True, "operator-origin"
+        else:
+            ok, reason = intake_gate.should_queue(t, proj)
         if not ok:
             print(f"intake: {t['slug']} rejected — {reason}")
             skipped += 1; continue
@@ -235,7 +238,8 @@ def ingest_file(path, projects_by_name, existing=None):
         row = {"project_id": proj["id"], "slug": t["slug"],
                "prompt": pipeline_contract.wrap_prompt(raw_prompt, project=t["project"],
                                                         kind="build", source="intake-file",
-                                                        slug=t["slug"], material=bool(t["material"])),
+                                                        slug=t["slug"], material=bool(t["material"]),
+                                                        resolve_live_routes=False),
                "base_branch": proj.get("default_base", "main"), "kind": "build",
                "state": "QUEUED", "deps": t["depends"], "material": bool(t["material"]),
                "note": pipeline_contract.note(source="intake-file")}
