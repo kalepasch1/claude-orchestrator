@@ -1,11 +1,11 @@
 # Cost Intelligence — Summary
-_30-day rolling window_
+_1-day rolling window_
 
 We measure cost per unit of delivered engineering work, not just tokens billed.
 
 **Efficiency.** Our per-merge cost reflects an orchestration layer purpose-built to avoid re-solving problems: work proven in one project is verified and reused across every other project we operate, not re-derived from scratch each time.
 
-**Reuse multiple.** For every 1.03x unit of delivered engineering value, 1 unit of fresh model spend was required — the remainder came from verified, reused, cross-project work.
+**Reuse multiple.** For every 1.0x unit of delivered engineering value, 1 unit of fresh model spend was required — the remainder came from verified, reused, cross-project work.
 
 **On raw model pricing:** we do not compete on per-token price against commodity-tier model providers, and don't claim to. **On total cost to cover a multi-project portfolio:** we are tracking this comparison but have not yet crossed over the raw price gap at current volume — see the internal report for the live number.
 
