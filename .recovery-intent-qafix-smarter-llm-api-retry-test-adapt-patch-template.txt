@@ -1,4 +1,0 @@
-recovery-intent: qafix-smarter-llm-api-retry-test-adapt-patch-template
-template: fbc4e1ba2d2b
-intent: 07060650 07062319 1677fc0f7242 4da78398a9b2 4ff7ba380eac 6096aa2b 74e1cfdba29d 8b92d078e856 9f821ef2b6cc a5f8e22456b6 acceptance adapt adapted affected after agentic agentledger analysis artifacts assertion based because before behavior being below blocked branch brief briefly broad budget bugfix build capacity category cause changed changes changing charts checks classes claude coder commit compatibility completed completion concrete config context continue dependencies descriptions diffs directive doesn drafting duplicate ensure equivalent exactly excerpt existing exists failed failure files final finish first fresh green htsparkline identified identify implementation including inspect
-base: orchestrator/dev

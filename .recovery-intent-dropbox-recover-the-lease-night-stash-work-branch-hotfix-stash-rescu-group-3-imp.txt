@@ -1,4 +1,0 @@
-recovery-intent: dropbox-recover-the-lease-night-stash-work-branch-hotfix-stash-rescu-group-3-imp
-template: afc63971cda9
-intent: 07130635 07190257 20251001 53375a0cecde __init__ _credential_allows _operation_authorized according active adapt address advice after agentic analysis apierror apply approximately artifacts attempt author available b4fa25c7 batch beethoven before behavior below branch broad bugfix build build_fix category cause change changes changing checks claim class classifier claud claude cloud coder codestral commit compiled completion component comprehensive concrete config configure context continue contract contracts coordination create credits cross currently custody debate_compress deepseek define delete denied dependencies deployfix diffs directive drafting dropbox either enforce ensure environment
-base: master

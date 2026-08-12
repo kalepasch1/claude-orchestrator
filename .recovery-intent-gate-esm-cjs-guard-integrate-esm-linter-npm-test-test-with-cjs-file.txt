@@ -1,4 +1,0 @@
-recovery-intent: gate-esm-cjs-guard-integrate-esm-linter-npm-test-test-with-cjs-file
-template: 6d10ef7dd258
-intent: confirm containing create exports fails server temporary utils
-base: main

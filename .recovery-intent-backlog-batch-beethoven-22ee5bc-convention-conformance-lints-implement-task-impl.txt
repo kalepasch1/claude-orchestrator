@@ -1,4 +1,0 @@
-recovery-intent: backlog-batch-beethoven-22ee5bc-convention-conformance-lints-implement-task-impl
-template: e976959b7eba
-intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 acceptance active adapt adaptive_probe adding adheres advice after agentic aider allowlist analysis author batch beethoven before behavior blocked blocker break build buildfail ce2e8dcd7954 change cheap claim class claude cloud codebase coder codestral commit concern concrete config configuration context contract conventions convert coordination cowork create cross custody deepseek defined delete deployfix diffs directive drafting ensure eslintrc excerpt existing exists fable files first flake8 flash force gemini generated google haiku identified
-base: master

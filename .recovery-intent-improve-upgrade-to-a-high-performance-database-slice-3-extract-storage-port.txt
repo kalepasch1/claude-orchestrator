@@ -1,4 +1,0 @@
-recovery-intent: improve-upgrade-to-a-high-performance-database-slice-3-extract-storage-port
-template: 74f253f2e9c3
-intent: 20260725 258e15 333b7e269c12 acceptance access adapt adding architecture baf840c0fe53 based before behavior bottlenecks build canary change codebase command comment commit concrete config containing conventions create current database define depend deploy diffs directly drafting driver edits ensure entire error excerpt exercise existing exists extract files first functio green heartbeat highest implement implementation instead intent interface level leverage library loadconfig locate losing matched memory merge mergeable merged methods module names narrow objects opportunity output owner passes patch patterns perform pipeline preserve pricing
-base: master
