@@ -702,6 +702,20 @@ def _must_run_agent_for_evidence(task, slug):
     return kind == "canary" or s.startswith("canary-") or "-canary-" in s or "coder-canary" in note
 
 
+def _prompt_evolver():
+    """Return the prompt_evolver module under either sys.path layout.
+
+    runner.py runs with runner/ on sys.path (bare `import db`), the test suite
+    imports the package from the repo root (`from runner import db`). Resolve
+    lazily so a missing module can never break task execution.
+    """
+    try:
+        import prompt_evolver
+    except ImportError:
+        from runner import prompt_evolver
+    return prompt_evolver
+
+
 def _cap_agent_prompt(prompt):
     """Keep Claude Code requests comfortably below context limits after tool/system overhead."""
     text = prompt or ""
@@ -1603,6 +1617,16 @@ def run_task(t):
                             draft_prompt = live_bidding.inject_auction_context(draft_prompt, _auction)
                 except Exception as e:
                     _log.debug("hook live_bidding failed: %s", e)
+                # PROMPT EVOLVER: UCB1 bandit over per-kind prompt templates. Runs
+                # last so the chosen arm wraps the fully enriched prompt, and stashes
+                # the arm on the task so record() can settle its reward after the run.
+                try:
+                    _evolved, _template_id = _prompt_evolver().select_template(kind, draft_prompt)
+                    if _template_id and _template_id != "base":
+                        draft_prompt = _cap_agent_prompt(_evolved)
+                    t["_prompt_template_id"] = _template_id
+                except Exception as e:
+                    _log.debug("hook prompt_evolver select failed: %s", e)
             # ── WAVE PIPELINE: pre-execution hooks ──────────────────────────
             _wave_t0 = time.time()
             try:
@@ -2604,6 +2628,22 @@ def record(t, project, slug, kind, model, acct, attempt, tests_ok, integrated, o
         candidate_shared.harvest(project, slug, kind, out)
     except Exception as e:
         print(f"[record] candidate_shared skipped: {e}")
+    # PROMPT EVOLVER: settle the bandit arm this run used. Pass raw signals only —
+    # reward hygiene (deployment beats merge, phantom merges earn nothing) is
+    # prompt_evolver's job, not the caller's. deployed_verified stays false here
+    # because record() runs before deployment settles; a first-try integration
+    # backed by a real artifact_commit still earns partial credit.
+    template_id = t.get("_prompt_template_id")
+    if template_id:
+        try:
+            _prompt_evolver().record_outcome(
+                kind, template_id,
+                merged_first_try=bool(integrated) and int(attempt or 0) <= 1,
+                deployed_verified=str(t.get("state") or "").upper() == "DEPLOYED_AND_VERIFIED",
+                artifact_commit=str(t.get("artifact_commit") or ""),
+            )
+        except Exception as e:
+            print(f"[record] prompt evolver settlement skipped: {e}")
 
 
 def cost_ledger_row(project, slug, model, out):
