@@ -1407,6 +1407,26 @@ def set_pin(slug, rank=1):
         return update("tasks", {"slug": slug}, {"pinned": True, "pin_rank": rank})
 
 
+def test_trigger(task_id):
+    """Atomically mark a newly queued task TESTING; fail soft on schema/DB drift.
+
+    If the TESTING enum migration has not reached a host yet, PostgREST rejects
+    this PATCH and the task remains QUEUED, so the ordinary claim path still
+    processes it.
+    """
+    try:
+        rows = _req(
+            "PATCH",
+            "/rest/v1/tasks",
+            body={"state": "TESTING", "updated_at": "now()"},
+            headers={"Prefer": "return=representation"},
+            params={"id": f"eq.{task_id}", "state": "eq.QUEUED"},
+        )
+        return rows[0] if rows else None
+    except Exception:
+        return None
+
+
 def claim_task(runner_id):
     """Atomically claim one QUEUED task whose dependencies are satisfied.
 
@@ -1454,12 +1474,20 @@ def claim_task(runner_id):
     except Exception:
         _increment_db_failure_count()
         pass
-    claim_fields = "id,slug,project_id,deps,confidence,created_at,updated_at,kind,note,priority,prompt,batch_id,parent_task_id,operator_approved_at,operator_approved_by,counsel_approved_at,counsel_approved_by,pinned,pin_rank"
+    claim_fields = "id,slug,project_id,deps,confidence,created_at,updated_at,kind,note,priority,prompt,batch_id,parent_task_id,operator_approved_at,operator_approved_by,counsel_approved_at,counsel_approved_by,pinned,pin_rank,state"
     try:
-        queued = select("tasks", {"select": claim_fields,
-                                  "state": "eq.QUEUED",
-                                  "order": "created_at.asc",
-                                  "limit": str(CLAIM_SCAN_LIMIT)}) or []
+        try:
+            queued = select("tasks", {"select": claim_fields,
+                                      "state": "in.(QUEUED,TESTING)",
+                                      "order": "created_at.asc",
+                                      "limit": str(CLAIM_SCAN_LIMIT)}) or []
+        except Exception:
+            # Rolling-upgrade fallback: keep claiming ordinary work until the
+            # TESTING enum migration reaches the database.
+            queued = select("tasks", {"select": claim_fields,
+                                      "state": "eq.QUEUED",
+                                      "order": "created_at.asc",
+                                      "limit": str(CLAIM_SCAN_LIMIT)}) or []
         # Sync to local mirror on successful fetch
         try:
             # FULL SCAN class — and YES, truncation here can corrupt claims. The audit
@@ -1936,12 +1964,14 @@ def claim_task(runner_id):
             except Exception:
                 pass
         if _deps_all_done:
-            # optimistic claim: flip to RUNNING only if still QUEUED
+            # Optimistic claim from the exact observed state preserves the
+            # cross-runner single-claim guarantee for QUEUED and TESTING alike.
             try:
+                current_state = str(t.get("state") or "QUEUED")
                 res = _req("PATCH", "/rest/v1/tasks",
                            body={"state": "RUNNING", "account": runner_id, "updated_at": "now()"},
                            headers={"Prefer": "return=representation"},
-                           params={"id": f"eq.{t['id']}", "state": "eq.QUEUED"})
+                           params={"id": f"eq.{t['id']}", "state": f"eq.{current_state}"})
             except Exception:
                 _increment_db_failure_count()
                 res = None

@@ -216,6 +216,29 @@ class CanonicalIntakeReceiptTest(unittest.TestCase):
         self.assertIn("slug", calls[0][1])
         self.assertEqual(calls[0][1]["state"], iw._LIVE_TASK_STATES)
 
+    def test_explicit_submitted_by_field_is_preserved_for_normal_slug(self):
+        with open(self.path, "w") as fh:
+            fh.write(
+                "PROJECT: apparently\n\n"
+                "- id: operator-normal-improvement\n"
+                "  title: Operator improvement\n"
+                "  material: no\n"
+                "  submitted-by: Codex operator-directed remediation\n"
+                "  prompt: |\n"
+                "    Implement and test the requested improvement.\n"
+            )
+        inserted = []
+        db_mock = types.SimpleNamespace(
+            select=lambda *a, **kw: [],
+            insert=lambda table, row: inserted.append(row) or [row],
+        )
+        with patch.object(iw, "db", db_mock), \
+             patch.object(iw.pipeline_contract, "wrap_prompt", side_effect=lambda p, **kw: p), \
+             patch.object(iw.intake_gate, "should_queue", return_value=(True, "operator")):
+            iw.ingest_file(self.path, self.projects, existing=set())
+        self.assertEqual(inserted[0]["submitted_by_label"],
+                         "Codex operator-directed remediation")
+
 
 class IngestDropboxPromptsTest(unittest.TestCase):
     def setUp(self):

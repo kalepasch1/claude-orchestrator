@@ -113,6 +113,19 @@ class EnqueueTaskLoaderTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "no receipt"):
                 enqueue_task.main(self._spec())
 
+    def test_stage_intake_is_canonical_deterministic_and_preserves_operator_origin(self):
+        with tempfile.TemporaryDirectory() as intake:
+            spec_path = self._spec(deps=["first"], material=False)
+            first = enqueue_task.stage_intake(spec_path, intake_dir=intake)
+            second = enqueue_task.stage_intake(spec_path, intake_dir=intake)
+            self.assertEqual(first, second)
+            with open(first, encoding="utf-8") as source:
+                rendered = source.read()
+            self.assertIn("PROJECT: beethoven", rendered)
+            self.assertIn("submitted-by: Codex operator-directed remediation", rendered)
+            self.assertIn("depends: [first]", rendered)
+            self.assertIn("proof: runner/tests/test_example.py", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

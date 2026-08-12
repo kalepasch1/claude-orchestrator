@@ -91,6 +91,45 @@ def _insert_id(result):
     return result.get("id") if isinstance(result, dict) else result
 
 
+def render_intake(spec):
+    """Render one JSON spec into the canonical credential-owning intake format."""
+    project = canonical_project_name(spec.get("project"))
+    deps = spec.get("deps") or []
+    if isinstance(deps, str):
+        deps = [item.strip() for item in deps.split(",") if item.strip()]
+    lines = [
+        f"PROJECT: {project}",
+        "",
+        f"- id: {spec['slug']}",
+        f"  title: {spec.get('title') or spec['slug']}",
+        f"  material: {'yes' if spec.get('material') else 'no'}",
+        f"  model: {spec.get('model') or ''}",
+        f"  submitted-by: {spec.get('submitted_by_label') or ''}",
+        f"  depends: [{', '.join(deps)}]",
+        f"  proof: {spec.get('proof') or ''}",
+        "  prompt: |",
+    ]
+    prompt = str(spec.get("prompt") or "")
+    if spec.get("note"):
+        prompt = f"{prompt.rstrip()}\n\nQueue context: {spec['note']}"
+    lines.extend(f"    {line}" for line in prompt.splitlines())
+    return "\n".join(lines) + "\n"
+
+
+def stage_intake(path, intake_dir=None):
+    """Atomically stage a spec for the runner process that owns DB credentials."""
+    with open(path, encoding="utf-8") as source:
+        spec = json.load(source)
+    target_dir = intake_dir or os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "intake"))
+    os.makedirs(target_dir, exist_ok=True)
+    target = os.path.join(target_dir, f"operator-{spec['slug']}.md")
+    tmp = target + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as output:
+        output.write(render_intake(spec))
+    os.replace(tmp, target)
+    return target
+
+
 def main(path):
     with open(path, encoding="utf-8") as source:
         spec = json.load(source)
@@ -183,5 +222,11 @@ def _enqueue_one(spec, proj, pid):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        sys.exit("usage: python runner/enqueue_task.py <task.json>")
-    main(sys.argv[1])
+        sys.exit("usage: python runner/enqueue_task.py [--stage-intake] <task.json> [...]")
+    if sys.argv[1] == "--stage-intake":
+        if len(sys.argv) < 3:
+            sys.exit("usage: python runner/enqueue_task.py --stage-intake <task.json> [...]")
+        for task_path in sys.argv[2:]:
+            print(f"[enqueue] staged intake -> {stage_intake(task_path)}")
+    else:
+        main(sys.argv[1])

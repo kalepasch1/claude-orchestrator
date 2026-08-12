@@ -15,6 +15,7 @@ Canonical format (the drop-in prompt emits exactly this):
       title: one line
       material: yes|no
       model: haiku|sonnet|opus
+      submitted-by: operator or system provenance label
       depends: [other-slug, ...]
       proof: `npx vue-tsc --noEmit` exits 0
       prompt: |
@@ -89,7 +90,10 @@ def parse(text):
             continue
         if in_prompt:
             plines.append(raw); continue
-        kv = re.match(r"^(title|material|model|depends|proof|prompt):\s*(.*)$", s)
+        kv = re.match(
+            r"^(title|material|model|submitted-by|submitted_by_label|depends|proof|prompt):\s*(.*)$",
+            s,
+        )
         if kv:
             k, v = kv.group(1), kv.group(2).strip()
             if k == "prompt":
@@ -102,6 +106,8 @@ def parse(text):
                 cur["material"] = v.lower().startswith("y")
             elif k == "model":
                 cur["model"] = (v or None)
+            elif k in ("submitted-by", "submitted_by_label"):
+                cur["submitted_by_label"] = (v or None)
             else:
                 cur[k] = v
     flush()
@@ -236,7 +242,9 @@ def ingest_file(path, projects_by_name, existing=None):
         # These reconciliation tasks are created only from an explicit operator request to
         # recover ChatGPT local work.  Preserve that provenance so queue-depth and red-release
         # back-pressure cannot silently refuse the owner's recovery directive.
-        if str(t["slug"]).startswith("chatgpt-local-reconcile-"):
+        if t.get("submitted_by_label"):
+            row["submitted_by_label"] = t["submitted_by_label"]
+        elif str(t["slug"]).startswith("chatgpt-local-reconcile-"):
             row["submitted_by_label"] = "ChatGPT local-build audit (operator-directed)"
         if t.get("model"):
             row["model"] = t["model"]
