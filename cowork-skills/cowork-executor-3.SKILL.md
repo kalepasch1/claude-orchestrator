@@ -139,6 +139,28 @@ UPDATE tasks SET state='QUARANTINED', note='v6.5: binary PATCH TEMPLATE stub' WH
 ```
 Move to next task. This is the ONLY quarantine reason.
 
+### 3a-pre. LOOK ON ORIGIN BEFORE YOU BUILD (mandatory)
+
+A requeued task very often already has finished work pushed under its own slug. Rebuilding
+it is the single largest source of wasted fleet capacity.
+
+```bash
+cd {repo_path}
+git fetch origin --quiet
+EXISTING=$(git ls-remote --heads origin "agent/{slug}" | awk '{print $1}')
+if [ -n "$EXISTING" ]; then
+  # Diff the COMMIT, not the branch. A branch cut from a stale base shows the commits
+  # that landed on the base since as false "deletions" -- one such branch appeared to
+  # delete 9,160 lines of tests when its actual commit was purely additive.
+  git diff --stat "$EXISTING^" "$EXISTING"
+fi
+```
+
+If `$EXISTING` is set and its commit is real, non-stub work: do NOT re-implement. Verify it
+(merge it onto the base, run the touched tests), then record `artifact_commit=$EXISTING` and
+`artifact_branch=agent/{slug}` and resolve the task. Re-implementing verified work already on
+origin is a defect, not zero-skip diligence.
+
 ### 3b. Isolated worktree (NEVER checkout branches in the main repo)
 ```bash
 cd {repo_path}
@@ -182,6 +204,11 @@ If `nothing to commit` → do NOT fabricate a stub commit. Mark the task BLOCKED
 ### 3f. Push, then remove the worktree (branch survives)
 ```bash
 git push origin HEAD:agent/{slug} --force 2>&1 | tail -3
+
+# Capture the evidence BEFORE leaving the worktree. A DONE row without a SHA is
+# unverifiable, gets reverted by the next audit, and the task is rebuilt from scratch.
+PUSHED_SHA=$(git rev-parse HEAD)
+git ls-remote --heads origin "agent/{slug}" | grep -q "$PUSHED_SHA" || echo "WARN: origin does not report $PUSHED_SHA — do NOT mark DONE"
 cd {repo_path} && git worktree remove --force "$WT" 2>&1 || true
 ```
 Push failure → do NOT mark DONE. Retry the push once; if it still fails, leave the task RUNNING for a same-session retry or mark it BLOCKED with the push error in the note — a task is only DONE when its branch is actually on origin. Always remove the worktree.
@@ -191,6 +218,8 @@ Push failure → do NOT mark DONE. Retry the push once; if it still fails, leave
 **DONE gate: mark DONE ONLY when (a) `git push origin HEAD:agent/{slug}` succeeded, AND (b) the committed diff contains non-doc code changes (or the task is genuinely a documentation task). Anything else → BLOCKED / SUPERSEDED per the rules above.**
 ```sql
 UPDATE tasks SET state='DONE',
+  artifact_commit='{pushed_sha}',   -- REQUIRED: the SHA captured in 3f
+  artifact_branch='agent/{slug}',   -- REQUIRED: where that SHA lives on origin
   note='cowork-executor-v6.5: implemented and pushed (isolated worktree)'
 WHERE id='{id}';
 UPDATE tasks SET updated_at=now()
