@@ -207,6 +207,37 @@ def _manager(repo):
     return "npm", [npm, "install", "--prefer-offline", "--no-audit", "--fund=false"]
 
 
+def _dev_env(manager, cmd):
+    """(cmd, env) that installs devDependencies, whatever NODE_ENV the fleet runs under.
+
+    ROOT CAUSE, found 2026-08-12. This host exports NODE_ENV=production. npm reads that
+    and OMITS devDependencies — silently, exiting 0, reporting "up to date". So every
+    fleet install produced a tree with no vitest, no test runner, no dev tooling, and
+    `npx vitest` died with ERR_MODULE_NOT_FOUND. worktree_preflight then called that tree
+    a "partial install" and blocked the project, forever, because re-running the same
+    install could never change the outcome.
+
+    Measured in claude-orchestrator/web: `npm ci` added 622 packages and vitest was not
+    among them; `npm ls vitest` reported empty while package.json declared it in
+    devDependencies. Re-running with NODE_ENV=development and --include=dev added the
+    missing 200 packages and the suite ran green immediately.
+
+    The fleet installs in order to BUILD AND TEST, so dev dependencies are not optional
+    for it — production omission is a deployment concern, not a CI one. Forced explicitly
+    rather than by hoping the ambient environment is right.
+    """
+    env = dict(os.environ)
+    if str(env.get("NODE_ENV", "")).lower() == "production":
+        env["NODE_ENV"] = "development"
+    env.pop("NPM_CONFIG_PRODUCTION", None)
+    env["NPM_CONFIG_INCLUDE"] = "dev"
+    if manager == "npm" and "--include=dev" not in cmd:
+        cmd = [*cmd, "--include=dev"]
+    elif manager == "pnpm" and "--prod" not in cmd:
+        cmd = [*cmd, "--dev"] if "--dev" not in cmd else cmd
+    return cmd, env
+
+
 def _ignore_scripts_cmd(manager, cmd):
     if manager == "npm" and "--ignore-scripts" not in cmd:
         return [*cmd, "--ignore-scripts"]
@@ -506,9 +537,12 @@ def _ensure_locked(repo, reason="prewarm", timeout=None):
             lock_file.close()
         return {"ok": False, "error": f"snapshot staging failed: {e}"}
     manager, cmd = _manager(build_root)
+    # The fleet installs in order to build AND TEST, so devDependencies are mandatory for
+    # it. See _dev_env: NODE_ENV=production on this host was silently omitting them.
+    cmd, _env = _dev_env(manager, cmd)
     try:
         r = subprocess.run(cmd, cwd=build_root, capture_output=True, text=True,
-                           timeout=timeout or _DEFAULT_TIMEOUT)
+                           env=_env, timeout=timeout or _DEFAULT_TIMEOUT)
     except subprocess.TimeoutExpired:
         shutil.rmtree(build_root, ignore_errors=True)
         if lock_file: lock_file.close()
@@ -522,7 +556,7 @@ def _ensure_locked(repo, reason="prewarm", timeout=None):
         fallback = _ignore_scripts_cmd(manager, cmd)
         if fallback:
             r2 = subprocess.run(fallback, cwd=build_root, capture_output=True, text=True,
-                                timeout=timeout or _DEFAULT_TIMEOUT)
+                                env=_env, timeout=timeout or _DEFAULT_TIMEOUT)
             if r2.returncode == 0:
                 r = r2
                 ignored_scripts = True
