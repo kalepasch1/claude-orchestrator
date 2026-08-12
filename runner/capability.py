@@ -217,5 +217,67 @@ def usage(slug):
                                               "capability_id": f"eq.{cap['id']}"}) or []
 
 
+def consumers(slug):
+    """Projects with an ACTIVE instance of this capability — the contract blast radius.
+
+    version() already files a verify card per consumer when a contract change is breaking,
+    but that fires at publish time, after the change is written. This exposes the same set
+    BEFORE the build so the agent can see who it is about to break. Fail-soft: [] on error.
+    """
+    try:
+        return sorted({u.get("project") for u in usage(slug)
+                       if u.get("status") == "active" and u.get("project")})
+    except Exception:
+        return []
+
+
+def contract_blast_radius(slug, new_contract):
+    """What a proposed contract would break, without publishing it.
+
+    Returns {"capability", "breaking": [...], "consumers": [...]}. `breaking` is empty when
+    the change is backward compatible, in which case consumers can be ignored.
+    """
+    out = {"capability": slug, "breaking": [], "consumers": []}
+    try:
+        cap = get(slug)
+        if not cap:
+            return out
+        out["breaking"] = _contract_diff(cap.get("contract") or {}, new_contract or {})
+        if out["breaking"]:
+            out["consumers"] = consumers(slug)
+    except Exception:
+        pass
+    return out
+
+
+def contract_note(project):
+    """Prompt-injection block naming the contracts this project depends on (or '').
+
+    A task in a consuming app that changes its own call sites needs to know the shape is
+    owned elsewhere and versioned; a task in the owning app needs to know who is downstream.
+    """
+    try:
+        rows = db.select("capability_instances",
+                         {"select": "capability_id,version,status",
+                          "project": f"eq.{project}", "status": "eq.active"}) or []
+        if not rows:
+            return ""
+        caps = {c["id"]: c for c in (db.select("capabilities",
+                                               {"select": "id,slug,name"}) or [])}
+        lines = ["# Shared contracts: this app instantiates the capabilities below. Their",
+                 "# shape is owned by the registry, not by this repo — do not fork or",
+                 "# silently diverge from them; version the capability instead:"]
+        seen = set()
+        for r in rows:
+            cap = caps.get(r.get("capability_id"))
+            if not cap or cap["slug"] in seen:
+                continue
+            seen.add(cap["slug"])
+            lines.append(f"- {cap['slug']} v{r.get('version') or '?'}")
+        return "\n".join(lines) + "\n\n" if seen else ""
+    except Exception:
+        return ""
+
+
 if __name__ == "__main__":
     print("capabilities:", [c["slug"] for c in (db.select("capabilities") or [])])
