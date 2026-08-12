@@ -30,6 +30,40 @@ class CanaryGaugeTest(unittest.TestCase):
         canary.set_gauge("canary_last_success", "not-a-number")
         self.assertEqual(canary.get_gauge("canary_last_success"), 0.0)
 
+    def test_gauge_object_is_module_level(self):
+        """`canary.canary_last_success` is a Gauge object on the module surface."""
+        gauge = canary.canary_last_success
+        self.assertIsInstance(gauge, canary.Gauge)
+        self.assertEqual(gauge.name, "canary_last_success")
+        self.assertEqual(
+            gauge.documentation,
+            "Indicator of the last validation result (1 for success, 0 for failure)",
+        )
+
+    def test_gauge_object_and_helpers_share_state(self):
+        canary.canary_last_success.set(42)
+        self.assertEqual(canary.get_gauge("canary_last_success"), 42.0)
+        canary.set_gauge("canary_last_success", 7)
+        self.assertEqual(canary.canary_last_success.get(), 7.0)
+
+    def test_gauge_object_inc_dec_and_fail_soft(self):
+        canary.canary_last_success.inc(2.5)
+        self.assertEqual(canary.canary_last_success.get(), 2.5)
+        canary.canary_last_success.dec(0.5)
+        self.assertEqual(canary.canary_last_success.get(), 2.0)
+        canary.canary_last_success.inc("nope")
+        self.assertEqual(canary.canary_last_success.get(), 2.0)
+
+    def test_help_line_rendered(self):
+        body = canary.render_metrics().decode()
+        self.assertIn("# HELP canary_last_success Indicator of the last validation", body)
+
+    def test_validate_canary_logs_without_nameerror(self):
+        """Regression: `_log` was referenced but never bound (NameError on call)."""
+        self.assertTrue(canary.validate_canary("contains a CANARY marker"))
+        self.assertFalse(canary.validate_canary("nothing here"))
+        self.assertFalse(canary.validate_canary(None))
+
 
 if __name__ == "__main__":
     unittest.main()
