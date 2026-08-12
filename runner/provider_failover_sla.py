@@ -24,12 +24,6 @@ def _local_path():
     return os.path.join(home, "provider_sla_state.json")
 
 
-def _local_path():
-    home = os.environ.get("CLAUDE_ORCH_HOME",
-                          os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".runtime"))
-    return os.path.join(home, "provider_sla_state.json")
-
-
 def _recent_ops():
     since = (datetime.datetime.utcnow() - datetime.timedelta(hours=WINDOW_H)).isoformat()
     try:
