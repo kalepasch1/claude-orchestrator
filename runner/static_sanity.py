@@ -29,6 +29,17 @@ CRITICAL_MODULES = [
     "fleet_control.py", "verify.py", "auto_remediate.py", "release_train.py",
     "blocked_triage.py", "intake_watcher.py", "swarm_executor.py",
     "model_gateway.py", "preflight_filter.py", "parallel_dispatch.py",
+    # ADDED 2026-08-12. Both modules are crash-free-until-used dispatchers, which is
+    # exactly the shape audit() catches and assert_critical() was not looking at:
+    #   * periodic.py owns the job dispatch table, so one dropped definition takes out
+    #     every job in it at once — `run_editorial` is not defined crash-looped eleven
+    #     jobs, and crash_loop_detector.py:272 still carries the note about it.
+    #   * canary.py gates deploys. It shipped six undefined-name findings for `_log`
+    #     (canary.py:69,72,74,85,88,90) that audit() reported for days while the gate
+    #     stayed silent, because the file was not on this list.
+    # Both are clean as of this commit, so adding them cannot wedge startup today; the
+    # point is that the next dropped definition refuses to start instead of no-opping.
+    "periodic.py", "canary.py",
 ]
 
 
