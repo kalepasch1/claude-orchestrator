@@ -45,27 +45,97 @@ def _spool(row):
         pass
 
 
-def flush(limit=500):
-    """Replay the local outbox; DB uniqueness makes retry idempotent."""
+def _read_outbox():
+    """Every spooled line, split into parseable rows and unparseable raw lines.
+
+    Malformed lines are kept verbatim rather than dropped: a half-written line
+    from a crashed process is still evidence, and json.JSONDecodeError used to
+    escape flush() entirely (the caller only guarded OSError).
+    """
+    rows, corrupt = [], []
     try:
         with open(_OUTBOX, encoding="utf-8") as outbox:
-            rows = [json.loads(line) for line in outbox if line.strip()][:limit]
+            for line in outbox:
+                if not line.strip():
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except (ValueError, TypeError):
+                    corrupt.append(line.rstrip("\n"))
     except OSError:
+        return [], []
+    return rows, corrupt
+
+
+def _write_outbox(rows, corrupt=()):
+    try:
+        os.makedirs(os.path.dirname(_OUTBOX), exist_ok=True)
+        with open(_OUTBOX, "w", encoding="utf-8") as outbox:
+            for row in rows:
+                outbox.write(_canonical(row) + "\n")
+            for line in corrupt:
+                outbox.write(line + "\n")
+        return True
+    except OSError:
+        return False
+
+
+def backlog():
+    """Outbox depth without delivering anything. Never raises.
+
+    Returns {"pending", "corrupt", "oldest_age_s", "path"}. `oldest_age_s` is
+    derived from the spooled rows' own timestamps when present, falling back to
+    the file mtime, so a stuck outbox is visible even if rows carry no clock.
+    """
+    rows, corrupt = _read_outbox()
+    oldest = None
+    for row in rows:
+        stamp = row.get("created_at") or row.get("occurred_at") if isinstance(row, dict) else None
+        if not stamp:
+            continue
+        try:
+            parsed = datetime.datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+            epoch = parsed.timestamp()
+        except (ValueError, TypeError, OSError):
+            continue
+        oldest = epoch if oldest is None else min(oldest, epoch)
+    if oldest is None and (rows or corrupt):
+        try:
+            oldest = os.path.getmtime(_OUTBOX)
+        except OSError:
+            oldest = None
+    age = None if oldest is None else max(0, int(time.time() - oldest))
+    return {"pending": len(rows), "corrupt": len(corrupt),
+            "oldest_age_s": age, "path": _OUTBOX}
+
+
+def flush(limit=500):
+    """Replay the local outbox; DB uniqueness makes retry idempotent.
+
+    `limit` bounds how many rows are ATTEMPTED per pass, never how many
+    survive. The previous implementation truncated the read to `limit` and
+    then rewrote the file from that slice alone, so an outbox deeper than the
+    limit lost every row past it — silent evidence destruction in exactly the
+    backlog case the outbox exists to survive. Undelivered and un-attempted
+    rows are both carried forward.
+    """
+    rows, corrupt = _read_outbox()
+    if not rows and not corrupt:
         return 0
+    try:
+        bound = max(0, int(limit))
+    except (TypeError, ValueError):
+        bound = 500
+    attempted, deferred = rows[:bound], rows[bound:]
     delivered = 0
     remaining = []
-    for row in rows:
+    for row in attempted:
         try:
             db.insert("fleet_evidence_events", row)
             delivered += 1
         except Exception:
             remaining.append(row)
-    try:
-        with open(_OUTBOX, "w", encoding="utf-8") as outbox:
-            for row in remaining:
-                outbox.write(_canonical(row) + "\n")
-    except OSError:
-        pass
+    _write_outbox(remaining + deferred, corrupt)
     return delivered
 
 

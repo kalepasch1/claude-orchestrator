@@ -1142,7 +1142,31 @@ def run_shipped():
     import shipped_metrics; return shipped_metrics.run()
 
 
+def run_complianceoutbox():
+    """Drain the durable evidence outbox; alert when it stops keeping up."""
+    import compliance_periodic; return compliance_periodic.run_outbox_flush()
+
+
+def run_compliancescorecard():
+    """Recompute fleet/department compliance scorecards and snapshot the metrics."""
+    import compliance_periodic; return compliance_periodic.run_scorecard_refresh()
+
+
+def run_complianceanomaly():
+    """Rolling z-score sweep over persisted compliance metrics."""
+    import compliance_periodic; return compliance_periodic.run_anomaly_check()
+
+
+def run_compliancehealth():
+    """Compliance readiness probe: backlog age, outbox failures, lag, freshness."""
+    import compliance_periodic; return compliance_periodic.run_health()
+
+
 JOBS = {
+    "complianceoutbox": run_complianceoutbox,
+    "compliancescorecard": run_compliancescorecard,
+    "complianceanomaly": run_complianceanomaly,
+    "compliancehealth": run_compliancehealth,
     "deployterminal": run_deployterminal,
     "shipped": run_shipped,
     "spec": run_spec,
@@ -1264,6 +1288,9 @@ if __name__ == "__main__":
     # honor the kill switch: model-spending jobs don't run while paused.
     # these only read outcomes / move task state / edit thresholds — they never spend tokens
     _SAFE_WHEN_PAUSED = {
+        # Compliance jobs observe and deliver evidence; they spend no tokens and
+        # mutate no protected state, and a pause must not strand spooled evidence.
+        "complianceoutbox", "compliancehealth", "complianceanomaly", "compliancescorecard",
         "resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn",
         "approval_policy.py", "queue_janitor.py", "unstick", "dagfix", "batchmech",
         "selftune", "cluster", "governor", "costslo", "promote", "prewarm",

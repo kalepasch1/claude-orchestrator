@@ -2751,6 +2751,15 @@ _SCHEDULE = [
     # contention, exhausted retries, missing tests each get their targeted requeue automatically.
     # Deterministic classification only; max 2 requeues per task then human escalation.
     ("blockedtriage-600","blocked_triage.py","interval", 600),
+    # Compliance subsystem SLOs (Round 8 audit follow-up). These modules had an
+    # API surface but no clock: evidence_bus.flush() — the durable outbox that
+    # exists so a DB outage cannot discard evidence — had exactly one ad-hoc
+    # caller and no schedule, so a spooled backlog drained only by accident.
+    # Intervals are documented alongside the jobs in compliance_periodic.py.
+    ("complianceoutbox-120","complianceoutbox",   "interval", 120),  # outbox is a buffer, not a queue: keep it near-empty
+    ("compliancehealth-60","compliancehealth",    "interval", 60),   # readiness must be fresher than what it gates
+    ("complianceanomaly-600","complianceanomaly", "interval", 600),  # needs >=4 samples; 10min builds a series within the hour
+    ("compliancescore-900","compliancescorecard", "interval", 900),  # feeds human review, not a control loop
     # Per-initiative progress rollup: strategy-round parts/subparts -> % progress, blockers,
     # deploy-readiness. Persists to coordination KV + .runtime artifact; every surface reads it.
     ("progressroll-300","progress_rollup.py","interval", 300),
@@ -2887,7 +2896,12 @@ _sched_last: dict = {}
 
 # Jobs that NEVER call a model and are safe (even desirable) to run while paused:
 # protect the Mac, and keep read-only spend/health telemetry flowing.
-_SAFE_WHEN_PAUSED = {"resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn",
+_SAFE_WHEN_PAUSED = {
+                     # Compliance observation/delivery: no tokens, no protected-state
+                     # mutation, and a pause must not strand spooled evidence.
+                     "complianceoutbox", "compliancehealth", "complianceanomaly",
+                     "compliancescorecard",
+                     "resource_governor.py", "usage_meter.py", "anomaly.py", "roi", "txn",
                      # Liveness monitoring must survive a pause. A paused fleet is exactly
                      # when a machine can quietly die without anyone noticing, and the
                      # monitor calls no models — it only reads heartbeats and files.

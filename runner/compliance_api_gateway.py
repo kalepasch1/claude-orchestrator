@@ -44,7 +44,24 @@ class ComplianceAPIGateway:
         try:
             endpoint = pieces[2:]
             if method == "GET" and endpoint == ["health"]:
+                # Liveness: the process answers. Deliberately does not consult
+                # the subsystem, so a degraded backlog cannot make the gateway
+                # look dead to whatever is restarting it.
                 return 200, {"status": "ok", "service": "compliance-api-gateway"}
+            if method == "GET" and endpoint == ["readiness"]:
+                # Readiness: backlog age, outbox failures, consumer lag and data
+                # freshness. 503 on "degraded" so a load balancer sheds traffic;
+                # "unknown" (a probe could not be read) is reported as 200 with
+                # the reason, because failing closed on an unreadable probe would
+                # take the subsystem down for an observability fault.
+                try:
+                    import compliance_periodic
+                    snapshot = compliance_periodic.health()
+                except Exception as exc:  # observability must never 500
+                    return 200, {"status": "unknown", "error": str(exc)[:200],
+                                 "service": "compliance-api-gateway"}
+                snapshot["service"] = "compliance-api-gateway"
+                return (503 if snapshot.get("status") == "degraded" else 200), snapshot
             if method == "GET" and len(endpoint) == 2 and endpoint[0] == "apps":
                 return 200, self.isolation.snapshot(body.get("tenant_id", "default"), endpoint[1])
             if method == "POST" and len(endpoint) == 3 and endpoint[0] == "apps" and endpoint[2] == "risk-score":
