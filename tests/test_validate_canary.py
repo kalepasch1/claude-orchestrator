@@ -26,6 +26,26 @@ class ValidateCanaryTest(unittest.TestCase):
         assert validate_canary(None) is False
         assert validate_canary(42) is False
 
+    def test_log_levels_info_on_found_warning_on_missing(self):
+        """Regression: `_log` was never bound, so every call raised NameError.
+
+        Pins the documented contract — INFO when the marker is present,
+        WARNING when it is absent (including non-string, fail-soft input).
+        """
+        import canary as canary_mod
+
+        with self.assertLogs(canary_mod.__name__, level="INFO") as found:
+            assert validate_canary("a canary marker") is True
+        assert [r.levelname for r in found.records] == ["INFO"]
+
+        with self.assertLogs(canary_mod.__name__, level="WARNING") as missing:
+            assert validate_canary("nothing here") is False
+        assert [r.levelname for r in missing.records] == ["WARNING"]
+
+        with self.assertLogs(canary_mod.__name__, level="WARNING") as bad_type:
+            assert validate_canary(None) is False
+        assert [r.levelname for r in bad_type.records] == ["WARNING"]
+
 
 if __name__ == "__main__":
     unittest.main()
