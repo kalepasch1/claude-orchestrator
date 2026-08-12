@@ -1,0 +1,4 @@
+recovery-intent: relfix-pinned-claim-escape-pr-22
+template: fa9331608ad1
+intent: 07190257 6096aa2b 66b09cbc adapt adopt affinity after agent agentic atomic beethoven before beyond bounded branch bugfix build canonical claim claimable claims class coder codex commit contract counsel dependencies deployfix diffs drafting duplicate equivalent escape excerpt exists explicit first flash focused gates gemini github google implementation improvement independent install instead integrate integrated intent introduced leader library matched merge merged missing modules native normal oldest ollama operator orchestration orchestrator order original patch paused pin_rank pinned pipeline planner postgrest preflight preserve prior production
+base: master
