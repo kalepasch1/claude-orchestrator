@@ -1,4 +1,0 @@
-recovery-intent: improve-implement-real-time-monitoring-and-alert-slice-3-integrate-alert-into-pi
-template: 98c00402094e
-intent: 07130635 07190257 20251001 53375a0cecde __init__ acceptance active adapt adding advice after agentic alert allow analysis apierror appropriate artifacts author authoritative available b4fa25c7 batch beethoven before behavior below branch broad bugfix build build_fix category cause change changes changing channels checked checkout checks claim class claud claude cloud coder command commit committing compiled complete completion concrete conditions config configuration conflicts context continue contract coordination credit credits critical cross currently custody deepseek delete denied dependencies deployfix diffs directive disable drafting either empty equivalent
-base: master

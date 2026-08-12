@@ -1,4 +1,0 @@
-recovery-intent: recover-missing-branch-copyfix-beethoven-07190657-slice-2
-template: 9e809c35cc8e
-intent: 07062319 07071626 07190657 1050px 202fb1d6d197752dd44af004e92ac9982c8636ab 6096aa2b 700px acceptance adapt advantage after agent agentic analysis artifacts author authority batch beethoven before behavior below branch branches broad bugfix build cache canonical category cause center changes changing check checks claim class coder columns commit compares completion components concrete config context continue contract copyfix dependencies describe diffs directive drafting equivalent error evident excerpt existing exists failure files final findings finish first flash fresh gemini gmail google green heading helper hints hivemind implementation inspect install
-base: master

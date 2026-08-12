@@ -1,4 +1,0 @@
-recovery-intent: recover-missing-branch-copyfix-beethoven-07190657-slice-2-integrate-patch
-template: fe42745b244b
-intent: 07190657 acceptance adapt agent allow bb22a2 beethoven before branch build canonical completed completes confirm confirmation copyfix diffs drafting ensure excerpt exists first implementation initiated instead integrate integration intent library matched merge merged missing monitor patch pending pipeline prior process project proven provide racefeed rebuilding recover relevant remote reuse running scratch similarity slice solved source status successfully summary tests train transplant trigger triggered visible
-base: master

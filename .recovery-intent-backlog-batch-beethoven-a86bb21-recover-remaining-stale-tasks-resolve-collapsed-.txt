@@ -1,4 +1,0 @@
-recovery-intent: backlog-batch-beethoven-a86bb21-recover-remaining-stale-tasks-resolve-collapsed-
-template: 71396d2535dc
-intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 acceptance active adapt advice after agentic aider allowlist analysis apply author batch beethoven before behavior blocked blocker build build_fix buildfail ce2e8dcd7954 change changeset cheap claim class claude clearly coder collapsed commit commits concern concrete config context contract convert coordination cowork criteria cross custody debate_compress deepseek defined delete deployfix diffs directive drafting ensure excerpt existing exists fable failure first fixes flash force gemini generated google haiku implement implementation improvement improvements
-base: master

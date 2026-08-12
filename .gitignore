@@ -45,3 +45,18 @@ runner/.restart_requested
 reports/cost_intelligence_internal.md
 COMMITTEE_CONSENSUS_OPINION.json
 GC_ORGANIZER_LIABILITY_MEMO.json
+
+# Recovery-intent stub markers.
+#
+# patch_recovery.regenerate_from_intent() writes .recovery-intent-<slug>.txt as a
+# last-resort placeholder so a missing branch at least has a branch again. It is a
+# marker, NOT work (see runner/recovery_stub_detector.py). 188 of them had
+# accumulated at repo root on master, swept in by agent worktrees running
+# `git add -A`, and every one of them is a permanent conflict source: any branch
+# that also creates a marker collides on repo root, which is exactly how
+# relfix-beethoven-299c6b3c3bc6 ended up conflicting on .gitignore plus two
+# .recovery-intent-*.txt files after four redo attempts.
+#
+# Ignoring them stops the accidental sweep-in. patch_recovery still commits its own
+# marker deliberately, via `git add -f`, so that path is unaffected.
+.recovery-intent-*.txt

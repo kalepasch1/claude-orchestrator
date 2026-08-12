@@ -1,4 +1,0 @@
-recovery-intent: recover-missing-branch-remediate-improve-automated-conflict-resolution-run-tests
-template: 0e3a565229a8
-intent: adapt again agent allow bb22a2 before branch build canonical changes completed confirmation diffs drafting ensure excerpt exists expected fails first identify implementation initiated instead integrate integration intent issue library matched merge merged missing patch prior process project proven provide racefeed rebuilding recover relevant reuse revert scratch similarity solved source successfully summary tests train transplant works
-base: master

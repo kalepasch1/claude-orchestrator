@@ -1,4 +1,0 @@
-recovery-intent: improve-implement-real-time-sync-between-web-and-slice-2-implement-websocket-ser
-template: b5bdac8e7544
-intent: 07041728 07130635 07190257 20251001 active adapt advice after agentic america analysis approval artifacts asserts author barks batch beethoven before behavior below between branch broad broadcast bugfix build build_fix category cause change changes changing checks claim class claud claude client cloud coder commit completion concrete config configurable connects context continue contract coordination correct could cowork cross custody deepseek default delete dependencies deployfix details diffs directive directly drafting ensure entry equivalent event events excerpt exhausted existing exists fable failure files final finish
-base: master

@@ -1,4 +1,0 @@
-recovery-intent: improve-missing-branch-auto-creator-slice-3-connect-event-to-branch-creation
-template: 644a8e2954c2
-intent: acceptance after branch broken completes confirms created creation decomposition derived ensure event function functionality handler integration located other passes result triggers
-base: master

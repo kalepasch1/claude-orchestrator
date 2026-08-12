@@ -1,4 +1,0 @@
-recovery-intent: canary-ollama-3-17-slice-1-apply-patch-template-bf2a3f19ec30
-template: c1d0dba50690
-intent: 07062319 07071626 8b92d078e856 acceptance adapt agentic alter analysis apply artifacts because beethoven before behavior below bf2a3f19ec30 blocks branch broad bugfix build canary category cause changes changing checks commit complete completion concrete config context continue dependencies diffs directive drafting duplicate duplicates eliminating equivalent examine existing exists expired failure files final finish first focus fresh functionality green heartbeat identify implementation improve inspect install instead intent large library lines maintainability matched merged minimally missing module ollama original orphaned parent pareto patch performance preserve
-base: main

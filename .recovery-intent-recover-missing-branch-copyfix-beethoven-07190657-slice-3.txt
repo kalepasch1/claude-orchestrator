@@ -1,4 +1,0 @@
-recovery-intent: recover-missing-branch-copyfix-beethoven-07190657-slice-3
-template: a2cb2b88df2b
-intent: 07062319 07071626 07190257 07190657 20251001 470px 6096aa2b 680px active adapt adding advantage agent agentic analysis another anything artifacts asking author automated beethoven before behavior below between blocked border bottleneck branch broad bugfix build cache candidate canonical capability category cause changes changing checks choose claim class claude coder commit completion components concrete config configured context continually continue contract coordination copyfix delete dependencies deployfix deployment describe destination diffs digital directive downside drafting drift embedded equivalent excerpt execution existing exists expected experience failure
-base: master

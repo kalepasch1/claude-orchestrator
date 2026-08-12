@@ -1,4 +1,0 @@
-recovery-intent: improve-upgrade-to-a-high-performance-database-slice-3-wire-store-and-verify-acc
-template: 82d1d588ea42
-intent: acceptance against application asserts available backend baseline build command commit completion concrete config database default documentation ensure existing final first instantiation large leave module original owner performance previous project rapid recorded replace scenario seconds store threshold under updates wiring worse
-base: master

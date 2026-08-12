@@ -1,4 +1,0 @@
-recovery-intent: recover-missing-branch-copyfix-beethoven-07190657-slice-4
-template: 5d6054875c43
-intent: 07130635 07190257 07190657 action active adapt adaptive_probe advice after agentic analysis artifacts author batch beethoven before behavior below blocking branch broad bugfix build build_fix category cause change changes changing checks claim class classifies claud claude cloud coder codestral commit committing compared completion components concrete config connector context continue contract contracts coordination copyfix cross custody decision deepseek delete dependencies deployfix deployment describe diffs digital directive disclosure dispute drafting equivalent error exceptions excerpt existing exists fable failure files final finish first flash
-base: master

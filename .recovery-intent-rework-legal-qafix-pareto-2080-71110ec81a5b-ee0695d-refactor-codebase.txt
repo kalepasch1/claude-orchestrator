@@ -1,4 +1,0 @@
-recovery-intent: rework-legal-qafix-pareto-2080-71110ec81a5b-ee0695d-refactor-codebase
-template: f83a8e57be1b
-intent: acceptance adapt codebase engineer ensuring existing failure focus functionality identify improved improvement indicates intact integrate introducing least merged modularity opportunities performance previous pricinggridreconstructi quality readability reducing refactor remains reproduction review senior significant tasks technical while without
-base: main

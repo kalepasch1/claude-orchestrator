@@ -1,4 +1,0 @@
-recovery-intent: backlog-batch-beethoven-a86bb21-recover-remaining-stale-tasks-identify-and-resol
-template: 081fcc784cd5
-intent: 07062319 07071626 8b92d078e856 a86bb21 acceptance adapt against agentic already alter analysis apply artifacts backlog bankrupted batch because beethoven before behavior below blocked blocker blocks branch branches broad budget bugfix build cache captured category cause chains change changes changing checks cleared collapsed commit complete completion completions concrete config context continue criteria current dependencies diffs directive document drafting duplicate duplicates eliminating equivalent examine excluding existing exists failure files final finish first focus fresh functional functionality green handled hints identify implement implementation improve
-base: master
