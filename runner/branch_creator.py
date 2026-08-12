@@ -7,13 +7,28 @@ credentials (never hardcoded). All git operations use subprocess with
 timeouts to prevent hangs.
 
 Env vars:
-    GITHUB_PAT              Personal access token (required for push)
+    GITHUB_PAT              Personal access token (optional — see below)
     ORCH_GIT_TIMEOUT        Git command timeout in seconds (default 60)
 
+Push credentials:
+    A PAT in the environment is NOT the only way this host can push. After the
+    2026-08-02 plaintext-credential purge, fleet machines authenticate through
+    git's own credential helper (osxkeychain on the Macs) or an SSH remote, and
+    GITHUB_PAT is simply unset. The old hard gate on GITHUB_PAT turned that into
+    "repo not found / PAT lacks access" and blocked every missing-branch
+    auto-recovery on those hosts even though `git push` would have worked.
+
+    `push_credentials()` therefore probes, in order:
+        1. GITHUB_PAT / GITHUB_TOKEN in the environment
+        2. gh_auth.gh_token() (GitHub App → PAT → `gh auth token`)
+        3. an SSH remote (git@…), which authenticates with the agent's keys
+        4. a configured git credential helper (e.g. osxkeychain)
+    and only reports "no credentials" when all four are absent.
+
 Security:
-    - No secrets in code — reads GITHUB_PAT from env only
-    - PAT is never logged or included in error messages
-    - Failed auth returns a generic error, not credential details
+    - No secrets in code — tokens come from the environment or gh_auth only
+    - The token value is never logged or included in a returned reason
+    - Only the *name* of the credential source is ever surfaced
 """
 import os
 import subprocess
@@ -43,6 +58,44 @@ def _git(args, repo):
         return "", False
 
 
+def push_credentials(repo_path):
+    """Return the name of the credential source this host can push with.
+
+    Returns a short source identifier ("env", "gh_auth", "ssh-remote",
+    "credential-helper") or "" when no push credential can be found. Never
+    returns, logs, or raises with the credential value itself.
+
+    Fail-soft: any probe that errors is treated as "this source unavailable"
+    rather than propagating — a broken `gh` binary must not wedge recovery.
+    """
+    # 1. Explicit token in the environment.
+    if os.environ.get("GITHUB_PAT") or os.environ.get("GITHUB_TOKEN"):
+        return "env"
+
+    # 2. gh_auth's own chain (GitHub App install token → PAT → gh CLI).
+    try:
+        import gh_auth
+        if gh_auth.gh_token():
+            return "gh_auth"
+    except Exception as exc:  # noqa: BLE001 - fail-soft, diagnostic logged
+        _log.debug("gh_auth probe unavailable: %s", exc)
+
+    if not repo_path or not os.path.isdir(repo_path):
+        return ""
+
+    # 3. SSH remote — authenticates with the agent's keys, no token needed.
+    url, ok = _git(["remote", "get-url", "origin"], repo_path)
+    if ok and url and (url.startswith("git@") or url.startswith("ssh://")):
+        return "ssh-remote"
+
+    # 4. A configured credential helper (osxkeychain on the fleet Macs).
+    helper, ok = _git(["config", "--get-all", "credential.helper"], repo_path)
+    if ok and helper.strip():
+        return "credential-helper"
+
+    return ""
+
+
 def create_branch(project_id, branch_name, base_branch="main", repo_path=None):
     """Create an agent branch from *base_branch* and push to origin.
 
@@ -63,12 +116,14 @@ def create_branch(project_id, branch_name, base_branch="main", repo_path=None):
     if not ok:
         return {"success": False, "reason": f"invalid branch name: {err}"}
 
-    # ── Check PAT availability (never log the value) ──
-    pat = os.environ.get("GITHUB_PAT", "")
-    if not pat:
+    # ── Check push credentials (never log the value, only the source) ──
+    cred_source = push_credentials(repo_path)
+    if not cred_source:
         return {"success": False,
-                "reason": "GITHUB_PAT not set — cannot push. "
-                          "Set it in the environment before calling."}
+                "reason": "no push credentials — GITHUB_PAT unset, gh auth "
+                          "unavailable, origin is not SSH and no git "
+                          "credential.helper is configured for this repo."}
+    _log.debug("push credential source for %s: %s", project_id, cred_source)
 
     # ── Fetch latest ──
     _, fetched = _git(["fetch", "origin", "--quiet"], repo_path)
@@ -100,7 +155,8 @@ def create_branch(project_id, branch_name, base_branch="main", repo_path=None):
     if not pushed:
         return {"success": False,
                 "reason": "branch created locally but push failed "
-                          "(check GITHUB_PAT scope)"}
+                          f"(credential source: {cred_source} — check its "
+                          "push scope for this repo)"}
 
     _log.info("created branch %s from %s in %s", branch_name, base_branch, project_id)
     return {"success": True, "reason": "created and pushed"}
