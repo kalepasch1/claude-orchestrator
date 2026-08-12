@@ -25,14 +25,22 @@ _CANARY = re.compile(r"\bcanary\b", re.IGNORECASE)
 
 
 def validate_canary(response_text) -> bool:
-    """Return True when `response_text` carries a canary marker."""
+    """Return True when `response_text` carries a canary marker.
+
+    Logs at INFO when the marker is found and at WARNING when it is not. The
+    asymmetry is the point: a missing marker is the condition a pipeline needs
+    to see in a default-level log, so it must not be filed as routine INFO.
+    Fail-soft on non-string input (returns False rather than raising).
+    """
     if not isinstance(response_text, str):
-        logger.warning("validate_canary: non-string input %r -> False", type(response_text))
+        logger.warning("validate_canary: non-string input (%s) -> False",
+                       type(response_text).__name__)
         return False
-    ok = bool(_CANARY.search(response_text))
-    logger.info("validate_canary: %s in %r", "marker found" if ok else "no marker",
-                response_text[:60])
-    return ok
+    if _CANARY.search(response_text):
+        logger.info("validate_canary: marker found in %r", response_text[:60])
+        return True
+    logger.warning("validate_canary: no marker in %r", response_text[:60])
+    return False
 
 
 def main(argv=None) -> int:

@@ -7,8 +7,16 @@ rollback if a metric regressed. Used by the overnight deploy window instead of a
 METRICS_URL must return JSON like {"error_rate":0.4,"p95_ms":180,"conversion":3.1}.
 Thresholds via env: CANARY_MAX_ERROR_RATE, CANARY_MAX_P95_MS, CANARY_MIN_CONVERSION.
 """
+import logging
 import os, sys, json, threading, time, urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+# RESTORED: validate_canary() logs through `_log`, but the module never defined it —
+# the same crash-free-until-used NameError class as the `threading` loss noted below,
+# and from the same family of auto-resolved canary-gemini-25 merges. Every call to
+# validate_canary() raised `NameError: name '_log' is not defined` on its FIRST log
+# line, so the function could never return at all.
+_log = logging.getLogger(__name__)
 
 # RESTORED 2026-08-02: merge c502818b 'Merge branch 'agent/canary-gemini-25-...'
 # (auto-resolved)' dropped the `threading` / `http.server` imports and these two module
@@ -57,22 +65,6 @@ def render_metrics():
             lines.append(f"# TYPE {name} gauge")
             lines.append(f"{name} {_gauges[name]}")
     return ("\n".join(lines) + "\n").encode()
-
-
-def validate_canary(response_text):
-    """True when 'canary' (case-insensitive) appears anywhere in response_text.
-
-    Logs at INFO when the canary marker is found, WARNING when it is not.
-    Fail-soft on non-string input (returns False rather than raising).
-    """
-    if not isinstance(response_text, str):
-        _log.warning("canary marker not found: non-string input (%s)", type(response_text).__name__)
-        return False
-    if "canary" in response_text.lower():
-        _log.info("canary marker found in response text")
-        return True
-    _log.warning("canary marker NOT found in response text")
-    return False
 
 
 def validate_canary(response_text):
