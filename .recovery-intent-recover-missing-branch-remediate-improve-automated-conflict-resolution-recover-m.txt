@@ -1,4 +1,0 @@
-recovery-intent: recover-missing-branch-remediate-improve-automated-conflict-resolution-recover-m
-template: c49711afe552
-intent: 07062319 07071626 8b92d078e856 acceptance adapt agentic alter analysis artifacts automated based because beethoven before behavior below beyond blocks branch branches broad bugfix build cache category cause changes changing checks closely commit completion concrete config conflict containing context continue conventions create dependencies descriptive diffs directive drafting duplicate duplicates eliminating equivalent examine existing exists failure features files final finish first focus focused fresh functionality green helpers hints identify implementation improve inspect install instead integral intent introduce large library lines local maintainability matched
-base: master

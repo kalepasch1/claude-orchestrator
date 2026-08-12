@@ -449,7 +449,11 @@ def _create_intent_stub(repo, slug, branch, base, intent_words, template_id=None
             f.write(f"base: {base}\n")
 
         env = _git_commit_env()
-        subprocess.run(["git", "add", stub_path], cwd=wt, env=env, capture_output=True)
+        # -f is required: .recovery-intent-*.txt is gitignored so that agent worktrees
+        # running `git add -A` stop sweeping stray markers into repo root (188 had
+        # accumulated on master, each one a permanent cross-branch conflict source).
+        # This call is the one place a marker is committed on purpose, so it opts out.
+        subprocess.run(["git", "add", "-f", stub_path], cwd=wt, env=env, capture_output=True)
         r2 = subprocess.run(["git", "commit", "--no-verify", "-m",
                             f"recovery-intent-stub: {slug}\n\nintent: {intent_text}"],
                            cwd=wt, env=env, capture_output=True, text=True)

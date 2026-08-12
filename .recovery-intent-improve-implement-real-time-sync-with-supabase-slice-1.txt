@@ -1,4 +1,0 @@
-recovery-intent: improve-implement-real-time-sync-with-supabase-slice-1
-template: 9b979d8cefcd
-intent: 07041728 07190257 actions active adapt advice after agent agentic analysis artifacts asking author barks batch beethoven before behavior below bottleneck branch broad bugfix build build_fix category cause change changes changing checks claim class claude cloud coder commit committed complete completion concrete config context continue contract coordination cross custody deepseek delete dependencies deployed deployfix diffs directive draft drafting enter equivalent error excerpt existing exists fable failure feedback files final finish first flash force fresh gemini generated google green implement implementation improve
-base: main

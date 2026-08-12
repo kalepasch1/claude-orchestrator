@@ -1,4 +1,0 @@
-recovery-intent: improve-upgrade-to-a-high-performance-database-slice-3-verify-base-branch-and-lo
-template: 6eba84cd1d0a
-intent: asserts branch build class command compilable compileall concrete config_db configstore configuration correctly create currently dummy ensure entry equivalent existence first function gradlew implements imports instantiate keywords load_config located master method minimal module named necessary needed package persistence point project python remote rename repository save_config search supplies tracking update upgrade value
-base: master

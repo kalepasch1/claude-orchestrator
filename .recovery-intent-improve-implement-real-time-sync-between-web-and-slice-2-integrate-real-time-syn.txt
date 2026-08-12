@@ -1,4 +1,0 @@
-recovery-intent: improve-implement-real-time-sync-between-web-and-slice-2-integrate-real-time-syn
-template: 2e2d32a0520e
-intent: changes channel communication configuring correctly existing feature focusing implemented integrate interface involve minimal newly runner should using vercel
-base: master

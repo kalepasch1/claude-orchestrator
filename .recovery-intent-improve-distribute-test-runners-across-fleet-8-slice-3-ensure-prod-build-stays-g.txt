@@ -1,4 +1,0 @@
-recovery-intent: improve-distribute-test-runners-across-fleet-8-slice-3-ensure-prod-build-stays-g
-template: 07f08fa42171
-intent: 07130635 07190257 20251001 across active adapt advice after agentic analysis artifacts author batch beethoven before behavior below branch broad bugfix build build_fix category cause change changes changing checks claim class claud claude cloud coder command commit complete completion concrete config connection context continue contract coordination cross custody decomposed deepseek delete dependencies deployfix devmerge diffs directive distribute drafting ensure equivalent errno exception excerpt existing exists explore failover failure files final finish first flash fleet force fresh gemini generated google green haiku
-base: master

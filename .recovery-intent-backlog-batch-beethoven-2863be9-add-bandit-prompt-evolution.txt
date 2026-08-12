@@ -1,4 +1,0 @@
-recovery-intent: backlog-batch-beethoven-2863be9-add-bandit-prompt-evolution
-template: 1d8d68e15541
-intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 acceptance actions active adapt advice after agentic aider algorithm allowlist among analysis armed author bandit bandit_selector based batch beethoven before behavior blocked blocker bottleneck budget build build_fix buildfail caused ce2e8dcd7954 change cheap claim class claude clearly cloud coder codex commit concern concrete config consumer context contract converges convert coordination cross custody decay deepseek defined delete deployfix diffs directive drafting epsilon error excerpt existing exists fable feedback first flash force
-base: master

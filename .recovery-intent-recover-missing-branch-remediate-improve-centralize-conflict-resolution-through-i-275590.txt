@@ -1,4 +1,0 @@
-recovery-intent: recover-missing-branch-remediate-improve-centralize-conflict-resolution-through-i-275590
-template: bf2eb5ab1d70
-intent: 07190257 20251001 275590 6096aa2b adapt agent agentic author beethoven before below branch build cache canonical capabilities centralize claim class claude code_generation coder codestral commit conflict context contract deepseek deployfix diffs drafting equivalent excerpt executor exists explore first flash gemini google haiku implementation improve independent install instead integrate integrated integration_sweeper intent leader library local matched merge merged missing model modules native ollama orchestration original panel patch pipeline planner prefer preflight prior project prompt proven queued racefeed rebuilding recover recovery recreate relevant
-base: master
