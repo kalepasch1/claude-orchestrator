@@ -6,7 +6,8 @@
   "main": "./shared/contracts/index.ts",
   "exports": {
     ".": "./shared/contracts/index.ts",
-    "./contracts": "./shared/contracts/index.ts"
+    "./contracts": "./shared/contracts/index.ts",
+    "./types": "./shared/types/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
