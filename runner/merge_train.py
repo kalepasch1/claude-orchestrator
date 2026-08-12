@@ -30,6 +30,28 @@ the legacy merge-handler are skipped.
 import datetime, json, os, re, sys, subprocess, threading, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+
+
+def _load_guard(name):
+    """Resolve a runner/ guard module without depending on sys.path shape.
+
+    A bare ``import regression_guard`` fails whenever runner/ is not on sys.path,
+    and because the gates FAIL CLOSED that false unavailable blocks clean branches.
+    Returns None only when the module truly cannot be loaded.
+    """
+    try:
+        from runner.sibling_import import load_sibling
+    except Exception:
+        try:
+            from sibling_import import load_sibling
+        except Exception:
+            try:
+                return __import__(name)
+            except Exception:
+                return None
+    return load_sibling(name)
+
+
 # RESTORED 2026-07-31 (overwrite-class recovery; static_sanity gate)
 _RELFIX_PREFIXES = ("relfix-", "qafix-", "deployfix-", "buildfix-", "copyfix-")
 try:
@@ -294,11 +316,10 @@ def _regression_gate(repo, base, branch, candidate_sha):
     if os.environ.get("ORCH_MERGE_REGRESSION_GUARD", "true").strip().lower() in (
             "0", "false", "no", "off"):
         return True, "regression guard disabled by ORCH_MERGE_REGRESSION_GUARD"
-    try:
-        import regression_guard
-    except Exception as exc:
-        return False, (f"regression guard unavailable (fail-closed): "
-                       f"{type(exc).__name__}: {exc}")
+    regression_guard = _load_guard("regression_guard")
+    if regression_guard is None:
+        return False, ("regression guard unavailable (fail-closed): "
+                       "runner/regression_guard.py could not be loaded")
     try:
         msg = _git(repo, "log", "--format=%s%n%b", f"{base}..{branch}", timeout=60).stdout or ""
     except Exception:
