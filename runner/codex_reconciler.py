@@ -144,6 +144,25 @@ def _live_task_slugs():
         return set()
 
 
+def _uncommitted_paths(item):
+    """Files the evidence worktree has that were never committed.
+
+    Prefers the scanner's own `changes` list; falls back to asking the worktree directly,
+    because an item can carry a head without a change list (the detached-worktree kinds do).
+    Read-only: `git status --porcelain` touches nothing.
+    """
+    changes = [c for c in (item.get("changes") or []) if c]
+    if changes:
+        return changes
+    path = item.get("path")
+    if not path or not os.path.isdir(str(path)):
+        return []
+    rc, out = _git(str(path), "status", "--porcelain")
+    if rc != 0:
+        return []
+    return [ln[3:].strip() for ln in out.splitlines() if ln.strip()]
+
+
 def _slug_candidates(item):
     """Every slug a piece of evidence could plausibly be tracked under."""
     out = set()
@@ -182,11 +201,29 @@ def classify_item(item, repo, base_ref="origin/master", remote_heads=None,
                               f"needs a human-scoped recovery task",
                     "evidence": {"kind": kind}}
 
-        # 2. Positive proof the work landed. Ancestry first (cheap and exact).
+        # 2. Positive proof the work landed. Ancestry first (cheap and exact) — but a
+        #    committed head says nothing about UNCOMMITTED work sitting on top of it.
+        #
+        #    FOUND THE HARD WAY, 2026-08-12. This classifier called
+        #    Codex/2026-08-07/cons/work/orchestrator-session-fabric-current ALREADY_PRESENT
+        #    because 59de85f2 is an ancestor of origin/master — while that worktree held 18
+        #    uncommitted files (the whole operator-output-truth change: terminal lockdown,
+        #    path containment, the paused-host guard v2 migration). The verdict was
+        #    "nothing here" for a directory containing 386 lines of unshipped work. It was
+        #    recovered only because a sibling artifact happened to carry the same patch.
+        #    Ancestry proves the COMMIT landed. It is not proof the DIRECTORY is empty.
         if head and _commit_exists(repo, head) and _is_ancestor(repo, head, base_ref):
-            return {"classification": ALREADY_PRESENT,
-                    "reason": f"{head[:12]} is an ancestor of {base_ref}",
-                    "evidence": {"head": head, "base": base_ref}}
+            dirty = _uncommitted_paths(item)
+            if not dirty:
+                return {"classification": ALREADY_PRESENT,
+                        "reason": f"{head[:12]} is an ancestor of {base_ref} and the "
+                                  f"worktree is clean",
+                        "evidence": {"head": head, "base": base_ref}}
+            return {"classification": RECOVERABLE_VALUE,
+                    "reason": (f"{head[:12]} is an ancestor of {base_ref}, but the worktree "
+                               f"holds {len(dirty)} uncommitted file(s) that never left it"),
+                    "evidence": {"head": head, "base": base_ref,
+                                 "uncommitted": dirty[:20]}}
 
         # 3. Somebody already owns it — a live task, or an agent branch on origin.
         owned = sorted(slugs & live_slugs)

@@ -41,11 +41,43 @@ class ClassifyTest(unittest.TestCase):
         v = cr.classify_item({"kind": "dirty_worktree", "error": "unreadable"}, "/repo")
         self.assertEqual(v["classification"], cr.CONFLICTED)
 
-    def test_ancestor_commit_is_already_present(self):
+    def test_ancestor_commit_on_a_clean_worktree_is_already_present(self):
         with mock.patch.object(cr, "_commit_exists", return_value=True), \
-             mock.patch.object(cr, "_is_ancestor", return_value=True):
+             mock.patch.object(cr, "_is_ancestor", return_value=True), \
+             mock.patch.object(cr, "_uncommitted_paths", return_value=[]):
             v = cr.classify_item({"kind": "dirty_worktree", "head": "a" * 40}, "/repo")
         self.assertEqual(v["classification"], cr.ALREADY_PRESENT)
+
+    def test_ancestor_commit_with_uncommitted_files_is_recoverable(self):
+        # REGRESSION (2026-08-12). orchestrator-session-fabric-current was called
+        # ALREADY_PRESENT on ancestry alone while holding 18 uncommitted files — 386 lines
+        # of unshipped work reported as "nothing here". Ancestry proves the COMMIT landed;
+        # it is not proof the DIRECTORY is empty.
+        with mock.patch.object(cr, "_commit_exists", return_value=True), \
+             mock.patch.object(cr, "_is_ancestor", return_value=True), \
+             mock.patch.object(cr, "_uncommitted_paths",
+                               return_value=["web/server/utils/fleetHealth.ts"]):
+            v = cr.classify_item({"kind": "detached_codex_worktree", "head": "a" * 40},
+                                 "/repo")
+        self.assertEqual(v["classification"], cr.RECOVERABLE_VALUE)
+        self.assertIn("uncommitted", v["evidence"])
+
+    def test_uncommitted_paths_prefers_the_scanner_change_list(self):
+        self.assertEqual(cr._uncommitted_paths({"changes": ["a.py", "b.py"]}),
+                         ["a.py", "b.py"])
+
+    def test_uncommitted_paths_falls_back_to_asking_the_worktree(self):
+        with mock.patch.object(os.path, "isdir", return_value=True), \
+             mock.patch.object(cr, "_git", return_value=(0, " M web/x.ts\nA  y.sql\n")):
+            self.assertEqual(cr._uncommitted_paths({"path": "/w"}), ["web/x.ts", "y.sql"])
+
+    def test_uncommitted_paths_on_a_missing_worktree_is_empty(self):
+        self.assertEqual(cr._uncommitted_paths({"path": "/no/such/dir"}), [])
+
+    def test_uncommitted_paths_on_git_failure_is_empty(self):
+        with mock.patch.object(os.path, "isdir", return_value=True), \
+             mock.patch.object(cr, "_git", return_value=(128, "")):
+            self.assertEqual(cr._uncommitted_paths({"path": "/w"}), [])
 
     def test_unknown_commit_is_never_already_present(self):
         # A sha the repo has never seen proves nothing. Calling that ALREADY_PRESENT is how
