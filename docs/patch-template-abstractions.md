@@ -1,151 +1,110 @@
-# Patch-template abstractions — what to reuse, and why
+# Patch-template abstractions: what we lift from a prior diff, and why
 
-Task: `dropbox-beethoven-audit-addendum-two-session-recon-slice-1-adapt-patch-template`.
+Owner module: `runner/patch_adaptation.py`
+Consumer: `runner/patch_templates.py` → `build()` → `patch_adaptation.directive()`
+Tests: `runner/tests/test_patch_adaptation_snippets.py`
 
-> "Analyze the extracted `patch_template.diff`. Identify core code changes … and abstract them into
-> reusable snippets or functions. Document these abstractions with comments explaining their
-> purpose. **Acceptance: Create a document outlining the identified abstractions and their
-> rationale.**"
+## The problem this addresses
 
-The acceptance criterion is a document, so this document is the deliverable. Verified against
-`origin/master` @ `59de85f2`.
+`patch_templates.build()` injects the nearest merged diffs into a queued task's
+prompt so the agentic coder adapts proven work instead of drafting net-new code.
+Until now that injection carried only **names**: "a prior diff defined
+`normalize_slug`", "a prior diff called `select()`".
 
-## Correction: there is no `patch_template.diff`
+A name is enough to tell a coder *that* an abstraction exists. It is not enough
+to tell it *what shape* the abstraction had. Handed a name alone, the coder
+reconstructs the function from the task description — which is precisely the
+net-new drafting the reuse-first policy is meant to prevent. The prior diff's
+structure is discarded at exactly the moment it would have been useful.
 
-`find . ~/.claude-orchestrator -name "patch_template*.diff"` returns nothing; no such file is
-tracked, and none exists in the runtime store. What *does* exist is the machinery the phrase
-points at:
+## The abstractions
 
-| Path | Role |
-|---|---|
-| `runner/patch_templates.py` | build / store / **lookup** a template; the `pre_claim_hook` that injects one into a task prompt |
-| `runner/patch_template_apply.py` | apply a template to a repo |
-| `runner/patch_transplant.py` | adapt a *proven prior diff* into a new context |
-| `runner/merged_diff_library.py` | find those proven prior diffs |
-| `runner/tests/PATCH_TEMPLATE_REGISTRY.md` | hash → owner module → acceptance test |
+Analysis of the extracted `patch_template.diff` payloads identified four classes
+of reusable content. Three were already captured; the fourth — the concrete code
+change itself — was not, and is what this work adds.
 
-So the analysis below is of the **template mechanism as it actually exists**, not of a diff file
-that does not. Abstracting from a file I cannot read would be fabrication.
+### 1. `changed_files(diff_text)` — the topology abstraction
+**Already present.** Answers *where* a change lives. Prefers the `diff --git`
+headers and falls back to `+++` lines, so it degrades gracefully on diffs that
+have been truncated by the merged-diff library.
 
----
+**Rationale:** owner directories are the single strongest signal against the
+most common agent failure mode — creating a parallel module beside the real one.
 
-## The five abstractions worth reusing
+### 2. `extract_patterns(diff_text, files)` — the vocabulary abstraction
+**Already present.** Answers *what names* a change introduced (`defines`), *what
+existing helpers it leaned on* (`reuses`), *what it imported*, *where its tests
+went*, and *what naming convention* the area follows.
 
-### A1 — `lookup(template_id)`: resolve-by-id with a two-tier fail-soft store
+**Rationale:** `reuses` is deliberately filtered against `_NOISE` and private
+`_`-prefixed names. A helper that a *merged* patch called is a helper that
+exists and is public — a safe instruction to give a coder. A private helper is
+not, because it may be module-local to a file the new task will never touch.
 
-```python
-def lookup(template_id):
-    """Resolve a stored patch template by id. Fail-soft: returns {} on any miss/error."""
-```
+### 3. `merge_patterns(pattern_list)` — the consensus abstraction
+**Already present, extended here.** Unions several per-diff profiles into one.
+Where two prior diffs disagree the union wins; where they agree the signal is
+implicitly stronger because it survives in every profile.
 
-**Shape:** normalise the key → try the **local JSONL** store (`.runtime/patch_templates.jsonl`,
-newest matching line wins) → fall back to the **`knowledge` table** → return `{}`.
+**Rationale:** a single nearest-neighbour diff is a weak sample. Two or three
+agreeing on an owner directory is close to a fact about the repo.
 
-**Why it is the right abstraction.** It separates *identity* from *storage*. Callers hold a
-12-hex id and never learn whether the answer came from disk or the DB, so the DB can be down and
-recovery still works. Corrupt JSONL lines are skipped individually rather than failing the read.
+### 4. `reusable_snippets(diff_text)` — the code-shape abstraction (new)
+Lifts the added body of every top-level definition out of the diff and returns
+it as `{"name", "kind", "language", "signature", "body"}`.
 
-**Reuse it for:** any content-addressed artifact the fleet stores and later needs back — templates,
-diffs, receipts, proofs. Do not re-derive the local-first ordering; it is what makes the store
-useful during an outage, which is exactly when recovery runs.
+**Rationale:** this is the abstraction the previous three were approximating.
+Names describe the change; the snippet *is* the change. Rendering it back into
+the patch template lets the coder edit proven code rather than reproduce it.
 
-### A2 — `exact_slug_re(slug)`: boundary-exact identifier matching
+Four constraints keep the abstraction safe to inject:
 
-```python
-return re.compile(r"(?<![A-Za-z0-9._-])" + re.escape(slug) + r"(?![A-Za-z0-9._-])")
-```
+| Constraint | Mechanism | Why |
+| --- | --- | --- |
+| Only added code is lifted | any non-`+` line clears the collector | Context lines already exist in the target repo. Emitting them would imply the prior patch made edits it never made. |
+| Hunk and file headers end a body | `@@`, `diff --git`, `+++`, `---`, `index ` clear the collector | Two hunks are two disjoint regions; splicing them produces code that never existed. |
+| Bodies are dedented | `_dedent_body()` strips the shared leading indent | A method body pasted at its original indent reads as broken code and invites the coder to "fix" the indentation of unrelated lines. |
+| Volume is bounded | `MAX_SNIPPETS = 4`, `SNIPPET_BODY_LINES = 12` | Snippets carry whole bodies and cost far more prompt budget than names. The coder needs the shape, not a verbatim replay it can fetch in full from the merged-diff library. |
 
-Lives in `landed_evidence.py`, and is the single most load-bearing four lines in the fleet.
+### 5. `_render_snippets(snippets)` — the presentation abstraction (new)
+Prefixes every emitted line so the block stays diff-shaped, and labels each
+snippet with why it is present.
 
-**Why.** A truncated or unanchored slug match caused a **76.6% phantom rate** across 13,816
-"MERGED" tasks. Three failure modes, all fixed by this one pattern plus a tree check:
-scaffolding that names the slug it failed to recover; 48-char prefix collisions letting sibling
-slices certify each other; and empty commits counting as evidence.
+**Rationale:** `preliminary_diff()` is explicitly *not an appliable patch* — it
+is the shape a patch should take. A block that stops looking like a diff halfway
+through invites an agent to try to `git apply` it. The rendering contract is
+pinned by `test_every_rendered_line_stays_diff_shaped`.
 
-**Reuse it for:** every "did X land / is X referenced" question. `re.escape` also means a slug is
-never accidentally read as a regex.
+## Design decisions worth recording
 
-### A3 — The fail-soft boolean contract: *return the outcome, not the completion*
+**Additive, not replacing.** `snippets` is a new key alongside `defines`; no
+existing key changed meaning. Every caller of `extract_patterns` and
+`merge_patterns` keeps working unmodified. This is what "smallest mergeable
+diff" means for a module with several live consumers.
 
-Codified in `tests/test_merged_diff_memory_capture_bool.py`:
+**Fail-soft throughout.** `reusable_snippets` returns `[]` on `None`, integers,
+dicts, and text that is not a diff. `patch_templates.build()` already wraps its
+adaptation call in a bare `except`, but a template builder that can be broken by
+one malformed archived diff would silently degrade every task in the queue —
+so the failure is contained at the source rather than at the call site.
 
-> "return True if the memory file was written successfully, False on ANY error (bad git refs, no
-> diffs, write failure), and never raise. … The load-bearing case is `no diffs -> False`.
-> Returning True there would tell a caller that memory is current when nothing was persisted."
+**Regex table over branching.** `_SNIPPET_HEADERS` is an ordered tuple of
+`(pattern, kind, language)`. Adding a language is one row, not a new branch in
+a growing `if` chain. Order matters: `class` precedes `def` so a decorated
+method is attributed to its own definition line.
 
-**Why.** The recurring defect in this codebase is *a guard that reports success because the
-function completed rather than because the work happened*. A function that returns `True` after
-doing nothing is worse than one that raises, because nothing downstream can tell.
+**Named constants over literals.** `MAX_SNIPPETS` and `SNIPPET_BODY_LINES` are
+module-level and referenced by the tests, so a future budget change is one edit
+and the tests move with it rather than against it.
 
-**The reusable rule, in three lines:**
+## Verification
 
-```python
-try:
-    return _do_the_work(...)          # True only if the work HAPPENED
-except Exception as e:
-    logger.warning("<module>: <op> failed: %s: %s; fail-soft False", type(e).__name__, e)
-    return False                       # logged, then swallowed — never a silent pass
-```
-
-A broad `except` is the convention here; a **silent** one is the defect.
-
-### A4 — Direction of failure is a per-call-site decision
-
-`branch_lease.acquire` fails **CLOSED**:
-
-> "An unavailable lease control plane is not proof of contention. Fail closed and let the runner
-> requeue instead of turning an RPC outage into a task error."
-
-`branch_lease.heartbeat` fails **SOFT (ALIVE)** on the same outage.
-
-**Why both are right.** Acquire guards a *safety* property (one writer per branch) — ambiguity must
-block. Heartbeat guards a *liveness* property — ambiguity must not kill healthy work. A single
-"fail-soft everywhere" policy gets one of them wrong.
-
-**Reuse:** state the direction and the reason in a comment at every fail-soft branch. This is a
-documentation abstraction, not a code one, and it is the one most often skipped.
-
-### A5 — Additive, non-mutating hooks
-
-`pre_claim_hook` returns `{**task, "prompt": new_prompt}` and carries this comment:
-
-```python
-# DO NOT write back to DB — keep original prompt intact for retries
-```
-
-The header records why: `"FIXED 2026-07-11: removed db.update() that permanently corrupted prompts."`
-
-**Why.** A hook that mutates shared state makes retries non-idempotent — the second attempt sees a
-prompt the first one rewrote. Returning a new dict keeps every retry identical to the first.
-The `MARK` sentinel makes it idempotent in the other direction too: an already-templated task is
-returned unchanged rather than double-templated.
-
-**Reuse:** any enrichment hook in the pipeline. Take a value, return a new value, touch nothing.
-
----
-
-## The pattern behind all five
-
-Every one of these came from a **measured incident**, and each is written so the incident cannot
-recur silently:
-
-| Abstraction | The failure it encodes |
-|---|---|
-| A1 `lookup` | recovery could not resolve a template back from its id |
-| A2 boundary match | 10,584 phantom merges (76.6%) |
-| A3 outcome-not-completion | "success" reported for work that never happened |
-| A4 fail direction | an RPC outage becoming either a task error or a double writer |
-| A5 additive hooks | a hook permanently corrupting task prompts |
-
-**The meta-rule for future slices:** when you find yourself writing one of these five shapes, import
-it instead. When you must write a new one, record the incident that justifies it in the docstring —
-that is what makes the next agent reuse it rather than rediscover it.
-
-## Where the registry fits
-
-`runner/tests/PATCH_TEMPLATE_REGISTRY.md` maps each template hash to its owner module and
-acceptance test, and requires the row to be added **in the same commit** as a new hash-scoped test.
-That convention is itself abstraction A1 applied to tests: an artifact you can resolve back from
-its id. A template with no registry row is a template nobody can find again.
-
-*Analysis only; no source modified.*
+- `runner/tests/test_patch_adaptation_snippets.py` — 21 tests, all passing.
+- Coverage: extraction (python + typescript), context/removed-line exclusion,
+  hunk-boundary termination, dedent, bounding by both default and explicit
+  limit, garbage input, profile integration, dedupe across diffs, rendering
+  shape, truncation, and the two `directive()` paths.
+- Pre-existing unrelated failures in
+  `runner/tests/test_patch_template_conflict_handling.py` (12) were confirmed
+  present on unmodified `origin/master` before this change and are untouched
+  by it.
