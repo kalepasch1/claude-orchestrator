@@ -1,0 +1,4 @@
+{
+  "_comment": "Apps whose public tables are intentionally anon-readable. rls_guard still records their posture in security_posture; it just does not file a sec-rls-<app> remediation task for them. Add an app only after an operator has judged the exposure acceptable.",
+  "apps": []
+}
