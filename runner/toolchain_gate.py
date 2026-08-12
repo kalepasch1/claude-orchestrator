@@ -36,7 +36,46 @@ PROBES = [
     {"files": ["vite.config.ts", "vite.config.js"], "cmd": ["npx", "vite", "--version"], "name": "vite"},
     {"files": ["go.mod"], "cmd": ["go", "version"], "name": "go"},
     {"files": ["Makefile"], "cmd": ["make", "--version"], "name": "make"},
+    # System-level build prerequisites. Only probed when the tree actually declares a
+    # native build — an unconditional gcc/cmake probe would red a pure-JS project for a
+    # compiler it never invokes.
+    {"files": ["CMakeLists.txt"], "cmd": ["cmake", "--version"], "name": "cmake"},
+    {"files": ["CMakeLists.txt", "binding.gyp", "configure.ac"],
+     "cmd": ["cc", "--version"], "name": "cc"},
 ]
+
+
+def _probe_roots(repo_path):
+    """Every directory a probe's config file may live in, nearest-first.
+
+    The scan was `os.path.isfile(os.path.join(repo_path, f))` — the repository ROOT
+    only. In a monorepo the toolchain the build actually needs is declared one level
+    down: this repo's `nuxt.config.ts`, `tsconfig.json` and `package-lock.json` are all
+    under `web/`, so the nuxt, tsc and npm probes never fired and the gate reported a
+    ready toolchain for a tree whose real build tools it had never looked at.
+
+    That is the same monorepo blindness that let `clean_clone_gate` install the empty
+    root package and then build `web/`. `dependency_prewarm.package_roots()` already
+    solves it for build_gate and clean_clone_gate; reuse it rather than re-deriving.
+    """
+    roots = [repo_path]
+    try:
+        import dependency_prewarm
+        for root in (dependency_prewarm.package_roots(repo_path) or []):
+            if root not in roots:
+                roots.append(root)
+    except Exception:  # fail-soft: root-only probing is the old behaviour, not a crash
+        pass
+    return roots
+
+
+def _probe_target(repo_path, probe):
+    """(config_dir, config_file) for the first root declaring this probe, else None."""
+    for root in _probe_roots(repo_path):
+        for name in probe["files"]:
+            if os.path.isfile(os.path.join(root, name)):
+                return root, name
+    return None
 
 
 def _load_state():
@@ -68,20 +107,34 @@ def check_project(project_id, repo_path):
     except Exception:
         pass
     for probe in PROBES:
-        # Only check if the project has the relevant config files
-        if not any(os.path.isfile(os.path.join(repo_path, f)) for f in probe["files"]):
+        # Only check if the project declares the relevant config file — anywhere in the
+        # tree's package roots, not merely at the repository root.
+        target = _probe_target(repo_path, probe)
+        if not target:
             continue
+        config_dir, config_file = target
+        # Run the probe where the config lives: `npx tsc` resolves the local binary from
+        # the nearest node_modules, so probing web/tsconfig.json from the repo root asks
+        # the wrong directory and reports a missing tool that is installed.
+        cwd = config_dir if config_dir != repo_path else probe_path
         try:
-            r = subprocess.run(probe["cmd"], capture_output=True, timeout=30, cwd=probe_path)
+            r = subprocess.run(probe["cmd"], capture_output=True, timeout=30, cwd=cwd)
             if r.returncode != 0:
-                failures.append({"tool": probe["name"],
+                failures.append({"tool": probe["name"], "declared_by": config_file,
+                                 "root": os.path.relpath(config_dir, repo_path),
                                  "error": (r.stderr.decode()[:200] if r.stderr else "exit code " + str(r.returncode))})
         except FileNotFoundError:
-            failures.append({"tool": probe["name"], "error": f"{probe['cmd'][0]} not found in PATH"})
+            failures.append({"tool": probe["name"], "declared_by": config_file,
+                             "root": os.path.relpath(config_dir, repo_path),
+                             "error": f"{probe['cmd'][0]} not found in PATH"})
         except subprocess.TimeoutExpired:
-            failures.append({"tool": probe["name"], "error": "timeout (>30s)"})
+            failures.append({"tool": probe["name"], "declared_by": config_file,
+                             "root": os.path.relpath(config_dir, repo_path),
+                             "error": "timeout (>30s)"})
         except Exception as e:
-            failures.append({"tool": probe["name"], "error": str(e)[:200]})
+            failures.append({"tool": probe["name"], "declared_by": config_file,
+                             "root": os.path.relpath(config_dir, repo_path),
+                             "error": str(e)[:200]})
 
     # "build RED: npm not installed" is usually node_modules missing, not the npm binary
     # itself — that's a cheap filesystem check (no subprocess), so run it unconditionally.
