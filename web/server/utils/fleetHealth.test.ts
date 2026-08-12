@@ -1,45 +1,45 @@
-import { mkdtemp, rm, unlink, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
-import { readFleetHealth } from './fleetHealth'
+import { summarizeFleetHealth } from './fleetHealth'
 
-const temporary: string[] = []
+const NOW = Date.parse('2026-08-07T12:00:00Z')
 
-afterEach(async () => {
-  await Promise.all(temporary.splice(0).map(path => rm(path, { recursive: true, force: true })))
-})
-
-async function stateFile(contents: string): Promise<string> {
-  const dir = await mkdtemp(join(tmpdir(), 'fleet-health-'))
-  temporary.push(dir)
-  const path = join(dir, 'sentinel_state.json')
-  await writeFile(path, contents, 'utf8')
-  return path
-}
-
-describe('readFleetHealth', () => {
-  it('returns true only for an explicit true sentinel flag', async () => {
-    expect(await readFleetHealth([await stateFile('{"db_up":true}')]))
-      .toEqual({ db_up: true })
+describe('summarizeFleetHealth', () => {
+  it('reports a fresh, contract-consistent fleet as healthy', () => {
+    expect(summarizeFleetHealth([
+      { runner_id: 'runner-a', hostname: 'Mac-A', last_seen: '2026-08-07T11:59:30Z', code_sha: 'abc', contract_hash: 'v1' },
+      { runner_id: 'runner-a-lane', hostname: 'Mac-A lane 1', last_seen: '2026-08-07T11:59:20Z', code_sha: 'abc', contract_hash: 'v1' },
+    ], NOW)).toEqual({
+      db_up: true,
+      status: 'healthy',
+      heartbeat_seconds: 30,
+      machines_live: 1,
+      contract_consistent: true,
+    })
   })
 
-  it('fails soft for false, missing, malformed, and deleted state', async () => {
-    expect(await readFleetHealth([await stateFile('{"db_up":false}')]))
-      .toEqual({ db_up: false })
-    expect(await readFleetHealth([await stateFile('{}')]))
-      .toEqual({ db_up: false })
-    expect(await readFleetHealth([await stateFile('{not-json')]))
-      .toEqual({ db_up: false })
-    const deleted = await stateFile('{"db_up":true}')
-    await unlink(deleted)
-    expect(await readFleetHealth([deleted])).toEqual({ db_up: false })
+  it('reports live Macs with mixed runner contracts as degraded', () => {
+    expect(summarizeFleetHealth([
+      { hostname: 'Mac-A', last_seen: '2026-08-07T11:59:30Z', code_sha: 'abc', contract_hash: 'v1' },
+      { hostname: 'Mac-B', last_seen: '2026-08-07T11:59:20Z', code_sha: 'def', contract_hash: 'v2' },
+    ], NOW)).toMatchObject({
+      db_up: true,
+      status: 'degraded',
+      machines_live: 2,
+      contract_consistent: false,
+    })
   })
 
-  it('checks fallback locations in order', async () => {
-    const valid = await stateFile('{"db_up":true}')
-    expect(await readFleetHealth(['/definitely/missing/sentinel.json', valid]))
-      .toEqual({ db_up: true })
+  it('does not count stale or invalid heartbeats as live', () => {
+    expect(summarizeFleetHealth([
+      { hostname: 'Mac-A', last_seen: '2026-08-07T11:40:00Z', code_sha: 'abc', contract_hash: 'v1' },
+      { hostname: 'Mac-B', last_seen: 'invalid' },
+    ], NOW)).toEqual({
+      db_up: false,
+      status: 'down',
+      heartbeat_seconds: 1200,
+      machines_live: 0,
+      contract_consistent: false,
+    })
   })
 })

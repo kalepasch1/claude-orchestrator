@@ -7,7 +7,7 @@ definePageMeta({ layout: 'default', alias: ['/index'] })
 
 const supabase = useSupabaseClient<any>()
 const user = useSupabaseUser()
-const { dbUp, refresh: refreshFleetHealth } = useFleetHealth()
+const { health: fleetHealth, refresh: refreshFleetHealth } = useFleetHealth()
 const tasks = ref<any[]>([])
 const approvals = ref<any[]>([])
 const projects = ref<any[]>([])
@@ -94,13 +94,13 @@ const capabilityGroups = computed(() => {
 
 function stateTone(state: string) {
   if (state === 'RUNNING') return 'tone-running'
-  if (['DONE', 'MERGED'].includes(state)) return 'tone-success'
-  if (['BLOCKED', 'CONFLICT', 'TESTFAIL'].includes(state)) return 'tone-danger'
+  if (state === 'DEPLOYED_AND_VERIFIED') return 'tone-success'
+  if (['BLOCKED', 'CONFLICT', 'TESTFAIL', 'PHANTOM_UNVERIFIED'].includes(state)) return 'tone-danger'
   if (state === 'RETRY') return 'tone-warning'
   return 'tone-neutral'
 }
 function readableState(state: string) {
-  return ({ QUEUED: 'Queued', RUNNING: 'In progress', MERGED: 'Shipped', DONE: 'Complete', TESTFAIL: 'Tests failed', BLOCKED: 'Needs input', CONFLICT: 'Merge conflict', RETRY: 'Retrying', WAITING: 'Waiting' } as any)[state] || state
+  return ({ QUEUED: 'Queued', RUNNING: 'In progress', DONE: 'Artifact ready', MERGED: 'Merged', DEPLOYED_AND_VERIFIED: 'Deployed & verified', PHANTOM_UNVERIFIED: 'Merge proof missing', TESTFAIL: 'Tests failed', BLOCKED: 'Needs input', CONFLICT: 'Merge conflict', RETRY: 'Retrying', WAITING: 'Waiting' } as any)[state] || state
 }
 
 async function loadAll() {
@@ -580,7 +580,7 @@ watch(user, u => { if (u) loadAll() })
                 :class="runners.some(alive) ? 'bg-green-400 dot-breathe' : 'bg-red-400'"></span>
         </span>
         <h1 class="text-lg font-semibold">Claude Orchestrator</h1>
-        <FleetHealthBadge :db-up="dbUp" />
+        <FleetHealthBadge :health="fleetHealth" />
         <span class="text-slate-500 text-sm">
           {{ liveRunnerCount }}/{{ runnerFleetTarget }} live lanes · <span class="font-mono" :class="exactBacklogCount ? 'text-amber-300' : 'text-emerald-400'" title="Exact full-table backlog count from SQL">{{ fmtInt(exactBacklogCount) }}</span> backlog · {{ approvals.length }} pending · <span class="font-mono text-slate-300" title="Token cost covered by your Claude Max plan — not cash">${{ coveredMtd.toFixed(2) }}</span> Max-covered · <span class="font-mono text-emerald-400" title="Real out-of-pocket API cash, month-to-date">${{ cashMtd.toFixed(2) }}</span> cash · <span class="font-mono text-cyan-300" title="Estimated prompt/result cache and patch-template savings from recent resource events">{{ Math.round(savingsKpi.tokens).toLocaleString() }}</span> tok avoided · <span class="font-mono" :class="integrateKpi.overall >= 1 ? 'text-emerald-400' : 'text-amber-400'" title="Post-QA merge-rate: passed/non-churn work that actually integrated. Target is 100%; failed drafting attempts are tracked separately as attempt yield.">{{ (integrateKpi.overall * 100).toFixed(0) }}%</span> merge-rate ({{ integrateKpi.integrated }}/{{ integrateKpi.completed }}) · <span class="font-mono" :class="(integrateKpi.usdPerMerge ?? 99) <= 2 ? 'text-emerald-400' : 'text-amber-400'" title="NORTH STAR: $ per merged change. Drive this DOWN.">{{ integrateKpi.usdPerMerge == null ? '—' : ('$' + integrateKpi.usdPerMerge.toFixed(2)) }}</span>/merge
         </span>
