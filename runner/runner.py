@@ -1255,6 +1255,24 @@ def run_task(t):
                         _extras += _evolved
                 except Exception as e:
                     _log.debug("hook prompt_evolution failed: %s", e)
+                # PROMPT EVOLUTION BANDIT: UCB1 over per-kind prompt TEMPLATES.
+                #
+                # prompt_evolution (above) adds evolved SECTIONS to a prompt. prompt_evolver
+                # chooses the prompt's SHAPE — base / chain_of_thought / edit_first — and
+                # learns which shape actually ships. It was written with its own tests and
+                # reward hygiene and then imported by nothing, so the arms were never pulled
+                # and the bandit could not learn: this is the Claude interface handling it.
+                #
+                # Applied AFTER compression and evolved additions so the tag survives to the
+                # model, and recorded against the same t so the outcome hook can attribute it.
+                try:
+                    import prompt_evolver
+                    _bandit_kind = str(t.get("kind") or "build")
+                    draft_prompt, _bandit_tid = prompt_evolver.select_template(
+                        _bandit_kind, draft_prompt)
+                    t["_bandit_kind"], t["_bandit_template_id"] = _bandit_kind, _bandit_tid
+                except Exception as e:
+                    _log.debug("hook prompt_evolver failed: %s", e)
             # BUILD-TO-GREEN MANDATE: make the agent iterate to a mergeable state ITSELF (edit -> build ->
             # fix -> re-build -> commit), the way an interactive VSCode session does — so it returns green,
             # mergeable work instead of a draft a downstream committee rejects and recycles. The build is
@@ -2513,6 +2531,29 @@ def run_task(t):
                 prompt_evolution.record_prompt_outcome(t, draft_prompt, visible_model, integrated, _pe_cost, attempt)
             except Exception as e:
                 _log.debug("hook prompt_evolution.record failed: %s", e)
+            # PROMPT EVOLUTION BANDIT: pull the arm's reward.
+            #
+            # Only recorded when an arm was actually selected — a run whose selection hook
+            # failed has no arm, and crediting "base" for it would bias the bandit toward
+            # the default every time selection broke.
+            #
+            # deployed_verified is NOT known here (deploy happens after the merge train), so
+            # a first-try merge backed by a real evidence sha earns the 0.5 partial credit
+            # prompt_evolver defines and nothing earns 1.0 from this call site. That is the
+            # reward hygiene the module documents: ~96% of MERGED rows were later found to be
+            # phantoms, so a bare merge claim must not look like delivery.
+            try:
+                if t.get("_bandit_template_id"):
+                    import prompt_evolver
+                    prompt_evolver.record_outcome(
+                        t.get("_bandit_kind") or "build",
+                        t["_bandit_template_id"],
+                        merged_first_try=bool(integrated) and int(attempt or 0) == 0,
+                        deployed_verified=False,
+                        artifact_commit=str(t.get("evidence_sha") or ""),
+                    )
+            except Exception as e:
+                _log.debug("hook prompt_evolver.record failed: %s", e)
             # ERROR TAXONOMY: record remediation outcome
             try:
                 import error_taxonomy
