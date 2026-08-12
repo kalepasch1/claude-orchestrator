@@ -87,6 +87,50 @@ def _is_public_file(path):
     return ext in PUBLIC_EXTS and bool(PUBLIC_PATH_RE.search(str(path or "")))
 
 
+_BLOCK_OPENERS = (("<!--", "-->"), ("/*", "*/"))
+
+
+def _block_comment_mask(lines):
+    """Which of `lines` sit inside a multi-line comment. Returns a list of bool.
+
+    IGNORED_LINE_RE only recognises a comment by how a line STARTS (`//`, `/*`,
+    `*`, `<!--`). The MIDDLE lines of a block comment start with ordinary prose,
+    so the guard read them as display copy.
+
+    That is what blocked apparently release ce3433f9: line 5 of
+    app/components/one-apparently/BenchReviewedSeal.vue is the middle of an HTML
+    comment reading "...the internal engine id (CADE) never surfaces here" — a
+    comment whose entire purpose is to state the very rule this guard enforces.
+    The gate flagged the documentation of its own rule and stopped a release.
+
+    State is tracked only across the lines actually supplied. The caller passes
+    added diff lines, so an opener outside that window is invisible and those
+    lines stay scanned — deliberately fail-open toward MORE scanning, never less.
+    """
+    mask, closer = [], None
+    for raw in lines:
+        text = str(raw or "")
+        if closer:
+            mask.append(True)
+            if closer in text:
+                closer = None
+            continue
+        opened = None
+        for start, end in _BLOCK_OPENERS:
+            i = text.find(start)
+            if i >= 0 and end not in text[i + len(start):]:
+                opened = end
+                break
+        mask.append(False)
+        closer = opened
+    return mask
+
+
+def _is_block_comment_body(raw):
+    """True when `raw` alone opens an unterminated block comment."""
+    return bool(_block_comment_mask([raw, ""])[1])
+
+
 def _looks_displayish(raw):
     text = (raw or "").strip()
     if not text:
@@ -115,7 +159,13 @@ def scan_lines(path, lines):
     if not _is_public_file(path):
         return []
     findings = []
-    for line_no, raw in lines:
+    lines = list(lines)
+    # A block comment's middle lines start with prose, so they must be masked
+    # by position, not by how the individual line begins (see _block_comment_mask).
+    in_comment = _block_comment_mask([raw for _, raw in lines])
+    for index, (line_no, raw) in enumerate(lines):
+        if in_comment[index]:
+            continue
         if not _looks_displayish(raw):
             continue
         text = _clean(raw)
