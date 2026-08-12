@@ -20,7 +20,11 @@ Located/reconstructed 2026-08-06 per backlog-batch-beethoven-e63dfee
 `economic-scheduler-revenue.patch` — switches `REVENUE_KEYWORDS` to intent
 phrases (`payment integration`, `payment processing`, …). Verified:
 
-- `git apply --check` passes against origin/master (this branch's base)
+- REFRESHED 2026-08-12: master moved (ORCH_ROI_THRESHOLD / REVENUE_CRITICAL_LANE_SIZE
+  replaced the names this patch was cut against), so the patch stopped applying.
+  Regenerated against current master; `git apply --check` passes again.
+  DO NOT APPLY without reading docs/ECONOMIC_SCHEDULER_AUDIT.md §5 first — the live
+  test suite asserts the opposite intent for payment BUGFIX tasks.
 - applied in a scratch worktree: revenue suite 28/28 green (was 25/28)
 - also committed as branch `agent/backlog-batch-beethoven-7c38d4c`
 
