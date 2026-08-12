@@ -405,8 +405,34 @@ def _age_hours(ts_str):
         return 0
 
 
+def main(batch_slug=None):
+    """Scheduled entry point.
+
+    run() opens with _decomposed_parents(), whose db.select calls are unguarded,
+    so a transient Supabase error killed the whole job with a full traceback —
+    367 of them in .runtime/logs/queue-materializer.err, with no successful run
+    recorded, i.e. the module read as 100% dead. None of those stacks were
+    actionable: there is no defect here when PostgREST returns a retryable error.
+
+    This is the pattern the file ALREADY uses one function down: _children_by_parent
+    catches its own scan failure and degrades to scan_complete=False rather than
+    raising. The entry point simply never got the same treatment.
+
+    Per the repo convention the broad catch WRITES A DIAGNOSTIC before it swallows —
+    a silent `except: pass` is the defect, a logged one is the convention — so a real
+    outage stays visible as one line instead of a stack. Deliberately narrow: only
+    TransientDBError, which its own docstring defines as retryable. A genuine
+    programming error still raises and still fails loudly.
+    """
+    try:
+        return run(batch_slug)
+    except db.TransientDBError as exc:
+        print(f"materializer: skipped this cycle — Supabase unreachable ({exc})", flush=True)
+        return 0
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--batch", default="")
     args = parser.parse_args()
-    print(run(args.batch or None))
+    print(main(args.batch or None))
