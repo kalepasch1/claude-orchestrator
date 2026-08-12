@@ -386,6 +386,60 @@ def _spec(name):
     return None
 
 
+def coder_provider(coder):
+    """The vendor a coder actually calls, read from its `--model <provider>/…` argument.
+
+    Returns "" when it cannot be determined — an unknown provider is never treated as
+    unhealthy, because guessing wrong removes a working coder from the pool.
+    """
+    try:
+        if str(coder.get("name") or "") == "claude":
+            return "claude"
+        cmd = str(coder.get("cmd") or "")
+        marker = "--model "
+        idx = cmd.find(marker)
+        if idx < 0:
+            return ""
+        spec = cmd[idx + len(marker):].split()[0]
+        return spec.split("/", 1)[0].strip().lower() if "/" in spec else ""
+    except Exception:
+        return ""
+
+
+def _provider_healthy(coder):
+    """False only when this coder's provider is demoted (credits/auth dead).
+
+    WHY THIS GATE EXISTS. A canary died repeatedly on:
+
+        litellm.APIError: XaiException - Error code: 403 - 'Your team … has either used
+        all available credits or reached its monthly spending limit.'
+        Retrying in 4.0s … 8.0s … 16.0s … 32.0s
+
+    Those retries are aider's own loop (aider.models.RETRY_TIMEOUT = 60), which retries
+    ANY exception until the window closes. LITELLM_NUM_RETRIES=1 does not bound it, and
+    there is no env knob for it — so ~60 seconds are burned per attempt on a 403 that
+    cannot resolve until someone buys credits.
+
+    The retry loop is not the thing to fight; SELECTING a dead provider is. Nothing in
+    the coder pool consulted provider health, so a vendor that is out of credits stayed
+    selectable forever and every routed task paid the same minute of backoff. This asks
+    the demote registry that already exists and simply was not wired into selection.
+
+    Fail-OPEN: any error, or an unreadable provider, keeps the coder eligible. A health
+    check that removes working coders is a worse outage than the one it prevents.
+    """
+    if not _truthy("ORCH_CODER_PROVIDER_HEALTH_GATE", True):
+        return True
+    provider = coder_provider(coder)
+    if not provider or provider == "claude":
+        return True
+    try:
+        import provider_failover_sla
+        return not provider_failover_sla.is_demoted(provider)
+    except Exception:
+        return True
+
+
 def _within_cap(coder):
     """A paid coder (daily_usd>0) is usable only while today's spend on it is under its cap. Free/local
     and subscription coders (daily_usd<=0) are always within cap."""
@@ -449,7 +503,7 @@ def _heavy_ollama_saturated(coder):
 # kept for backward-compat with any external caller
 def _third_within_cap():
     c = _spec(os.environ.get("ORCH_THIRD_CODER", ""))
-    return bool(c) and _within_cap(c)
+    return bool(c) and _within_cap(c) and _provider_healthy(c)
 
 
 def _task_difficulty(task):
@@ -591,12 +645,12 @@ def _pick_raw(task, slot_index=0):
     sensitivity = _task_sensitivity(task)
     _avoid = {str(a) for a in (task.get("_avoid_coders") or []) if a}
     usable = [c for c in pool
-              if c["cap"] >= need and _within_cap(c) and _allowed_by_terms(c, sensitivity)
+              if c["cap"] >= need and _within_cap(c) and _provider_healthy(c) and _allowed_by_terms(c, sensitivity)
               and not _heavy_ollama_saturated(c) and c["name"] not in _avoid]
     if not usable and sensitivity in ("crown_jewel", "crown-jewel", "crownjewel"):
         # Fail closed toward local-only: prefer any local coder even if it is below ideal cap,
         # instead of leaking crown-jewel context to an external provider.
-        local = [c for c in pool if _allowed_by_terms(c, sensitivity) and _within_cap(c)]
+        local = [c for c in pool if _allowed_by_terms(c, sensitivity) and _within_cap(c) and _provider_healthy(c)]
         if local:
             usable = sorted(local, key=lambda c: (-c["cap"], c["cost"]))
     def adjusted_cost(c):
@@ -623,7 +677,7 @@ def _pick_raw(task, slot_index=0):
         # to a Claude subscription account.
         if forced == "aider":
             candidates = by_cost or sorted(
-                [c for c in pool if c["name"] != "claude" and c["name"] not in _avoid and _within_cap(c)],
+                [c for c in pool if c["name"] != "claude" and c["name"] not in _avoid and _within_cap(c) and _provider_healthy(c)],
                 key=lambda c: (adjusted_cost(c), -c["cap"]),
             )
             if candidates:
@@ -649,7 +703,7 @@ def _pick_raw(task, slot_index=0):
             return by_cost[0]["name"]
         if diff == "critical":
             return "claude"
-        strongest = sorted([c for c in pool if c["name"] != "claude" and c["name"] not in _avoid and _within_cap(c)],
+        strongest = sorted([c for c in pool if c["name"] != "claude" and c["name"] not in _avoid and _within_cap(c) and _provider_healthy(c)],
                            key=lambda c: -c["cap"])
         return strongest[0]["name"] if strongest else "claude"
 
@@ -781,7 +835,7 @@ def pick(task, slot_index=0):
     need = int(clean_task.get("_need") or 0) or (9 if diff == "critical" else _NEED[diff])
     sensitivity = _task_sensitivity(clean_task)
     usable = [c for c in pool
-              if c["cap"] >= need and _within_cap(c) and _allowed_by_terms(c, sensitivity)
+              if c["cap"] >= need and _within_cap(c) and _provider_healthy(c) and _allowed_by_terms(c, sensitivity)
               and not _heavy_ollama_saturated(c) and c["name"] not in avoid]
     if usable:
         ranked = sorted(usable, key=lambda c: (float(c["cost"]), -c["cap"]))
