@@ -28,9 +28,16 @@ describe('operator-visible release surfaces', () => {
   it('pins the authenticated dashboard improvement to the live index route', async () => {
     const app = await readFile(resolve(root, 'app.vue'), 'utf8')
     const dashboard = await readFile(resolve(root, 'pages/index.vue'), 'utf8')
+    const proofTimeline = await readFile(resolve(root, 'components/ProofTimeline.vue'), 'utf8')
 
     expect(app).toContain('<NuxtPage')
-    expect(dashboard).toContain('<FleetHealthBadge :db-up="dbUp" />')
+    expect(dashboard).toContain('<FleetHealthBadge :health="fleetHealth" />')
     expect(dashboard).toContain('refreshFleetHealth()')
+    expect(dashboard).toContain("MERGED: 'Merged'")
+    expect(dashboard).toContain("DEPLOYED_AND_VERIFIED: 'Deployed & verified'")
+    expect(dashboard).not.toContain("MERGED: 'Shipped'")
+    expect(proofTimeline).toContain("state === 'DEPLOYED_AND_VERIFIED'")
+    expect(proofTimeline).toContain('A linked QA receipt is present')
+    expect(proofTimeline).not.toContain("done: state === 'MERGED'")
   })
 })

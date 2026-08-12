@@ -840,7 +840,13 @@ watch(slug, () => { refreshInsights() })
                 @use-prompt="useCadePrompt"
               />
               <OutcomeIntelligenceLive :app="APPS.find(a => a.id === selectedApp)?.name || selectedApp" :capability="cap.name" :project-id="selectedProject" />
-              <ProofTimeline :tasks="recentTasks" :deployments="recentDeploys" :capability="cap.name" />
+              <ProofTimeline
+                :tasks="recentTasks"
+                :deployments="recentDeploys"
+                :capability="cap.name"
+                :project-id="selectedProject"
+                :project-name="projects.find(project => project.id === selectedProject)?.name"
+              />
               <div class="flex items-end justify-between gap-4">
                 <div>
                   <div class="text-[10px] font-semibold uppercase tracking-[0.16em] text-gray-400">Capability workspace</div>
