@@ -1,6 +1,7 @@
 # Recovery ledger — ChatGPT/Codex local build evidence (beethoven)
 
-`docs/recovery-ledger/6e398b6bdfef.json`, produced by `scripts/reconcile-evidence.mjs`.
+One JSON ledger per audit fingerprint, produced by `scripts/reconcile-evidence.mjs`:
+`6e398b6bdfef.json`, `d64eac25eb52.json`.
 
 ## What was done
 
@@ -8,7 +9,12 @@ The task carried a snapshot of local evidence. Rather than classify a snapshot, 
 tool **enumerates the live source** — as the brief requires — and classifies every
 item it actually finds.
 
-**1099 items** classified against `origin/master`, **zero UNKNOWN, zero CONFLICTED**:
+**1099–1102 items** classified against `origin/master`, **zero UNKNOWN and zero
+CONFLICTED in every ledger**. The count drifts by three between runs because the
+repository genuinely changed in the minutes between them — which is the same fact
+the fingerprints report, visible a second way.
+
+Representative counts (`6e398b6bdfef`):
 
 | classification | count |
 |---|---|
