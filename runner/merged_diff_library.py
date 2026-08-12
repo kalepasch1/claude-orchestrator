@@ -53,6 +53,17 @@ def _diff(repo, base, head, max_chars=60000):
         return ""
 
 
+def chunked_diff(repo, base, head, max_lines=None):
+    """Return the merge diff split into turn-budget-sized chunks.
+
+    Callers that hand a diff to a model must use this instead of `_diff`: a
+    whole merge diff in one turn is what produced the `error_max_turns` losses.
+    Fail-soft -- an unreadable range yields [].
+    """
+    from diff_chunker import chunk_diff
+    return chunk_diff(_diff(repo, base, head), max_lines=max_lines)
+
+
 def features(prompt, diff="", files=None):
     files = files or []
     blob = "\n".join([prompt or "", diff or "", " ".join(files)])
