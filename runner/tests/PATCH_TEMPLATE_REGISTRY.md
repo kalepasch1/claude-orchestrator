@@ -9,6 +9,7 @@ with `patch_templates.lookup(template_id)`.
 | Template id  | Owner module               | Acceptance test                                              |
 |--------------|----------------------------|--------------------------------------------------------------|
 | 95fc17a356b7 | `runner/patch_templates.py` (`lookup`) | `runner/tests/test_template_95fc17a.py`          |
+| ae92a40b1d18 | `runner/patch_templates.py` (`find_template`) — slug-keyed resolver for `dependency_stub` | `runner/tests/test_patch_templates_find_template.py` |
 | 4fa4039b57dc | `runner/patch_transplant.py` | `runner/tests/test_patch_transplant_relfix_kalepasch_com_4fa4039b57dc.py` |
 | ce2e8dcd7954 | `runner/patch_transplant.py` | `runner/tests/test_patch_transplant_relfix_kalepasch_com.py` |
 | 918597e30434 | `runner/patch_templates.py` (`lookup`, `pre_claim_hook`) — branch-recovery template | `runner/tests/test_template_918597e3.py` |
