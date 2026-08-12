@@ -242,6 +242,248 @@ def identify_affected_lines(diff_text):
         return {}
 
 
+# --- Adaptation stage -------------------------------------------------------
+#
+# `find`/`directive`/`adapter_directive` above SURFACE proven diffs; nothing
+# actually ADAPTED one onto the current task, so "adapt proven prior diffs
+# before drafting net-new code" stayed advisory. The functions below close that
+# gap: rebase a prior diff onto the current task's paths, refuse to carry a
+# secret across the reuse boundary (security gate, fails CLOSED), and score the
+# adapted patch against the acceptance intent so the caller knows whether the
+# adaptation is usable or whether net-new code is genuinely required.
+
+#: Secret shapes that must never be transplanted from one task's diff into
+#: another's. Mirrors tools/merged_diff_memory.SECRET_PATTERNS.
+ADAPT_SECRET_PATTERNS = [
+    re.compile(r"(?i)(api[_-]?key|secret|token|password|passwd|credential)\s*[=:]\s*['\"][^'\"]{8,}"),
+    re.compile(r"(?i)bearer\s+[A-Za-z0-9._\-]{20,}"),
+    re.compile(r"sk-[A-Za-z0-9]{20,}"),
+    re.compile(r"ghp_[A-Za-z0-9]{20,}"),
+    re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    re.compile(r"(?i)AKIA[0-9A-Z]{16}"),
+]
+
+#: Minimum share of the current task's acceptance-intent words the adapted
+#: patch must exhibit before it is reported as meeting acceptance.
+ORCH_ADAPT_ACCEPTANCE_THRESHOLD = float(
+    os.environ.get("ORCH_ADAPT_ACCEPTANCE_THRESHOLD", "0.25")
+)
+
+#: Cap on hunks carried across in a single adaptation.
+ORCH_ADAPT_MAX_HUNKS = int(os.environ.get("ORCH_ADAPT_MAX_HUNKS", "200"))
+
+
+def contains_secret(text):
+    """True when `text` carries a credential shape. Fail-soft on bad input."""
+    if not isinstance(text, str) or not text:
+        return False
+    return any(pattern.search(text) for pattern in ADAPT_SECRET_PATTERNS)
+
+
+def _split_file_sections(diff_text):
+    """Split a unified diff into [(path, section_lines)] by `diff --git`."""
+    sections = []
+    current_path = None
+    current = []
+    for line in str(diff_text or "").splitlines():
+        match = DIFF_GIT.match(line)
+        if match:
+            if current_path is not None:
+                sections.append((current_path, current))
+            current_path = match.group(2)
+            current = [line]
+            continue
+        if current_path is None:
+            continue
+        current.append(line)
+    if current_path is not None:
+        sections.append((current_path, current))
+    return sections
+
+
+def _retarget_path(source_path, target_files):
+    """Map a source diff path onto the current task's file set.
+
+    Prefers an exact basename match, then a same-extension match, then None
+    (meaning: this section has no counterpart and must be dropped rather than
+    guessed at).
+    """
+    if not target_files:
+        return None
+    source_base = os.path.basename(str(source_path or ""))
+    for candidate in target_files:
+        if os.path.basename(str(candidate)) == source_base:
+            return str(candidate)
+    source_ext = os.path.splitext(str(source_path or ""))[1]
+    if source_ext:
+        for candidate in target_files:
+            if os.path.splitext(str(candidate))[1] == source_ext:
+                return str(candidate)
+    return None
+
+
+def adapt_diff(task, source_diff, target_files=None):
+    """Rebase a proven prior `source_diff` onto the current `task`.
+
+    Returns a dict::
+
+        {"patch": str,            # the adapted unified diff ("" when unusable)
+         "adapted_files": [...],  # target paths the patch touches
+         "dropped": [...],        # (source_path, reason) pairs
+         "secrets_blocked": int,  # sections refused by the security gate
+         "hunks": int}
+
+    Never raises. Security gate fails CLOSED: any section carrying a credential
+    shape is dropped whole, never sanitised-and-kept.
+    """
+    result = {"patch": "", "adapted_files": [], "dropped": [], "secrets_blocked": 0, "hunks": 0}
+    if not isinstance(source_diff, str) or not source_diff.strip():
+        return result
+
+    task = task if isinstance(task, dict) else {}
+    if target_files is None:
+        target_files = task.get("files") or task.get("target_files") or []
+    target_files = [str(f) for f in (target_files or []) if str(f).strip()]
+
+    out_lines = []
+    hunks = 0
+    for source_path, section in _split_file_sections(source_diff):
+        body = "\n".join(section)
+        if contains_secret(body):
+            result["secrets_blocked"] += 1
+            result["dropped"].append((source_path, "secret-shape refused"))
+            continue
+        target_path = _retarget_path(source_path, target_files)
+        if not target_path:
+            result["dropped"].append((source_path, "no counterpart in target files"))
+            continue
+        section_hunks = sum(1 for line in section if HUNK_HEADER.match(line))
+        if hunks + section_hunks > ORCH_ADAPT_MAX_HUNKS:
+            result["dropped"].append((source_path, "hunk budget exhausted"))
+            continue
+        hunks += section_hunks
+        for line in section:
+            if DIFF_GIT.match(line):
+                out_lines.append("diff --git a/%s b/%s" % (target_path, target_path))
+            elif line.startswith("--- a/"):
+                out_lines.append("--- a/%s" % target_path)
+            elif line.startswith("+++ b/"):
+                out_lines.append("+++ b/%s" % target_path)
+            elif line.startswith("index "):
+                continue  # blob hashes are meaningless after retargeting
+            else:
+                out_lines.append(line)
+        result["adapted_files"].append(target_path)
+
+    result["hunks"] = hunks
+    if out_lines:
+        result["patch"] = "\n".join(out_lines) + "\n"
+    return result
+
+
+def verify_acceptance(task, patch):
+    """Score an adapted `patch` against the current task's acceptance intent.
+
+    Returns {"meets_acceptance": bool, "coverage": float, "matched": [...],
+    "missing": [...], "reasons": [...]}. Never raises.
+    """
+    verdict = {"meets_acceptance": False, "coverage": 0.0,
+               "matched": [], "missing": [], "reasons": []}
+    task = task if isinstance(task, dict) else {}
+    patch = patch if isinstance(patch, str) else ""
+
+    if not patch.strip():
+        verdict["reasons"].append("empty patch")
+        return verdict
+    if contains_secret(patch):
+        verdict["reasons"].append("patch carries a credential shape")
+        return verdict
+
+    intent_words = set(acceptance_intent(task.get("prompt")).split())
+    if not intent_words:
+        verdict["reasons"].append("no acceptance intent extractable from prompt")
+        return verdict
+
+    patch_words = _words(patch)
+    matched = sorted(intent_words & patch_words)
+    missing = sorted(intent_words - patch_words)
+    coverage = len(matched) / float(len(intent_words))
+
+    verdict["matched"] = matched[:40]
+    verdict["missing"] = missing[:40]
+    verdict["coverage"] = round(coverage, 3)
+    verdict["meets_acceptance"] = coverage >= ORCH_ADAPT_ACCEPTANCE_THRESHOLD
+    if not verdict["meets_acceptance"]:
+        verdict["reasons"].append(
+            "coverage %.3f below threshold %.3f — draft net-new code"
+            % (coverage, ORCH_ADAPT_ACCEPTANCE_THRESHOLD)
+        )
+    return verdict
+
+
+def adapt_best(task, limit=3, target_files=None):
+    """Reuse-first entry point: adapt the best proven diff for `task`.
+
+    Walks candidates most-similar-first, adapts each, and returns the first
+    adaptation that clears acceptance. Falls back to reporting the best
+    near-miss so the caller can decide to draft net-new code with evidence
+    rather than by default. Never raises.
+    """
+    outcome = {"adapted": False, "source": None, "patch": "",
+               "verdict": None, "attempts": []}
+    try:
+        hits = find(task, limit=limit)
+    except Exception:
+        hits = []
+    if not hits:
+        outcome["attempts"].append({"source": None, "reason": "no proven diffs found"})
+        return outcome
+
+    best = None
+    for hit in hits:
+        adaptation = adapt_diff(task, hit.get("diff") or "", target_files)
+        verdict = verify_acceptance(task, adaptation["patch"])
+        attempt = {
+            "source": "%s/%s" % (hit.get("project"), hit.get("slug")),
+            "similarity": hit.get("similarity"),
+            "adapted_files": adaptation["adapted_files"],
+            "secrets_blocked": adaptation["secrets_blocked"],
+            "coverage": verdict["coverage"],
+            "meets_acceptance": verdict["meets_acceptance"],
+        }
+        outcome["attempts"].append(attempt)
+        if verdict["meets_acceptance"]:
+            outcome.update({"adapted": True, "source": attempt["source"],
+                            "patch": adaptation["patch"], "verdict": verdict})
+            return outcome
+        if best is None or verdict["coverage"] > (best[1]["coverage"] or 0.0):
+            best = (attempt["source"], verdict, adaptation["patch"])
+
+    if best:
+        outcome.update({"source": best[0], "verdict": best[1], "patch": best[2]})
+    return outcome
+
+
+def adaptation_directive(task, limit=3, target_files=None):
+    """Human-readable directive describing the adaptation outcome."""
+    outcome = adapt_best(task, limit=limit, target_files=target_files)
+    if outcome["adapted"]:
+        return (
+            "ADAPTED PROVEN DIFF: %s (coverage %.3f) already meets acceptance — "
+            "apply it instead of drafting net-new code."
+            % (outcome["source"], outcome["verdict"]["coverage"])
+        )
+    if outcome["verdict"]:
+        return (
+            "NO REUSABLE DIFF: best candidate %s reached coverage %.3f (%s). "
+            "Draft net-new code, starting from that shape."
+            % (outcome["source"], outcome["verdict"]["coverage"],
+               "; ".join(outcome["verdict"]["reasons"]) or "below threshold")
+        )
+    return "NO REUSABLE DIFF: no proven prior work matched; draft net-new code."
+
+
 def stats():
     """Return library statistics for operator observability."""
     try:
