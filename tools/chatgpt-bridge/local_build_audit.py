@@ -557,6 +557,162 @@ def _render_task(project: str, evidence: list[dict[str, Any]], fp: str) -> str:
 """
 
 
+# A registry entry is settled only when an operator/agent recorded WHY it is
+# settled. Anything else is still owed an answer.
+SETTLED_DISPOSITIONS = ("covered", "superseded", "released", "abandoned")
+
+# Re-opening orphaned evidence is recovery, not a flood. At the time this was
+# written 95 of 120 live registry entries were orphaned; releasing all of them
+# in one sweep would queue ~95 tasks at once. Recover a bounded slice per run
+# and let successive runs drain the backlog. Fleet-pushable via fleet_control.
+try:
+    ORPHAN_REOPEN_LIMIT = max(0, int(os.environ.get("ORCH_AUDIT_ORPHAN_REOPEN_LIMIT", "10")))
+except (TypeError, ValueError):
+    ORPHAN_REOPEN_LIMIT = 10
+
+
+def _is_settled(entry: Any) -> bool:
+    """True when someone explicitly recorded how this entry was resolved."""
+    if not isinstance(entry, dict):
+        return False
+    return str(entry.get("disposition", "")).lower() in SETTLED_DISPOSITIONS
+
+
+def _manifest_exists(entry: Any) -> bool:
+    """True when the entry's intake manifest is still on disk.
+
+    A manifest on disk means the queue can still see the work, so the evidence
+    it covers must stay suppressed. Fail-soft: an entry with no recorded
+    manifest path is treated as still present, since re-queueing on a bad path
+    guess is noisier than the (already-detected) orphan case.
+    """
+    if not isinstance(entry, dict):
+        return True
+    intake = entry.get("intake")
+    if not intake:
+        return True
+    try:
+        return Path(intake).exists()
+    except (OSError, TypeError, ValueError):
+        return True
+
+
+def _evidence_is_open(state: dict[str, Any], item_fp: str) -> bool:
+    """True when this evidence item still needs to be queued somewhere.
+
+    Suppression requires one of two positive reasons: a manifest that still
+    exists (the work is queued and visible), or a recorded disposition (a
+    human/agent said how it ended). Absent both, the item is orphaned and must
+    be re-opened — that is precisely the state the manifest cleanup left 95
+    entries in.
+    """
+    record = state.get("evidence", {}).get(item_fp)
+    if record is None:
+        return True  # never seen
+    if _is_settled(record):
+        return False
+    owner_fp = record.get("queued_fp") or record.get("migrated_from")
+    owner = state.get("queued", {}).get(owner_fp) if owner_fp else None
+    if owner is None:
+        # Older records predate queued_fp back-references; fall back to the
+        # entry that carries the same slug, then to the record itself.
+        slug = record.get("slug")
+        owner = next((e for e in state.get("queued", {}).values()
+                      if isinstance(e, dict) and e.get("slug") == slug), None)
+    if owner is None:
+        owner = record
+    if _is_settled(owner):
+        return False
+    return not _manifest_exists(owner)
+
+
+def reconcile_fingerprint(
+    fingerprint: str, state_path: Path, disposition: str = "",
+    successor: str = "", note: str = "",
+) -> dict[str, Any]:
+    """Classify one audit fingerprint and durably record its disposition.
+
+    Read-only with respect to every evidence source: repositories, worktrees,
+    refs, stashes and artifacts are never touched. Only the audit registry is
+    written, and only to add provenance.
+    """
+    state = _json_read(state_path, {"schema": 2, "queued": {}, "evidence": {}})
+    state.setdefault("queued", {})
+    state.setdefault("evidence", {})
+
+    matches = [fp for fp in state["queued"] if fp.startswith(fingerprint)]
+    if not matches:
+        matches = [fp for fp, entry in state["queued"].items()
+                   if isinstance(entry, dict)
+                   and fingerprint in str(entry.get("slug", ""))]
+    if not matches:
+        return {"status": "not_found", "fingerprint": fingerprint}
+    if len(matches) > 1:
+        return {"status": "ambiguous", "fingerprint": fingerprint,
+                "matches": sorted(matches)[:10]}
+
+    fp = matches[0]
+    entry = dict(state["queued"][fp])
+    manifest_present = _manifest_exists(entry)
+    members = [item_fp for item_fp, rec in state["evidence"].items()
+               if isinstance(rec, dict)
+               and (rec.get("queued_fp") == fp or rec.get("slug") == entry.get("slug"))]
+    open_members = [m for m in members if _evidence_is_open(state, m)]
+
+    if not disposition:
+        if _is_settled(entry):
+            disposition = str(entry["disposition"]).lower()
+        elif manifest_present:
+            disposition = "open"
+        elif open_members:
+            disposition = "reopened"
+        else:
+            disposition = "covered"
+
+    entry["disposition"] = disposition
+    entry["reconciled_at"] = int(time.time())
+    if successor:
+        entry["successor"] = successor
+    if note:
+        entry["reconcile_note"] = note
+    state["queued"][fp] = entry
+
+    if disposition in SETTLED_DISPOSITIONS:
+        for item_fp in members:
+            record = state["evidence"].get(item_fp)
+            if isinstance(record, dict):
+                record["disposition"] = disposition
+                if successor:
+                    record["successor"] = successor
+                record.setdefault("queued_fp", fp)
+        open_members = []
+
+    _atomic_json(state_path, state)
+    return {
+        "status": "ok", "fingerprint": fp, "slug": entry.get("slug"),
+        "project": entry.get("project"), "disposition": disposition,
+        "successor": entry.get("successor", ""),
+        "manifest_present": manifest_present,
+        "evidence_items": len(members), "open_evidence_items": len(open_members),
+    }
+
+
+def registry_orphans(state_path: Path) -> list[dict[str, Any]]:
+    """Queued entries whose manifest is gone and whose fate was never recorded."""
+    state = _json_read(state_path, {"queued": {}})
+    orphans = []
+    for fp, entry in (state.get("queued") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        if _is_settled(entry):
+            continue
+        intake = entry.get("intake")
+        if intake and not _manifest_exists(entry):
+            orphans.append({"fingerprint": fp, "slug": entry.get("slug"),
+                            "project": entry.get("project"), "intake": intake})
+    return sorted(orphans, key=lambda row: (str(row["project"]), str(row["slug"])))
+
+
 def queue_groups(
     groups: dict[str, list[dict[str, Any]]], intake: Path, state_path: Path,
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
@@ -565,6 +721,9 @@ def queue_groups(
     legacy_migration = "evidence" not in state
     state.setdefault("evidence", {})
     queued, duplicates = [], []
+    # Budget shared across all projects this run, so a single project cannot
+    # consume the whole recovery allowance.
+    reopen_budget = ORPHAN_REOPEN_LIMIT
     intake.mkdir(parents=True, exist_ok=True)
     for project, items in sorted(groups.items()):
         if not items:
@@ -588,8 +747,23 @@ def queue_groups(
             duplicates.append({"project": project, "fingerprint": legacy_fp,
                                "slug": prior.get("slug")})
             continue
-        unseen = [(item_fp, item) for item_fp, item in item_rows
-                  if item_fp not in state["evidence"]]
+        # Re-open evidence orphaned by manifest cleanup. `state["evidence"]`
+        # suppresses an item forever once any manifest claimed it, but the
+        # duplicate-manifest sweep deleted intake files without recording a
+        # disposition — 95 of 120 registry entries pointed at files that no
+        # longer existed. Those items were neither queued nor re-queueable:
+        # silently lost. An item stays suppressed only while its owning entry
+        # is still actionable (manifest on disk) OR carries an explicit
+        # disposition saying it was handled.
+        fresh, reopened = [], []
+        for item_fp, item in item_rows:
+            if not _evidence_is_open(state, item_fp):
+                continue
+            # Never-seen items always queue; orphan recovery is rate-limited.
+            (reopened if item_fp in state["evidence"] else fresh).append((item_fp, item))
+        allowed_reopen = reopened[:reopen_budget]
+        reopen_budget -= len(allowed_reopen)
+        unseen = fresh + allowed_reopen
         if not unseen:
             prior_slug = next((state["evidence"][item_fp].get("slug")
                                for item_fp, _ in item_rows), None)
@@ -611,6 +785,9 @@ def queue_groups(
             state["evidence"][item_fp] = {
                 "project": project, "slug": slug, "kind": item.get("kind"),
                 "intake": str(path), "created_at": int(time.time()),
+                # Back-reference so an item's fate can be resolved from its
+                # owning entry without a slug scan.
+                "queued_fp": fp,
             }
         queued.append({"project": project, "fingerprint": fp, "slug": slug, "intake": str(path)})
     state["schema"] = 2
@@ -659,7 +836,33 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--artifact-status", choices=("pending", "failed", "applied"), default="pending")
     parser.add_argument("--result-file", type=Path)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--reconcile", metavar="FINGERPRINT",
+                        help="Classify one audit fingerprint and record its "
+                             "disposition. Read-only w.r.t. evidence sources.")
+    parser.add_argument("--disposition", default="",
+                        help="Explicit disposition for --reconcile "
+                             "(covered/superseded/released/abandoned/open).")
+    parser.add_argument("--successor", default="",
+                        help="Task slug, branch or commit that carries the value forward.")
+    parser.add_argument("--reconcile-note", default="")
+    parser.add_argument("--list-orphans", action="store_true",
+                        help="List queued entries whose intake manifest is gone "
+                             "and whose disposition was never recorded.")
     args = parser.parse_args(argv)
+
+    # Reconciliation and orphan listing only read/annotate the registry, so
+    # they bypass the scan, the rate limiter and the run lock entirely.
+    if args.list_orphans:
+        orphans = registry_orphans(args.state)
+        print(json.dumps({"status": "ok", "orphans": len(orphans),
+                          "entries": orphans}, sort_keys=True))
+        return 0
+    if args.reconcile:
+        result = reconcile_fingerprint(
+            args.reconcile, args.state, disposition=args.disposition,
+            successor=args.successor, note=args.reconcile_note)
+        print(json.dumps(result, sort_keys=True))
+        return 0 if result.get("status") == "ok" else 1
 
     # launchd may start the bridge while an explicit deep audit is still walking
     # the fleet. Both runs write the same registry at completion, so serialize the
