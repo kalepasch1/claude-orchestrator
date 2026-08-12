@@ -543,9 +543,29 @@ def run(window_days=30, out_dir=None):
     return payload
 
 
-if __name__ == "__main__":
+def _main():
+    """One scheduled pass. Raises on failure; crashloop_guard decides what that means."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--window-days", type=int, default=30)
     parser.add_argument("--out-dir", default=None)
     args = parser.parse_args()
     print(json.dumps(run(window_days=args.window_days, out_dir=args.out_dir), indent=2, default=str))
+
+
+if __name__ == "__main__":
+    # CRASH LOOP (2026-08-12). This job was logged as "100% dead": 242 tracebacks, 98% of
+    # its total, zero successful runs. The module is fine — it runs green on demand. What
+    # it lacked was any protection at the entry point, so a transient
+    # `URLError: [Errno 61] Connection refused` reaching the first db.select ended as an
+    # unhandled traceback, and a scheduler retry produced another one. A dependency outage
+    # was therefore indistinguishable from a broken module, which is how "zero successful
+    # runs" got recorded for code that works.
+    #
+    # crashloop_guard separates a skipped pass from a refusal from a real crash, and
+    # escalates once per distinct cause instead of once per tick.
+    try:
+        import crashloop_guard
+    except Exception:
+        _main()
+    else:
+        sys.exit(crashloop_guard.guarded_main("cost-intelligence", _main))

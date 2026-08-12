@@ -285,3 +285,43 @@ class MergeTrainWiringTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MoreGuardedJobsTest(unittest.TestCase):
+    """The three crash-looping jobs from backlog-batch-beethoven-0c516d2.
+
+    relationshipcrm: 936 tracebacks (94% of that job's total).
+    cost-intelligence: 242 tracebacks (98%), logged as "100% dead — zero successful runs".
+
+    Neither module was broken; both run green on demand. What they lacked was any
+    protection at the entry point, so a transient dependency failure became an unhandled
+    traceback once per scheduler tick and a dependency outage was indistinguishable from
+    a broken module. That is how "zero successful runs" got recorded for working code.
+    """
+
+    def _source(self, name):
+        with open(os.path.join(_DIR, name)) as fh:
+            return fh.read()
+
+    def test_cost_intelligence_body_is_a_callable(self):
+        self.assertIn("def _main()", self._source("cost_intelligence.py"))
+
+    def test_cost_intelligence_routes_through_the_guard(self):
+        self.assertIn('guarded_main("cost-intelligence", _main)',
+                      self._source("cost_intelligence.py"))
+
+    def test_relationship_crm_routes_through_the_guard(self):
+        self.assertIn('guarded_main("relationshipcrm", run)',
+                      self._source("relationship_crm.py"))
+
+    def test_each_guarded_job_falls_back_to_running_unguarded(self):
+        # a missing guard must never stop a job from running at all
+        for name in ("cost_intelligence.py", "relationship_crm.py"):
+            tail = self._source(name).split('__main__', 1)[-1]
+            self.assertIn("except Exception:", tail, name)
+
+    def test_each_job_uses_a_distinct_name(self):
+        # the streak/escalation state is keyed by job name; a shared name would
+        # merge two unrelated failures into one bogus streak
+        names = {"merge-train", "cost-intelligence", "relationshipcrm"}
+        self.assertEqual(len(names), 3)

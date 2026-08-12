@@ -33,5 +33,15 @@ def run(limit=250):
     print(f'relationship_crm: reviewed={len(contacts)} recommendations_created={created} sends=0')
     return {'reviewed':len(contacts),'created':created,'sent':0}
 
-if __name__ == '__main__': run()
+if __name__ == '__main__':
+    # CRASH LOOP (2026-08-12): 936 tracebacks, 94% of this job's total. Same shape as
+    # cost-intelligence — a transient dependency failure at the entry point became an
+    # unhandled traceback once per scheduler tick, with nothing alerting.
+    try:
+        import crashloop_guard
+    except Exception:
+        run()
+    else:
+        import sys as _sys
+        _sys.exit(crashloop_guard.guarded_main("relationshipcrm", run))
 
