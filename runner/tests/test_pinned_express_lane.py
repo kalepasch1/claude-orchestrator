@@ -49,6 +49,30 @@ def _task(task_id, slug=None, pinned=False, pin_rank=0, project_id="p1",
     }
 
 
+def _projects_for(queued):
+    """Declare a project row for every project_id the queued tasks reference.
+
+    claim_task derives host affinity from the projects table: a task whose
+    project_id has no row is dropped before any sorting happens, and the runner
+    logs "no locally-runnable tasks … no project repo is present". That message
+    points at host affinity, so a test with an undeclared project_id reads as a
+    machine problem rather than a missing fixture — which is exactly how the two
+    multi-project express-lane tests stayed red.
+
+    `repo_path=None` is deliberate: `db.repo_runnable_here(None)` returns True
+    (no repo required), so affinity is satisfied without touching the filesystem.
+    """
+    ids = []
+    for task in queued or ():
+        pid = (task or {}).get("project_id")
+        if pid and pid not in ids:
+            ids.append(pid)
+    if not ids:
+        ids = ["p1"]
+    return [{"id": pid, "name": pid, "priority": 5, "concurrency_weight": 1,
+             "repo_path": None} for pid in ids]
+
+
 def _make_select(queued, active=None, recent=None, projects=None, done=None, controls=None):
     """Return a select() mock that dispatches on the table+params the real code sends."""
     active = active or []
@@ -81,8 +105,17 @@ def _make_select(queued, active=None, recent=None, projects=None, done=None, con
 class TestPinnedExpressLane(unittest.TestCase):
     """Tests for the pinned task express lane — bypass of other priority tiers."""
 
-    def _claim(self, queued, active=None, done=None, controls=None):
-        """Run claim_task against a mocked DB and return the claimed slug."""
+    def _claim(self, queued, active=None, done=None, controls=None, projects=None):
+        """Run claim_task against a mocked DB and return the claimed slug.
+
+        `projects` must be forwarded: claim_task computes host affinity from the
+        projects table, and a task whose project_id is absent from it is filtered
+        out of the queue entirely. Two tests already passed `projects=` and got
+        `TypeError: _claim() got an unexpected keyword argument`; a third supplied
+        tasks in projects that were never declared and saw the whole queue vanish
+        with "no locally-runnable tasks" — a host-affinity message for what is
+        really a missing fixture.
+        """
         claimed = []
 
         def fake_patch(method, path, body=None, headers=None, params=None):
@@ -93,7 +126,9 @@ class TestPinnedExpressLane(unittest.TestCase):
                 return [task] if task else []
             return None
 
-        sel = _make_select(queued, active=active or [], done=done or [], controls=controls or [])
+        projects = projects or _projects_for(queued)
+        sel = _make_select(queued, active=active or [], done=done or [],
+                           controls=controls or [], projects=projects)
         with patch.object(db, "select", side_effect=sel), \
              patch.object(db, "_req", side_effect=fake_patch):
             db.claim_task("runner-1")
@@ -319,14 +354,40 @@ class TestPinnedExpressLane(unittest.TestCase):
         self.assertEqual(self._claim(tasks), "pinned-task")
 
     def test_paused_project_filtering_happens_before_express_lane(self):
-        """Pinned tasks in paused projects are filtered out before sorting."""
-        # Paused project filtering happens early, so a pinned task in a paused project won't be claimed
+        """Pinned tasks in paused projects are filtered out before sorting.
+
+        This used to assert the outcome while supplying no `controls` rows at all,
+        so nothing in the fixture ever said p-paused was paused. It passed only
+        while a missing projects fixture was emptying the whole queue — the right
+        answer for the wrong reason, and it flipped to a real failure the moment
+        the projects fixture was fixed.
+
+        claim_task reads paused projects from controls(scope='project', paused=true)
+        and maps them by project NAME, so the pause has to be stated here.
+        """
         tasks = [
             _task("pinned-paused-proj", project_id="p-paused", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
             _task("unpinned-active", project_id="p-active", created_at="2024-01-01T00:00:00"),
         ]
-        # This is hard to test with mocks; rely on db.py logic that filters paused projects first
-        self.assertEqual(self._claim(tasks), "unpinned-active")
+        controls = [{"project": "p-paused", "paused": True, "updated_by": "operator"}]
+        self.assertEqual(self._claim(tasks, controls=controls), "unpinned-active")
+
+    def test_remote_quarantine_pause_does_not_filter(self):
+        """A pause written by remote-quarantine is ignored, per db.claim_task."""
+        tasks = [
+            _task("pinned-paused-proj", project_id="p-paused", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
+            _task("unpinned-active", project_id="p-active", created_at="2024-01-01T00:00:00"),
+        ]
+        controls = [{"project": "p-paused", "paused": True, "updated_by": "remote-quarantine"}]
+        self.assertEqual(self._claim(tasks, controls=controls), "pinned-paused-proj")
+
+    def test_pause_filtering_beats_the_pin(self):
+        """A paused project's pinned task is dropped even with nothing else queued."""
+        tasks = [
+            _task("pinned-paused-proj", project_id="p-paused", pinned=True, pin_rank=1),
+        ]
+        controls = [{"project": "p-paused", "paused": True, "updated_by": "operator"}]
+        self.assertIsNone(self._claim(tasks, controls=controls))
 
 
 class TestSetPinIntegration(unittest.TestCase):
@@ -349,8 +410,17 @@ class TestSetPinIntegration(unittest.TestCase):
 class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
     """Edge case tests for pinned express lane."""
 
-    def _claim(self, queued, active=None, done=None, controls=None):
-        """Run claim_task against a mocked DB and return the claimed slug."""
+    def _claim(self, queued, active=None, done=None, controls=None, projects=None):
+        """Run claim_task against a mocked DB and return the claimed slug.
+
+        `projects` must be forwarded: claim_task computes host affinity from the
+        projects table, and a task whose project_id is absent from it is filtered
+        out of the queue entirely. Two tests already passed `projects=` and got
+        `TypeError: _claim() got an unexpected keyword argument`; a third supplied
+        tasks in projects that were never declared and saw the whole queue vanish
+        with "no locally-runnable tasks" — a host-affinity message for what is
+        really a missing fixture.
+        """
         claimed = []
 
         def fake_patch(method, path, body=None, headers=None, params=None):
@@ -361,7 +431,9 @@ class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
                 return [task] if task else []
             return None
 
-        sel = _make_select(queued, active=active or [], done=done or [], controls=controls or [])
+        projects = projects or _projects_for(queued)
+        sel = _make_select(queued, active=active or [], done=done or [],
+                           controls=controls or [], projects=projects)
         with patch.object(db, "select", side_effect=sel), \
              patch.object(db, "_req", side_effect=fake_patch):
             db.claim_task("runner-1")
