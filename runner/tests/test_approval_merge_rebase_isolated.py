@@ -92,8 +92,12 @@ class RebaseIsolatedOutcomesTest(unittest.TestCase):
 
 class IntegrateUsesIsolatedRebaseTest(unittest.TestCase):
     def test_integrate_diverged_branch_calls_rebase_isolated(self):
+        # Two git calls precede the rebase decision: `rev-parse base` (pre_base) and
+        # `merge-base --is-ancestor` (rc!=0 -> diverged). A single-element side_effect
+        # ran out on the second and raised StopIteration, so this test was red on master
+        # for reasons unrelated to what it asserts.
         with patch.object(approval_merge, "_free_branch"), \
-             patch("subprocess.run", side_effect=[_proc(1)]) as m, \
+             patch("subprocess.run", side_effect=[_proc(0, "deadbeef\n"), _proc(1)]) as m, \
              patch.object(approval_merge, "_rebase_isolated", return_value=False) as ri:
             result = approval_merge._integrate(REPO, "agent/x", "main")
         ri.assert_called_once_with(REPO, "main", "agent/x")
