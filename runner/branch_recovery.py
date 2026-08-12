@@ -4,8 +4,16 @@ branch_recovery.py - detect and recover missing git branches.
 
 Recovery strategies (tried in order):
   1. Fetch from origin/upstream remotes
-  2. Restore from git reflog if the branch was recently active
-  3. Mark as unrecoverable if the branch is >30 days stale
+  2. Restore from the branch_durability archive (refs/archive/<branch>/<epoch>)
+  3. Restore from git reflog if the branch was recently active
+  4. Mark as unrecoverable if the branch is >30 days stale
+
+Strategy 2 exists because the deletion path already preserves the work: every
+branch removed via branch_durability.safe_delete() has its tip archived under
+refs/archive/ (and mirrored to origin) specifically so it can be restored rather
+than re-generated. Recovery did not consult that namespace, so archived branches
+were still reported unrecoverable and became manual recover-missing-branch tasks
+— the manual intervention this module exists to remove.
 
 Pure git operations — no database writes, except recover_missing_branches()
 which does best-effort task-state marking (MERGED/QUARANTINED) after a
@@ -15,6 +23,10 @@ Env vars:
     ORCH_BRANCH_RECOVERY_ENABLED              "true" (default) to enable
     ORCH_BRANCH_RECOVERY_STALE_DAYS           days before marking unrecoverable (default: 30)
     ORCH_BRANCH_RECOVERY_TIMEOUT              git command timeout in seconds (default: 60)
+    ORCH_BRANCH_RECOVERY_FETCH_ARCHIVE        "true" (default) to fetch refs/archive from
+                                              origin before searching it, so a branch
+                                              archived on another fleet machine is
+                                              recoverable here
     ORCH_MISSING_BRANCH_RECOVERY_THRESHOLD    min library-hit similarity to apply (default: 0.8)
     ORCH_MISSING_BRANCH_LIBRARY_PATH          optional JSON file mapping slug -> diff
 """
@@ -34,6 +46,7 @@ TIMEOUT = int(os.environ.get("ORCH_BRANCH_RECOVERY_TIMEOUT", "60"))
 _stats = {
     "recover_attempts": 0,
     "recover_fetched": 0,
+    "recover_archive": 0,
     "recover_reflog": 0,
     "recover_unrecoverable": 0,
     "recover_errors": 0,
@@ -92,6 +105,78 @@ def _fetch_branch(repo, branch, remote="origin"):
     """Attempt to fetch *branch* from *remote* and create a local ref."""
     rc, _, err = _git(repo, "fetch", remote,
                       f"refs/heads/{branch}:refs/heads/{branch}")
+    return rc == 0, err
+
+
+ARCHIVE_NS = "refs/archive"
+
+
+def _archive_refs(repo, branch):
+    """Archive refs for *branch*, newest epoch first.
+
+    branch_durability.safe_delete() copies a tip to refs/archive/<branch>/<epoch> before
+    deleting it, precisely so the commits can be restored instead of re-generated. Recovery
+    never looked there, so work that WAS durably archived still came back "unrecoverable"
+    and turned into a manual recover-missing-branch task. Refs sort by their epoch suffix,
+    so the newest archive is the most recent tip.
+    """
+    rc, out, _ = _git(repo, "for-each-ref", "--format=%(refname) %(objectname)",
+                      f"{ARCHIVE_NS}/{branch}")
+    if rc != 0 or not out:
+        return []
+    refs = []
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        ref, sha = parts
+        try:
+            epoch = int(ref.rsplit("/", 1)[1])
+        except (IndexError, ValueError):
+            epoch = 0
+        refs.append((epoch, ref, sha))
+    refs.sort(reverse=True)
+    return refs
+
+
+def _archive_recover(repo, branch):
+    """Restore *branch* from its newest archive ref. Exact restore of the original commit.
+
+    Deliberately NOT staleness-gated the way reflog recovery is: an archive ref is an
+    explicit, durable record that this exact tip was worth keeping, and `git gc` will not
+    prune it. Age is not evidence the work is unwanted, and re-generating committed code
+    from scratch is strictly worse than restoring it.
+    """
+    refs = _archive_refs(repo, branch)
+    if not refs:
+        return False, "no archive ref"
+    for _epoch, ref, sha in refs:
+        # The ref can outlive its object only if someone hand-deleted objects; verify
+        # rather than create a branch pointing at nothing.
+        rc, _, _ = _git(repo, "cat-file", "-e", f"{sha}^{{commit}}")
+        if rc != 0:
+            continue
+        rc, _, err = _git(repo, "branch", branch, sha)
+        if rc == 0:
+            return True, f"restored from {ref} ({sha[:8]})"
+        _log.warning("archive restore failed for %s from %s: %s", branch, ref, err)
+    return False, "archive refs present but none restorable"
+
+
+def _fetch_archive_refs(repo, branch, remote="origin"):
+    """Pull this branch's archive refs down from *remote* before searching locally.
+
+    archive_branch() mirrors refs to origin (ORCH_SHARE_ARCHIVE_REFS), so a branch archived
+    on a DIFFERENT fleet machine is recoverable here — but only if we fetch the namespace
+    first. Best-effort: a failed fetch just means we search whatever is already local.
+    """
+    ok, _ = _fetch_refspec(repo, remote,
+                           f"{ARCHIVE_NS}/{branch}/*:{ARCHIVE_NS}/{branch}/*")
+    return ok
+
+
+def _fetch_refspec(repo, remote, refspec):
+    rc, _, err = _git(repo, "fetch", remote, refspec)
     return rc == 0, err
 
 
@@ -179,6 +264,25 @@ def recover_branch(project_path, branch_name):
             return {"status": "recovered",
                     "action_taken": "fetched from upstream"}
         _log.warning("upstream fetch failed for %s: %s", branch_name, detail)
+
+    # Strategy 1c: restore from the durability archive.
+    #
+    # Ordered BEFORE reflog on purpose. A reflog entry is an accident of what this
+    # checkout happened to do and expires (~90 days), and a worktree's reflog dies with
+    # the worktree — which is exactly the case here, since approval_merge's conflict-redo
+    # path deletes agent branches via branch_durability.safe_delete(). An archive ref is
+    # the opposite: written deliberately on the deletion path, mirrored to origin, and
+    # never gc'd. It is both more likely to hit and an exact restore rather than a guess
+    # at which reflog line meant this branch.
+    if os.environ.get("ORCH_BRANCH_RECOVERY_FETCH_ARCHIVE", "true").lower() in (
+            "1", "true", "yes", "on"):
+        _fetch_archive_refs(project_path, branch_name, "origin")
+    ok, detail = _archive_recover(project_path, branch_name)
+    if ok:
+        _stats["recover_archive"] += 1
+        _log.info("recovered %s from durability archive: %s", branch_name, detail)
+        return {"status": "recovered",
+                "action_taken": f"archive recovery: {detail}"}
 
     # Strategy 2: reflog recovery
     ok, detail = _reflog_recover(project_path, branch_name)
