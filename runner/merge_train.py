@@ -2195,7 +2195,8 @@ def _startup_static_gate():
         pass  # gate tooling itself must never wedge the train
 
 
-if __name__ == "__main__":
+def _main():
+    """One scheduled pass. Raises on failure; crashloop_guard decides what that means."""
     _startup_static_gate()
     # SINGLE-FLIGHT (2026-07-14): the 60s scheduler kept spawning new train processes while a
     # long pass (staging tests take minutes) was still running — 3-4 stacked merge_train.py
@@ -2248,3 +2249,24 @@ if __name__ == "__main__":
         _th.Thread(target=_deadline, name="merge-train-watchdog", daemon=True).start()
 
     print(json.dumps(train_run(), indent=2, default=str))
+
+
+if __name__ == "__main__":
+    # CRASH LOOP (2026-08-12). Both failure paths above ended as an unhandled traceback:
+    # _startup_static_gate() deliberately re-raises RuntimeError, and train_run()'s first
+    # act is db.select("projects"), which raises TransientDBError on any DNS blip. The
+    # scheduler respawns every 60s, so each one appended another stack to merge-train.err
+    # and nothing alerted. Measured on this host: 444 KB of .err, 87 tracebacks of this job
+    # (78% of its total), 265 of them the SAME undefined name, plus 9 DNS failures.
+    #
+    # Those are three different situations and they need three different endings — a gate
+    # saying no is not a crash, and a DNS blip is not a bug. crashloop_guard classifies,
+    # deduplicates and escalates once per distinct cause; see its module docstring.
+    #
+    # If the guard itself is unavailable, run unguarded rather than not running at all.
+    try:
+        import crashloop_guard
+    except Exception:
+        _main()
+    else:
+        sys.exit(crashloop_guard.guarded_main("merge-train", _main))
