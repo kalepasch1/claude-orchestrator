@@ -1092,16 +1092,19 @@ def insert(table, row, upsert=False):
     # Catches: PATCH TEMPLATE stubs, empty prompts, prompts that are just error messages.
     # This prevents 1,794+ garbage tasks from ever being created (they used to be cleaned up
     # after the fact by rootcause_cluster, which was too late — they'd already consumed slots).
+    # 2026-08-12: the checks below were inline and tested `startswith("PATCH TEMPLATE")`,
+    # so any stub carrying a preamble — a MERGED-DIFF LIBRARY block or an ORCHESTRATION
+    # PIPELINE CONTRACT header, which the filing paths PREPEND — walked straight past the
+    # gate and was only caught at preflight (28 auto-quarantines in 7 days). preflight
+    # already knew how to strip those wrappers; this gate did not. Both now share one
+    # judgement in prompt_integrity, so the door and the corridor cannot disagree.
     if table == "tasks" and isinstance(row, dict) and not upsert:
         _prompt = (row.get("prompt") or "").strip()
-        _reject_reason = None
-        if not _prompt or len(_prompt) < 20:
-            _reject_reason = "empty or trivial prompt"
-        elif _prompt.startswith("PATCH TEMPLATE"):
-            _reject_reason = "unfilled PATCH TEMPLATE stub"
-        elif all(line.startswith(("Error", "error:", "Traceback", "fatal:"))
-                 for line in _prompt.strip().split("\n")[:5] if line.strip()):
-            _reject_reason = "prompt is only error messages"
+        try:
+            import prompt_integrity
+            _reject_reason = prompt_integrity.reject_reason_for_insert(_prompt)
+        except Exception:
+            _reject_reason = None if _prompt and len(_prompt) >= 20 else "empty or trivial prompt"
         if _reject_reason:
             import logging
             logging.getLogger("db").warning(
@@ -1199,6 +1202,49 @@ def update(table, match, patch):
         _guard_fleet_config(table, {"key": (match or {}).get("key") or (patch or {}).get("key"),
                                     "value": (patch or {}).get("value")})
     params = {k: f"eq.{v}" for k, v in match.items()}
+    # SPEC PROTECTION (2026-08-12). 87 tasks in 7 days were quarantined "spec-lost": their
+    # real specification had been overwritten in place with "Complete the task '<slug>'.".
+    # Every prompt gate on this module lived on the INSERT path, so a destructive PATCH was
+    # invisible to all of them — the task was gutted, stayed QUEUED looking healthy, and was
+    # only caught once preflight saw a contentless prompt. The work is unrecoverable at that
+    # point; the original text is simply gone.
+    #
+    # agentic_repair already defends its own path by omitting `prompt` when the caller did
+    # not select it. That fixed one writer. This defends the BOUNDARY, so the next writer
+    # cannot reintroduce the same loss.
+    #
+    # Judged as a transition, not a value: a stub over nothing is fine, a stub over a real
+    # spec is refused. Fail-open on any uncertainty (unknown current prompt, multi-row match,
+    # guard error) — blocking legitimate writes would be worse than the bug.
+    if table == "tasks" and isinstance(patch, dict) and patch.get("prompt") is not None:
+        try:
+            import prompt_integrity
+            _cur = None
+            if "id" in (match or {}):
+                _rows = select("tasks", {"select": "prompt,slug", "id": f"eq.{match['id']}",
+                                         "limit": "1"}) or []
+                _cur = (_rows[0].get("prompt") if _rows else None)
+            if _cur:
+                _why = prompt_integrity.reject_reason_for_update(patch.get("prompt"), _cur)
+                if _why:
+                    import logging
+                    logging.getLogger("db").warning(
+                        "spec-guard: dropping prompt write for task %s — %s",
+                        (match or {}).get("id", "?"), _why)
+                    try:
+                        _record_refusal({"slug": (_rows[0].get("slug") if _rows else None),
+                                         "prompt": patch.get("prompt")},
+                                        "spec_guard", _why)
+                    except Exception:
+                        pass
+                    # Drop ONLY the destructive field. The rest of the patch (state, note,
+                    # attempt) is the caller's real intent and must still land — dropping the
+                    # whole write would strand the task instead of protecting it.
+                    patch = {k: v for k, v in patch.items() if k != "prompt"}
+                    if not patch:
+                        return None
+        except Exception:
+            pass    # fail-open: the spec guard must never break the update path
     # METRIC INTEGRITY: refuse silent mass state flips. 9,236 tasks were once moved to MERGED
     # by two bulk UPDATEs, making every downstream metric untrue. A state-changing PATCH that
     # would touch more than ORCH_BULK_STATE_MAX rows now needs ORCH_ALLOW_BULK_STATE_CHANGE
