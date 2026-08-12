@@ -747,6 +747,26 @@ def _rerun_release_gates(repo, sha, test_cmd, require_tests, build_cmd):
 
     Returns (ok, gate_name, log).
     """
+    # RESOLVED-FILE GATE (2026-08-12), first because it is the cheapest and because a
+    # marker in the tree makes every later gate's verdict meaningless — a .gitignore with
+    # conflict markers silently stops ignoring, and the build still goes green. Runs over
+    # the WHOLE tree at `sha`, not a change list, since the marker that reaches production
+    # is characteristically in a file this batch never touched.
+    try:
+        import resolved_file_gate
+        marker_findings = resolved_file_gate.scan_repo(repo, ref=sha)
+        if marker_findings:
+            files = sorted({f.get("file") for f in marker_findings if f.get("file")})
+            return False, "conflict-markers", (
+                "release refused: %d unresolved conflict-marker finding(s) at %s in %s. "
+                "Nothing was force-pushed and neither side of any conflict was discarded — "
+                "resolve the files and re-run."
+                % (len(marker_findings), (sha or "")[:12], ", ".join(files[:10]) or "the tree"))
+    except Exception as exc:
+        # Fail-closed, like every other gate in this function.
+        return False, "conflict-markers", (
+            "resolved-file gate error (fail-closed): %s: %s" % (type(exc).__name__, exc))
+
     if test_cmd and require_tests:
         try:
             with commit_overlay.checkout(repo, sha, prefix="release-regate-overlay-") as overlay:
