@@ -49,6 +49,20 @@ def record_success(ts=None):
     set_gauge("canary_last_success", time.time() if ts is None else ts)
 
 
+def record_failure():
+    """Reset canary_last_success to 0 when an evaluation fails.
+
+    Only the promote path ever touched this gauge, so after a rollback the
+    gauge kept the timestamp of the *previous* success. Any alert written as
+    `time() - canary_last_success > threshold` therefore stayed green through
+    a failing canary until the threshold expired on its own -- the gauge said
+    "last succeeded 40s ago" while the canary was actively rolling back.
+    Zeroing on failure makes the same alert fire immediately, and matches the
+    documented contract that 0 means "not currently succeeding".
+    """
+    set_gauge("canary_last_success", 0)
+
+
 def render_metrics():
     """Prometheus text exposition for GET /metrics."""
     lines = ["canary_up 1"]
@@ -138,6 +152,10 @@ def main(argv=None):
     result = evaluate(argv[0] if argv else None)
     if result.get("verdict") == "promote":
         record_success()
+    else:
+        # Failure check location: a rollback must clear the gauge, not leave
+        # the previous success timestamp standing.
+        record_failure()
     print(json.dumps(result))
     return 0 if result.get("verdict") == "promote" else 1
 
