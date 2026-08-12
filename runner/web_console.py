@@ -71,18 +71,43 @@ def _build_snapshot():
 
 
 class ConsoleHandler(http.server.BaseHTTPRequestHandler):
-    def _send_json(self, status, payload):
+    def _send_json(self, status, payload, extra_headers=None):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        for header, value in (extra_headers or {}).items():
+            self.send_header(header, value)
+        # `Access-Control-Allow-Origin: *` used to go out on every response.
+        # On a loopback service that hands any web page the whole compliance
+        # surface, so only an explicitly configured origin is echoed now.
+        try:
+            import compliance_auth
+            for header, value in compliance_auth.cors_headers(self.headers.get("Origin")).items():
+                self.send_header(header, value)
+        except Exception:
+            pass
         self.end_headers()
         self.wfile.write(json.dumps(payload, indent=2, default=str).encode())
+
+    def _caller(self):
+        """Bearer token (if presented) and the peer address, for auth."""
+        token = None
+        header = self.headers.get("Authorization") or ""
+        if header.lower().startswith("bearer "):
+            token = header[7:].strip()
+        token = token or self.headers.get("X-Compliance-Token")
+        try:
+            client_host = self.client_address[0]
+        except (AttributeError, IndexError, TypeError):
+            client_host = None
+        return token, client_host
 
     def do_GET(self):
         if self.path.startswith("/compliance/v1/"):
             from compliance_api_gateway import gateway
             params = {key: values[-1] for key, values in parse_qs(urlparse(self.path).query).items()}
-            status, payload = gateway.dispatch("GET", self.path, params)
+            token, client_host = self._caller()
+            status, payload = gateway.dispatch("GET", self.path, params,
+                                               client_host=client_host, token=token)
             return self._send_json(status, payload)
         if self.path == "/health":
             return self._send_json(200, {"status": "ok"})
@@ -100,14 +125,28 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.path.startswith("/compliance/v1/"):
             return self._send_json(404, {"error": "not found"})
+        import compliance_auth
         try:
             length = int(self.headers.get("Content-Length", "0"))
+            # Bound BEFORE reading. The previous code read Content-Length bytes
+            # unconditionally, so a single declared-huge request could exhaust
+            # memory on the loopback console.
+            compliance_auth.check_body_size(length)
             body = json.loads(self.rfile.read(length) or b"{}")
             if not isinstance(body, dict): raise ValueError("JSON object required")
+        except compliance_auth.AuthError as exc:
+            # The oversized body is deliberately never read, so the connection
+            # cannot be reused — say so rather than leaving the peer to
+            # discover it as a reset mid-response.
+            self.close_connection = True
+            return self._send_json(exc.status, {"error": str(exc)},
+                                   extra_headers={"Connection": "close"})
         except (ValueError, json.JSONDecodeError) as exc:
             return self._send_json(400, {"error": str(exc)})
         from compliance_api_gateway import gateway
-        status, payload = gateway.dispatch("POST", self.path, body)
+        token, client_host = self._caller()
+        status, payload = gateway.dispatch("POST", self.path, body,
+                                           client_host=client_host, token=token)
         self._send_json(status, payload)
 
     def log_message(self, format, *args):
