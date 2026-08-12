@@ -7,8 +7,14 @@ rollback if a metric regressed. Used by the overnight deploy window instead of a
 METRICS_URL must return JSON like {"error_rate":0.4,"p95_ms":180,"conversion":3.1}.
 Thresholds via env: CANARY_MAX_ERROR_RATE, CANARY_MAX_P95_MS, CANARY_MIN_CONVERSION.
 """
-import os, sys, json, threading, time, urllib.request
+import os, sys, json, logging, threading, time, urllib.request
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+# RESTORED 2026-08-12: `validate_canary` referenced `_log` and the module never
+# imported logging or bound `_log` — a NameError that only fired the first time
+# validate_canary() was called. Same crash-free-until-used class as the
+# _metrics_server regression noted below. Bind the logger next to the imports.
+_log = logging.getLogger(__name__)
 
 # RESTORED 2026-08-02: merge c502818b 'Merge branch 'agent/canary-gemini-25-...'
 # (auto-resolved)' dropped the `threading` / `http.server` imports and these two module
@@ -24,24 +30,77 @@ _metrics_server_lock = threading.Lock()
 # prometheus_client is not a repo dependency, and /metrics already speaks the
 # Prometheus text exposition format, so a hard import would add a dep for no
 # behavior. The gauge state is module-level and lock-guarded.
-_gauges = {"canary_last_success": 0.0}
+
+
+class Gauge:
+    """Minimal Prometheus-compatible gauge: set/inc/dec/get, stdlib only.
+
+    Deliberately duck-types prometheus_client.Gauge rather than importing it —
+    prometheus_client is not a repo dependency and render_metrics() already
+    emits the Prometheus text exposition format. Fail-soft: a non-numeric value
+    is ignored rather than raising, so a bad caller never wedges the canary.
+    """
+
+    def __init__(self, name, documentation=""):
+        self.name = name
+        self.documentation = documentation
+        self._value = 0.0
+        self._lock = threading.Lock()
+
+    def set(self, value):
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return
+        with self._lock:
+            self._value = v
+
+    def inc(self, amount=1.0):
+        try:
+            delta = float(amount)
+        except (TypeError, ValueError):
+            return
+        with self._lock:
+            self._value += delta
+
+    def dec(self, amount=1.0):
+        self.inc(-amount if isinstance(amount, (int, float)) else amount)
+
+    def get(self):
+        with self._lock:
+            return self._value
+
+    def __repr__(self):
+        return f"Gauge({self.name!r}, {self.get()!r})"
+
+
+# Module-level gauge object — `canary.canary_last_success` is part of the public
+# surface. Value is the unix timestamp of the last promote (0.0 = never), which
+# doubles as the success/failure indicator: non-zero means the last validation
+# succeeded, 0 means it has not.
+canary_last_success = Gauge(
+    "canary_last_success",
+    "Indicator of the last validation result (1 for success, 0 for failure)",
+)
+
+_gauges = {"canary_last_success": canary_last_success}
 _gauges_lock = threading.Lock()
 
 
 def set_gauge(name, value):
     """Set a gauge value. Fail-soft: unknown names are created, bad values ignored."""
-    try:
-        v = float(value)
-    except (TypeError, ValueError):
-        return
     with _gauges_lock:
-        _gauges[name] = v
+        gauge = _gauges.get(name)
+        if gauge is None:
+            gauge = _gauges[name] = Gauge(name)
+    gauge.set(value)
 
 
 def get_gauge(name):
     """Current gauge value (0.0 for unknown gauges)."""
     with _gauges_lock:
-        return _gauges.get(name, 0.0)
+        gauge = _gauges.get(name)
+    return gauge.get() if gauge is not None else 0.0
 
 
 def record_success(ts=None):
@@ -53,26 +112,13 @@ def render_metrics():
     """Prometheus text exposition for GET /metrics."""
     lines = ["canary_up 1"]
     with _gauges_lock:
-        for name in sorted(_gauges):
-            lines.append(f"# TYPE {name} gauge")
-            lines.append(f"{name} {_gauges[name]}")
+        gauges = [_gauges[name] for name in sorted(_gauges)]
+    for gauge in gauges:
+        if gauge.documentation:
+            lines.append(f"# HELP {gauge.name} {gauge.documentation}")
+        lines.append(f"# TYPE {gauge.name} gauge")
+        lines.append(f"{gauge.name} {gauge.get()}")
     return ("\n".join(lines) + "\n").encode()
-
-
-def validate_canary(response_text):
-    """True when 'canary' (case-insensitive) appears anywhere in response_text.
-
-    Logs at INFO when the canary marker is found, WARNING when it is not.
-    Fail-soft on non-string input (returns False rather than raising).
-    """
-    if not isinstance(response_text, str):
-        _log.warning("canary marker not found: non-string input (%s)", type(response_text).__name__)
-        return False
-    if "canary" in response_text.lower():
-        _log.info("canary marker found in response text")
-        return True
-    _log.warning("canary marker NOT found in response text")
-    return False
 
 
 def validate_canary(response_text):
