@@ -49,6 +49,7 @@ Task Classes:
 import os
 import sys
 import json
+import logging
 import threading
 import time
 from typing import Dict, List, Any, Optional
@@ -285,6 +286,41 @@ ENV_OVERRIDES = {
 }
 
 
+
+
+# Task classes whose preflight triage must be routed to a hosted model with a
+# stronger safety posture than the free local default. The pipeline contract
+# already names this route for legal/security work; it was only ever written
+# into prompt headers by hand, so nothing enforced it.
+PREFLIGHT_ESCALATED_MODEL = os.environ.get(
+    "ORCH_PREFLIGHT_ESCALATED_MODEL", "google:gemini-2.0-flash"
+)
+PREFLIGHT_ESCALATED_CLASSES = ("legal", "security", "compliance", "privacy")
+
+
+def preflight_triage_model(task_class: str = None) -> str:
+    """Return the ``provider:model`` route for the preflight triage stage.
+
+    ``task_class`` may be a bare class ("legal") or the decorated form the
+    pipeline contract emits ("legal (need 9, risk legal_posture)"); only the
+    leading token is significant. Legal/security-adjacent classes escalate to
+    PREFLIGHT_ESCALATED_MODEL; everything else takes the configured default.
+
+    Fail-soft: None, empty, or unparseable input returns the default route
+    rather than raising.
+    """
+    default = ENV_OVERRIDES.get("ORCH_PREFLIGHT_MODEL", "local:llama3.2:3b")
+    try:
+        head = str(task_class or "").strip().split("(")[0].strip().lower()
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "preflight_triage_model: unparseable task_class %r (%s); using default",
+            task_class, exc,
+        )
+        return default
+    if head in PREFLIGHT_ESCALATED_CLASSES:
+        return PREFLIGHT_ESCALATED_MODEL
+    return default
 
 
 def validate_config() -> bool:
