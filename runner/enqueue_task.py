@@ -29,6 +29,21 @@ PROJECT_ALIASES = {
 _RECOVERABLE_STATES = {"BLOCKED", "CONFLICT", "TESTFAIL", "WAITING", "DECOMPOSED", "SHELVED"}
 _INTENT_MARKER = "enqueue-intent:"
 
+# Legacy (marker-less) intent scan. Paged rather than truncated: the previous
+# single 1000-row read made any older open task invisible to dedup, so an
+# equivalent open intent could be inserted twice. ORCH_-prefixed so the ceiling
+# is fleet-pushable if a project's open queue ever outgrows it.
+def _int_env(name, default):
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+_INTENT_SCAN_PAGE = _int_env("ORCH_INTENT_SCAN_PAGE", 1000)
+_INTENT_SCAN_MAX = _int_env("ORCH_INTENT_SCAN_MAX", 20000)
+
 
 def canonical_project_name(name):
     raw = str(name or "").strip()
@@ -69,19 +84,52 @@ def _intent_from_note(note):
 
 
 def _find_open_by_intent(project_id, key):
-    rows = db.select("tasks", {
+    """Find the open task carrying this intent key, or None.
+
+    Filtered server-side. The previous shape pulled the newest 1000 open rows and
+    scanned them in Python, which the repo's own TRUNCATED SCAN detector flagged
+    at this line: any open task older than the newest 1000 was invisible, so the
+    dedup silently missed it and inserted a duplicate. Two cheap targeted queries
+    replace one truncated bulk read — first on the explicit intent marker, then
+    on the slug for rows enqueued before markers existed.
+    """
+    marker = "[" + _INTENT_MARKER + key + "]"
+    base = {
         "select": "id,slug,state,attempt,note",
         "project_id": f"eq.{project_id}",
         "state": "not.in.(%s)" % ",".join(sorted(TERMINAL_STATES)),
         "order": "updated_at.desc",
-        "limit": "1000",
-    }) or []
-    for row in rows:
-        candidate = _intent_from_note(row.get("note"))
-        if not candidate:
-            candidate = intent_key(project_id, row.get("slug", ""))
-        if candidate == key:
-            return row
+        "limit": "50",
+    }
+    tagged = dict(base)
+    # PostgREST `like` uses * as the wildcard; commas and parens would break the
+    # filter grammar, so a key containing them falls through to the slug pass.
+    if not any(ch in marker for ch in ",()"):
+        tagged["note"] = "like.*{0}*".format(marker)
+        rows = db.select("tasks", tagged) or []
+        for row in rows:
+            if _intent_from_note(row.get("note")) == key:
+                return row
+
+    # Legacy rows predate the marker, so their key must be derived from the slug
+    # and cannot be filtered server-side (intent_key normalizes the slug first).
+    # Page through them instead of truncating at the first 1000 — an open task
+    # older than that page was previously invisible, and a missed dedup means a
+    # duplicate insert, not just a slow query.
+    base = dict(base, limit=str(_INTENT_SCAN_PAGE))
+    page, offset = _INTENT_SCAN_PAGE, 0
+    while offset < _INTENT_SCAN_MAX:
+        scoped = dict(base, offset=str(offset))
+        rows = db.select("tasks", scoped) or []
+        for row in rows:
+            candidate = _intent_from_note(row.get("note"))
+            if not candidate:
+                candidate = intent_key(project_id, row.get("slug", ""))
+            if candidate == key:
+                return row
+        if len(rows) < page:
+            return None
+        offset += page
     return None
 
 
@@ -216,7 +264,15 @@ def _enqueue_one(spec, proj, pid):
     if result.action == "created" and result.task_id:
         triggered = db.test_trigger(result.task_id)
         if triggered:
-            print(f"[enqueue] test trigger fired for '{spec['slug']}' -> state=TESTING")
+            print(f"[enqueue] test trigger fired for '{spec['slug']}' "
+                  f"-> state={db.TRIGGER_STATE}")
+        else:
+            # Say why. A trigger that silently never fires is indistinguishable
+            # from one that does, which is how the QUEUED->trigger transition
+            # stayed broken without anyone noticing.
+            reason = getattr(db.test_trigger, "last_error", "") or "unknown reason"
+            print(f"[enqueue] test trigger did NOT fire for '{spec['slug']}': {reason}")
+            print(f"[enqueue] '{spec['slug']}' remains QUEUED and claimable.")
     return result
 
 

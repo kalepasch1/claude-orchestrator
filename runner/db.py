@@ -1407,24 +1407,97 @@ def set_pin(slug, rank=1):
         return update("tasks", {"slug": slug}, {"pinned": True, "pin_rank": rank})
 
 
-def test_trigger(task_id):
-    """Atomically mark a newly queued task TESTING; fail soft on schema/DB drift.
+TRIGGER_STATE = (os.environ.get("ORCH_ENQUEUE_TRIGGER_STATE") or "TESTING").strip().upper()
 
-    If the TESTING enum migration has not reached a host yet, PostgREST rejects
-    this PATCH and the task remains QUEUED, so the ordinary claim path still
-    processes it.
+
+def _looks_like_bad_enum(exc):
+    """True when a write failed because the value is not in the target enum.
+
+    Diagnostic only. Deliberately not used to gate the write: the enum cannot be
+    introspected through PostgREST, and a sampled state list is incomplete by
+    construction, so pre-checking against it would refuse legal states that
+    simply had no row yet. Attempt the write, then explain the refusal.
     """
+    text = str(exc).lower()
+    return ("invalid input value for enum" in text
+            or ("22p02" in text and "enum" in text))
+
+
+def task_state_values():
+    """States observed on tasks, for diagnostics only — NOT the enum definition.
+
+    PostgREST exposes no enum-introspection endpoint, so this samples the states
+    actually present and caches the result for the process. It is a lower bound
+    on the enum: a legal state with no rows will be absent. Never treat a missing
+    value as proof that the state is illegal.
+    """
+    cached = getattr(task_state_values, "_cache", None)
+    if cached is not None:
+        return cached
+    try:
+        rows = _req("GET", "/rest/v1/tasks",
+                    params={"select": "state", "limit": "1000"}) or []
+        values = tuple(sorted({str(r.get("state")) for r in rows if r.get("state")}))
+    except Exception:
+        values = ()
+    task_state_values._cache = values
+    return values
+
+
+def test_trigger(task_id):
+    """Atomically move a newly queued task to the trigger state. Fail-soft.
+
+    Returns the patched row, or None. On None the task stays QUEUED and the
+    ordinary claim path still processes it — that part always worked.
+
+    REGRESSION (measured 2026-08-12): the target was the hardcoded literal
+    "TESTING", which is not a member of task_state on this database (QUEUED,
+    WAITING, RUNNING, RETRY, DONE, BLOCKED, CONFLICT, TESTFAIL, MERGED, SHELVED,
+    MERGING, DECOMPOSED, QUARANTINED, SUPERSEDED, CLOSED, DEPLOYED_AND_VERIFIED,
+    PHANTOM_UNVERIFIED). Every PATCH was rejected and swallowed by a bare
+    `except: return None`, so the QUEUED->trigger transition had never fired
+    anywhere and nothing said so. The silence was the defect: an enqueue that
+    never triggers is indistinguishable from one that does.
+
+    Now the state comes from ORCH_ENQUEUE_TRIGGER_STATE (fleet-pushable, still
+    defaulting to TESTING so behaviour is unchanged the moment the enum migration
+    lands), and every refusal is recorded on `test_trigger.last_error` for the
+    caller to print. The write is still attempted first and the error read
+    afterwards — pre-checking against a sampled state list would refuse legal
+    states that merely have no rows yet. Still never raises.
+    """
+    test_trigger.last_error = ""
+    if not task_id:
+        test_trigger.last_error = "no task id"
+        return None
     try:
         rows = _req(
             "PATCH",
             "/rest/v1/tasks",
-            body={"state": "TESTING", "updated_at": "now()"},
+            body={"state": TRIGGER_STATE, "updated_at": "now()"},
             headers={"Prefer": "return=representation"},
             params={"id": f"eq.{task_id}", "state": "eq.QUEUED"},
         )
-        return rows[0] if rows else None
-    except Exception:
+        if rows:
+            return rows[0]
+        test_trigger.last_error = "task was not QUEUED at trigger time (already claimed?)"
         return None
+    except Exception as exc:
+        detail = "{0}: {1}".format(type(exc).__name__, exc)
+        if _looks_like_bad_enum(exc):
+            known = task_state_values()
+            detail = (
+                "trigger state {0!r} is not a member of task_state on this database"
+                "{1}; task left QUEUED and claimable. Set ORCH_ENQUEUE_TRIGGER_STATE "
+                "to a legal state, or land the enum migration. (raw: {2})".format(
+                    TRIGGER_STATE,
+                    " (states seen: {0})".format(", ".join(known)) if known else "",
+                    detail))
+        test_trigger.last_error = detail
+        return None
+
+
+test_trigger.last_error = ""
 
 
 def claim_task(runner_id):
