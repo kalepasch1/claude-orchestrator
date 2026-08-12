@@ -49,7 +49,125 @@ def _heartbeat_fresh():
     return None
 
 
+MAINTENANCE_LOCK = os.environ.get(
+    "ORCH_MAINTENANCE_LOCK",
+    os.path.join(os.environ.get("CLAUDE_ORCH_HOME", _DIR), "maintenance.lock"),
+)
+
+
+def _maintenance_present():
+    """Read the fence NOW, not at startup.
+
+    keepalive.sh has always honoured this lock; supervisor.py did not, so the fence
+    held against one path into a restart and was silently absent from the other.
+    That asymmetry is how a runner starts during declared maintenance without
+    anything looking broken.
+    """
+    return os.path.exists(MAINTENANCE_LOCK)
+
+
+def _observe_ownership():
+    """Gather what supervisor_ownership needs. Best-effort and fail-soft: a
+    supervisor that crashes while checking whether it may act is worse than one
+    that acts on partial information, so an unreadable fact becomes an absent fact
+    and the ownership check reports it."""
+    from supervisor_ownership import (
+        LockState,
+        OwnershipObservation,
+        ProcessInfo,
+        parse_launchctl_list,
+    )
+
+    def _pgrep(pattern):
+        try:
+            out = subprocess.run(["pgrep", "-fl", pattern], capture_output=True, text=True)
+            found = []
+            for line in (out.stdout or "").strip().splitlines():
+                pid, _, cmd = line.partition(" ")
+                if pid.isdigit() and int(pid) != os.getpid():
+                    found.append(ProcessInfo(int(pid), cmd))
+            return tuple(found)
+        except Exception:
+            return ()
+
+    def _lock(path):
+        try:
+            if not os.path.exists(path):
+                return LockState(path=path, exists=False)
+            holder = None
+            pid_file = os.path.join(path, "pid") if os.path.isdir(path) else path
+            try:
+                with open(pid_file) as handle:
+                    raw = handle.read().strip()
+                holder = int(raw) if raw.isdigit() else None
+            except Exception:
+                holder = None
+            alive = False
+            if holder:
+                try:
+                    os.kill(holder, 0)
+                    alive = True
+                except Exception:
+                    alive = False
+            return LockState(path=path, exists=True, holder_pid=holder, holder_alive=alive)
+        except Exception:
+            return LockState(path=path, exists=False)
+
+    service = None
+    try:
+        out = subprocess.run(["launchctl", "list"], capture_output=True, text=True)
+        service = parse_launchctl_list(out.stdout or "")
+    except Exception:
+        service = None
+
+    home = os.environ.get("CLAUDE_ORCH_HOME", _DIR)
+    return OwnershipObservation(
+        service=service,
+        repo_path=home,
+        supervisor_lock=_lock(os.path.join(home, ".runtime", "keepalive.lock")),
+        runner_lock=_lock(os.path.join(home, ".runtime", "runner.lock")),
+        keepalive_processes=_pgrep("keepalive.sh"),
+        runner_processes=_pgrep("runner.py"),
+        coder_processes=_pgrep("agentic_implementer"),
+        maintenance_lock_present=_maintenance_present(),
+    )
+
+
+def _record_incident(incident):
+    try:
+        import db
+        db.insert("runner_health", {
+            "runner_id": incident.runner_id, "hostname": incident.hostname,
+            "status": incident.status, "detail": incident.detail[:1000]})
+    except Exception:
+        pass
+    print(f"[supervisor] OWNERSHIP INCIDENT: {', '.join(incident.codes)}")
+
+
 def _restart():
+    # THE GATE. Ownership and the maintenance fence are checked before anything is
+    # started, and an incident is recorded rather than silently corrected — a
+    # supervisor that quietly fixes ownership is one whose ownership nobody can
+    # reason about.
+    try:
+        from supervisor_ownership import assess_ownership, build_incident, may_restart
+
+        observation = _observe_ownership()
+        decision = may_restart(observation, maintenance_check=_maintenance_present)
+
+        incident = build_incident(assess_ownership(observation), socket.gethostname())
+        if incident is not None:
+            _record_incident(incident)
+
+        if not decision.allowed:
+            print(f"[supervisor] restart withheld: {decision.reason}")
+            return
+    except ImportError:
+        # Fail-soft: if the ownership module is unavailable the supervisor still
+        # restarts a dead runner, but it says the gate was skipped rather than
+        # implying it passed.
+        print("[supervisor] ownership gate unavailable; restarting without it")
+
     subprocess.Popen(["bash", "-lc", RUNNER_CMD], cwd=_DIR)
     try:
         import db
