@@ -375,7 +375,91 @@ def plan(master: str, repo: str = None, project: str = None) -> list:
     except Exception as e:
         sys.stderr.write(f"[planner] disposition memory failed ({e}); planning unchanged\n")
 
+    # GOLDEN PATHS + STRATEGY-AWARE GENERATION (Wave C, Part 4 — the compounding half).
+    #
+    # `golden_path.py` shipped complete, tested and dependency-free, and was imported by
+    # NOTHING — the same dead-on-arrival shape the disposition-memory block above was in
+    # before it was wired. Suppression (Part 7) stops waste being generated; this is the
+    # other side, and the only place the compounding can actually be taken: it decides what
+    # a shard STARTS from.
+    #
+    # Two clauses, both applied here because the prompt is the only artifact that reaches
+    # the coder:
+    #   * golden path — the best-OUTCOME merged shard in the vertical. The merged-diff
+    #     library already answers "has something like this been done", but it ranks by
+    #     similarity, and similarity is blind to outcome: a shard that merged after four
+    #     repair attempts scores the same as one that merged first-pass.
+    #   * approved structure — a tribunal approval is the most load-bearing context a shard
+    #     can have and today is not passed down at all, so the AMOE flow and state gates get
+    #     discovered as review findings instead of being written in the first place.
+    #
+    # Appended, never substituted: an existing prompt is what the operator asked for, and a
+    # planner that rewrites it has changed the task rather than informed it. Fail-soft — a
+    # missing strategy or a thin vertical leaves planning exactly as it was.
+    tasks = _apply_golden_path(tasks, project=project)
+
     return tasks
+
+
+def _apply_golden_path(tasks, project=None, strategy=None, shards=None):
+    """Append golden-path + approved-structure context to each task prompt.
+
+    Returns `tasks` unchanged on any failure or when there is nothing to add.
+    """
+    try:
+        import golden_path
+        strategy = strategy if strategy is not None else _approved_strategy(project)
+        if not isinstance(strategy, dict) or not strategy.get("structure"):
+            return tasks
+
+        shards = shards if shards is not None else _merged_shards(project)
+        vertical = strategy.get("vertical") or strategy.get("structure")
+        template = golden_path.template_for(shards or [], vertical)
+
+        context = golden_path.strategy_context(strategy, template=template)
+        if not context.get("ok"):
+            # An unapproved structure is a REFUSAL to add context, not a silent pass —
+            # say so, because "built the wrong thing correctly" is the expensive failure.
+            sys.stderr.write(f"[planner] golden path not applied: {context.get('reason')}\n")
+            return tasks
+
+        block = context.get("prompt") or ""
+        if not block.strip():
+            return tasks
+        for t in tasks:
+            prompt = str(t.get("prompt") or "")
+            if "APPROVED STRUCTURE:" in prompt:
+                continue                      # idempotent: re-planning must not stack blocks
+            t["prompt"] = (block + "\n\n" + prompt) if prompt else block
+        return tasks
+    except Exception as e:
+        sys.stderr.write(f"[planner] golden path failed ({e}); planning unchanged\n")
+        return tasks
+
+
+def _approved_strategy(project=None):
+    """The tribunal-approved structure for this project, or {}. Fail-soft."""
+    try:
+        import db
+        rows = db.select("strategies", {"select": "structure,vertical,approved,jurisdictions",
+                                        "project": f"eq.{project}", "approved": "is.true",
+                                        "order": "updated_at.desc", "limit": "1"}) or []
+        return rows[0] if rows else {}
+    except Exception:
+        return {}
+
+
+def _merged_shards(project=None, limit=500):
+    """Merged shards for outcome-ranked distillation, or []. Fail-soft."""
+    try:
+        import db
+        rows = db.select("merged_diffs", {"select": "slug,project,kind,vertical,created_at",
+                                          "project": f"eq.{project}",
+                                          "order": "created_at.desc",
+                                          "limit": str(int(limit))}) or []
+        return rows
+    except Exception:
+        return []
 
 
 def _disposition_signal(project=None, limit=500):
