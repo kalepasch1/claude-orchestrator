@@ -119,6 +119,76 @@ def _git(repo: str, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+#: Branches whose worktree is NEVER disposable. These are integration and
+#: release lines an operator works in directly; an agent worktree is always
+#: `agent/<slug>`, so nothing here can be a task checkout.
+DEFAULT_RESERVED_BRANCHES = ("orchestrator/dev", "master", "main", "production")
+
+#: Drop this file at a worktree root to protect it regardless of branch.
+RESERVED_MARKER = ".orchestrator-reserved"
+
+
+def reserved_branches() -> tuple:
+    raw = os.environ.get("ORCH_RESERVED_BRANCHES", "").strip()
+    if not raw:
+        return DEFAULT_RESERVED_BRANCHES
+    return tuple(b.strip() for b in raw.split(",") if b.strip())
+
+
+def reserved_worktree_reason(repo: str, wt: str) -> Optional[str]:
+    """Why `wt` must never be force-removed or reused as a task checkout.
+
+    WHY THIS EXISTS (2026-08-12). `approval_merge._free_branch()` resolves a
+    branch to whichever worktree holds it and runs `git worktree remove --force`
+    on it. Its only exemption was the PRIMARY checkout — so any LINKED worktree
+    was fair game, including the one an operator has the integration branch
+    checked out in. Observed the same night: an agent wrote into
+    apparently-wt/promote-20260811 (holding orchestrator/dev) while it was in
+    use, leaving a conflicted index with no MERGE_HEAD and four raw conflict
+    markers in a tracked .ts file. `--force` would not have stopped at
+    uncommitted work.
+
+    `validate_task_worktree()` below already refuses anything whose branch is
+    not `agent/<slug>`, which is the same invariant — but the destructive paths
+    in approval_merge and self_healing_merge never call it. This is that
+    invariant, factored out so those paths can share it rather than growing a
+    second, weaker copy.
+
+    Returns a reason string when the worktree is protected, else None.
+    """
+    repo = os.path.realpath(repo)
+    wt_real = os.path.realpath(wt)
+
+    if wt_real == repo:
+        return "it is the primary checkout"
+
+    if os.path.exists(os.path.join(wt_real, RESERVED_MARKER)):
+        return f"it carries a {RESERVED_MARKER} marker"
+
+    branch = _git(wt_real, "symbolic-ref", "--quiet", "--short", "HEAD")
+    name = branch.stdout.strip() if not branch.returncode else ""
+
+    if not name:
+        # Detached HEAD is not provably a task checkout, and force-removing it
+        # discards whatever it holds. Refuse rather than guess.
+        return "its HEAD is detached, so it cannot be shown to be a task worktree"
+
+    if name in reserved_branches():
+        return f"it has the reserved branch {name} checked out"
+
+    if not name.startswith("agent/"):
+        # The positive form of the rule: only agent/<slug> checkouts are
+        # disposable. Anything else is someone's working tree.
+        return f"its branch {name} is not an agent/<slug> task branch"
+
+    return None
+
+
+def is_disposable_worktree(repo: str, wt: str) -> bool:
+    """True when `wt` is a task checkout that may be force-removed."""
+    return reserved_worktree_reason(repo, wt) is None
+
+
 def is_nested_in(child: str, parent: str) -> bool:
     """True if `child` lives inside `parent` (not equal to it)."""
     child = os.path.realpath(child)
