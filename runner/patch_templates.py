@@ -70,6 +70,17 @@ def build(task):
                 lines.append(adapted)
         except Exception as exc:  # fail-soft: a bad hit must not break template build
             log.debug("patch_templates: adaptation skipped (%s)", exc)
+        # Complements the structural directive above: that one says HOW the prior
+        # patch was shaped, this one says WHICH files and line ranges it touched.
+        # Both are fail-soft — no adapter, no scaffold, same template as before.
+        try:
+            import merged_diff_adapter
+            scaffold = merged_diff_adapter.adapt(hits, target_files=task.get("target_files"))
+        except Exception as exc:
+            log.debug("patch_templates: diff scaffold skipped (%s)", exc)
+            scaffold = ""
+        if scaffold:
+            lines.append(scaffold)
     else:
         lines.append("Prior merged patterns to adapt: none found; keep the patch template reusable.")
     return tid, "\n".join(lines)
