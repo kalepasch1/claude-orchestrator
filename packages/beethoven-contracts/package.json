@@ -1,0 +1,23 @@
+{
+  "name": "@beethoven/contracts",
+  "version": "0.1.0",
+  "description": "Shared contracts for the Beethoven fleet immune system: lane/worker/runner states, identities, claim capacity, job assignments, audit fields, and boundary validators. Contracts only — no actuators. Zero runtime dependencies.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./domain": "./src/domain.ts",
+    "./schemas": "./src/schemas.ts"
+  },
+  "scripts": {
+    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": { "node": ">=20.10.0" },
+  "license": "UNLICENSED",
+  "private": true,
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "typescript": "^5.6.3"
+  }
+}

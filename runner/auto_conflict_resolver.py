@@ -42,6 +42,27 @@ try:
 except Exception:
     db = None
 
+
+def _load_guard(name):
+    """Resolve a runner/ guard module without depending on sys.path shape.
+
+    See runner/sibling_import.py: a bare import of a sibling raises
+    ModuleNotFoundError whenever runner/ is missing from sys.path, and the
+    fail-closed gates turn that into a false regression verdict.
+    """
+    try:
+        from runner.sibling_import import load_sibling
+    except Exception:
+        try:
+            from sibling_import import load_sibling
+        except Exception:
+            try:
+                return __import__(name)
+            except Exception:
+                return None
+    return load_sibling(name)
+
+
 GIT_TIMEOUT = int(os.environ.get("WORKTREE_GC_GIT_TIMEOUT", "90"))
 MAX_CONFLICT_FILES = int(os.environ.get("ORCH_AUTO_RESOLVE_MAX_FILES", "5"))
 
@@ -304,10 +325,10 @@ def _regression_check(repo: str, pre_sha: str, branch: str, result_ref: str = "H
         return ""
     if not pre_sha:
         return "regression guard: could not capture pre-merge SHA (fail-closed)"
-    try:
-        import regression_guard
-    except Exception as exc:
-        return f"regression guard unavailable (fail-closed): {type(exc).__name__}: {exc}"
+    regression_guard = _load_guard("regression_guard")
+    if regression_guard is None:
+        return ("regression guard unavailable (fail-closed): "
+                "runner/regression_guard.py could not be loaded")
     try:
         msg = _git(["git", "log", "-1", "--format=%s%n%b", result_ref], repo).stdout or ""
         ok, detail = regression_guard.gate(repo, pre_sha, result_ref, commit_message=msg)

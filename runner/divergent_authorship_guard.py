@@ -244,7 +244,16 @@ def _undefined_names(source):
     this guard must never fail open just because a sibling module moved.
     """
     try:
-        import regression_guard
+        from runner.sibling_import import load_sibling
+    except Exception:
+        try:
+            from sibling_import import load_sibling
+        except Exception:
+            load_sibling = None
+    try:
+        regression_guard = load_sibling("regression_guard") if load_sibling else None
+        if regression_guard is None:
+            regression_guard = __import__("regression_guard")
         return regression_guard._ast_undefined(source)
     except Exception:
         pass
