@@ -43,10 +43,42 @@ def _extract_intent_chunks(prompt):
     return chunks[:MAX_SUB_TASKS]
 
 
-def decompose(task, project_name="", repo=""):
+def _emit_decomposition(task, sub_tasks, repo="", base_branch="master"):
+    """Notify the branch provisioner after a real decomposition. Fail-soft.
+
+    The children below are INSERTED INTO THE QUEUE with no agent branch, exactly like
+    auto_decompose's, so without this they wait for the next
+    branch_orchestrator.find_missing_branches sweep — which is the missing_branch
+    bottleneck decomposition_events exists to remove. auto_decompose.decompose was wired to
+    the handler; this path was not, so half the decompositions on the fleet still went the
+    slow way.
+
+    Mirrors auto_decompose._emit_decomposition deliberately, including the >1 guard: a
+    single simplified child (the halving strategy) is not a decomposition fan-out.
+    """
+    children = list(sub_tasks or [])
+    if len(children) <= 1:
+        return children
+    try:
+        if __package__:
+            from . import decomposition_events
+        else:
+            import decomposition_events
+        decomposition_events.on_decomposition_completed(
+            task.get("slug"), children, repo_path=repo, base_branch=base_branch)
+    except Exception:
+        pass  # provisioning is an optimisation; the sweep remains the fallback
+    return children
+
+
+def decompose(task, project_name="", repo="", base_branch="master"):
     """Decompose a bankrupt prompt into independent sub-tasks.
 
     Returns: list of queued sub-task dicts
+
+    Emits `decomposition_completed` when the split produced more than one child, so the
+    missing-branch auto-creator provisions agent/<slug> immediately instead of leaving the
+    children for the scan-based sweep. Pass `repo` to enable provisioning.
     """
     prompt = task.get("prompt", "")
     project_id = task.get("project_id", "")
@@ -55,14 +87,18 @@ def decompose(task, project_name="", repo=""):
     # Strategy 1: File-level decomposition
     files = _extract_file_targets(prompt)
     if len(files) >= MIN_SUB_TASKS:
-        return _decompose_by_files(task, files, project_id, project_name)
+        return _emit_decomposition(
+            task, _decompose_by_files(task, files, project_id, project_name),
+            repo, base_branch)
 
     # Strategy 2: Intent-level decomposition
     chunks = _extract_intent_chunks(prompt)
     if len(chunks) >= MIN_SUB_TASKS:
-        return _decompose_by_intent(task, chunks, project_id, project_name)
+        return _emit_decomposition(
+            task, _decompose_by_intent(task, chunks, project_id, project_name),
+            repo, base_branch)
 
-    # Strategy 3: Halve the prompt (simplify scope)
+    # Strategy 3: Halve the prompt (simplify scope) — one child, no fan-out to provision.
     return _decompose_by_halving(task, project_id, project_name)
 
 
