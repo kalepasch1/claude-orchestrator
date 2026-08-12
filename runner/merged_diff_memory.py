@@ -256,24 +256,29 @@ def _prune_old_entries(index_file, days=90):
     """Remove entries older than N days from MEMORY.md."""
     try:
         cutoff = datetime.utcnow().date() - timedelta(days=days)
-        with open(index_file, "r") as f:
-            lines = f.readlines()
-
-        kept = []
-        for line in lines:
-            # Try to extract date from line
-            match = re.search(r"(\d{4})-(\d{2})-(\d{2})", line)
-            if match:
-                try:
-                    entry_date = datetime.strptime(f"{match.group(1)}{match.group(2)}{match.group(3)}", "%Y%m%d").date()
-                    if entry_date >= cutoff:
-                        kept.append(line)
-                except Exception:
-                    kept.append(line)  # keep if unparseable
-            else:
-                kept.append(line)
-
+        # Read AND write under the same lock. The read used to sit outside it, so two
+        # concurrent prunes could both load the same `lines`, each drop a different set,
+        # and the second writer would resurrect the entries the first had just removed
+        # (or drop entries the first had kept) — a lost-update on the index file.
         with _lock:
+            with open(index_file, "r") as f:
+                lines = f.readlines()
+
+            kept = []
+            for line in lines:
+                # Try to extract date from line
+                match = re.search(r"(\d{4})-(\d{2})-(\d{2})", line)
+                if match:
+                    try:
+                        entry_date = datetime.strptime(
+                            f"{match.group(1)}{match.group(2)}{match.group(3)}", "%Y%m%d").date()
+                        if entry_date >= cutoff:
+                            kept.append(line)
+                    except Exception:
+                        kept.append(line)  # keep if unparseable
+                else:
+                    kept.append(line)
+
             with open(index_file, "w") as f:
                 f.writelines(kept)
     except Exception as e:
@@ -499,7 +504,20 @@ def capture_merge(commit_hash: str, branch: str, cwd: str) -> bool:
 
 
 def get_recent_merges(limit: int = 20) -> list[dict]:
-    """Get recent merge metadata. Returns empty list on error."""
+    """Get the most recent `limit` merge records. Returns [] on error.
+
+    `merges[-limit:]` alone is wrong at the boundary: -0 == 0, so a limit of 0 sliced
+    from the start and returned the WHOLE list — the opposite of "give me none" — and a
+    negative limit silently became "all but the first N". `recent()` already clamps its
+    limit; this one did not, so the same argument meant different things depending on
+    which entry point a caller used. limit <= 0 now means no records.
+    """
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 20
+    if limit <= 0:
+        return []
     merges = _read_memory()
     return merges[-limit:]
 
