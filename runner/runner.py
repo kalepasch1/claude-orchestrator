@@ -1756,6 +1756,27 @@ def run_task(t):
             except Exception as e:
                 _log.debug("hook credential_broker failed: %s", e)
 
+            # CREDENTIAL FAILURE (distinct from exhaustion): an unrefreshable OAuth session
+            # matches none of the EXHAUST signals, so before this gate it fell through to the
+            # generic failure path and was charged to the task. It is the FLEET's fault, so
+            # quarantine that one account and hand the attempt back.
+            try:
+                import lane_capacity
+                _cause = lane_capacity.classify(out)
+                if _cause == lane_capacity.CAUSE_OAUTH_EXPIRED:
+                    lane_capacity.quarantine(acct, out, cause=_cause)
+                    _state = lane_capacity.capacity_state()
+                    set_state(t["id"], state="RETRY",
+                              note="credential failure on '%s' (%s) — attempt preserved; %s" % (
+                                  (acct or {}).get("name", "?"), _cause,
+                                  "; ".join(_state.get("operator_actions", [])) or "re-authenticate"))
+                    if lane_capacity.preserves_attempt(_cause):
+                        attempt -= 1
+                    time.sleep(5)
+                    continue
+            except Exception as e:
+                _log.debug("hook lane_capacity_credential failed: %s", e)
+
             if any(s in low for s in EXHAUST):
                 nxt = POOL.mark_exhausted(acct)
                 # CROSS-VENDOR CASCADE: use tier_router for intelligent failover
@@ -3673,6 +3694,23 @@ def main():
                                 _mem_log_t = time.time()
                     except Exception as e:
                         _log.debug("hook capacity_pacer_claim failed: %s", e)
+                    # CREDENTIAL/CAPACITY GATE: the pacer above answers "should we spend
+                    # budget"; this answers "can any coder lane actually authenticate".
+                    # Claiming into a weekly-capped or dead-OAuth lane costs a real task
+                    # one attempt, so pausing a cycle is strictly cheaper. Fail-soft:
+                    # lane_capacity allows claiming on any internal error.
+                    try:
+                        import lane_capacity
+                        _lc_ok, _lc_why = lane_capacity.should_claim()
+                        if not _lc_ok:
+                            _cp_ok = False
+                            if time.time() - _mem_log_t > 120:
+                                print(f"[lane-capacity] holding: {_lc_why}")
+                                for _act in lane_capacity.capacity_state().get("operator_actions", []):
+                                    print(f"[lane-capacity] operator action: {_act}")
+                                _mem_log_t = time.time()
+                    except Exception as e:
+                        _log.debug("hook lane_capacity_claim failed: %s", e)
                     if not _cp_ok:
                         t = None
                         pass  # skip claiming this cycle
