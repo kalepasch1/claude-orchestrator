@@ -52,13 +52,44 @@ _active_lanes = {
     "standard": {},     # runner_id -> {"task_id": "...", "claimed_at": <time>}
 }
 _lane_assignments = {}  # task_id -> {"lane": "express"|"standard", "assigned_at": <time>, "fallback": bool}
-_total_lanes = 40       # Default; updated by capacity function
+
+#: Explicit override from set_total_lanes(); None means "ask the runner".
+_total_lanes_override = None
+
+#: Last-resort default, used only when MAX_PARALLEL is unreadable. Matches
+#: runner.py's own MAX_PARALLEL default so the two cannot disagree silently.
+_DEFAULT_TOTAL_LANES = 12
+
+
+def total_lanes():
+    """The machine's real lane count.
+
+    Previously a module constant of 40 that `set_total_lanes()` was supposed to
+    update — and nothing ever called it. The live limit is `MAX_PARALLEL`
+    (runner.py:192, default 12, tuned per machine in runner/.env and pushable via
+    fleet_config), so the capacity split was computed against a lane count that
+    did not exist: on a 12-lane box, `ORCH_EXPRESS_LANE_CAPACITY_PCT=15` reserved
+    `max(1, int(40 * 0.15))` = **6 lanes, i.e. 50% of the machine**, not 15%.
+
+    Read live rather than cached, for the same reason runner.py checks eff_limit
+    every dispatch loop: a boot-time snapshot silently pins the machine to
+    whatever the value happened to be at boot.
+    """
+    if _total_lanes_override is not None:
+        return _total_lanes_override
+    try:
+        return max(1, int(os.environ.get("MAX_PARALLEL", "") or _DEFAULT_TOTAL_LANES))
+    except (TypeError, ValueError):  # fail-soft: a malformed env must not break claims
+        return _DEFAULT_TOTAL_LANES
 
 
 def set_total_lanes(count):
-    """Set the total number of available lanes (used for capacity calculation)."""
-    global _total_lanes
-    _total_lanes = max(1, count)
+    """Pin the total lane count explicitly, overriding the MAX_PARALLEL read."""
+    global _total_lanes_override
+    try:
+        _total_lanes_override = max(1, int(count))
+    except (TypeError, ValueError):
+        _total_lanes_override = None
 
 
 def express_lane_capacity():
@@ -66,12 +97,17 @@ def express_lane_capacity():
     if not is_enabled():
         return 0
     pct = capacity_percentage()
-    return max(1, int(_total_lanes * pct / 100)) if pct > 0 else 0
+    if pct <= 0:
+        return 0
+    # Never hand the whole machine to express work: a reservation that leaves no
+    # standard lane is a deadlock, not a priority.
+    total = total_lanes()
+    return max(1, min(total - 1, int(total * pct / 100))) if total > 1 else 1
 
 
 def standard_lane_capacity():
     """Compute the number of standard lanes."""
-    return _total_lanes - express_lane_capacity()
+    return total_lanes() - express_lane_capacity()
 
 
 def _entries_of(value):
@@ -253,7 +289,7 @@ def stats():
         return {
             "enabled": is_enabled(),
             "capacity_percentage": capacity_percentage(),
-            "total_lanes": _total_lanes,
+            "total_lanes": total_lanes(),
             "express": {
                 "capacity": express_cap,
                 "active": express_used,
@@ -269,7 +305,8 @@ def stats():
 
 def invalidate():
     """Clear all tracked lane state (for testing)."""
-    global _active_lanes, _lane_assignments
+    global _active_lanes, _lane_assignments, _total_lanes_override
     with _lock:
         _active_lanes = {"express": {}, "standard": {}}
         _lane_assignments = {}
+        _total_lanes_override = None
