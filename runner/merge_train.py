@@ -1056,28 +1056,86 @@ def _push_base(repo, base):
     return "PUSHFAIL:" + err[-120:]
 
 
-def _verify_push(repo, base):
-    """Contract guarantee: verify origin/{base} matches local {base} after push.
+def _is_ancestor(repo, ancestor_sha, descendant_sha):
+    """True when `ancestor_sha` is reachable from `descendant_sha`.
 
-    Returns '' on success, error string if the remote ref does not match.
-    This prevents the DB/GitHub desync observed 2026-07-09 where a task was
-    marked MERGED but the push silently failed to advance origin."""
+    Fail CLOSED: any git error returns False, so an unanswerable question is treated
+    as divergence and the caller refuses. Being wrong in this direction costs a retry;
+    being wrong in the other direction certifies a push that never landed.
+    """
+    if not ancestor_sha or not descendant_sha:
+        return False
+    try:
+        r = _git(repo, "merge-base", "--is-ancestor", ancestor_sha, descendant_sha, timeout=60)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _verify_push(repo, base):
+    """Contract guarantee: our commit is really on origin/{base} after the push.
+
+    Returns '' on success, error string otherwise. This prevents the DB/GitHub desync
+    observed 2026-07-09 where a task was marked MERGED but the push silently failed to
+    advance origin.
+
+    EXACT-MATCH WAS TOO STRICT (2026-08-07). The check required local == remote, so a
+    benign interleave — our push lands, then another train or auto-sync commits on top
+    before our read-back — reported VERIFY:sha-mismatch even though our work was safely
+    on the remote. Nothing was ever overwritten (the guard did its job), but every event
+    burned a full retry cycle, and the rate was climbing with fleet concurrency:
+    64 -> 72 -> 81 mismatches over 2026-08-07 alone.
+
+    So the question is no longer "does the remote tip equal my sha" but "is my commit
+    ON the remote branch". Those differ only when someone built on top of us, which is
+    precisely the benign case. The dangerous cases still fail, because for each of them
+    our commit is NOT an ancestor of the remote tip:
+
+      * the push never landed          -> local is AHEAD of remote, not an ancestor;
+      * the ref was force-reset/rewound -> our commit is unreachable;
+      * a divergent history was pushed  -> our commit is on an abandoned line.
+    """
     try:
         local = _git(repo, "rev-parse", base)
-        remote = _git(repo, "rev-parse", f"origin/{base}")
-        if local.returncode != 0 or remote.returncode != 0:
+        if local.returncode != 0:
             return "VERIFY:rev-parse-failed"
         local_sha = (local.stdout or "").strip()
+
+        # ALWAYS refresh before judging, and refresh with an explicit FORCED refspec.
+        #
+        # Two separate traps, both found by tests/test_merge_train_push_verify.py:
+        #
+        # 1. The old code compared against `origin/<base>` FIRST and only fetched if that
+        #    disagreed. `origin/<base>` is a local cache, so when it happened to already
+        #    equal local the function returned success having never contacted the remote —
+        #    it could certify a push that never left the machine. That is the exact
+        #    DB/GitHub desync this verifier exists to prevent.
+        # 2. A bare `fetch origin <base>` leaves `origin/<base>` UNCHANGED when the remote
+        #    was rewound or force-pushed, because that update is not a fast-forward. The
+        #    stale ref still contained our commit, so verification passed for a branch our
+        #    work had just been force-pushed off.
+        #
+        # The leading `+` on the refspec is what makes the local remote-tracking ref
+        # update non-fast-forward; a `--force` flag would be redundant AND would trip the
+        # repo's no-force-push guard (tests/test_release_push_fast_forward.py), which
+        # greps for the literal. This only ever rewrites a LOCAL cache ref — it can never
+        # touch the remote.
+        _git(repo, "fetch", "origin",
+             f"+{base}:refs/remotes/origin/{base}", timeout=60)
+
+        remote = _git(repo, "rev-parse", f"origin/{base}")
+        if remote.returncode != 0:
+            return "VERIFY:rev-parse-failed"
         remote_sha = (remote.stdout or "").strip()
-        if local_sha and remote_sha and local_sha == remote_sha:
+        if not local_sha or not remote_sha:
+            return "VERIFY:rev-parse-failed"
+        if local_sha == remote_sha:
             return ""
-        # Stale fetch cache — refetch and recheck once
-        _git(repo, "fetch", "origin", base, timeout=60)
-        remote2 = _git(repo, "rev-parse", f"origin/{base}")
-        remote2_sha = (remote2.stdout or "").strip()
-        if local_sha == remote2_sha:
+        # Benign advancement: our commit IS on the remote branch, someone just built
+        # on top of it between our push and our read-back.
+        if _is_ancestor(repo, local_sha, remote_sha):
             return ""
-        return f"VERIFY:sha-mismatch local={local_sha[:10]} remote={remote2_sha[:10]}"
+        return f"VERIFY:sha-mismatch local={local_sha[:10]} remote={remote_sha[:10]}"
     except Exception as e:
         return f"VERIFY:exception:{e}"
 
