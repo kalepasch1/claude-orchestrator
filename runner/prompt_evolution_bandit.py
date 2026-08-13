@@ -247,34 +247,183 @@ def reset():
 
 
 # ---------------------------------------------------------------------------
-# Performance-data stubs.
+# Performance data — real, sourced from `outcomes`.
 #
-# The real reward source is the `outcomes` table (see bandit._outcomes). Wiring
-# that up means a schema column that records which prompt variant produced each
-# outcome, which does not exist yet. Until it does, these return empty/neutral
-# values so a caller can integrate against the final signature today and get
-# real numbers the moment the column lands, rather than having to change call
-# sites later.
+# This block used to be a pair of stubs whose comment read "wiring that up means
+# a schema column that records which prompt variant produced each outcome, which
+# does not exist yet". That premise is stale: `outcomes` carries `experiment_id`
+# and `experiment_variant` (written by runner.py:2601 via experiment_router), and
+# those two columns are exactly the missing link. So `load_performance` now reads
+# them, and every restart of the runner no longer throws away the fleet's entire
+# prompt-variant history and re-explores from zero.
 # ---------------------------------------------------------------------------
-def load_performance(db=None, limit=2000):
-    """Historical per-variant rewards from the outcomes table.
 
-    Returns {arm_id: [reward, ...]}. Empty until `outcomes.prompt_variant` exists.
+#: Only outcomes whose experiment_id starts with this belong to a *prompt*
+#: experiment. Without the filter, model-routing and scheduler experiments would
+#: be folded in as if they were prompt variants, and "control"/"candidate" from an
+#: unrelated experiment would poison the arm statistics.
+EXPERIMENT_PREFIX = os.environ.get("ORCH_PROMPT_BANDIT_EXPERIMENT_PREFIX", "prompt")
+
+#: PostgREST caps one response at 1000 rows regardless of `limit`, so asking for
+#: more only hides the truncation. This read is a SAMPLE in the taxonomy in
+#: db.select_all's docstring: a bounded *recent* window is the right semantics here
+#: (prompt templates evolve, so year-old rewards are not evidence about today's
+#: arms) and the deterministic order makes the window reproducible.
+_MAX_ROWS = 1000
+
+
+def _outcome_reward(row):
+    """Reward for one outcome row, in [0, 1].
+
+    Deliberately NOT bandit._reward: that one is success-per-dollar and is
+    unbounded above (it divides by cost + 0.01, so a free win scores 100). The
+    prompt bandit's accept() gate compares means against MARGIN, which defaults to
+    0.05 and is calibrated as a *rate* difference. Feeding it per-dollar rewards
+    would make the margin meaningless. Prompt quality is also the thing being
+    measured here — cost is the model's property, not the template's.
+
+    1.0 merged first try, 0.2 tests passed but not integrated, 0.0 otherwise —
+    the same tiering bandit._reward uses before its cost division.
     """
-    return {}
+    if row.get("integrated") and row.get("tests_passed"):
+        return 1.0
+    if row.get("tests_passed"):
+        return 0.2
+    return 0.0
 
 
-def warm_start(db=None, arm_ids=None):
+def load_performance(db=None, limit=_MAX_ROWS, experiment_prefix=None):
+    """Historical per-variant rewards from the `outcomes` table.
+
+    Returns {arm_id: [reward, ...]}, newest first, restricted to terminal rows of
+    prompt experiments. Fail-soft: any DB problem yields {} and a warning, because
+    a cold start is a slower bandit, not a broken runner.
+    """
+    prefix = EXPERIMENT_PREFIX if experiment_prefix is None else experiment_prefix
+    conn = db
+    if conn is None:
+        try:
+            import db as _db_mod
+            conn = _db_mod
+        except Exception as e:
+            _log.warning("load_performance: no db module (%s); cold start", e)
+            return {}
+
+    try:
+        cap = max(1, min(int(limit or _MAX_ROWS), _MAX_ROWS))
+    except (TypeError, ValueError):
+        cap = _MAX_ROWS
+
+    params = {
+        "select": "experiment_id,experiment_variant,tests_passed,integrated,created_at,id",
+        "experiment_variant": "not.is.null",
+        "order": "created_at.desc,id.desc",
+        "limit": str(cap),
+    }
+    if prefix:
+        params["experiment_id"] = f"like.{prefix}%"
+
+    try:
+        rows = conn.select("outcomes", params) or []
+    except Exception as e:
+        _log.warning("load_performance query failed (%s); cold start", e)
+        return {}
+
+    out = {}
+    for r in rows:
+        try:
+            arm = r.get("experiment_variant")
+            if not isinstance(arm, str) or not arm:
+                continue
+            out.setdefault(arm, []).append(_outcome_reward(r))
+        except Exception:
+            continue
+    _log.info("load_performance: %d rewards across %d variants", 
+              sum(len(v) for v in out.values()), len(out))
+    return out
+
+
+def warm_start(db=None, arm_ids=None, experiment_prefix=None):
     """Seed the singleton from `load_performance` so a restart is not a cold start.
 
-    Returns the number of rewards folded in (0 while the data source is a stub).
+    `arm_ids`, when given, restricts the fold-in to variants that are still live —
+    a template that no longer exists should not keep influencing selection, and it
+    must not be resurrected as an arm just because it has history.
+
+    Returns the number of rewards folded in.
     """
     folded = 0
     try:
-        for arm_id, rewards in (load_performance(db) or {}).items():
+        wanted = set(arm_ids) if arm_ids else None
+        perf = load_performance(db, experiment_prefix=experiment_prefix) or {}
+        for arm_id, rewards in perf.items():
+            if wanted is not None and arm_id not in wanted:
+                continue
             for r in rewards:
                 update(arm_id, r)
                 folded += 1
     except Exception as e:
         _log.warning("warm_start failed (%s); starting cold", e)
     return folded
+
+
+def analyze(arm_ids=None):
+    """Explain the bandit's current state and why accept() does or does not pass.
+
+    stats() reports the raw counters; this reports the *decision*. When a variant
+    has been running for days and has not been promoted, the operator needs to know
+    which of the two accept() gates is holding it — not enough pulls, or not enough
+    margin — because those have opposite remedies (wait vs. abandon the variant).
+
+    Returns a dict:
+        arms       {arm_id: {"pulls", "mean"}} sorted by mean, best first
+        leader     arm with the highest mean, or "" when there is no data
+        runner_up  second-highest arm, or ""
+        margin     leader.mean - runner_up.mean
+        accepted   True when accept(leader) passes
+        blocked_by "" | "insufficient-pulls" | "insufficient-margin" | "no-incumbent" | "no-data"
+        min_pulls / required_margin  the thresholds in force
+    """
+    base = {"arms": {}, "leader": "", "runner_up": "", "margin": 0.0,
+            "accepted": False, "blocked_by": "no-data",
+            "min_pulls": _bandit.min_pulls, "required_margin": _bandit.margin}
+    try:
+        s = stats() or {}
+        counts = s.get("counts") or {}
+        means = s.get("average_reward") or {}
+        if arm_ids:
+            keep = set(arm_ids)
+            counts = {k: v for k, v in counts.items() if k in keep}
+            means = {k: v for k, v in means.items() if k in keep}
+
+        pulled = [a for a, n in counts.items() if n > 0]
+        base["arms"] = {
+            a: {"pulls": counts.get(a, 0), "mean": round(float(means.get(a, 0.0)), 4)}
+            for a in sorted(counts, key=lambda x: (-float(means.get(x, 0.0)), x))
+        }
+        if not pulled:
+            return base
+
+        ranked = sorted(pulled, key=lambda a: (-float(means.get(a, 0.0)), a))
+        leader = ranked[0]
+        base["leader"] = leader
+
+        if len(ranked) < 2:
+            base["blocked_by"] = "no-incumbent"
+            return base
+
+        runner_up = ranked[1]
+        base["runner_up"] = runner_up
+        base["margin"] = round(float(means.get(leader, 0.0)) - float(means.get(runner_up, 0.0)), 4)
+
+        if counts.get(leader, 0) < _bandit.min_pulls:
+            base["blocked_by"] = "insufficient-pulls"
+        elif base["margin"] < _bandit.margin:
+            base["blocked_by"] = "insufficient-margin"
+        else:
+            base["blocked_by"] = ""
+            base["accepted"] = accept(leader)
+        return base
+    except Exception as e:
+        _log.warning("analyze failed (%s); fail-soft", e)
+        return base
