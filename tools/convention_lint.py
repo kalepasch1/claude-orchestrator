@@ -121,6 +121,22 @@ class ConventionChecker(ast.NodeVisitor):
         self._check_hardcoded_secrets(node)
         self.generic_visit(node)
 
+    def _own_nodes(self, node: ast.FunctionDef):
+        """Walk a function body without descending into nested functions/classes.
+
+        ast.walk() crosses scope boundaries, so a `raise` inside a nested helper was
+        attributed to its enclosing function (and a nested try/except was credited as
+        the enclosing function's handler). Nested scopes are visited on their own,
+        so yielding them here double-counts as well as misattributes.
+        """
+        stack = list(ast.iter_child_nodes(node))
+        while stack:
+            child = stack.pop()
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            yield child
+            stack.extend(ast.iter_child_nodes(child))
+
     def _check_fail_soft_error_handling(self, node: ast.FunctionDef) -> None:
         """
         Rule 1: Fail-soft error handling
@@ -128,12 +144,15 @@ class ConventionChecker(ast.NodeVisitor):
         Public module-level functions should not raise on bad input.
         Flag functions that have raise statements but no try/except handlers.
         """
-        # Only check public module-level functions
+        # Only check public module-level functions. function_context already holds
+        # this function, so depth > 1 means it is nested inside another function.
         if self.class_depth > 0 or node.name.startswith('_'):
+            return
+        if len(self.function_context) > 1:
             return
 
         has_raise = False
-        for child in ast.walk(node):
+        for child in self._own_nodes(node):
             if isinstance(child, ast.Raise):
                 has_raise = True
                 break
@@ -141,7 +160,7 @@ class ConventionChecker(ast.NodeVisitor):
         if has_raise:
             # Check if there are try/except blocks that handle errors gracefully
             has_error_handler = False
-            for child in ast.walk(node):
+            for child in self._own_nodes(node):
                 if isinstance(child, ast.Try):
                     for handler in child.handlers:
                         # Check if handler has a return statement (fail-soft)
@@ -159,7 +178,7 @@ class ConventionChecker(ast.NodeVisitor):
         # A bare `except: pass` silently swallows every error including
         # KeyboardInterrupt/SystemExit — that is silent failure, not fail-soft
         # (fail-soft returns a sensible default). Flag it in public functions.
-        for child in ast.walk(node):
+        for child in self._own_nodes(node):
             if not isinstance(child, ast.Try):
                 continue
             for handler in child.handlers:
