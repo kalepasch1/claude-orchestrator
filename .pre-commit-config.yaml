@@ -8,4 +8,8 @@ repos:
         types: [python]
         stages: [commit]
         pass_filenames: true
-        description: Enforce conventions from CLAUDE.md on Python files
+        description: >-
+          Enforce conventions from CLAUDE.md on Python files. Ratcheted against
+          .convention-lint-baseline.json — a rule's count may not rise. Run
+          `python tools/lint_conventions.py --update-baseline runner tools scripts`
+          after genuinely reducing a count, and `--strict` for a full audit.
