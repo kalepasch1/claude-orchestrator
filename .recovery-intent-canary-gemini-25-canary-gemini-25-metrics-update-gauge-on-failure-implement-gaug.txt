@@ -1,0 +1,4 @@
+recovery-intent: canary-gemini-25-canary-gemini-25-metrics-update-gauge-on-failure-implement-gaug
+template: 32a20ad37b5d
+intent: 07130635 07190257 20251001 53375a0cecde active adapt advice after agent agentic analysis apierror artifacts author available b4fa25c7 batch beethoven before behavior below branch broad bugfix build build_fix canary canary_last_success category cause change changes changing check checks claim class claud claude cloud coder commit completion concrete config conflict context continue contract coordination could credits cross custody debate_compress deepseek delete denied dependencies deployfix detected diffs directive drafting either equivalent error excerpt existing exists fable failure files final finish first flash force forward fresh
+base: main
