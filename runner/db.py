@@ -293,6 +293,39 @@ PROJECT_PRIORITY_ORDER = {
 }
 
 
+def _is_express_row(row):
+    """Is this task row express? Single definition, shared by the counter and the sort.
+
+    Delegates to express_lane.is_express_task so the claim path and the express module can
+    never disagree about what "express" means. Fail-soft: any import problem answers False,
+    which leaves ordering exactly as it was rather than breaking the claim scan.
+    """
+    try:
+        import express_lane
+        if not express_lane.is_enabled():
+            return False
+        express, _reason = express_lane.is_express_task(row)
+        return bool(express)
+    except Exception:
+        return False
+
+
+def _express_capacity():
+    """Express lanes available on this machine, or 0 when the feature is off.
+
+    Reads express_lane.express_lane_capacity(), which was dead code: it clamps to
+    `min(total - 1, total * pct / 100)` so express can never take the whole machine, and
+    nothing consulted it. Fail-soft: 0 disables the express jump rather than breaking claims.
+    """
+    try:
+        import express_lane
+        if not express_lane.is_enabled():
+            return 0
+        return max(0, int(express_lane.express_lane_capacity()))
+    except Exception:
+        return 0
+
+
 def _project_rank_name(name):
     """Return numeric priority for *name* (lower = higher priority, 13 = default/unknown)."""
     return PROJECT_PRIORITY_ORDER.get(str(name or "").strip().lower(), 13)
@@ -1682,8 +1715,13 @@ def claim_task(runner_id):
     active_release_by_project = {}
     active_recovery_by_project = {}
     active_evidence = 0
+    active_express = 0
     try:
-        for r in (select("tasks", {"select": "project_id,slug,kind,note", "state": "in.(RUNNING,RETRY)"}) or []):
+        # pinned/pin_rank/priority are selected so express occupancy can be counted here
+        # rather than in a second scan: express_lane.is_express_task() reads exactly those
+        # three fields, and the claim path already pays for this one query.
+        for r in (select("tasks", {"select": "project_id,slug,kind,note,pinned,pin_rank,priority",
+                                   "state": "in.(RUNNING,RETRY)"}) or []):
             pid = r.get("project_id")
             if pid:
                 active_by_project[pid] = active_by_project.get(pid, 0) + 1
@@ -1693,8 +1731,21 @@ def claim_task(runner_id):
                     active_recovery_by_project[pid] = active_recovery_by_project.get(pid, 0) + 1
             if _is_evidence_task(r):
                 active_evidence += 1
+            if _is_express_row(r):
+                active_express += 1
     except Exception:
         pass
+
+    # BOUNDED EXPRESS JUMP QUEUE. _express_rank sorted every express task ahead of all
+    # standard work with no ceiling, so a pinned batch claims the entire machine until it
+    # drains — the same starvation shape the rework- tier was given a bounded lane to fix,
+    # and the same distortion queue_velocity has to compensate for by excluding pinned
+    # depth from its integral. express_lane.py already declares the right ceiling
+    # (express_lane_capacity(), 15% of MAX_PARALLEL, never the whole machine) and nothing
+    # consulted it. Gate the jump on it, in the reserved-lane style used by evidence and
+    # recovery above: express work still goes first, but only up to its own reservation.
+    express_capacity = _express_capacity()
+    express_lane_open = express_capacity > 0 and active_express < express_capacity
     # FAIR ROUND-ROBIN across projects: prefer the project that has gone LONGEST without activity, so
     # every app gets worked (not just the biggest/highest-priority queue). Within that, honor priority,
     # ROI weight, then FIFO. This is what lets a single-slot runner still touch ALL projects in rotation.
@@ -1775,18 +1826,18 @@ def claim_task(runner_id):
         fleet with 64 zombie lanes on 2026-08-02. Ordering delivers the feature's actual
         promise — express work goes first — with no lane accounting to leak.
 
+        BOUNDED by express_lane.express_lane_capacity(): once that many express tasks are
+        already RUNNING, express work sorts as standard. Without the bound a pinned batch
+        holds every lane until it drains, which starves the rest of the portfolio and is
+        the same distortion queue_velocity has to subtract from its integral.
+
         Respects express_lane.is_enabled() so ORCH_EXPRESS_LANE_ENABLED=false restores the
         prior ordering exactly. Fail-soft: any import/attribute problem leaves ordering
         unchanged rather than breaking the claim scan.
         """
-        try:
-            import express_lane
-            if not express_lane.is_enabled():
-                return 1
-            express, _reason = express_lane.is_express_task(t)
-            return 0 if express else 1
-        except Exception:
+        if not express_lane_open:
             return 1
+        return 0 if _is_express_row(t) else 1
 
     def _pin_rank_order(t):
         # Among pinned tasks, lower pin_rank claims first (1 = highest priority).
