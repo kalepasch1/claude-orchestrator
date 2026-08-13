@@ -58,7 +58,10 @@ class CanaryHeartbeatFileFormatTest(unittest.TestCase):
             # ISO8601 UTC timestamp pattern: YYYY-MM-DDTHH:MM:SS.ffffffZ
             iso_pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
             self.assertRegex(first_line, iso_pattern)
-            self.assertTrue(first_line.endswith("Z") or "+" in first_line or "-" in first_line[-6:])
+            # The timezone marker lives on the timestamp token, not the full
+            # "<timestamp> # canary" line.
+            ts_token = first_line.split(" ")[0]
+            self.assertTrue(ts_token.endswith("Z") or "+" in ts_token or "-" in ts_token[-6:])
 
     def test_deploy_canary_timestamp_parses_as_datetime(self):
         """Timestamp should be parseable back to a datetime object."""
