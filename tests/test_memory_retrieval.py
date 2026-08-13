@@ -84,6 +84,83 @@ class BackendFailSoftTest(unittest.TestCase):
         self.assertTrue(any("Retrieving exemplars" in line for line in cm.output))
 
 
+class BackendCacheTest(unittest.TestCase):
+    """The backend read is cached: repeated retrievals hit it once per TTL."""
+
+    def setUp(self):
+        mr.clear_exemplars()  # force the backend path + drop any cached rows
+        os.environ.pop("ORCH_MEMORY_EXEMPLAR_CACHE_TTL", None)
+
+    def tearDown(self):
+        mr.clear_exemplars()
+        os.environ.pop("ORCH_MEMORY_EXEMPLAR_CACHE_TTL", None)
+
+    @staticmethod
+    def _fake_backend():
+        fake = mock.MagicMock()
+        fake.get_recent_merges.return_value = [
+            {"branch": "agent/x", "summary": "fix y", "files_changed": ["a/b.py"], "commit": "abc"},
+        ]
+        return fake
+
+    def test_repeated_retrievals_read_backend_once(self):
+        fake = self._fake_backend()
+        with mock.patch.dict(sys.modules, {"merged_diff_memory": fake}):
+            for _ in range(5):
+                self.assertEqual(len(mr.retrieve_exemplars()), 1)
+        self.assertEqual(fake.get_recent_merges.call_count, 1)
+
+    def test_ttl_zero_disables_cache(self):
+        os.environ["ORCH_MEMORY_EXEMPLAR_CACHE_TTL"] = "0"
+        fake = self._fake_backend()
+        with mock.patch.dict(sys.modules, {"merged_diff_memory": fake}):
+            for _ in range(3):
+                mr.retrieve_exemplars()
+        self.assertEqual(fake.get_recent_merges.call_count, 3)
+
+    def test_invalidate_forces_reload(self):
+        fake = self._fake_backend()
+        with mock.patch.dict(sys.modules, {"merged_diff_memory": fake}):
+            mr.retrieve_exemplars()
+            mr.invalidate_cache()
+            mr.retrieve_exemplars()
+        self.assertEqual(fake.get_recent_merges.call_count, 2)
+
+    def test_bad_ttl_env_falls_back_to_default(self):
+        os.environ["ORCH_MEMORY_EXEMPLAR_CACHE_TTL"] = "not-a-number"
+        fake = self._fake_backend()
+        with mock.patch.dict(sys.modules, {"merged_diff_memory": fake}):
+            mr.retrieve_exemplars()
+            mr.retrieve_exemplars()
+        self.assertEqual(fake.get_recent_merges.call_count, 1)
+
+    def test_cache_stats_shape(self):
+        fake = self._fake_backend()
+        with mock.patch.dict(sys.modules, {"merged_diff_memory": fake}):
+            mr.retrieve_exemplars()
+            mr.retrieve_exemplars()
+        stats = mr.cache_stats()
+        self.assertEqual(stats["size"], 1)
+        self.assertGreaterEqual(stats["hits"], 1)
+        self.assertGreaterEqual(stats["misses"], 1)
+        self.assertIn("ttl_s", stats)
+
+    def test_backend_failure_still_fail_soft_under_cache(self):
+        fake = mock.MagicMock()
+        fake.get_recent_merges.side_effect = RuntimeError("db down")
+        with mock.patch.dict(sys.modules, {"merged_diff_memory": fake}):
+            self.assertEqual(mr.retrieve_exemplars(), [])
+            self.assertEqual(mr.retrieve_exemplars(), [])
+
+    def test_in_memory_store_takes_priority_over_backend(self):
+        fake = self._fake_backend()
+        mr.add_exemplar({"id": "s1", "title": "staged", "content": "c", "keywords": []})
+        with mock.patch.dict(sys.modules, {"merged_diff_memory": fake}):
+            got = mr.retrieve_exemplars()
+        self.assertEqual([e["id"] for e in got], ["s1"])
+        fake.get_recent_merges.assert_not_called()
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     unittest.main()

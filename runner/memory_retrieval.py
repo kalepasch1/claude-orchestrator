@@ -14,6 +14,8 @@ and for callers that stage exemplars before the backend has any.
 import logging
 import os
 import sys
+import threading
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -21,6 +23,51 @@ log = logging.getLogger(__name__)
 
 # ── In-memory exemplar store (module-level, spec group-11 bullet 18) ─────────
 _STORE: list = []
+
+# ── Backend-load cache ──────────────────────────────────────────────────────
+# retrieve_exemplars() used to call load_exemplars_from_store() on EVERY call,
+# re-reading up to 100 rows out of the merged-diff backend per retrieval. Hot
+# callers (the planner ranks candidates in a loop) paid that read N times for
+# an identical answer. Cache the mapped exemplars behind a short TTL.
+#
+# ORCH_-prefixed so it is fleet-pushable via fleet_control.py; 0 disables the
+# cache entirely (restores the previous read-every-call behaviour).
+_CACHE_TTL_DEFAULT = 60.0
+_cache_lock = threading.Lock()
+_cache_value: list = []
+_cache_at: float = 0.0
+_cache_hits = 0
+_cache_misses = 0
+
+
+def _cache_ttl():
+    """TTL in seconds for the backend exemplar cache; fail-soft to default."""
+    try:
+        return max(0.0, float(os.environ.get("ORCH_MEMORY_EXEMPLAR_CACHE_TTL",
+                                             _CACHE_TTL_DEFAULT)))
+    except (TypeError, ValueError):
+        return _CACHE_TTL_DEFAULT
+
+
+def invalidate_cache():
+    """Drop the cached backend exemplars (next read re-loads)."""
+    global _cache_value, _cache_at
+    with _cache_lock:
+        _cache_value = []
+        _cache_at = 0.0
+
+
+def cache_stats():
+    """Observability hook: {hits, misses, size, age_s, ttl_s}."""
+    with _cache_lock:
+        age = (time.monotonic() - _cache_at) if _cache_at else None
+        return {
+            "hits": _cache_hits,
+            "misses": _cache_misses,
+            "size": len(_cache_value),
+            "age_s": age,
+            "ttl_s": _cache_ttl(),
+        }
 
 
 def add_exemplar(item):
@@ -35,8 +82,35 @@ def get_all_exemplars():
 
 
 def clear_exemplars():
-    """Test hook: empty the in-memory store."""
+    """Test hook: empty the in-memory store (and the backend cache with it)."""
     _STORE.clear()
+    invalidate_cache()
+
+
+def _cached_load_exemplars():
+    """load_exemplars_from_store() behind the TTL cache.
+
+    Cache misses do the (slow) backend read OUTSIDE the lock so a slow or hung
+    backend never serialises every other caller behind it; the lock only
+    guards the tiny publish step. TTL 0 bypasses the cache entirely.
+    """
+    global _cache_value, _cache_at, _cache_hits, _cache_misses
+    ttl = _cache_ttl()
+    if ttl <= 0:
+        return load_exemplars_from_store()
+
+    now = time.monotonic()
+    with _cache_lock:
+        if _cache_at and (now - _cache_at) < ttl:
+            _cache_hits += 1
+            return list(_cache_value)
+        _cache_misses += 1
+
+    loaded = load_exemplars_from_store()
+    with _cache_lock:
+        _cache_value = list(loaded)
+        _cache_at = time.monotonic()
+    return loaded
 
 
 def load_exemplars_from_store():
@@ -96,7 +170,7 @@ def retrieve_exemplars(keyword=None, limit=5):
         log.debug("retrieve_exemplars: limit<=0, returning []")
         return []
 
-    exemplars = get_all_exemplars() or load_exemplars_from_store()
+    exemplars = _STORE or _cached_load_exemplars()
     if not isinstance(keyword, str) or not keyword.strip():
         matches = list(exemplars)
     else:
