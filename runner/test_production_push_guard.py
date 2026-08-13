@@ -14,6 +14,18 @@ os.environ.setdefault("SUPABASE_SERVICE_KEY", "test")
 import production_push_guard as guard
 
 
+def _head(d):
+    """HEAD of the scratch repo, not of whatever GIT_DIR points at.
+
+    Under a pre-push hook GIT_DIR is exported, and a bare `git rev-parse HEAD`
+    would answer for the real repository even with cwd set here — the same
+    mechanism that caused the 2026-08-13 incident, reproduced inside the test
+    harness that exists to check for it.
+    """
+    return subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, env=guard._clean_git_env(),
+                          capture_output=True, text=True).stdout.strip()
+
+
 def _repo(scripts=None, lockfiles=(), commit=True):
     d = tempfile.mkdtemp()
     if scripts is not None:
@@ -22,10 +34,24 @@ def _repo(scripts=None, lockfiles=(), commit=True):
     for name in lockfiles:
         open(os.path.join(d, name), "w").close()
     if commit:
-        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
-               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
-        subprocess.run(["git", "init", "-q"], cwd=d, check=True)
-        subprocess.run(["git", "add", "-A"], cwd=d, check=True)
+        # STRIP THE INHERITED GIT_* VARIABLES.
+        #
+        # This guard runs inside a pre-push hook, where git exports GIT_DIR and
+        # GIT_INDEX_FILE. Anything spawning git from that environment targets the
+        # REAL repository regardless of cwd. On 2026-08-13 four vitest suites with
+        # this same shape committed a 1.5-million-deletion tree to apparently and
+        # pushed it to master. These fixtures create repos and commit too, so they
+        # are the same hazard.
+        env = {k: v for k, v in os.environ.items()
+               if k not in {"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+                            "GIT_PREFIX", "GIT_OBJECT_DIRECTORY",
+                            "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE"}}
+        env.update({"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                    "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+                    "GIT_CEILING_DIRECTORIES": d,
+                    "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"})
+        subprocess.run(["git", "init", "-q"], cwd=d, env=env, check=True)
+        subprocess.run(["git", "add", "-A"], cwd=d, env=env, check=True)
         subprocess.run(["git", "commit", "-qm", "init"], cwd=d, env=env, check=True)
     return d
 
@@ -81,14 +107,14 @@ def test_prefers_test_ci_over_test():
 def test_dirty_tree_cannot_earn_a_proof():
     """A suite run attests the tree it ran against, not the one being pushed."""
     d = _repo(scripts={"test": "true"}, lockfiles=("package-lock.json",))
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, capture_output=True, text=True).stdout.strip()
+    head = _head(d)
     open(os.path.join(d, "dirty.txt"), "w").write("uncommitted")
     assert guard._tree_is_exactly(d, head) is False
 
 
 def test_clean_tree_at_the_commit_is_attestable():
     d = _repo(scripts={"test": "true"}, lockfiles=("package-lock.json",))
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, capture_output=True, text=True).stdout.strip()
+    head = _head(d)
     assert guard._tree_is_exactly(d, head) is True
 
 
@@ -101,7 +127,7 @@ def test_wrong_commit_is_not_attestable():
 
 def test_red_suite_blocks_the_push():
     d = _repo(scripts={"test": "sh -c 'echo 3 tests failed; exit 1'"}, lockfiles=("package-lock.json",))
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, capture_output=True, text=True).stdout.strip()
+    head = _head(d)
     ok, log = guard.verify_tests(d, head)
     assert ok is False
     assert "FULL SUITE RED" in log
@@ -110,7 +136,7 @@ def test_red_suite_blocks_the_push():
 
 def test_green_suite_allows_the_push():
     d = _repo(scripts={"test": "true"}, lockfiles=("package-lock.json",))
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, capture_output=True, text=True).stdout.strip()
+    head = _head(d)
     ok, log = guard.verify_tests(d, head)
     assert ok is True
     assert "green" in log
@@ -120,8 +146,8 @@ def test_the_gate_is_not_vacuous():
     """Same repo shape, same call, opposite verdicts — it is reading the result."""
     green = _repo(scripts={"test": "true"}, lockfiles=("package-lock.json",))
     red = _repo(scripts={"test": "false"}, lockfiles=("package-lock.json",))
-    hg = subprocess.run(["git", "rev-parse", "HEAD"], cwd=green, capture_output=True, text=True).stdout.strip()
-    hr = subprocess.run(["git", "rev-parse", "HEAD"], cwd=red, capture_output=True, text=True).stdout.strip()
+    hg = _head(green)
+    hr = _head(red)
     assert guard.verify_tests(green, hg)[0] is True
     assert guard.verify_tests(red, hr)[0] is False
 
@@ -174,7 +200,7 @@ def _flaky_repo(fail_times):
 
 def test_a_single_red_run_is_retried_and_flake_does_not_block():
     d = _flaky_repo(fail_times=1)
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, capture_output=True, text=True).stdout.strip()
+    head = _head(d)
     ok, log = guard.verify_tests(d, head)
     assert ok is True, log
     assert "ON RE-RUN" in log, log
@@ -184,14 +210,14 @@ def test_a_single_red_run_is_retried_and_flake_does_not_block():
 def test_a_push_allowed_on_a_second_attempt_says_so():
     """It must not print an unqualified GREEN. The operator should see the retry."""
     d = _flaky_repo(fail_times=1)
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, capture_output=True, text=True).stdout.strip()
+    head = _head(d)
     _, log = guard.verify_tests(d, head)
     assert "environmental, not code" in log
 
 
 def test_a_real_failure_survives_the_retry_and_blocks():
     d = _flaky_repo(fail_times=99)
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, capture_output=True, text=True).stdout.strip()
+    head = _head(d)
     ok, log = guard.verify_tests(d, head)
     assert ok is False, log
     assert "twice" in log
@@ -202,7 +228,7 @@ def test_a_green_first_run_is_not_run_twice():
     """The retry is for red runs only; every push must not pay for two suites."""
     d = _repo(scripts={"test": "sh -c 'c=$(cat .runs 2>/dev/null || echo 0); echo $((c+1)) > .runs'"},
               lockfiles=("package-lock.json",))
-    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, capture_output=True, text=True).stdout.strip()
+    head = _head(d)
     ok, _ = guard.verify_tests(d, head)
     assert ok is True
     assert int(open(os.path.join(d, ".runs")).read().strip()) == 1

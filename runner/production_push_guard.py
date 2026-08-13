@@ -28,8 +28,22 @@ PRODUCTION_REFS = {"refs/heads/main", "refs/heads/master"}
 ZERO_SHA = "0" * 40
 
 
+# git exports these into a hook's environment, and they OVERRIDE cwd. This guard
+# runs as a pre-push hook, so every git call it makes must be told which
+# repository to look at rather than inheriting one. Same hazard that let four
+# vitest suites commit to the wrong repository on 2026-08-13.
+_GIT_REDIRECT_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR",
+                      "GIT_PREFIX", "GIT_OBJECT_DIRECTORY",
+                      "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE")
+
+
+def _clean_git_env():
+    return {k: v for k, v in os.environ.items() if k not in _GIT_REDIRECT_VARS}
+
+
 def _git(repo, *args):
-    return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
+    return subprocess.run(["git", *args], cwd=repo, env=_clean_git_env(),
+                          capture_output=True, text=True, check=True).stdout.strip()
 
 
 def guarded_updates(lines):
@@ -160,7 +174,8 @@ def _tree_is_exactly(repo, commit):
 
 
 def _run_suite(repo, command):
-    return subprocess.run(command, cwd=repo, shell=True, capture_output=True, text=True,
+    return subprocess.run(command, cwd=repo, shell=True, env=_clean_git_env(),
+                          capture_output=True, text=True,
                           timeout=int(os.environ.get("ORCH_TEST_GATE_TIMEOUT", "1800")))
 
 
