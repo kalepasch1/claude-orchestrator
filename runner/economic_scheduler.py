@@ -191,6 +191,38 @@ class _estimate(tuple):
         return tuple.__getitem__(self, 2)
 
 
+def _as_float(value, default=0.0):
+    """Coerce a context signal to a float, degrading to *default* instead of raising.
+
+    The module contract is "every read is fail-soft", but two real input shapes broke it:
+
+      * a NESTED telemetry dict — `{"apparently": {"error_rate": 0.9}}` is what the
+        telemetry side actually emits, and `float(dict)` raises TypeError;
+      * a NON-NUMERIC historical return — `{"build": "oops"}`, and `float("oops")`
+        raises ValueError.
+
+    Both raised straight out of predict_revenue. Because ev_scheduler.load_ctx() calls the
+    economic signals inside a bare `except Exception: pass`, neither surfaced as an error:
+    the economic signals were silently dropped from the scheduling context and the queue
+    was ordered as though revenue prediction did not exist. A nested dict is READ (not just
+    survived) so a genuine error-rate spike still boosts bugfix work.
+    """
+    if isinstance(value, bool) or value is None:
+        return default
+    if isinstance(value, dict):
+        for key in ("error_rate", "rate", "value", "avg_delta", "point_estimate"):
+            if key in value:
+                return _as_float(value[key], default)
+        return default
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    if math.isnan(out) or math.isinf(out):
+        return default
+    return out
+
+
 def predict_revenue(task, ctx):
     """Estimate $/merge impact for a task.
 
@@ -220,7 +252,7 @@ def predict_revenue(task, ctx):
     # Base: historical avg_delta for this kind. Two spellings are honoured because two existed:
     # the implementation read kind_roi/error_rates, the test suite supplied
     # surface_returns/app_signals, and neither side had ever run against the other.
-    base_revenue = float((ctx.get("kind_roi") or ctx.get("surface_returns") or {}).get(kind, 0) or 0)
+    base_revenue = _as_float((ctx.get("kind_roi") or ctx.get("surface_returns") or {}).get(kind, 0))
     estimate = max(0.0, base_revenue)
 
     # Boost for high-growth projects
@@ -232,7 +264,7 @@ def predict_revenue(task, ctx):
         estimate *= 1.5
 
     # Boost bugfix tasks if error rate spike
-    error_rate = float((ctx.get("error_rates") or ctx.get("app_signals") or {}).get(project, 0) or 0)
+    error_rate = _as_float((ctx.get("error_rates") or ctx.get("app_signals") or {}).get(project, 0))
     if error_rate > 0.3 and kind in ("bugfix", "fix", "hotfix"):
         estimate *= 1.5
 

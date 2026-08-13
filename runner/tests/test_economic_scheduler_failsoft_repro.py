@@ -43,11 +43,12 @@ recommends fixing exactly these three as their own change.
 
 STATUS OF THIS FILE
 -------------------
-Every test below asserts the CORRECT fail-soft behaviour and is marked
-`@unittest.expectedFailure`, so this file is green today AND pins the defect precisely:
-the moment the production fix lands, these flip to unexpected-successes and the
-decorators come off. That is the reproduction — deterministic, isolated, and it does not
-require an agent turn budget to observe.
+FIXED. These tests were committed on the diagnose branch as `@unittest.expectedFailure`
+to pin the defect; the accompanying change to `economic_scheduler._as_float` makes every
+one of them pass, so the decorators are gone and they are now live regression guards.
+A nested telemetry dict is READ rather than merely survived, so a real error-rate spike
+still boosts bugfix work; a non-numeric historical return degrades to 0.0 as the module
+docstring has always promised.
 """
 import os
 import sys
@@ -82,13 +83,11 @@ class NestedSignalReproTest(unittest.TestCase):
         with self.assertRaises(TypeError):
             float({"error_rate": 0.9})
 
-    @unittest.expectedFailure
     def test_a_nested_error_rate_dict_must_not_raise(self):
         out = es.predict_revenue(task(kind="bugfix"),
                                  ctx(app_signals={"apparently": {"error_rate": 0.1}}))
         self.assertIsInstance(out["point_estimate"], float)
 
-    @unittest.expectedFailure
     def test_a_nested_spike_still_boosts_bugfix_work(self):
         """The nested shape must be READ, not just survived: 0.9 > 0.3 is a spike."""
         spiking = es.predict_revenue(task(kind="bugfix"),
@@ -100,12 +99,10 @@ class NestedSignalReproTest(unittest.TestCase):
 class NonNumericSignalReproTest(unittest.TestCase):
     """Defect 2: a non-numeric historical return raises instead of scoring 0."""
 
-    @unittest.expectedFailure
     def test_a_garbage_kind_return_must_not_raise(self):
         out = es.predict_revenue(task(), ctx(surface_returns={"build": "oops"}))
         self.assertIsInstance(out["point_estimate"], float)
 
-    @unittest.expectedFailure
     def test_a_garbage_kind_return_scores_zero_not_a_guess(self):
         out = es.predict_revenue(task(), ctx(surface_returns={"build": "oops"}))
         self.assertEqual(out["point_estimate"], 0.0)
@@ -114,12 +111,10 @@ class NonNumericSignalReproTest(unittest.TestCase):
 class DownstreamCallersReproTest(unittest.TestCase):
     """Defect 3: everything that delegates to predict_revenue inherits the raise."""
 
-    @unittest.expectedFailure
     def test_cost_benefit_survives_a_malformed_context(self):
         out = es.cost_benefit(task(), ctx(surface_returns={"build": "oops"}))
         self.assertIsInstance(out["predicted_revenue"], float)
 
-    @unittest.expectedFailure
     def test_score_survives_a_malformed_context(self):
         self.assertIsInstance(
             es.score(task(kind="bugfix"),
