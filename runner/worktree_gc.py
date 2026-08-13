@@ -17,6 +17,7 @@ Safety invariants:
 
 Environment variables:
   WORKTREE_GC_GIT_TIMEOUT   Max seconds for any single git subprocess (default: 90).
+  WORKTREE_GC_MAX_SECONDS   Wall-clock budget for the WHOLE run() (default: 600, 0 = off).
   ORCH_SHARE_AGENT_BRANCHES Push agent branches to origin before GC (default: true).
 """
 import os, re, sys, time, shutil, subprocess
@@ -34,10 +35,76 @@ GIT_TIMEOUT = int(os.environ.get("WORKTREE_GC_GIT_TIMEOUT", "90"))
 MIN_AGE_MIN = int(os.environ.get("WORKTREE_GC_MIN_AGE_MIN", "180"))
 
 
+# --- Whole-job deadline ------------------------------------------------------------
+# GIT_TIMEOUT bounds ONE subprocess. It does not bound the job: run() loops over every
+# project, and gc_repo/gc_integration_worktrees each loop over every worktree or slot,
+# issuing several git/du/lsof calls apiece. With ~40 worktrees per repo across 9 repos,
+# the worst case is thousands of calls * 90s — effectively unbounded. That is how
+# 'worktreegc' wedged: it held its singleton lock for 1074s, periodic.py skipped three
+# consecutive invocations, and each skip exited 0 so nothing downstream noticed.
+#
+# A wall-clock budget is checked between repos and between items, and every subprocess
+# timeout is clamped to whatever is left, so the job cannot outlive the deadline by more
+# than one already-running call. Exceeding it is not an error: GC is idempotent and
+# resumable, so the sweep simply stops and the next invocation continues where it left
+# off — a partial sweep that releases its lock beats a complete one that never returns.
+MAX_SECONDS = int(os.environ.get("WORKTREE_GC_MAX_SECONDS", "600"))
+
+_deadline = None  # epoch seconds, or None when no budget is in force
+
+
+def _start_deadline(budget=None):
+    """Begin a wall-clock budget for this run. Returns the previous deadline."""
+    global _deadline
+    prev = _deadline
+    budget = MAX_SECONDS if budget is None else budget
+    # 0 means "no budget". A NEGATIVE budget is an already-elapsed deadline, not "off" —
+    # callers (and tests) use it to assert that an out-of-time sweep does nothing.
+    _deadline = None if budget == 0 else (time.time() + budget)
+    return prev
+
+
+def _clear_deadline(previous=None):
+    global _deadline
+    _deadline = previous
+
+
+def _time_left():
+    """Seconds remaining in the budget; None when unbounded."""
+    if _deadline is None:
+        return None
+    return _deadline - time.time()
+
+
+def _expired():
+    left = _time_left()
+    return left is not None and left <= 0
+
+
+def _bounded_timeout(default=None):
+    """Per-subprocess timeout clamped to the remaining job budget (>= 1s)."""
+    default = GIT_TIMEOUT if default is None else default
+    left = _time_left()
+    if left is None:
+        return default
+    return max(1, min(default, int(left) if left > 0 else 1))
+
+
 def _run_git(args, repo):
-    """Execute a git command in the given repo, with timeout protection."""
+    """Execute a git command in the given repo, with timeout protection.
+
+    The per-call timeout is clamped to the remaining job budget so a single slow git
+    cannot carry the whole sweep past its deadline.
+    """
+    timeout = GIT_TIMEOUT
+    left = _time_left()
+    if left is not None:
+        if left <= 0:
+            return subprocess.CompletedProcess(args, returncode=124, stdout="",
+                                               stderr="worktree_gc deadline exceeded")
+        timeout = max(1, min(GIT_TIMEOUT, int(left)))
     try:
-        return subprocess.run(args, cwd=repo, capture_output=True, text=True, timeout=GIT_TIMEOUT)
+        return subprocess.run(args, cwd=repo, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         # Return a failed-looking result so callers degrade gracefully instead of crashing.
         return subprocess.CompletedProcess(args, returncode=124, stdout="", stderr="git timeout")
@@ -136,6 +203,10 @@ def gc_repo(repo):
             locked = True
         elif line == "":
             # end of a worktree block
+            if _expired():
+                print(f"worktree_gc: deadline reached in {repo}; stopping after "
+                      f"{removed} removal(s) — the next run resumes")
+                break
             if path and branch and branch.startswith("agent/"):
                 slug = branch[len("agent/"):]
                 if slug not in protected and os.path.abspath(path) != main_worktree:
@@ -212,7 +283,7 @@ def _active_cwds():
     """
     try:
         r = subprocess.run(["/usr/sbin/lsof", "-a", "-d", "cwd", "-Fn"],
-                           capture_output=True, text=True, timeout=GIT_TIMEOUT)
+                           capture_output=True, text=True, timeout=_bounded_timeout())
     except Exception:
         return None
     # lsof exits non-zero when some FDs are unreadable; output is still usable.
@@ -251,7 +322,8 @@ def _slot_age_seconds(path, name):
 def _dir_bytes(path):
     """Apparent disk usage of a slot, via du -sk. 0 if it cannot be measured."""
     try:
-        r = subprocess.run(["du", "-sk", path], capture_output=True, text=True, timeout=GIT_TIMEOUT)
+        r = subprocess.run(["du", "-sk", path], capture_output=True, text=True,
+                           timeout=_bounded_timeout())
         if r.returncode == 0:
             return int(r.stdout.split()[0]) * 1024
     except Exception:
@@ -309,6 +381,10 @@ def gc_integration_worktrees(repo, dry_run=False):
             break
         if not _RUN_SLOT_RE.match(name):
             continue  # persistent slot — never swept
+        if _expired():
+            print(f"worktree_gc: deadline reached during the integration sweep of {repo}; "
+                  f"stopping after {removed} slot(s) — the next run resumes")
+            break
         path = os.path.join(root, name)
         if not os.path.isdir(path) or os.path.islink(path):
             continue
@@ -358,30 +434,53 @@ def gc_integration_worktrees(repo, dry_run=False):
     return removed, freed, skipped
 
 
-def run(dry_run=False):
+def run(dry_run=False, max_seconds=None):
+    """Sweep every project's stale worktrees under a hard wall-clock budget.
+
+    `max_seconds` (default WORKTREE_GC_MAX_SECONDS, 600) bounds the WHOLE job, not just
+    one subprocess. Pass 0 to disable the budget. The sweep is idempotent and resumable,
+    so stopping early is safe: the singleton lock is released and the next invocation
+    picks up the projects this one did not reach.
+    """
+    budget = MAX_SECONDS if max_seconds is None else max_seconds
+    previous = _start_deadline(budget)
+    started = time.time()
     total = 0
     int_removed = int_freed = 0
-    for p in db.select("projects", {"select": "name,repo_path"}) or []:
-        repo = p.get("repo_path", "")
-        try:
-            n = 0 if dry_run else gc_repo(repo)
-            if n:
-                print(f"worktree_gc: {p['name']} removed {n} stale worktree(s)")
-            total += n
-        except Exception as e:
-            print(f"worktree_gc: {p.get('name')} error {e}")
-        # Orphaned integration slots are a separate leak: unregistered dirs that
-        # `git worktree prune` is structurally unable to see.
-        try:
-            r, b, s = gc_integration_worktrees(repo, dry_run=dry_run)
-            if r or s:
-                print(f"worktree_gc: {p['name']} integration slots "
-                      f"reclaimed={r} skipped(in-use/young/locked)={s}")
-            int_removed += r
-            int_freed += b
-        except Exception as e:
-            print(f"worktree_gc: {p.get('name')} integration sweep error {e}")
-    print(f"worktree_gc: removed {total} stale worktree(s) across repos")
+    deadline_hit = False
+    try:
+        for p in db.select("projects", {"select": "name,repo_path"}) or []:
+            repo = p.get("repo_path", "")
+            if _expired():
+                deadline_hit = True
+                print(f"worktree_gc: {budget}s budget exhausted before {p.get('name')}; "
+                      f"stopping cleanly — the next run continues from here")
+                break
+            try:
+                n = 0 if dry_run else gc_repo(repo)
+                if n:
+                    print(f"worktree_gc: {p['name']} removed {n} stale worktree(s)")
+                total += n
+            except Exception as e:
+                print(f"worktree_gc: {p.get('name')} error {e}")
+            # Orphaned integration slots are a separate leak: unregistered dirs that
+            # `git worktree prune` is structurally unable to see.
+            try:
+                r, b, s = gc_integration_worktrees(repo, dry_run=dry_run)
+                if r or s:
+                    print(f"worktree_gc: {p['name']} integration slots "
+                          f"reclaimed={r} skipped(in-use/young/locked)={s}")
+                int_removed += r
+                int_freed += b
+            except Exception as e:
+                print(f"worktree_gc: {p.get('name')} integration sweep error {e}")
+    finally:
+        # ALWAYS clear the budget, including on an unexpected raise. A leaked deadline
+        # would make every later in-process call believe it had no time left.
+        _clear_deadline(previous)
+    elapsed = time.time() - started
+    print(f"worktree_gc: removed {total} stale worktree(s) across repos "
+          f"in {elapsed:.1f}s{' (DEADLINE HIT — partial sweep)' if deadline_hit else ''}")
     if int_removed:
         print(f"worktree_gc: reclaimed {int_removed} integration slot(s)"
               + (f", {int_freed / 1e9:.2f} GB" if int_freed else ""))
