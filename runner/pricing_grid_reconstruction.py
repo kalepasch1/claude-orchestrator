@@ -174,9 +174,34 @@ class PricingGridReconstructionUtil:
     @staticmethod
     def from_raw_tiers(product_id: str, raw_tiers: List[Dict[str, Any]],
                        currency: str = "USD") -> PricingGrid:
-        """Reconstruct PricingGrid from raw tier dicts using unified factory."""
+        """Reconstruct PricingGrid from raw tier dicts, dropping exact duplicates.
+
+        A raw feed that lists the same tier twice used to produce a grid holding it
+        twice, and an exact duplicate overlaps ITSELF: `validate_grid` on such a grid
+        returns (False, ["tier 'base' overlaps with 'base'"]), so a redundant row made a
+        correct price table fail its own validation. The duplicate also inflated the tier
+        count everywhere the grid is rendered or counted (`to_dict`, callers reading
+        `len(tiers)`).
+
+        Deduplication is on the FULL pricing identity — name, bounds and unit price — so
+        two tiers that merely share a name but price differently are preserved and still
+        reported as a genuine overlap. First occurrence wins, which keeps the caller's
+        ordering intent; sorting then happens exactly as before.
+
+        Cost is deliberately unaffected: `_consume_tier_units` already consumed each unit
+        once, so `total_cost` returned the same number with or without the duplicate.
+        This removes the redundant entry and nothing else.
+        """
         tiers = [_build_pricing_tier_from_dict(rt) for rt in raw_tiers]
-        grid = PricingGrid(product_id=product_id, tiers=tiers, currency=currency)
+        deduped: List[PricingTier] = []
+        seen = set()
+        for tier in tiers:
+            identity = (tier.name, tier.min_units, tier.max_units, tier.unit_price)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            deduped.append(tier)
+        grid = PricingGrid(product_id=product_id, tiers=deduped, currency=currency)
         grid.tiers = grid.sorted_tiers
         return grid
 
