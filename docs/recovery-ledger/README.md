@@ -211,3 +211,31 @@ The plan for this fingerprint is committed alongside the ledger as
 ones pin the behaviour that matters: a preserved ref is never planned into
 `refs/heads/`, tips a remote already holds are skipped, and an empty plan is still a
 runnable script rather than a broken one.
+
+---
+
+# Fingerprint `797668765dad` — the failed patch nobody had ever seen
+
+Same three evidence kinds as `215fba971ab9`, plus two more bridge artifacts
+including the `.patch` payload. **1325 items, zero UNKNOWN.**
+
+The run surfaced **4 bridge artifacts where the zip-only filter saw 2**. Three are
+ALREADY_PRESENT, each verified against the branch its own `.result.txt` receipt
+names rather than a branch inferred from its filename.
+
+The fourth is the finding:
+
+`_failed/20260807-085521--smarter--apparently-framework-merge.patch` →
+**CONFLICTED_NEEDS_FOCUSED_TASK**
+
+A failed bridge payload for the `smarter` repository. No remote branch carries it,
+and because it is a `.patch` in `_failed/`, no reconciliation run had ever
+enumerated it — it sat outside the tool's field of view since 2026-08-07. Left
+untouched for a focused task rather than replayed blind: it failed once, and
+re-applying a patch whose failure was never diagnosed is how a bad merge becomes
+two bad merges.
+
+The `broken_codex_git_worktree` classifies RECOVERABLE_VALUE with its content
+preserved in `refs/heads/codex/orchestrator-session-fabric`; its uncommitted drift
+cannot be read without the pruned gitdir and is reported as unaccounted-for rather
+than assumed to be nothing.
