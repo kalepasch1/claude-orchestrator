@@ -122,8 +122,73 @@ def record_failure():
     set_gauge("canary_last_success", 0)
 
 
+#: How stale `canary_last_success` may get before the heartbeat counts as expired.
+#: Read at call time, not import time, so an operator can widen it during a long
+#: deploy window without restarting the canary process.
+HEARTBEAT_MAX_AGE_DEFAULT_S = 300.0
+
+
+def _heartbeat_max_age():
+    try:
+        value = float(os.environ.get("CANARY_HEARTBEAT_MAX_AGE_S", HEARTBEAT_MAX_AGE_DEFAULT_S))
+    except (TypeError, ValueError):
+        return HEARTBEAT_MAX_AGE_DEFAULT_S
+    return value if value > 0 else HEARTBEAT_MAX_AGE_DEFAULT_S
+
+
+def heartbeat_age(now=None):
+    """Seconds since the last successful evaluation, or None if there has never been one.
+
+    None and 0 are different answers and the caller needs both: 0 is the gauge's documented
+    "not currently succeeding" sentinel (record_failure sets it), while None means the
+    process has not yet completed a first evaluation.
+    """
+    last = get_gauge("canary_last_success")
+    if not last:
+        return None
+    return max(0.0, (time.time() if now is None else now) - last)
+
+
+def heartbeat_expired(now=None, max_age=None):
+    """True when the canary heartbeat is stale (or has never beaten).
+
+    The gauge has always been *written* — record_success stamps it, record_failure zeroes it
+    — but nothing in this module ever READ it back, so a canary that stopped evaluating
+    entirely (crashed thread, wedged deploy window, host asleep) looked exactly like a canary
+    that was fine: /metrics kept serving the last timestamp it happened to have, and the
+    staleness arithmetic was left to whatever external alert someone remembered to write.
+
+    A never-beating heartbeat is expired. That is the case that matters most — a canary that
+    dies before its first success is the one nobody notices.
+    """
+    age = heartbeat_age(now=now)
+    if age is None:
+        return True
+    return age > (_heartbeat_max_age() if max_age is None else max_age)
+
+
+def heartbeat_status(now=None):
+    """Structured heartbeat verdict, shaped like evaluate()'s so callers can treat them alike."""
+    age = heartbeat_age(now=now)
+    max_age = _heartbeat_max_age()
+    if age is None:
+        return {"expired": True, "age_s": None, "max_age_s": max_age,
+                "reason": "no successful canary evaluation since process start"}
+    if age > max_age:
+        return {"expired": True, "age_s": round(age, 3), "max_age_s": max_age,
+                "reason": f"last success was {age:.0f}s ago, over the {max_age:.0f}s limit"}
+    return {"expired": False, "age_s": round(age, 3), "max_age_s": max_age,
+            "reason": "heartbeat is current"}
+
+
 def render_metrics():
-    """Prometheus text exposition for GET /metrics."""
+    """Prometheus text exposition for GET /metrics.
+
+    canary_heartbeat_expired is computed at scrape time rather than stored: staleness is a
+    function of the clock, so a gauge only written on state change would go on reporting 0
+    for exactly the failure it exists to catch — a canary that has stopped writing anything.
+    """
+    set_gauge("canary_heartbeat_expired", 1 if heartbeat_expired() else 0)
     lines = ["canary_up 1"]
     with _gauges_lock:
         gauges = [_gauges[name] for name in sorted(_gauges)]
@@ -195,6 +260,15 @@ def main(argv=None):
     on the verdict without parsing stdout.
     """
     argv = sys.argv[1:] if argv is None else argv
+
+    # `--heartbeat` reports staleness WITHOUT evaluating: the whole point is to answer
+    # "is this canary still beating" from outside, at a moment when running an evaluation
+    # is exactly what may be wedged. Exit 1 when expired, matching the rollback convention.
+    if argv and argv[0] == "--heartbeat":
+        status = heartbeat_status()
+        print(json.dumps(status))
+        return 1 if status["expired"] else 0
+
     result = evaluate(argv[0] if argv else None)
     if result.get("verdict") == "promote":
         record_success()
