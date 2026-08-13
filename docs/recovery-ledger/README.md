@@ -327,3 +327,24 @@ is the case worth waking someone for.
 cover the identical twin across the rename, bytes that differ (no twin claimed),
 the slug fallback, the orphaned output, and a path the snapshot names that disk no
 longer has.
+
+---
+
+# Fingerprint `383306e1301e` — a clean pass, which is the point
+
+Evidence: the `broken_codex_git_worktree` at
+`Codex/2026-08-07/cons/work/orchestrator-session-fabric`, two bridge artifacts, and
+the live `orchestrator_rescue_refs` namespace.
+
+**1344 items, zero UNKNOWN**, and nothing about this run required a change to the
+tool.
+
+Worth stating because it was not true a few fingerprints ago. Each of the earlier
+runs in this series hit a kind the classifier could not see — a pruned gitdir that
+`git worktree list` cannot report, untracked files invisible to both `stash create`
+and `diff`, `.patch` payloads excluded by a `.zip` filter, a Codex output renamed on
+its way into the dropbox. Every one of those was fixed in the shared tool rather than
+worked around in the task, and the result is that this fingerprint's evidence
+classified end-to-end on the first pass.
+
+Nothing was popped, dropped, reset, cleaned or moved.
