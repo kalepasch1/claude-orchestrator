@@ -281,7 +281,72 @@ class ConventionChecker(ast.NodeVisitor):
                     message=msg
                 ))
 
+            # Rule 9: fail-soft must not mean fail-SILENT.
+            #
+            # The existing rules above are about returning a sensible default, which
+            # is a correctness property. This one is a diagnosability property, and
+            # nothing checked it: a handler that neither binds the exception nor
+            # emits any diagnostic destroys the only evidence that something went
+            # wrong. fleet_control.load_config carries the lesson in a comment —
+            # "NAME WHAT IS DROPPED. Silence here is what made a pushed-but-inert
+            # knob indistinguishable from a working one." — but no check enforced
+            # it, so the pattern kept spreading.
+            if self._is_silently_discarded(handler):
+                exc_name = self._get_exception_name(handler.type) if handler.type else "bare except"
+                msg = (
+                    f"Handler for '{exc_name}' discards the error with no diagnostic: "
+                    "bind it (`except X as e`) and log/print what was dropped, or "
+                    "add a comment naming why it is safe to ignore"
+                )
+                self.violations.append((handler.lineno, "no-silent-error", msg))
+                self._v2_violations.append(ConventionViolation(
+                    filepath=self.filepath,
+                    lineno=handler.lineno,
+                    rule="SILENT_ERROR_NO_DIAGNOSTIC",
+                    severity="warning",
+                    message=msg
+                ))
+
         self.generic_visit(node)
+
+    # Calls that count as "this error was reported somewhere".
+    _DIAGNOSTIC_CALLS = {
+        "print", "warn", "warning", "error", "exception", "critical", "info",
+        "debug", "log", "write", "alert", "capture_exception", "report",
+    }
+
+    def _emits_diagnostic(self, stmts) -> bool:
+        """True if any statement in the handler reports the error somewhere."""
+        for stmt in stmts:
+            for sub in ast.walk(stmt):
+                if isinstance(sub, ast.Raise):
+                    return True  # re-raised: the caller still sees it
+                if isinstance(sub, ast.Call):
+                    func = sub.func
+                    name = ""
+                    if isinstance(func, ast.Attribute):
+                        name = func.attr
+                    elif isinstance(func, ast.Name):
+                        name = func.id
+                    if name in self._DIAGNOSTIC_CALLS:
+                        return True
+        return False
+
+    def _is_silently_discarded(self, handler: ast.ExceptHandler) -> bool:
+        """A handler that keeps no reference to the error and reports nothing.
+
+        Deliberately NOT flagged:
+          * `except X as e:` — the name is bound, so the value is recoverable even
+            if this particular handler chooses not to use it.
+          * any handler that logs, prints, writes, alerts or re-raises.
+          * a handler whose body is a single `pass` guarded by an explanatory
+            comment is still flagged, because a comment is not available at
+            runtime — but severity is `warning`, not `error`, so intentional
+            swallows can be triaged rather than blocking.
+        """
+        if handler.name is not None:
+            return False
+        return not self._emits_diagnostic(handler.body)
 
     def visit_Subscript(self, node: ast.Subscript) -> None:
         """Check for config key assignments (Rules 1 & 2)."""
