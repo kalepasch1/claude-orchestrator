@@ -1,4 +1,0 @@
-recovery-intent: recover-missing-branch-remediate-improve-optimize-task-routing-algorithm
-template: f6f3a6db4338
-intent: 08t14 28a9c8c2bdbf 5fac0ef2b876 6096aa2b 825997 99f45988 aaac4e acceptance adapt adding after agent algorithm automatically backlog before behavior below blocked bottleneck bottlenecks branch branches build c1486760bb7d cache canonical change commit common concrete conflict context conventions conversion crashes critical current database decomposed deployed diffs drafting during enhance ensure equivalent error excerpt existing exists files first function handling helpers implementation improve install instead integrate integrated integration_sweeper intent library limit locate matched matching merge mergeable merged missing module modules naming optimize original owner patch
-base: master

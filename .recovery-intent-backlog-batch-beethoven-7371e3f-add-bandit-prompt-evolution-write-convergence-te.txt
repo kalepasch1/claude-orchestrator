@@ -1,4 +1,0 @@
-recovery-intent: backlog-batch-beethoven-7371e3f-add-bandit-prompt-evolution-write-convergence-te
-template: 8f5c34ac4f1f
-intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 __init__ acceptance accepts accommodate active adapt adaptive_probe advice after agentic aider allowlist always assert assertion author banditselector batch beethoven before behavior blocked blocker breaking build buildfail ce2e8dcd7954 change choices chosen claim class claude cloud coder codestral comprehensive configure context contract convergence coordination corresponding count create cross custody debate_compress decay deepseek delete deployfix deterministic diffs drafting epsilon excerpt existing exists fable final first fixed flash force frequencies gemini generated get_bandit_params
-base: master

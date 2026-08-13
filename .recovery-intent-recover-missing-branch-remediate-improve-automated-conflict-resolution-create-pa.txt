@@ -1,4 +1,0 @@
-recovery-intent: recover-missing-branch-remediate-improve-automated-conflict-resolution-create-pa
-template: 27230fbf577d
-intent: 54d2cfd622ef 9d0155 aaac4e acceptance adapt adding agent avoid before behavior bf0ed633a9c6 branch build c1486760bb7d conventions create diffs directories drafting equivalent excerpt existing exists files first focus function helpers identified implementation instead intent library limit limiting locate matched matching mentioned mergeable merged missing module naming owner patch preserve prior project proven rebuilding relevant reset resuming retry reuse scope scratch should similarity slots smaller smallest solved source summary template tests transplant using vigil weekly
-base: master

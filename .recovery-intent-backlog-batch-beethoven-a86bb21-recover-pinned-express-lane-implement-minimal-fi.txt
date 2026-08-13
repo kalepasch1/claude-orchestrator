@@ -1,4 +1,0 @@
-recovery-intent: backlog-batch-beethoven-a86bb21-recover-pinned-express-lane-implement-minimal-fi
-template: cebe1c607c54
-intent: 056af630dd5f 07062319 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6f940a79484e 7f21d02 acceptance active actually adapt address adjustments advice after agentic aider allowlist alter analysis apply author batch beethoven before behavior beyond blocked blocker build build_fix buildfail cannot cause ce2e8dcd7954 change changes cheap claim class claude cloud codebase coder codestral commit components concern concrete config confirm context contract convert coordination cross custody debate_compress deepseek delete deployfix determined diffs directive drafting excerpt existing exists fable failed failing failure feature files first flash
-base: master

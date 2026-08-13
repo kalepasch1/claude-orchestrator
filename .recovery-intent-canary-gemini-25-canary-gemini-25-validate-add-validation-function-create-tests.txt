@@ -1,4 +1,0 @@
-recovery-intent: canary-gemini-25-canary-gemini-25-validate-add-validation-function-create-tests
-template: 5875add43d56
-intent: 07062319 07071626 8b92d078e856 acceptance adapt agent agentic alter analysis artifacts assert basicconfig because beethoven before behavior below blocks branch broad bugfix build canary category cause changes changing check checks coder commit completion concrete config configure context continue correct create dependencies diffs directive drafting duplicate duplicates eliminating equivalent examine existing exists failure files final finish first focus fresh function functionality gemini given green identify implementation improve inputs inspect install instead integrating intent issue large level library lines logging maintainability matched merged
-base: main

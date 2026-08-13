@@ -1,4 +1,0 @@
-recovery-intent: improve-missing-branch-auto-creator-slice-3-integrate-and-test
-template: 38e9b5e6431f
-intent: adapt agent allow automation bb22a2 before branch break build canonical command completed confirmation creation diffs drafting ensure excerpt existing exists first functionality implementation initiated instead integrate integration intent library located matched merge merged missing module patch prior process project proven provide racefeed rebuilding recover relevant reuse scratch similarity solved source specified successfully summary tests train transplant verify
-base: master

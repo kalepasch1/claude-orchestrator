@@ -1,4 +1,0 @@
-recovery-intent: improve-upgrade-to-a-high-performance-database-slice-3-implement-new-high-perfor
-template: 955b5a629fd9
-intent: adapter against asserts backend build choose client command compile completes configstore configuration connection created database ensure entry error executes faster fulfills functional implement implementation integration interface least memory migration minimal passes performance pooled postgresql project provide scripts significantly smallest speed stack start store technology usable without workload write
-base: master
