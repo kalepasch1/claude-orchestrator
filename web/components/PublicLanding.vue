@@ -219,7 +219,7 @@ useHead({
             <path class="map-route cross" d="M135 88C310 20 425 35 552 88M120 328C275 382 435 380 565 328"/>
             <circle class="pulse-dot d1" cx="225" cy="133" r="5"/><circle class="pulse-dot d2" cx="454" cy="125" r="5"/><circle class="pulse-dot d3" cx="238" cy="278" r="5"/><circle class="pulse-dot d4" cx="455" cy="275" r="5"/>
           </svg>
-          <div class="map-core"><MadeusMark /><b>Portfolio<br>intelligence network</b><small>26 objectives routing</small></div>
+          <div class="map-core"><MadeusMark /><b>Portfolio<br>intelligence network</b><small>Every holding, aligned</small></div>
           <div class="company-node tomorrow"><span>TOMORROW</span><b>Risk &amp; markets</b><small><i /> pricing hedge simulated</small></div>
           <div class="company-node smarter"><span>SMARTER</span><b>Legal operating system</b><small><i /> 4 matters advanced</small></div>
           <div class="company-node studio"><span>STUDIO</span><b>Design &amp; venture</b><small><i /> brand system verified</small></div>
