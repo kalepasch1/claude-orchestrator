@@ -211,3 +211,53 @@ The plan for this fingerprint is committed alongside the ledger as
 ones pin the behaviour that matters: a preserved ref is never planned into
 `refs/heads/`, tips a remote already holds are skipped, and an empty plan is still a
 runnable script rather than a broken one.
+
+---
+
+# Fingerprint `e4b9212494ba` — the artifact kind the enumerator could not see
+
+One evidence item: a bridge artifact at
+`chatgpt-dropbox/_applied/20260812-020326--claude-orchestrator--operator-output-truth-session-fabric-20260812.patch`.
+
+`enumerateBridgeArtifacts()` filtered on `.zip`, and `classifyBridgeArtifact()`
+stripped `.zip$` to derive the slug. The bridge has since started emitting bare
+`.patch` payloads. An artifact kind the enumerator cannot see is an artifact kind it
+silently reports nothing about — the UNKNOWN bucket wearing a different hat.
+
+Now `.zip`, `.patch` and `.diff` are all payloads, and `.result.txt` sidecars are
+correctly excluded from the payload list.
+
+## Reading the receipt instead of guessing from the name
+
+Every artifact has a `<name>.result.txt` beside it containing the line:
+
+```
+[chatgpt-bridge] pushed branch chatgpt/operator-output-truth-session-fabric-20260812-08120203
+```
+
+That is the bridge stating what it did. The old code instead reconstructed the branch
+from the filename — and the bridge appends a run suffix, so
+`…-20260812` becomes `…-20260812-08120203`. Substring matching happened to bridge
+that gap. A guess that usually works is the worst kind: it fails silently on the one
+artifact whose naming drifted, and reports live code as unrecoverable.
+
+`readBridgeReceipt()` is now consulted first; name matching remains only as the
+fallback for artifacts with no receipt.
+
+## What the wider net caught
+
+Enumerating both buckets with the new extensions surfaced **four** artifacts where
+the previous code saw two. Three are ALREADY_PRESENT, verified against the branch
+each receipt names. The fourth had never been visible to any run:
+
+`_failed/20260807-085521--smarter--apparently-framework-merge.patch` →
+**CONFLICTED_NEEDS_FOCUSED_TASK**. It is a failed payload for the `smarter`
+repository, no remote branch carries it, and the zip-only filter meant no
+reconciliation had ever reported it. Left in place for a focused task.
+
+## Tests
+
+`scripts/reconcile-evidence.test.mjs` — 28 cases, `node --test`. The six new ones
+cover the receipt parser (present, absent, records-no-push), `.patch`/`.diff`
+enumeration, sidecar exclusion, and the run-suffix case where the receipt and the
+filename disagree.
