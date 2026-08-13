@@ -27,6 +27,7 @@
  * Completion bar: ZERO items classified UNKNOWN.
  */
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 
@@ -291,6 +292,11 @@ export function classifyStash(entry, ctx) {
  * the UNKNOWN bucket wearing a different hat.
  */
 const ARTIFACT_EXT = /\.(zip|patch|diff)$/
+
+/** Content identity for artifacts, which is the only identity that survives a rename. */
+function sha256File(path) {
+  return createHash('sha256').update(readFileSync(path)).digest('hex')
+}
 
 /**
  * The branch the bridge says it pushed, from the `<artifact>.result.txt` sidecar.
@@ -591,6 +597,82 @@ export function enumerateBridgeArtifacts(dropboxDir) {
   })
 }
 
+/**
+ * Classify a Codex output artifact — a patch Codex wrote into its own
+ * `<session>/outputs/` directory, upstream of the dropbox.
+ *
+ * These are named `<repo>--<slug>.patch`, with no timestamp prefix and no
+ * `.result.txt` receipt: Codex writes the patch, and only later does the bridge
+ * copy it into the dropbox, rename it with a timestamp, apply it and record where
+ * it landed. So the same bytes exist twice under two different names, and the
+ * copy that knows its fate is the other one.
+ *
+ * Matching by name across that rename would be guesswork. Matching by **content
+ * hash** is not: if the bytes are identical, it is the same patch, and whatever
+ * the bridge did with one it did with both.
+ *
+ * The failure this avoids is specific. A Codex output whose dropbox twin already
+ * landed on a remote is safe, but nothing in its own filename says so — classified
+ * on its own it looks like an unreferenced patch sitting in a scratch directory,
+ * which reads as either "the only copy" (needless recovery work) or "some leftover"
+ * (quietly dropping a real one). Hashing settles it.
+ */
+export function classifyCodexOutput(artifactPath, ctx, bridgeArtifacts = []) {
+  if (!existsSync(artifactPath)) {
+    return {
+      ref: artifactPath,
+      sha: null,
+      classification: 'CONFLICTED_NEEDS_FOCUSED_TASK',
+      reason: 'Codex output named by the evidence snapshot is no longer on disk.',
+    }
+  }
+
+  const digest = sha256File(artifactPath)
+  const twin = bridgeArtifacts.find(
+    (p) => p !== artifactPath && existsSync(p) && sha256File(p) === digest,
+  )
+
+  if (twin) {
+    const viaBridge = classifyBridgeArtifact(twin, ctx)
+    return {
+      ...viaBridge,
+      ref: artifactPath,
+      sha256: digest,
+      identicalTo: twin,
+      reason:
+        `byte-identical (sha256 ${digest.slice(0, 12)}) to the dropbox artifact ` +
+        `${basename(twin)}, so it shares its fate. ${viaBridge.reason}`,
+    }
+  }
+
+  // No twin: fall back to the repo/slug encoded in the name.
+  const slug = basename(artifactPath).replace(ARTIFACT_EXT, '').split('--').slice(1).join('--')
+  const landed = slug ? [...ctx.remoteBranches].filter((b) => b.includes(slug)) : []
+
+  if (landed.length > 0) {
+    return {
+      ref: artifactPath,
+      sha: resolve(`origin/${landed[0]}`),
+      sha256: digest,
+      classification: 'ALREADY_PRESENT',
+      preservedIn: landed.map((b) => `origin/${b}`),
+      reason:
+        `no dropbox artifact carries these bytes, but origin/${landed[0]} matches the ` +
+        'slug in the filename. The content ships.',
+    }
+  }
+
+  return {
+    ref: artifactPath,
+    sha: null,
+    sha256: digest,
+    classification: 'RECOVERABLE_VALUE',
+    reason:
+      'a Codex output patch that never reached the dropbox and matches no remote ' +
+      'branch. It was written and then nothing carried it — this file is the only copy.',
+  }
+}
+
 // ─── Turning "no remote copy" into something you can act on ──────────────────
 
 /**
@@ -680,7 +762,8 @@ function main() {
         '                 [--external-worktree <path>]...  worktrees git can no longer list\n' +
         '                 [--bridge-artifact <path>]...    a single dropbox zip\n' +
         '                 [--dropbox <dir>]                enumerate _applied/ and _failed/\n' +
-        '                 [--preserve-plan <path>]         write a push plan for local-only tips',
+        '                 [--preserve-plan <path>]         write a push plan for local-only tips\n' +
+        '                 [--codex-output <path>]...       a patch in a Codex session outputs dir',
     )
     process.exit(2)
   }
@@ -743,6 +826,7 @@ function main() {
     ...collectFlag(args, '--bridge-artifact'),
     ...enumerateBridgeArtifacts(dropboxDir),
   ].filter((p, i, a) => a.indexOf(p) === i)
+  const codexOutputs = collectFlag(args, '--codex-output')
 
   const items = collapseDuplicateTrees([
     ...branches.map((b) => ({ kind: 'branch', ...classifyRef(b, ctx) })),
@@ -761,6 +845,10 @@ function main() {
     ...bridgeArtifacts.map((p) => ({
       kind: 'bridge_artifact',
       ...classifyBridgeArtifact(p, ctx),
+    })),
+    ...codexOutputs.map((p) => ({
+      kind: 'codex_output',
+      ...classifyCodexOutput(p, ctx, bridgeArtifacts),
     })),
   ])
 

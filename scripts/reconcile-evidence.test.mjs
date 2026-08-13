@@ -22,6 +22,7 @@ import {
   classifyExternalWorktree,
   collectFlag,
   enumerateBridgeArtifacts,
+  classifyCodexOutput,
   readBridgeReceipt,
 } from './reconcile-evidence.mjs'
 
@@ -279,5 +280,74 @@ describe('bridge artifacts beyond .zip', () => {
     })
     assert.equal(r.classification, 'RECOVERABLE_VALUE')
     assert.match(r.reason, /orphan/)
+  })
+})
+
+describe('classifyCodexOutput', () => {
+  const mk = (dir, name, body) => {
+    fs.mkdirSync(dir, { recursive: true })
+    const p = path.join(dir, name)
+    fs.writeFileSync(p, body)
+    return p
+  }
+
+  it('shares the fate of a byte-identical dropbox twin, across the rename', () => {
+    const base = path.join(root, `cx-${Math.random().toString(36).slice(2)}`)
+    const out = mk(path.join(base, 'outputs'), 'repo--thing-20260812.patch', 'PATCH BODY')
+    const twin = mk(path.join(base, '_applied'), '20260812-020326--repo--thing-20260812.patch', 'PATCH BODY')
+    fs.writeFileSync(`${twin}.result.txt`, '[chatgpt-bridge] pushed branch chatgpt/thing-20260812-08120203\n')
+
+    const r = classifyCodexOutput(
+      out,
+      { mainSha: 'HEAD', localDefaultSha: null, liveTaskSlugs: [], remoteBranches: new Set(['chatgpt/thing-20260812-08120203']) },
+      [twin],
+    )
+    assert.equal(r.classification, 'ALREADY_PRESENT')
+    assert.equal(r.identicalTo, twin)
+    assert.equal(r.ref, out)
+    assert.match(r.reason, /byte-identical/)
+  })
+
+  it('does not claim a twin when the bytes differ', () => {
+    const base = path.join(root, `cx-${Math.random().toString(36).slice(2)}`)
+    const out = mk(path.join(base, 'outputs'), 'repo--other.patch', 'ONE')
+    const other = mk(path.join(base, '_applied'), '20260812-000000--repo--other.patch', 'TWO')
+    const r = classifyCodexOutput(
+      out,
+      { mainSha: 'HEAD', localDefaultSha: null, liveTaskSlugs: [], remoteBranches: new Set() },
+      [other],
+    )
+    assert.equal(r.identicalTo, undefined)
+    assert.equal(r.classification, 'RECOVERABLE_VALUE')
+  })
+
+  it('falls back to the slug in the name when no twin exists', () => {
+    const base = path.join(root, `cx-${Math.random().toString(36).slice(2)}`)
+    const out = mk(path.join(base, 'outputs'), 'repo--named-thing.patch', 'BODY')
+    const r = classifyCodexOutput(
+      out,
+      { mainSha: 'HEAD', localDefaultSha: null, liveTaskSlugs: [], remoteBranches: new Set(['chatgpt/named-thing-0812']) },
+      [],
+    )
+    assert.equal(r.classification, 'ALREADY_PRESENT')
+    assert.deepEqual(r.preservedIn, ['origin/chatgpt/named-thing-0812'])
+  })
+
+  it('calls an output that nothing carries the only copy', () => {
+    const base = path.join(root, `cx-${Math.random().toString(36).slice(2)}`)
+    const out = mk(path.join(base, 'outputs'), 'repo--orphaned.patch', 'BODY')
+    const r = classifyCodexOutput(
+      out,
+      { mainSha: 'HEAD', localDefaultSha: null, liveTaskSlugs: [], remoteBranches: new Set() },
+      [],
+    )
+    assert.equal(r.classification, 'RECOVERABLE_VALUE')
+    assert.match(r.reason, /only copy/)
+    assert.equal(typeof r.sha256, 'string')
+  })
+
+  it('flags an output the snapshot names but disk no longer has', () => {
+    const r = classifyCodexOutput(path.join(root, 'nope', 'gone.patch'), { remoteBranches: new Set() }, [])
+    assert.equal(r.classification, 'CONFLICTED_NEEDS_FOCUSED_TASK')
   })
 })

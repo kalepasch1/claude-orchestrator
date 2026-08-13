@@ -283,3 +283,47 @@ were not per-task workarounds; they were the missing kinds, and the set now cove
 what the audit actually produces.
 
 Nothing was popped, dropped, reset, cleaned or moved.
+
+---
+
+# Fingerprint `e0945946bd0d` — the same patch, twice, under two names
+
+Evidence: a `dirty_worktree` at the orchestrator root, the worktree at
+`Codex/2026-08-07/cons/work/orchestrator-session-fabric-current`, and a
+`codex_output_artifact` at
+`Codex/2026-08-07/cons/outputs/claude-orchestrator--operator-output-truth-session-fabric-20260812.patch`.
+
+**1350 items, zero UNKNOWN.**
+
+## Why a Codex output is not just another bridge artifact
+
+Codex writes its patch into its own session `outputs/` directory as
+`<repo>--<slug>.patch`. Only later does the bridge copy it into the dropbox, rename
+it with a timestamp prefix, apply it, and record where it landed in a
+`.result.txt`. The same bytes end up in two places under two names, and **only the
+copy in the dropbox knows what happened to it.**
+
+Classified on its own, the Codex-side file looks like an unreferenced patch in a
+scratch directory. That reads either as "the only copy" — needless recovery work on
+code that already shipped — or as "some leftover", which is how a real only-copy gets
+dropped. Neither is acceptable, and the filename cannot tell you which it is.
+
+Matching across the rename by name would be guesswork. **Matching by content hash is
+not.** If the bytes are identical it is the same patch, and whatever the bridge did
+with one it did with both.
+
+Here they are identical — `sha256 889cdfd16140` — so the Codex output inherits its
+twin's verdict: ALREADY_PRESENT on
+`origin/chatgpt/operator-output-truth-session-fabric-20260812-08120203`. Neither copy
+was deleted; both are kept as provenance.
+
+When there is no twin, the classifier falls back to the slug in the filename, and
+failing that says plainly that the patch was written and nothing carried it — which
+is the case worth waking someone for.
+
+## Tests
+
+`scripts/reconcile-evidence.test.mjs` — 33 cases, `node --test`. The five new ones
+cover the identical twin across the rename, bytes that differ (no twin claimed),
+the slug fallback, the orphaned output, and a path the snapshot names that disk no
+longer has.
