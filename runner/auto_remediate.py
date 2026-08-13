@@ -518,12 +518,44 @@ def _decompose(task, note):
         return None
 
 
+def _auto_create_child_branches(task, child_slugs):
+    """Missing-branch auto-creator (slice 3): after a decomposition completes, pre-create
+    each child's agent/<slug> branch via git_auto_branch so coders never claim a sub-task
+    whose branch is missing. Branch names derive from the decomposition result (the child
+    slugs _spawn_subtasks actually created). Fail-soft: never blocks the decomposition path.
+    Returns the number of branches ensured."""
+    if not child_slugs:
+        return 0
+    try:
+        import git_auto_branch
+        rows = db.select("projects", {"select": "repo_path,default_base",
+                                      "id": f"eq.{task.get('project_id')}", "limit": "1"}) or []
+        repo = (rows[0].get("repo_path") or "") if rows else ""
+        if not repo or not os.path.isdir(repo):
+            return 0
+        base = task.get("base_branch") or (rows[0].get("default_base") or "") or "master"
+        made = 0
+        for child in child_slugs:
+            try:
+                branch, _final = git_auto_branch.ensure_branch_safe(repo, child, base=base)
+                if branch:
+                    made += 1
+            except Exception:
+                continue
+        return made
+    except Exception:
+        return 0
+
+
 def _spawn_subtasks(task, subs, return_ids=False):
     """Create child tasks for a decomposed parent. Returns count actually created.
-    FIXED 2026-07-11: quality gate rejects sub-tasks < 80 chars or missing action verbs."""
+    FIXED 2026-07-11: quality gate rejects sub-tasks < 80 chars or missing action verbs.
+    Slice-3 (missing-branch auto-creator): each spawned child also gets its agent/<slug>
+    branch pre-created so the child never starts against a missing branch."""
     ACTION_WORDS = re.compile(r"\b(add|create|implement|fix|update|write|modify|remove|refactor|replace|extract|move|rename|delete|configure|set up|integrate|convert|wrap|define|build|test|validate|ensure|return|handle|parse|send|fetch|call|check)\b", re.I)
     made = 0
     child_ids = []
+    child_slugs = []
     for i, s in enumerate(subs):
         prompt_text = str(s.get("prompt") or "").strip()
         if len(prompt_text) < 80 or not ACTION_WORDS.search(prompt_text):
@@ -539,10 +571,13 @@ def _spawn_subtasks(task, subs, return_ids=False):
                 "prompt": prompt_text,
                 "note": f"auto-decomposed from {task['slug']}"})
             made += 1
+            child_slugs.append(child)
             if return_ids and isinstance(row, list) and row:
                 child_ids.append(row[0].get("id", ""))
         except Exception:
             pass
+    # Decomposition complete -> auto-create each child's branch (fail-soft).
+    _auto_create_child_branches(task, child_slugs)
     if return_ids:
         return made, child_ids
     return made
