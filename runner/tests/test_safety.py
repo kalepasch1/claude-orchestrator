@@ -13,6 +13,26 @@ F) Slack edge functions must fail-secure (return 503) when required env-var secr
 import os, sys, tempfile, subprocess, json, unittest, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+_RUNNER_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def load_runner_module():
+    """Load runner/runner.py by PATH.
+
+    A bare `import runner` is ambiguous here: the repo root is also on sys.path and
+    `runner/` is a package there, so under pytest the name resolves to the package and
+    every attribute lookup fails with a misleading
+    "module 'runner' has no attribute ...". That is what kept
+    TestCostCapture::test_runner_record_writes_real_cost red — the test was fine, the
+    import was wrong.
+    """
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "runner_module_under_test", os.path.join(_RUNNER_DIR, "runner.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 
 # ── A: resource_governor safety ───────────────────────────────────────────────
 
@@ -408,7 +428,8 @@ class TestCostCapture(unittest.TestCase):
         """record() must write the passed cost to outcomes.usd, not the regex fallback."""
         import time
         sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        import runner, db
+        import db
+        runner = load_runner_module()
 
         outcomes_rows = []
         orig_insert = db.insert
@@ -702,6 +723,119 @@ class TestSlackEdgeFunctionFailSecure(unittest.TestCase):
                          "verify() must not bypass signature check when SIGNING is unset")
         self.assertIn("if (!SIGNING) return false", src,
                       "verify() must return false when SIGNING is unset")
+
+
+# ── G: prompt-delivery guard ──────────────────────────────────────────────────
+
+class TestPromptDeliveryGuard(unittest.TestCase):
+    """runner.guard_check must NEVER let a no-work session be scored as a real run.
+
+    The prompt-delivery bug: the CLI opens without instructions, the model answers
+    "I'm ready to help. What would you like to work on?", the session ends with an empty
+    diff, and the attempt is charged as a completed run. Seven remediation cycles went by
+    on a note that said only "agent run failed" — because nothing recorded WHICH condition
+    fired. These guards keep the verdict codes stable and the retry state observable.
+    """
+
+    def setUp(self):
+        # Loaded by path, not by name: the repo root is also on sys.path and `runner/` is a
+        # package there, so a bare `import runner` resolves to the package under pytest and
+        # silently yields a module with none of these symbols.
+        self.runner = load_runner_module()
+
+    def test_default_response_is_caught_and_flagged_as_conflict(self):
+        verdict = self.runner.guard_check(
+            "I'm ready to help. What would you like to work on?", diff_files=[])
+        self.assertFalse(verdict["ok"])
+        self.assertEqual(verdict["reason"], self.runner.GUARD_DEFAULT_RESPONSE)
+        # The spec's 409: the runner has no HTTP surface, so the conflict is carried as a
+        # machine-readable status on the verdict for any transport that fronts it.
+        self.assertEqual(verdict["status"], 409)
+
+    def test_empty_diff_with_real_output_is_caught(self):
+        verdict = self.runner.guard_check("I refactored the parser and it looks good.",
+                                          diff_files=[])
+        self.assertFalse(verdict["ok"])
+        self.assertEqual(verdict["reason"], self.runner.GUARD_EMPTY_DIFF)
+
+    def test_empty_output_is_caught(self):
+        for blank in ("", "   \n\t "):
+            with self.subTest(output=repr(blank)):
+                self.assertEqual(self.runner.guard_check(blank)["reason"],
+                                 self.runner.GUARD_EMPTY_OUTPUT)
+
+    def test_real_work_passes(self):
+        verdict = self.runner.guard_check("Edited parser.py and added a test.",
+                                          diff_files=["runner/parser.py"])
+        self.assertTrue(verdict["ok"])
+        self.assertIsNone(verdict["status"])
+
+    def test_unmeasured_diff_is_not_treated_as_empty(self):
+        # diff_files=None means "not measured". Conflating that with "no changes" would
+        # retry every healthy run whose diff the caller had not collected yet.
+        self.assertTrue(self.runner.guard_check("Edited parser.py.")["ok"])
+
+    def test_guard_sets_RETRY_not_RUNNING(self):
+        """A trip must be visible to the queue.
+
+        Leaving the task RUNNING and looping in-process is what made repeated trips look
+        like one long healthy run: nothing counted them and the retry promoter never saw
+        them.
+        """
+        seen = {}
+
+        def fake_set_state(task_id, **kw):
+            seen.update(kw)
+
+        original_set_state = self.runner.set_state
+        original_regression = self.runner.regression
+        self.runner.set_state = fake_set_state
+
+        class _Recorder:
+            def __init__(self):
+                self.calls = []
+
+            def record(self, *args):
+                self.calls.append(args)
+
+        recorder = _Recorder()
+        self.runner.regression = recorder
+        try:
+            verdict = self.runner.guard_check("I'm ready to help.", diff_files=[])
+            self.runner.record_guard_trigger(
+                {"id": "t1", "prompt": "do the thing", "project_name": "beethoven"},
+                "slug-1", "build", verdict)
+        finally:
+            self.runner.set_state = original_set_state
+            self.runner.regression = original_regression
+
+        self.assertEqual(seen.get("state"), "RETRY")
+        self.assertIn(self.runner.GUARD_DEFAULT_RESPONSE, seen.get("note", ""))
+        # The trigger condition must reach the regression log, not just the note.
+        self.assertTrue(recorder.calls, "guard trip was not recorded for regression analysis")
+        self.assertIn(self.runner.GUARD_DEFAULT_RESPONSE, recorder.calls[0])
+
+    def test_recording_failure_does_not_block_the_retry(self):
+        """Fail-soft: a broken regression sink must not strand the task in RUNNING."""
+        seen = {}
+
+        class _Boom:
+            def record(self, *_args):
+                raise RuntimeError("sink down")
+
+        original_set_state = self.runner.set_state
+        original_regression = self.runner.regression
+        self.runner.set_state = lambda task_id, **kw: seen.update(kw)
+        self.runner.regression = _Boom()
+        try:
+            self.runner.record_guard_trigger(
+                {"id": "t2", "prompt": "p"}, "slug-2", "build",
+                self.runner.guard_check("", diff_files=[]))
+        finally:
+            self.runner.set_state = original_set_state
+            self.runner.regression = original_regression
+
+        self.assertEqual(seen.get("state"), "RETRY")
 
 
 if __name__ == "__main__":
