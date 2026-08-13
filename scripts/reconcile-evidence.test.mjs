@@ -17,6 +17,7 @@ import { after, before, describe, it } from 'node:test'
 
 import {
   CLASSIFICATIONS,
+  buildPreservationPlan,
   classifyBridgeArtifact,
   classifyExternalWorktree,
   collectFlag,
@@ -151,5 +152,60 @@ describe('enumerateBridgeArtifacts', () => {
   it('returns empty for a dropbox that is not configured or not there', () => {
     assert.deepEqual(enumerateBridgeArtifacts(null), [])
     assert.deepEqual(enumerateBridgeArtifacts(path.join(root, 'no-dropbox')), [])
+  })
+})
+
+describe('buildPreservationPlan', () => {
+  const branch = (name, over = {}) => ({
+    kind: 'branch',
+    ref: `refs/heads/${name}`,
+    sha: 'a'.repeat(40),
+    classification: 'RECOVERABLE_VALUE',
+    remotePreserved: false,
+    uniqueCommits: 3,
+    ...over,
+  })
+
+  it('plans a push for every recoverable tip with no remote copy', () => {
+    const { script, atRisk } = buildPreservationPlan([branch('agent/one'), branch('agent/two')])
+    assert.equal(atRisk, 2)
+    assert.match(script, /push a{40} refs\/preserved\/agent\/one/)
+    assert.match(script, /push a{40} refs\/preserved\/agent\/two/)
+  })
+
+  it('never plans a push into refs/heads — a preserved ref must not become a branch', () => {
+    const { script } = buildPreservationPlan([branch('agent/one')])
+    assert.ok(!/refs\/heads\//.test(script.split('\n').filter((l) => l.startsWith('push ')).join('\n')))
+  })
+
+  it('defaults to a dry run so the operator sees the plan first', () => {
+    const { script } = buildPreservationPlan([branch('agent/one')])
+    assert.match(script, /APPLY="\$\{APPLY:-0\}"/)
+    assert.match(script, /would push/)
+  })
+
+  it('skips tips a remote already preserves', () => {
+    const { atRisk } = buildPreservationPlan([branch('agent/safe', { remotePreserved: true })])
+    assert.equal(atRisk, 0)
+  })
+
+  it('skips anything that is not a recoverable branch', () => {
+    const { atRisk } = buildPreservationPlan([
+      branch('agent/present', { classification: 'ALREADY_PRESENT' }),
+      branch('agent/no-sha', { sha: null }),
+      { ...branch('agent/rescue'), kind: 'rescue_ref' },
+    ])
+    assert.equal(atRisk, 0)
+  })
+
+  it('produces a runnable no-op script when nothing is at risk', () => {
+    const { script } = buildPreservationPlan([])
+    assert.match(script, /nothing at risk/)
+    assert.match(script, /^#!\/usr\/bin\/env bash/)
+  })
+
+  it('honours an alternate namespace', () => {
+    const { script } = buildPreservationPlan([branch('agent/one')], { namespace: 'refs/attic' })
+    assert.match(script, /refs\/attic\/agent\/one/)
   })
 })

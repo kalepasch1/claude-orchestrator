@@ -162,3 +162,52 @@ surviving ref, the live-task deferral, both dropbox buckets, and the flag parser
 The additions read: `existsSync`, `readFileSync`, `readdirSync`, and `for-each-ref`
 through the same allowlisted `runGit`. No zip is extracted, no worktree is
 re-registered, no ref is written. **Nothing was popped, dropped, reset or moved.**
+
+---
+
+# Fingerprint `6c8911116873` — the number that mattered, made actionable
+
+Two evidence items.
+
+**`dirty_worktree` at `/Users/kpasch/Documents/beethoven/claude-orchestrator`** —
+already integrated. The same source, at the same `changes_digest`
+(`7e991556…`), was reconciled under fingerprint `48ada8033590` and its 206 live
+items were committed to `agent/chatgpt-local-reconcile-beethoven-48ada8033590`.
+Classified **ACTIVE_IN_ANOTHER_TASK**; doing it again is exactly the duplication
+the coordination rule forbids.
+
+**`local_only_branch_tips` — 22 in the snapshot, 30 live.** These are branch tips
+with no counterpart on origin. If this machine dies, they die.
+
+## Why a report was not enough
+
+Every previous run ended by printing *"N item(s) have NO remote copy"* — 308 for
+`0481d68df58a`, 383 for `10d6c3591091`. That line has been true and unacted-on for
+every fingerprint so far. A count of what you are about to lose is an obituary, not
+a recovery.
+
+`--preserve-plan <path>` now writes the remedy: an idempotent shell script that
+pushes each at-risk tip to `refs/preserved/<name>` on origin.
+
+## Why `refs/preserved/` and not a branch
+
+`refs/preserved/*` is not under `refs/heads/*`, so these are **not branches**. The
+merge train, branch protection, CI triggers and Vercel's Git integration all
+enumerate branches, and none of them will ever see these refs. Pushing 30 recovered
+tips as real branches would hand the merge train 30 things to integrate and could
+trip a production deploy — the cure would be worse than the risk. As preserved refs
+they survive a dead disk and change nothing else.
+
+The generated script is **dry-run by default** (`APPLY=1` to push), for the same
+reason the classifier is read-only: the operator sees the plan before it runs. It is
+idempotent — re-running pushes the same sha to the same ref, which is a no-op.
+
+The plan for this fingerprint is committed alongside the ledger as
+`preserve-local-only-6c8911116873.sh`. Nothing in this task pushed it.
+
+## Tests
+
+`scripts/reconcile-evidence.test.mjs` — now 22 cases, `node --test`. The seven new
+ones pin the behaviour that matters: a preserved ref is never planned into
+`refs/heads/`, tips a remote already holds are skipped, and an empty plan is still a
+runnable script rather than a broken one.
