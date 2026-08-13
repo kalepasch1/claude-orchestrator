@@ -1,12 +1,13 @@
 {
   "name": "@spine/contracts",
   "version": "0.1.0",
-  "description": "Contract infrastructure for the compounding code-generation platform (Wave C spine). Declaration-only: interfaces and function signatures for compound creation, wave triggering and event processing. Carries no runtime implementation and no runtime dependencies.",
+  "description": "Contract and entity infrastructure for the compounding code-generation platform (Wave C spine). Declaration-only: `./contracts` carries the operation surface a caller depends on, `./types` the stored entities behind it. No runtime implementation and no runtime dependencies.",
   "type": "module",
   "main": "./shared/contracts/index.ts",
   "exports": {
     ".": "./shared/contracts/index.ts",
-    "./contracts": "./shared/contracts/index.ts"
+    "./contracts": "./shared/contracts/index.ts",
+    "./types": "./shared/types/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
