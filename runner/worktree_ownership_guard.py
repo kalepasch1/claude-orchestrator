@@ -193,6 +193,90 @@ def _prune_rescue_refs(path, keep=None, max_age_days=None):
     return pruned
 
 
+def _all_rescue_refs(repo):
+    """Every ref under refs/orch-rescue in `repo`, newest first. Unscoped.
+
+    _rescue_refs() deliberately filters to one worktree's name. That scoping is
+    what made the backlog immortal — see reap_rescue_refs.
+    """
+    rc, out, _ = _git(repo, "for-each-ref", "--sort=-refname",
+                      "--format=%(refname)%09%(objectname)", RESCUE_PREFIX)
+    if rc != 0:
+        return []
+    refs = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) == 2 and parts[0].startswith(RESCUE_PREFIX):
+            refs.append({"ref": parts[0], "sha": parts[1]})
+    return refs
+
+
+def _is_discharged(repo, sha, base):
+    """True when `sha` is already an ancestor of `base` — its content shipped."""
+    if not sha or not base:
+        return False
+    rc, out, _ = _git(repo, "rev-list", "--count", "%s..%s" % (base, sha))
+    return rc == 0 and out.strip() == "0"
+
+
+def reap_rescue_refs(repo, base="origin/master", dry_run=True, limit=0):
+    """Repo-wide reaper for refs/orch-rescue. Returns a report dict. Fail-soft.
+
+    MEASURED 2026-08-12 in apparently: 209 refs, 191 unique SHAs, and 133 that
+    had never been classified by anything. The cause is two properties of the
+    existing pruner, both of which look reasonable alone:
+
+      1. _prune_rescue_refs is only ever called from rescue(), so a worktree's
+         refs are revisited ONLY when that same worktree is rescued again.
+      2. _rescue_refs scopes by worktree name.
+
+    Agent worktrees are removed after push (the documented convention). So the
+    moment a worktree goes away, its rescue refs become unreachable by the only
+    code that could retire them: nothing reaps them, ever. The 14-day age floor
+    then hides the leak, because the sweep's arrival rate across ~231 worktrees
+    far exceeds a 14-day expiry.
+
+    This reaps repo-wide, including orphans, and — critically — only retires a
+    ref whose commit is ALREADY AN ANCESTOR of `base`. A discharged ref pins
+    objects that master already contains, so deleting it loses nothing. A ref
+    carrying content not in base is NEVER touched, whatever its age: a rescue
+    ref is the last copy of that work, and this guard destroying work is the one
+    outcome it cannot be allowed to have.
+
+    dry_run defaults to True. Deleting refs is opt-in, by design.
+    """
+    report = {"repo": repo, "base": base, "dry_run": bool(dry_run),
+              "scanned": 0, "discharged": 0, "retained": 0, "deleted": 0,
+              "errors": 0, "refs_deleted": []}
+    try:
+        refs = _all_rescue_refs(repo)
+    except Exception:
+        report["errors"] += 1
+        return report
+    for entry in refs:
+        report["scanned"] += 1
+        try:
+            if not _is_discharged(repo, entry["sha"], base):
+                report["retained"] += 1
+                continue
+            report["discharged"] += 1
+            if dry_run:
+                continue
+            if limit and report["deleted"] >= limit:
+                continue
+            if _git(repo, "update-ref", "-d", entry["ref"], entry["sha"])[0] == 0:
+                report["deleted"] += 1
+                report["refs_deleted"].append(entry["ref"])
+            else:
+                report["errors"] += 1
+        except Exception:
+            report["errors"] += 1
+    _log_event({"event": "reap", "repo": repo, "base": base,
+                "scanned": report["scanned"], "discharged": report["discharged"],
+                "deleted": report["deleted"], "dry_run": bool(dry_run)})
+    return report
+
+
 def rescue(path, reason="pre-destructive"):
     """Capture the worktree's uncommitted state into refs/orch-rescue/<ts>-<name>.
 
