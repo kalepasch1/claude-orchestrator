@@ -526,3 +526,57 @@ class TestTemplateIDsConstant(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBanditConverges(unittest.TestCase):
+    """The property the +inf seeding destroyed: recorded reward must be able to win.
+
+    Before this fix, select_template seeded every id in TEMPLATE_IDS at n_trials=0.
+    A zero-trial arm scores +inf and is never written to the database by
+    select_template (the spec is explicit that TEMPLATE_IDS are not auto-inserted),
+    so the same untried constant outranked real history on every single call. A
+    bandit that can explore but never exploit is not a bandit — it is a round-robin
+    with extra steps.
+    """
+
+    def setUp(self):
+        prompt_evolver.invalidate()
+
+    def tearDown(self):
+        prompt_evolver.invalidate()
+
+    def test_a_proven_arm_beats_an_unrecorded_constant(self):
+        rows = [{"kind": "k", "template_id": "base",
+                 "total_reward": 40.0, "n_trials": 50}]
+        with patch('runner.db.select', return_value=rows):
+            _, chosen = prompt_evolver.select_template("k", "p")
+        self.assertEqual(chosen, "base")
+
+    def test_the_better_of_two_recorded_arms_wins_once_both_are_explored(self):
+        rows = [{"kind": "k", "template_id": "base",
+                 "total_reward": 5.0, "n_trials": 100},
+                {"kind": "k", "template_id": "edit_first",
+                 "total_reward": 90.0, "n_trials": 100}]
+        with patch('runner.db.select', return_value=rows):
+            _, chosen = prompt_evolver.select_template("k", "p")
+        self.assertEqual(chosen, "edit_first")
+
+    def test_a_genuinely_untried_recorded_arm_is_still_explored_first(self):
+        # exploration is preserved for arms that actually exist in the table
+        rows = [{"kind": "k", "template_id": "base",
+                 "total_reward": 90.0, "n_trials": 100},
+                {"kind": "k", "template_id": "chain_of_thought",
+                 "total_reward": 0.0, "n_trials": 0}]
+        with patch('runner.db.select', return_value=rows):
+            _, chosen = prompt_evolver.select_template("k", "p")
+        self.assertEqual(chosen, "chain_of_thought")
+
+    def test_selection_is_stable_across_repeated_calls(self):
+        rows = [{"kind": "k", "template_id": "base",
+                 "total_reward": 40.0, "n_trials": 50}]
+        picks = set()
+        for _ in range(5):
+            prompt_evolver.invalidate()
+            with patch('runner.db.select', return_value=rows):
+                picks.add(prompt_evolver.select_template("k", "p")[1])
+        self.assertEqual(picks, {"base"})

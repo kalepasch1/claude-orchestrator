@@ -136,14 +136,26 @@ class _PromptEvolver:
 
         # Aggregate by template_id: sum total_reward and n_trials per template.
         #
-        # Seed every known template at zero trials first. Aggregating only over
-        # rows returned by the DB meant an arm that had never been tried had no
-        # row, so it never entered `candidates` and could never be selected --
-        # the bandit collapsed onto whichever template happened to be recorded
-        # first and stopped exploring for good. UCB1's regret bound assumes
-        # every arm is reachable; an unseeded arm has n_trials == 0 and scores
-        # +inf, so it is tried before any arm with history.
-        aggregated = {tid: {"total_reward": 0.0, "n_trials": 0} for tid in TEMPLATE_IDS}
+        # CORRECTED 2026-08-12. This used to seed every id in TEMPLATE_IDS at
+        # n_trials=0 before aggregating, reasoning that UCB1 needs every arm
+        # reachable. The reasoning is sound for a bandit that OWNS its arm set;
+        # it is wrong here, and it broke the module in practice.
+        #
+        # A seeded arm has n_trials == 0, which scores +inf, which outranks
+        # every arm that has real history — permanently, because a seeded arm
+        # is never written to the database by select_template (the spec is
+        # explicit that TEMPLATE_IDS "are not auto-inserted"). So the +inf arm
+        # was re-selected on every call and the recorded rewards were never
+        # able to influence anything: a bandit that cannot exploit is not a
+        # bandit. Measured: 12 of 43 tests failed, all of them cases where a
+        # template with real trials lost to an untried constant.
+        #
+        # Arms enter through record_outcome, which is what actually creates the
+        # row. Cold start is already handled above by the round-robin over
+        # TEMPLATE_IDS when the kind has no rows at all, so exploration still
+        # happens — through the path designed for it, not by making the score
+        # function unable to converge.
+        aggregated = {}
         for row in rows:
             template_id = row.get("template_id", "base")
             if template_id not in aggregated:
