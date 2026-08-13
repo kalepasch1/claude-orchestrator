@@ -39,7 +39,12 @@ _EMAIL_VARS = ("ORCH_GIT_USER_EMAIL", "FLEET_GIT_AUTHOR_EMAIL")
 
 # Author names seen in this repo's history that are NOT the canonical one. Listed so the audit
 # can name them specifically rather than reporting an anonymous count.
-KNOWN_DRIFT_NAMES = ("Kale Aaron Pasch", "madeus-agent", "claude", "Claude", "agent")
+# "Kale Pasch" is the current top offender, not a historical one: it is the name baked into
+# the cowork-executor skill's commit command, so every executor run adds more. It was 91 of
+# the last 400 commits on master when this list was updated, against 309 canonical. Naming it
+# here is what lets `audit_repo()` report it as known drift instead of an anonymous author.
+KNOWN_DRIFT_NAMES = ("Kale Pasch", "Kale Aaron Pasch", "madeus-agent",
+                     "claude", "Claude", "agent")
 # Emails that must never author a commit here: Vercel BLOCKS the resulting production deploy.
 BLOCKED_EMAILS = ("mandyjustinepasch@gmail.com", "kale@heretomorrow.us", "noreply@github.com")
 
