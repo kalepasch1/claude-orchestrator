@@ -17,6 +17,7 @@ import os
 import shlex
 import subprocess
 import sys
+import time
 
 RUNNER_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, RUNNER_DIR)
@@ -173,6 +174,70 @@ def _tree_is_exactly(repo, commit):
     return head == commit and dirty == ""
 
 
+#: The re-run must not measure the tail of the run before it.
+#:
+#: The old code re-ran immediately. On 2026-08-13 that made the re-run useless:
+#: three engine suites (agentic-10x, auto-remediation, licensing-autopilot) hit
+#: vitest's 5000ms default timeout on both attempts, and the same tree, same
+#: command, same commit came back 1018/1018 green when the suite was started on
+#: a quiet machine. Four control runs isolated the variable — piped vs inherited
+#: stdout and cleaned vs ambient env all failed identically, so it was neither —
+#: and a quiet-start run through the identical piped invocation passed. The
+#: machine had just finished a suite; ~18 vitest forks were still winding down.
+#:
+#: So: before the second attempt, wait for the 1-minute load average to come
+#: back under LOAD_PER_CPU x cores, bounded. A gate that re-runs into its own
+#: exhaust cannot tell flake from failure, which is the one job it has here.
+#: 0.5, not 1.0. The first version used 1.0 and was measured too loose within the
+#: hour: on an 18-core box it released the re-run at load 17.7 against a
+#: threshold of 18.0 — "settled" by arithmetic, still saturated in fact. Every
+#: green full-suite run that day was at load ~8; every red one at 16-26. One
+#: runnable thread per two cores leaves room for the timing-sensitive tests that
+#: started this, and the bounded wait below means a busy box still gets to push.
+QUIET_LOAD_PER_CPU = float(os.environ.get("ORCH_QUIET_LOAD_PER_CPU", "0.5"))
+QUIET_MAX_WAIT_S = int(os.environ.get("ORCH_QUIET_MAX_WAIT_S", "180"))
+
+
+def _wait_for_quiet_machine(max_wait=None, per_cpu=None):
+    """Block until the box is idle enough for a timing-sensitive suite, or give up."""
+    max_wait = QUIET_MAX_WAIT_S if max_wait is None else max_wait
+    per_cpu = QUIET_LOAD_PER_CPU if per_cpu is None else per_cpu
+    # ORCH_QUIET_MAX_WAIT_S=0 turns the cool-down off. This exists because the
+    # guard's own test suite deadlocked on it: test_red_suite_blocks_the_push
+    # drives verify_tests through a genuinely red run, which reached the real
+    # cool-down and sat there for the full budget on a machine that was busy —
+    # running that very test suite. A wait that can block its own tests will be
+    # deleted by whoever hits it at 3am, so it has an off switch and the tests
+    # use it.
+    if max_wait <= 0:
+        return None
+    try:
+        cpus = os.cpu_count() or 1
+        threshold = cpus * per_cpu
+    except Exception:
+        return None  # never let the cool-down itself break a push
+    deadline = time.monotonic() + max_wait
+    first = None
+    while True:
+        try:
+            load = os.getloadavg()[0]
+        except (OSError, AttributeError):
+            return None  # not available on this platform; proceed immediately
+        if first is None:
+            first = load
+        if load <= threshold:
+            if first > threshold:
+                print(f"production_push_guard: machine settled ({first:.1f} -> {load:.1f}, "
+                      f"threshold {threshold:.1f}); re-running now", file=sys.stderr)
+            return load
+        if time.monotonic() >= deadline:
+            print(f"production_push_guard: load still {load:.1f} (threshold {threshold:.1f}) after "
+                  f"{max_wait}s — re-running anyway, but a red result here may be the machine, "
+                  "not the code.", file=sys.stderr)
+            return load
+        time.sleep(5)
+
+
 def _run_suite(repo, command):
     return subprocess.run(command, cwd=repo, shell=True, env=_clean_git_env(),
                           capture_output=True, text=True,
@@ -217,6 +282,7 @@ def verify_tests(repo, commit):
     if proc.returncode != 0:
         print("production_push_guard: suite red — re-running once to separate flake from failure",
               file=sys.stderr)
+        _wait_for_quiet_machine()
         second = _run_suite(repo, command)
         if second.returncode == 0:
             try:

@@ -8,6 +8,7 @@ through because each one compiled. The build gate was doing its job; it was just
 never asked the second question.
 """
 import os, sys, json, subprocess, tempfile
+import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("SUPABASE_URL", "http://localhost")
 os.environ.setdefault("SUPABASE_SERVICE_KEY", "test")
@@ -261,6 +262,19 @@ def test_the_block_message_names_the_switch_that_would_bypass_it():
     assert "Set ORCH_ALLOW_RED_TESTS=1 to ship anyway" in src
 
 
+
+# ── the cool-down must not block the suite that tests it ─────────────────────
+#
+# test_red_suite_blocks_the_push drives verify_tests through a genuinely red
+# run, which reaches the real _wait_for_quiet_machine and waits for the box to
+# settle — on a box that is busy running this very suite. It deadlocked for the
+# full 180s budget on first contact. Off by default here; the cool-down's own
+# tests pass an explicit max_wait and are unaffected.
+@pytest.fixture(autouse=True)
+def _no_cooldown_by_default(monkeypatch):
+    monkeypatch.setattr(guard, "QUIET_MAX_WAIT_S", 0)
+
+
 # ── content guard: refuse on what the push CONTAINS ──────────────────────────
 
 def _clean_env(author=("dev", "dev@example.com")):
@@ -410,3 +424,126 @@ if __name__ == "__main__":
                 print(f"  ERROR {name}: {type(err).__name__}: {err}")
     print(f"\n{'FAILED' if fails else 'OK'} — {fails} failure(s)")
     raise SystemExit(1 if fails else 0)
+
+
+# ── the re-run must not measure the tail of the run before it ────────────────
+
+
+def test_returns_immediately_when_the_machine_is_already_quiet(monkeypatch):
+    calls = []
+    monkeypatch.setattr(guard.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(guard.os, "getloadavg", lambda: (1.0, 1.0, 1.0))
+    monkeypatch.setattr(guard.time, "sleep", lambda s: calls.append(s))
+    assert guard._wait_for_quiet_machine(max_wait=60, per_cpu=1.0) == 1.0
+    assert calls == [], "slept on an idle machine"
+
+
+def test_waits_while_the_machine_is_hot_then_proceeds(monkeypatch):
+    """The exact 2026-08-13 shape: load 31 right after a suite, settling to 8."""
+    loads = iter([31.2, 24.0, 16.8, 7.9, 7.9])
+    slept = []
+    monkeypatch.setattr(guard.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(guard.os, "getloadavg", lambda: (next(loads), 0, 0))
+    monkeypatch.setattr(guard.time, "sleep", lambda s: slept.append(s))
+    assert guard._wait_for_quiet_machine(max_wait=600, per_cpu=1.0) == 7.9
+    assert len(slept) == 3, f"expected three waits, got {slept}"
+
+
+def test_gives_up_rather_than_blocking_a_push_forever(monkeypatch):
+    """A permanently busy box must still be able to push."""
+    ticks = iter([0, 10, 20, 30, 40, 50, 60, 70])
+    monkeypatch.setattr(guard.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(guard.os, "getloadavg", lambda: (99.0, 0, 0))
+    monkeypatch.setattr(guard.time, "sleep", lambda s: None)
+    monkeypatch.setattr(guard.time, "monotonic", lambda: next(ticks))
+    assert guard._wait_for_quiet_machine(max_wait=30, per_cpu=1.0) == 99.0
+
+
+def test_a_platform_without_loadavg_does_not_break_the_push(monkeypatch):
+    def boom():
+        raise OSError("not available")
+    monkeypatch.setattr(guard.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr(guard.os, "getloadavg", boom)
+    assert guard._wait_for_quiet_machine(max_wait=30, per_cpu=1.0) is None
+
+
+def test_the_threshold_scales_with_cores(monkeypatch):
+    """Load 12 is hot on 8 cores and idle on 18 — the same number, opposite verdicts."""
+    monkeypatch.setattr(guard.time, "sleep", lambda s: None)
+    monkeypatch.setattr(guard.os, "getloadavg", lambda: (12.0, 0, 0))
+    ticks = iter(range(0, 1000, 10))
+    monkeypatch.setattr(guard.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(guard.os, "cpu_count", lambda: 18)
+    assert guard._wait_for_quiet_machine(max_wait=30, per_cpu=1.0) == 12.0  # under 18 -> immediate
+
+    ticks2 = iter(range(0, 1000, 10))
+    monkeypatch.setattr(guard.time, "monotonic", lambda: next(ticks2))
+    monkeypatch.setattr(guard.os, "cpu_count", lambda: 8)
+    # over 8 -> waits until the deadline, then proceeds anyway
+    assert guard._wait_for_quiet_machine(max_wait=30, per_cpu=1.0) == 12.0
+
+
+def test_verify_tests_cools_down_between_the_two_attempts(monkeypatch):
+    """The whole point: the second run must not start while the first is still cooling."""
+    order = []
+    monkeypatch.setattr(guard, "detect_test_cmd", lambda repo: "npm test")
+    monkeypatch.setattr(guard.proof_graph, "reusable_verification",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(guard.proof_graph, "record_verification",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(guard, "_tree_is_exactly", lambda repo, commit: True)
+    monkeypatch.setattr(guard, "_wait_for_quiet_machine", lambda *a, **k: order.append("cooldown"))
+
+    class R:
+        def __init__(self, rc):
+            self.returncode, self.stdout, self.stderr = rc, "", ""
+
+    runs = iter([R(1), R(0)])
+
+    def fake_run(repo, command):
+        order.append("run")
+        return next(runs)
+
+    monkeypatch.setattr(guard, "_run_suite", fake_run)
+    ok, log = guard.verify_tests("/repo", "deadbeefcafe")
+    assert ok is True, log
+    assert order == ["run", "cooldown", "run"], order
+    assert "ON RE-RUN" in log
+
+
+def test_a_green_first_run_never_pays_for_the_cooldown(monkeypatch):
+    order = []
+    monkeypatch.setattr(guard, "detect_test_cmd", lambda repo: "npm test")
+    monkeypatch.setattr(guard.proof_graph, "reusable_verification", lambda *a, **k: None)
+    monkeypatch.setattr(guard.proof_graph, "record_verification", lambda *a, **k: None)
+    monkeypatch.setattr(guard, "_tree_is_exactly", lambda repo, commit: True)
+    monkeypatch.setattr(guard, "_wait_for_quiet_machine", lambda *a, **k: order.append("cooldown"))
+
+    class R:
+        def __init__(self, rc):
+            self.returncode, self.stdout, self.stderr = rc, "", ""
+
+    monkeypatch.setattr(guard, "_run_suite", lambda repo, command: (order.append("run"), R(0))[1])
+    ok, _ = guard.verify_tests("/repo", "deadbeefcafe")
+    assert ok is True
+    assert order == ["run"], order
+
+
+def test_the_default_threshold_is_half_a_thread_per_core():
+    """1.0 released a re-run at load 17.7 on 18 cores, which is not settled."""
+    assert guard.QUIET_LOAD_PER_CPU == 0.5
+
+
+def test_the_observed_too_loose_case_now_waits(monkeypatch):
+    """Load 17.7 on 18 cores: released under the old default, waits under this one."""
+    monkeypatch.setattr(guard.os, "cpu_count", lambda: 18)
+    monkeypatch.setattr(guard.os, "getloadavg", lambda: (17.7, 0, 0))
+    monkeypatch.setattr(guard.time, "sleep", lambda s: None)
+    ticks = iter(range(0, 1000, 10))
+    monkeypatch.setattr(guard.time, "monotonic", lambda: next(ticks))
+    # Old default: 17.7 <= 18.0, returns on the first look.
+    assert guard._wait_for_quiet_machine(max_wait=30, per_cpu=1.0) == 17.7
+    ticks2 = iter(range(0, 1000, 10))
+    monkeypatch.setattr(guard.time, "monotonic", lambda: next(ticks2))
+    # Current default: 17.7 > 9.0, so it waits out the whole budget first.
+    assert guard._wait_for_quiet_machine(max_wait=30, per_cpu=guard.QUIET_LOAD_PER_CPU) == 17.7
