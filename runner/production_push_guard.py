@@ -246,12 +246,137 @@ def verify_tests(repo, commit):
     )
 
 
+# ── CONTENT GUARD ────────────────────────────────────────────────────────────
+#
+# Proof-based gating did not stop the 2026-08-13 incident and could not have.
+# The build gate asks "is there a green proof for this commit". The test gate
+# asks "does the suite pass". Neither asks whether the commit is obviously
+# destructive, and neither noticed that the commit they approved was not the
+# commit that shipped.
+#
+# What reached master:
+#
+#   ef27653f  author: test <test@example.com>  message: "init"
+#   7063 files changed, 1 insertion(+), 1508930 deletions(-)
+#
+# It deleted package.json, vercel.json, every source file, and .github/workflows
+# — which is why GitHub recorded no CI runs for it: the commit removed the CI.
+#
+# These checks are cheap, need no proof graph, no build and no network, and each
+# refuses that push on its own.
+
+#: Identities belonging to test fixtures. A commit authored by one of these was
+#: written by a test, not a person, and has no business on a production ref.
+FIXTURE_AUTHORS = {
+    "test@example.com", "test@test", "t@t", "you@example.com",
+    "test@localhost", "fixture@example.com",
+}
+
+#: A push may not remove more than this fraction of the tracked tree.
+MAX_DELETION_RATIO = float(os.environ.get("ORCH_MAX_DELETION_RATIO", "0.5"))
+
+#: ...unless the tree was smaller than this, where a large proportional delete
+#: is unremarkable and blocking it would just train people to bypass the guard.
+DELETION_FLOOR_FILES = 25
+
+
+def _tree_file_count(repo, commit):
+    out = _git(repo, "ls-tree", "-r", "--name-only", commit)
+    return len([line for line in out.splitlines() if line.strip()])
+
+
+def verify_content(repo, old_commit, new_commit):
+    """Refuse a push on what it contains. No proof required, no network."""
+    if not old_commit or old_commit == ZERO_SHA:
+        return True, "new ref — no prior tree to compare"
+
+    try:
+        authors = _git(repo, "log", "--format=%ae", f"{old_commit}..{new_commit}").splitlines()
+    except subprocess.CalledProcessError as err:
+        return False, f"cannot read the commit range ({err}); refusing rather than guessing."
+    fixture = sorted({a.strip() for a in authors if a.strip().lower() in FIXTURE_AUTHORS})
+    if fixture:
+        return False, (
+            f"REFUSING: commits in this push are authored by a test fixture ({', '.join(fixture)}).\n"
+            "A commit written by a test is not a change anyone made. This is how a vitest "
+            "fixture's tree reached master on 2026-08-13.\n"
+            "If a real person genuinely has this identity, fix the identity, not this guard."
+        )
+
+    try:
+        before = _tree_file_count(repo, old_commit)
+        after = _tree_file_count(repo, new_commit)
+    except subprocess.CalledProcessError as err:
+        return False, f"cannot count the trees ({err}); refusing rather than guessing."
+    if before >= DELETION_FLOOR_FILES and after < before * (1 - MAX_DELETION_RATIO):
+        removed = before - after
+        return False, (
+            f"REFUSING: this push removes {removed} of {before} tracked files "
+            f"({removed / before:.0%} of the tree).\n"
+            "A production ref does not lose most of its files in one push. If the deletion is "
+            "real, do it on a branch and merge it where a human sees the diff.\n"
+            "Override with ORCH_MAX_DELETION_RATIO if you mean it."
+        )
+
+    return True, f"content sane: {before} -> {after} files, no fixture authorship"
+
+
+def verify_immutable_ref(local_ref, local_sha, repo):
+    """A production push must name a SHA or a branch, never a moving target.
+
+    THIS IS THE DEFECT THAT SHIPPED ef27653f, and it defeats every other check
+    here. `git push origin HEAD:master` prints its plan, runs this hook, and only
+    THEN resolves HEAD. The hook runs the repo's full suite. On 2026-08-13 that
+    suite committed to the repository it was running in, HEAD moved, and git sent
+    the new commit — so the guard verified 0c0a8048 and GitHub received ef27653f.
+
+    A gate that approves one commit while a different one ships is not a gate.
+    """
+    if local_ref not in ("HEAD", "refs/heads/HEAD"):
+        return True, f"immutable source ref {local_ref}"
+    try:
+        now = _git(repo, "rev-parse", "HEAD")
+    except subprocess.CalledProcessError:
+        now = "<unreadable>"
+    moved = now != local_sha
+    return False, (
+        "REFUSING: this push names HEAD as its source.\n"
+        "git resolves HEAD AFTER this hook runs, so anything the hook does — including running "
+        "the test suite — can move it, and the commit that ships is then not the commit that "
+        "was verified. That is exactly how ef27653f reached master on 2026-08-13.\n"
+        f"  verified: {local_sha[:12]}\n"
+        f"  HEAD now: {now[:12]}{'   <-- ALREADY MOVED' if moved else ''}\n"
+        "Push an explicit commit instead:  git push origin <sha>:refs/heads/master"
+    )
+
+
 def main(stdin=None):
     repo = _git(os.getcwd(), "rev-parse", "--show-toplevel")
     updates = guarded_updates(stdin if stdin is not None else sys.stdin)
-    for _local_ref, commit, remote_ref, remote_commit in updates:
+    for local_ref, commit, remote_ref, remote_commit in updates:
+        # ORDER IS DELIBERATE, AND THESE TWO COME FIRST.
+        #
+        # They are the only checks that would have stopped 2026-08-13, they cost
+        # milliseconds, and neither can be satisfied by a proof. Running them
+        # before changes_affect_build also closes a hole: that function can SKIP
+        # verification entirely when it decides no deploy-root files changed, and
+        # a commit deleting the whole tree should never reach a code path that
+        # can choose not to look at it.
+        ref_ok, ref_log = verify_immutable_ref(local_ref, commit, repo)
+        if not ref_ok:
+            print("production_push_guard: BLOCKED — mutable source ref", file=sys.stderr)
+            print(ref_log, file=sys.stderr)
+            return 1
+
+        content_ok, content_log = verify_content(repo, remote_commit, commit)
+        if not content_ok:
+            print("production_push_guard: BLOCKED — refused on content", file=sys.stderr)
+            print(content_log, file=sys.stderr)
+            return 1
+        print(f"production_push_guard: CONTENT OK — {content_log}", file=sys.stderr)
+
         if not changes_affect_build(repo, remote_commit, commit):
-            print(f"production_push_guard: SKIPPED — no deploy-root changes for {remote_ref}", file=sys.stderr)
+            print(f"production_push_guard: SKIPPED build/test — no deploy-root changes for {remote_ref}", file=sys.stderr)
             continue
         print(f"production_push_guard: verifying {commit[:12]} for {remote_ref} in Vercel context", file=sys.stderr)
         ok, log = verify(repo, commit)

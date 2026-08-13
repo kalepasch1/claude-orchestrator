@@ -261,6 +261,140 @@ def test_the_block_message_names_the_switch_that_would_bypass_it():
     assert "Set ORCH_ALLOW_RED_TESTS=1 to ship anyway" in src
 
 
+# ── content guard: refuse on what the push CONTAINS ──────────────────────────
+
+def _clean_env(author=("dev", "dev@example.com")):
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env.update({"GIT_AUTHOR_NAME": author[0], "GIT_AUTHOR_EMAIL": author[1],
+                "GIT_COMMITTER_NAME": author[0], "GIT_COMMITTER_EMAIL": author[1],
+                "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"})
+    return env
+
+
+def _commit(d, files, author=("dev", "dev@example.com"), msg="c", delete_all=False):
+    env = _clean_env(author)
+    if delete_all:
+        subprocess.run(["git", "rm", "-rq", "."], cwd=d, env=env, check=True)
+    for name, body in files.items():
+        p = os.path.join(d, name)
+        if os.path.dirname(p):
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+        open(p, "w").write(body)
+    subprocess.run(["git", "add", "-A"], cwd=d, env=env, check=True)
+    subprocess.run(["git", "commit", "-qm", msg], cwd=d, env=env, check=True)
+    return _head(d)
+
+
+def _repo_with(n_files):
+    d = _repo(scripts={"test": "true"}, lockfiles=("package-lock.json",))
+    base = _commit(d, {f"src/f{i}.ts": f"export const x{i} = {i}\n" for i in range(n_files)})
+    return d, base
+
+
+def test_a_commit_authored_by_a_test_fixture_is_refused():
+    """The exact shape that reached master: author test <test@example.com>."""
+    d, base = _repo_with(40)
+    bad = _commit(d, {"src/new.ts": "x"}, author=("test", "test@example.com"))
+    ok, log = guard.verify_content(d, base, bad)
+    assert ok is False, log
+    assert "test fixture" in log and "test@example.com" in log
+
+
+def test_a_commit_by_a_real_author_passes():
+    d, base = _repo_with(40)
+    good = _commit(d, {"src/new.ts": "x"}, author=("Bear", "kale@heretomorrow.us"))
+    assert guard.verify_content(d, base, good)[0] is True
+
+
+def test_deleting_most_of_the_tree_is_refused():
+    """7063 files -> 1, which is what ef27653f did."""
+    d, base = _repo_with(40)
+    wiped = _commit(d, {"only.txt": "x"}, delete_all=True, msg="init")
+    ok, log = guard.verify_content(d, base, wiped)
+    assert ok is False, log
+    assert "removes" in log and "of the tree" in log
+
+
+def test_an_ordinary_deletion_is_allowed():
+    """A gate that cries wolf gets switched off. Normal cleanup must pass."""
+    d, base = _repo_with(40)
+    env = _clean_env()
+    for i in range(5):
+        os.remove(os.path.join(d, f"src/f{i}.ts"))
+    subprocess.run(["git", "add", "-A"], cwd=d, env=env, check=True)
+    subprocess.run(["git", "commit", "-qm", "cleanup"], cwd=d, env=env, check=True)
+    assert guard.verify_content(d, base, _head(d))[0] is True
+
+
+def test_a_tiny_repo_may_shrink_freely():
+    d, base = _repo_with(4)
+    wiped = _commit(d, {"only.txt": "x"}, delete_all=True)
+    assert guard.verify_content(d, base, wiped)[0] is True
+
+
+def test_content_guard_is_not_vacuous():
+    """Same call, opposite verdicts — it reads the push rather than waving it through."""
+    d, base = _repo_with(40)
+    good = _commit(d, {"src/new.ts": "x"}, author=("Bear", "kale@heretomorrow.us"))
+    assert guard.verify_content(d, base, good)[0] is True
+    bad = _commit(d, {"src/other.ts": "y"}, author=("test", "test@example.com"))
+    assert guard.verify_content(d, good, bad)[0] is False
+
+
+def test_a_new_ref_has_nothing_to_compare():
+    d, _ = _repo_with(10)
+    ok, log = guard.verify_content(d, guard.ZERO_SHA, _head(d))
+    assert ok is True and "new ref" in log
+
+
+# ── immutable ref: the defect that actually shipped ef27653f ─────────────────
+
+def test_pushing_HEAD_is_refused():
+    """`git push origin HEAD:master` resolves HEAD AFTER the hook runs.
+
+    The hook runs the full suite. If anything in that suite moves HEAD, the
+    commit that ships is not the commit that was verified — the guard approved
+    0c0a8048 and GitHub received ef27653f.
+    """
+    d, base = _repo_with(10)
+    ok, log = guard.verify_immutable_ref("HEAD", base, d)
+    assert ok is False, log
+    assert "resolves HEAD AFTER this hook runs" in log
+    assert "<sha>:refs/heads/master" in log
+
+
+def test_pushing_an_explicit_sha_is_allowed():
+    d, base = _repo_with(10)
+    ok, log = guard.verify_immutable_ref(base, base, d)
+    assert ok is True, log
+
+
+def test_pushing_a_named_branch_is_allowed():
+    d, base = _repo_with(10)
+    assert guard.verify_immutable_ref("refs/heads/release", base, d)[0] is True
+
+
+def test_the_refusal_shows_that_HEAD_already_moved():
+    """The operator should see the divergence, not just be told it is possible."""
+    d, base = _repo_with(10)
+    moved = _commit(d, {"src/after.ts": "x"})
+    _, log = guard.verify_immutable_ref("HEAD", base, d)
+    assert "ALREADY MOVED" in log
+    assert moved[:12] in log
+
+
+# ── ordering: no proof may buy its way past content ──────────────────────────
+
+def test_content_and_ref_checks_run_before_build_and_test_gates():
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "production_push_guard.py")).read()
+    body = src.split("def main(", 1)[1]
+    assert body.index("verify_immutable_ref(") < body.index("ok, log = verify(")
+    assert body.index("verify_content(") < body.index("ok, log = verify(")
+    # ...and ahead of changes_affect_build, which can SKIP verification entirely.
+    assert body.index("verify_content(") < body.index("changes_affect_build(")
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):
