@@ -650,17 +650,30 @@ def select_all(table, params=None, page_size=PAGE_SIZE, max_rows=None, order=Non
     q.pop("limit", None)
     q.pop("offset", None)
 
-    cap = SELECT_ALL_MAX_ROWS if max_rows is None else max_rows
-    page_size = max(1, min(int(page_size), PAGE_SIZE))
+    try:
+        cap = SELECT_ALL_MAX_ROWS if max_rows is None else int(max_rows)
+    except (TypeError, ValueError):
+        cap = SELECT_ALL_MAX_ROWS
+    if cap <= 0:
+        return []
+    try:
+        page_size = max(1, min(int(page_size), PAGE_SIZE))
+    except (TypeError, ValueError):
+        page_size = PAGE_SIZE
     rows, offset = [], 0
     while True:
+        # Never ask for rows we are contractually going to throw away. The page size used
+        # to be fixed, so a select_all(max_rows=10) against a large table still pulled a
+        # full 1000-row page over the wire and then sliced 990 of them off in the return.
+        # Clamping to the remaining budget makes the last request exact.
+        want = min(page_size, cap - len(rows))
         # Goes through select() rather than _req() on purpose: one HTTP path, and any test
         # double or instrumentation installed on select() automatically covers paging too.
-        page = select(table, dict(q, limit=str(page_size), offset=str(offset))) or []
+        page = select(table, dict(q, limit=str(want), offset=str(offset))) or []
         rows.extend(page)
-        if len(page) < page_size:
+        if len(page) < want:
             break
-        offset += page_size
+        offset += want
         if len(rows) >= cap:
             print(f"[db] select_all({table}) hit max_rows={cap} — result is TRUNCATED; "
                   f"narrow the filter or raise ORCH_SELECT_ALL_MAX_ROWS", flush=True)
