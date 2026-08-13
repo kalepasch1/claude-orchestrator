@@ -1,4 +1,0 @@
-recovery-intent: canary-codex-31-implement-orphan-termination-logic
-template: 79b381c1cd95
-intent: 07041728 07130635 07190257 20251001 53375a0cecde accepts active adapt advice after agent agentic already analysis apierror artifacts author available b4fa25c7 barks batch beethoven before behavior below branch broad bugfix build build_fix canary cases category cause change changed changes changing cheap checks claim class claud claude cleanup coder codex commit completion concrete concurrently config confirm conflict containing context continue contract coordination correct could credits cross custody deepseek delete denied dependencies deployfix descriptive diffs directive drafting either equivalent error excerpt existing exists expired
-base: main

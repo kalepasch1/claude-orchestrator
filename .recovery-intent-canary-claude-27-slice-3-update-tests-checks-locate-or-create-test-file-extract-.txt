@@ -1,4 +1,0 @@
-recovery-intent: canary-claude-27-slice-3-update-tests-checks-locate-or-create-test-file-extract-
-template: 3012ed7fdebc
-intent: 0000000 07130635 07190257 100644 20251001 68c04d4 7ce8bfb acceptance active adapt advice after agentic analysis arguments artifacts author backlog batch beethoven before behavior below branch broad bugfix build build_fix called canary category cause change changed changes changing checks claim class claud claude cloud coder codestral commit completion concrete config consolidate consolidation contains context continue contract coordination correct cowork create created cross custody deepseek delete dependencies deployfix diffs directive drafting equivalent excerpt executor existing exists extract extracted fable failure files final finish
-base: main
