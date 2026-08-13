@@ -136,10 +136,24 @@ def render_metrics():
 
 
 def validate_canary(response_text):
-    """True when 'canary' (case-insensitive) appears anywhere in response_text.
+    """True when 'canary' (case-insensitive) appears ANYWHERE in response_text.
 
     Logs at INFO when the canary marker is found, WARNING when it is not.
     Fail-soft on non-string input (returns False rather than raising).
+
+    NOT THE SAME FUNCTION as `canary_validation.validate_canary`, despite the identical
+    name. That one matches on a WORD BOUNDARY (`\\bcanary\\b`) and logs INFO on a miss.
+    The two disagree on affixed forms — `"precanary build"` is True here and False there —
+    so `from canary import validate_canary` and `from canary_validation import
+    validate_canary` are not interchangeable imports.
+
+    Both behaviours are deliberate and separately tested
+    (`tests/test_validate_canary.py` vs `tests/test_canary_validation.py`, which pins
+    `test_substring_without_word_boundary_is_false`), so neither may be quietly
+    consolidated into the other. Use THIS one to confirm a marker survived a pipeline hop
+    that may have concatenated it; use the word-boundary one when the marker must stand
+    alone. `tests/test_validate_canary_divergence.py` pins the difference so a future
+    "deduplicate" pass has to notice it.
     """
     if not isinstance(response_text, str):
         _log.warning("canary marker not found: non-string input (%s)", type(response_text).__name__)
