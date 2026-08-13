@@ -81,8 +81,15 @@ def _make_select(queued, active=None, recent=None, projects=None, done=None, con
 class TestPinnedExpressLane(unittest.TestCase):
     """Tests for the pinned task express lane — bypass of other priority tiers."""
 
-    def _claim(self, queued, active=None, done=None, controls=None):
-        """Run claim_task against a mocked DB and return the claimed slug."""
+    def _claim(self, queued, active=None, done=None, controls=None, projects=None):
+        """Run claim_task against a mocked DB and return the claimed slug.
+
+        `projects` is threaded through to _make_select. It was missing, so
+        test_multiple_projects_with_pinned_express_lane — the one test that checks the
+        express lane actually beats PROJECT priority, which is the feature's whole point —
+        died with `TypeError: _claim() got an unexpected keyword argument 'projects'`
+        instead of ever exercising the ordering.
+        """
         claimed = []
 
         def fake_patch(method, path, body=None, headers=None, params=None):
@@ -93,7 +100,8 @@ class TestPinnedExpressLane(unittest.TestCase):
                 return [task] if task else []
             return None
 
-        sel = _make_select(queued, active=active or [], done=done or [], controls=controls or [])
+        sel = _make_select(queued, active=active or [], done=done or [], controls=controls or [],
+                           projects=projects)
         with patch.object(db, "select", side_effect=sel), \
              patch.object(db, "_req", side_effect=fake_patch):
             db.claim_task("runner-1")
@@ -319,14 +327,53 @@ class TestPinnedExpressLane(unittest.TestCase):
         self.assertEqual(self._claim(tasks), "pinned-task")
 
     def test_paused_project_filtering_happens_before_express_lane(self):
-        """Pinned tasks in paused projects are filtered out before sorting."""
-        # Paused project filtering happens early, so a pinned task in a paused project won't be claimed
+        """A pin does not override a paused project: pausing still wins.
+
+        This asserted against project ids ('p-paused', 'p-active') that no projects fixture
+        ever defined, so claim_task resolved neither task to a project, dropped BOTH on the
+        host-affinity filter, and returned None — the test failed without ever reaching the
+        paused-vs-pinned logic it names. Define the two projects, and mark one paused the way
+        db.claim_task actually reads it: a controls row with scope=project keyed by project
+        NAME (db.py:1556), not by id.
+        """
+        projects = [
+            {"id": "p-paused", "name": "paused-proj", "priority": 5,
+             "concurrency_weight": 1, "repo_path": None},
+            {"id": "p-active", "name": "active-proj", "priority": 5,
+             "concurrency_weight": 1, "repo_path": None},
+        ]
+        controls = [{"project": "paused-proj", "paused": True, "updated_by": "test"}]
         tasks = [
-            _task("pinned-paused-proj", project_id="p-paused", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
+            _task("pinned-paused-proj", project_id="p-paused", pinned=True, pin_rank=1,
+                  created_at="2024-01-02T00:00:00"),
             _task("unpinned-active", project_id="p-active", created_at="2024-01-01T00:00:00"),
         ]
-        # This is hard to test with mocks; rely on db.py logic that filters paused projects first
-        self.assertEqual(self._claim(tasks), "unpinned-active")
+        claimed = self._claim(tasks, projects=projects, controls=controls)
+        self.assertIsNotNone(
+            claimed,
+            "claim_task returned None — the fixture is unroutable again, not the pause working",
+        )
+        self.assertEqual(claimed, "unpinned-active")
+
+    def test_pinned_claims_when_its_project_is_not_paused(self):
+        """Control for the test above: same fixture, pause lifted, and the pin now wins.
+
+        Without this, 'unpinned-active' would also be the answer if the express lane were
+        entirely broken, so the paused test alone cannot distinguish 'pause beat the pin'
+        from 'the pin never worked'.
+        """
+        projects = [
+            {"id": "p-paused", "name": "paused-proj", "priority": 5,
+             "concurrency_weight": 1, "repo_path": None},
+            {"id": "p-active", "name": "active-proj", "priority": 5,
+             "concurrency_weight": 1, "repo_path": None},
+        ]
+        tasks = [
+            _task("pinned-proj-b", project_id="p-paused", pinned=True, pin_rank=1,
+                  created_at="2024-01-02T00:00:00"),
+            _task("unpinned-active", project_id="p-active", created_at="2024-01-01T00:00:00"),
+        ]
+        self.assertEqual(self._claim(tasks, projects=projects, controls=[]), "pinned-proj-b")
 
 
 class TestSetPinIntegration(unittest.TestCase):
@@ -349,8 +396,12 @@ class TestSetPinIntegration(unittest.TestCase):
 class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
     """Edge case tests for pinned express lane."""
 
-    def _claim(self, queued, active=None, done=None, controls=None):
-        """Run claim_task against a mocked DB and return the claimed slug."""
+    def _claim(self, queued, active=None, done=None, controls=None, projects=None):
+        """Run claim_task against a mocked DB and return the claimed slug.
+
+        Same `projects` passthrough as TestPinnedExpressLane._claim, so this class cannot
+        acquire the same TypeError the moment an edge case needs a custom projects fixture.
+        """
         claimed = []
 
         def fake_patch(method, path, body=None, headers=None, params=None):
@@ -361,7 +412,8 @@ class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
                 return [task] if task else []
             return None
 
-        sel = _make_select(queued, active=active or [], done=done or [], controls=controls or [])
+        sel = _make_select(queued, active=active or [], done=done or [], controls=controls or [],
+                           projects=projects)
         with patch.object(db, "select", side_effect=sel), \
              patch.object(db, "_req", side_effect=fake_patch):
             db.claim_task("runner-1")
