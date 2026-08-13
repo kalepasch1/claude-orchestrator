@@ -188,6 +188,91 @@ class ConventionChecker(ast.NodeVisitor):
         self.generic_visit(node)
         self.function_context.pop()
 
+    # A client-side scan window becomes a bug only once the set outgrows it, so the
+    # threshold is "big enough that someone meant to take a large slice".
+    _SCAN_WINDOW_MIN_LIMIT = 100
+    # `limit: "5001"` is the documented "are there more than 5000?" sentinel — the count
+    # is never used as a total, only compared to 5000. Flagging it would push people to
+    # "fix" a correct idiom.
+    _SCAN_WINDOW_SENTINELS = frozenset({"5001", "1001", "101"})
+
+    def visit_Call(self, node: ast.Call) -> None:
+        """Flag `db.select(..., {"limit": <big>})` with no `order`.
+
+        WHY THIS RULE EXISTS. The shape has produced four outage-class failures on this
+        fleet (merge_train._pick_cards: newest 3,000 of 238,177 approvals; another
+        producing 240 duplicates of one slug; ev_scheduler scoring an arbitrary 500 of
+        1,407 QUEUED tasks; config_optimizer autoscaling off a queue depth structurally
+        incapable of exceeding 1,000). Each looked like "the queue is slow" from outside.
+
+        PostgREST caps a response at 1,000 rows regardless of `limit`, so a large limit
+        does not widen the window — it only hides the truncation. Without an `order` the
+        rows returned are not even reproducible, so one end of the set becomes
+        structurally invisible and the work there sits forever.
+
+        The rule was specified by tests/test_scan_window_correctness.py and never
+        implemented, so the guard against the class did not exist while its regression
+        tests sat red.
+        """
+        try:
+            self._check_scan_window(node)
+        finally:
+            self.generic_visit(node)
+
+    @staticmethod
+    def _limit_literal(value) -> str:
+        """Render a limit value as a string if it is statically knowable, else ''.
+
+        Handles the `str(800)` form as well as a bare literal; a computed limit cannot be
+        judged here and is left alone rather than guessed at.
+        """
+        if isinstance(value, ast.Constant):
+            return str(value.value)
+        if (isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+                and value.func.id == "str" and len(value.args) == 1
+                and isinstance(value.args[0], ast.Constant)):
+            return str(value.args[0].value)
+        return ""
+
+    def _check_scan_window(self, node: ast.Call) -> None:
+        func = node.func
+        # `db.select(...)` only. `select_all` pages to exhaustion and is the fix, not the
+        # smell, so it must never be flagged.
+        if not (isinstance(func, ast.Attribute) and func.attr == "select"):
+            return
+        if not (isinstance(func.value, ast.Name) and func.value.id == "db"):
+            return
+
+        params = next((arg for arg in node.args if isinstance(arg, ast.Dict)), None)
+        if params is None:
+            return
+
+        keys = {}
+        for key, value in zip(params.keys, params.values):
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                keys[key.value] = value
+        if "order" in keys:
+            return
+        if "limit" not in keys:
+            return
+
+        raw = self._limit_literal(keys["limit"])
+        if not raw or raw in self._SCAN_WINDOW_SENTINELS:
+            return
+        try:
+            limit = int(raw)
+        except (TypeError, ValueError):
+            return
+        if limit < self._SCAN_WINDOW_MIN_LIMIT:
+            return
+
+        self._record(ConventionViolation(
+            self.filepath, node.lineno, 'SCAN_WINDOW_NO_ORDER',
+            f'db.select with limit={limit} and no "order": the window is not reproducible '
+            f'and PostgREST caps the response at 1000 rows regardless. Use db.select_all '
+            f'for a full scan, db.count for a count, or add a deterministic "order".'
+        ))
+
     def visit_Assign(self, node: ast.Assign) -> None:
         """Check for hardcoded secrets in assignments."""
         self._check_hardcoded_secrets(node)
@@ -299,6 +384,45 @@ class ConventionChecker(ast.NodeVisitor):
                         ))
 
 
+_NOQA_RE = re.compile(r'#\s*noqa(?::\s*(?P<rules>[A-Za-z0-9_,\s]+))?', re.IGNORECASE)
+
+
+def _apply_noqa(violations: List[ConventionViolation],
+                source_lines: List[str]) -> List[ConventionViolation]:
+    """Drop violations whose reported line carries a covering `# noqa`.
+
+    A rule with no per-line override gets bypassed wholesale instead — a suppression
+    that stays visible in the diff and greppable in review is the lesser evil. Bare
+    `# noqa` covers everything on the line; `# noqa: RULE` covers only that rule.
+
+    A statement spanning several lines is reported at its FIRST line, so the comment is
+    also looked for on the last line of the call — that is where it reads naturally
+    when the params dict is wrapped.
+    """
+    kept = []
+    for violation in violations:
+        start = (violation.lineno or 1) - 1
+        candidates = []
+        for index in (start, start + 1, start + 2, start + 3):
+            if 0 <= index < len(source_lines):
+                candidates.append(source_lines[index])
+        if any(_is_suppressed(line, violation.rule) for line in candidates):
+            continue
+        kept.append(violation)
+    return kept
+
+
+def _is_suppressed(line: str, rule: str) -> bool:
+    match = _NOQA_RE.search(line or '')
+    if not match:
+        return False
+    rules = match.group('rules')
+    if not rules:
+        return True
+    return rule.upper() in {r.strip().upper()
+                            for r in rules.replace(',', ' ').split() if r.strip()}
+
+
 def check_file(filepath: str) -> List[ConventionViolation]:
     """Parse and check a Python file for convention violations."""
     try:
@@ -315,7 +439,7 @@ def check_file(filepath: str) -> List[ConventionViolation]:
 
         checker = ConventionChecker(filepath, source_lines)
         checker.visit(tree)
-        return checker.violations
+        return _apply_noqa(checker.violations, source_lines)
     except Exception as e:
         return [ConventionViolation(
             filepath, 1, 'CHECK_ERROR',
