@@ -782,6 +782,181 @@ def local_branch_audit(repo, slugs=None, limit=200):
 run = sweep
 
 
+# --------------------------------------------------------------- phantom verify
+
+PHANTOM_STATE = "PHANTOM_UNVERIFIED"
+VERIFY_ATTEMPT_CAP = int(os.environ.get("ORCH_PHANTOM_VERIFY_ATTEMPTS", "2"))
+
+
+def _verify_attempts(task):
+    """How many times this task has already been through a phantom-verify pass."""
+    try:
+        return int((task.get("verify_attempts") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _bump_verify_attempts(task, note):
+    """Record one failed verification attempt without losing the count.
+
+    The column may not exist on every deployment, so the count is also embedded in the
+    note as `[verify-attempt N/CAP]` and parsed back out — the attempt cap must work
+    before the migration lands, or the batch would loop on the same rows forever.
+    """
+    attempts = _verify_attempts(task) + 1
+    stamped = f"[verify-attempt {attempts}/{VERIFY_ATTEMPT_CAP}] {note}"
+    try:
+        db.update("tasks", {"id": task["id"]},
+                  {"verify_attempts": attempts, "note": stamped})
+        return attempts
+    except Exception:
+        pass
+    try:
+        db.update("tasks", {"id": task["id"]}, {"note": stamped})
+    except Exception:
+        pass
+    return attempts
+
+
+def _note_attempts(task):
+    """Attempts recovered from the note stamp, for pre-migration deployments."""
+    import re
+    m = re.search(r"\[verify-attempt (\d+)/", str(task.get("note") or ""))
+    return int(m.group(1)) if m else 0
+
+
+def verify_phantom(project=None, limit=100, dry_run=False):
+    """Batch-verify PHANTOM_UNVERIFIED tasks against real git evidence.
+
+    For each task: look for boundary-exact, tree-changing integration evidence via the
+    same _integration_evidence() the sweep uses. Evidence found -> MERGED with the sha
+    that proves it. No evidence after VERIFY_ATTEMPT_CAP attempts -> requeued for a
+    rebuild. Bounded by `limit`; never raises.
+
+    This exists because the orch-repair loop had no way to drain the 10k+ phantom
+    population without hand-rolled git archaeology, which the operator runbook forbids.
+    """
+    out = {"scanned": 0, "merged": [], "requeued": [], "still_unproven": [],
+           "skipped_no_repo": [], "project": project, "limit": limit, "dry_run": dry_run}
+    try:
+        limit = max(1, int(limit))
+    except (TypeError, ValueError):
+        limit = 100
+
+    projects = {}
+    try:
+        for p in (db.select("projects", {"select": "id,name,repo_path,default_base"}) or []):
+            projects[p["id"]] = p
+    except Exception as e:
+        out["error"] = f"project lookup failed: {e}"
+        return out
+
+    query = {"select": "id,slug,project_id,state,note,kind,base_branch",
+             "state": f"eq.{PHANTOM_STATE}", "order": "updated_at.asc", "limit": str(limit)}
+    if project:
+        pid = next((p["id"] for p in projects.values() if p.get("name") == project), None)
+        if pid is None:
+            out["error"] = f"unknown project {project!r}"
+            return out
+        query["project_id"] = f"eq.{pid}"
+    try:
+        tasks = db.select("tasks", query) or []
+    except Exception as e:
+        out["error"] = f"task query failed: {e}"
+        return out
+
+    for t in tasks:
+        out["scanned"] += 1
+        slug = t.get("slug") or ""
+        proj = projects.get(t.get("project_id")) or {}
+        repo = proj.get("repo_path") or ""
+        try:
+            repo = db.localize_repo_path(repo)
+        except Exception:
+            pass
+        if not repo or not os.path.isdir(repo):
+            # Not evidence of anything — this machine simply does not hold the repo.
+            out["skipped_no_repo"].append(slug)
+            continue
+
+        evidence = _integration_evidence(repo, slug)
+        if evidence:
+            sha, ref, subject = evidence
+            out["merged"].append({"slug": slug, "sha": sha, "ref": ref})
+            if dry_run:
+                continue
+            try:
+                import merge_truth
+                merge_truth.guarded_task_update(
+                    t, {"state": "MERGED", "artifact_commit": sha,
+                        "note": f"integration_sweeper --verify-phantom: evidence in {ref} "
+                                f"at {sha[:12]} ({str(subject)[:80]})"}, repo=repo)
+            except Exception as e:
+                print(f"[verify-phantom] {slug}: merge write failed: {e}")
+            continue
+
+        attempts = max(_verify_attempts(t), _note_attempts(t))
+        if attempts + 1 >= VERIFY_ATTEMPT_CAP:
+            out["requeued"].append({"slug": slug, "attempts": attempts + 1})
+            if dry_run:
+                continue
+            try:
+                db.update("tasks", {"id": t["id"]},
+                          {"state": "QUEUED", "artifact_commit": None,
+                           "note": f"integration_sweeper --verify-phantom: no integration "
+                                   f"evidence after {attempts + 1} attempts; requeued for rebuild"})
+            except Exception as e:
+                print(f"[verify-phantom] {slug}: requeue failed: {e}")
+            continue
+
+        out["still_unproven"].append({"slug": slug, "attempts": attempts + 1})
+        if not dry_run:
+            _bump_verify_attempts(t, "integration_sweeper --verify-phantom: no evidence yet")
+
+    return out
+
+
+def _build_parser():
+    import argparse
+    parser = argparse.ArgumentParser(
+        prog="integration_sweeper.py",
+        description="Find tested-but-unintegrated work, and batch-verify phantom merges.")
+    parser.add_argument("--verify-phantom", action="store_true",
+                        help=f"batch-verify {PHANTOM_STATE} tasks against git evidence "
+                             "instead of running the normal sweep")
+    parser.add_argument("--project", default=None, help="restrict to one project by name")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="max rows to process (default 100 for --verify-phantom)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="report what would change without writing")
+    parser.add_argument("--no-train", action="store_true",
+                        help="sweep without running the merge train afterwards")
+    return parser
+
+
+def main(argv=None):
+    """CLI entry point.
+
+    There was no argument handling at all: `--verify-phantom --project x --limit 100`
+    was silently ignored and the module ran a full unbounded sweep instead, which is
+    worse for an operator than an error, because it looks like it worked.
+    """
+    args = _build_parser().parse_args(argv)
+    if args.verify_phantom:
+        result = verify_phantom(project=args.project,
+                                limit=args.limit if args.limit is not None else 100,
+                                dry_run=args.dry_run)
+        print(json.dumps(result, indent=2, default=str))
+        for row in result.get("merged", []):
+            print(f"MERGED   {row['slug']} <- {row['sha'][:12]} in {row['ref']}")
+        for row in result.get("requeued", []):
+            print(f"REQUEUED {row['slug']} (no evidence after {row['attempts']} attempts)")
+        return 0 if not result.get("error") else 1
+    result = sweep(limit=args.limit if args.limit is not None else LIMIT,
+                   run_train=(RUN_TRAIN and not args.no_train))
+    print(json.dumps(result, indent=2, default=str))
+    return 0
+
+
 if __name__ == "__main__":
-    import json
-    print(json.dumps(sweep(), indent=2, default=str))
+    sys.exit(main())
