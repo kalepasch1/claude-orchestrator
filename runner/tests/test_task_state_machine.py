@@ -29,8 +29,12 @@ class TestTaskStateMachine(unittest.TestCase):
         self.assertEqual(len(VALID_TRANSITIONS["MERGED"]), 0)
 
     def test_syntax_check(self):
-        import py_compile
-        py_compile.compile("runner/task_state_machine.py", doraise=True)
+        import os, sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from syntax_guard import compile_runner_module
+        # cwd-independent: the old literal "runner/task_state_machine.py" only resolved from the
+        # repo root and raised FileNotFoundError when the suite ran from runner/.
+        compile_runner_module("task_state_machine.py")
 
 
 if __name__ == "__main__":

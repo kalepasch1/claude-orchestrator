@@ -33,8 +33,12 @@ class TestBranchManager(unittest.TestCase):
             self.assertIn("active", report)
 
     def test_syntax_check(self):
-        import py_compile
-        py_compile.compile("runner/branch_manager.py", doraise=True)
+        import os, sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from syntax_guard import compile_runner_module
+        # cwd-independent: the old literal "runner/branch_manager.py" only resolved from the
+        # repo root and raised FileNotFoundError when the suite ran from runner/.
+        compile_runner_module("branch_manager.py")
 
 
 if __name__ == "__main__":

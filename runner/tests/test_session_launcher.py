@@ -31,8 +31,12 @@ class TestSessionLauncher(unittest.TestCase):
         self.assertIn("uptime_s", d)
 
     def test_syntax(self):
-        import py_compile
-        py_compile.compile("runner/session_launcher.py", doraise=True)
+        import os, sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from syntax_guard import compile_runner_module
+        # cwd-independent: the old literal "runner/session_launcher.py" only resolved from the
+        # repo root and raised FileNotFoundError when the suite ran from runner/.
+        compile_runner_module("session_launcher.py")
 
 
 if __name__ == "__main__":
