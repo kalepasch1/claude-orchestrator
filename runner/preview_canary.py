@@ -26,6 +26,9 @@ import urllib.parse
 import urllib.error
 from typing import Optional
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import db
+
 TOKEN = os.environ.get("VERCEL_TOKEN", "")
 TEAM = os.environ.get("VERCEL_TEAM_ID", "")
 TIMEOUT = int(os.environ.get("PREVIEW_CANARY_TIMEOUT_S", "300"))
@@ -43,6 +46,92 @@ def _vercel_get(path, qs=None):
     req = urllib.request.Request(url, headers={"Authorization": f"Bearer {TOKEN}"})
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.loads(r.read().decode())
+
+
+#: `_vget` is the name deploy_verify.py uses for the same call, and the name the test suite
+#: patches on this module. Two spellings of one HTTP path is how the drift below started.
+_vget = _vercel_get
+
+
+def query_preview(project, branch):
+    """The READY-or-not preview deployment for `branch`, or None.
+
+    ADDED to close a contract gap: runner/tests/test_vercel_deploys.py::TestPreviewCanary has
+    always exercised `query_preview`, `_vget`, `db` and a sweep-shaped `run()` — none of which
+    this module ever defined. It defined `check(project, branch)`, a blocking poll for one
+    branch. So all seven tests errored at patch time with "module does not have the attribute
+    'db'", which reads like a broken test rather than a missing feature and had been left
+    alone accordingly.
+
+    Branch matching is explicit rather than delegated to the Vercel `branch` query parameter:
+    the API returns the newest preview for the project when the filter matches nothing, so
+    asking for `orchestrator/dev` and rendering whatever came back is how a green canary ends
+    up reporting on `main`.
+    """
+    if not project:
+        return None
+    try:
+        data = _vget("/v6/deployments", {
+            "app": project, "target": "preview", "branch": branch, "limit": "20",
+        }) or {}
+    except Exception:
+        return None   # fail-soft: the canary is advisory, never a blocker
+
+    for dep in (data.get("deployments") or []):
+        ref = ((dep.get("meta") or {}).get("githubCommitRef") or "")
+        if ref == branch:
+            return dep
+    return None
+
+
+def run():
+    """Sweep every app in deploy_health, record its preview state, flag failures.
+
+    Returns {"checked": n, ...}. Skips cleanly (checked=0) with no VERCEL_TOKEN so the caller
+    needs no conditional — the same fail-soft contract as check().
+    """
+    token = os.environ.get("VERCEL_TOKEN", "")
+    if not token:
+        return {"checked": 0, "skipped": True, "reason": "VERCEL_TOKEN not set"}
+
+    checked = failed = 0
+    try:
+        rows = db.select("deploy_health", {"select": "app,vercel_project,git_branch"}) or []
+    except Exception as e:
+        return {"checked": 0, "skipped": True, "reason": f"deploy_health unreadable: {e}"}
+
+    for row in rows:
+        app = row.get("app")
+        project = row.get("vercel_project") or app
+        branch = row.get("git_branch")
+        if not app or not branch:
+            continue
+        dep = query_preview(project, branch)
+        checked += 1
+        if not dep:
+            continue
+
+        state = _ready_state(dep)
+        url = dep.get("url")
+        try:
+            db.update("deploy_health", {"app": app},
+                      {"preview_state": state.lower(), "preview_url": url})
+        except Exception:
+            pass   # a telemetry write must not take the sweep down
+
+        if state in ("ERROR", "CANCELED"):
+            failed += 1
+            try:
+                db.insert("approvals", {
+                    "slug": f"preview-canary-{app}",
+                    "title": f"Preview build failed: {app}",
+                    "body": f"Preview deployment for {app} ({branch}) is {state}. URL: {url}",
+                    "status": "pending",
+                })
+            except Exception:
+                pass
+
+    return {"checked": checked, "failed": failed}
 
 
 def _latest_preview(project, branch):
