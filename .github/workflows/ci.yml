@@ -69,3 +69,9 @@ jobs:
         # down before (a bare `for` loop referencing an undefined name, a missing import that
         # fail-soft handling masked) across all sources, not just the ones with tests.
         run: python -m compileall -q . > /dev/null
+
+      - name: Syntax-check repo-root modules
+        # runner/ was the only tree compiled, so repo-root entry points — canary.py included,
+        # which the scheduled canary workflow shells out to — could ship a syntax error and
+        # still show a green CI.
+        run: python -m compileall -q *.py > /dev/null
