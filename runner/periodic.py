@@ -21,6 +21,12 @@ Usage:
   python3 periodic.py txn
 """
 import os, sys, subprocess, time, json, socket, urllib.error
+import contextlib, threading
+
+try:
+    import signal
+except ImportError:  # pragma: no cover - signal is present on every supported platform
+    signal = None
 # Inherited NODE_ENV=production makes npm omit devDependencies in every child job (staging QA,
 # prewarm, merge/release trains) → "Could not load <module>" failures. Strip it (see runner.py).
 os.environ.pop("NODE_ENV", None)
@@ -90,6 +96,69 @@ _JOB_MAX_RUNTIME_S = int(os.environ.get("ORCH_PERIODIC_JOB_MAX_RUNTIME_S", "3600
 # regardless of how much of its runtime budget is left.
 _WEDGE_SKIPS = int(os.environ.get("ORCH_PERIODIC_WEDGE_SKIPS", "3"))
 _SKIP_STATE_PATH = os.path.join(_RUNTIME, "periodic-skips.json")
+
+# Hard wall-clock cap on ONE job invocation.
+#
+# The skip counter above detects a wedge after the fact; it cannot end one. A job that
+# never returns holds its singleton lock for as long as the process lives, so every later
+# invocation skips — and skips exit 0, which is why the 'governor' wedge (3 consecutive
+# skips, holder pid held 349s) was invisible downstream. Counting the skips louder does
+# not release the lock. Bounding the job does.
+#
+# The cap is deliberately generous: this exists to break a hang, not to fail slow-but-
+# healthy work. Per-job override: ORCH_PERIODIC_JOB_TIMEOUT_<JOB>.
+_JOB_TIMEOUT_S = int(os.environ.get("ORCH_PERIODIC_JOB_TIMEOUT", "900"))
+
+
+class JobTimeout(Exception):
+    """A periodic job exceeded its wall-clock budget and was interrupted."""
+
+
+def _job_timeout(job):
+    """Timeout budget for one job. Fail-soft: unparseable config falls back to the default."""
+    raw = os.environ.get(f"ORCH_PERIODIC_JOB_TIMEOUT_{str(job).upper().replace('-', '_')}")
+    for value in (raw, _JOB_TIMEOUT_S):
+        try:
+            if value is not None:
+                return int(value)
+        except (TypeError, ValueError):
+            continue
+    return 900
+
+
+@contextlib.contextmanager
+def _time_limit(seconds, job):
+    """Interrupt the body after ``seconds`` via SIGALRM.
+
+    Fail-soft by design: signals only work on the main thread of a POSIX process, so
+    anywhere that does not hold (worker thread, no SIGALRM) this degrades to running
+    WITHOUT a cap rather than refusing to run the job at all. A missing timeout is the
+    status quo; a job that will not start is a regression.
+    """
+    if not seconds or seconds <= 0 or signal is None:
+        yield
+        return
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def _fire(_signum, _frame):
+        raise JobTimeout(f"{job} exceeded its {seconds}s budget")
+
+    try:
+        previous = signal.signal(signal.SIGALRM, _fire)
+    except (ValueError, AttributeError, OSError):
+        yield
+        return
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        try:
+            signal.signal(signal.SIGALRM, previous)
+        except (ValueError, AttributeError, OSError):
+            pass
 
 # Exit codes, so a scheduler/wrapper can tell the three outcomes apart.
 _EX_OK = 0
@@ -290,7 +359,16 @@ def _invoke_job(job):
         duration of an outage, which is the opposite of what we want.
     """
     try:
-        return JOBS[job]()
+        with _time_limit(_job_timeout(job), job):
+            return JOBS[job]()
+    except JobTimeout as exc:
+        # Loud on purpose. The whole failure mode being fixed here is that a wedged job
+        # was SILENT: it exited 0 and nothing downstream noticed for three cycles.
+        print(f"periodic {job}: TIMEOUT — {exc}. Interrupted so the singleton lock is "
+              f"released and the next invocation can actually run. Raise the budget with "
+              f"ORCH_PERIODIC_JOB_TIMEOUT_{str(job).upper().replace('-', '_')} if this job "
+              f"is legitimately this slow.")
+        return {"timeout": True, "job": job, "detail": str(exc)}
     except db.MissingRelationError as exc:
         _disable_job(job, str(exc))
         return None
