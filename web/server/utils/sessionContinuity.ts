@@ -63,7 +63,11 @@ function isRecord(value: unknown): value is SessionRecord {
  * redeploy of the same app reads back the shard its predecessor wrote.
  */
 export function shardKey(appId: unknown): string {
-  const slug = str(appId).trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
+  // Only a string is a meaningful app id. The shared `str()` helper also coerces finite
+  // numbers, which silently turned shardKey(0) into "session-shard:0" instead of falling
+  // back — a non-string caller would then get its own shard rather than the default one.
+  const raw = typeof appId === 'string' ? appId : ''
+  const slug = raw.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '')
   return `${SHARD_PREFIX}:${slug || 'default'}`
 }
 
