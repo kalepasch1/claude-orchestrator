@@ -12,6 +12,10 @@ log = logging.getLogger(__name__)
 
 PORT = int(os.environ.get("ORCH_CONSOLE_PORT", "8701"))
 
+# Cap on the request body we will read purely to answer a refusal politely. A declared
+# Content-Length is attacker-controlled, so it is never trusted as a read size.
+_MAX_DRAIN_BYTES = 64 * 1024
+
 _snapshot_cache = {"data": {}, "ts": 0.0}
 
 
@@ -109,6 +113,14 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
             status, payload = gateway.dispatch("GET", self.path, params,
                                                client_host=client_host, token=token)
             return self._send_json(status, payload)
+        # Fleet configuration, served through the transport-agnostic REST layer.
+        # Mirrors the /compliance/v1/ mounting above: the handler owns transport, the
+        # module owns the contract. READ-ONLY here on purpose — see do_PUT.
+        if self.path == "/config" or self.path.startswith("/config/"):
+            import config_api
+            status, payload = config_api.dispatch("GET", urlparse(self.path).path)
+            return self._send_json(status, payload)
+
         if self.path == "/health":
             return self._send_json(200, {"status": "ok"})
 
@@ -148,6 +160,40 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
         status, payload = gateway.dispatch("POST", self.path, body,
                                            client_host=client_host, token=token)
         self._send_json(status, payload)
+
+    def do_PUT(self):
+        """Config writes are NOT exposed in this slice — 405 with the reason.
+
+        `config_api.put_config` exists and is tested, and mounting it here would be four
+        lines. It is deliberately not mounted yet: this console binds 127.0.0.1 with no
+        authentication on its own routes, so a PUT mount would let ANY local process
+        rewrite fleet configuration. The compliance routes beside it carry
+        `compliance_auth` precisely because they mutate.
+
+        So the write path lands in the next slice, together with the auth check — not as
+        a follow-up someone might forget. Answering 405 rather than 404 makes the
+        endpoint's existence and its absence both discoverable.
+        """
+        # Drain the request body before answering, bounded. Replying while bytes are
+        # still in flight makes the peer see a connection reset instead of the 405 we
+        # actually sent — the refusal has to be legible, not a mystery TCP error.
+        try:
+            length = int(self.headers.get("Content-Length", "0") or 0)
+        except ValueError:
+            length = 0
+        if length > 0:
+            self.rfile.read(min(length, _MAX_DRAIN_BYTES))
+            if length > _MAX_DRAIN_BYTES:
+                # Refuse to read an unbounded body just to be polite about it.
+                self.close_connection = True
+
+        if self.path == "/config" or self.path.startswith("/config/"):
+            return self._send_json(405, {
+                "error": "config writes are not exposed on the console yet",
+                "reason": "pending authentication; use the config_api module directly",
+                "allowed": ["GET"],
+            })
+        return self._send_json(404, {"error": "not found"})
 
     def log_message(self, format, *args):
         pass  # suppress request logging
