@@ -174,6 +174,76 @@ def parse_tracebacks(text):
     return found
 
 
+RECENCY_GATE = os.environ.get(
+    "ORCH_CRASH_LOOP_RECENCY_GATE", "true").lower() in ("1", "true", "yes", "on")
+
+
+RECENT_BYTES = int(os.environ.get("ORCH_CRASH_LOOP_RECENT_BYTES", str(256 * 1024)))
+# A job crashing on its most recent invocation still has that traceback at EOF. This many
+# trailing lines are always scanned, so the success-line cut can never hide a live loop.
+CRASHING_TAIL_LINES = int(os.environ.get("ORCH_CRASH_LOOP_CRASHING_TAIL_LINES", "80"))
+
+
+def live_tail(text, recent_bytes=None):
+    """Narrow a 4MB scan window to the job's most recent activity.
+
+    WHY: the freshness gate in scan() is `os.path.getmtime(<job>.err)`, but .err is not a
+    traceback-only stream — jobs write ordinary progress lines and `[db] TRUNCATED SCAN`
+    warnings to stderr too. Any job that logs at all keeps its .err mtime fresh forever, so
+    every historical traceback still sitting in the 4MB tail reads as current.
+
+    That is not hypothetical. `credresolver` was reported at "critical x134 99.3%" for
+    `NameError: run_editorial`, a bug fixed days earlier: the last NameError sat 474KB from
+    the end of a 591KB file, followed by nothing but successful "[cred-resolver]
+    auto-resolved ..." lines. Six other jobs carried the same ghost, and those findings are
+    what refill the backlog with tasks to fix bugs that are already fixed. `share`
+    compounds it — classify() divides by the traceback count, so it measures share OF
+    FAILURES, never a failure rate: 134 dead tracebacks plus 5,000 later successes scores
+    99.3%.
+
+    Because these logs are append-only, distance from EOF is a usable proxy for recency,
+    and unlike "cut at the last successful line" it cannot swallow a live crash loop —
+    a job failing right now has its traceback at EOF, inside any window. `merge-train`,
+    whose .err ends mid-crash, survives this gate; the seven `run_editorial` ghosts do not.
+
+    Set ORCH_CRASH_LOOP_RECENT_BYTES=0 to disable narrowing entirely.
+    """
+    body = str(text or "")
+    limit = RECENT_BYTES if recent_bytes is None else recent_bytes
+    if limit > 0 and len(body) > limit:
+        window = body[-limit:]
+        # Never start mid-traceback: a partial block would lose the frames that form its
+        # signature, so drop back to the first complete record in the window.
+        start = window.find("Traceback (most recent call last):")
+        body = window if start <= 0 else window[start:]
+
+    lines = body.splitlines()
+    # (b) A job failing RIGHT NOW has a traceback at the end of its log. Whatever the
+    # success-line analysis concludes, never discard the last CRASHING_TAIL_LINES — that is
+    # what keeps a live loop (merge-train ends mid-crash) from being gated away.
+    floor = max(0, len(lines) - CRASHING_TAIL_LINES)
+
+    # (a) Otherwise a signature only counts if it postdates the job's last completed
+    # invocation. Success lines are unindented, non-exception, and outside a traceback;
+    # frames inside faulthandler-style dumps are indented and must not reset the cut.
+    cut, in_traceback = 0, False
+    for index, line in enumerate(lines):
+        if _TB_START.match(line):
+            in_traceback = True
+            continue
+        if line.startswith((" ", "\t")) or not line.strip():
+            continue
+        if in_traceback:
+            if _EXC.match(line.strip()):
+                in_traceback = False       # exception line closes the block
+                continue
+            in_traceback = False
+        cut = index + 1                    # the job produced output again after crashing
+    kept = "\n".join(lines[min(cut, floor):])
+    # splitlines() drops the final separator; keep it so an unnarrowed body round-trips.
+    return kept + "\n" if kept and body.endswith("\n") else kept
+
+
 def _read_tail(path, limit=None):
     """Read at most the last <limit> bytes; .err files here reach 15MB."""
     limit = TAIL_BYTES if limit is None else limit
@@ -206,7 +276,10 @@ def scan(log_dir=None, window_hours=None):
         if window > 0 and (now - err_mtime) > window:
             continue  # this job has not crashed recently; nothing live to alert on
         job = name[:-4]
-        tracebacks = parse_tracebacks(_read_tail(err_path))
+        body = _read_tail(err_path)
+        if RECENCY_GATE:
+            body = live_tail(body)
+        tracebacks = parse_tracebacks(body)
         if not tracebacks:
             continue
         log_path = os.path.join(directory, job + ".log")
