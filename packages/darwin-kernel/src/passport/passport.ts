@@ -65,11 +65,29 @@ const DAY = 86_400_000;
  *
  * buildPassport and verifyPassport MUST both hash through here — canonicalising on only one
  * side makes every passport fail its own digest check.
+ *
+ * The comparator must be a TOTAL order over exactly the bytes that get hashed. The scalar
+ * tuple below (kind, issuer, issuedAt, expiresAt, value) is not: it omits `detail`, so two
+ * claims that agree on all five compare equal, `Array.prototype.sort` is stable and therefore
+ * leaves them in caller order, and the digest goes back to being order-dependent — the exact
+ * defect this function exists to prevent. `canonicalize` is the final tie-break because it is
+ * the same key-sorted serialization the digest itself is taken over, so every digest-relevant
+ * field (including `detail`, and any field added later) participates in the ordering by
+ * construction. The scalar tuple is kept ahead of it only because it orders a canonical dump
+ * the way a human would expect to read it, and short-circuits before the serialize in the
+ * common case.
  */
 function canonicalBody<T extends { claims: Claim[] }>(body: T): T {
   return {
     ...body,
     claims: [...body.claims].sort((a, b) => {
+      const scalar =
+        a.kind.localeCompare(b.kind) ||
+        a.issuer.localeCompare(b.issuer) ||
+        a.issuedAt.localeCompare(b.issuedAt) ||
+        a.expiresAt.localeCompare(b.expiresAt) ||
+        a.value - b.value;
+      if (scalar !== 0) return scalar;
       const ka = canonicalize(a);
       const kb = canonicalize(b);
       return ka < kb ? -1 : ka > kb ? 1 : 0;
