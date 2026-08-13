@@ -57,6 +57,33 @@ class _ModuleState:
     shed_count: int = 0
 
 
+class Router:
+    """Integration seam for the neuromorphic router.
+
+    The router only ever RE-WEIGHTS an allocation the budget has already decided.
+    It cannot wake an idle module, cannot exceed max_share, and cannot raise the
+    total above total_budget — the broker clamps and rescales afterwards. Keeping
+    the router advisory is what preserves the zero-budget-when-idle guarantee no
+    matter what a future routing policy decides to do.
+    """
+
+    def weight(self, budgets: Dict[str, float],
+               significance: Dict[str, float]) -> Dict[str, float]:  # pragma: no cover
+        raise NotImplementedError
+
+
+class ProportionalRouter(Router):
+    """Reference router: split the same pot in proportion to significance."""
+
+    def weight(self, budgets, significance):
+        total_pot = sum(budgets.values())
+        weights = {m: max(0.0, float(significance.get(m, 0.0))) for m in budgets}
+        total_weight = sum(weights.values())
+        if total_weight <= 0:
+            return dict(budgets)
+        return {m: total_pot * w / total_weight for m, w in weights.items()}
+
+
 @dataclass
 class Allocation:
     """The result of one tick. `budgets` omits every module that gets nothing."""
@@ -67,6 +94,9 @@ class Allocation:
     starved_admitted: List[str] = field(default_factory=list)
     fallback: bool = False
     idle: List[str] = field(default_factory=list)
+    # Budget the tick was entitled to but did not hand out, because max_share
+    # bound it. Reported rather than redistributed so the cap always binds.
+    unspent: float = 0.0
 
     @property
     def funded(self) -> List[str]:
@@ -91,11 +121,15 @@ class SpikeAttentionBudget:
         starvation_ticks: int = DEFAULT_STARVATION_TICKS,
         max_active: int = DEFAULT_MAX_ACTIVE,
         fallback_after_idle_ticks: Optional[int] = None,
+        max_share: Optional[float] = None,
+        router: Optional["Router"] = None,
     ):
         if fall > rise:
             raise ValueError("fall threshold must be <= rise threshold (hysteresis)")
         if total_budget <= 0:
             raise ValueError("total_budget must be positive")
+        if max_share is not None and max_share <= 0:
+            raise ValueError("max_share must be positive when set")
         self.total_budget = float(total_budget)
         self.rise = float(rise)
         self.fall = float(fall)
@@ -104,6 +138,13 @@ class SpikeAttentionBudget:
         self.max_active = max(1, int(max_active))
         # None disables the clock-driven fallback entirely.
         self.fallback_after_idle_ticks = fallback_after_idle_ticks
+        # Per-module ceiling. Without it a lone spiking module absorbs the entire
+        # budget, which is fine for throughput and terrible for blast radius: one
+        # misbehaving significance sensor can consume every unit of attention the
+        # system has. Unspent remainder is deliberately NOT redistributed — see
+        # _apply_bounds.
+        self.max_share = max_share
+        self.router = router
 
         self._state: Dict[str, _ModuleState] = {}
         self._ticks_since_any_spike = 0
@@ -145,6 +186,31 @@ class SpikeAttentionBudget:
                 st.above_streak = 0
                 st.active = False
                 st.ready_since = None
+
+    def _apply_bounds(self, active, sig_by_module) -> Dict[str, float]:
+        """Even split, then clamp each module to max_share.
+
+        The clamped remainder is NOT handed to the other active modules. That is a
+        deliberate choice: redistributing it means the cap silently stops binding
+        whenever few modules are active, so the guarantee "no module can ever draw
+        more than max_share in one tick" would hold only sometimes. A bound that
+        holds only sometimes is not a bound. The unspent amount is reported on the
+        allocation instead, so the slack is visible rather than quietly absorbed.
+        """
+        share = self.total_budget / len(active)
+        if self.max_share is not None:
+            share = min(share, self.max_share)
+        budgets = {module: share for module in active}
+        if self.router is not None:
+            budgets = self.router.weight(budgets, sig_by_module)
+            if self.max_share is not None:
+                # The router advises; it does not get to exceed the bound.
+                budgets = {m: min(v, self.max_share) for m, v in budgets.items()}
+            total = sum(budgets.values())
+            if total > self.total_budget:
+                scale = self.total_budget / total
+                budgets = {m: v * scale for m, v in budgets.items()}
+        return budgets
 
     def _shed(self, active: List[str], sig_by_module: Dict[str, float]) -> tuple:
         """Trim to max_active, keeping the most significant. Returns (kept, shed)."""
@@ -214,12 +280,14 @@ class SpikeAttentionBudget:
         # module is simply absent from the dict — there is no zero entry to
         # accidentally sum, and no way to hand out a sliver by mistake.
         if active:
-            share = self.total_budget / len(active)
-            for module in active:
+            for module, share in self._apply_bounds(active, sig_by_module).items():
                 alloc.budgets[module] = share
                 st = self._state_for(module)
                 st.last_funded_tick = tick
                 st.total_budget += share
+            alloc.unspent = round(
+                self.total_budget - sum(alloc.budgets.values()), 10
+            )
 
         alloc.active = list(active)
         alloc.idle = sorted(m for m in self._state if m not in alloc.budgets)
@@ -265,5 +333,7 @@ class SpikeAttentionBudget:
             starvation_ticks=self.starvation_ticks,
             max_active=self.max_active,
             fallback_after_idle_ticks=self.fallback_after_idle_ticks,
+            max_share=self.max_share,
+            router=self.router,
         )
         return [fresh.step(tick, signals) for tick, signals in script]
