@@ -305,5 +305,77 @@ class TestBulkAndConfig(unittest.TestCase):
         self.assertGreater(es.TOP_REVENUE_TASKS, 0)
 
 
+class TestPlanHorizonTerminates(unittest.TestCase):
+    """The revenue sweep must finish in a bounded number of steps.
+
+    Before the plan horizon, predict_revenue_bulk walked whatever iterable it was handed to
+    exhaustion. Handed one that never exhausts — a generator over a queue that refills, the
+    shape ev_scheduler.load_ctx() feeds it from a full-scan pager — it never returned, and it
+    never returned quietly: the caller wraps it in `except Exception: pass`, so a hang there
+    looks exactly like a scheduler that has stopped caring about revenue.
+
+    These tests are the reproduction. They pass an unbounded source and assert the call comes
+    back at all, which is the property the fix adds.
+    """
+
+    def test_an_endless_task_stream_still_terminates(self):
+        def forever():
+            i = 0
+            while True:
+                i += 1
+                yield task(id=f"t{i}")
+
+        out = es.predict_revenue_bulk(forever(), ctx(), horizon=25)
+        self.assertEqual(len(out), 25, "the walk must stop at the horizon, not at exhaustion")
+
+    def test_a_repeating_stream_terminates_on_steps_not_distinct_ids(self):
+        # The `seen` set alone is not a bound: an endless stream of the SAME id yields no new
+        # results forever. Steps are what must be counted.
+        def same_task_forever():
+            while True:
+                yield task(id="t1")
+
+        out = es.predict_revenue_bulk(same_task_forever(), ctx(), horizon=10)
+        self.assertEqual(len(out), 1, "a repeated task is scored once")
+
+    def test_duplicate_tasks_are_scored_once(self):
+        calls = {"n": 0}
+        real = es.predict_revenue
+
+        def counting(t, c):
+            calls["n"] += 1
+            return real(t, c)
+
+        tasks = [task(id="a"), task(id="a"), task(id="b"), task(id="a")]
+        with mock.patch.object(es, "predict_revenue", side_effect=counting):
+            out = es.predict_revenue_bulk(tasks, ctx())
+        self.assertEqual(sorted(out), ["a", "b"])
+        self.assertEqual(calls["n"], 2, "duplicates must not be re-scored")
+
+    def test_the_horizon_is_configurable_and_defaults_positive(self):
+        self.assertGreater(es.PLAN_HORIZON, 0, "a non-positive default horizon disables scoring")
+        import importlib
+
+        with mock.patch.dict(os.environ, {"ORCH_ECONOMIC_PLAN_HORIZON": "7"}, clear=True):
+            self.assertEqual(importlib.reload(es).PLAN_HORIZON, 7)
+        importlib.reload(es)  # restore ambient module state for other tests
+
+    def test_a_zero_horizon_means_no_work_not_unbounded_work(self):
+        self.assertEqual(es.predict_revenue_bulk([task()], ctx(), horizon=0), {})
+        self.assertEqual(es.predict_revenue_bulk([task()], ctx(), horizon=-1), {})
+
+    def test_a_junk_horizon_falls_back_to_the_default(self):
+        out = es.predict_revenue_bulk([task(id="a")], ctx(), horizon="not-a-number")
+        self.assertEqual(sorted(out), ["a"])
+
+    def test_the_plan_is_still_valid_within_the_bound(self):
+        # Bounding the walk must not change what the scored tasks are worth.
+        tasks = [task(id="a"), task(id="b", kind="bugfix")]
+        bounded = es.predict_revenue_bulk(tasks, ctx(), horizon=100)
+        self.assertEqual(bounded["a"], es.predict_revenue(task(id="a"), ctx())["point_estimate"])
+        self.assertEqual(bounded["b"],
+                         es.predict_revenue(task(id="b", kind="bugfix"), ctx())["point_estimate"])
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
