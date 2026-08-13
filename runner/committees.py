@@ -1746,10 +1746,65 @@ def board_review():
     return {"apps": len(alloc), "top": top and top.get('app'), "bumped": bumped}
 
 
+#: How often the portfolio bandit force-funds its LEAST-favored arm. Fleet-pushable via
+#: fleet_control.py because it is ORCH_-prefixed and carries no secret. 0 disables.
+ORCH_BOARD_CONTRARIAN_EVERY = os.environ.get("ORCH_BOARD_CONTRARIAN_EVERY", "5")
+
+
+def _contrarian_every(value=None):
+    """Parse the contrarian interval. Fail-soft: anything unparseable means 'default 5'."""
+    raw = ORCH_BOARD_CONTRARIAN_EVERY if value is None else value
+    try:
+        n = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 5
+    return n if n >= 0 else 5
+
+
+def contrarian_due(total_pulls, every=None):
+    """True when this pull is the scheduled counter-consensus pull.
+
+    UCB1 already explores, but it explores toward arms it is UNCERTAIN about; it never
+    deliberately funds the arm it is confident is worst. That is precisely the arm whose
+    low score is most likely to be an artefact of the board's own priors — an app starved
+    early looks bad forever because it is never funded enough to prove otherwise. So on a
+    fixed cadence the least-favored arm is force-funded regardless of score.
+
+    Fail-soft: a non-numeric interval falls back to the default rather than raising, and
+    0 disables the behaviour entirely (pure UCB1).
+    """
+    n = _contrarian_every(every)
+    if n <= 0:
+        return False
+    try:
+        pulls = int(total_pulls)
+    except (TypeError, ValueError):
+        return False
+    return pulls > 0 and pulls % n == 0
+
+
+def select_board_arm(scored, total_pulls, every=None):
+    """Choose (arm, is_contrarian) from UCB-sorted ``scored`` (descending).
+
+    Pure so the policy is testable without a database. Returns the normal UCB winner
+    except on a contrarian beat, when the LAST entry — the least-favored arm — is
+    returned instead. With fewer than two arms there is no dissent to fund, so the
+    winner stands.
+    """
+    if not scored:
+        return None, False
+    if len(scored) > 1 and contrarian_due(total_pulls, every):
+        return scored[-1], True
+    return scored[0], False
+
+
 def board_bandit():
     """PORTFOLIO BANDIT: instead of a one-shot allocation, continuously shift build effort toward the app
     with the best REALIZED reward (concluded-experiment lift + revenue movement), while exploring
-    underfunded apps just enough not to miss a sleeper. UCB1 over apps; autonomous queue rebalance."""
+    underfunded apps just enough not to miss a sleeper. UCB1 over apps; autonomous queue rebalance.
+
+    ANTI-GROUPTHINK: every ORCH_BOARD_CONTRARIAN_EVERY pulls the least-favored arm is
+    force-funded (see contrarian_due) so consensus is stress-tested rather than compounded."""
     import math
     apps = [p for p in (db.select("projects", {"select": "id,name"}) or []) if p["name"] != "smoke-test"]
     # reward signal: average realized lift of each app's concluded experiments (fallback: optimistic prior)
@@ -1768,7 +1823,7 @@ def board_bandit():
         ucb = (reward / 10.0) + math.sqrt(2 * math.log(total_pulls) / (pulls + 1))
         scored.append((ucb, name, a["id"], reward))
     scored.sort(reverse=True)
-    top = scored[0] if scored else None
+    top, is_contrarian = select_board_arm(scored, total_pulls)
     bumped = 0
     if top:
         _, tname, tid, treward = top
@@ -1781,10 +1836,14 @@ def board_bandit():
         rsum = float(st.get("reward_sum") or 0) + treward
         db.insert("board_bandit", {"app": tname, "pulls": pulls, "reward_sum": rsum,
                   "avg_reward": round(rsum / pulls, 3), "updated_at": "now()"}, upsert=True)
+        rationale = (f"CONTRARIAN pull: least-favored arm force-funded to stress-test consensus "
+                     f"(reward {round(treward,2)}, explored {pulls}x)" if is_contrarian
+                     else f"UCB pick: reward {round(treward,2)}, explored {pulls}x")
         db.insert("board_allocations", {"app": tname, "recommended_share": 1.0,
-                  "rationale": f"UCB pick: reward {round(treward,2)}, explored {pulls}x"})
-    print(f"committees.board_bandit: picked {top and top[1]}, bumped {bumped} tasks")
-    return {"top": top and top[1], "bumped": bumped}
+                  "rationale": rationale})
+    print(f"committees.board_bandit: picked {top and top[1]}"
+          f"{' (contrarian)' if is_contrarian else ''}, bumped {bumped} tasks")
+    return {"top": top and top[1], "bumped": bumped, "contrarian": is_contrarian}
 
 
 def mine_hypotheses(limit=3):
@@ -1847,9 +1906,105 @@ def build_kg():
     return n
 
 
+def causal_links(opinions, outcomes, min_support=2):
+    """Aggregate (verdict -> measured outcome) evidence per app. Pure; no I/O.
+
+    The similarity edges built above answer "what did we decide near this?" — co-occurrence.
+    They cannot answer "did holding that verdict actually move anything", because an opinion
+    and an outcome that merely share an app and a week look identical to a keyword graph.
+
+    So a link is only counted when the outcome came AFTER the determination for the same app
+    (``created_at`` / ``concluded_at`` compared as strings, which is correct for the ISO-8601
+    timestamps this schema stores). Effect is the mean realized lift of the experiments that
+    followed. ``min_support`` exists because one experiment after one verdict is an anecdote:
+    below it the link is dropped rather than reported as causal.
+
+    This is directional evidence, not proof — nothing here controls for confounders, so the
+    output is phrased as "followed by" wherever it reaches a prompt.
+
+    Returns a list of dicts sorted by |effect| descending, each:
+        {verdict, app, n, effect}
+    Fail-soft: malformed rows are skipped, never raised on.
+    """
+    buckets = {}
+    for o in opinions or []:
+        try:
+            verdict = (o.get("consensus_verdict") or "").strip()
+            app = o.get("app") or "portfolio"
+            at = str(o.get("created_at") or "")
+        except AttributeError:
+            continue
+        if not verdict:
+            continue
+        for e in outcomes or []:
+            try:
+                if (e.get("app") or "portfolio") != app:
+                    continue
+                when = str(e.get("concluded_at") or "")
+                if not (at and when and when > at):
+                    continue
+                lift = float(e.get("lift") or 0)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            buckets.setdefault((verdict, app), []).append(lift)
+    links = []
+    for (verdict, app), lifts in buckets.items():
+        if len(lifts) < min_support:
+            continue
+        links.append({"verdict": verdict, "app": app, "n": len(lifts),
+                      "effect": round(sum(lifts) / len(lifts), 3)})
+    links.sort(key=lambda l: (-abs(l["effect"]), l["verdict"], l["app"]))
+    return links
+
+
+def format_causal_context(links, limit=3):
+    """Render causal_links() as a prompt line. Empty string when there is nothing to say."""
+    if not links:
+        return ""
+    parts = [f"'{l['verdict']}' on {l['app']} was followed by mean lift "
+             f"{l['effect']:+} across {l['n']} experiments" for l in links[:limit]]
+    return ("CAUSAL EVIDENCE (determination -> measured outcome; directional, not controlled): "
+            + " | ".join(parts) + "\n")
+
+
+def build_causal_kg(limit=300):
+    """Persist causal edges alongside the similarity edges. Fail-soft: never raises."""
+    try:
+        ops = db.select("committee_opinions",
+                        {"select": "app,consensus_verdict,created_at",
+                         "order": "created_at.desc", "limit": str(limit)}) or []
+        exps = db.select("committee_experiments",
+                         {"select": "app,lift,concluded_at", "status": "eq.concluded"}) or []
+        links = causal_links(ops, exps)
+        have = {(e["from_key"], e["to_key"], e["relation"]) for e in
+                (db.select("kg_edges", {"select": "from_key,to_key,relation",
+                                        "relation": "eq.outcome:followed", "limit": "5000"}) or [])}
+        n = 0
+        for l in links:
+            fk, tk = l["verdict"], l["app"]
+            if (fk, tk, "outcome:followed") in have:
+                continue
+            db.insert("kg_edges", {"from_kind": "verdict", "from_key": fk, "to_kind": "outcome",
+                                   "to_key": tk, "relation": "outcome:followed",
+                                   "weight": l["n"]})
+            have.add((fk, tk, "outcome:followed"))
+            n += 1
+        print(f"committees.build_causal_kg: {len(links)} causal links, {n} new edges")
+        return n
+    except Exception as exc:
+        # CLAUDE.md: broad catch is the fail-soft convention, but it must diagnose before
+        # swallowing — a silent except is the defect.
+        print(f"committees.build_causal_kg: skipped ({exc})")
+        return 0
+
+
 def kg_context(title, body, limit=4):
     """Query the knowledge graph for opinions near this decision (any committee) — richer than single-
-    committee precedent. Returns a compact context string."""
+    committee precedent. Returns a compact context string.
+
+    Appends CAUSAL EVIDENCE when the graph has enough post-determination outcomes to say
+    which verdicts were actually followed by movement, so the board reasons about effect
+    rather than adjacency."""
     key = set(re.findall(r"[a-z]{4,}", ((title or "") + " " + (body or "")).lower()))
     ops = db.select("committee_opinions", {"select": "committee,subject_title,consensus_verdict,opinion",
                     "order": "created_at.desc", "limit": "200"}) or []
@@ -1864,7 +2019,20 @@ def kg_context(title, body, limit=4):
         return ""
     lines = [f"{o['committee']} held '{o.get('consensus_verdict')}' on '{o.get('subject_title')}'"
              for _, o in scored[:limit]]
-    return "RELATED PRIOR DECISIONS (knowledge graph): " + " | ".join(lines) + "\n"
+    out = "RELATED PRIOR DECISIONS (knowledge graph): " + " | ".join(lines) + "\n"
+    # Causal layer is additive and fail-soft: if the outcome data is unavailable the
+    # co-occurrence context above is still returned unchanged.
+    try:
+        near = {o.get("consensus_verdict") for _, o in scored[:limit]}
+        cops = db.select("committee_opinions", {"select": "app,consensus_verdict,created_at",
+                         "order": "created_at.desc", "limit": "200"}) or []
+        cexps = db.select("committee_experiments", {"select": "app,lift,concluded_at",
+                          "status": "eq.concluded"}) or []
+        links = [l for l in causal_links(cops, cexps) if l["verdict"] in near]
+        out += format_causal_context(links)
+    except Exception as exc:
+        print(f"committees.kg_context: causal layer skipped ({exc})")
+    return out
 
 
 def meta_review():
