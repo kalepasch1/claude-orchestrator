@@ -348,3 +348,23 @@ worked around in the task, and the result is that this fingerprint's evidence
 classified end-to-end on the first pass.
 
 Nothing was popped, dropped, reset, cleaned or moved.
+
+---
+
+# Fingerprint `3b50d1e569de` — one item, and it is the one that keeps recurring
+
+A single evidence item: the `broken_codex_git_worktree` at
+`Codex/2026-08-07/cons/work/orchestrator-session-fabric`. **1358 items enumerated
+live, zero UNKNOWN.**
+
+That worktree has now appeared in five separate fingerprints. Its verdict is stable
+and worth stating once plainly: its **committed** content survives in
+`refs/heads/codex/orchestrator-session-fabric`, so the pruned gitdir is not the loss
+it looks like. What cannot be recovered is any **uncommitted** drift in the
+directory, which is unreadable without the gitdir and is reported as
+`uncommittedDriftUnreadable: true` rather than assumed to be nothing.
+
+The recurrence is itself the signal. A source that keeps arriving in new audits is a
+source nothing has resolved, and the resolution here is not a merge — it is either
+committing that ref or accepting that the drift is gone. Recorded, not silently
+re-recovered.
