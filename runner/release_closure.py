@@ -499,3 +499,59 @@ def report_completion(closure):
         return False, "missing: %s" % (", ".join(closure.get("missing", [])) or "unknown")
     except Exception:
         return False, "fail-soft: closure could not be evaluated, so completion is not reported"
+
+
+# ─── Reachability ────────────────────────────────────────────────────────────
+# Everything above was correct and unreachable: no module in the tree imported
+# release_closure, and it had no entry point of its own, so the closure verdict it
+# computes could never actually be asked for. A green test suite over code nothing
+# can call proves the logic works, not that it runs. This is the entry point, and it
+# deliberately changes no existing gate: it READS evidence and REPORTS, exactly like
+# the CLIs on stash_triage.py and dirty_checkout_recovery.py.
+
+
+def main(argv=None) -> int:
+    """Evaluate release closure for one task from an evidence JSON document.
+
+    Evidence arrives as a file or on stdin so this stays runnable with no database
+    and no credentials — the same argument-not-a-lookup choice the reconcile tooling
+    makes. Exit code is the verdict: 0 closed, 1 not closed, 2 unreadable input.
+    """
+    import argparse
+    import json
+    import sys
+
+    ap = argparse.ArgumentParser(
+        description="Evaluate end-to-end release closure for one task. "
+                    "MERGED is not DONE: this reports whether a user can actually see it.")
+    ap.add_argument("evidence", nargs="?", default="-",
+                    help="path to an evidence JSON document, or - for stdin")
+    ap.add_argument("--json", action="store_true", help="emit the full closure record")
+    args = ap.parse_args(argv)
+
+    try:
+        raw = sys.stdin.read() if args.evidence == "-" else open(args.evidence).read()
+        evidence = json.loads(raw)
+    except Exception as exc:
+        print("unreadable evidence: %s" % exc, file=sys.stderr)
+        return 2
+
+    closure = evaluate_closure(evidence)
+    ok, reason = report_completion(closure)
+
+    if args.json:
+        print(json.dumps({"closure": closure, "may_report_complete": ok, "reason": reason},
+                         indent=2, sort_keys=True, default=str))
+    else:
+        print("stage:  %s" % closure.get("stage"))
+        print("closed: %s" % closure.get("closed"))
+        missing = closure.get("missing") or []
+        if missing:
+            print("missing: %s" % ", ".join(missing))
+        print("verdict: %s" % reason)
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())
