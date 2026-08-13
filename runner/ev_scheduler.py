@@ -39,6 +39,29 @@ TOP_N = 50                 # tasks that receive an explicit priority write
 CONTROLS_TOP = 100         # ids stored in the controls ev_ranking row
 PARK_CAP = 20              # max tasks parked per run
 ZERO_EV = 0.01             # scores below this are "near-zero"
+
+# ── low-EV early exit ─────────────────────────────────────────────────────────────────────
+# Refuse worthless work BEFORE it is enqueued, instead of enqueuing it and shelving it later.
+# The shelf path is what produces "shelved by queue-velocity PID (low EV, integral too high)"
+# — and every shelved task had already been counted into the PID's integral on the way in, so
+# the controller was integrating work it then threw away. Refusing at the door removes that
+# windup at the source: a task that never entered the queue reports counts_toward_pid=False.
+#
+# Refusing is STRONGER than parking, so the bar is deliberately harder to trip:
+# LOW_EV_THRESHOLD < ZERO_EV, i.e. a task can be park-eligible and still be enqueued.
+LOW_EV_THRESHOLD = float(os.environ.get("ORCH_LOW_EV_THRESHOLD", "0.0"))
+LOW_EV_EARLY_EXIT = os.environ.get("ORCH_LOW_EV_EARLY_EXIT", "true").lower() == "true"
+
+#: Fields producers use for expected value, in precedence order.
+EV_FIELDS = ("ev", "expected_value", "score", "value")
+
+#: Lanes whose value is not EV-expressible. Recovery, evidence and repair work exists
+#: precisely because something is broken, so scoring it low and refusing it would make the
+#: fleet unable to repair itself — the one refusal that must never happen.
+EV_EXEMPT_PREFIXES = ("recovery", "recover-", "breach-remediation", "canary",
+                      "qafix", "relfix", "buildfix", "deployfix", "toolchain-repair",
+                      "rework")
+EV_EXEMPT_KINDS = ("recovery", "canary", "toolchain-repair")
 PARK_NOTE = "[ev-low-priority: near-zero expected value — keep queued, run when capacity allows]"
 BOOST_KINDS = ("build",)
 REVENUE_WORDS = ("revenue", "pricing", "growth", "conversion")
@@ -74,6 +97,148 @@ EXEMPT_SLUG_PREFIXES = ("recovery", "recover-", "breach-", "canary-", "qafix-", 
 # weighted by REALIZED outcomes (merged-and-stayed-green rate, retries, human-reject
 # rate) rather than flat cost only. Default OFF so current scheduling is byte-identical.
 OUTCOME_WEIGHTING_ENABLED = os.environ.get("ORCH_EV_OUTCOME_WEIGHTING", "false").lower() in ("true", "1", "yes")
+
+
+def task_ev(task):
+    """Expected value declared on `task`, or None when it is unknown.
+
+    None means "not measured" and is NEVER treated as zero — a producer that has not
+    adopted the EV field must not have every task silently refused.
+
+    Booleans are rejected even though `isinstance(True, int)` is True in Python: `ev=True`
+    is a field-type mistake, and reading it as 1.0 would let a typo enqueue work at a
+    value nobody assigned.
+    """
+    if not isinstance(task, dict):
+        return None
+    for field in EV_FIELDS:
+        if field not in task:
+            continue
+        raw = task[field]
+        if isinstance(raw, bool) or raw is None:
+            return None
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            return None
+        # NaN and ±inf are not measurements. NaN in particular compares False against
+        # EVERY threshold, so it would silently enqueue as "not below the bar" while
+        # poisoning any later arithmetic that touches it.
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    return None
+
+
+def _ev_exempt(task):
+    """True when this task's lane is not EV-expressible (recovery, canary, repair …)."""
+    slug = str((task or {}).get("slug") or "").lower()
+    kind = str((task or {}).get("kind") or "").lower()
+    if kind in EV_EXEMPT_KINDS:
+        return True
+    return any(slug.startswith(p) for p in EV_EXEMPT_PREFIXES)
+
+
+def should_enqueue(task, ev=None, threshold=None):
+    """Decide whether `task` may enter the queue at all.
+
+    Returns {enqueue, reason, ev, threshold, counts_toward_pid}. `counts_toward_pid` is
+    the point of the whole function: it is False EXACTLY when the task was refused, so a
+    task that never entered the queue can never be integrated by the queue-velocity PID.
+    That windup is what produced hours of "shelved by queue-velocity PID (low EV, integral
+    too high)" against work the controller had itself counted on the way in.
+
+    FAILS OPEN everywhere: unknown EV, an exempt lane, the kill switch, or an exception
+    inside the gate all enqueue. Refusing work is the destructive direction, so every
+    uncertainty resolves toward letting it through.
+    """
+    threshold = LOW_EV_THRESHOLD if threshold is None else threshold
+    verdict = {"enqueue": True, "reason": "", "ev": None,
+               "threshold": threshold, "counts_toward_pid": True}
+
+    if not LOW_EV_EARLY_EXIT:
+        verdict["reason"] = "low-EV early exit disabled"
+        return verdict
+
+    try:
+        value = task_ev(task) if ev is None else float(ev)
+    except Exception as exc:
+        verdict["reason"] = f"gate error ({exc}); enqueuing"
+        return verdict
+
+    verdict["ev"] = value
+
+    if value is None:
+        verdict["reason"] = "EV unknown; enqueuing"
+        return verdict
+
+    if _ev_exempt(task):
+        verdict["reason"] = "exempt lane (recovery/evidence/repair); enqueuing"
+        return verdict
+
+    if value < threshold:
+        slug = str((task or {}).get("slug") or "?")
+        verdict.update({"enqueue": False, "counts_toward_pid": False,
+                        "reason": f"EV {value} below threshold {threshold}"})
+        # Printed, not logged: the refusal must be visible in the producer's own output,
+        # and this module already reports through stdout.
+        print(f"[ev-scheduler] early exit: {slug} EV={value} < {threshold} — not enqueuing")
+        return verdict
+
+    verdict["reason"] = f"EV {value} >= {threshold}"
+    return verdict
+
+
+#: Note written on already-queued rows the gate would have refused. Deliberately distinct
+#: from PARK_NOTE: parking means "keep queued, run later", this means "the gate would not
+#: have admitted this at all". Conflating them would make the two states unqueryable.
+LOW_EV_SKIP_NOTE = ("[ev-low-value: below the enqueue threshold — would not be admitted "
+                    "today; left QUEUED for a human to retire or re-scope]")
+
+
+def shelve_low_ev(scored, threshold=None, cap=None):
+    """Mark already-queued rows the gate would now refuse. Returns how many were marked.
+
+    `scored` is [(ev, task), ...] as produced by the ranking pass.
+
+    NEVER changes `state` and never deletes. The gate can only refuse work at the door;
+    work already in the queue was admitted under the rules of its day, and silently
+    shelving it is exactly the behaviour that produced hours of "shelved by queue-velocity
+    PID" against tasks nobody chose to drop. This writes a NOTE so a human can retire or
+    re-scope it, and stops at PARK_CAP so one pass can never blanket the queue.
+
+    Fail-soft: a failing update is counted as not-marked rather than raised.
+    """
+    threshold = LOW_EV_THRESHOLD if threshold is None else threshold
+    cap = PARK_CAP if cap is None else cap
+    marked = 0
+    for value, task in scored or []:
+        if marked >= cap:
+            break
+        try:
+            if _ev_exempt(task):
+                continue
+            if value is None or float(value) >= threshold:
+                continue
+            db.update("tasks", {"id": task.get("id")}, {"note": LOW_EV_SKIP_NOTE})
+            marked += 1
+            print(f"[ev-scheduler] low-value: {task.get('slug')} EV={value} — noted, left QUEUED")
+        except Exception as exc:
+            print(f"[ev-scheduler] could not note {task.get('slug')}: {exc}")
+            continue
+    return marked
+
+
+def filter_enqueueable(tasks, threshold=None):
+    """Split `tasks` into (keep, skipped) where skipped is [(task, verdict), ...]."""
+    keep, skipped = [], []
+    for task in tasks or []:
+        verdict = should_enqueue(task, threshold=threshold)
+        if verdict["enqueue"]:
+            keep.append(task)
+        else:
+            skipped.append((task, verdict))
+    return keep, skipped
 
 
 def outcome_weight(task, ctx):
