@@ -130,6 +130,42 @@ def record_gate(manifest_id, gate, ok, *, command="", duration_ms=0, detail=""):
     return manifest
 
 
+def record_journey(manifest_id, receipt):
+    """Attach a production journey receipt to a frozen manifest.
+
+    Receipts are keyed by task slug so a fused release carries one receipt per attributed
+    task. `journeys_ok` is the manifest-level answer to "may anything in this release be
+    promoted?" — it is False while any REQUIRED journey is not a clean pass, which is what
+    stops a green build from certifying unproven work.
+    """
+    manifest = load(manifest_id)
+    journeys = manifest.setdefault("journeys", {})
+    key = str((receipt or {}).get("slug") or "release")
+    journeys[key] = receipt
+    manifest["journeys_ok"] = all(
+        (r or {}).get("verdict") == "pass"
+        for r in journeys.values() if (r or {}).get("required", True))
+    path = os.path.join(_dir(), manifest_id + ".json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as target:
+        json.dump(manifest, target, indent=2, sort_keys=True)
+    os.replace(tmp, path)
+    return manifest
+
+
+def required_journey_slugs(manifest):
+    """Attributed task slugs in this manifest that still need a passing journey."""
+    journeys = (manifest or {}).get("journeys") or {}
+    out = []
+    for task in (manifest or {}).get("tasks") or []:
+        slug = str(task.get("slug") or "")
+        if not slug:
+            continue
+        if (journeys.get(slug) or {}).get("verdict") != "pass":
+            out.append(slug)
+    return sorted(out)
+
+
 def validate(repo, manifest):
     current = _git(repo, "rev-parse", manifest.get("candidate_sha", ""))
     if current.returncode != 0:
