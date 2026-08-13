@@ -363,6 +363,67 @@ def write_ledger(records: list, fingerprint: str, *, db=None,
     return out
 
 
+#: Probe result for _accepted_live_states, cached for the life of the process. `None`
+#: means "not probed yet"; a tuple (possibly empty) means the probe has run.
+_ACCEPTED_LIVE_STATES = None
+
+
+def _accepted_live_states(db) -> tuple:
+    """The subset of LIVE_TASK_STATES the backend will actually accept in a filter.
+
+    `state` is a Postgres enum and `LIVE_TASK_STATES` is not a subset of it — `READY`
+    is not a member — and PostgREST rejects the *entire* request with a bare
+    `HTTP Error 400` when an `in.()` list names a value the enum does not have. The 400
+    body is not carried on the exception, so the bad member cannot be read off the
+    error; it has to be found by asking. Each probe is one `limit=1` request and the
+    answer is cached for the process, so this costs a handful of tiny reads once and
+    then never again.
+    """
+    global _ACCEPTED_LIVE_STATES
+    if _ACCEPTED_LIVE_STATES is not None:
+        return _ACCEPTED_LIVE_STATES
+    probe = getattr(db, "select", None)
+    if probe is None:
+        # No single-row read available (test doubles, older shims): assume the whole
+        # list is fine and let _live_task_rows fall back if it is not.
+        return tuple(LIVE_TASK_STATES)
+    accepted = []
+    for state in LIVE_TASK_STATES:
+        try:
+            probe("tasks", {"select": "slug", "state": f"eq.{state}", "limit": "1"})
+            accepted.append(state)
+        except Exception:  # noqa: BLE001 — not a member, or transport; either way skip
+            continue
+    _ACCEPTED_LIVE_STATES = tuple(accepted)
+    return _ACCEPTED_LIVE_STATES
+
+
+def _live_task_rows(db) -> list:
+    """Rows for live tasks only, filtered server-side when the backend allows it.
+
+    The full `tasks` table is ~22k rows and the live slice is ~900, so the unfiltered
+    scan this replaced paged 23 HTTP round-trips to answer a one-page question — and
+    tripped the truncated-scan detector every run, because page one of a paged read
+    legitimately comes back at exactly the 1000-row limit.
+
+    The filter stays best-effort and the unfiltered scan stays as the fallback. The
+    caller-side state check in live_task_slugs() remains authoritative, so a filtered
+    read and a full scan return the same slugs — only the cost differs.
+    """
+    accepted = _accepted_live_states(db)
+    if accepted:
+        try:
+            return db.select_all(
+                "tasks",
+                {"select": "slug,state", "state": f"in.({','.join(accepted)})"}) or []
+        except Exception:  # noqa: BLE001 — old backend, transport, enum drift
+            pass
+    try:
+        return db.select_all("tasks", {"select": "slug,state"}) or []
+    except Exception:  # noqa: BLE001 — fail-soft, see live_task_slugs docstring
+        return []
+
+
 def live_task_slugs(db=None, project_name: str = "") -> set:
     """Slugs currently owned by a live orchestrator task. Fail-soft: empty set.
 
@@ -377,10 +438,7 @@ def live_task_slugs(db=None, project_name: str = "") -> set:
         except Exception:  # noqa: BLE001
             return set()
     slugs = set()
-    try:
-        rows = db.select_all("tasks", {"select": "slug,state"}) or []
-    except Exception:  # noqa: BLE001
-        return set()
+    rows = _live_task_rows(db)
     for row in rows:
         if str(row.get("state", "")).upper() in LIVE_TASK_STATES and row.get("slug"):
             slugs.add(row["slug"])
