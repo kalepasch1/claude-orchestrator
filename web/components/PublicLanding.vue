@@ -129,9 +129,9 @@ useHead({
     <section class="outcome-loop">
       <div class="loop-copy">
         <p class="dark-kicker"><i /> Founder at the helm</p>
-        <h2>You choose the destination.<br>The hivemind navigates.</h2>
+        <h2>You choose the destination.<br>The platform navigates.</h2>
         <p>This is the GPS, lane-departure warning, and creative route planner for your portfolio. You keep authority. The platform watches the whole terrain, warns before drift, and continually proposes faster, safer, higher-value routes.</p>
-        <div class="loop-stats"><span><b>YOU</b> hold the wheel</span><span><b>CADE</b> predicts the road</span><span><b>∞</b> routes compared</span></div>
+        <div class="loop-stats"><span><b>YOU</b> hold the wheel</span><span><b>AI</b> predicts the road</span><span><b>∞</b> routes compared</span></div>
       </div>
       <div class="loop-console">
         <header><span>Founder-led guidance</span><b>YOU DECIDE</b></header>
