@@ -2,6 +2,34 @@
 
 Custom Python AST-based linter that enforces conventions extracted from `CLAUDE.md`.
 
+## Which implementation is canonical
+
+**`tools/lint_conventions.py`** — it is the one `.pre-commit-config.yaml` actually invokes,
+so it is the only copy whose behaviour can block a commit. Fix rules there.
+
+Three other near-identical linters exist and are *not* wired to anything:
+`tools/convention_lint.py`, `tools/convention_linter.py`, `runner/tools/lint_conventions.py`
+(~1,600 lines between them, each claiming to enforce "the CLAUDE.md conventions"). They are
+left in place rather than deleted because tests still import them — but note that
+`tools/lint_conventions.py` and `runner/tools/lint_conventions.py` share a module name, so
+which one a test gets depends on `sys.path` order, and the suites under
+`runner/tests/test_convention_conformance_*.py` are red today for that reason. Consolidating
+them onto the canonical copy is tracked separately; see `REFACTORING_PATTERN.md` for the
+keep-the-keeper procedure. Until then, the command examples below that name
+`tools/convention_lint.py` describe that unwired copy, not the hook.
+
+## FAIL_SOFT_ERROR: silence is the defect, breadth is not
+
+The rule flags a handler only when it discards the exception **without saying anything** —
+no log, no return, no re-raise, no recovery. A broad `except Exception:` that logs and
+continues is the documented convention in this repo (an error must not wedge the runner),
+per the correction recorded in `CLAUDE.md`: *"a silent `except Exception: pass` is the
+defect; a logged one is the convention."*
+
+It previously flagged every handler lacking a `return`, which reported the correct pattern
+as a violation and produced 5,849 findings in `runner/` alone. The narrowed rule reports
+1,328 there, each a real silent swallow.
+
 ## Running the Linter
 
 ### Command Line

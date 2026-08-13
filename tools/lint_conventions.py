@@ -199,21 +199,58 @@ class ConventionChecker(ast.NodeVisitor):
                     ))
 
     def _check_error_handling(self, node: ast.FunctionDef) -> None:
-        """Check for fail-soft error handling patterns."""
-        for child in ast.walk(node):
-            if isinstance(child, ast.Try):
-                self._check_try_except(child)
+        """Deliberately a no-op; `visit_Try` already reaches every handler.
+
+        This used to `ast.walk` the function body and re-check every Try node that
+        `visit_Try` would visit anyway, so each handler was reported twice — and three
+        times inside a nested function. Two identical lines in the output made the whole
+        report look untrustworthy long before anyone counted them.
+        """
+        return
 
     def _check_try_except(self, try_node: ast.Try) -> None:
-        """Verify try/except blocks have appropriate error handling."""
-        for handler in try_node.handlers:
-            has_return = any(isinstance(stmt, ast.Return) for stmt in handler.body)
+        """Flag handlers that swallow an exception SILENTLY.
 
-            if not has_return:
-                self.violations.append(ConventionViolation(
-                    self.filepath, handler.lineno, 'FAIL_SOFT_ERROR',
-                    'Exception handler should return a sensible default (empty string, None, etc.)'
-                ))
+        The previous rule flagged any handler without a `return`, which was backwards for
+        this codebase and produced 5,849 findings in runner/ alone — a lint that fires
+        5,849 times is a lint nobody runs, which is how the rule ended up disabled in
+        practice while real silent swallows shipped.
+
+        It also contradicted the governing convention. CLAUDE.md records the correction
+        verbatim: broad catches ARE the documented fail-soft convention (an error must not
+        wedge the runner), and "a silent `except Exception: pass` is the defect; a logged
+        one is the convention." So a handler that logs a diagnostic and continues — the
+        exact shape the convention asks for, e.g. branch_lease's
+        "heartbeat RPC infra error (...); fail-soft ALIVE" — was reported as a violation,
+        while `except Exception: pass` was reported identically. The signal was zero.
+
+        A handler is fine if it does ANY of: log/print/warn, return a default, re-raise,
+        continue/break, or perform real recovery work. It is flagged only when it does
+        none of those — i.e. it discards the error and says nothing.
+        """
+        for handler in try_node.handlers:
+            if not self._is_silent_swallow(handler):
+                continue
+            self.violations.append(ConventionViolation(
+                self.filepath, handler.lineno, 'FAIL_SOFT_ERROR',
+                'Exception handler swallows the error silently; write a diagnostic '
+                '(logger/print) before continuing, or return a sensible default'
+            ))
+
+    # Any of these in a handler body means the error had an observable outcome.
+    _OBSERVABLE_NODES = (ast.Return, ast.Raise, ast.Continue, ast.Break, ast.Call,
+                         ast.Assign, ast.AugAssign, ast.AnnAssign, ast.Delete,
+                         ast.Assert, ast.With, ast.Try, ast.Yield, ast.YieldFrom)
+
+    def _is_silent_swallow(self, handler: ast.ExceptHandler) -> bool:
+        """True when the handler discards the exception without any observable effect.
+
+        Any call counts, not only a recognised logger: the rule targets `pass`, and
+        second-guessing whether a given call is "enough of a diagnostic" is how a
+        narrow rule turns back into thousands of false positives. `if`/`for` bodies are
+        walked, so a conditional log still clears the check.
+        """
+        return not any(isinstance(stmt, self._OBSERVABLE_NODES) for stmt in ast.walk(handler))
 
     def _check_unguarded_mutations(self, node: ast.Attribute) -> None:
         """Flag mutations to shared state outside lock context."""
@@ -287,6 +324,42 @@ class ConventionChecker(ast.NodeVisitor):
         return bool(re.match(r'^[a-z][a-z0-9]*(_[a-z0-9]+)*$', name))
 
 
+# `# noqa` optionally followed by `:` and a comma/space-separated rule list.
+_NOQA_RE = re.compile(r'#\s*noqa(?::\s*(?P<rules>[A-Za-z0-9_,\s]+))?', re.IGNORECASE)
+
+
+def is_suppressed(line: str, rule: str) -> bool:
+    """True when `line` carries a `# noqa` that covers `rule`.
+
+    CONVENTION_LINT.md has promised this escape hatch since Phase 1 ("use
+    `# noqa: RULE_NAME` to skip specific lines") and nothing ever implemented it. A
+    blocking pre-commit hook with no per-line override is one that gets bypassed
+    wholesale with `--no-verify`, which is strictly worse than a narrow suppression
+    that stays visible in the diff and greppable in review.
+
+    Bare `# noqa` suppresses everything on the line; `# noqa: RULE` only that rule.
+    """
+    match = _NOQA_RE.search(line or '')
+    if not match:
+        return False
+    rules = match.group('rules')
+    if not rules:
+        return True
+    return rule.upper() in {r.strip().upper() for r in rules.replace(',', ' ').split() if r.strip()}
+
+
+def apply_noqa(violations: List[ConventionViolation],
+               source_lines: List[str]) -> List[ConventionViolation]:
+    """Drop violations whose reported line carries a covering `# noqa`."""
+    kept = []
+    for violation in violations:
+        index = (violation.lineno or 1) - 1
+        line = source_lines[index] if 0 <= index < len(source_lines) else ''
+        if not is_suppressed(line, violation.rule):
+            kept.append(violation)
+    return kept
+
+
 def check_file(filepath: str) -> List[ConventionViolation]:
     """Parse and check a Python file for convention violations."""
     try:
@@ -302,7 +375,7 @@ def check_file(filepath: str) -> List[ConventionViolation]:
             )]
         checker = ConventionChecker(filepath, source_lines)
         checker.visit(tree)
-        return checker.violations
+        return apply_noqa(checker.violations, source_lines)
     except Exception as e:
         return [ConventionViolation(
             filepath, 1, 'PARSE_ERROR',

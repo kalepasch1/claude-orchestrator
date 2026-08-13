@@ -225,14 +225,34 @@ except KeyError:
         error_violations = [v for v in violations if 'error' in v.rule.lower()]
         self.assertGreater(len(error_violations), 0)
 
-    def test_broad_exception_without_default_fails(self):
-        """Broad exception without sensible default fails."""
+    def test_broad_exception_that_logs_is_the_convention_not_a_violation(self):
+        """A broad catch that logs and continues is CORRECT here — it must not be flagged.
+
+        This test previously asserted the opposite, encoding advice CLAUDE.md explicitly
+        corrected: broad catches are this repo's documented fail-soft convention (an error
+        must not wedge the runner), and "a silent `except Exception: pass` is the defect;
+        a logged one is the convention." Flagging the logged form is what drove the rule
+        to 5,849 findings in runner/ and got the hook ignored.
+        """
         code = """
 def handle():
     try:
         execute()
     except Exception:
         log("error")
+"""
+        violations = self._check_code(code)
+        error_violations = [v for v in violations if 'error' in v.rule.lower()]
+        self.assertEqual(len(error_violations), 0)
+
+    def test_broad_exception_that_says_nothing_still_fails(self):
+        """The actual defect: the error is discarded and nothing is recorded."""
+        code = """
+def handle():
+    try:
+        execute()
+    except Exception:
+        pass
 """
         violations = self._check_code(code)
         error_violations = [v for v in violations if 'error' in v.rule.lower()]
