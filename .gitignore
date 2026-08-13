@@ -30,6 +30,11 @@ runner/.preopt_cache/
 .claude/settings.json
 .vercel
 .env*
+# ...but the generated template is committed on purpose. It carries names and defaults
+# only — never a value for anything matching KEY/TOKEN/SECRET/PASSWORD — and without this
+# negation the `.env*` rule above silently swallows it, which is why the repo had no
+# config template at all. Regenerate with `python3 scripts/gen_env_example.py`.
+!.env.example
 
 # machine-local settings with PIDs, credentials, hardcoded paths
 .claude/settings.local.json
