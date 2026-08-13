@@ -29,6 +29,20 @@ def _tier_units_in_range(units: int, tier_min: int, tier_max: Optional[int]) -> 
     return True
 
 
+def _tier_capacity_units(tier_min: int, tier_max: Optional[int]) -> int:
+    """Canonical tier capacity: how many units a bounded tier can ever hold.
+
+    Unlimited (max_units=None) and malformed (max < min) tiers report 0. This is the
+    ONE definition of capacity in the codebase — `common_utils.consume_from_tier`
+    recomputed the identical `tier_max - (tier_min - 1)` expression inline, which is the
+    duplication this consolidation removes. Everything that needs a capacity now calls
+    here or `PricingTier._tier_capacity`.
+    """
+    if tier_max is None:
+        return 0
+    return max(0, tier_max - tier_min + 1)
+
+
 def _calculate_applicable_units(units: int, tier_min: int, tier_max: Optional[int]) -> int:
     """Single unified method for calculating applicable units in a tier range.
 
@@ -66,6 +80,16 @@ class PricingTier:
     def is_unlimited(self) -> bool:
         """Single source of truth for unlimited tier detection."""
         return self.max_units is None
+
+    @staticmethod
+    def _tier_capacity(tier: 'PricingTier') -> int:
+        """Capacity of *tier* in units; 0 for unlimited or malformed tiers.
+
+        Thin delegation to the canonical `_tier_capacity_units` so callers can reach it
+        off the class without importing the module-level helper. Reads only min/max —
+        never metadata — so it cannot leak tier metadata into a calculation.
+        """
+        return _tier_capacity_units(tier.min_units, tier.max_units)
 
     def cost_for_units(self, units: int) -> float:
         """Calculate cost for units within this tier's range."""
@@ -110,12 +134,15 @@ class PricingGrid:
         if remaining <= 0:
             return 0, 0.0
 
-        consumed, _ = common_utils.consume_from_tier(
-            current=tier.min_units - 1,
-            tier_min=tier.min_units,
-            tier_max=tier.max_units,
-            amount=remaining
-        )
+        # An unlimited tier absorbs everything; a bounded one is clamped to its capacity.
+        # This used to call common_utils.consume_from_tier(current=tier.min_units - 1, ...),
+        # which with that fixed `current` reduces to exactly `tier_max - tier_min + 1` —
+        # the same expression PricingTier._tier_capacity owns. Two copies of one rule is
+        # the duplication being consolidated; capacity now has a single definition.
+        if tier.is_unlimited:
+            consumed = remaining
+        else:
+            consumed = min(remaining, PricingTier._tier_capacity(tier))
         if consumed == 0:
             cost = 0.0
         else:
