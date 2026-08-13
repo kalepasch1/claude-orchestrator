@@ -44,6 +44,15 @@ def recover(repo, slug, base, project=None):
     """
     branch = f"agent/{slug}"
 
+    # Method -1: the branch is already on origin. Cheapest and EXACT — it restores the
+    # commit that was actually pushed rather than reconstructing one. Runs first because
+    # every method below it is either slower, approximate, or both, and the common shape
+    # of "missing branch" is a local ref that was pruned with its worktree while the push
+    # succeeded.
+    result = restore_from_remote(repo, slug, base)
+    if result["ok"]:
+        return result
+
     # Method 0: recover the exact, immutable artifact. This is deterministic,
     # cross-host and does not spend model tokens.
     result = _immutable_ref_recovery(repo, slug, branch, base)
@@ -249,21 +258,44 @@ def _apply_patch_to_branch(repo, patch, branch, base):
 # These are NOT yet wired into recover() — they are isolated utilities.
 # ---------------------------------------------------------------------------
 
+def _branch_listed(stdout, branch):
+    """Exact match against `git branch --list` output.
+
+    `branch in stdout` was a SUBSTRING test, so `agent/fix-widget` reported found when
+    only `agent/fix-widget-border` existed. A false positive here is the expensive
+    direction: detect_branch is the gate that decides a task needs no recovery, so the
+    task keeps its queue slot pointing at a branch that does not exist.
+    """
+    for line in (stdout or "").splitlines():
+        if line.strip().lstrip("* +").strip() == branch:
+            return True
+    return False
+
+
 def detect_branch(repo, slug):
-    """Zero-spend detection: check local branches and worktrees for agent/<slug>.
+    """Zero-spend detection: is agent/<slug> anywhere we can reach without spending?
 
     Returns dict with:
     - found: bool
-    - location: 'local' | 'worktree' | None
+    - location: 'local' | 'worktree' | 'remote' | None
     - branch: str
     - path: Optional[str]  (worktree path when location=='worktree')
+    - remote_ref: Optional[str] (e.g. 'refs/remotes/origin/agent/<slug>')
+
+    The remote check matters as much as the local ones. Agent work is PUSHED to
+    `origin/agent/<slug>` and the local branch is then deleted with the worktree, so on a
+    fresh clone — or after any ref prune — the exact finished work is sitting on origin
+    while this function reported "missing". Callers then either ran the expensive
+    recovery ladder to reconstruct work that already existed, or, in
+    queue_velocity._recovery_action, shelved the task outright.
     """
     branch = f"agent/{slug}"
 
     # 1. Local branches — cheapest check
     r = _git(repo, "branch", "--list", branch)
-    if r.returncode == 0 and branch in (r.stdout or ""):
-        return {"found": True, "location": "local", "branch": branch, "path": None}
+    if r.returncode == 0 and _branch_listed(r.stdout, branch):
+        return {"found": True, "location": "local", "branch": branch, "path": None,
+                "remote_ref": None}
 
     # 2. Worktrees — branch may be checked out without existing as a local ref
     r = _git(repo, "worktree", "list", "--porcelain")
@@ -273,9 +305,55 @@ def detect_branch(repo, slug):
             if line.startswith("worktree "):
                 cur_path = line[len("worktree "):].strip()
             elif line.strip() == f"branch refs/heads/{branch}":
-                return {"found": True, "location": "worktree", "branch": branch, "path": cur_path}
+                return {"found": True, "location": "worktree", "branch": branch,
+                        "path": cur_path, "remote_ref": None}
 
-    return {"found": False, "location": None, "branch": branch, "path": None}
+    # 3. Remote-tracking refs — still zero-spend: no network, reads what is already
+    #    fetched. `for-each-ref` is used rather than `branch -r --list` because it prints
+    #    one exact refname per line with no decoration to parse around.
+    ref = f"refs/remotes/origin/{branch}"
+    r = _git(repo, "for-each-ref", "--format=%(refname)", ref)
+    if r.returncode == 0 and (r.stdout or "").strip() == ref:
+        return {"found": True, "location": "remote", "branch": branch, "path": None,
+                "remote_ref": ref}
+
+    return {"found": False, "location": None, "branch": branch, "path": None,
+            "remote_ref": None}
+
+
+def restore_from_remote(repo, slug, base=None):
+    """Recreate the local branch from origin. Zero-spend; no model tokens, no network.
+
+    This is the cheapest recovery there is and it is EXACT — the recovered branch is the
+    commit that was pushed, not a reconstruction. It belongs ahead of every other method
+    in `recover()` for that reason.
+
+    `base` is accepted and ignored on purpose: unlike _immutable_ref_recovery there is no
+    ancestry requirement, because the remote branch IS the work, whatever it is based on.
+    Rebasing is the merge train's job, not recovery's.
+    """
+    branch = f"agent/{slug}"
+    ref = f"refs/remotes/origin/{branch}"
+    try:
+        found = _git(repo, "for-each-ref", "--format=%(refname)", ref)
+        if found.returncode != 0 or (found.stdout or "").strip() != ref:
+            return {"ok": False, "method": "remote_restore", "branch": branch,
+                    "reason": "no origin/agent branch for this slug"}
+        resolved = _git(repo, "rev-parse", "--verify", ref)
+        sha = resolved.stdout.strip() if resolved.returncode == 0 else ""
+        if not sha:
+            return {"ok": False, "method": "remote_restore", "branch": branch,
+                    "reason": "remote ref does not resolve"}
+        _free_branch(repo, branch)
+        created = _git(repo, "branch", "--force", branch, sha)
+        if created.returncode != 0:
+            return {"ok": False, "method": "remote_restore", "branch": branch,
+                    "reason": (created.stderr or "")[:200]}
+        return {"ok": True, "method": "remote_restore", "branch": branch,
+                "commit": sha, "remote_ref": ref}
+    except Exception as exc:
+        return {"ok": False, "method": "remote_restore", "branch": branch,
+                "reason": str(exc)[:200]}
 
 
 def query_cache_hints(slug, intent_words=None, project=None):

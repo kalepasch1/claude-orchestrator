@@ -49,6 +49,7 @@ class DetectBranchLocalTest(unittest.TestCase):
             g.side_effect = [
                 _proc(0, ""),        # branch --list: empty
                 _proc(0, wt_output), # worktree list --porcelain
+                _proc(0, ""),        # for-each-ref: no remote-tracking ref
             ]
             result = pr.detect_branch(REPO, SLUG)
         self.assertFalse(result["found"])
@@ -59,6 +60,7 @@ class DetectBranchLocalTest(unittest.TestCase):
             g.side_effect = [
                 _proc(0, ""),  # branch --list: empty
                 _proc(0, ""),  # worktree list: empty
+                _proc(0, ""),  # for-each-ref: no remote-tracking ref
             ]
             result = pr.detect_branch(REPO, SLUG)
         self.assertFalse(result["found"])
@@ -114,6 +116,7 @@ class DetectBranchWorktreeTest(unittest.TestCase):
             g.side_effect = [
                 _proc(0, ""),   # branch --list: empty
                 _proc(1, ""),   # worktree list: fails
+                _proc(0, ""),   # for-each-ref: no remote-tracking ref
             ]
             result = pr.detect_branch(REPO, SLUG)
         self.assertFalse(result["found"])
@@ -648,6 +651,146 @@ class TemplateAdaptationTest(unittest.TestCase):
             result = pr._template_adaptation(REPO, SLUG, BRANCH, BASE)
         self.assertFalse(result["ok"])
         self.assertIn("task not found", result["reason"])
+
+
+# ---------------------------------------------------------------------------
+# Remote-tracking detection and restore (slice 5)
+#
+# Agent work is PUSHED to origin/agent/<slug> and the local branch is deleted with
+# its worktree, so on a fresh clone or after a ref prune the exact finished work is
+# on origin while detect_branch used to report "missing".
+# ---------------------------------------------------------------------------
+
+REMOTE_REF = f"refs/remotes/origin/{BRANCH}"
+
+
+class BranchListedTest(unittest.TestCase):
+    """The substring bug: `agent/x` must not match `agent/x-y`."""
+
+    def test_a_longer_branch_name_is_not_a_match(self):
+        self.assertFalse(pr._branch_listed("  agent/fix-widget-border\n", "agent/fix-widget"))
+
+    def test_an_exact_name_matches(self):
+        self.assertTrue(pr._branch_listed("  agent/fix-widget\n", "agent/fix-widget"))
+
+    def test_the_checked_out_marker_is_tolerated(self):
+        self.assertTrue(pr._branch_listed("* agent/fix-widget\n", "agent/fix-widget"))
+        self.assertTrue(pr._branch_listed("+ agent/fix-widget\n", "agent/fix-widget"))
+
+    def test_empty_output_is_not_a_match(self):
+        for bad in ("", None, "\n\n"):
+            self.assertFalse(pr._branch_listed(bad, "agent/fix-widget"))
+
+
+class DetectBranchRemoteTest(unittest.TestCase):
+    def test_found_on_origin_when_absent_locally(self):
+        with patch.object(pr, "_git") as g:
+            g.side_effect = [
+                _proc(0, ""),            # branch --list: empty
+                _proc(0, ""),            # worktree list: empty
+                _proc(0, REMOTE_REF + "\n"),  # for-each-ref: present on origin
+            ]
+            result = pr.detect_branch(REPO, SLUG)
+        self.assertTrue(result["found"])
+        self.assertEqual(result["location"], "remote")
+        self.assertEqual(result["remote_ref"], REMOTE_REF)
+
+    def test_a_local_branch_short_circuits_before_the_remote_check(self):
+        with patch.object(pr, "_git") as g:
+            g.side_effect = [_proc(0, f"  {BRANCH}\n")]
+            result = pr.detect_branch(REPO, SLUG)
+        self.assertEqual(result["location"], "local")
+        self.assertEqual(g.call_count, 1)
+
+    def test_a_partial_ref_match_is_not_accepted(self):
+        """for-each-ref on a prefix can print a different ref; only the exact one counts."""
+        with patch.object(pr, "_git") as g:
+            g.side_effect = [
+                _proc(0, ""), _proc(0, ""),
+                _proc(0, f"refs/remotes/origin/{BRANCH}-old\n"),
+            ]
+            result = pr.detect_branch(REPO, SLUG)
+        self.assertFalse(result["found"])
+
+    def test_a_failing_for_each_ref_is_not_found(self):
+        with patch.object(pr, "_git") as g:
+            g.side_effect = [_proc(0, ""), _proc(0, ""), _proc(1, "", "boom")]
+            result = pr.detect_branch(REPO, SLUG)
+        self.assertFalse(result["found"])
+
+
+class RestoreFromRemoteTest(unittest.TestCase):
+    def test_recreates_the_branch_at_the_pushed_commit(self):
+        with patch.object(pr, "_git") as g, patch.object(pr, "_free_branch"):
+            g.side_effect = [
+                _proc(0, REMOTE_REF + "\n"),  # for-each-ref
+                _proc(0, "deadbeef\n"),       # rev-parse
+                _proc(0, ""),                 # branch --force
+            ]
+            result = pr.restore_from_remote(REPO, SLUG)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["method"], "remote_restore")
+        self.assertEqual(result["commit"], "deadbeef")
+
+    def test_no_remote_branch_is_a_clean_miss(self):
+        with patch.object(pr, "_git") as g:
+            g.side_effect = [_proc(0, "")]
+            result = pr.restore_from_remote(REPO, SLUG)
+        self.assertFalse(result["ok"])
+        self.assertIn("no origin/agent branch", result["reason"])
+
+    def test_an_unresolvable_ref_is_not_a_success(self):
+        with patch.object(pr, "_git") as g:
+            g.side_effect = [_proc(0, REMOTE_REF + "\n"), _proc(1, "")]
+            result = pr.restore_from_remote(REPO, SLUG)
+        self.assertFalse(result["ok"])
+        self.assertIn("does not resolve", result["reason"])
+
+    def test_a_failing_branch_create_reports_the_git_error(self):
+        with patch.object(pr, "_git") as g, patch.object(pr, "_free_branch"):
+            g.side_effect = [
+                _proc(0, REMOTE_REF + "\n"), _proc(0, "deadbeef\n"),
+                _proc(1, "", "fatal: cannot lock ref"),
+            ]
+            result = pr.restore_from_remote(REPO, SLUG)
+        self.assertFalse(result["ok"])
+        self.assertIn("cannot lock ref", result["reason"])
+
+    def test_it_never_raises(self):
+        with patch.object(pr, "_git", side_effect=RuntimeError("boom")):
+            result = pr.restore_from_remote(REPO, SLUG)
+        self.assertFalse(result["ok"])
+        self.assertIn("boom", result["reason"])
+
+
+class RecoverPrefersTheRemoteTest(unittest.TestCase):
+    def test_remote_restore_runs_before_every_reconstruction(self):
+        """The exact pushed commit beats any reconstruction, so it must be tried first."""
+        with patch.object(pr, "restore_from_remote",
+                          return_value={"ok": True, "method": "remote_restore",
+                                        "branch": BRANCH, "commit": "abc"}) as remote, \
+             patch.object(pr, "_immutable_ref_recovery") as immutable, \
+             patch.object(pr, "_replay_stored_patch") as replay, \
+             patch.object(pr, "_reflog_recovery") as reflog, \
+             patch.object(pr, "_template_adaptation") as template:
+            result = pr.recover(REPO, SLUG, BASE)
+        self.assertEqual(result["method"], "remote_restore")
+        remote.assert_called_once()
+        immutable.assert_not_called()
+        replay.assert_not_called()
+        reflog.assert_not_called()
+        template.assert_not_called()
+
+    def test_a_remote_miss_falls_through_to_the_existing_ladder(self):
+        with patch.object(pr, "restore_from_remote",
+                          return_value={"ok": False, "method": "remote_restore",
+                                        "branch": BRANCH, "reason": "none"}), \
+             patch.object(pr, "_immutable_ref_recovery",
+                          return_value={"ok": True, "method": "immutable_ref",
+                                        "branch": BRANCH}) as immutable:
+            result = pr.recover(REPO, SLUG, BASE)
+        self.assertEqual(result["method"], "immutable_ref")
+        immutable.assert_called_once()
 
 
 if __name__ == "__main__":
