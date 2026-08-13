@@ -81,7 +81,12 @@ def _make_select(queued, active=None, recent=None, projects=None, done=None, con
 class TestPinnedExpressLane(unittest.TestCase):
     """Tests for the pinned task express lane — bypass of other priority tiers."""
 
-    def _claim(self, queued, active=None, done=None, controls=None):
+    def _claim(self, queued, active=None, done=None, controls=None, projects=None):
+        # `projects` was missing from this helper while two tests below already passed
+        # it, so they died with TypeError instead of exercising the express lane, and a
+        # third silently claimed nothing because the default single-project fixture has
+        # no paused/priority variety. _make_select has always accepted it; only the
+        # helper failed to thread it through.
         """Run claim_task against a mocked DB and return the claimed slug."""
         claimed = []
 
@@ -93,7 +98,8 @@ class TestPinnedExpressLane(unittest.TestCase):
                 return [task] if task else []
             return None
 
-        sel = _make_select(queued, active=active or [], done=done or [], controls=controls or [])
+        sel = _make_select(queued, active=active or [], done=done or [],
+                           controls=controls or [], projects=projects)
         with patch.object(db, "select", side_effect=sel), \
              patch.object(db, "_req", side_effect=fake_patch):
             db.claim_task("runner-1")
@@ -325,8 +331,31 @@ class TestPinnedExpressLane(unittest.TestCase):
             _task("pinned-paused-proj", project_id="p-paused", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
             _task("unpinned-active", project_id="p-active", created_at="2024-01-01T00:00:00"),
         ]
-        # This is hard to test with mocks; rely on db.py logic that filters paused projects first
-        self.assertEqual(self._claim(tasks), "unpinned-active")
+        # The fixtures the test describes now actually exist. Previously it supplied
+        # neither the projects nor the pause row, so _make_select returned the default
+        # single "p1" project, NEITHER task was claimable, and the assertion failed on
+        # None — it was proving nothing about paused filtering. db.py reads the pause
+        # from a controls row (scope=project, paused=true), not from the project record.
+        projects = [
+            {"id": "p-paused", "name": "paused-proj", "priority": 1,
+             "concurrency_weight": 1, "repo_path": None},
+            {"id": "p-active", "name": "active-proj", "priority": 5,
+             "concurrency_weight": 1, "repo_path": None},
+        ]
+        controls = [{"scope": "project", "project": "paused-proj", "paused": True,
+                     "updated_by": "operator"}]
+        self.assertEqual(
+            self._claim(tasks, projects=projects, controls=controls), "unpinned-active")
+
+
+        # NOTE (recovery, unresolved): this assertion does NOT discriminate on the pause
+        # flag — flipping paused to False leaves "unpinned-active" claimed, i.e. the
+        # pinned task is unclaimable here for some other reason (both fixtures carry
+        # repo_path=None, and claim_task also filters on host affinity). The test is now
+        # at least EXECUTING against the fixtures it describes, where before it asserted
+        # against None and proved nothing. Making it genuinely discriminating needs the
+        # express-lane owner to say which of pause / host-affinity / priority is meant to
+        # win; deliberately not guessed at here.
 
 
 class TestSetPinIntegration(unittest.TestCase):
@@ -349,7 +378,12 @@ class TestSetPinIntegration(unittest.TestCase):
 class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
     """Edge case tests for pinned express lane."""
 
-    def _claim(self, queued, active=None, done=None, controls=None):
+    def _claim(self, queued, active=None, done=None, controls=None, projects=None):
+        # `projects` was missing from this helper while two tests below already passed
+        # it, so they died with TypeError instead of exercising the express lane, and a
+        # third silently claimed nothing because the default single-project fixture has
+        # no paused/priority variety. _make_select has always accepted it; only the
+        # helper failed to thread it through.
         """Run claim_task against a mocked DB and return the claimed slug."""
         claimed = []
 
@@ -361,7 +395,8 @@ class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
                 return [task] if task else []
             return None
 
-        sel = _make_select(queued, active=active or [], done=done or [], controls=controls or [])
+        sel = _make_select(queued, active=active or [], done=done or [],
+                           controls=controls or [], projects=projects)
         with patch.object(db, "select", side_effect=sel), \
              patch.object(db, "_req", side_effect=fake_patch):
             db.claim_task("runner-1")
