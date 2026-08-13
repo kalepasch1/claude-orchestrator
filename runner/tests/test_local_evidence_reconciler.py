@@ -314,6 +314,116 @@ def test_live_task_slugs_filters_by_state():
     assert slugs == {"alive"}
 
 
+@pytest.fixture(autouse=True)
+def _reset_state_probe():
+    """The accepted-state probe is cached per process; don't leak it between tests."""
+    ler._ACCEPTED_LIVE_STATES = None
+    yield
+    ler._ACCEPTED_LIVE_STATES = None
+
+
+class RecordingDB(FakeDB):
+    """FakeDB that remembers the params of every select_all, and can reject a filter.
+
+    `reject_filter` models the PostgREST 400 raised when an `in.()` list names a value
+    the `task_state` enum does not have — the reason the server-side filter has to stay
+    best-effort rather than becoming the only path.
+    """
+
+    def __init__(self, tasks=None, reject_filter=False):
+        super().__init__(tasks=tasks)
+        self.calls = []
+        self.reject_filter = reject_filter
+
+    def select_all(self, table, params=None):
+        self.calls.append(dict(params or {}))
+        if self.reject_filter and "state" in (params or {}):
+            raise RuntimeError("400: invalid input value for enum task_state")
+        return self.tasks
+
+
+class ProbingDB(RecordingDB):
+    """A backend whose enum rejects some of LIVE_TASK_STATES, like the real one does.
+
+    `bad_states` never resolve through `select`, exactly as PostgREST behaves for an
+    enum value that does not exist.
+    """
+
+    def __init__(self, tasks=None, bad_states=("READY",)):
+        super().__init__(tasks=tasks)
+        self.bad_states = set(bad_states)
+        self.probes = []
+
+    def select(self, table, params=None):
+        params = params or {}
+        self.probes.append(params.get("state", ""))
+        for bad in self.bad_states:
+            if params.get("state") == f"eq.{bad}":
+                raise RuntimeError("HTTP Error 400: Bad Request")
+        return []
+
+
+def test_live_task_slugs_filters_server_side():
+    db = RecordingDB(tasks=[{"slug": "alive", "state": "QUEUED"}])
+    assert ler.live_task_slugs(db) == {"alive"}
+    assert len(db.calls) == 1, "the filtered read must answer on its own"
+    state = db.calls[0].get("state", "")
+    assert state.startswith("in.(") and state.endswith(")")
+    for want in ler.LIVE_TASK_STATES:
+        assert want in state
+
+
+def test_live_task_slugs_falls_back_when_filter_rejected():
+    db = RecordingDB(tasks=[{"slug": "alive", "state": "RUNNING"},
+                            {"slug": "finished", "state": "DONE"}],
+                     reject_filter=True)
+    # Identical answer either way: the state check in live_task_slugs stays authoritative.
+    assert ler.live_task_slugs(db) == {"alive"}
+    assert len(db.calls) == 2, "a rejected filter must fall back to the full scan"
+    assert "state" not in db.calls[1]
+
+
+def test_live_task_slugs_fail_soft_when_both_reads_fail():
+    class Broken(RecordingDB):
+        def select_all(self, table, params=None):
+            self.calls.append(dict(params or {}))
+            raise RuntimeError("db down")
+
+    db = Broken()
+    assert ler.live_task_slugs(db) == set()
+    assert len(db.calls) == 2
+
+
+def test_state_probe_drops_members_the_enum_rejects():
+    # The whole point: one bad member must not cost us the filter for the good ones.
+    db = ProbingDB(tasks=[{"slug": "alive", "state": "QUEUED"}], bad_states=("READY",))
+    assert ler.live_task_slugs(db) == {"alive"}
+    assert len(db.calls) == 1, "the filtered read must still answer on its own"
+    sent = db.calls[0]["state"]
+    assert "READY" not in sent
+    for want in ler.LIVE_TASK_STATES:
+        if want != "READY":
+            assert want in sent
+
+
+def test_state_probe_is_cached_across_calls():
+    db = ProbingDB(tasks=[{"slug": "alive", "state": "QUEUED"}])
+    ler.live_task_slugs(db)
+    after_first = len(db.probes)
+    ler.live_task_slugs(db)
+    assert len(db.probes) == after_first, "probe must run once per process, not per call"
+    assert len(db.calls) == 2
+
+
+def test_state_probe_all_rejected_falls_back_to_full_scan():
+    db = ProbingDB(tasks=[{"slug": "alive", "state": "QUEUED"},
+                          {"slug": "finished", "state": "MERGED"}],
+                   bad_states=ler.LIVE_TASK_STATES)
+    assert ler.live_task_slugs(db) == {"alive"}
+    assert len(db.calls) == 1
+    assert "state" not in db.calls[0], "no usable filter left; must scan unfiltered"
+
+
 # ── fail-soft surface ───────────────────────────────────────────────────────
 
 def test_missing_repo_is_fail_soft(tmp_path):
