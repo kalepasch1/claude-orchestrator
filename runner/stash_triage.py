@@ -53,6 +53,43 @@ BUCKETS = (EMPTY, ALREADY_LANDED, RECOVERABLE, CONFLICTED, ERROR)
 _TIMEOUT_S = int(os.environ.get("ORCH_STASH_TRIAGE_TIMEOUT_S", "30") or 30)
 
 
+# ── audit addendum §D: the recorded result ───────────────────────────────────
+# The functions below this block classify a pile live. This block is the pile as it was
+# already classified, so a run that has nothing new to look at does not spend an hour
+# reproducing an answer that is written down.
+#
+#: The §D result. Recorded so it is not recomputed; dated so it can be invalidated.
+#:
+#: ARITHMETIC NOTE (found while encoding this, 2026-08-05). The four buckets sum to **288**,
+#: not the stated 315 — 27 stashes are in the pile and in no bucket. The addendum says "start
+#: from this, don't recompute", and that instruction is still right for the 288 that WERE
+#: classified; it is the 27 that need a pass. Recording the gap rather than quietly rescaling
+#: a bucket to make the numbers close is the whole point: a triage that silently balances is a
+#: triage nobody can audit, and the 27 would have been lost in the rounding. `unaccounted` is
+#: derived, never hand-entered, so it cannot go stale against the counts above.
+BASELINE = {
+    "host": "mac1",
+    "measured_at": "2026-07-30",
+    "total": 315,
+    "counts": {EMPTY: 119, ALREADY_LANDED: 37, RECOVERABLE: 12, CONFLICTED: 120},
+    "conflicted_touching_runner": 76,
+    "recovery_script": "recover_stashes.sh",
+    "recoverable_refs": [
+        "stash@{2}", "stash@{37}", "stash@{39}", "stash@{64}", "stash@{65}", "stash@{69}",
+        "stash@{70}", "stash@{97}", "stash@{161}", "stash@{220}", "stash@{221}", "stash@{259}",
+    ],
+}
+
+#: Not recoverable. Stated so it stops being looked for.
+PERMANENT_LOSS = {
+    "batches": 282,
+    "window": "2026-07-08..2026-07-16",
+    "cause": "the old destructive `git stash push -u` in sentinel.checkout_guard",
+    "status": "not in any stash, not in the reflog, not recoverable",
+    "root_cause_fixed": True,
+}
+
+
 def _git(repo, *args, stdin=None, timeout=None):
     return subprocess.run(["git", *args], cwd=repo, input=stdin,
                           capture_output=True, text=True,
@@ -158,6 +195,112 @@ def triage(repo=".", limit=None):
                        for r in conflicted],
         "stashes": results,
     }
+
+
+# ── audit addendum §D: querying the recorded result ──────────────────────────
+# All of these are read-only over BASELINE and never raise: an operator summary that
+# throws is worse than one that says it is unavailable.
+
+
+def compare_to_baseline(observed_total, baseline=None):
+    """Has the pile moved since §D was measured? Never raises.
+
+    Returns {"changed", "baseline_total", "observed_total", "delta", "recommendation"}.
+    The recommendation is the point: an unchanged pile means the §D numbers still hold and a
+    full re-triage is an hour spent to reproduce a result already written down.
+    """
+    baseline = baseline or BASELINE
+    result = {"changed": True, "baseline_total": baseline.get("total"),
+              "observed_total": None, "delta": None, "recommendation": ""}
+    try:
+        observed = int(observed_total)
+        result["observed_total"] = observed
+        result["delta"] = observed - int(baseline.get("total") or 0)
+        result["changed"] = result["delta"] != 0
+        if not result["changed"]:
+            result["recommendation"] = (
+                f"pile unchanged since {baseline.get('measured_at')} — use the recorded triage "
+                f"({summary_line(baseline)}); do NOT recompute")
+        elif result["delta"] > 0:
+            result["recommendation"] = (
+                f"{result['delta']} new stash(es) since {baseline.get('measured_at')} — triage "
+                f"ONLY the new ones; the rest of the baseline still holds")
+        else:
+            result["recommendation"] = (
+                f"{abs(result['delta'])} stash(es) fewer than the baseline — something dropped "
+                f"them; explain that before triaging (see stash_census fleet reconciliation)")
+        return result
+    except Exception:
+        result["recommendation"] = "observed total unreadable — recompute nothing on a guess"
+        return result
+
+
+def unaccounted(baseline=None):
+    """Stashes in the pile that are in no bucket. Derived, so it cannot go stale.
+
+    `is None`, not falsiness: an explicitly-empty baseline means "nothing was recorded", and
+    silently substituting the module default there would report a 27-stash gap for a pile that
+    was never measured.
+    """
+    baseline = BASELINE if baseline is None else baseline
+    try:
+        return int(baseline.get("total") or 0) - sum(baseline.get("counts", {}).values())
+    except Exception:
+        return 0
+
+
+def summary_line(baseline=None):
+    """The §D result as one line. Never raises."""
+    baseline = baseline or BASELINE
+    try:
+        counts = baseline.get("counts", {})
+        return (f"{counts.get(EMPTY, 0)} empty · {counts.get(ALREADY_LANDED, 0)} already-landed · "
+                f"{counts.get(RECOVERABLE, 0)} recoverable · {counts.get(CONFLICTED, 0)} conflicted")
+    except Exception:
+        return ""
+
+
+def real_work(baseline=None):
+    """The count that actually needs a human or agent: the conflicted set. Never raises."""
+    baseline = baseline or BASELINE
+    try:
+        return int(baseline.get("counts", {}).get(CONFLICTED, 0))
+    except Exception:
+        return 0
+
+
+def render(comparison=None, baseline=None):
+    """Operator summary. Never raises."""
+    baseline = baseline or BASELINE
+    try:
+        lines = [
+            f"STASH TRIAGE — recorded {baseline.get('measured_at')} on {baseline.get('host')}",
+            "=" * 58,
+            f"  total {baseline.get('total')}: {summary_line(baseline)}",
+            f"  {baseline.get('conflicted_touching_runner')} of the conflicted touch runner/ — "
+            f"that is the real work",
+            f"  the {baseline['counts'][RECOVERABLE]} clean ones have a vetted script: "
+            f"{baseline.get('recovery_script')}",
+        ]
+        gap = unaccounted(baseline)
+        if gap:
+            lines += [
+                f"  UNACCOUNTED: {gap} stash(es) are in the pile and in NO bucket — the recorded "
+                f"buckets sum to {baseline['total'] - gap}, not {baseline['total']}.",
+                f"    Triage those {gap}; the other {baseline['total'] - gap} are already done.",
+            ]
+        lines += [
+            "",
+            f"  PERMANENTLY LOST: {PERMANENT_LOSS['batches']} batches, "
+            f"{PERMANENT_LOSS['window']} — {PERMANENT_LOSS['status']}.",
+            f"    cause: {PERMANENT_LOSS['cause']} (root-cause-fixed). Stop looking for them.",
+        ]
+        if comparison:
+            lines.append("")
+            lines.append(f"  {comparison.get('recommendation', '')}")
+        return "\n".join(lines)
+    except Exception:
+        return "stash triage baseline unavailable"
 
 
 def format_report(report):
