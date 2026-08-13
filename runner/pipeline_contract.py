@@ -57,6 +57,16 @@ _ALLOWLIST_ENV_KEYS = {
     "legal": "ORCH_LEGAL_TASK_ALLOWLIST",
 }
 
+# Module-level constant backing each task class, consulted by `task_allowlist`
+# when the corresponding ORCH_* env var is unset. Resolved through globals() at
+# call time (not bound here) so that reassigning the constant — which is the
+# documented programmatic control surface, and what unittest.mock.patch.object
+# does — actually changes the gate.
+_ALLOWLIST_CONSTANTS = {
+    "security": "SECURITY_TASK_ALLOWLIST",
+    "legal": "LEGAL_TASK_ALLOWLIST",
+}
+
 
 def _parse_allowlist(raw: Optional[str]) -> Optional[set]:
     """Parse a comma-separated allowlist env value.
@@ -72,14 +82,34 @@ def _parse_allowlist(raw: Optional[str]) -> Optional[set]:
 def task_allowlist(task_class: str) -> Optional[set]:
     """Resolve the allowlist for a task class at call time.
 
-    Read live from the environment so a fleet-wide ORCH_* config push takes effect
-    without restarting the runner. Fail-soft: any error means "no allowlist".
+    Precedence:
+      1. The ORCH_* environment variable, read live, so a fleet-wide config push
+         takes effect without restarting the runner.
+      2. Otherwise the module-level ``{SECURITY,LEGAL}_TASK_ALLOWLIST`` constant.
+
+    Step 2 is not optional. Those constants are exported and documented as the
+    programmatic control surface ("kept for backward compatibility with existing
+    importers"), but an earlier refactor to live-env reads stopped consulting them,
+    so assigning one had no effect and `_credential_allows` silently fell through to
+    its allow-everything default. A credential gate that cannot be closed
+    programmatically is worse than no gate, because callers believe it is shut.
+    Reading the constant as the fallback keeps the live push authoritative while
+    making the exported constants load-bearing again.
+
+    Fail-soft: any error means "no allowlist".
     """
     try:
-        key = _ALLOWLIST_ENV_KEYS.get((task_class or "").lower())
+        cls = (task_class or "").lower()
+        key = _ALLOWLIST_ENV_KEYS.get(cls)
         if not key:
             return None
-        return _parse_allowlist(os.environ.get(key))
+        raw = os.environ.get(key)
+        if raw is not None:
+            return _parse_allowlist(raw)
+        # Env unset -> fall back to the module-level constant. Unset AND unassigned
+        # is None, i.e. "no allowlist configured", preserving the default-open
+        # behaviour for classes nobody has gated.
+        return globals().get(_ALLOWLIST_CONSTANTS.get(cls, ""), None)
     except Exception:
         return None
 
