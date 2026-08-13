@@ -337,3 +337,47 @@ def test_sessions_are_independent():
     assert one.session_id != two.session_id
     b.cancel(one.session_id)
     assert two.state == SessionState.RUNNING
+
+
+# ---------------------------------------------------------------------------
+# unittest bridge
+#
+# The slice acceptance names `python3 -m unittest runner.tests.test_development_session_broker`
+# as its proof, but these are pytest-style module-level functions, so unittest collected
+# ZERO of them and the command exited OK on an empty suite — a green light that proved
+# nothing. `load_tests` wraps every no-argument test function here as a real TestCase
+# method and pulls in the slice-2 suite, so the stated command runs the whole broker
+# suite. pytest still collects the functions directly and is unaffected.
+#
+# Parametrized functions are skipped deliberately: their arguments come from pytest
+# marks, so only pytest can supply them. They are counted in the module docstring rather
+# than faked here.
+# ---------------------------------------------------------------------------
+def load_tests(loader, tests, pattern):  # noqa: D401 - unittest protocol
+    import inspect
+    import unittest as _unittest
+
+    suite = _unittest.TestSuite()
+    namespace = {}
+    for name, fn in sorted(globals().items()):
+        if not name.startswith("test_") or not callable(fn):
+            continue
+        if getattr(fn, "pytestmark", None):
+            continue  # parametrized: pytest owns the arguments
+        try:
+            if inspect.signature(fn).parameters:
+                continue
+        except (TypeError, ValueError):  # pragma: no cover - builtins
+            continue
+        namespace[name] = (lambda f: lambda self: f())(fn)
+    if namespace:
+        case = type("BrokerFunctionTests", (_unittest.TestCase,), namespace)
+        suite.addTests(loader.loadTestsFromTestCase(case))
+
+    try:
+        from . import test_development_session_broker_slice2 as _slice2
+    except Exception:  # pragma: no cover - slice 2 absent
+        _slice2 = None
+    if _slice2 is not None:
+        suite.addTests(loader.loadTestsFromModule(_slice2))
+    return suite
