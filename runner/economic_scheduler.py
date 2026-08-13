@@ -24,6 +24,16 @@ import revenue_attribution
 ENABLED = os.environ.get("ORCH_ECONOMIC_SCHEDULER_ENABLED", "false").lower() in ("true", "1", "yes")
 ROI_THRESHOLD = float(os.environ.get("ORCH_ROI_THRESHOLD", "1.5"))  # only pursue if 1.5x ROI
 REVENUE_CRITICAL_LANE_SIZE = int(os.environ.get("ORCH_REVENUE_CRITICAL_LANE_SIZE", "20"))
+
+# PLAN HORIZON (added for the economic-scheduler revenue loop fix).
+#
+# ev_scheduler.load_ctx() calls predict_revenue_bulk(queued_tasks(), ctx) where queued_tasks()
+# is a FULL SCAN that pages to exhaustion, and run() scores every row it is handed. Neither
+# path had an upper bound on the number of scoring steps: the work per 900s cycle grew with
+# the queue, and any caller that passed a repeating or self-refilling iterable (a generator
+# over a live queue, a re-queueing sweep) scored the same task ids forever without ever
+# terminating. Bounding the walk makes the pass finite by construction rather than by luck.
+PLAN_HORIZON = int(os.environ.get("ORCH_ECONOMIC_PLAN_HORIZON", "2000"))
 REVENUE_KEYWORDS = ("pricing", "payment", "stripe", "marketplace", "billing", "revenue", "monetize")
 
 
@@ -320,16 +330,45 @@ def score(task, ctx):
     return s
 
 
-def predict_revenue_bulk(tasks, ctx=None):
-    """Batch predict revenue for multiple tasks. Used by ev_scheduler.load_ctx()."""
+def predict_revenue_bulk(tasks, ctx=None, horizon=None):
+    """Batch predict revenue for multiple tasks. Used by ev_scheduler.load_ctx().
+
+    Bounded by construction. Two guards, because there were two ways to not terminate:
+
+      * a `seen` set of task ids — a task that appears twice is scored once. Repeats were
+        previously re-scored and the later result overwrote the earlier one, so the extra
+        work was invisible in the output and could not be noticed from the return value.
+      * a plan horizon — at most `horizon` scoring steps (default PLAN_HORIZON), so an
+        endless or self-refilling iterable stops instead of spinning. Iteration steps, not
+        just results, are counted: a stream of duplicates or junk rows is progress toward
+        the bound too, otherwise the `seen` filter would let it loop forever.
+
+    Passing `horizon=0` or a negative value means "no work", not "unbounded".
+    """
     ctx = ctx if ctx is not None else load_ctx()
+    try:
+        cap = PLAN_HORIZON if horizon is None else int(horizon)
+    except (TypeError, ValueError):
+        cap = PLAN_HORIZON
+    if cap <= 0:
+        return {}
+
     results = {}
+    seen = set()
+    steps = 0
     for task in tasks or []:
+        if steps >= cap:
+            print(f"[economic_scheduler] predict_revenue_bulk hit plan horizon={cap} — "
+                  f"result is TRUNCATED; raise ORCH_ECONOMIC_PLAN_HORIZON to widen", flush=True)
+            break
+        steps += 1
         if not isinstance(task, dict):   # fail-soft: see predict_revenue
             continue
         task_id = task.get("id")
-        if task_id:
-            results[task_id] = predict_revenue(task, ctx)["point_estimate"]
+        if not task_id or task_id in seen:
+            continue
+        seen.add(task_id)
+        results[task_id] = predict_revenue(task, ctx)["point_estimate"]
     return results
 
 
@@ -381,9 +420,16 @@ def run():
         if not tasks:
             return {"status": "success", "tasks_scored": 0, "routed": 0}
 
-        # Score each task
+        # Score each task, within the same plan horizon predict_revenue_bulk uses. The
+        # sweep is a fixed-cost job on a 900s timer, so its cost must not track queue depth.
         scored = []
-        for task in tasks:
+        seen = set()
+        for task in tasks[:PLAN_HORIZON]:
+            task_id = task.get("id") if isinstance(task, dict) else None
+            if task_id is not None and task_id in seen:
+                continue
+            if task_id is not None:
+                seen.add(task_id)
             try:
                 task_score = score(task, ctx)
                 scored.append((task_score, task))
