@@ -63,6 +63,78 @@ class ConventionViolation:
 TEST_EXEMPT_RULES = frozenset({"FAIL_SOFT_ERROR", "HARDCODED_SECRET"})
 
 
+# Identifier words that suggest a credential. Matched as whole words after splitting the
+# identifier on snake_case/camelCase boundaries — NOT as bare substrings. The previous
+# unanchored `re.search` made "AUTH" fire inside "author_model" and "author_provider",
+# and "CREDENTIAL" inside "IGNORE_CREDENTIAL", which accounted for most of this rule's
+# output on runner/.
+#
+# "key" is deliberately NOT in this set. This repo names its fleet_config entries
+# STATE_KEY, BUDGET_KEY, PRESSURE_KEY, CONTROL_KEY and so on — they hold the *name of a
+# config row*, never a credential. Treating a bare "key" as a secret keyword flags ~20 of
+# them. Compound spellings (api_key, private_key, access_key, secret_key) are matched
+# separately by _names_a_secret, which is where "key" genuinely does imply a credential.
+SECRET_NAME_WORDS = frozenset({
+    'password', 'passwd', 'token', 'secret', 'credential', 'credentials', 'auth',
+})
+
+# Values that name or stand in for a secret without being one. A rule that cannot tell
+# "the string test-key" from an actual credential trains people to run `--no-verify`.
+PLACEHOLDER_MARKERS = (
+    'test', 'example', 'sample', 'dummy', 'fake', 'placeholder', 'changeme',
+    'marker', 'redacted', 'your-', 'your_', 'xxx', 'todo', 'none', 'null',
+)
+
+# Shortest string that could carry a credential at all. Deliberately low: the placeholder
+# and entropy checks below do the discriminating, and a high threshold here would silently
+# stop flagging the short toy secrets the rule is specified (and tested) to catch.
+MIN_SECRET_VALUE_LEN = 4
+
+
+def _identifier_words(name: str) -> set:
+    """Lowercased word set for an identifier, splitting snake_case and camelCase.
+
+    "author_model" -> {"author", "model"}, so the "auth" keyword no longer matches it,
+    while "auth_token" -> {"auth", "token"} still does.
+    """
+    spaced = re.sub(r'(?<=[a-z0-9])(?=[A-Z])', '_', str(name or ''))
+    return {w for w in re.split(r'[^A-Za-z0-9]+', spaced.lower()) if w}
+
+
+def _names_a_secret(name: str) -> bool:
+    """True when the identifier claims to hold a credential, by whole-word match."""
+    words = _identifier_words(name)
+    if words & SECRET_NAME_WORDS:
+        return True
+    # "key" only implies a credential next to a qualifier: api_key, private_key,
+    # access_key, secret_key. Order-independent, so apiKey and KEY_API both match.
+    if 'key' not in words:
+        return False
+    return bool(words & {'api', 'private', 'access', 'signing', 'encryption'})
+
+
+def _looks_like_secret_value(value: str) -> bool:
+    """True only when the assigned literal could plausibly BE a credential.
+
+    This is the gate the rule was missing. It fired on the name alone, so
+    `auth_hint = ""` and `os.environ["PLOEH_S2S_SECRET"] = "test-key"` were reported as
+    hardcoded secrets — an empty string and a placeholder respectively, neither of which
+    can leak anything. Checking the value is what makes the rule's output actionable.
+    """
+    text = str(value or '').strip()
+    if len(text) < MIN_SECRET_VALUE_LEN:
+        return False           # "" cannot leak anything; neither can a 3-char flag
+    if text.startswith('$'):
+        return False           # env placeholder: $SECRET, ${SECRET}
+    if any(ch.isspace() for ch in text):
+        return False           # prose/messages, not credentials
+    low = text.lower()
+    if any(marker in low for marker in PLACEHOLDER_MARKERS):
+        return False
+    # A credential carries entropy; a single repeated character or a lone word does not.
+    return len(set(text)) >= 5
+
+
 def is_test_file(filepath: str) -> bool:
     """True for pytest/unittest modules, by this repo's actual layout.
 
@@ -178,34 +250,34 @@ class ConventionChecker(ast.NodeVisitor):
 
         Flag string literals that look like secrets (PASSWORD|TOKEN|SECRET|KEY=).
         """
-        secret_patterns = [
-            r'PASSWORD', r'TOKEN', r'SECRET', r'API_KEY', r'PRIVATE_KEY',
-            r'AUTH', r'CREDENTIAL', r'KEY='
-        ]
-        secret_regex = re.compile('|'.join(secret_patterns), re.IGNORECASE)
+        if not (isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
+            return
 
-        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-            value = node.value.value
-            # Skip environment variable placeholders like $SECRET or ${SECRET}
-            if value.startswith('$'):
-                return
+        # The value gate runs first and rejects most of the tree, so a name that merely
+        # mentions credentials costs nothing until something secret-shaped is assigned.
+        value = node.value.value
+        if not _looks_like_secret_value(value):
+            return
 
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    var_name = target.id
-                    if secret_regex.search(var_name):
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                var_name = target.id
+                if _names_a_secret(var_name):
+                    self._record(ConventionViolation(
+                        self.filepath, node.lineno, 'HARDCODED_SECRET',
+                        f'Variable "{var_name}" is assigned a literal that looks like a '
+                        'credential; read it from the environment instead'
+                    ))
+            elif isinstance(target, ast.Subscript):
+                if isinstance(target.slice, ast.Constant) and isinstance(target.slice.value, str):
+                    key_name = target.slice.value
+                    if _names_a_secret(key_name):
                         self._record(ConventionViolation(
                             self.filepath, node.lineno, 'HARDCODED_SECRET',
-                            f'Variable "{var_name}" contains secret keyword; use environment variables instead'
+                            f'Config key "{key_name}" is assigned a literal that looks like '
+                            'a credential; read it from the environment instead'
                         ))
-                elif isinstance(target, ast.Subscript):
-                    if isinstance(target.slice, ast.Constant) and isinstance(target.slice.value, str):
-                        key_name = target.slice.value
-                        if secret_regex.search(key_name):
-                            self._record(ConventionViolation(
-                                self.filepath, node.lineno, 'HARDCODED_SECRET',
-                                f'Config key "{key_name}" contains secret keyword; use environment variables instead'
-                            ))
 
 
 def check_file(filepath: str) -> List[ConventionViolation]:

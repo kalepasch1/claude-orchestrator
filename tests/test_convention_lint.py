@@ -167,6 +167,59 @@ class TestHardcodedSecrets(unittest.TestCase):
         secret_violations = [v for v in violations if v.rule == 'HARDCODED_SECRET']
         self.assertGreater(len(secret_violations), 0)
 
+    # ── Regression: the nine false positives this rule produced on runner/ ──────────
+    #
+    # Every HARDCODED_SECRET the linter reported across the whole runner/ tree was
+    # false. Each case below is a verbatim line from the code it flagged. They are
+    # tested individually rather than as one blob so a regression names the shape that
+    # broke, and as a group so the "zero false positives" property is asserted directly.
+
+    def _secret_hits(self, code: str) -> list:
+        return [v for v in self._check_code(code) if v.rule == 'HARDCODED_SECRET']
+
+    def test_pass_author_is_not_auth(self):
+        """"author_model" must not match the "auth" keyword by substring."""
+        self.assertEqual(self._secret_hits('author_model = "anthropic-claude"'), [])
+        self.assertEqual(self._secret_hits('author_provider = "openai"'), [])
+
+    def test_pass_empty_string_assigned_to_secret_name(self):
+        """An empty literal cannot leak a credential, whatever it is called."""
+        self.assertEqual(self._secret_hits('auth_hint = ""'), [])
+        self.assertEqual(self._secret_hits('credential_fp = ""'), [])
+        self.assertEqual(self._secret_hits('api_key = ""'), [])
+
+    def test_pass_sentinel_and_placeholder_values(self):
+        """Markers and test placeholders are config vocabulary, not credentials."""
+        self.assertEqual(self._secret_hits('IGNORE_CREDENTIAL = "credential-marker"'), [])
+        self.assertEqual(self._secret_hits('os.environ["PLOEH_S2S_SECRET"] = "test-key"'), [])
+
+    def test_pass_config_row_names_ending_in_key(self):
+        """fleet_config row names (STATE_KEY, BUDGET_KEY, ...) hold names, not secrets."""
+        for line in ('STATE_KEY = "orch_state_v2"',
+                     'BUDGET_KEY = "material_red_team_budget"',
+                     'PRESSURE_KEY = "merge_train_pressure"',
+                     'CONTROL_KEY = "model_slashing_control"'):
+            self.assertEqual(self._secret_hits(line), [], line)
+
+    def test_fail_qualified_key_names_still_flagged(self):
+        """"key" next to a qualifier is still a credential."""
+        for line in ('api_key = "sk-live-9f83bc2a17de"',
+                     'private_key = "MIIEowIBAAKCAQEA9f83bc"',
+                     'accessKey = "AKIA9F83BC2A17DEQZ"'):
+            self.assertGreater(len(self._secret_hits(line)), 0, line)
+
+    def test_pass_prose_assigned_to_secret_name(self):
+        """Human-readable messages contain spaces; credentials do not."""
+        self.assertEqual(
+            self._secret_hits('auth_error = "token exchange failed, retrying"'), [])
+
+    def test_real_credentials_are_still_caught(self):
+        """The tightening must not buy its accuracy with false negatives."""
+        for line in ('GITHUB_TOKEN = "ghp_16C7e42F292c6912E7710c838347Ae178B4a"',
+                     'password = "hunter2corrhorse"',
+                     'SUPABASE_SECRET = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"'):
+            self.assertGreater(len(self._secret_hits(line)), 0, line)
+
 
 class TestModuleLevelSingletons(unittest.TestCase):
     """Test rule: Module-level functions follow singleton delegation pattern."""
