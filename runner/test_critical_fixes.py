@@ -127,20 +127,32 @@ def test_default_project_for_dropbox_hyphen_to_space_variant():
     text = "We need to update Apparently Law components"
     projects = {"apparently": {}, "apparently-law": {}, "beethoven": {}}
 
-    result = intake_watcher._default_project_for_dropbox(text, "apparently-law", projects)
-    # The text says "Apparently Law" (space), not "apparently-law" (hyphen)
-    # Variant matching should convert one to match the other
-    matches = [name for name in projects if name and any(
-        v and v in text.lower() for v in {
-            name.lower(),
-            name.replace("-", " "),
-            name.replace("_", " "),
-            name.replace("-", ""),
-            name.replace("_", "")
-        }
-    )]
-    assert "apparently-law" in matches, \
-        "Hyphenated project name should match space-separated text via variant"
+    # Signature is (text, projects_by_name, filename=None). This call used to pass a
+    # stray project name in the second slot, so `projects` landed on `filename` and the
+    # test died in os.path.basename(dict) with a TypeError — it never reached an
+    # assertion. It also asserted against a local re-implementation of the variant
+    # matching rather than the function's own output, so even once it ran it could not
+    # have caught a regression in _default_project_for_dropbox.
+    result = intake_watcher._default_project_for_dropbox(text, projects)
+
+    # The text says "Apparently Law" (space), not "apparently-law" (hyphen); variant
+    # matching bridges the separator, and the longest match wins over the 'apparently'
+    # prefix.
+    assert result == "apparently-law", \
+        f"Hyphenated project name should match space-separated text via variant, got {result!r}"
+
+
+def test_default_project_for_dropbox_filename_beats_prose():
+    """An explicit PROMPT-<project>-*.md filename outranks the prose heuristic."""
+    import intake_watcher
+
+    text = "We need to update Apparently Law components"
+    projects = {"apparently": {}, "apparently-law": {}, "beethoven": {}}
+
+    result = intake_watcher._default_project_for_dropbox(
+        text, projects, filename="PROMPT-beethoven-backlog-blitz.md")
+    assert result == "beethoven", \
+        f"filename project should win over prose mention, got {result!r}"
 
 
 def test_default_project_for_dropbox_underscore_variant():
