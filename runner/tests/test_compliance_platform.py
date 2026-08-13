@@ -41,14 +41,22 @@ def test_graph_optimizer_anomaly_and_sandbox():
 
 
 def test_gateway_and_protected_remediation_gate():
+    # The gateway now requires an authenticated principal and takes tenancy
+    # from it rather than from the body (see test_compliance_api_auth.py). This
+    # test is about the remediation gate, so it presents an authorized acme
+    # caller explicitly instead of relying on the old body-supplied tenant.
+    import compliance_auth
+    acme = compliance_auth.Principal(
+        name="acme", tenant="acme",
+        scopes=frozenset({compliance_auth.READ, compliance_auth.WRITE}), via="test")
     gateway = ComplianceAPIGateway()
-    status, payload = gateway.dispatch("POST", "/compliance/v1/apps/payments/risk-score", {"tenant_id": "acme", "score": 42})
+    status, payload = gateway.dispatch("POST", "/compliance/v1/apps/payments/risk-score", {"tenant_id": "acme", "score": 42}, principal=acme)
     assert status == 200 and payload["new"] == 42
-    status, payload = gateway.dispatch("POST", "/compliance/v1/events", {"app_id": "payments", "tenant_id": "acme", "kind": "regulation.ingested", "payload": {"regulation_id": "ccpa", "requirements": ["notice"]}})
+    status, payload = gateway.dispatch("POST", "/compliance/v1/events", {"app_id": "payments", "tenant_id": "acme", "kind": "regulation.ingested", "payload": {"regulation_id": "ccpa", "requirements": ["notice"]}}, principal=acme)
     assert status == 202
     result = AutoRemediationEngineV2().remediate("payments", {"id": "i1"}, lambda _: {"operation": "submit_filing"}, lambda _: True, lambda _: None)
     assert result.status == "approval_required"
-    status, payload = gateway.dispatch("POST", "/compliance/v1/remediations/propose", {"app_id": "payments", "issue": {"id": "i2"}, "plan": {"operation": "safe_change", "validated": True}})
+    status, payload = gateway.dispatch("POST", "/compliance/v1/remediations/propose", {"app_id": "payments", "issue": {"id": "i2"}, "plan": {"operation": "safe_change", "validated": True}}, principal=acme)
     assert status == 200 and payload["status"] == "approval_required"
 
 
