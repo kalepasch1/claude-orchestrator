@@ -19,12 +19,19 @@ import db
 ENABLED = os.environ.get("ORCH_BRANCH_RECOVERY_ENABLED", "true").lower() in ("1", "true", "yes", "on")
 DRY_RUN = os.environ.get("ORCH_BRANCH_RECOVERY_DRY_RUN", "true").lower() in ("1", "true", "yes", "on")
 BATCH_SIZE = int(os.environ.get("ORCH_BRANCH_RECOVERY_BATCH", "20"))
+# Second recovery strategy: rebuild a lost branch from the merged-diff library
+# instead of requeuing a full agent run. On by default; ORCH_ prefix so it is
+# fleet-pushable via fleet_control.py.
+PATTERN_ADAPT = os.environ.get(
+    "ORCH_BRANCH_RECOVERY_PATTERN_ADAPT", "true").lower() in ("1", "true", "yes", "on")
 
 _stats = {
     "runs": 0,
     "last_run": None,
     "total_detected": 0,
     "total_recovered": 0,
+    "recovered_git": 0,
+    "recovered_pattern": 0,
     "projects_scanned": 0,
     "errors": 0,
 }
@@ -83,30 +90,100 @@ def _detect_missing_branches(project):
     return missing
 
 
+def _resolve_base(project, task):
+    """
+    Resolve the base branch to recover onto.
+
+    `project.get("default_base", "master")` was wrong twice over: dict.get's
+    default does not fire when the key is present and None (every project row
+    selects the column, so it usually is present), and it ignored the task's
+    own base_branch. Recovering onto a branch that does not exist in the
+    checkout is the failure this whole module exists to prevent.
+
+    Order: the task's own base, then the project default, then whatever the
+    repo actually has (branch_manager._detect_base_branch), then "master".
+    """
+    for candidate in (task.get("base_branch"), project.get("default_base")):
+        value = (candidate or "").strip()
+        if value:
+            return value
+    try:
+        import branch_manager
+        detected = branch_manager._detect_base_branch(project.get("repo_path", ""))
+        if detected:
+            return detected
+    except Exception as exc:
+        _log.debug("base detection failed for %s: %s", project.get("name", "?"), exc)
+    return "master"
+
+
+def _pattern_adapt(task, project, base_branch):
+    """
+    Second recovery strategy: rebuild the branch from the merged-diff library.
+
+    branch_recovery.recover_missing_branches finds a proven prior diff for the
+    slug above a similarity threshold and applies it, rather than re-running
+    the agent from scratch. It was written, tested and then left at zero
+    callers, so fleet-wide recovery only ever had branch_fleet_recovery's
+    strategies — fetch-from-remote, or requeue the whole task. Requeue throws
+    away work that is still recoverable and costs a full agent run.
+
+    Tried only after the git-level strategies fail. Fail-soft: any error here
+    leaves the task exactly as branch_fleet_recovery left it.
+    """
+    if not PATTERN_ADAPT:
+        return None
+    try:
+        import branch_recovery
+        entry = {
+            "slug": task.get("slug", ""),
+            "repo": project.get("repo_path", ""),
+            "base": base_branch,
+            "project": project.get("name", ""),
+        }
+        out = branch_recovery.recover_missing_branches(
+            [entry], project=project.get("name") or None)
+        return out if out.get("merged") else None
+    except Exception as exc:
+        _log.debug("pattern adaptation failed for %s: %s", task.get("slug", "?"), exc)
+        _stats["errors"] += 1
+        return None
+
+
 def _recover_project(project, missing_tasks):
     """Attempt recovery of missing branches for a project. Returns (detected, recovered)."""
     import branch_fleet_recovery
     repo_path = project.get("repo_path", "")
-    base_branch = project.get("default_base", "master")
     detected = len(missing_tasks)
     recovered = 0
 
     for task in missing_tasks:
         slug = task.get("slug", "")
+        base_branch = _resolve_base(project, task)
         if DRY_RUN:
-            _log.info("[dry-run] detected missing branch agent/%s in %s",
-                      slug, project.get("name", "?"))
+            _log.info("[dry-run] detected missing branch agent/%s in %s (base %s)",
+                      slug, project.get("name", "?"), base_branch)
             continue
         try:
             result = branch_fleet_recovery.recover_branch(task, repo_path, base_branch)
             if result.get("recovered"):
                 recovered += 1
+                _stats["recovered_git"] += 1
                 _log.info("recovered branch agent/%s via %s", slug, result.get("strategy"))
-            else:
-                _log.warning("could not recover agent/%s: %s", slug, result.get("strategy"))
+                continue
         except Exception as e:
             _log.warning("error recovering agent/%s: %s", slug, e)
             _stats["errors"] += 1
+            result = {"strategy": "error"}
+
+        adapted = _pattern_adapt(task, project, base_branch)
+        if adapted:
+            recovered += 1
+            _stats["recovered_pattern"] += 1
+            _log.info("recovered branch agent/%s via pattern adaptation (%s)",
+                      slug, adapted.get("details"))
+        else:
+            _log.warning("could not recover agent/%s: %s", slug, result.get("strategy"))
 
     return detected, recovered
 
