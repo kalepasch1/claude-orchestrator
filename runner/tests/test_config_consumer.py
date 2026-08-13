@@ -304,15 +304,16 @@ def test_get_with_large_value():
         del os.environ["ORCH_LARGE"]
 
 
-def test_get_case_sensitivity():
-    """get() is case-sensitive for key matching."""
-    os.environ["ORCH_lowercase"] = "value"
+def test_get_normalizes_key_to_uppercase():
+    """get() upper-cases the key: 'lowercase' reads ORCH_LOWERCASE, not ORCH_lowercase."""
+    os.environ["ORCH_lowercase"] = "wrong-case"
+    os.environ["ORCH_LOWERCASE"] = "value"
     try:
-        # get() uses key as-is, so "lowercase" looks for ORCH_lowercase
         value = config_consumer.get("lowercase")
         assert value == "value", f"Expected 'value', got {value}"
     finally:
         del os.environ["ORCH_lowercase"]
+        del os.environ["ORCH_LOWERCASE"]
 
 
 def test_get_int_with_whitespace():

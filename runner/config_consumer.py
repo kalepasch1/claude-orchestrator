@@ -47,17 +47,40 @@ class _ConfigConsumer:
         except Exception:
             return {}
 
+    @staticmethod
+    def _env_lookup(key: str) -> str:
+        """Resolve ORCH_{key} the same way the fleet_control gateway does.
+
+        fleet_control.get_fleet_config() does `f"ORCH_{key}".upper()`, but this
+        class used the key verbatim. fleet_control.load_config() writes the DB key
+        into os.environ unchanged (`os.environ[k] = new`) and fleet_config keys are
+        stored upper-case, so any caller passing a lower-case key — e.g.
+        config_consumer.get("max_lanes") — looked up ORCH_max_lanes, missed, and
+        silently got the default. The same key read through load_config() (which
+        goes via the gateway) resolved correctly. One knob, two answers, no error:
+        precisely the "STORED BUT NOT APPLIED" failure fleet_control.load_config
+        logs about, except this path never logged anything.
+
+        Upper-case first to agree with the gateway, then fall back to the verbatim
+        name so anything that deliberately exported a mixed-case ORCH_* var keeps
+        working.
+        """
+        value = os.environ.get(f"ORCH_{key}".upper(), "").strip()
+        if value:
+            return value
+        return os.environ.get(f"ORCH_{key}", "").strip()
+
     def get(self, key: str, default: str = "") -> str:
         """Get ORCH_{key} from environment, stripping whitespace.
 
+        Key matching is case-insensitive, matching fleet_control.get_fleet_config().
         Returns default if key is None/empty/not found/whitespace-only.
         Never raises — fail-soft by design.
         """
         try:
             if not key or not isinstance(key, str):
                 return default
-            env_key = f"ORCH_{key}"
-            value = os.environ.get(env_key, "").strip()
+            value = self._env_lookup(key)
             return value if value else default
         except Exception:
             return default
