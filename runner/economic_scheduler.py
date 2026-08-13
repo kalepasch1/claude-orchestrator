@@ -22,8 +22,96 @@ import revenue_attribution
 
 ENABLED = os.environ.get("ORCH_ECONOMIC_SCHEDULER_ENABLED", "false").lower() in ("true", "1", "yes")
 ROI_THRESHOLD = float(os.environ.get("ORCH_ROI_THRESHOLD", "1.5"))  # only pursue if 1.5x ROI
-REVENUE_CRITICAL_LANE_SIZE = int(os.environ.get("ORCH_REVENUE_CRITICAL_LANE_SIZE", "20"))
+
+# Size of the revenue-critical fast lane. TOP_REVENUE_TASKS is the name the test suite and
+# newer call sites use; REVENUE_CRITICAL_LANE_SIZE is kept as an alias so the older call
+# sites that import it keep working.
+TOP_REVENUE_TASKS = int(os.environ.get("ORCH_REVENUE_CRITICAL_LANE_SIZE", "20"))
+REVENUE_CRITICAL_LANE_SIZE = TOP_REVENUE_TASKS
+
+# A family with a terrible merge record is weighted down but never zeroed: a 0.0 weight would
+# park every task of that kind at the bottom of the queue forever, which is how a bad streak
+# becomes permanent starvation rather than a temporary deprioritisation.
+KIND_WEIGHT_FLOOR = float(os.environ.get("ORCH_KIND_WEIGHT_FLOOR", "0.1"))
+
+CONFIDENCE_BAND = float(os.environ.get("ORCH_ECONOMIC_CONFIDENCE_BAND", "0.25"))
+
 REVENUE_KEYWORDS = ("pricing", "payment", "stripe", "marketplace", "billing", "revenue", "monetize")
+
+
+def _as_float(value, default=0.0):
+    """Coerce to float, fail-soft. Malformed context values must not raise: this module is
+    called from inside ev_scheduler's bare `except Exception: pass`, so a raise here does not
+    surface as an error — it silently drops economic signals from the scheduling context."""
+    try:
+        if isinstance(value, dict):
+            return default
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def _signal(ctx, project, field, default=0.0):
+    """Read one per-project signal. Accepts both shapes that exist in the tree: a flat
+    {project: value} map and a nested {project: {field: value}} record."""
+    row = (ctx.get(field + "s") if isinstance(ctx, dict) else None) or {}
+    entry = row.get(project) if isinstance(row, dict) else None
+    if isinstance(entry, dict):
+        entry = entry.get(field)
+    return _as_float(entry, default)
+
+
+def _estimated_cost(task, ctx):
+    """What this task is expected to cost, in USD.
+
+    Preferred source is the project's measured average spend
+    (ctx["outcome_stats"][project]["avg_usd"]) — a per-task `usd` field is only populated
+    after the task has run, so reading it first meant every unrun task looked free.
+    Falls back to task["usd"] for rows that carry a real figure.
+    """
+    if not isinstance(task, dict):
+        return 0.0
+    project = task.get("project") or ""
+    stats = (ctx.get("outcome_stats") if isinstance(ctx, dict) else None) or {}
+    entry = stats.get(project) if isinstance(stats, dict) else None
+    if isinstance(entry, dict) and entry.get("avg_usd") is not None:
+        return max(0.0, _as_float(entry.get("avg_usd")))
+    return max(0.0, _as_float(task.get("usd")))
+
+
+def _success_rate(task, ctx):
+    """Measured success rate for the task's project, defaulting to a neutral 0.7."""
+    if not isinstance(task, dict):
+        return 0.7
+    project = task.get("project") or ""
+    stats = (ctx.get("outcome_stats") if isinstance(ctx, dict) else None) or {}
+    entry = stats.get(project) if isinstance(stats, dict) else None
+    if isinstance(entry, dict) and entry.get("success_rate") is not None:
+        return _as_float(entry.get("success_rate"), 0.7)
+    if task.get("success_rate") is not None:
+        return _as_float(task.get("success_rate"), 0.7)
+    return 0.7
+
+
+def _kind_weight(task, ctx):
+    """Weight a task by how often its kind actually merges green.
+
+    ctx["family_outcomes"][kind] = {"total": n, "merged_green": n, "retries": n, "rejected": n}
+    No data for the kind is neutral (1.0), not punitive — an unseen family should sort on its
+    own merits rather than be pushed to the back for lack of history.
+    """
+    if not isinstance(task, dict):
+        return 1.0
+    kind = (task.get("kind") or "").lower()
+    families = (ctx.get("family_outcomes") if isinstance(ctx, dict) else None) or {}
+    entry = families.get(kind) if isinstance(families, dict) else None
+    if not isinstance(entry, dict):
+        return 1.0
+    total = _as_float(entry.get("total"))
+    if total <= 0:
+        return 1.0
+    merge_rate = max(0.0, min(1.0, _as_float(entry.get("merged_green")) / total))
+    return KIND_WEIGHT_FLOOR + (1.0 - KIND_WEIGHT_FLOOR) * merge_rate
 
 
 def load_ctx():
@@ -133,7 +221,8 @@ def predict_revenue(task, ctx):
     # Base: historical avg_delta for this kind. Two spellings are honoured because two existed:
     # the implementation read kind_roi/error_rates, the test suite supplied
     # surface_returns/app_signals, and neither side had ever run against the other.
-    base_revenue = float((ctx.get("kind_roi") or ctx.get("surface_returns") or {}).get(kind, 0) or 0)
+    returns = (ctx.get("kind_roi") or ctx.get("surface_returns") or {}) if isinstance(ctx, dict) else {}
+    base_revenue = _as_float(returns.get(kind, 0) if isinstance(returns, dict) else 0)
     estimate = max(0.0, base_revenue)
 
     # Boost for high-growth projects
@@ -144,25 +233,26 @@ def predict_revenue(task, ctx):
     if any(w in prompt for w in REVENUE_KEYWORDS):
         estimate *= 1.5
 
-    # Boost bugfix tasks if error rate spike
-    error_rate = float((ctx.get("error_rates") or ctx.get("app_signals") or {}).get(project, 0) or 0)
+    # Boost bugfix tasks if error rate spike. The signal map is written in two shapes in this
+    # tree — flat {project: 0.9} and nested {project: {"error_rate": 0.9}} — and reading the
+    # nested one as a bare float raised TypeError, which ev_scheduler swallowed silently.
+    signals = (ctx.get("error_rates") or ctx.get("app_signals") or {}) if isinstance(ctx, dict) else {}
+    raw_signal = signals.get(project, 0) if isinstance(signals, dict) else 0
+    if isinstance(raw_signal, dict):
+        raw_signal = raw_signal.get("error_rate", 0)
+    error_rate = _as_float(raw_signal)
     if error_rate > 0.3 and kind in ("bugfix", "fix", "hotfix"):
         estimate *= 1.5
 
     # Confidence interval around the estimate (wider if no data).
     #
-    # THE TWO TEST FILES DISAGREE, so no implementation can be green. Measured by flipping the
-    # constant and diffing the runs: test_economic_scheduler.py requires +/-20% (6 tests) and
-    # test_economic_scheduler_revenue.py requires +/-25% (2 tests). Setting 0.25 fixed those 2
-    # and broke those 6 — 14 failures became 18. That is not a stale test, it is a suite that
-    # cannot be satisfied, and it is why this module has been red for as long as it has: nothing
-    # in CI ran it, so nobody found out that its own spec contradicts itself.
-    #
-    # Left at 20% — the value the larger set encodes and the behaviour that has always shipped.
-    # Made configurable so the decision is a config change rather than another patch. Nothing
-    # outside this module reads confidence_low/confidence_high (grep: zero consumers), so this
-    # constant is inert in production either way.
-    band = float(os.environ.get("ORCH_ECONOMIC_CONFIDENCE_BAND", "0.20"))
+    # A prior comment here claimed the band could not be satisfied because
+    # test_economic_scheduler_revenue.py demanded +/-25% while test_economic_scheduler.py
+    # demanded +/-20%, and left the module red on that basis. There is no
+    # test_economic_scheduler_revenue.py in the tree (`ls runner/test_economic_scheduler*.py`
+    # returns exactly one file) and the one suite that does exist asserts 0.75x/1.25x. The
+    # conflict was not real, so the band is set to the value the actual spec encodes.
+    band = CONFIDENCE_BAND
     if base_revenue == 0:
         low, high = 0.0, estimate
     else:
@@ -184,19 +274,26 @@ def cost_benefit(task, ctx):
                 "roi": 0.0, "worthwhile": False}
 
     predicted_revenue, _, _ = predict_revenue(task, ctx)
-    estimated_cost = float(task.get("usd") or 0)
+    estimated_cost = _estimated_cost(task, ctx)
 
-    # Avoid division by zero
-    if estimated_cost <= 0:
-        estimated_cost = 1.0
+    # Free work is not a division-by-zero to be papered over with a fake $1 cost — that made
+    # genuinely free revenue look like 100x ROI instead of unbounded, and sorted it below
+    # cheap-but-not-free work. Free work WITH revenue is infinite ROI; free work with NO
+    # revenue is 0.0, not infinity, so a worthless free task does not top the queue.
+    if estimated_cost > 0:
+        roi = predicted_revenue / estimated_cost
+    elif predicted_revenue > 0:
+        roi = float("inf")
+    else:
+        roi = 0.0
 
-    roi = predicted_revenue / estimated_cost if estimated_cost > 0 else 0.0
-    worthwhile = predicted_revenue > (ROI_THRESHOLD * estimated_cost)
+    # Strictly greater: a task sitting exactly at the threshold does not clear it.
+    worthwhile = roi > ROI_THRESHOLD
 
     return {
         "predicted_revenue": round(predicted_revenue, 2),
         "estimated_cost": round(estimated_cost, 2),
-        "roi": round(roi, 2),
+        "roi": roi if math.isinf(roi) else round(roi, 2),
         "worthwhile": worthwhile,
     }
 
@@ -214,23 +311,23 @@ def score(task, ctx):
         return 0.0
 
     predicted_revenue, _, _ = predict_revenue(task, ctx)
-    estimated_cost = float(task.get("usd") or 0)
+    estimated_cost = _estimated_cost(task, ctx)
 
+    # Unlike cost_benefit, score clamps: an infinite score is not sortable, and the queue
+    # order is the only thing this function exists to produce.
     if estimated_cost <= 0:
         estimated_cost = 1.0
 
     # Base score: ROI
-    s = (predicted_revenue / estimated_cost) if estimated_cost > 0 else predicted_revenue
+    s = predicted_revenue / estimated_cost
 
-    # Success rate boost (assume 0.7 baseline if not specified)
-    success_rate = float(task.get("success_rate") or 0.7)
-    s *= (1.0 + success_rate)
+    # Success rate boost (neutral 0.7 baseline when the project has no measured history)
+    s *= (1.0 + _success_rate(task, ctx))
 
-    # Kind outcome weight (future: integrate with outcome_stats from ev_scheduler context)
-    # For now, neutral (1.0)
-    s *= 1.0
+    # Kind outcome weight: families that rarely merge green are worth less per dollar.
+    s *= _kind_weight(task, ctx)
 
-    return s
+    return max(0.0, s)
 
 
 def predict_revenue_bulk(tasks, ctx=None):
@@ -253,12 +350,13 @@ def apply_routing(scored):
     annotation (create or update lane if needed).
 
     scored: list of (score, task) tuples, sorted descending by score
-    """
-    if not ENABLED:
-        return {"routed": 0}
 
+    The ENABLED kill-switch is enforced by run(), the scheduled job — not here. Checking it in
+    this function meant the router silently no-opped for any caller that had already decided to
+    route, and made the function untestable without exporting a global.
+    """
     # Sort by score descending
-    scored_copy = sorted(scored or [], key=lambda x: -x[0])[:REVENUE_CRITICAL_LANE_SIZE]
+    scored_copy = sorted(scored or [], key=lambda x: -x[0])[:TOP_REVENUE_TASKS]
 
     routed = 0
     for score_val, task in scored_copy:
@@ -276,7 +374,7 @@ def apply_routing(scored):
             # Fail-soft: skip if update fails
             pass
 
-    return {"routed": routed, "lane": "revenue-critical", "top_n": REVENUE_CRITICAL_LANE_SIZE}
+    return {"routed": routed, "lane": "revenue-critical", "top_n": TOP_REVENUE_TASKS}
 
 
 def run():
