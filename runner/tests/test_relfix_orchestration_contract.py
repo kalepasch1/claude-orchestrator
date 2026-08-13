@@ -20,7 +20,7 @@ os.environ["ORCH_BUILD_VALIDATION_ENABLED"] = "false"
 class TestOrchestrationPipelineContract:
     """Verify orchestration pipeline contract is fulfilled for relfix task."""
 
-    def test_contract_metadata():
+    def test_contract_metadata(self):
         """Contract includes task source, project, class, and risk profile."""
         contract = {
             "source": "release-self-heal",
@@ -37,7 +37,7 @@ class TestOrchestrationPipelineContract:
         assert contract["need_score"] >= 0 and contract["need_score"] <= 10
         assert contract["risk_score"] >= 0 and contract["risk_score"] <= 10
 
-    def test_contract_preflight_triage_model():
+    def test_contract_preflight_triage_model(self):
         """Preflight triage uses local:llama3.2:3b with QPD scoring."""
         triage = {
             "model": "local:llama3.2:3b",
@@ -54,7 +54,7 @@ class TestOrchestrationPipelineContract:
         assert triage["cost"] >= 0.0
         assert triage["sample_count"] >= 1
 
-    def test_contract_strategy_planner_model():
+    def test_contract_strategy_planner_model(self):
         """Strategy planner uses deepseek:deepseek-v4-flash with QPD scoring."""
         planner = {
             "model": "deepseek:deepseek-v4-flash",
@@ -70,7 +70,7 @@ class TestOrchestrationPipelineContract:
         assert 0.0 <= planner["qpd_score"] <= 10.0
         assert planner["cost"] >= 0.0
 
-    def test_contract_agentic_coder_model():
+    def test_contract_agentic_coder_model(self):
         """Agentic coder uses claude-haiku-4-5-20251001."""
         coder = {
             "model": "claude-haiku-4-5-20251001",
@@ -84,7 +84,7 @@ class TestOrchestrationPipelineContract:
         assert coder["author"] is True
         assert len(coder["capabilities"]) > 0
 
-    def test_contract_qa_route_specification():
+    def test_contract_qa_route_specification(self):
         """Independent QA route uses nomic-embed-text for exploration."""
         qa_route = {
             "name": "independent_qa",
@@ -99,7 +99,7 @@ class TestOrchestrationPipelineContract:
         assert qa_route["strategy"] in ("explore", "consensus", "veto")
         assert qa_route["sample_count"] >= 1
 
-    def test_contract_qa_panel():
+    def test_contract_qa_panel(self):
         """QA panel lists all models that vote on patch acceptance."""
         qa_panel = {
             "models": [
@@ -115,7 +115,7 @@ class TestOrchestrationPipelineContract:
         assert qa_panel["consensus_rule"] in ("unanimous_pass", "quorum", "majority")
         assert "claude" in qa_panel["tie_breaker"]
 
-    def test_contract_legal_gate():
+    def test_contract_legal_gate(self):
         """Legal gate is owner-only when patch affects licensing, registration, custody, transmission, or advice."""
         legal_gate = {
             "enabled": True,
@@ -135,7 +135,7 @@ class TestOrchestrationPipelineContract:
         assert len(legal_gate["triggers"]) > 0
         assert "@" in legal_gate["owner_email"]
 
-    def test_contract_merge_and_release_path():
+    def test_contract_merge_and_release_path(self):
         """Merge to orchestrator/dev after tests, auto-batch to production."""
         release = {
             "auto_merge": True,
@@ -151,7 +151,7 @@ class TestOrchestrationPipelineContract:
         assert release["merge_after_stage"] in ("qa_panel", "test", "build")
         assert release["auto_batch"] is True
 
-    def test_contract_coordination_rule():
+    def test_contract_coordination_rule(self):
         """Coordination rule: reuse solutions, don't delete unrelated work, reconcile with active loops."""
         coordination = {
             "reuse_prior_solutions": True,
@@ -174,7 +174,7 @@ class TestOrchestrationPipelineContract:
 class TestModelSelection:
     """Verify model selection respects QPD scoring and leader rules."""
 
-    def test_qpd_leader_selection():
+    def test_qpd_leader_selection(self):
         """Select model with highest QPD score in each role."""
         candidates = {
             "preflight_triage": [
@@ -197,7 +197,7 @@ class TestModelSelection:
         planner_leader = max(candidates["strategy_planner"], key=lambda x: x["qpd_score"])
         assert planner_leader["model"] == "deepseek:deepseek-v4-flash"
 
-    def test_model_availability_fallback():
+    def test_model_availability_fallback(self):
         """If preferred model unavailable, fall back to next QPD leader."""
         preferred = {
             "model": "local:llama3.2:3b",
@@ -215,7 +215,7 @@ class TestModelSelection:
         assert selected["model"] == "claude-opus-4-8"
         assert selected["available"] is True
 
-    def test_cost_optimization():
+    def test_cost_optimization(self):
         """Free models (cost=0.0) preferred when QPD is equivalent."""
         option_a = {"model": "local:llama3.2:3b", "qpd_score": 7.58, "cost": 0.0}
         option_b = {"model": "gpt-4", "qpd_score": 7.60, "cost": 0.03}
@@ -229,7 +229,7 @@ class TestModelSelection:
         assert selected["model"] == "local:llama3.2:3b"
         assert selected["cost"] == 0.0
 
-    def test_author_capability_required():
+    def test_author_capability_required(self):
         """Agentic coder must have author capability."""
         models = [
             {"model": "claude-haiku-4-5-20251001", "author": True, "qpd_score": 6.8},
@@ -245,7 +245,7 @@ class TestModelSelection:
 class TestCoordinationRules:
     """Verify coordination rules prevent work loss and duplication."""
 
-    def test_reuse_prior_solutions():
+    def test_reuse_prior_solutions(self):
         """Check if a solved implementation exists before drafting net-new."""
         source_patches = [
             {
@@ -267,7 +267,7 @@ class TestCoordinationRules:
         assert len(applicable) >= 1
         assert applicable[0]["id"].startswith("pareto-2080")
 
-    def test_preserve_unrelated_queued_work():
+    def test_preserve_unrelated_queued_work(self):
         """Do not delete or overwrite unrelated queued improvements."""
         queued_work = {
             "improvements": [
@@ -289,7 +289,7 @@ class TestCoordinationRules:
             if not work["related_to_relfix"]:
                 assert work["status"] == "queued", f"Work {work['id']} was not preserved"
 
-    def test_leave_recovered_work_in_queue_until_shipped():
+    def test_leave_recovered_work_in_queue_until_shipped(self):
         """Recovered work stays in queue until confirmed shipped to production."""
         recovered_work = {
             "id": "relfix-kalepasch-com-d3c42c32d62c",
@@ -302,7 +302,7 @@ class TestCoordinationRules:
         if not recovered_work["shipped_to_production"]:
             assert recovered_work["status"] != "shipped"
 
-    def test_reconcile_with_active_loops():
+    def test_reconcile_with_active_loops(self):
         """Coordinate with any active loop-generated work."""
         active_loops = [
             {
@@ -332,7 +332,7 @@ class TestCoordinationRules:
 class TestLegalGate:
     """Verify legal gate blocks patches that need compliance review."""
 
-    def test_legal_gate_triggers_on_licensing_change():
+    def test_legal_gate_triggers_on_licensing_change(self):
         """Gate blocks if patch changes licensing terms."""
         patch_changes = {
             "files": ["LICENSE", "setup.py"],
@@ -347,7 +347,7 @@ class TestLegalGate:
             gate = {"status": "BLOCKED", "reason": "Licensing change requires legal review"}
             assert gate["status"] == "BLOCKED"
 
-    def test_legal_gate_triggers_on_registration_requirement():
+    def test_legal_gate_triggers_on_registration_requirement(self):
         """Gate blocks if patch adds registration/compliance requirements."""
         patch_changes = {
             "files": ["auth.py", "config.py"],
@@ -362,7 +362,7 @@ class TestLegalGate:
             gate = {"status": "BLOCKED", "reason": "Registration/compliance changes require legal review"}
             assert gate["status"] == "BLOCKED"
 
-    def test_legal_gate_triggers_on_custody_change():
+    def test_legal_gate_triggers_on_custody_change(self):
         """Gate blocks if patch changes data custody/ownership model."""
         patch_changes = {
             "files": ["db.py", "models.py"],
@@ -377,7 +377,7 @@ class TestLegalGate:
             gate = {"status": "BLOCKED", "reason": "Data custody changes require legal review"}
             assert gate["status"] == "BLOCKED"
 
-    def test_legal_gate_passes_for_safe_changes():
+    def test_legal_gate_passes_for_safe_changes(self):
         """Gate allows patches that don't trigger legal review."""
         patch_changes = {
             "files": ["auth.py", "utils.py"],
@@ -392,7 +392,7 @@ class TestLegalGate:
             gate = {"status": "ALLOWED", "reason": "No legal review needed"}
             assert gate["status"] == "ALLOWED"
 
-    def test_legal_gate_requires_owner_approval():
+    def test_legal_gate_requires_owner_approval(self):
         """Only repo owner can approve legal gate bypass."""
         gate_block = {
             "reason": "Licensing change",
@@ -407,7 +407,7 @@ class TestLegalGate:
 class TestCrossLearning:
     """Verify cross-learning routes are applied from prior outcomes."""
 
-    def test_learned_verify_diff_route():
+    def test_learned_verify_diff_route(self):
         """Learned route: verify_diff uses local:llama3.2:3b with q=7.7."""
         learned_route = {
             "name": "verify_diff",
@@ -422,7 +422,7 @@ class TestCrossLearning:
         assert learned_route["qpd_score"] > 7.5
         assert learned_route["source"] == "previous_outcomes"
 
-    def test_learned_meta_loop_improvement_route():
+    def test_learned_meta_loop_improvement_route(self):
         """Learned route: meta_loop_improvement uses deepseek:deepseek-v4-pro with q=7."""
         learned_route = {
             "name": "meta_loop_improvement",
@@ -436,7 +436,7 @@ class TestCrossLearning:
         assert "deepseek" in learned_route["model"]
         assert learned_route["qpd_score"] >= 7.0
 
-    def test_apply_learned_route_if_applicable():
+    def test_apply_learned_route_if_applicable(self):
         """Apply learned route when task type matches."""
         task = {
             "id": "relfix-kalepasch-com-d3c42c32d62c",
@@ -454,7 +454,7 @@ class TestCrossLearning:
             route = learned_routes["verify_diff"]
             assert route["model"] == "local:llama3.2:3b"
 
-    def test_outcome_signal_tracking():
+    def test_outcome_signal_tracking(self):
         """Track outcome signals: merged, test-pass, cost, models used."""
         outcome = {
             "merged_count": 0,
@@ -481,7 +481,7 @@ class TestCrossLearning:
 class TestPatchTransplantSimilarity:
     """Extended similarity testing for patch transplant adaptation."""
 
-    def test_similarity_threshold_for_adaptation():
+    def test_similarity_threshold_for_adaptation(self):
         """Similarity >= 0.3 is sufficient for patch adaptation."""
         patches = [
             {"id": "pareto-2080/...", "similarity": 0.363, "adaptable": True},
@@ -497,7 +497,7 @@ class TestPatchTransplantSimilarity:
             else:
                 assert patch["adaptable"] is False
 
-    def test_similarity_scoring_factors():
+    def test_similarity_scoring_factors(self):
         """Similarity accounts for file overlap, hunk context, and semantic match."""
         scoring = {
             "file_overlap_weight": 0.4,
@@ -520,7 +520,7 @@ class TestPatchTransplantSimilarity:
         assert 0.0 <= weighted_sim <= 1.0
         assert weighted_sim > 0.3  # Meets threshold
 
-    def test_dissimilar_patches_rejected():
+    def test_dissimilar_patches_rejected(self):
         """Patches with similarity < 0.3 are rejected and drafted from scratch."""
         patch = {
             "id": "unrelated-fix",
@@ -535,7 +535,7 @@ class TestPatchTransplantSimilarity:
 class TestIntegrationEndToEnd:
     """Full orchestration pipeline for relfix task."""
 
-    def test_relfix_full_workflow_with_coordination():
+    def test_relfix_full_workflow_with_coordination(self):
         """Complete workflow respecting coordination rules and learning."""
         workflow = {
             "task_id": "relfix-kalepasch-com-d3c42c32d62c",
