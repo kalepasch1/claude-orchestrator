@@ -1204,6 +1204,29 @@ def upsert(table, row):
     return insert(table, row, upsert=True)
 
 
+def _record_stage_transition(table, match, patch):
+    """Log a task state change to the transition log, for stage-level cycle time.
+
+    `update()` is the single choke point every task state change passes through, which is
+    why the hook lives here rather than in each caller. Gated to single-row task updates
+    that actually carry a new `state`, so heartbeats (which patch only `updated_at`) cost
+    nothing. Entirely fail-soft: a metrics write must never fail a state change, and
+    ORCH_RECORD_STAGE_TRANSITIONS=false turns it off fleet-wide without a deploy.
+    """
+    if table != "tasks" or not isinstance(patch, dict) or "state" not in patch:
+        return
+    if "id" not in (match or {}):
+        return  # bulk updates are already refused above; never log one as a task transition
+    if os.environ.get("ORCH_RECORD_STAGE_TRANSITIONS", "true").lower() != "true":
+        return
+    try:
+        import stage_cycle_time
+        stage_cycle_time.record_transition(
+            match.get("id"), patch.get("state"), project_id=patch.get("project_id"))
+    except Exception:
+        pass
+
+
 def update(table, match, patch):
     """PATCH rows in *table* matching *match* dict with *patch* fields.  Tolerates 409 (concurrent write)."""
     # A PATCH can plant a secret just as easily as an INSERT; the key may live in
@@ -1236,8 +1259,10 @@ def update(table, match, patch):
     except ImportError:
         pass
     try:
-        return _req("PATCH", f"/rest/v1/{table}", body=patch,
-                    headers={"Prefer": "return=representation"}, params=params)
+        result = _req("PATCH", f"/rest/v1/{table}", body=patch,
+                      headers={"Prefer": "return=representation"}, params=params)
+        _record_stage_transition(table, match, patch)
+        return result
     except TransientDBError:
         # 409 = a concurrent write (the two Macs racing the same row). The write intent is already
         # satisfied by the other writer, so treat it as a no-op instead of letting it bubble up as a

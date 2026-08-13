@@ -309,6 +309,20 @@ def load_outcomes_data() -> dict:
     }
 
 
+def load_stage_cycle_time(lookback_hours: int = 168) -> dict:
+    """Stage-level p50/p90 per project and per model route, plus first-pass merge rate.
+
+    Thin wrapper over `stage_cycle_time.summarize()` so the dashboard has one section to
+    read. Fail-soft: an empty dict on any error, because a missing panel must never stop
+    the rest of the report being generated.
+    """
+    try:
+        import stage_cycle_time
+        return stage_cycle_time.summarize(lookback_hours) or {}
+    except Exception:
+        return {}
+
+
 # ---------------------------------------------------------------------------
 # 3. load_savings_data
 # ---------------------------------------------------------------------------
@@ -635,6 +649,7 @@ def generate_report() -> dict:
     savings_data = load_savings_data()
     advantages = compute_orchestrator_advantages()
     comparison = compute_competitive_comparison(cost_data)
+    cycle_time = load_stage_cycle_time()
 
     summary = {
         "total_spend_usd": cost_data.get("total_spend", 0.0),
@@ -642,6 +657,10 @@ def generate_report() -> dict:
         "total_merged": outcomes_data.get("merged", 0),
         "merge_rate": outcomes_data.get("merge_rate", 0.0),
         "first_pass_rate": outcomes_data.get("first_pass_rate", 0.0),
+        # Headline throughput metric: merged on attempt 1. Distinct from `first_pass_rate`
+        # above, which means "tests passed, no retries" — a diff can clear its own tests
+        # and still never survive the merge train.
+        "first_pass_merge_rate": cycle_time.get("first_pass_merge_rate"),
         "cost_per_merge": outcomes_data.get("avg_cost_per_merge", 0.0),
         "total_tokens": (
             cost_data.get("total_input_tokens", 0)
@@ -657,6 +676,7 @@ def generate_report() -> dict:
         "cost_analysis": cost_data,
         "quality_metrics": outcomes_data,
         "savings": savings_data,
+        "stage_cycle_time": cycle_time,
         "orchestrator_advantages": advantages,
         "competitive_comparison": comparison,
         "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
