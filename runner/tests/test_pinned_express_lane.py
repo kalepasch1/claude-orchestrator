@@ -20,11 +20,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import db
 
 
-def _task(slug, pinned=False, pin_rank=0, project_id="p1", created_at="2024-01-01T00:00:00",
-          kind="self", note="", state="QUEUED"):
-    """Create a mock task dict for testing."""
+def _task(task_id, slug=None, pinned=False, pin_rank=0, project_id="p1",
+          created_at="2024-01-01T00:00:00", kind="self", note="", state="QUEUED"):
+    """Create a mock task dict for testing.
+
+    The first positional is the task ID; `slug` defaults to it. They were a single
+    parameter named `slug`, so the eleven callers that pass a distinct slug — the
+    ones that exercise the recover-/qafix-/canary-/improve- lane ordering, i.e. the
+    whole point of the express-lane tests — raised `TypeError: _task() got multiple
+    values for argument 'slug'` at collection and never ran.
+    """
+    slug = slug if slug is not None else task_id
     return {
-        "id": slug,
+        "id": task_id,
         "slug": slug,
         "project_id": project_id,
         "state": state,
@@ -171,8 +179,14 @@ class TestPinnedExpressLane(unittest.TestCase):
             _task("pin-2", pinned=True, pin_rank=2, created_at="2024-01-03T00:00:00"),
         ]
         claimed = []
+        remaining = list(tasks)
         for _ in range(3):
-            claimed.append(self._claim(tasks))
+            # Drain: a real claim flips the row to RUNNING so it leaves the queue.
+            # Re-claiming the same static list only ever re-returns rank 1, which
+            # proves nothing about ordering.
+            got = self._claim(remaining)
+            claimed.append(got)
+            remaining = [t for t in remaining if t["id"] != got]
         self.assertEqual(claimed, ["pin-1", "pin-2", "pin-3"])
 
     def test_pin_rank_zero_treated_as_unpinned(self):
