@@ -4,7 +4,10 @@ import { createClient } from '@supabase/supabase-js'
 // Returns live queue state, running tasks, cascade metrics, and cost data
 // Mirrors what runner/web_console.py's _build_snapshot() does, but reads from Supabase directly.
 
-const STATES = ['QUEUED', 'RUNNING', 'DONE', 'MERGED', 'BLOCKED', 'CONFLICT', 'TESTFAIL', 'BUILDFAIL', 'SHELVED']
+const STATES = [
+  'QUEUED', 'RUNNING', 'DONE', 'MERGED', 'DEPLOYED_AND_VERIFIED',
+  'PHANTOM_UNVERIFIED', 'BLOCKED', 'CONFLICT', 'TESTFAIL', 'BUILDFAIL', 'SHELVED',
+]
 
 export default defineEventHandler(async (_event) => {
   const url = process.env.SUPABASE_URL || process.env.NUXT_SUPABASE_URL || ''
@@ -30,16 +33,16 @@ export default defineEventHandler(async (_event) => {
       .eq('state', 'RUNNING')
       .order('updated_at', { ascending: true })
       .limit(20),
-    // Recently completed (DONE/MERGED)
+    // Keep artifact, integration and production delivery states distinct.
     sb.from('tasks')
-      .select('slug,state,updated_at,cost_usd,kind')
-      .in('state', ['DONE', 'MERGED'])
+      .select('slug,state,updated_at,cost_usd,kind,project_id,artifact_commit')
+      .in('state', ['DONE', 'MERGED', 'DEPLOYED_AND_VERIFIED'])
       .order('updated_at', { ascending: false })
       .limit(10),
     // Aggregate cost from recent tasks
     sb.from('tasks')
       .select('cost_usd,model_tier,state')
-      .in('state', ['DONE', 'MERGED'])
+      .in('state', ['DONE', 'MERGED', 'DEPLOYED_AND_VERIFIED'])
       .order('updated_at', { ascending: false })
       .limit(100),
   ])
@@ -59,6 +62,9 @@ export default defineEventHandler(async (_event) => {
     state: r.state,
     updated_at: r.updated_at,
     cost_usd: r.cost_usd ?? null,
+    kind: r.kind ?? null,
+    project_id: r.project_id ?? null,
+    artifact_commit: r.artifact_commit ?? null,
   }))
 
   // Compute cascade metrics from running tasks
@@ -80,7 +86,7 @@ export default defineEventHandler(async (_event) => {
     recent_completions: recentDone,
     total_queued: queueStates['QUEUED'] ?? 0,
     total_running: queueStates['RUNNING'] ?? 0,
-    total_blocked: (queueStates['BLOCKED'] ?? 0) + (queueStates['TESTFAIL'] ?? 0) + (queueStates['BUILDFAIL'] ?? 0),
+    total_blocked: (queueStates['BLOCKED'] ?? 0) + (queueStates['TESTFAIL'] ?? 0) + (queueStates['BUILDFAIL'] ?? 0) + (queueStates['PHANTOM_UNVERIFIED'] ?? 0),
     cascade: {
       avg_confidence: Math.round(avgConfidence * 100) / 100,
       saves_percent: savesPercent,

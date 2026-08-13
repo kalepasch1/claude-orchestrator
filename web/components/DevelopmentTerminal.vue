@@ -163,14 +163,39 @@ function clearOutput() { outputLines.value = [] }
 watch(() => snapshot.value.recent_completions, (completions) => {
   if (!completions.length) return
   const latest = completions[0]
+  const hasArtifact = Boolean(latest.artifact_commit)
+  const isMerged = latest.state === 'MERGED' || latest.state === 'DEPLOYED_AND_VERIFIED'
+  const isDeployed = latest.state === 'DEPLOYED_AND_VERIFIED'
   verificationSteps.value = [
-    { key: 'code_implemented', label: 'Code implemented', status: 'pass' },
-    { key: 'wired_e2e', label: 'Wired end-to-end', status: 'pass' },
-    { key: 'no_dead_code', label: 'No dead code', status: 'pass' },
-    { key: 'git_merge_clean', label: 'Merge clean', status: latest.state === 'MERGED' ? 'pass' : 'pending' },
-    { key: 'migrations_applied', label: 'Migrations applied', status: 'pass' },
-    { key: 'vercel_deploy', label: 'Vercel deployed', status: latest.state === 'MERGED' ? 'pass' : 'pending' },
-    { key: 'qa_testing', label: 'QA passed', status: 'pass' },
+    {
+      key: 'code_implemented', label: 'Artifact recorded',
+      status: hasArtifact ? 'pass' : 'fail',
+      detail: hasArtifact ? latest.artifact_commit!.slice(0, 12) : 'No artifact commit is attached to this task.',
+    },
+    {
+      key: 'wired_e2e', label: 'End-to-end proof', status: 'pending',
+      detail: 'Requires a task-scoped journey receipt; task state alone is not proof.',
+    },
+    {
+      key: 'no_dead_code', label: 'Code-quality proof', status: 'pending',
+      detail: 'No independent code-quality receipt is exposed by this snapshot.',
+    },
+    {
+      key: 'git_merge_clean', label: 'Integrated', status: isMerged ? 'pass' : 'pending',
+      detail: isMerged ? 'Artifact commit is reported reachable on the integration branch.' : `Current state: ${latest.state}`,
+    },
+    {
+      key: 'migrations_applied', label: 'Migration proof', status: 'pending',
+      detail: 'Requires an applied-migration receipt when database changes are present.',
+    },
+    {
+      key: 'vercel_deploy', label: 'Production deployed and verified', status: isDeployed ? 'pass' : 'pending',
+      detail: isDeployed ? 'Exact release SHA is reported live.' : 'MERGED is not a production deployment.',
+    },
+    {
+      key: 'qa_testing', label: 'Independent QA proof', status: 'pending',
+      detail: 'Requires a linked test or QA receipt.',
+    },
   ]
 }, { deep: true })
 
