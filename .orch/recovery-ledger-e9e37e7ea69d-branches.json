@@ -1,0 +1,106 @@
+{
+ "audit_fingerprint": "e9e37e7ea69d-localbranches",
+ "base": "origin/master",
+ "counts": {
+  "ALREADY_PRESENT": 5,
+  "RECOVERABLE_VALUE": 2,
+  "SUPERSEDED_BY_NEWER": 1
+ },
+ "items": [
+  {
+   "classification": "RECOVERABLE_VALUE",
+   "created_at": 1786029792,
+   "disposition": "diff still applies; route through the merge train",
+   "evidence": "git apply --check --3way clean",
+   "files": [
+    "packages/darwin-kernel/src/passport/passport.ts",
+    "runner/patch_transplant.py",
+    "runner/transplant_discipline.py",
+    "tests/test_transplant_discipline.py"
+   ],
+   "ref": "refs/heads/_rb",
+   "sha": "fcef8e0665f9b7d79cc9f4e72734dc169e24badd",
+   "subject": "agent: dropbox-wave-c-compounding-codegen-platform-spine--slice-2 \u2014 unblock train: passport digest order-independence + fail-closed expiry"
+  },
+  {
+   "classification": "RECOVERABLE_VALUE",
+   "created_at": 1785383571,
+   "disposition": "diff still applies; route through the merge train",
+   "evidence": "git apply --check --3way clean",
+   "files": [
+    "runner/backlog_batch_processor.py",
+    "runner/intake_watcher.py",
+    "runner/planner.py",
+    "runner/test_vigil_merge_orchestration.py",
+    "runner/tests/test_backlog_batch_illuminati.py"
+   ],
+   "ref": "refs/heads/backlog-batch-illuminati-1d1b027",
+   "sha": "0abf5b6d4c52bfc741172e9aae160743cc5bc2e3",
+   "subject": "fix(backlog-batch-illuminati): timestamp in empty batch result + floating point precision in tests"
+  },
+  {
+   "classification": "ALREADY_PRESENT",
+   "created_at": 1784757893,
+   "disposition": "already merged into origin/master",
+   "evidence": "is-ancestor",
+   "files": [],
+   "ref": "refs/heads/fix-branch",
+   "sha": "54b416f7fe88971020eaa948439b3563d23e795d",
+   "subject": "fix: govern() respects ORCH_DISABLE_MEM_GATE \u2014 skip RAM throttle+clamp when set"
+  },
+  {
+   "classification": "SUPERSEDED_BY_NEWER",
+   "created_at": 1786103948,
+   "disposition": "all 1 touched path(s) rewritten in origin/master after the branch was cut; newest wins",
+   "evidence": "base newer on every touched path",
+   "files": [
+    "runner/release_train.py"
+   ],
+   "ref": "refs/heads/fix-release-train-manifest-import-20260807",
+   "sha": "6d77311f95e2fe2172425395372f54eaecfbf932",
+   "subject": "fix: add missing release_manifest import in release_train.py"
+  },
+  {
+   "classification": "ALREADY_PRESENT",
+   "created_at": 1785434400,
+   "disposition": "already merged into origin/master",
+   "evidence": "is-ancestor",
+   "files": [],
+   "ref": "refs/heads/mac1-wip-2026-07-30",
+   "sha": "5bc36d6af61da787f4263113c1d177e5a8a8605a",
+   "subject": "fleet: ship orchestrator changes + restart"
+  },
+  {
+   "classification": "ALREADY_PRESENT",
+   "created_at": 1785593387,
+   "disposition": "already merged into origin/master",
+   "evidence": "is-ancestor",
+   "files": [],
+   "ref": "refs/heads/mac1-wip-2026-08-01",
+   "sha": "9e984cae3a745cec5dc4672bec72859ec557e9d6",
+   "subject": "wip(mac1): local fleet work incl. py39 UTC shim \u2014 review before merging"
+  },
+  {
+   "classification": "ALREADY_PRESENT",
+   "created_at": 1786636269,
+   "disposition": "already merged into origin/master",
+   "evidence": "is-ancestor",
+   "files": [],
+   "ref": "refs/heads/master",
+   "sha": "64a7b0ef2c42c5e6678ac983a6fe3b83ca1980f3",
+   "subject": "chore: sync show_greeting.py working-tree change from QA health check"
+  },
+  {
+   "classification": "ALREADY_PRESENT",
+   "created_at": 1785433665,
+   "disposition": "already merged into origin/master",
+   "evidence": "is-ancestor",
+   "files": [],
+   "ref": "refs/heads/worktree-agent-a4d8f842ebe05a089",
+   "sha": "cc9ec6dc99606377bac0999122aca5439d004234",
+   "subject": "fleet: replace hardcoded per-Mac MACHINE_PROFILES with dynamic machine_profile.py + cross-Mac model visibility via fleet_capabilities.py"
+  }
+ ],
+ "total": 8,
+ "unknown": 0
+}
