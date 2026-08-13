@@ -284,6 +284,26 @@ export function classifyStash(entry, ctx) {
 // Both are supplied by path rather than discovered, because a tool that went
 // hunting across the filesystem for candidate directories would be guessing.
 
+/**
+ * Extensions the bridge writes. `.zip` was the only one this file knew about, and
+ * the bridge has since started emitting bare `.patch` payloads — an artifact kind
+ * it could not see is an artifact kind it silently reports nothing about, which is
+ * the UNKNOWN bucket wearing a different hat.
+ */
+const ARTIFACT_EXT = /\.(zip|patch|diff)$/
+
+/**
+ * The branch the bridge says it pushed, from the `<artifact>.result.txt` sidecar.
+ * Returns null when there is no receipt — absence is not evidence of failure, it
+ * just means we fall back to matching on the name.
+ */
+export function readBridgeReceipt(artifactPath) {
+  const receipt = `${artifactPath}.result.txt`
+  if (!existsSync(receipt)) return null
+  const text = readFileSync(receipt, 'utf8')
+  return /^\[chatgpt-bridge\] pushed branch (.+)$/m.exec(text)?.[1]?.trim() ?? null
+}
+
 /** Refs whose name ends in `/<name>` or equals `<name>` — the checkout's likely home. */
 function refsNamed(name) {
   const all = runGit(['for-each-ref', '--format=%(refname)'], { allowFail: true }) ?? ''
@@ -392,8 +412,8 @@ export function classifyBridgeArtifact(artifactPath, ctx) {
   const { remoteBranches } = ctx
   const file = basename(artifactPath)
   const bucket = basename(join(artifactPath, '..'))
-  // `<ts>--<repo>--<slug>.zip`
-  const slug = file.replace(/\.zip$/, '').split('--').slice(2).join('--')
+  // `<ts>--<repo>--<slug>.<ext>`
+  const slug = file.replace(ARTIFACT_EXT, '').split('--').slice(2).join('--')
 
   if (!existsSync(artifactPath)) {
     return {
@@ -404,9 +424,23 @@ export function classifyBridgeArtifact(artifactPath, ctx) {
     }
   }
 
-  const landed = slug
-    ? [...remoteBranches].filter((b) => b.startsWith(`chatgpt/${slug}`) || b.includes(slug))
-    : []
+  // Prefer the bridge's own receipt over inference from the filename.
+  //
+  // Every artifact has a `<name>.result.txt` sidecar holding the exact branch the
+  // bridge pushed, and reading it beats reconstructing that branch from the file
+  // name: the bridge appends a run suffix (`…-20260812` becomes
+  // `…-20260812-08120203`), so name-matching is a guess that happens to work.
+  // A guess that usually works is the worst kind here — it fails silently on the
+  // one artifact whose naming drifted, and reports it as unrecoverable.
+  const declaredBranch = readBridgeReceipt(artifactPath)
+  const landedFromReceipt =
+    declaredBranch && remoteBranches.has(declaredBranch) ? [declaredBranch] : []
+
+  const landed = landedFromReceipt.length
+    ? landedFromReceipt
+    : slug
+      ? [...remoteBranches].filter((b) => b.startsWith(`chatgpt/${slug}`) || b.includes(slug))
+      : []
 
   if (landed.length > 0) {
     return {
@@ -551,7 +585,8 @@ export function enumerateBridgeArtifacts(dropboxDir) {
     const dir = join(dropboxDir, bucket)
     if (!existsSync(dir)) return []
     return readdirSync(dir)
-      .filter((f) => f.endsWith('.zip'))
+      // `.result.txt` sidecars sit beside the payloads and are not payloads.
+      .filter((f) => ARTIFACT_EXT.test(f))
       .map((f) => join(dir, f))
   })
 }

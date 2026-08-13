@@ -22,6 +22,7 @@ import {
   classifyExternalWorktree,
   collectFlag,
   enumerateBridgeArtifacts,
+  readBridgeReceipt,
 } from './reconcile-evidence.mjs'
 
 let root
@@ -207,5 +208,76 @@ describe('buildPreservationPlan', () => {
   it('honours an alternate namespace', () => {
     const { script } = buildPreservationPlan([branch('agent/one')], { namespace: 'refs/attic' })
     assert.match(script, /refs\/attic\/agent\/one/)
+  })
+})
+
+describe('readBridgeReceipt', () => {
+  const withReceipt = (name, body) => {
+    const dir = path.join(root, 'receipts')
+    fs.mkdirSync(dir, { recursive: true })
+    const p = path.join(dir, name)
+    fs.writeFileSync(p, 'payload')
+    if (body !== null) fs.writeFileSync(`${p}.result.txt`, body)
+    return p
+  }
+
+  it('reads the branch the bridge says it pushed', () => {
+    const p = withReceipt(
+      '20260812-020326--repo--thing.patch',
+      '[chatgpt-bridge] default branch: master\n[chatgpt-bridge] pushed branch chatgpt/thing-08120203\nOK\n',
+    )
+    assert.equal(readBridgeReceipt(p), 'chatgpt/thing-08120203')
+  })
+
+  it('returns null when there is no receipt, rather than throwing', () => {
+    assert.equal(readBridgeReceipt(withReceipt('a--b--c.patch', null)), null)
+  })
+
+  it('returns null when the receipt records no push', () => {
+    const p = withReceipt('a--b--d.patch', '[chatgpt-bridge] failed to apply\n')
+    assert.equal(readBridgeReceipt(p), null)
+  })
+})
+
+describe('bridge artifacts beyond .zip', () => {
+  const drop = () => {
+    const dir = path.join(root, `drop-${Math.random().toString(36).slice(2)}`)
+    fs.mkdirSync(path.join(dir, '_applied'), { recursive: true })
+    return dir
+  }
+
+  it('enumerates .patch and .diff payloads, not just .zip', () => {
+    const dir = drop()
+    for (const f of ['a.zip', 'b.patch', 'c.diff', 'd.txt', 'b.patch.result.txt']) {
+      fs.writeFileSync(path.join(dir, '_applied', f), 'x')
+    }
+    const found = enumerateBridgeArtifacts(dir).map((p) => path.basename(p)).sort()
+    assert.deepEqual(found, ['a.zip', 'b.patch', 'c.diff'])
+  })
+
+  it('trusts the receipt over the filename when the bridge added a run suffix', () => {
+    const dir = drop()
+    const p = path.join(dir, '_applied', '20260812-020326--repo--thing-20260812.patch')
+    fs.writeFileSync(p, 'x')
+    fs.writeFileSync(`${p}.result.txt`, '[chatgpt-bridge] pushed branch chatgpt/thing-20260812-08120203\n')
+    const r = classifyBridgeArtifact(p, {
+      mainSha: 'HEAD',
+      localDefaultSha: null,
+      liveTaskSlugs: [],
+      remoteBranches: new Set(['chatgpt/thing-20260812-08120203']),
+    })
+    assert.equal(r.classification, 'ALREADY_PRESENT')
+    assert.deepEqual(r.preservedIn, ['origin/chatgpt/thing-20260812-08120203'])
+  })
+
+  it('still classifies a .patch with no remote as the last copy', () => {
+    const dir = drop()
+    const p = path.join(dir, '_applied', '20260812-020326--repo--orphan.patch')
+    fs.writeFileSync(p, 'x')
+    const r = classifyBridgeArtifact(p, {
+      mainSha: 'HEAD', localDefaultSha: null, liveTaskSlugs: [], remoteBranches: new Set(),
+    })
+    assert.equal(r.classification, 'RECOVERABLE_VALUE')
+    assert.match(r.reason, /orphan/)
   })
 })
