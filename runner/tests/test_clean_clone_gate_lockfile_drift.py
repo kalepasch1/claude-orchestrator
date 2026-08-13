@@ -55,6 +55,22 @@ def test_unfrozen_install_command_is_idempotent():
     assert ccg.unfrozen_install_command(once) == ""
 
 
+@pytest.mark.parametrize("cmd", [
+    "node scripts/check.js --immutable",
+    "docker run --immutable img",
+    "echo --frozen-lockfile",
+    "git commit -m 'note --immutable'",
+])
+def test_unfrozen_install_command_does_not_rewrite_non_installs(cmd):
+    """The mapping is anchored per package manager.
+
+    A blind substring replace on --immutable / --frozen-lockfile rewrites commands that were
+    never installs. Anchoring is the reason master's implementation was kept over the branch's
+    during consolidation, so it is asserted rather than assumed.
+    """
+    assert ccg.unfrozen_install_command(cmd) == ""
+
+
 # --- _LOCKFILE_DRIFT --------------------------------------------------------
 
 DRIFT_LOGS = [
@@ -66,6 +82,13 @@ DRIFT_LOGS = [
     "YN0028: The lockfile would have been modified by this install, which is "
     "explicitly forbidden.",
     "error Your lockfile needs to be updated, but yarn was run with --frozen-lockfile.",
+    # Folded in during the 2026-08-13 detector consolidation. Each is a real phrasing the
+    # narrower pattern missed, which meant a repairable drift was reported red.
+    "YN0028: The lockfile would have been created by this install, which is explicitly forbidden.",
+    "error Your lockfile needs to be updated.",
+    "ERR_PNPM_LOCKFILE_CONFIG_MISMATCH  The lockfile is out of date with the workspace",
+    "The lockfile does not match the current package.json",
+    "warning pnpm-lock.yaml lockfile does not satisfy the importers",
 ]
 
 
@@ -85,6 +108,22 @@ NON_DRIFT_LOGS = [
 
 @pytest.mark.parametrize("log", NON_DRIFT_LOGS)
 def test_non_drift_logs_not_flagged(log):
+    assert not ccg._LOCKFILE_DRIFT.search(log)
+
+
+def test_widened_alternations_do_not_span_lines():
+    """The folded-in alternations are line-bounded on purpose.
+
+    `_LOCKFILE_DRIFT` compiles with `re.S`, so an unbounded `.*` would let the word "lockfile"
+    in one log line pair with "not up to date" hundreds of lines later and misreport an
+    unrelated compile failure as repairable drift.
+    """
+    log = "\n".join([
+        "info reading lockfile",
+        "TypeError: Cannot read properties of undefined",
+        "  at build (/app/src/index.ts:12:3)",
+        "note: your local cache is not up to date",
+    ])
     assert not ccg._LOCKFILE_DRIFT.search(log)
 
 
