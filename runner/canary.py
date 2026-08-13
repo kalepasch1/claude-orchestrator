@@ -201,15 +201,33 @@ def render_metrics():
 
 
 def validate_canary(response_text):
-    """True when 'canary' (case-insensitive) appears anywhere in response_text.
+    """True when response_text carries a canary marker. Delegates — see below.
 
-    Logs at INFO when the canary marker is found, WARNING when it is not.
-    Fail-soft on non-string input (returns False rather than raising).
+    UNIFIED 2026-08-13: there were three copies of this function and they did not
+    agree. Root canary.py and runner/canary_validation.py both match on a WORD
+    BOUNDARY (`\\bcanary\\b`); this one matched on a SUBSTRING
+    (`"canary" in text.lower()`). So "precanary" and "canaryX" validated here and
+    failed at the other two entry points.
+
+    That is the worst possible shape for a marker check: its whole job is to
+    confirm a canary survived a pipeline hop, and it returned a different verdict
+    depending on which import path the caller happened to use — a hop could be
+    reported as both intact and broken. Neither answer was flagged, because each
+    copy was self-consistent and no test compared them.
+
+    Word boundary wins: it is what two of the three implementations already did and
+    what root canary.py documents ("Mirrors runner/canary_validation.py"). Rather
+    than a fourth copy of the regex, delegate, so the semantics can only ever be
+    changed in one place.
+
+    Logging stays here (INFO on hit, WARNING on miss) because callers of this module
+    depend on this logger's name.
     """
     if not isinstance(response_text, str):
         _log.warning("canary marker not found: non-string input (%s)", type(response_text).__name__)
         return False
-    if "canary" in response_text.lower():
+    import canary_validation
+    if canary_validation.validate_canary(response_text):
         _log.info("canary marker found in response text")
         return True
     _log.warning("canary marker NOT found in response text")
