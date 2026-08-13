@@ -585,6 +585,134 @@ def recent(days: int = 14, limit: int = 50, repo: str = ".") -> list[dict]:
             continue
     return records
 
+# Matches the subject git writes for a merge: "Merge branch 'agent/foo' into bar",
+# "Merge pull request #12 from org/agent/foo", and the plain "Merge agent/foo" form.
+_MERGE_BRANCH_RE = re.compile(
+    r"""Merge\s+(?:remote-tracking\s+)?branch\s+['"]([^'"]+)['"]"""
+    r"""|Merge\s+pull\s+request\s+\#?\d+\s+from\s+(\S+)"""
+    r"""|Merge\s+([^\s'"]+)""",
+    re.IGNORECASE,
+)
+
+
+def _branch_from_subject(subject: str) -> str:
+    """Best-effort source branch out of a merge subject. '' when it is not a merge."""
+    m = _MERGE_BRANCH_RE.search(subject or "")
+    if not m:
+        return ""
+    branch = next((g for g in m.groups() if g), "")
+    # "org/agent/foo" from a PR subject -> "agent/foo"; keep plain names intact.
+    if branch.startswith("origin/"):
+        branch = branch[len("origin/"):]
+    return branch.strip()
+
+
+def _summarise(subject: str, branch: str, files: list) -> str:
+    """One-line, dependency-free description of what a merge did.
+
+    Heuristic on purpose. The spec allows an LLM call "if available", but this module
+    is imported by the scheduler on every pass and has no model client; a per-merge
+    network call would make a metadata read cost money and latency. The heuristic reads
+    the same signals a summariser would (touched top-level areas, test-vs-source mix,
+    breadth) and is deterministic, which also makes it testable.
+    """
+    paths = [p for p in (files or []) if p]
+    if not paths:
+        return f"{subject or 'merge'} — no files changed"
+    areas = sorted({(p.split("/", 1)[0] if "/" in p else "(root)") for p in paths})
+    tests = sum(1 for p in paths
+                if "test" in os.path.basename(p).lower() or p.startswith("tests/")
+                or "/tests/" in p)
+    if tests == len(paths):
+        nature = "tests only"
+    elif tests:
+        nature = f"{len(paths) - tests} source + {tests} test file(s)"
+    else:
+        nature = f"{len(paths)} source file(s)"
+    where = ", ".join(areas[:3]) + ("…" if len(areas) > 3 else "")
+    lead = subject or (f"merge of {branch}" if branch else "merge")
+    return f"{lead} — {nature} under {where}"
+
+
+def assemble_merge_summaries(limit: int = 20, repo: str = ".",
+                             store: bool = False) -> list[dict]:
+    """Recent merges as [{name, branch_name, files_changed, merge_date, summary}, …].
+
+    This is the assembled shape the merged-diff-memory backlog asks for, in that exact
+    key order and with no extra keys, newest first. It sits on the existing extractors
+    (`_safe_run` git reads) rather than introducing a second git layer.
+
+    `store=True` also persists the records through the existing metadata memory, so a
+    caller can assemble and remember in one step; the memory schema is unchanged
+    (commit/branch/author/date/message/files_affected) — this shape is a projection for
+    consumers, not a new storage format.
+
+    Fail-soft: returns [] rather than raising, because every caller of this module reads
+    it inside a broad except and a raise would silently degrade to "no merges" anyway.
+    """
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 20
+    if limit <= 0:
+        return []
+
+    try:
+        out = _safe_run(["git", "log", f"--max-count={limit}", "--merges", "--format=%H"],
+                        cwd=repo)
+        if not out:
+            # Fast-forward-only repos have no merge commits; fall back to plain commits
+            # so the assembled list is never empty just because of a merge strategy.
+            out = _safe_run(["git", "log", f"--max-count={limit}", "--format=%H"], cwd=repo)
+        shas = [s for s in out.split("\n") if s.strip()][:limit]
+    except Exception:
+        return []
+
+    records = []
+    for sha in shas:
+        try:
+            subject = _safe_run(["git", "log", "-1", "--format=%s", sha], cwd=repo)
+            date = _safe_run(["git", "log", "-1", "--format=%aI", sha], cwd=repo)
+            # `-m --first-parent` is required: for a MERGE commit, a plain diff-tree
+            # prints nothing at all (git has no single parent to diff against), so
+            # files_changed came back empty for every record — the exact field this
+            # shape exists to carry. --first-parent diffs against the branch we merged
+            # INTO, i.e. "what this merge brought in".
+            raw = _safe_run(["git", "diff-tree", "--no-commit-id", "--name-only",
+                             "-r", "-m", "--first-parent", sha], cwd=repo)
+            files = [f for f in raw.split("\n") if f.strip()] if raw else []
+            branch = _branch_from_subject(subject)
+            records.append({
+                "name": subject or sha[:12],
+                "branch_name": branch,
+                "files_changed": files,
+                "merge_date": date,
+                "summary": _summarise(subject, branch, files),
+            })
+        except Exception:
+            continue
+
+    if store and records:
+        try:
+            merges = _read_memory()
+            known = {m.get("commit") for m in merges}
+            for sha, rec in zip(shas, records):
+                if sha in known:
+                    continue
+                merges.append({
+                    "commit": sha,
+                    "branch": rec["branch_name"],
+                    "author": "",
+                    "date": rec["merge_date"],
+                    "message": rec["name"],
+                    "files_affected": rec["files_changed"],
+                })
+            _write_memory(merges)
+        except Exception:
+            pass
+    return records
+
+
 def write_memory_file(merges: list[dict]) -> bool:
     """Persist merge metadata. True on success, False on any error.
 
