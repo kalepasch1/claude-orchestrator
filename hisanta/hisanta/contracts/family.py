@@ -1,122 +1,71 @@
-"""Shared interfaces/types for the hisanta family domain."""
+"""Re-export shim: the canonical family contracts live at hisanta/contracts/family.py.
+
+This file used to be a second, independently-maintained copy of the same domain.
+The two drifted: the nested copy grew the quest/grandma/gifting/school types
+while the top-level one grew the approval/kindness types, and because every
+consumer imports `hisanta.contracts.family` (absolute), the nested definitions
+were unreachable dead code that still had to be kept in sync by hand.
+
+The canonical module was already written to be the *union* — every symbol either
+file ever exported is defined there, with a shape that satisfies both sets of
+callers. So this module is now a pure re-export. Behaviour is preserved exactly:
+`hisanta.hisanta.contracts.family.X is hisanta.contracts.family.X` for every X,
+which means an isinstance check or an enum identity comparison cannot fail just
+because a caller reached the domain by the nested path.
+
+Same convention as the root `merged_diff_library.py` shim over
+`runner/merged_diff_library.py`. Do not add definitions here — add them to
+hisanta/contracts/family.py and extend the re-export list below.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import Enum
+from hisanta.contracts.family import (  # noqa: F401  (re-export)
+    ApprovalStatus,
+    ClassroomCohort,
+    ConstitutionAction,
+    ConstitutionVerdict,
+    CoppaConsent,
+    DENY_ACTIONS,
+    ESCALATE_ACTIONS,
+    GiftLane,
+    GrandmaStorySlot,
+    MasteryEfficacyMetric,
+    MatchJar,
+    MilestoneReaction,
+    PII_FREE_FIELDS,
+    ParentApproval,
+    ParentVerificationReceipt,
+    Quest,
+    QuestKind,
+    RewardCoin,
+    RewardCoins,
+    RewardSchedule,
+    SchoolQuest,
+    constitution_check,
+)
 
-
-class QuestKind(Enum):
-    READING = "READING"
-    MATH = "MATH"
-    KINDNESS = "KINDNESS"
-
-
-@dataclass
-class Quest:
-    kind: QuestKind
-    description: str = ""
-    completed: bool = False
-
-
-@dataclass
-class RewardSchedule:
-    schedule_type: str = "fixed"
-    variable_ratio_coupled_to_purchase: bool = False
-
-
-@dataclass
-class MasteryEfficacyMetric:
-    subject: str
-    score: float = 0.0
-    attempts: int = 0
-
-
-class ConstitutionVerdict(Enum):
-    ALLOW = "ALLOW"
-    DENY = "DENY"
-    ESCALATE = "ESCALATE"
-
-
-def constitution_check(action: str) -> ConstitutionVerdict:
-    """Check an action against the constitution rules.
-
-    Denies: charge_child, open_ended_child_chat
-    Escalates: loot, gift, ai_message
-    Allows: everything else
-    """
-    deny_actions = {"charge_child", "open_ended_child_chat"}
-    escalate_actions = {"loot", "gift", "ai_message"}
-
-    if action in deny_actions:
-        return ConstitutionVerdict.DENY
-    if action in escalate_actions:
-        return ConstitutionVerdict.ESCALATE
-    return ConstitutionVerdict.ALLOW
-
-
-@dataclass
-class GrandmaStorySlot:
-    story_id: str
-    duration_seconds: int = 120
-    recorded: bool = False
-
-
-@dataclass
-class MilestoneReaction:
-    """Milestone reaction data. child_name is a PII field."""
-    milestone_id: str
-    reaction_text: str
-    child_name: str = ""  # PII field
-    approved: bool = False
-
-
-PII_FREE_FIELDS = frozenset({"milestone_id", "reaction_text", "approved"})
-
-
-class GiftLane(Enum):
-    AD_HOC = "AD_HOC"
-    ADVENT = "ADVENT"
-    EARNED_REWARD = "EARNED_REWARD"
-
-
-@dataclass
-class MatchJar:
-    balance: float = 0.0
-    lane: GiftLane = GiftLane.AD_HOC
-
-
-@dataclass
-class ParentApproval:
-    approved: bool = False
-    parent_id: str = ""
-
-
-@dataclass
-class ParentVerificationReceipt:
-    verified: bool = False
-    parent_id: str = ""
-
-
-@dataclass
-class RewardCoin:
-    amount: int = 1
-    receipt: ParentVerificationReceipt | None = None
-
-
-@dataclass
-class SchoolQuest:
-    quest: Quest | None = None
-    classroom: str = ""
-
-
-@dataclass
-class ClassroomCohort:
-    name: str
-    members: list = field(default_factory=list)
-
-
-@dataclass
-class CoppaConsent:
-    consented: bool = False
-    parent_id: str = ""
+__all__ = [
+    "ApprovalStatus",
+    "ClassroomCohort",
+    "ConstitutionAction",
+    "ConstitutionVerdict",
+    "CoppaConsent",
+    "DENY_ACTIONS",
+    "ESCALATE_ACTIONS",
+    "GiftLane",
+    "GrandmaStorySlot",
+    "MasteryEfficacyMetric",
+    "MatchJar",
+    "MilestoneReaction",
+    "PII_FREE_FIELDS",
+    "ParentApproval",
+    "ParentVerificationReceipt",
+    "Quest",
+    "QuestKind",
+    "RewardCoin",
+    "RewardCoins",
+    "RewardSchedule",
+    "SchoolQuest",
+    "constitution_check",
+]
