@@ -32,6 +32,163 @@ MIN_SCORE = float(os.environ.get("IMPROVE_MIN_SCORE", "12"))   # auto-build bar 
 QUEUE_FLOOR = int(os.environ.get("IMPROVE_QUEUE_FLOOR", "12"))
 BOTTLENECK_SURFACES = ("integration", "reliability", "orchestration-layer", "cost-efficiency", "observability")
 
+# ---- SURFACE ESCALATION ---------------------------------------------------------------------------
+# improvement_measure writes measured per-surface returns to surface_returns so the miner can "weight
+# high-return surfaces higher next cycle". Weighting alone is too weak: surf_boost only nudges the score
+# of ideas that were already mined, so a surface that is demonstrably paying off still waits its turn in
+# the round-robin cursor and still gets the same number of slots. Escalation makes the response real —
+# a proven surface gets PINNED into this run's rotation (budget/frequency) and gets deeper exploration
+# tasks queued through the normal intake path.
+ORCH_SURFACE_ESCALATE_THRESHOLD = float(os.environ.get("ORCH_SURFACE_ESCALATE_THRESHOLD", "0.25"))
+ORCH_SURFACE_ESCALATE_MAX = int(os.environ.get("ORCH_SURFACE_ESCALATE_MAX", "3"))       # surfaces per run
+ORCH_SURFACE_ESCALATE_DEPTH = int(os.environ.get("ORCH_SURFACE_ESCALATE_DEPTH", "2"))   # explore tasks/surface
+
+
+def surface_returns():
+    """{surface: avg_delta} as measured by improvement_measure. Fail-soft: {} on any error."""
+    out = {}
+    try:
+        rows = db.select("surface_returns", {"select": "surface,avg_delta"}) or []
+    except Exception:
+        return out
+    for r in rows:
+        try:
+            name = (r or {}).get("surface")
+            if name:
+                out[str(name)] = float(r.get("avg_delta") or 0)
+        except (TypeError, ValueError, AttributeError):
+            continue          # no-op on bad data rather than poisoning the whole run
+    return out
+
+
+def escalating_surfaces(returns=None, threshold=None, limit=None):
+    """Surfaces whose measured return cleared the escalation bar, best-first.
+
+    Only known SURFACES qualify: a stale or mistyped row in surface_returns must not be able to inject an
+    arbitrary surface name into the rotation.
+    """
+    try:
+        bar = ORCH_SURFACE_ESCALATE_THRESHOLD if threshold is None else float(threshold)
+    except (TypeError, ValueError):
+        bar = ORCH_SURFACE_ESCALATE_THRESHOLD
+    rets = surface_returns() if returns is None else (returns or {})
+    if not isinstance(rets, dict):
+        return []
+    known = set(SURFACES)
+    hits = []
+    for surface, delta in rets.items():
+        try:
+            d = float(delta)
+        except (TypeError, ValueError):
+            continue
+        if surface in known and d > bar:
+            hits.append((d, surface))
+    hits.sort(key=lambda x: (-x[0], x[1]))
+    cap = ORCH_SURFACE_ESCALATE_MAX if limit is None else max(0, int(limit))
+    return [s for _, s in hits[:cap]]
+
+
+def escalation_pairs(apps, surfaces, cap=None):
+    """(app, surface) pairs to PIN into the rotation — the concrete budget/frequency raise.
+
+    Round-robins over surfaces first so several escalated surfaces each get a slot before any one of them
+    takes a second app. Returns [] when nothing escalated, which keeps the normal rotation untouched.
+    """
+    app_list = [a for a in (apps or []) if a]
+    surf_list = [s for s in (surfaces or []) if s]
+    if not app_list or not surf_list:
+        return []
+    limit = PER_RUN if cap is None else max(0, int(cap))
+    out, seen = [], set()
+    for a in app_list:
+        for s in surf_list:
+            pair = (a, s)
+            if pair in seen:
+                continue
+            seen.add(pair)
+            out.append(pair)
+            if len(out) >= limit:
+                return out
+    return out
+
+
+def exploration_records(app, surfaces, project_id, base_branch="master", depth=None):
+    """Deeper-exploration task records for escalated surfaces (pure: builds rows, queues nothing)."""
+    if not app or not project_id:
+        return []
+    n = ORCH_SURFACE_ESCALATE_DEPTH if depth is None else max(0, int(depth))
+    rows = []
+    for surface in (surfaces or []):
+        for i in range(n):
+            slug = f"explore-{surface}-{app}-{i + 1}"[:60]
+            rows.append({
+                "project_id": project_id, "slug": slug, "state": "QUEUED", "kind": "build",
+                "base_branch": base_branch,
+                "prompt": (
+                    f"DEEPER EXPLORATION (auto-escalated): the '{surface}' surface has a measured return "
+                    f"above ORCH_SURFACE_ESCALATE_THRESHOLD, so it has earned extra exploration budget.\n"
+                    f"Go a level deeper than the usual mining pass on {app}'s {surface} surface: find the "
+                    f"single highest-leverage concrete change, implement the smallest mergeable version of "
+                    f"it, and add the narrowest test that proves the new behavior. Preserve existing "
+                    f"behavior. Round {i + 1} of {n}."),
+                "assumptions": {"target_path": f"{surface}:{app}:explore-{i + 1}"},
+            })
+    return rows
+
+
+def queue_exploration_tasks(app, surfaces, project_id, base_branch="master", depth=None,
+                            find_open_by_intent=None, insert=None, bump=None):
+    """Auto-queue deeper exploration tasks through the EXISTING intake path (enqueue.enqueue_task).
+
+    Reusing enqueue_task means escalation inherits its intent-key coalescing, so repeatedly escalating the
+    same hot surface bumps the open task instead of minting duplicates every hour. The three collaborators
+    are injectable so this is testable without a database. Fail-soft: never raises into the mining run.
+    """
+    records = exploration_records(app, surfaces, project_id, base_branch=base_branch, depth=depth)
+    if not records:
+        return {"created": 0, "coalesced": 0}
+
+    if find_open_by_intent is None or insert is None or bump is None:
+        def find_open_by_intent(key):
+            try:
+                rows = db.select("tasks", {"select": "id,slug,attempt", "intent_key": f"eq.{key}",
+                                           "state": "in.(QUEUED,RUNNING)", "limit": "1"}) or []
+            except Exception:
+                return None
+            return rows[0] if rows else None
+
+        def insert(record, key):
+            row = dict(record)
+            row.pop("assumptions", None)          # transport-only hint, not a tasks column
+            row["intent_key"] = key
+            try:
+                return db.insert("tasks", row)
+            except Exception:
+                return None
+
+        def bump(existing):
+            try:
+                db.update("tasks", {"id": f"eq.{existing.get('id')}"},
+                          {"attempt": int(existing.get("attempt") or 0) + 1})
+            except Exception:
+                pass
+
+    tally = {"created": 0, "coalesced": 0}
+    try:
+        import enqueue as _enqueue
+    except Exception:
+        return tally
+    for record in records:
+        try:
+            res = _enqueue.enqueue_task(record, find_open_by_intent=find_open_by_intent,
+                                        insert=insert, bump=bump)
+            action = getattr(res, "action", None) or (res[0] if isinstance(res, tuple) else None)
+            if action in tally:
+                tally[action] += 1
+        except Exception:
+            continue          # one bad record must not abort the escalation pass
+    return tally
+
 PROMPT = """You are a world-class product+engineering+systems strategist. For the target below, propose 3
 concrete, high-leverage hypotheses to make its {surface} 100x-1000x better — MORE EFFICIENT, faster, cheaper,
 higher-quality, or more autonomous. This can be the app itself OR the autonomous system that builds it
@@ -132,6 +289,15 @@ def _next_pairs():
     # Never rotate onto the orchestrator's own repo as a normal app either.
     apps = [a for a in apps if self_work_gate.allow_self_target(a, "improvement_miner app rotation")]
     pairs = [(a, s) for a in apps for s in SURFACES] or pairs
+    # SURFACE ESCALATION: a surface with proven measured return is pinned into THIS run's rotation ahead
+    # of the cursor — an actual frequency/budget raise, not just a score nudge on the next pass. Capped at
+    # half the run so escalation can never starve the round-robin that keeps everything else re-examined.
+    try:
+        _esc = escalating_surfaces()
+        if _esc:
+            urgent = escalation_pairs(apps, _esc, cap=max(1, PER_RUN // 2)) + urgent
+    except Exception:
+        pass          # fail-soft: escalation must never break the normal rotation
     out = []
     seen = set()
     for pair in urgent + [pairs[(i + k) % len(pairs)] for k in range(min(PER_RUN, len(pairs)))]:
