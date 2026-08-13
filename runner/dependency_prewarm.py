@@ -20,6 +20,14 @@ _HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchest
 _STAMP_DIR = os.environ.get("ORCH_DEPS_STAMP_DIR", os.path.join(_HOME, "deps"))
 _LOCKS = ("package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock")
 _DEFAULT_TIMEOUT = int(os.environ.get("ORCH_DEPS_PREWARM_TIMEOUT", "900"))
+# Per-`cp` ceiling for one package root's node_modules activation.
+_ACTIVATION_CALL_TIMEOUT_S = int(os.environ.get("ORCH_DEPS_ACTIVATION_TIMEOUT", "180"))
+# Ceiling for ALL roots in one link_shared_runtime() call. Must stay comfortably
+# below merge_train's 900s pass watchdog so activation can never consume the
+# whole pass and leave nothing merged.
+_ACTIVATION_TOTAL_BUDGET_S = int(os.environ.get("ORCH_DEPS_ACTIVATION_BUDGET", "420"))
+# Below this much remaining budget, skip cloning and symlink instead.
+_ACTIVATION_MIN_SLICE_S = int(os.environ.get("ORCH_DEPS_ACTIVATION_MIN_SLICE", "15"))
 _COMMON_PACKAGE_DIRS = tuple(
     x.strip() for x in os.environ.get(
         "ORCH_PACKAGE_ROOT_HINTS",
@@ -652,6 +660,16 @@ def link_shared_runtime(repo, worktree):
     roots = package_roots(repo) or [repo]
     linked = []
 
+    # Aggregate wall-clock budget for the clone path.
+    #
+    # activate_modules() bounds each individual `cp` at _ACTIVATION_CALL_TIMEOUT_S,
+    # but this function calls it once per package root. With 6 roots (the current
+    # beethoven layout) the worst case was 6 * 180s = 1080s, which alone exceeds the
+    # 900s merge_train watchdog -- so a single _build_gate could burn the entire pass
+    # in dependency activation and get killed before integrating anything. Bound the
+    # total here and degrade to the (near-instant) symlink path once spent.
+    deadline = time.monotonic() + _ACTIVATION_TOTAL_BUDGET_S
+
     def link_one(src, dst):
         if os.path.exists(src) and not os.path.exists(dst):
             try:
@@ -664,13 +682,19 @@ def link_shared_runtime(repo, worktree):
         if not os.path.isdir(src) or os.path.exists(dst):
             return
         mode = os.environ.get("ORCH_DEPS_ACTIVATION_MODE", "clone").lower()
-        if mode == "clone":
+        remaining = deadline - time.monotonic()
+        if mode == "clone" and remaining > _ACTIVATION_MIN_SLICE_S:
             if os.uname().sysname == "Darwin":
                 cmd = ["cp", "-cR", src, dst]
             else:
                 cmd = ["cp", "-a", "--reflink=auto", src, dst]
             try:
-                copied = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+                copied = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=min(_ACTIVATION_CALL_TIMEOUT_S, remaining),
+                )
                 if copied.returncode == 0 and os.path.isdir(dst):
                     linked.append(dst)
                     return
