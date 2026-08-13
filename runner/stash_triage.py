@@ -337,8 +337,19 @@ def main(argv=None):
     ap.add_argument("--repo", default=".")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--json", action="store_true")
+    ap.add_argument(
+        "--baseline", action="store_true",
+        help="compare the live pile against the recorded baseline and say whether a "
+             "re-triage is needed at all (an unchanged pile means the recorded result "
+             "still holds and recomputing it is an hour spent reproducing a known answer)")
     args = ap.parse_args(argv)
     report = triage(args.repo, limit=args.limit)
+    if args.baseline:
+        comparison = compare_to_baseline(report["total"])
+        print(json.dumps({"report": report, "baseline_comparison": comparison},
+                         indent=2, sort_keys=True) if args.json
+              else render(comparison))
+        return 0
     print(json.dumps(report, indent=2, sort_keys=True) if args.json
           else format_report(report))
     return 0
