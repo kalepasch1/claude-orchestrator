@@ -292,12 +292,43 @@ def gate_merged_patch(task, patch, repo=None, prod_branch=None, fetch=True):
 
 
 def guarded_task_update(task, patch, repo=None, prod_branch=None, fetch=True):
-    """gate_merged_patch + db.update. Returns the applied patch, or None if nothing written."""
+    """gate_merged_patch + db.update. Returns the applied patch, or None if nothing written.
+
+    The write is isolated: a row the database refuses must not abort the caller's
+    whole pass. integration_sweeper.sweep() drives this in a loop over every task,
+    so an escaping exception killed the entire sweep on the first bad row and the
+    job crash-looped without ever reaching the rest of the queue.
+
+    "Nothing written" is already this module's contract for a failed update
+    (see gate_merged_patch), so callers need no new handling.
+    """
     final = gate_merged_patch(task, patch, repo=repo, prod_branch=prod_branch, fetch=fetch)
     if final is None:
         return None
-    db.update("tasks", {"id": task["id"]}, final)
+    try:
+        db.update("tasks", {"id": task["id"]}, final)
+    except Exception as exc:
+        slug = task.get("slug") or task.get("id")
+        detail = str(exc)
+        # A closure-evidence rejection is deterministic: it will fail identically on
+        # every retry, so it must be surfaced as a data defect rather than retried
+        # forever as if it were a transient outage.
+        if _is_evidence_rejection(detail):
+            print(f"[merge-truth] {slug}: DB rejected closure for missing evidence "
+                  f"(state={final.get('state')}, "
+                  f"artifact_commit={(final.get('artifact_commit') or 'none')[:12]}); "
+                  f"row left unchanged, needs an artifact_commit or a "
+                  f"NO-ARTIFACT-JUSTIFIED note")
+        else:
+            print(f"[merge-truth] {slug}: task update failed (non-fatal): {detail}")
+        return None
     return final
+
+
+def _is_evidence_rejection(detail):
+    """True when the write was refused by the closure-evidence guard."""
+    low = (detail or "").lower()
+    return "artifact_commit" in low or "no-artifact-justified" in low
 
 
 # ── read-only reconciler ─────────────────────────────────────────────────────
