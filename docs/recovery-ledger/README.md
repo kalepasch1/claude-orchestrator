@@ -368,3 +368,20 @@ The recurrence is itself the signal. A source that keeps arriving in new audits 
 source nothing has resolved, and the resolution here is not a merge — it is either
 committing that ref or accepting that the drift is gone. Recorded, not silently
 re-recovered.
+
+---
+
+# Fingerprint `84fc83c513d9` — 418 items with no remote copy
+
+Evidence: the `broken_codex_git_worktree` at
+`Codex/2026-08-07/cons/work/orchestrator-session-fabric` and the live
+`orchestrator_rescue_refs` namespace. **1371 items, zero UNKNOWN.**
+
+**418 of them carry `remotePreserved: false`** — the highest count recorded against
+this repository. For those the only copy is this disk, and that number is the one to
+read first if the machine is ever rebuilt.
+
+None was merged: the brief caps recovery at a minimum coherent diff, so each stays
+queued for a focused task rather than being force-applied here. What this ledger
+buys is that they are now enumerated, classified and durable in git, instead of
+being a count in a log line that scrolls away.
