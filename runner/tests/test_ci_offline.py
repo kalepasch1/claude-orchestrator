@@ -233,5 +233,50 @@ class TestAbandonedTemporaryWorktrees(unittest.TestCase):
         self.assertIn("status.returncode or status.stdout", src)
 
 
+class TestRepoRootCanaryEntryPoint(unittest.TestCase):
+    """`canary.py` at the repo root is what the scheduled canary workflow shells out to, and its
+    exit code is the entire pass/fail signal. Until now nothing verified it: CI's compileall runs
+    inside runner/ only, so the repo-root modules were never even syntax-checked, and a typo in
+    main() would have surfaced as a green schedule that silently validated nothing.
+
+    Pure logic, no network, no credentials — belongs in the blocking beachhead."""
+
+    ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    def _run(self, *args):
+        return subprocess.run(
+            [sys.executable, os.path.join(self.ROOT, "canary.py"), *args],
+            capture_output=True, text=True,
+        )
+
+    def test_marker_present_exits_zero(self):
+        self.assertEqual(self._run("this response is a canary").returncode, 0)
+
+    def test_marker_absent_exits_nonzero(self):
+        # The workflow gates on this. A zero here would report a passing canary on a dead key.
+        self.assertEqual(self._run("gemini returned nothing useful").returncode, 1)
+
+    def test_no_arguments_exits_nonzero(self):
+        # Empty stdout from the provider must fail, not pass by vacuous truth.
+        self.assertEqual(self._run().returncode, 1)
+
+    def test_match_is_case_insensitive_and_word_bounded(self):
+        sys.path.insert(0, self.ROOT)
+        import canary
+        self.assertTrue(canary.validate_canary("CANARY"))
+        self.assertFalse(canary.validate_canary("canarybird"))
+        self.assertFalse(canary.validate_canary(None))
+
+    def test_every_repo_root_module_compiles(self):
+        # CI compiled runner/ only, so a half-landed refactor in a repo-root module shipped
+        # unnoticed. Mirrors the runner-wide compileall guard at the root level.
+        import compileall
+        roots = [os.path.join(self.ROOT, f) for f in os.listdir(self.ROOT) if f.endswith(".py")]
+        self.assertTrue(roots, "expected repo-root python modules to exist")
+        for path in roots:
+            with self.subTest(module=os.path.basename(path)):
+                self.assertTrue(compileall.compile_file(path, quiet=2, force=True))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
