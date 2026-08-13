@@ -1,0 +1,65 @@
+name: Canary
+
+# A scheduled liveness check on the Gemini path. Two distinct failures must both turn the
+# run red, and must be distinguishable in the log:
+#   * probe step fails  -> the key is invalid/expired or the API is unreachable;
+#   * validate step fails -> the key works but the model returned unexpected output.
+on:
+  schedule:
+    # Every 5 minutes. GitHub queues rather than guarantees this cadence on a busy
+    # runner pool; treat gaps in the history as scheduler lag, not as a passing canary.
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+# A backed-up schedule can otherwise stack identical runs on top of each other.
+concurrency:
+  group: canary
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  gemini-canary:
+    name: gemini — marker canary
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    env:
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_MODEL: gemini-2.0-flash
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install --quiet -r requirements.txt
+
+      - name: Fail fast when the secret is not configured
+        # Without this the probe fails with a generic transport error and the run looks
+        # like a Gemini outage rather than a missing repo secret.
+        run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "::error::GEMINI_API_KEY secret is not set on this repository"
+            exit 1
+          fi
+
+      - name: Probe Gemini
+        id: probe
+        # Non-zero here == credential/transport failure. stdout is the model reply only;
+        # the module logs to stderr precisely so this capture stays clean.
+        run: |
+          set -euo pipefail
+          RESPONSE="$(python gemini_canary_probe.py)"
+          echo "response<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$RESPONSE" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Validate canary marker
+        # `canary.py` exits 1 when the marker is absent, which fails the step and so the
+        # workflow — the exit-code contract the whole canary gates on.
+        run: python canary.py "${{ steps.probe.outputs.response }}"
