@@ -1,4 +1,0 @@
-recovery-intent: canary-deepseek-6-run-full-canary-validation-run-smoke-tests-pass-triage-and-fix
-template: 62da0f1c22b1
-intent: 07041728 07190257 20251001 acceptance active adapt advice after agentic analysis applying artifacts asking author barks batch beethoven before behavior below branch broad bugfix build build_fix canary categories categorised categorize category cause change changes changing checks claim class claude cloud coder commit common completion concrete config contains context continue contract coordination count cross custody deepseek defect defects delete dependencies deployfix diffs directive drafting either environment equivalent excerpt existing exists fable failing failure failures fewer files final finish first fixes flaky flash
-base: main
