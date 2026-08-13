@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Tests for branch_audit_integrator.py"""
 import os, sys, unittest, tempfile, subprocess
+from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import branch_audit_integrator as bai
 from branch_audit_integrator import (
     RiskConfig, BranchHealth, ReviewVerdict,
     BranchAuditResult, FleetHealthSummary,
@@ -227,6 +229,84 @@ class TestFormatReport(unittest.TestCase):
         self.assertIn("agent/bar", report)
         self.assertIn("HUMAN_REVIEW", report)
         self.assertIn("AUTO_APPROVE", report)
+
+
+# ---------------------------------------------------------------------------
+# Stranded (pushed-but-unmerged) branches.
+#
+# The audit listed LOCAL branches only. Executor hosts delete the local ref with the
+# worktree after pushing, so the fleet read as nearly empty while 250 branches sat
+# stranded on origin against 479 already merged. These tests pin the remote reach.
+# ---------------------------------------------------------------------------
+
+class TestSlugExtraction(unittest.TestCase):
+    def test_local_and_remote_names_give_the_same_slug(self):
+        self.assertEqual(bai._slug_of("agent/fix-widget"), "fix-widget")
+        self.assertEqual(bai._slug_of("origin/agent/fix-widget"), "fix-widget")
+        self.assertEqual(bai._slug_of("refs/remotes/origin/agent/fix-widget"), "fix-widget")
+
+    def test_a_non_agent_name_is_returned_unchanged(self):
+        self.assertEqual(bai._slug_of("master"), "master")
+
+    def test_empty_input_does_not_raise(self):
+        for bad in (None, "", 7):
+            self.assertIsInstance(bai._slug_of(bad), str)
+
+
+class TestCollectAgentBranches(unittest.TestCase):
+    def _patched(self, local, remote):
+        return (mock.patch.object(bai, "_local_agent_branches", return_value=local),
+                mock.patch.object(bai, "_remote_agent_branches", return_value=remote))
+
+    def test_remote_branches_are_included(self):
+        p1, p2 = self._patched([], ["origin/agent/a", "origin/agent/b"])
+        with p1, p2:
+            self.assertEqual(bai.collect_agent_branches("/repo"),
+                             ["origin/agent/a", "origin/agent/b"])
+
+    def test_a_slug_present_both_places_is_audited_once_as_the_local_ref(self):
+        p1, p2 = self._patched(["agent/a"], ["origin/agent/a", "origin/agent/b"])
+        with p1, p2:
+            self.assertEqual(bai.collect_agent_branches("/repo"), ["agent/a", "origin/agent/b"])
+
+    def test_include_remote_false_restores_the_old_behaviour(self):
+        p1, p2 = self._patched(["agent/a"], ["origin/agent/b"])
+        with p1, p2:
+            self.assertEqual(bai.collect_agent_branches("/repo", include_remote=False),
+                             ["agent/a"])
+
+    def test_a_pruned_host_still_sees_the_pushed_work(self):
+        """The exact failure: no local refs at all, work only on origin."""
+        p1, p2 = self._patched([], ["origin/agent/a", "origin/agent/b", "origin/agent/c"])
+        with p1, p2:
+            self.assertEqual(len(bai.collect_agent_branches("/repo")), 3)
+
+
+class TestIsMergedAcrossRefTypes(unittest.TestCase):
+    def test_uses_ancestry_so_a_remote_ref_can_read_as_merged(self):
+        with mock.patch.object(bai.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0)
+            self.assertTrue(bai._is_merged("/repo", "origin/agent/a", "master"))
+        args = run.call_args[0][0]
+        self.assertEqual(args[:3], ["git", "merge-base", "--is-ancestor"])
+        self.assertIn("origin/agent/a", args)
+
+    def test_a_non_ancestor_is_not_merged(self):
+        with mock.patch.object(bai.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=1)
+            self.assertFalse(bai._is_merged("/repo", "origin/agent/a", "master"))
+
+
+class TestFleetAuditReachesRemote(unittest.TestCase):
+    def test_stranded_remote_branches_appear_in_the_summary(self):
+        with mock.patch.object(bai, "_local_agent_branches", return_value=[]), \
+             mock.patch.object(bai, "_remote_agent_branches",
+                               return_value=["origin/agent/a", "origin/agent/b"]), \
+             mock.patch.object(bai, "audit_branch",
+                               side_effect=lambda repo, branch, **kw: BranchAuditResult(name=branch)):
+            results, summary = audit_fleet("/repo")
+        self.assertEqual(summary.total, 2)
+        self.assertEqual([r.name for r in results], ["origin/agent/a", "origin/agent/b"])
 
 
 if __name__ == "__main__":
