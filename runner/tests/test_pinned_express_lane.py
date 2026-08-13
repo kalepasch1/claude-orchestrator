@@ -81,8 +81,14 @@ def _make_select(queued, active=None, recent=None, projects=None, done=None, con
 class TestPinnedExpressLane(unittest.TestCase):
     """Tests for the pinned task express lane — bypass of other priority tiers."""
 
-    def _claim(self, queued, active=None, done=None, controls=None):
-        """Run claim_task against a mocked DB and return the claimed slug."""
+    def _claim(self, queued, active=None, done=None, controls=None, projects=None):
+        """Run claim_task against a mocked DB and return the claimed slug.
+
+        `projects` and `controls` are forwarded to the select() mock so a test can
+        describe its own project table (priorities, names) and its own pause rows.
+        Without the `projects` parameter every multi-project ordering test raised
+        TypeError at call time instead of exercising the express lane at all.
+        """
         claimed = []
 
         def fake_patch(method, path, body=None, headers=None, params=None):
@@ -93,7 +99,12 @@ class TestPinnedExpressLane(unittest.TestCase):
                 return [task] if task else []
             return None
 
-        sel = _make_select(queued, active=active or [], done=done or [], controls=controls or [])
+        sel = _make_select(queued, active=active or [], done=done or [],
+                           controls=controls or [], projects=projects)
+        # claim_task reads projects through a module-level 300s cache. Without this the
+        # first test to run freezes the project table for the whole file and a test's own
+        # `projects` fixture is silently ignored.
+        db.invalidate_projects_cache()
         with patch.object(db, "select", side_effect=sel), \
              patch.object(db, "_req", side_effect=fake_patch):
             db.claim_task("runner-1")
@@ -320,13 +331,24 @@ class TestPinnedExpressLane(unittest.TestCase):
 
     def test_paused_project_filtering_happens_before_express_lane(self):
         """Pinned tasks in paused projects are filtered out before sorting."""
-        # Paused project filtering happens early, so a pinned task in a paused project won't be claimed
+        # Paused project filtering happens early, so a pinned task in a paused project
+        # won't be claimed. claim_task resolves pauses by project NAME via the controls
+        # table, so both projects must exist in the projects fixture and the paused one
+        # must have a matching controls row — otherwise neither task has a known project
+        # and the claim is dropped by host affinity before the express lane is reached.
+        projects = [
+            {"id": "p-paused", "name": "paused-proj", "priority": 1,
+             "concurrency_weight": 1, "repo_path": None},
+            {"id": "p-active", "name": "active-proj", "priority": 5,
+             "concurrency_weight": 1, "repo_path": None},
+        ]
+        controls = [{"project": "paused-proj", "paused": True, "updated_by": "operator"}]
         tasks = [
             _task("pinned-paused-proj", project_id="p-paused", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
             _task("unpinned-active", project_id="p-active", created_at="2024-01-01T00:00:00"),
         ]
-        # This is hard to test with mocks; rely on db.py logic that filters paused projects first
-        self.assertEqual(self._claim(tasks), "unpinned-active")
+        self.assertEqual(self._claim(tasks, projects=projects, controls=controls),
+                         "unpinned-active")
 
 
 class TestSetPinIntegration(unittest.TestCase):
@@ -349,8 +371,14 @@ class TestSetPinIntegration(unittest.TestCase):
 class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
     """Edge case tests for pinned express lane."""
 
-    def _claim(self, queued, active=None, done=None, controls=None):
-        """Run claim_task against a mocked DB and return the claimed slug."""
+    def _claim(self, queued, active=None, done=None, controls=None, projects=None):
+        """Run claim_task against a mocked DB and return the claimed slug.
+
+        `projects` and `controls` are forwarded to the select() mock so a test can
+        describe its own project table (priorities, names) and its own pause rows.
+        Without the `projects` parameter every multi-project ordering test raised
+        TypeError at call time instead of exercising the express lane at all.
+        """
         claimed = []
 
         def fake_patch(method, path, body=None, headers=None, params=None):
@@ -361,7 +389,12 @@ class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
                 return [task] if task else []
             return None
 
-        sel = _make_select(queued, active=active or [], done=done or [], controls=controls or [])
+        sel = _make_select(queued, active=active or [], done=done or [],
+                           controls=controls or [], projects=projects)
+        # claim_task reads projects through a module-level 300s cache. Without this the
+        # first test to run freezes the project table for the whole file and a test's own
+        # `projects` fixture is silently ignored.
+        db.invalidate_projects_cache()
         with patch.object(db, "select", side_effect=sel), \
              patch.object(db, "_req", side_effect=fake_patch):
             db.claim_task("runner-1")
