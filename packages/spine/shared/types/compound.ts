@@ -79,6 +79,36 @@ export type TerminalCompoundStatus = Extract<CompoundStatus, "settled" | "failed
 export type ActiveCompoundStatus = Exclude<CompoundStatus, TerminalCompoundStatus>;
 
 /**
+ * A compound that has reached a terminal status.
+ *
+ * `terminalAt` and `terminalReason` are optional on `Compound` because they are
+ * absent for the whole active life of the record. Narrowing to this type makes
+ * `terminalAt` required, so a reader that has already established terminality
+ * does not have to re-check what the status already proved.
+ */
+export interface SettledCompound extends Compound {
+  readonly status: TerminalCompoundStatus;
+  readonly terminalAt: EpochMillis;
+}
+
+/**
+ * What a store returns for list and index views.
+ *
+ * Identity, status and rolled-up counts without the wave plan: a listing of a
+ * thousand compounds should not pay for every `WaveSpec` in every one of them.
+ * Derived from the entity — never written, never a source of truth.
+ */
+export interface CompoundSummary {
+  readonly id: CompoundId;
+  readonly name: string;
+  readonly owner: string;
+  readonly status: CompoundStatus;
+  readonly waveCount: number;
+  readonly settledWaveCount: number;
+  readonly updatedAt: EpochMillis;
+}
+
+/**
  * Legal compound transitions, as data.
  *
  * Terminal statuses map to `never`, so an implementation that tries to declare
