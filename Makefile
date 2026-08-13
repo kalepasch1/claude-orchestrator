@@ -5,11 +5,19 @@ BASE_URL          ?= http://localhost:3000
 E2E_SUPABASE_URL  ?=
 E2E_SESSION_JSON  ?=
 
-.PHONY: test-e2e install-e2e lock lock-check install-deps
+.PHONY: test-e2e install-e2e lock lock-check install-deps install-all-deps verify-deps
 
 ## install-deps: install the exact locked Python dependency set
 install-deps:
 	python3 -m pip install --break-system-packages -r requirements.lock
+
+## install-all-deps: install every language manifest (python + all node workspaces)
+install-all-deps:
+	bash scripts/install-language-deps.sh
+
+## verify-deps: fail if any declared dependency is missing from the environment
+verify-deps:
+	bash scripts/install-language-deps.sh --verify
 
 ## lock: regenerate requirements.lock from the currently installed set
 lock:
