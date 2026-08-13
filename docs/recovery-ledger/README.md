@@ -368,3 +368,18 @@ The recurrence is itself the signal. A source that keeps arriving in new audits 
 source nothing has resolved, and the resolution here is not a merge — it is either
 committing that ref or accepting that the drift is gone. Recorded, not silently
 re-recovered.
+
+---
+
+# Fingerprint `5e30d0e05126` — four kinds, same live source
+
+Evidence: `broken_codex_git_worktree`, `chatgpt_bridge_artifact`,
+`local_only_branch_tips` and `orchestrator_rescue_refs`. **1371 items, zero UNKNOWN**,
+418 with no remote copy.
+
+Item-for-item identical to `84fc83c513d9`, which is the expected result and not a
+duplicate: both fingerprints are photographs of one repository taken minutes apart,
+and the classifier deliberately reports on the **live** source rather than on either
+photograph. Two fingerprints agreeing is the audit trail working, not redundancy.
+
+Nothing was popped, dropped, reset, cleaned or moved.
