@@ -755,6 +755,87 @@ def _agentic_repair_continue(t, category, failure, attempt, directive=None):
     return True
 
 
+# Guard verdict codes. Stable strings: they are written to the task note and to the
+# regression log, so a query like "how often did GUARD_DEFAULT_RESPONSE fire this week"
+# has to keep working across releases.
+GUARD_OK = "ok"
+GUARD_EMPTY_DIFF = "GUARD_EMPTY_DIFF"
+GUARD_DEFAULT_RESPONSE = "GUARD_DEFAULT_RESPONSE"
+GUARD_EMPTY_OUTPUT = "GUARD_EMPTY_OUTPUT"
+
+# The runner has no HTTP surface, so the spec's "HTTP 409 Conflict" is carried as a
+# machine-readable conflict code on the verdict rather than an actual response status.
+# Any transport that fronts the runner can map GUARD_CONFLICT_STATUS straight through;
+# inventing a web layer here just to raise a literal 409 would be a fiction.
+GUARD_CONFLICT_STATUS = 409
+
+
+def guard_check(output, diff_files=None):
+    """Detect a session that burned a model call and produced nothing.
+
+    Two distinct failures were previously handled by two inline blocks with subtly
+    different behaviour, and neither recorded WHICH condition fired — so the shelf note
+    "agent run failed" was all the regression analysis ever had to work with.
+
+    Returns a dict: {"ok": bool, "reason": <code>, "status": int|None, "detail": str}.
+    Pure — no db, no network, no clock — so it is cheap to assert on directly.
+
+      * GUARD_EMPTY_OUTPUT      the agent said nothing at all;
+      * GUARD_DEFAULT_RESPONSE  the CLI opened without instructions and the model replied
+                                with a greeting ("I'm ready to help. What would you like
+                                to work on?") — the prompt-delivery bug this guards;
+      * GUARD_EMPTY_DIFF        the agent talked but committed no file changes.
+
+    `diff_files` is the list of changed paths; None means "not measured" and is NOT
+    treated as empty — an unmeasured diff must not be reported as a missing one.
+    """
+    text = output or ""
+    if not text.strip():
+        return {"ok": False, "reason": GUARD_EMPTY_OUTPUT, "status": GUARD_CONFLICT_STATUS,
+                "detail": "agent produced no output"}
+
+    try:
+        import session_proof
+        stalled = bool(session_proof.STALL_RX.search(text))
+    except Exception as e:
+        # Fail SOFT toward "not stalled": a missing import must not convert every
+        # successful run into a retry. Logged, per the fail-soft convention.
+        _log.debug("guard_check: session_proof unavailable (%s); skipping stall match", e)
+        stalled = False
+    if stalled:
+        return {"ok": False, "reason": GUARD_DEFAULT_RESPONSE, "status": GUARD_CONFLICT_STATUS,
+                "detail": "output matches a default/greeting response — prompt was not delivered"}
+
+    if diff_files is not None and len(diff_files) == 0:
+        return {"ok": False, "reason": GUARD_EMPTY_DIFF, "status": GUARD_CONFLICT_STATUS,
+                "detail": "agent produced output but no committable file changes"}
+
+    return {"ok": True, "reason": GUARD_OK, "status": None, "detail": ""}
+
+
+def record_guard_trigger(task, slug, kind, verdict):
+    """Persist a guard trip for regression analysis, then set the task to RETRY.
+
+    Deliberately RETRY and not RUNNING. The prior code left the task RUNNING and looped
+    in-process, so a guard trip was invisible to the queue: nothing could count it, the
+    retry promoter never saw it, and a task that tripped repeatedly looked like one long
+    healthy run. RETRY is a state the rest of the system already understands.
+
+    Fail-soft: a failure to record must not prevent the state change.
+    """
+    note = f"guard_check: {verdict.get('reason')} ({verdict.get('detail')}) — retrying"
+    try:
+        regression.record(
+            (task.get("project_name") or ""), slug, kind,
+            (task.get("prompt") or "")[:500],
+            verdict.get("reason") or GUARD_OK,
+            verdict.get("detail") or "")
+    except Exception as e:
+        _log.debug("guard_check: regression.record failed: %s", e)
+    set_state(task["id"], state="RETRY", note=note[:400])
+    return note
+
+
 def run_task(t):
     # V15 fleet runtime: learn repeat-query topology at intake.  This hook is
     # deliberately fail-soft and performs no model/network calls.
@@ -1945,11 +2026,25 @@ def run_task(t):
                     # SESSION PROOF: check for stall pattern first
                     try:
                         import session_proof
-                        if not t.get("_proof_retry") and session_proof.STALL_RX.search(out or ""):
+                        _guard = guard_check(out, diff_files=[])
+                        if not _guard["ok"] and not t.get("_proof_retry"):
+                            # First trip: the prompt probably never arrived, so re-inject it
+                            # in-session. Cheaper than a full requeue and it fixes the cause.
                             t["_proof_retry"] = True
                             prompt = session_proof.reinjection_prompt(t)
-                            set_state(t["id"], state="RUNNING", note="session-proof: stall detected — re-injecting prompt")
+                            set_state(t["id"], state="RUNNING",
+                                      note=f"session-proof: {_guard['reason']} — re-injecting prompt")
                             continue
+                        if not _guard["ok"]:
+                            # Second trip AFTER re-injection. Re-injection is not the fix, so
+                            # stop burning calls in-process: record which condition fired and
+                            # hand the task back to the queue as RETRY. Previously this fell
+                            # through to the generic "no file changes" nudge, which discarded
+                            # the diagnosis and is why the shelf note was only "agent run failed".
+                            record_guard_trigger(t, slug, kind, _guard)
+                            record(t, name, slug, kind, visible_model, acct, attempt,
+                                   False, False, out, t0, cost=run_cost)
+                            return
                     except Exception as e:
                         _log.debug("hook session_proof failed: %s", e)
                     nochange_nudge = (
