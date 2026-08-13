@@ -56,12 +56,27 @@ _NETWORK = re.compile(
 # That is repairable in a pristine export: retry once non-frozen, then let the real build prove
 # whether the resolved graph is deployable. This stays narrow so unrelated install failures do not
 # get concealed by a broad fallback.
+#
+# CONSOLIDATED 2026-08-13: this capability grew independently on master and on
+# agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-1. Two detectors for one
+# capability is the duplication the survey-first mandate forbids, so there is now exactly one.
+# Master's `unfrozen_install_command` is the survivor because its unfreeze mapping is anchored
+# per package manager, where the branch did a blind substring replace that rewrote ANY command
+# containing --immutable, including commands that were not installs. The branch's genuinely-wider
+# alternations are folded in rather than discarded: "would have been created", the un-suffixed
+# "lockfile needs to be updated" (yarn omits the flag name when invoked via CI config), and the
+# out-of-date / does-not-match phrasings pnpm and yarn emit.
+#
+# The folded-in alternations use `[^\n]*` rather than `.*`. The pattern compiles with re.S, so
+# `.*` would let the word "lockfile" on one line pair with "not up to date" thousands of lines
+# later and call an unrelated failure drift.
 _LOCKFILE_DRIFT = re.compile(
     r"package-lock\.json.*(?:in sync|up to date)|"
     r"Missing:\s+\S+\s+from lock file|"
     r"ERR_PNPM_OUTDATED_LOCKFILE|pnpm-lock\.yaml.*not up to date|"
-    r"lockfile would have been modified|"
-    r"lockfile needs to be updated.*--frozen-lockfile|"
+    r"lockfile would have been (?:modified|created)|"
+    r"lockfile needs to be updated|"
+    r"lockfile[^\n]*(?:out of date|out-of-date|not up to date|does not (?:satisfy|match))|"
     r"can only install packages when your package\.json and package-lock\.json.*in sync|"
     r"npm ci` can only install|YN0028|cannot install with .frozen-lockfile.",
     re.I | re.S,
@@ -69,7 +84,12 @@ _LOCKFILE_DRIFT = re.compile(
 
 
 def unfrozen_install_command(cmd):
-    """Map a known frozen package-manager install to one non-frozen retry."""
+    """Map a known frozen package-manager install to one non-frozen retry.
+
+    Fail-soft: never raises, returns "" for anything it does not recognise. Matching is
+    anchored to the install command itself, so a flag like --immutable appearing in an
+    unrelated command is not silently rewritten.
+    """
     try:
         normalized = " ".join(str(cmd or "").split())
         if not normalized:
