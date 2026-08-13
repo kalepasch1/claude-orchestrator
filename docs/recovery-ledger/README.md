@@ -211,3 +211,23 @@ The plan for this fingerprint is committed alongside the ledger as
 ones pin the behaviour that matters: a preserved ref is never planned into
 `refs/heads/`, tips a remote already holds are skipped, and an empty plan is still a
 runnable script rather than a broken one.
+
+---
+
+# Fingerprint `215fba971ab9` — three kinds, all previously unenumerable
+
+Evidence: a `dirty_worktree` at the orchestrator root (33 changes), the
+`broken_codex_git_worktree` at `Codex/2026-08-07/cons/work/orchestrator-session-fabric`,
+and the `chatgpt_bridge_artifact` queue-bridge zip.
+
+Every one of the three is a kind that `enumerateEvidence()` cannot reach on its own,
+and all three now classify through the dedicated paths added under `10d6c3591091`
+and `e4b9212494ba`. **1325 items, zero UNKNOWN.**
+
+| evidence item | classification |
+|---|---|
+| dirty worktree at the orchestrator root | already integrated under `48ada8033590` — not duplicated |
+| broken Codex worktree | RECOVERABLE_VALUE; committed content survives in `refs/heads/codex/orchestrator-session-fabric`, uncommitted drift unreadable and reported as such |
+| queue-bridge zip | ALREADY_PRESENT on `origin/chatgpt/chatgpt-local-queue-bridge-20260811-08111602`, verified from its receipt |
+
+Nothing was popped, dropped, reset, cleaned or moved.
