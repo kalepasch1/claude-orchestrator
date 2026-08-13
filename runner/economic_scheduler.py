@@ -18,6 +18,7 @@ Feeds back to ev_scheduler's context so economic signals inform all prioritizati
 import os, sys, json, math
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import pricing_config
 import revenue_attribution
 
 ENABLED = os.environ.get("ORCH_ECONOMIC_SCHEDULER_ENABLED", "false").lower() in ("true", "1", "yes")
@@ -26,12 +27,88 @@ REVENUE_CRITICAL_LANE_SIZE = int(os.environ.get("ORCH_REVENUE_CRITICAL_LANE_SIZE
 REVENUE_KEYWORDS = ("pricing", "payment", "stripe", "marketplace", "billing", "revenue", "monetize")
 
 
+#: Default returned by project_tier_price() when a project is on no configured tier.
+#: 0.0 means "no pricing signal", which is what every project resolves to under the
+#: stock pricing_config defaults — see the backward-compatibility note in load_ctx().
+NO_TIER_PRICE = 0.0
+
+
+def project_tier_price(ctx, project):
+    """Monthly price of `project`'s pricing tier, or NO_TIER_PRICE. Never raises.
+
+    The tier table is keyed by tier name ("free"/"pro"/"scale"), so a project only
+    resolves to a price when an operator has pushed a table keyed by project name via
+    ORCH_PRICING_TIERS. Under the defaults nothing matches and this returns 0.0 for
+    every project — which is what keeps the multiplier below inert.
+    """
+    try:
+        tiers = (ctx or {}).get("pricing", {}).get("tiers") or {}
+        return float(tiers.get(project, NO_TIER_PRICE) or NO_TIER_PRICE)
+    except Exception:
+        return NO_TIER_PRICE
+
+
+def project_rate_limit(ctx, project):
+    """Rate limit for `project`'s pricing tier, or None. Never raises.
+
+    Provided as the supported read path so consumers stop reaching into
+    ctx["pricing"]["rate_limits"] directly; nothing in the scheduler scores on it yet.
+    """
+    try:
+        limits = (ctx or {}).get("pricing", {}).get("rate_limits") or {}
+        value = limits.get(project)
+        return int(value) if value is not None else None
+    except Exception:
+        return None
+
+
+def _tier_multiplier(ctx, project):
+    """Revenue multiplier for `project`'s pricing tier. Never raises; 1.0 when unknown.
+
+    Normalised against the cheapest PAID tier in the table so the multiplier is 1.0 for
+    an entry-level paid project and scales up from there. Free ($0) entries are excluded
+    from the baseline — dividing by 0 is undefined, and a free project should not be
+    scored as though it were the reference price. A project on an explicit $0 tier gets
+    1.0, i.e. unchanged, not zeroed: the tier says nothing about the work's value.
+    """
+    try:
+        price = project_tier_price(ctx, project)
+        if price <= 0:
+            return 1.0
+        paid = [p for p in ((ctx or {}).get("pricing", {}).get("tiers") or {}).values()
+                if isinstance(p, (int, float)) and p > 0]
+        baseline = min(paid) if paid else 0.0
+        if baseline <= 0:
+            return 1.0
+        return price / baseline
+    except Exception:
+        return 1.0
+
+
 def load_ctx():
-    """Build economic context from db. Every read is fail-soft."""
+    """Build economic context from db. Every read is fail-soft.
+
+    Also loads the pricing table from pricing_config into ctx["pricing"]. This is the
+    scheduler's initialization path, so it is the one place the table is read; the
+    scoring functions take it off ctx rather than importing pricing_config themselves,
+    which keeps them pure and mockable exactly as they are today.
+
+    BACKWARD COMPATIBILITY: adding a key to ctx cannot change any existing score.
+    pricing_config.DEFAULT_TIERS is keyed by tier name, never by project name, so
+    project_tier_price() returns 0.0 for every project unless an operator pushes a
+    project-keyed ORCH_PRICING_TIERS. The tier multiplier in predict_revenue is
+    therefore exactly 1.0 under the defaults, and every existing test asserts the
+    same numbers it did before.
+    """
     ctx = {
         "kind_roi": {},
         "high_growth_projects": set(),
         "error_rates": {},
+        # refresh=False: load_ctx runs once per scheduling pass and callers may build
+        # several contexts in a loop, so the cached table is the right read here. A
+        # fleet push still lands on the next process cycle via pricing_config's own
+        # refresh semantics.
+        "pricing": pricing_config.load_pricing_config(refresh=False),
     }
     try:
         ctx["kind_roi"] = revenue_attribution.kind_roi() or {}
@@ -148,6 +225,16 @@ def predict_revenue(task, ctx):
     error_rate = float((ctx.get("error_rates") or ctx.get("app_signals") or {}).get(project, 0) or 0)
     if error_rate > 0.3 and kind in ("bugfix", "fix", "hotfix"):
         estimate *= 1.5
+
+    # Pricing-tier weighting (slice 3). Work on a project that carries a paid tier is
+    # worth more per merge than the same work on a free one, so scale by the tier price
+    # relative to the cheapest paid tier in the table.
+    #
+    # INERT BY DEFAULT: pricing_config.DEFAULT_TIERS is keyed by tier name, so
+    # project_tier_price() returns 0.0 for every project and the multiplier is 1.0.
+    # It only becomes live once an operator pushes a project-keyed ORCH_PRICING_TIERS.
+    # That is what makes this slice backward compatible rather than a re-scoring.
+    estimate *= _tier_multiplier(ctx, project)
 
     # Confidence interval around the estimate (wider if no data).
     #
