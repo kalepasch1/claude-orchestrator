@@ -28,13 +28,67 @@ except Exception:
     fleet_control = None
 
 
+DEFAULT_CACHE_TTL_SEC = 60.0
+DEFAULT_CACHE_MAX_ENTRIES = 1000
+
+
+def _env_number(name: str, default: float, cast=float, minimum=None):
+    """Read a numeric ORCH_ knob. Never raises; a bad value logs and falls back.
+
+    This module is imported by most of the runner, so a malformed value must not be
+    able to raise. It previously did: the TTL was cast with a bare float() inside
+    __init__, which runs at import time via the module-level singleton, so
+    ORCH_CONFIG_CACHE_TTL_SEC=abc raised ValueError and took down every importer of
+    the configuration layer — the one module whose whole contract is "never raises".
+    """
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = cast(str(raw).strip())
+        if minimum is not None and value < minimum:
+            raise ValueError(f"must be >= {minimum}, got {value}")
+        return value
+    except Exception as exc:
+        print(f"[config_consumer] {name} unusable ({exc}); using default {default}", flush=True)
+        return default
+
+
 class _ConfigConsumer:
     """Thread-safe singleton for configuration consumption with caching."""
 
     def __init__(self):
         self._lock = threading.Lock()
         self._cache: Dict[str, tuple] = {}
-        self._cache_ttl_sec = float(os.environ.get("ORCH_CONFIG_CACHE_TTL_SEC", "60"))
+
+    @property
+    def _cache_ttl_sec(self) -> float:
+        """Re-read on every use so a fleet-pushed TTL takes effect without a restart.
+
+        Reading it once in __init__ meant the value was frozen at process start; a
+        fleet_config push of ORCH_CONFIG_CACHE_TTL_SEC changed nothing until every
+        runner was restarted, which is the failure mode this config layer exists to
+        prevent for everyone else.
+        """
+        return _env_number("ORCH_CONFIG_CACHE_TTL_SEC", DEFAULT_CACHE_TTL_SEC,
+                           float, minimum=0.0)
+
+    @property
+    def _cache_max_entries(self) -> int:
+        return int(_env_number("ORCH_CONFIG_CACHE_MAX_ENTRIES",
+                               DEFAULT_CACHE_MAX_ENTRIES, int, minimum=1))
+
+    def _evict_locked(self) -> None:
+        """Bound the cache. Caller must hold the lock.
+
+        load_config() keys the cache on caller-supplied strings, so an unbounded dict
+        is a slow leak in a process that runs for weeks. Oldest entries go first.
+        """
+        limit = self._cache_max_entries
+        if len(self._cache) <= limit:
+            return
+        for key in sorted(self._cache, key=lambda k: self._cache[k][1])[:len(self._cache) - limit]:
+            self._cache.pop(key, None)
 
     def load_all(self) -> Dict[str, str]:
         """Return all ORCH_* prefixed environment variables as a dict (without prefix)."""
@@ -146,15 +200,23 @@ class _ConfigConsumer:
             # Cache and return
             with self._lock:
                 self._cache[key] = (value, time.time())
+                self._evict_locked()
             return value
         except Exception:
             return default
 
-    def invalidate_cache(self) -> None:
-        """Clear all cached configuration values."""
+    def invalidate_cache(self, key: Optional[str] = None) -> None:
+        """Clear cached configuration. One key when given, otherwise everything.
+
+        Per-key invalidation lets a caller that just pushed one value re-read it
+        immediately without throwing away every other cached key.
+        """
         try:
             with self._lock:
-                self._cache.clear()
+                if key:
+                    self._cache.pop(key, None)
+                else:
+                    self._cache.clear()
         except Exception:
             pass
 
@@ -201,9 +263,9 @@ def load_config(key: str, default: str = "") -> str:
     return _consumer.load_config(key, default)
 
 
-def invalidate_cache() -> None:
-    """Clear all cached configuration values."""
-    _consumer.invalidate_cache()
+def invalidate_cache(key: Optional[str] = None) -> None:
+    """Clear cached configuration values — one key when given, otherwise all."""
+    _consumer.invalidate_cache(key)
 
 
 if __name__ == "__main__":
