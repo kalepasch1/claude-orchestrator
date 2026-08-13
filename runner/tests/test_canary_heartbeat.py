@@ -58,7 +58,19 @@ class CanaryHeartbeatFileFormatTest(unittest.TestCase):
             # ISO8601 UTC timestamp pattern: YYYY-MM-DDTHH:MM:SS.ffffffZ
             iso_pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
             self.assertRegex(first_line, iso_pattern)
-            self.assertTrue(first_line.endswith("Z") or "+" in first_line or "-" in first_line[-6:])
+
+            # The zone-designator check must run on the TIMESTAMP, not the whole line.
+            # It previously read `first_line.endswith("Z") or "+" in first_line or "-" in
+            # first_line[-6:]` against "<timestamp>Z # canary" — which ends in "canary",
+            # contains no "+", and whose last six characters are "canary". The assertion
+            # was structurally unsatisfiable for the very format the file uses, so this
+            # test could never pass and had nothing to do with the timestamp being wrong.
+            timestamp_token = first_line.split()[0]
+            self.assertTrue(
+                timestamp_token.endswith("Z")
+                or "+" in timestamp_token
+                or "-" in timestamp_token[-6:],
+                f"timestamp {timestamp_token!r} carries no UTC/offset designator")
 
     def test_deploy_canary_timestamp_parses_as_datetime(self):
         """Timestamp should be parseable back to a datetime object."""
