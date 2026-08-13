@@ -53,8 +53,15 @@ class BanditSelector:
     parameters so several independent bandits (model routing, prompt-variant selection,
     retry-strategy selection) can run side by side without sharing globals.
 
-    This slice is initialization only — the selection algorithm lands in a later slice.
-    What matters here is that the constructor is total and validating: an arm set that
+    The selection algorithm IS implemented here — see `select`, `update_reward` and
+    `stats` below. This sentence used to read "this slice is initialization only, the
+    selection algorithm lands in a later slice", and it stayed after the algorithm
+    landed. A docstring that understates what a module does is not a harmless stale
+    comment in this codebase: it is the signal a later agent reads before deciding to
+    re-implement, and slice-5 of this very task was queued asking for exactly the
+    methods that were already sitting below it.
+
+    The constructor is total and validating: an arm set that
     is empty, non-iterable, or contains non-strings is rejected at construction rather
     than producing a selector that silently never selects anything. Likewise epsilon
     outside [0, 1] is a caller bug, not a value to clamp quietly, because a clamped
@@ -175,6 +182,21 @@ class BanditSelector:
             "average_reward": dict(self.average_reward),
             "best_arm": self.best_arm(),
         }
+
+    # ------------------------------------------------------------------ aliases
+    # The queued spec for this component named the API `update(arm_id, reward)` and
+    # `get_stats()`. The implementation landed as `update_reward` / `stats`, so a
+    # caller written against the spec fails with AttributeError at runtime rather
+    # than at import. These are thin, documented aliases — one canonical
+    # implementation, two names — rather than a second copy of the arithmetic.
+
+    def update(self, arm_id, reward):
+        """Alias for `update_reward`. See its docstring for the incremental mean."""
+        return self.update_reward(arm_id, reward)
+
+    def get_stats(self):
+        """Alias for `stats`. Returns a copied snapshot; callers cannot mutate state."""
+        return self.stats()
 
     def __len__(self):
         return len(self.arm_ids)
