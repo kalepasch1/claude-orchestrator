@@ -569,12 +569,24 @@ def recent(days: int = 14, limit: int = 50, repo: str = ".") -> list[dict]:
     except Exception:
         return []
 
+    # Per-diff byte cap (memory fix). Every record here holds the FULL text of a commit's
+    # diff, and the whole list is held at once: one merge of a lockfile or a generated bundle
+    # is tens of MB, and `limit` defaults to 50 of them. The caller regex-scans the text for
+    # convention hints, so a bounded head of each diff answers the same question at a bounded
+    # cost. 0 or negative disables the cap.
+    try:
+        max_diff_bytes = int(os.environ.get("ORCH_DIFF_RECENT_MAX_BYTES", str(256 * 1024)))
+    except (TypeError, ValueError):
+        max_diff_bytes = 256 * 1024
+
     records = []
     for sha in shas[:limit]:
         try:
             diff = _safe_run(["git", "show", "--format=%s", "--unified=0", sha], cwd=repo)
             if not diff:
                 continue
+            if 0 < max_diff_bytes < len(diff):
+                diff = diff[:max_diff_bytes]
             records.append({
                 "commit": sha,
                 "date": _safe_run(["git", "log", "-1", "--format=%aI", sha], cwd=repo),
@@ -636,6 +648,7 @@ class _DiffPool:
         self._bytes = 0
         self._hits = 0
         self._misses = 0
+        self._evictions = 0
 
     def put_diff(self, branch_a: str, branch_b: str, commit: str, content: str) -> None:
         size = len(content.encode("utf-8", errors="replace"))
@@ -647,12 +660,46 @@ class _DiffPool:
         key = (branch_a, branch_b, commit)
         with self._lock:
             reclaimed = self._entries.get(key, (None, 0.0, 0))[2]
-            if self._bytes - reclaimed + size > CACHE_SIZE_BYTES:
-                return  # cache full — silently refuse
             if key in self._entries:
                 self._bytes -= reclaimed
+                del self._entries[key]
+
+            # RECLAIM BEFORE REFUSING (memory fix).
+            #
+            # The cap used to be enforced by refusing the write: once 50 MB of diffs had
+            # accumulated the pool never accepted another entry and never gave a byte back.
+            # TTL did not help — expiry was only ever checked in get_diff(), and only for the
+            # one key being looked up, so a diff nobody asks for again is held for the life of
+            # the process. In a long-running runner that is a permanently full cache holding
+            # permanently stale content: worst case for both memory and hit rate.
+            #
+            # Now the cap evicts. Expired entries go first (they are dead weight by
+            # definition), then the oldest live entries, until the new value fits.
+            if self._bytes + size > CACHE_SIZE_BYTES:
+                self._evict_expired_locked()
+            if self._bytes + size > CACHE_SIZE_BYTES:
+                self._evict_oldest_locked(size)
+            if self._bytes + size > CACHE_SIZE_BYTES:
+                return  # single entry larger than the whole cap — nothing to evict for
+
             self._entries[key] = (content, time.time(), size)
             self._bytes += size
+
+    def _evict_expired_locked(self) -> None:
+        """Drop every entry past its TTL. Caller holds the lock."""
+        now = time.time()
+        for key in [k for k, (_c, stored_at, _s) in self._entries.items()
+                    if now - stored_at > CACHE_TTL]:
+            self._bytes -= self._entries.pop(key)[2]
+            self._evictions += 1
+
+    def _evict_oldest_locked(self, needed: int) -> None:
+        """Evict oldest-first until `needed` bytes fit under the cap. Caller holds the lock."""
+        for key, _entry in sorted(self._entries.items(), key=lambda kv: kv[1][1]):
+            if self._bytes + needed <= CACHE_SIZE_BYTES:
+                return
+            self._bytes -= self._entries.pop(key)[2]
+            self._evictions += 1
 
     def get_diff(self, branch_a: str, branch_b: str, commit: str) -> str:
         key = (branch_a, branch_b, commit)
@@ -677,6 +724,7 @@ class _DiffPool:
                 "bytes_used": self._bytes,
                 "hits": self._hits,
                 "misses": self._misses,
+                "evictions": self._evictions,
             }
 
     def invalidate(self) -> None:
@@ -685,6 +733,7 @@ class _DiffPool:
             self._bytes = 0
             self._hits = 0
             self._misses = 0
+            self._evictions = 0
 
 
 _pool = _DiffPool()
