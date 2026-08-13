@@ -211,3 +211,22 @@ The plan for this fingerprint is committed alongside the ledger as
 ones pin the behaviour that matters: a preserved ref is never planned into
 `refs/heads/`, tips a remote already holds are skipped, and an empty plan is still a
 runnable script rather than a broken one.
+
+---
+
+# Fingerprint `4d83819ff744` — 23 local-only tips, and a plan for them
+
+One evidence item: `local_only_branch_tips`, 23 in the snapshot, at the orchestrator
+root. **1324 items classified live, zero UNKNOWN.**
+
+Of those, **18 branch tips are RECOVERABLE_VALUE with no remote copy** — the only
+copy is this disk. `--preserve-plan` emits the remedy alongside the ledger:
+
+`preserve-local-only-4d83819ff744.sh` — idempotent, dry-run by default, pushing each
+tip to `refs/preserved/<name>`. That namespace is not `refs/heads/*`, so none of
+these become branches and neither the merge train, CI, branch protection nor
+Vercel's Git integration will see them. They survive a dead disk and change nothing
+else.
+
+**This task did not run it.** Pushing 18 recovered tips is an operator decision, and
+the script prints its plan until `APPLY=1` says otherwise.
