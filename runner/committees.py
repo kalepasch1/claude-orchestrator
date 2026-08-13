@@ -266,6 +266,98 @@ def _seats(committee):
     return s if isinstance(s, list) and s else list(DEFAULT_SEATS)
 
 
+# ---- GROUPTHINK GUARD (CADE) --------------------------------------------------------------------
+# RED_SEAT is a standing adversary on every panel, but one devil's advocate against a room that already
+# agrees is theatre: it gets absorbed. Extra adversary personas and an exploration ("productive heretic")
+# quota are expensive, so they are seated ONLY when they can actually change the answer — i.e. when
+# materiality is high, or when the panel converged BEFORE anyone cross-examined anyone (premature
+# consensus is the signature of groupthink, not of an easy question).
+HERETIC_SEAT = "Productive Heretic (exploration seat)"
+ADVERSARY_SEATS = [
+    "Falsification adversary (name the evidence that would kill this)",
+    "Second-order adversary (name what breaks downstream, not here)",
+]
+# Materiality at/above which the guard seats extra adversaries even without premature convergence.
+GROUPTHINK_MATERIALITY = float(os.environ.get("COMMITTEE_GROUPTHINK_MATERIALITY", "0.6"))
+
+_MATERIAL_MARKERS = (
+    "irreversible", "irreversibly", "production", "prod ", "customer", "revenue", "payment",
+    "billing", "credential", "secret", "security", "privacy", "pii", "delete", "drop table",
+    "migration", "licens", "regulat", "compliance", "custody", "legal", "contract", "liability",
+)
+
+
+def issue_materiality(title, body=None, blast_radius=None):
+    """PRE-PANEL stakes estimate in [0,1] for CADE IssueSpec.materiality.
+
+    Distinct from _materiality(panel, ...), which scores stakes AFTER the panel has spoken. This one runs
+    BEFORE seats are assembled, because seat composition is the decision it feeds. Deliberately cheap and
+    deterministic (no model call): it only has to be good enough to decide whether to buy extra seats.
+    """
+    text = f"{title or ''} {body or ''}".lower()
+    m = 0.3
+    hits = sum(1 for k in _MATERIAL_MARKERS if k in text)
+    m += min(0.4, 0.1 * hits)
+    if blast_radius is not None:
+        try:
+            m += 0.3 * max(0.0, min(1.0, float(blast_radius)))
+        except (TypeError, ValueError):
+            pass
+    return round(max(0.0, min(1.0, m)), 2)
+
+
+def converged_fast(positions):
+    """True when every opening position landed on the SAME verdict before any cross-examination.
+
+    Requires >=3 seats: unanimity across two seats is too thin to call groupthink.
+    """
+    pos = positions or []
+    verdicts = {(p.get("verdict") or "").strip().lower() for p in pos if p.get("verdict")}
+    return len(pos) >= 3 and len(verdicts) == 1
+
+
+def groupthink_seats(materiality, premature_consensus, seated=None):
+    """The EXTRA seats to add to a panel. Empty unless the guard actually fires.
+
+    Returns adversary personas plus an exploration quota that scales with materiality (the higher the
+    stakes, the more we pay to have someone argue the unpopular read). Never returns a seat that is
+    already seated, so callers can apply it idempotently.
+    """
+    try:
+        mat = float(materiality)
+    except (TypeError, ValueError):
+        mat = 0.0
+    if not (mat >= GROUPTHINK_MATERIALITY or premature_consensus):
+        return []
+    extra = list(ADVERSARY_SEATS)
+    quota = 2 if mat >= 0.85 else 1          # exploration quota
+    extra += [HERETIC_SEAT] if quota == 1 else [f"{HERETIC_SEAT} #{i + 1}" for i in range(quota)]
+    already = set(seated or [])
+    return [s for s in extra if s not in already]
+
+
+def tournament_bracket(proposals, keep=None):
+    """IDEA TOURNAMENT: eliminate the weaker half of competing proposals, strongest-first.
+
+    Pure ranking primitive for generative issues — personas propose competing solutions, weaker ones are
+    knocked out each round, and the survivors go to synthesis. Kept free of model/DB calls so the
+    elimination rule itself is testable and deterministic; the debate rounds that produce the scores live
+    in the caller. Ties break on the original order, so the bracket is stable.
+    """
+    items = [p for p in (proposals or []) if isinstance(p, dict)]
+    if not items:
+        return []
+
+    def _rank(entry):
+        idx, p = entry
+        score = float(p.get("score", 5) or 5)
+        conviction = float(p.get("conviction", 5) or 5)
+        return (-(score * (0.5 + conviction / 20.0)), idx)   # conviction modulates, score dominates
+
+    survivors = max(1, (len(items) + 1) // 2) if keep is None else max(1, min(int(keep), len(items)))
+    return [p for _, p in sorted(enumerate(items), key=_rank)[:survivors]]
+
+
 def _precedent(committee_name, title, body, app=None):
     """CONSENSUS MEMORY + CROSS-APP CASE LAW: surface the closest prior opinion from THIS committee as
     precedent — from ANY app in the portfolio — so a lesson learned on one app pre-empts the same mistake
@@ -514,6 +606,31 @@ def deliberate(committee, subject_type, subject_id, title, body, app=None):
                   verdict=d.get("verdict"), text=d.get("risk") or d.get("opportunity"))
     if not positions:
         return None
+
+    # GROUPTHINK GUARD: the coordination loop below exits the moment every verdict agrees, so a room that
+    # agreed on the opening round is never cross-examined at all — the cheapest possible answer and the
+    # most dangerous one. Before letting that stand, buy extra adversary + exploration seats, but ONLY
+    # when they can plausibly change the outcome: high materiality, or exactly that premature consensus.
+    premature = converged_fast(positions)
+    mat = issue_materiality(title, body)
+    extra_seats = groupthink_seats(mat, premature, seated=seats)
+    if extra_seats:
+        _emit(subject_id, 50, "groupthink-guard", expert=name,
+              text=f"materiality={mat}, premature_consensus={premature}; seating {', '.join(extra_seats)}")
+        opening_digest = " | ".join(f"{p['seat']} [{p.get('verdict')}]" for p in positions)[:600]
+        heretic_brief = (
+            f"The panel has already landed on: {opening_digest}\n"
+            f"YOUR ROLE: do NOT ratify that. Argue the strongest position the room has NOT considered, and "
+            f"name the specific evidence that would overturn the emerging consensus. An objection the panel "
+            f"can absorb without changing anything is a wasted seat.\n")
+        for j, seat in enumerate(extra_seats):
+            d = _json(_seat_prompt(seat, heretic_brief), need=_seat_need(name, seat))
+            if d:
+                d["seat"] = seat
+                positions.append(d)
+                _emit(subject_id, 51 + j, "heresy", expert=f"{name}/{seat}",
+                      verdict=d.get("verdict"), text=d.get("risk") or d.get("opportunity"))
+        seats = seats + extra_seats
 
     # rounds 1..MAX_ROUNDS: coordinate until the panel converges (all verdicts agree) or rounds run out
     rounds_run = 0
