@@ -85,7 +85,16 @@ class PromotionWindowTest(unittest.TestCase):
         self.p_verify = mock.patch.object(dt, "verify_release", return_value=self.verify)
         self.p_class = mock.patch.object(dt, "_classify_candidate", side_effect=_fake_classify)
         self.p_isdir = mock.patch.object(dt.os.path, "isdir", return_value=True)
-        for p in (self.p_select, self.p_update, self.p_verify, self.p_class, self.p_isdir):
+        # This suite is about the SCAN WINDOW, not the production-journey gate that was
+        # added on top of it in 2026-08-13. Stub the journey verdict to "passed" so a
+        # window regression cannot hide behind a journey refusal (and vice versa). The
+        # gate's own behaviour is covered by test_production_journey_receipts.py, and
+        # test_journey_gate_blocks_promotion_here_too below pins that it still applies.
+        self.p_journey = mock.patch.object(
+            dt, "_journey_verdict",
+            side_effect=lambda t, v: ({"verdict": "pass", "required": True}, True, "journey passed"))
+        for p in (self.p_select, self.p_update, self.p_verify, self.p_class, self.p_isdir,
+                  self.p_journey):
             p.start()
             self.addCleanup(p.stop)
 
@@ -109,6 +118,34 @@ class PromotionWindowTest(unittest.TestCase):
         out = dt.promote_release(self.release)
         self.assertGreater(out["funnel"][dt.BUCKET_NOT_ANCESTOR], 0)
         self.assertEqual(out["promoted"], 3)
+
+    # 3a
+    def test_missing_journey_column_keeps_pagination_not_a_single_page(self):
+        """A pre-migration `journey` column must not collapse the scan to one page."""
+        rejected = {"n": 0}
+        real = _fake_select(self.rows)
+
+        def picky(table, params=None):
+            params = params or {}
+            if table == "tasks" and "journey" in (params.get("select") or ""):
+                rejected["n"] += 1
+                raise Exception('column tasks.journey does not exist')
+            return real(table, params)
+
+        with mock.patch.object(dt.db, "select", side_effect=picky):
+            out = dt.promote_release(self.release)
+        self.assertGreaterEqual(rejected["n"], 1)
+        self.assertEqual(out["promoted"], 3, "pagination must survive the missing column")
+
+    # 3b
+    def test_journey_gate_blocks_promotion_here_too(self):
+        """Finding the row is necessary; a passing journey is still also required."""
+        with mock.patch.object(dt, "_journey_verdict",
+                               side_effect=lambda t, v: (None, False, "no journey")):
+            out = dt.promote_release(self.release)
+        self.assertEqual(out["promoted"], 0)
+        self.assertEqual(out["funnel"][dt.BUCKET_JOURNEY_UNPROVEN], 3)
+        self.assertEqual(self.updated, [])
 
     # 4
     def test_absent_commit_is_routed_to_recovery(self):

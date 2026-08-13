@@ -56,9 +56,17 @@ def _build_snapshot():
     except Exception:
         pass
 
+    journeys = {}
+    try:
+        import production_journey
+        journeys = production_journey.summary(limit=50)
+    except Exception:
+        pass
+
     snapshot = {
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "queue_states": states,
+        "production_journeys": journeys,
         "running_tasks": running,
         "recent_completions": recent_done,
         "total_queued": states.get("QUEUED", 0),
@@ -111,6 +119,22 @@ class ConsoleHandler(http.server.BaseHTTPRequestHandler):
             return self._send_json(status, payload)
         if self.path == "/health":
             return self._send_json(200, {"status": "ok"})
+
+        # PROOF UI: production journey receipts. Receipts are redacted at write time, so
+        # what is stored is what is safe to serve.
+        if self.path.startswith("/journeys"):
+            params = {k: v[-1] for k, v in parse_qs(urlparse(self.path).query).items()}
+            try:
+                import production_journey
+                if params.get("sha") or params.get("slug"):
+                    payload = {"receipts": production_journey.load_all(
+                        limit=int(params.get("limit", "50")),
+                        sha=params.get("sha"), slug=params.get("slug"))}
+                else:
+                    payload = production_journey.summary(limit=int(params.get("limit", "50")))
+                return self._send_json(200, payload)
+            except Exception as e:
+                return self._send_json(500, {"error": str(e)})
 
         if self.path in ("/", "/snapshot"):
             try:

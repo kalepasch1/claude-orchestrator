@@ -47,7 +47,11 @@ import db
 DEPLOYED_AND_VERIFIED = "DEPLOYED_AND_VERIFIED"
 
 # Release states that mean "this project is red and must not take new work".
-FAILED_RELEASE_STATES = {"failed", "error", "rolled_back", "verification_blocked", "rollback_failed"}
+# `journey_failed` is a release whose post-deploy production journey failed its
+# assertions: the build is live and returns 200, but the declared user journey is
+# broken. That is a red project — back-pressure must treat it like any other failure.
+FAILED_RELEASE_STATES = {"failed", "error", "rolled_back", "verification_blocked",
+                         "rollback_failed", "journey_failed"}
 GOOD_RELEASE_STATES = {"success", "deployed", DEPLOYED_AND_VERIFIED.lower()}
 
 _TRUTHY = ("1", "true", "yes", "on")
@@ -132,8 +136,15 @@ def sha_is_live(project, sha, vercel_project=None):
     return False, f"live sha {live[:12]} != release sha {str(sha)[:12]}"
 
 
-def verify_release(release, project_row=None, health=None):
-    """Full terminal check for one release row. Returns a dict; ok=True only if BOTH pass."""
+def verify_release(release, project_row=None, health=None, journey=None):
+    """Release-level health check for one release row.
+
+    `ok` means the RELEASE is healthy: the production URL answers 200 and the release SHA
+    is the one actually serving. That is necessary and NOT sufficient for promoting any
+    individual task — see `promote_release`, which additionally requires each task's own
+    production journey receipt. `release_health_only` names that explicitly so no caller
+    can read a green release as proof that a task's behaviour works.
+    """
     project = release.get("project")
     sha = release.get("to_sha")
     url = release.get("vercel_url") or _prod_url(project, project_row, health)
@@ -141,11 +152,26 @@ def verify_release(release, project_row=None, health=None):
         url = "https://" + url
     status, ok200 = http_ok(url)
     live, why = sha_is_live(project, sha)
-    return {"project": project, "sha": sha, "url": url, "http_status": status,
-            "http_ok": ok200, "sha_live": live, "sha_reason": why,
-            "ok": bool(ok200 and live),
-            "reason": ("verified" if (ok200 and live)
-                       else f"http={status} sha_live={live} ({why})")}
+    out = {"project": project, "sha": sha, "url": url, "http_status": status,
+           "http_ok": ok200, "sha_live": live, "sha_reason": why,
+           "ok": bool(ok200 and live),
+           "release_health_only": True,
+           "reason": ("release healthy (HTTP 200 + sha live); per-task journeys still required"
+                      if (ok200 and live) else f"http={status} sha_live={live} ({why})")}
+    # A release-level journey, when the release itself declares one, gates the release.
+    if journey is not None:
+        out["journey"] = journey
+        try:
+            import production_journey
+            jok, jwhy = production_journey.gate(journey, required=journey.get("required", True))
+        except Exception as e:
+            jok, jwhy = True, f"journey gate unavailable: {e}"
+        out["journey_ok"] = jok
+        out["journey_reason"] = jwhy
+        if not jok:
+            out["ok"] = False
+            out["reason"] = jwhy
+    return out
 
 
 # ------------------------------------------------------------------ promotion
@@ -163,6 +189,9 @@ BUCKET_PROMOTABLE = "promotable"
 BUCKET_NO_COMMIT = "skipped_no_commit"
 BUCKET_NOT_ANCESTOR = "skipped_not_ancestor"
 BUCKET_COMMIT_ABSENT = "skipped_commit_absent"
+# The change is in the release, but no production journey proved the behaviour works.
+# HTTP 200 on the release used to be enough; it no longer is.
+BUCKET_JOURNEY_UNPROVEN = "skipped_journey_unproven"
 
 
 def _commit_exists(repo, sha):
@@ -200,6 +229,32 @@ def _classify_candidate(repo, artifact_commit, release_sha):
         return BUCKET_NOT_ANCESTOR
 
 
+def _journey_verdict(task, verify_result):
+    """(receipt, ok, reason) for one task's production journey against a verified release.
+
+    Reuses an existing receipt for this (sha, slug) when one was already recorded by the
+    post-deploy pass, and otherwise executes the declared journey now. Fail-soft on
+    import errors — but note that failing soft here means NOT promoting, because an
+    unavailable prover is not a proof.
+    """
+    slug = str(task.get("slug") or "")
+    sha = str(verify_result.get("sha") or "")
+    try:
+        import production_journey
+    except Exception as e:
+        return None, False, f"journey prover unavailable: {e}"
+    try:
+        receipt = production_journey.find(sha, slug)
+        if receipt is None:
+            receipt = production_journey.verify_task(
+                task, base_url=verify_result.get("url") or "", sha=sha,
+                environment=str(verify_result.get("environment") or "production"))
+        ok, why = production_journey.gate(receipt, required=receipt.get("required", True))
+        return receipt, ok, why
+    except Exception as e:
+        return None, False, f"journey execution error: {e}"
+
+
 def _select_all_merged_with_commit(pid, cutoff, page_size=None):
     """Every MERGED task for the project that HAS artifact_commit evidence.
 
@@ -216,7 +271,7 @@ def _select_all_merged_with_commit(pid, cutoff, page_size=None):
         page_size = 500
     page_size = max(1, page_size)
 
-    base = {"select": "id,slug,state,artifact_commit",
+    base = {"select": "id,slug,state,artifact_commit,journey",
             "project_id": f"eq.{pid}",
             "state": "eq.MERGED",
             "artifact_commit": "not.is.null",
@@ -230,6 +285,26 @@ def _select_all_merged_with_commit(pid, cutoff, page_size=None):
         try:
             rows = db.select("tasks", q) or []
         except Exception:
+            # `journey` is a newer column. If the migration has not run yet, drop it and
+            # keep the server-side filter + ordering + pagination rather than collapsing
+            # to a single unfiltered page — that collapse is the exact scan-window bug
+            # this function exists to prevent.
+            if "journey" in base["select"]:
+                base["select"] = base["select"].replace(",journey", "")
+                try:
+                    rows = db.select("tasks", dict(base, limit=str(page_size),
+                                                   offset=str(offset))) or []
+                except Exception:
+                    rows = None
+                if rows is not None:
+                    for r in rows:
+                        if r.get("id") not in seen:
+                            seen.add(r.get("id"))
+                            out.append(r)
+                    if len(rows) < page_size:
+                        break
+                    offset += page_size
+                    continue
             # Degrade to a single unfiltered page rather than promoting nothing at all.
             if offset == 0:
                 try:
@@ -324,12 +399,33 @@ def promote_release(release, dry_run=False):
     for t in tasks:
         buckets[_classify_candidate(repo, t.get("artifact_commit"), release_sha)].append(t)
 
-    promotable = buckets[BUCKET_PROMOTABLE]
+    # JOURNEY GATE 2026-08-13: being inside a green release is still only ancestry
+    # evidence — it proves the code shipped, not that the behaviour works. Each task
+    # must additionally carry a PASSING production journey receipt for THIS release sha.
+    # Tasks that declare no journey, whose journey failed, or whose journey was only
+    # flaky stay MERGED and are reported in their own funnel bucket. Do not relax this
+    # to raise the promotion count: HTTP 200 alone is exactly the false signal that
+    # certified 2,714 "delivered" tasks nobody could show working.
+    journeyed, unproven, journey_receipts = [], [], []
+    for t in buckets[BUCKET_PROMOTABLE]:
+        receipt, ok, why = _journey_verdict(t, result)
+        if receipt:
+            journey_receipts.append(receipt)
+        if ok:
+            t["_journey_reason"] = why
+            journeyed.append(t)
+        else:
+            t["_journey_reason"] = why
+            unproven.append(t)
+    buckets[BUCKET_JOURNEY_UNPROVEN] = unproven
+
+    promotable = journeyed
     funnel = {
         "candidates": len(tasks),
         BUCKET_NO_COMMIT: len(buckets[BUCKET_NO_COMMIT]),
         BUCKET_NOT_ANCESTOR: len(buckets[BUCKET_NOT_ANCESTOR]),
         BUCKET_COMMIT_ABSENT: len(buckets[BUCKET_COMMIT_ABSENT]),
+        BUCKET_JOURNEY_UNPROVEN: len(unproven),
     }
 
     def _log_funnel(promoted_n):
@@ -340,7 +436,11 @@ def promote_release(release, dry_run=False):
               f"candidates={funnel['candidates']} promoted={promoted_n} "
               f"skipped_no_commit={funnel[BUCKET_NO_COMMIT]} "
               f"skipped_not_ancestor={funnel[BUCKET_NOT_ANCESTOR]} "
-              f"skipped_commit_absent={funnel[BUCKET_COMMIT_ABSENT]}")
+              f"skipped_commit_absent={funnel[BUCKET_COMMIT_ABSENT]} "
+              f"skipped_journey_unproven={funnel[BUCKET_JOURNEY_UNPROVEN]}")
+        for t in unproven[:10]:
+            print(f"deployment_terminal: JOURNEY-UNPROVEN {project} "
+                  f"task={t.get('slug') or t.get('id')} — {t.get('_journey_reason')}")
 
     if dry_run:
         _log_funnel(0)
@@ -354,7 +454,8 @@ def promote_release(release, dry_run=False):
             db.update("tasks", {"id": t["id"]},
                       {"state": DEPLOYED_AND_VERIFIED,
                        "note": (f"deployment verified: {result['url']} @ {release_sha[:12]} "
-                                f"(HTTP 200, sha live, contains {t['artifact_commit'][:12]})")})
+                                f"(HTTP 200, sha live, contains {t['artifact_commit'][:12]}, "
+                                f"journey: {t.get('_journey_reason') or 'n/a'})")})
             promoted += 1
         except Exception:
             pass
@@ -366,6 +467,8 @@ def promote_release(release, dry_run=False):
     _log_funnel(promoted)
     return {"promoted": promoted,
             "skipped_no_evidence": len(tasks) - len(promotable),
+            "journey_unproven": len(unproven),
+            "journey_receipts": [r.get("id") for r in journey_receipts if r],
             "funnel": funnel, "verify": result}
 
 
