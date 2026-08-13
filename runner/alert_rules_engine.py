@@ -48,13 +48,50 @@ DEFAULT_RULES = [
         "threshold": 10,
         "severity": "warning",
     },
+    # ---- Integration throughput: ABSOLUTE, LEVEL-BASED triggers ----------------
+    #
+    # The 2026-08-08 outage. Merges per day: Aug 5 = 234, Aug 6 = 246, Aug 7 = 45,
+    # Aug 8 = 4. A 60x collapse from peak; the fleet shipped essentially nothing for
+    # ~36h. Two independent reasons nothing responded:
+    #
+    #   * the repair loop only fires a playbook when a KPI is >2x worse than the
+    #     PREVIOUS run. That is a derivative test and it is blind to a slow
+    #     catastrophe — the loop's own stored baseline saw merged_24h 15 -> 9, a
+    #     ratio of 1.667, under its 2x bar, while the real level was in free fall;
+    #   * the only absolute rule here, `low_merge_rate`, fired at `< 5` with severity
+    #     "info". Aug 7's 45 merges tripped nothing at all, and Aug 8's 4 merges
+    #     produced an "info" — the single most business-critical failure the fleet
+    #     has, ranked below queue depth.
+    #
+    # So: a LADDER of absolute levels, and a severity that matches the stakes. A level
+    # test cannot be outrun by a gradual decline, however smooth.
     {
-        "id": "low_merge_rate",
-        "name": "Low merge rate",
+        "id": "merge_throughput_degraded",
+        "name": "Merge throughput degraded",
         "metric": "merge_rate_24h",
         "operator": "lt",
-        "threshold": 5,
-        "severity": "info",
+        # Aug 7 (45 merges) would have fired here, ~24h before the fleet hit zero.
+        "threshold": 50,
+        "severity": "warning",
+    },
+    {
+        "id": "merge_throughput_collapsed",
+        "name": "Merge throughput collapsed — the fleet is not shipping",
+        "metric": "merge_rate_24h",
+        "operator": "lt",
+        "threshold": 10,
+        # Critical, not info: nothing merging is worse than a deep queue.
+        "severity": "critical",
+    },
+    {
+        "id": "merge_stall_1h",
+        "name": "No merges in the last hour",
+        "metric": "merge_rate_1h",
+        "operator": "lt",
+        "threshold": 1,
+        # Fast detection. A 24h window needs most of a day of zero before it reads
+        # as zero; the outage ran 7.5h before anyone looked.
+        "severity": "critical",
     },
 ]
 
@@ -105,9 +142,22 @@ def _collect_metrics():
         merged_24h = db.select("tasks", {"select": "id", "state": "eq.MERGED", "updated_at": f"gte.{cutoff_24h}"}) or []
         metrics["merge_rate_24h"] = len(merged_24h)
 
+        # Short window so a stall is visible in an hour rather than a day. A 24h
+        # counter still reads 60 the morning after everything stopped.
+        merged_1h = db.select("tasks", {"select": "id", "state": "eq.MERGED",
+                                        "updated_at": f"gte.{cutoff_1h}"}) or []
+        metrics["merge_rate_1h"] = len(merged_1h)
+
         metrics["pending_approvals"] = state_counts.get("PENDING_REVIEW", 0)
-    except Exception:
-        pass
+    except Exception as e:
+        # Was `pass`. Silence here is the worst possible failure of a monitor: with no
+        # metrics every `lt` rule evaluates against None, `_compare` returns False, and
+        # the dashboard shows a calm green board precisely when the control plane is
+        # unreachable. Say so, out loud, and still fail soft.
+        print(f"[alert_rules_engine] metric collection FAILED ({type(e).__name__}: {e}); "
+              f"alerts evaluated on partial metrics — a quiet board is NOT evidence of health",
+              file=sys.stderr)
+        metrics["_collection_error"] = f"{type(e).__name__}: {e}"
     return metrics
 
 
