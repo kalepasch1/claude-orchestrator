@@ -261,3 +261,25 @@ reconciliation had ever reported it. Left in place for a focused task.
 cover the receipt parser (present, absent, records-no-push), `.patch`/`.diff`
 enumeration, sidecar exclusion, and the run-suffix case where the receipt and the
 filename disagree.
+
+---
+
+# Fingerprint `ac93979d6c7a` — four kinds, one pass
+
+Evidence: a `dirty_worktree` at the orchestrator root, a second worktree at
+`claude-orchestrator-wt/spine-types-x2`, the `broken_codex_git_worktree` at
+`Codex/2026-08-07/cons/work/orchestrator-session-fabric`, and the queue-bridge
+artifact — plus the live `orchestrator_rescue_refs` namespace.
+
+**1347 items, zero UNKNOWN.** Every kind routed through a classifier that already
+exists: rescue refs and branches through the ancestry path, the two worktrees through
+`classifyExternalWorktree`, the artifact through `classifyBridgeArtifact` with its
+branch read from the bridge's own receipt.
+
+That is the point worth recording. The first fingerprints in this series each needed
+the tool extended before their evidence could be classified at all — `.patch`
+payloads, pruned gitdirs, untracked files. This one needed nothing. The extensions
+were not per-task workarounds; they were the missing kinds, and the set now covers
+what the audit actually produces.
+
+Nothing was popped, dropped, reset, cleaned or moved.
