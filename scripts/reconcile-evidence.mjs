@@ -27,7 +27,8 @@
  * Completion bar: ZERO items classified UNKNOWN.
  */
 import { execFileSync } from 'node:child_process'
-import { writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
 
 // ─── The read-only guarantee ─────────────────────────────────────────────────
 
@@ -265,6 +266,174 @@ export function classifyStash(entry, ctx) {
   }
 }
 
+// ─── Evidence that git cannot enumerate for itself ───────────────────────────
+//
+// The two classifiers below exist because the snapshot the brief hands us keeps
+// containing items that `enumerateEvidence()` structurally cannot find:
+//
+//   - a `broken_codex_git_worktree`: a directory whose `.git` file points at a
+//     `worktrees/<name>` gitdir that has since been pruned. `git worktree list`
+//     will never mention it — the registration is exactly what is gone — so
+//     without an explicit classifier it falls off the end of the run and lands in
+//     the UNKNOWN bucket, which is the one outcome the completion bar forbids.
+//
+//   - a `chatgpt_bridge_artifact`: a dropbox zip in `_applied/` or `_failed/`.
+//     It is not a git object at all, but it is a carrier of code, and whether its
+//     contents survived depends on whether the bridge's push landed.
+//
+// Both are supplied by path rather than discovered, because a tool that went
+// hunting across the filesystem for candidate directories would be guessing.
+
+/** Refs whose name ends in `/<name>` or equals `<name>` — the checkout's likely home. */
+function refsNamed(name) {
+  const all = runGit(['for-each-ref', '--format=%(refname)'], { allowFail: true }) ?? ''
+  return all.split('\n').filter((r) => r.endsWith(`/${name}`))
+}
+
+/**
+ * Classify a worktree directory supplied by path, including one whose git
+ * metadata no longer resolves.
+ *
+ * The load-bearing idea: **a worktree is a checkout, not a copy.** Its committed
+ * content lives in the ref it was checked out from, so a broken registration is
+ * only a real loss if that ref is also gone. What a broken worktree genuinely
+ * costs is its *uncommitted* drift — unreadable once the gitdir is pruned, and
+ * therefore reported as such rather than quietly assumed to be nothing.
+ */
+export function classifyExternalWorktree(path, ctx) {
+  const { liveTaskSlugs, remoteBranches } = ctx
+  const name = basename(path)
+
+  if (!existsSync(path)) {
+    return {
+      ref: path,
+      sha: null,
+      classification: 'CONFLICTED_NEEDS_FOCUSED_TASK',
+      reason:
+        'the evidence path no longer exists on disk. Nothing here can be read, and a ' +
+        'vanished source is a question for a human, not a silent pass.',
+    }
+  }
+
+  const dotGit = join(path, '.git')
+  const gitdir = existsSync(dotGit)
+    ? /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, 'utf8'))?.[1]?.trim() ?? dotGit
+    : null
+  const metadataLive = gitdir ? existsSync(gitdir) : false
+
+  // A live registration needs no special handling — the normal worktree path covers it.
+  if (metadataLive) {
+    return {
+      ref: path,
+      sha: null,
+      classification: 'ALREADY_PRESENT',
+      reason: 'git metadata still resolves; the registered-worktree pass already covers it.',
+    }
+  }
+
+  // Is a task already on this? Recovering it twice is what the coordination rule forbids.
+  const owningTask =
+    liveTaskSlugs.find((slug) => slug.includes(name) || name.includes(slug)) ??
+    [...remoteBranches].find((b) => b.includes(name))
+
+  const homes = refsNamed(name).filter((r) => resolve(r))
+
+  if (owningTask) {
+    return {
+      ref: path,
+      sha: homes[0] ? resolve(homes[0]) : null,
+      classification: 'ACTIVE_IN_ANOTHER_TASK',
+      owningTask,
+      preservedIn: homes,
+      gitdirMissing: gitdir,
+      reason:
+        `git metadata at ${gitdir} is gone, but "${owningTask}" already represents this ` +
+        `recovery${homes.length ? ` and ${homes.length} ref(s) still carry the content` : ''}. ` +
+        'Left untouched rather than recovered a second time.',
+    }
+  }
+
+  if (homes.length === 0) {
+    return {
+      ref: path,
+      sha: null,
+      classification: 'CONFLICTED_NEEDS_FOCUSED_TASK',
+      gitdirMissing: gitdir,
+      reason:
+        `git metadata at ${gitdir} is gone and no ref anywhere in the repository is named ` +
+        `for "${name}". The files on disk may be the only copy and they cannot be diffed ` +
+        'without the gitdir — this needs a focused task, not a classification.',
+    }
+  }
+
+  return {
+    ref: path,
+    sha: resolve(homes[0]),
+    classification: 'RECOVERABLE_VALUE',
+    preservedIn: homes,
+    gitdirMissing: gitdir,
+    uncommittedDriftUnreadable: true,
+    reason:
+      `git metadata at ${gitdir} is gone. The committed content survives in ${homes.length} ` +
+      `ref(s) (${homes[0]}), so the checkout itself is not the loss — but any UNCOMMITTED ` +
+      'drift in this directory cannot be read without the gitdir and is not accounted for here.',
+  }
+}
+
+/**
+ * Classify a ChatGPT-bridge dropbox artifact.
+ *
+ * `_applied/` means the bridge reported success, but "the script exited 0" and "the
+ * code is durably on a remote" are different claims. The one that matters is the
+ * second, so the branch the artifact names is checked against the remote before the
+ * artifact is called safe.
+ */
+export function classifyBridgeArtifact(artifactPath, ctx) {
+  const { remoteBranches } = ctx
+  const file = basename(artifactPath)
+  const bucket = basename(join(artifactPath, '..'))
+  // `<ts>--<repo>--<slug>.zip`
+  const slug = file.replace(/\.zip$/, '').split('--').slice(2).join('--')
+
+  if (!existsSync(artifactPath)) {
+    return {
+      ref: artifactPath,
+      sha: null,
+      classification: 'CONFLICTED_NEEDS_FOCUSED_TASK',
+      reason: 'artifact named by the evidence snapshot is no longer on disk.',
+    }
+  }
+
+  const landed = slug
+    ? [...remoteBranches].filter((b) => b.startsWith(`chatgpt/${slug}`) || b.includes(slug))
+    : []
+
+  if (landed.length > 0) {
+    return {
+      ref: artifactPath,
+      sha: resolve(`origin/${landed[0]}`),
+      classification: 'ALREADY_PRESENT',
+      bucket,
+      preservedIn: landed.map((b) => `origin/${b}`),
+      reason:
+        `the bridge pushed this payload to origin/${landed[0]}, so its contents are durable ` +
+        'independently of the zip. The archive is kept as provenance, not as the only copy.',
+    }
+  }
+
+  return {
+    ref: artifactPath,
+    sha: null,
+    classification: bucket === '_failed' ? 'CONFLICTED_NEEDS_FOCUSED_TASK' : 'RECOVERABLE_VALUE',
+    bucket,
+    reason:
+      bucket === '_failed'
+        ? 'the bridge failed to apply this payload and no remote branch carries it.'
+        : `marked applied, but no remote branch matches "${slug}" — the exit code said yes and ` +
+          'the remote says otherwise. The zip is currently the only copy.',
+  }
+}
+
 // ─── Duplicate-snapshot collapse ─────────────────────────────────────────────
 
 /** Which kind of evidence is the most durable carrier of a given tree. */
@@ -361,6 +530,32 @@ export function enumerateEvidence() {
   return { branches, rescueRefs, stashes, worktrees }
 }
 
+/** Collect every `--flag <value>` occurrence, so the flags are repeatable. */
+export function collectFlag(args, flag) {
+  const out = []
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === flag && args[i + 1] && !args[i + 1].startsWith('--')) out.push(args[i + 1])
+  }
+  return out
+}
+
+/**
+ * Every zip the bridge has already touched, under `<dropbox>/_applied` and
+ * `<dropbox>/_failed`. Enumerated rather than taken from the snapshot, for the
+ * same reason the refs are: a snapshot is a photograph, and the brief asks about
+ * the live source.
+ */
+export function enumerateBridgeArtifacts(dropboxDir) {
+  if (!dropboxDir || !existsSync(dropboxDir)) return []
+  return ['_applied', '_failed'].flatMap((bucket) => {
+    const dir = join(dropboxDir, bucket)
+    if (!existsSync(dir)) return []
+    return readdirSync(dir)
+      .filter((f) => f.endsWith('.zip'))
+      .map((f) => join(dir, f))
+  })
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 function main() {
@@ -369,7 +564,13 @@ function main() {
   const jsonOut = args.includes('--json') ? args[args.indexOf('--json') + 1] : null
 
   if (!fingerprint || fingerprint.startsWith('--')) {
-    console.error('usage: node scripts/reconcile-evidence.mjs --fingerprint <sha> [--json out]')
+    console.error(
+      'usage: node scripts/reconcile-evidence.mjs --fingerprint <sha> [--json out]\n' +
+        '                 [--default-branch <name>]\n' +
+        '                 [--external-worktree <path>]...  worktrees git can no longer list\n' +
+        '                 [--bridge-artifact <path>]...    a single dropbox zip\n' +
+        '                 [--dropbox <dir>]                enumerate _applied/ and _failed/',
+    )
     process.exit(2)
   }
 
@@ -424,6 +625,14 @@ function main() {
   const ctx = { mainSha, localDefaultSha, liveTaskSlugs, remoteBranches }
   const { branches, rescueRefs, stashes, worktrees } = enumerateEvidence()
 
+  // Evidence git cannot enumerate for itself — see the classifiers above.
+  const externalWorktrees = collectFlag(args, '--external-worktree')
+  const dropboxDir = collectFlag(args, '--dropbox')[0] ?? null
+  const bridgeArtifacts = [
+    ...collectFlag(args, '--bridge-artifact'),
+    ...enumerateBridgeArtifacts(dropboxDir),
+  ].filter((p, i, a) => a.indexOf(p) === i)
+
   const items = collapseDuplicateTrees([
     ...branches.map((b) => ({ kind: 'branch', ...classifyRef(b, ctx) })),
     ...rescueRefs.map((r) => ({ kind: 'rescue_ref', ...classifyRef(r, ctx) })),
@@ -433,6 +642,14 @@ function main() {
       ref: w.path,
       branch: w.branch,
       ...classifyRef(w.branch === 'DETACHED' ? 'HEAD' : w.branch, ctx),
+    })),
+    ...externalWorktrees.map((p) => ({
+      kind: 'external_worktree',
+      ...classifyExternalWorktree(p, ctx),
+    })),
+    ...bridgeArtifacts.map((p) => ({
+      kind: 'bridge_artifact',
+      ...classifyBridgeArtifact(p, ctx),
     })),
   ])
 

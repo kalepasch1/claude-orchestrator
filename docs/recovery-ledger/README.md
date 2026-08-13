@@ -114,3 +114,51 @@ tool refuses any git subcommand outside its read-only allowlist.
 `scripts/reconcile-evidence.mjs` is committed alongside the ledgers. It existed only
 as an untracked file in the main checkout — one copy, on one disk, generating the
 artefact that documents what else is at risk on that same disk.
+
+---
+
+# Fingerprint `10d6c3591091` — the evidence git could not enumerate for itself
+
+This snapshot carried three items. The first — 365 `refs/orch-rescue/*` refs — the
+classifier already handled. The other two it structurally could not see:
+
+| evidence kind | why the previous run would have missed it |
+|---|---|
+| `broken_codex_git_worktree` | `git worktree list` cannot report a worktree whose `worktrees/<name>` gitdir has been pruned — the registration is exactly what is gone |
+| `chatgpt_bridge_artifact` | a dropbox zip is not a git object, so no ref enumeration reaches it |
+
+Anything not enumerated is not classified, and an unclassified item is UNKNOWN —
+the one outcome the completion bar forbids. So the gap was in the tool, not in the
+run, and the fix went into the shared tool rather than into a one-off script.
+
+## What was added
+
+`classifyExternalWorktree(path, ctx)` and `classifyBridgeArtifact(path, ctx)`, plus
+repeatable `--external-worktree`, `--bridge-artifact` and `--dropbox` flags.
+
+Two judgements are load-bearing:
+
+**A worktree is a checkout, not a copy.** Its committed content lives in the ref it
+came from, so a pruned gitdir is only a real loss if that ref is also gone. What a
+broken worktree genuinely costs is its *uncommitted* drift — unreadable once the
+gitdir is pruned. That is reported as `uncommittedDriftUnreadable: true` rather than
+quietly assumed to be nothing, because assuming it is nothing is how the only copy
+of something gets written off.
+
+**`_applied/` is not proof.** "The bridge script exited 0" and "the code is durably
+on a remote" are different claims, and only the second one matters. An artifact in
+`_applied/` whose branch is not on origin is classified RECOVERABLE_VALUE with the
+reason *"the exit code said yes and the remote says otherwise"* — the zip is then
+the only copy, which is precisely the case worth catching.
+
+## Tests
+
+`scripts/reconcile-evidence.test.mjs` — 15 cases, `node --test`. They cover the
+vanished path, the still-healthy gitdir, the pruned gitdir with and without a
+surviving ref, the live-task deferral, both dropbox buckets, and the flag parser.
+
+## Read-only, still
+
+The additions read: `existsSync`, `readFileSync`, `readdirSync`, and `for-each-ref`
+through the same allowlisted `runGit`. No zip is extracted, no worktree is
+re-registered, no ref is written. **Nothing was popped, dropped, reset or moved.**
