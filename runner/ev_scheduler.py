@@ -43,6 +43,33 @@ PARK_NOTE = "[ev-low-priority: near-zero expected value — keep queued, run whe
 BOOST_KINDS = ("build",)
 REVENUE_WORDS = ("revenue", "pricing", "growth", "conversion")
 
+
+def _env_float_ev(name, default):
+    try:
+        return float(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        return default
+
+
+# --- Low-EV early exit -------------------------------------------------------------
+# Refuse negative-EV work BEFORE it is enqueued. Parking (above) annotates work already
+# in the queue; this stops it entering. Because a refused task never occupies a queue
+# slot, it can never contribute to the queue-velocity PID's integral — the windup
+# fix-pid-integral-windup clamps downstream is removed here at the source.
+#
+# The bar is intentionally STRICTLY LOWER than ZERO_EV: refusing is a stronger action
+# than parking, so it must be harder to trigger. Only genuinely negative EV is refused.
+LOW_EV_THRESHOLD = _env_float_ev("ORCH_EV_LOW_THRESHOLD", 0.0)
+LOW_EV_EARLY_EXIT = os.environ.get("ORCH_EV_LOW_EARLY_EXIT", "true").lower() in ("true", "1", "yes", "on")
+LOW_EV_SKIP_NOTE = "[ev-low-skip: expected value below the enqueue bar — not scheduled, kept for audit]"
+# Field names producers have used for EV, in precedence order.
+EV_FIELDS = ("ev", "expected_value", "score", "value")
+# Lanes whose value is not EV-expressible: recovery, remediation and evidence work.
+EXEMPT_KINDS = frozenset({"recovery", "canary", "toolchain-repair", "qafix", "relfix",
+                          "buildfix", "deployfix", "rework", "remediation"})
+EXEMPT_SLUG_PREFIXES = ("recovery", "recover-", "breach-", "canary-", "qafix-", "relfix-",
+                        "buildfix-", "deployfix-", "toolchain-repair", "rework-")
+
 # Outcome weighting: when ORCH_EV_OUTCOME_WEIGHTING=true, task-family priority is
 # weighted by REALIZED outcomes (merged-and-stayed-green rate, retries, human-reject
 # rate) rather than flat cost only. Default OFF so current scheduling is byte-identical.
@@ -329,6 +356,117 @@ def park_zero_ev(scored=None):
             except Exception:
                 pass
     return parked
+
+
+def task_ev(task):
+    """Best-effort read of a producer-supplied expected value off a task row.
+
+    Returns a float, or None when no producer supplied a usable measurement. None is
+    deliberately distinct from 0.0: 0.0 is a measured verdict ("we looked, it's worth
+    nothing"), None is "nobody looked". Only the former may be refused.
+    """
+    if not isinstance(task, dict):
+        return None
+    for field in EV_FIELDS:
+        if field not in task:
+            continue
+        raw = task[field]
+        # bools are ints in Python; an `ev=True` is a producer bug, not a measurement.
+        if isinstance(raw, bool) or raw is None:
+            continue
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if math.isnan(val) or math.isinf(val):
+            continue
+        return val
+    return None
+
+
+def _is_exempt(task):
+    """Recovery/evidence lanes carry value the EV heuristic cannot express."""
+    if not isinstance(task, dict):
+        return False
+    if (task.get("kind") or "").strip().lower() in EXEMPT_KINDS:
+        return True
+    slug = (task.get("slug") or "").strip().lower()
+    return any(slug.startswith(p) for p in EXEMPT_SLUG_PREFIXES)
+
+
+def should_enqueue(task, ev=None, threshold=None):
+    """Gate a task BEFORE it is written to the queue.
+
+    Returns a verdict dict:
+      {"enqueue": bool, "reason": str, "ev": float|None, "threshold": float,
+       "counts_toward_pid": bool}
+
+    counts_toward_pid mirrors `enqueue`. A task that was never enqueued never occupied a
+    queue slot, so the queue-velocity PID must not integrate it — that is the windup this
+    gate removes at the source rather than clamping downstream.
+
+    Fails OPEN: an unknown EV, an exempt lane, a disabled kill switch or an exception in
+    the gate itself all enqueue. Dropping work is far worse than running a cheap task.
+    """
+    bar = LOW_EV_THRESHOLD if threshold is None else float(threshold)
+
+    def verdict(enqueue, reason, value):
+        return {"enqueue": enqueue, "reason": reason, "ev": value,
+                "threshold": bar, "counts_toward_pid": enqueue}
+
+    if not LOW_EV_EARLY_EXIT:
+        return verdict(True, "low-EV early exit disabled", ev)
+    try:
+        value = task_ev(task) if ev is None else ev
+        if value is None:
+            return verdict(True, "EV unknown — not refusing unmeasured work", None)
+        value = float(value)
+        if _is_exempt(task):
+            return verdict(True, "exempt lane (recovery/evidence) — EV gate not applied", value)
+        if value < bar:
+            slug = (task or {}).get("slug") if isinstance(task, dict) else task
+            print(f"[ev-gate] early exit: not enqueuing {slug} "
+                  f"(ev={value} below threshold {bar})")
+            return verdict(False, f"EV {value} below threshold {bar}", value)
+        return verdict(True, f"EV {value} at or above threshold {bar}", value)
+    except Exception as e:
+        return verdict(True, f"gate error, failing open: {e}", None)
+
+
+def filter_enqueueable(tasks, threshold=None):
+    """Split tasks into (keep, skipped) where skipped is [(task, verdict), ...]."""
+    keep, skipped = [], []
+    for t in (tasks or []):
+        v = should_enqueue(t, threshold=threshold)
+        (keep if v["enqueue"] else skipped).append(t if v["enqueue"] else (t, v))
+    return keep, skipped
+
+
+def shelve_low_ev(scored=None, threshold=None):
+    """Annotate ALREADY-QUEUED rows the gate would now refuse. Never changes state.
+
+    The gate above only guards new writes; rows enqueued before it existed still sit in
+    the queue inflating the PID's integral. This marks them with LOW_EV_SKIP_NOTE so the
+    controller and operators can see them, capped at PARK_CAP per run. It deliberately
+    does NOT write `state`: nothing is destroyed, and the annotation is reversible.
+    """
+    scored = scored if scored is not None else _scored_queue()
+    bar = LOW_EV_THRESHOLD if threshold is None else float(threshold)
+    marked = 0
+    for s, t in scored:
+        if marked >= PARK_CAP:
+            break
+        if s >= bar or _is_exempt(t):
+            continue
+        try:
+            db.update("tasks", {"id": t["id"]},
+                      {"note": LOW_EV_SKIP_NOTE, "updated_at": "now()"})
+            marked += 1
+        except Exception as e:
+            print(f"[ev-gate] could not mark {t.get('slug')}: {e}")
+    if marked:
+        print(f"[ev-gate] marked {marked} already-queued low-EV tasks")
+    return marked
 
 
 def run():
