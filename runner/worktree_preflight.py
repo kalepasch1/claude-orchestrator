@@ -215,6 +215,72 @@ def verify_install(roots, limit=5):
     return None
 
 
+#: A repair removes package directories. Cap how many, so a bad detector cannot
+#: turn into a mass delete, and keep the whole thing behind a kill switch.
+REPAIR_MAX_PACKAGES = int(os.environ.get("ORCH_WORKTREE_PREFLIGHT_REPAIR_MAX", "40"))
+
+
+def repair_partial_install(root, broken, timeout=None):
+    """Delete truncated packages and reinstall them. Returns a result dict.
+
+    WHY THIS HAS TO EXIST. Before this, verify_install() found the truncation and the
+    caller went straight to _block_project(). That is a DEADLOCK, not a safeguard: npm
+    considers a truncated tree satisfied (`npm ls` is happy — the package.json is there,
+    only the files listed in `main`/`exports`/`bin` are missing), so the next preflight
+    runs the same install, gets the same exit 0, fails the same verify, and blocks the
+    project again. Measured in this repo: web/node_modules/vitest@1.6.1 has no dist/ at
+    all, ~250 packages in that tree are truncated the same way, and every `npx vitest`
+    dies with ERR_MODULE_NOT_FOUND. A project parked on that condition never comes back
+    on its own, because nothing ever changes the thing being re-checked.
+
+    Deleting the package directory is what breaks the loop — npm will not re-fetch a
+    package it believes is installed, but it will happily install one that is absent.
+
+    Safety: only paths INSIDE `<root>/node_modules` are ever removed (verified with a
+    resolved-prefix check, so a crafted name cannot escape), at most
+    REPAIR_MAX_PACKAGES of them, and only when ORCH_WORKTREE_PREFLIGHT_REPAIR is on.
+    Fail-soft: any error returns ok=False and the caller blocks exactly as it did before.
+    """
+    out = {"ok": False, "removed": [], "attempted": 0, "error": None}
+    if not _truthy("ORCH_WORKTREE_PREFLIGHT_REPAIR", True):
+        out["error"] = "repair disabled (ORCH_WORKTREE_PREFLIGHT_REPAIR)"
+        return out
+    try:
+        node_modules = os.path.realpath(os.path.join(root, "node_modules"))
+        if not os.path.isdir(node_modules):
+            out["error"] = "no node_modules to repair"
+            return out
+        names = [b.get("name") for b in (broken or []) if b.get("name")]
+        out["attempted"] = len(names)
+        if not names:
+            out["error"] = "nothing identified to repair"
+            return out
+        for name in names[:REPAIR_MAX_PACKAGES]:
+            pkg = os.path.realpath(os.path.join(node_modules, *name.split("/")))
+            # Containment: the resolved path must sit under node_modules, and must not
+            # BE node_modules. Anything else is a detector bug and must not delete.
+            if not pkg.startswith(node_modules + os.sep) or pkg == node_modules:
+                continue
+            if not os.path.isdir(pkg):
+                continue
+            try:
+                shutil.rmtree(pkg)
+                out["removed"].append(name)
+            except OSError:
+                continue
+        if not out["removed"]:
+            out["error"] = "no truncated package directory could be removed"
+            return out
+        install = _install(root, timeout=timeout)
+        out["ok"] = bool(install.get("ok"))
+        out["install"] = install
+        if not out["ok"]:
+            out["error"] = install.get("error") or "reinstall failed"
+    except Exception as e:
+        out["error"] = f"{type(e).__name__}: {e}"
+    return out
+
+
 def _block_project(project, reason):
     """Mark the project paused with an attributable reason. Best-effort."""
     try:
@@ -318,11 +384,26 @@ def preflight(project, repo_path, force=False, timeout=None):
         # Verify the packages are whole before declaring the project claimable.
         if _truthy("ORCH_WORKTREE_PREFLIGHT_VERIFY", True):
             partial = verify_install(roots)
+            repair = None
+            if partial:
+                # REPAIR BEFORE BLOCKING (2026-08-12). Blocking straight from here was a
+                # deadlock, not a safeguard: npm treats a truncated tree as satisfied, so
+                # the next pass re-installs, re-verifies and re-blocks, forever. Nothing
+                # about the condition being checked ever changes, so the project never
+                # comes back on its own. Try ONE bounded repair — remove the truncated
+                # packages so npm will actually re-fetch them — and block only if the tree
+                # is still broken afterwards.
+                for root in roots or []:
+                    broken = partial_install(root, limit=REPAIR_MAX_PACKAGES)
+                    if broken:
+                        repair = repair_partial_install(root, broken, timeout=timeout)
+                partial = verify_install(roots)
             if partial:
                 _write_stamp(project, {"date": _today(), "status": STATUS_BLOCKED,
                                        "reason": partial, "checked_at": time.time()})
                 _block_project(project, partial)
-                return _result(project, STATUS_BLOCKED, partial, install=install)
+                return _result(project, STATUS_BLOCKED, partial, install=install,
+                               repair=repair)
 
         _write_stamp(project, {"date": _today(), "status": STATUS_GREEN,
                                "reason": None, "checked_at": time.time()})
