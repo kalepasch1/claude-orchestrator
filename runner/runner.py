@@ -1116,6 +1116,22 @@ def run_task(t):
                 except Exception:
                     pass
             coder = "claude" if t.get("_force_claude") else agentic_coders.pick(t, slot_index=attempt - 1)
+            # FLEET IMMUNE SYSTEM §3, diagnosis (7): weak-coder routes produced "0/12 merged"
+            # cycles on legal-class tasks. The cost optimiser above picks on price; this is the
+            # floor underneath it — force the strongest coder after 2 failed attempts, and never
+            # let a legal-class task (need >= 8) have its DIFF written by a weak local model.
+            # Triage and QA stay cheap; only the coder stage is gated. Only ever moves UP.
+            try:
+                import route_escalation
+                _esc = route_escalation.decide_route(t, route=coder, attempts=attempt - 1)
+                if _esc.get("escalated"):
+                    _log.info("route-escalation[%s]: %s -> %s (%s)", slug, coder,
+                              _esc["route"], _esc["reason"])
+                    set_state(t["id"], note=f"route-escalation: {_esc['detail']}"[:400])
+                    coder = _esc["route"]
+            except Exception as e:
+                # Fail-soft: a routing guard must never stop a task from running at all.
+                _log.debug("hook route_escalation failed: %s", e)
             try:
                 _coder_route = agentic_coders.route({**t, "force_coder": coder})
                 visible_model = model if coder == "claude" else f"{coder}:{_coder_route.get('model') or model}"
