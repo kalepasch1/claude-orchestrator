@@ -195,7 +195,27 @@ def main(argv=None):
     on the verdict without parsing stdout.
     """
     argv = sys.argv[1:] if argv is None else argv
-    result = evaluate(argv[0] if argv else None)
+    try:
+        result = evaluate(argv[0] if argv else None)
+    except Exception as exc:
+        # THE GAUGE MUST BE CLEARED ON *EVERY* NON-SUCCESS, INCLUDING A CRASH.
+        #
+        # Only the two verdict branches below used to touch the gauge, so an exception
+        # out of evaluate() — a malformed metrics payload, a DNS failure, a bug in a
+        # threshold parse — propagated out of main() and left `canary_last_success`
+        # holding the LAST SUCCESSFUL timestamp. Every alert of the shape
+        # `time() - canary_last_success > threshold` therefore stayed green while the
+        # canary was crashing on every run: the exact stale-gauge failure record_failure's
+        # own docstring was written about, reachable by a second route nobody closed.
+        #
+        # A crash is a failure, so it is recorded as one and reported in the same
+        # rollback-shaped JSON a caller already parses.
+        record_failure()
+        result = {"verdict": "rollback",
+                  "reason": f"canary raised {type(exc).__name__}: {exc}"}
+        print(json.dumps(result))
+        return 1
+
     if result.get("verdict") == "promote":
         record_success()
     else:
