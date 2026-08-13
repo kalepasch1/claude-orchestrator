@@ -368,3 +368,25 @@ The recurrence is itself the signal. A source that keeps arriving in new audits 
 source nothing has resolved, and the resolution here is not a merge — it is either
 committing that ref or accepting that the drift is gone. Recorded, not silently
 re-recovered.
+
+---
+
+# Fingerprint `ab0a05980686` — 419 with no remote copy
+
+Evidence: the `broken_codex_git_worktree` at
+`Codex/2026-08-07/cons/work/orchestrator-session-fabric`, `local_only_branch_tips`
+and the live `orchestrator_rescue_refs` namespace.
+
+**1358 items, zero UNKNOWN. 419 carry `remotePreserved: false`** — a new high for
+this repository, and the number worth carrying out of this ledger. For those items
+the only copy is this disk.
+
+None was merged: the brief caps recovery at a minimum coherent diff, so each stays
+queued for a focused task. What this run changes is that they are now enumerated,
+classified and durable in git rather than a count in a log line.
+
+The single `CONFLICTED_NEEDS_FOCUSED_TASK` remains the `_failed` dropbox patch for
+the `smarter` repository — still carried by no remote branch, still awaiting the
+focused task it needs rather than a blind replay.
+
+Nothing was popped, dropped, reset, cleaned or moved.
