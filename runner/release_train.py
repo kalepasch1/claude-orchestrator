@@ -24,6 +24,7 @@ RELEASE_FLOW_FILE = os.path.join(RUNTIME_DIR, "release_flow.json")
 sys.path.insert(0, RUNNER_DIR)
 import db
 import commit_overlay
+import delivery_lease
 import integration_runtime
 import paused_host_guard
 import release_manifest
@@ -426,6 +427,15 @@ def _insert_release(row):
     Retries without `host` if the column is not present yet: code and migrations
     deploy independently, and a lagging DB must not take releases down entirely.
     """
+    # FENCE CHECK (2026-08-13): a releases row is the fleet's record of what shipped —
+    # deploy_verify, back-pressure and the RED/GREEN project state all read it. A host
+    # that has lost the releaser lease must not write one, or a superseded pass
+    # overwrites the incumbent's account of production. Anonymous (unfenced) release
+    # writes are permitted only while delivery_lease.available() is False; see the
+    # compatibility window note there.
+    delivery_lease.require(
+        delivery_lease.held(str(row.get("project") or ""), delivery_lease.ROLE_RELEASER),
+        f"record releases row for {row.get('project')}")
     try:
         return db.insert("releases", dict(row, host=paused_host_guard.HOST))
     except Exception:
@@ -944,6 +954,13 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
             _insert_failed_release(project, "proof", ahead, release_base_sha, to_sha,
                                    proof_note[-500:])
             return False, to_sha, proof_note
+        # FENCE CHECK (2026-08-13): the last possible moment before production moves.
+        # Everything above — integrate, re-gate, test, build proof — takes minutes, and
+        # the lease can lapse or be taken over inside that window. Verifying here rather
+        # than at the top of the pass is the entire point: a timed-out predecessor must
+        # be unable to promote. LeaseLost propagates to _run_for_with_repo, which yields.
+        delivery_lease.require(delivery_lease.held(project, delivery_lease.ROLE_RELEASER),
+                               f"promote {STAGING} -> {prod} for {project}")
         pr = _git(repo, "push", "origin", f"{STAGING}:{prod}", timeout=300)
         if pr.returncode == 0:
             # Keep local prod fresh when possible, but do not fail a good remote release
@@ -1203,6 +1220,14 @@ def _run_for_unlocked(project, repo_override=None):
     except Exception:
         bcmd = ""
     manifest = None
+    # FENCE CHECK (2026-08-13): the manifest is the binding record of which tasks a
+    # release claims to carry. Two hosts writing manifests for the same repo produce two
+    # contradictory accounts of one production tip, so it is written only under a
+    # verified lease. Deliberately OUTSIDE the try below: that block swallows every
+    # exception into `manifest = None`, which would turn a lost lease into a silently
+    # manifest-less release rather than a stopped one.
+    delivery_lease.require(delivery_lease.held(project, delivery_lease.ROLE_RELEASER),
+                           f"create release manifest for {project}")
     try:
         import release_manifest
         manifest_tasks = release_manifest.discover_tasks(
@@ -1487,16 +1512,36 @@ def run_for(project):
 
 
 def _run_for_with_repo(project, repo):
+    """Run one project's release pass under the repo lock AND the releaser lease.
+
+    repo_lock is an flock under this machine's .runtime/ — it serialises processes on
+    one Mac and is blind to the others. The delivery lease is the cross-machine half:
+    it is held for the whole pass and its fence is re-verified immediately before each
+    shared-ref write, so a pass that loses ownership mid-flight (expiry, takeover,
+    restart) cannot complete its push. See delivery_lease for why the single
+    integration_owner.decide() check at the top of run() was not sufficient.
+    """
     import repo_lock
     timeout = float(os.environ.get("ORCH_RELEASE_LOCK_TIMEOUT_S", "1") or 1)
     with repo_lock.hold(repo, timeout=timeout) as acquired:
         if not acquired:
             return {"project": project, "note": "release busy; existing train owns repo"}
+        lease = delivery_lease.acquire(project, delivery_lease.ROLE_RELEASER)
+        if lease is None and delivery_lease.available():
+            return {"project": project,
+                    "note": "another host holds the releaser lease for this repository"}
         try:
             with integration_runtime.isolated_repo(repo, "release_train") as integration_repo:
                 return _run_for_unlocked(project, repo_override=integration_repo)
+        except delivery_lease.LeaseLost as exc:
+            # Not an error to retry here: another host owns this repository now and is
+            # entitled to the work. Surfacing it as a note keeps the pass out of the
+            # failed-release table, which would otherwise flip the project RED.
+            return {"project": project, "note": f"release yielded: {exc}"}
         except integration_runtime.IntegrationRuntimeError as exc:
             return {"project": project, "note": f"release isolation blocked: {exc}"}
+        finally:
+            delivery_lease.release(lease)
 
 
 def _next_version():

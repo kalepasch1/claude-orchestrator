@@ -38,6 +38,7 @@ except Exception:
     _verify_mod = None
 
 import events
+import delivery_lease
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
 import integration_runtime
 import paused_host_guard
@@ -1020,7 +1021,7 @@ def _ff_base(repo, branch, base):
     return False
 
 
-def _push_base(repo, base):
+def _push_base(repo, base, project=None):
     """Step 5: push only when explicitly enabled. Returns '' or an error tail.
 
     On a non-fast-forward rejection (origin moved while we merged — e.g. the other Mac pushed),
@@ -1037,6 +1038,12 @@ def _push_base(repo, base):
         task_refs._ensure_auth(repo)
     except Exception:
         pass  # best-effort; push will fail with a clear error if auth is missing
+    # FENCE CHECK (2026-08-13): this is the integration branch update that the 54
+    # PUSH-VERIFY-FAILED sha mismatches came from. integration_owner.decide() ran once,
+    # at the top of the pass, potentially many cards and minutes ago; re-verify the
+    # fence against the store here, immediately before origin moves.
+    delivery_lease.require(delivery_lease.held(project or "", delivery_lease.ROLE_INTEGRATOR),
+                           f"push integration branch {base}")
     r = _git(repo, "push", "origin", base, timeout=300)
     if r.returncode == 0:
         return ""
@@ -1727,6 +1734,17 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
 
     base = _integration_base(repo, proj, task_base)
 
+    # CROSS-HOST OWNERSHIP (2026-08-13): take the integrator lease for THIS repository
+    # before touching it. `ensure` is idempotent for this process, so a pass covering
+    # many cards in one repo acquires once and keeps it — releasing per card would drop
+    # ownership between cards and invite a takeover mid-pass. train_run releases the
+    # whole set at the end. Yielding here is not a failure: another host owns this repo
+    # and the card stays undecided for its train to pick up.
+    if delivery_lease.ensure(pname, delivery_lease.ROLE_INTEGRATOR) is None \
+            and delivery_lease.available():
+        _log(pname, slug, "SKIP", "another host holds the integrator lease")
+        return "not-integrator"
+
     if not _materialize_branch(repo, branch):
         state = task.get("state")
         if state in ("QUEUED", "RUNNING", "RETRY"):
@@ -1924,7 +1942,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         _log(pname, slug, "CONFLICT", "ff refused, cap exhausted")
         return "conflict"
 
-    push_err = _push_base(repo, base)                             # (5)
+    push_err = _push_base(repo, base, project=pname)              # (5)
     if push_err:
         # PUSH-VERIFICATION GATE: a merge is not MERGED until origin actually has it. A failed
         # push previously only annotated the note while the task still went MERGED — DB said
@@ -2241,7 +2259,13 @@ def train_run():
     with integration_runtime.global_lease("merge_train", timeout=timeout) as acquired:
         if not acquired:
             return {"skipped": "another integration or release train owns the global lease"}
-        return _train_run_unleased()
+        try:
+            return _train_run_unleased()
+        finally:
+            # Hand every repository back at the end of the pass so the next host takes
+            # over immediately instead of waiting out each TTL. Failing to release is
+            # not an error — the TTL still reclaims it.
+            delivery_lease.release_all(delivery_lease.ROLE_INTEGRATOR)
 
 
 # scheduler-compat alias: the train IS the integration path now
