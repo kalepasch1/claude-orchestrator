@@ -117,6 +117,54 @@ def lookup(template_id):
     return {}
 
 
+def find_template(slug):
+    """Resolve a reusable patch for a task SLUG. Fail-soft: {} on any miss/error.
+
+    `lookup()` resolves by template id; this resolves by slug, which is what the
+    callers that hold a dependency name actually have. `dependency_stub`
+    already called this function behind `hasattr(patch_templates, ...)` — the
+    attribute never existed, so its patch-template recovery path had been dead
+    code since it was written. It applies `template["diff"]`, so an APPLICABLE
+    hit must carry one:
+
+      * `merged_diffs` (newest matching row wins) yields a real diff and IS
+        applicable — the key is present.
+      * the local JSONL patch-template store yields only a scaffold body, so no
+        `diff` key is set and the caller's `template.get("diff")` guard makes it
+        a clean no-op rather than a bogus `git apply`.
+    """
+    name = str(slug or "").strip()
+    if not name:
+        return {}
+    try:
+        rows = db.select("merged_diffs", {"select": "slug,project,kind,diff,files,created_at",
+                                          "slug": f"eq.{name}",
+                                          "order": "created_at.desc", "limit": "1"}) or []
+        for row in rows:
+            diff = str((row or {}).get("diff") or "")
+            if diff.strip():
+                return {"slug": name, "diff": diff, "project": (row or {}).get("project"),
+                        "files": (row or {}).get("files") or [], "source": "merged_diffs"}
+    except Exception as exc:  # fail-soft: a DB outage must not break dependency recovery
+        log.debug("patch_templates: merged_diffs lookup failed for %s (%s)", name, exc)
+    found = {}
+    try:
+        with open(_fallback_path()) as f:
+            for line in f:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and row.get("task") == name:
+                    found = row
+    except OSError:
+        pass
+    if found:
+        return {"slug": name, "template_id": found.get("template_id"),
+                "body": found.get("body") or "", "source": "jsonl"}
+    return {}
+
+
 def _store(task, template_id, body):
     row = {"project": task.get("project_id") or "unknown",
            "title": f"patch template {task.get('slug') or template_id}",
