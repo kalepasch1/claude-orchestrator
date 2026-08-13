@@ -1,4 +1,0 @@
-recovery-intent: canary-gemini-25-validate-gemini-25-environment
-template: 6cecb1b5de93
-intent: 07130635 07190257 20251001 53375a0cecde __init__ active adapt advice after agentic analysis apierror artifacts author available b4fa25c7 batch beethoven before behavior below branch broad bugfix build build_fix canary category cause change changes changing cheap checks claim class claud claude coder commit compiled completion concrete config context continue contract coordination correctly could credits cross currently custody debate_compress deepseek delete denied dependencies deployfix development diffs directive directly drafting either ensure environment equivalent error excerpt exhausted existing exists fable failure files final finish first
-base: main

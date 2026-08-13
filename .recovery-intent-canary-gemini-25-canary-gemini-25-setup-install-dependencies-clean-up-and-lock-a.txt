@@ -1,4 +1,0 @@
-recovery-intent: canary-gemini-25-canary-gemini-25-setup-install-dependencies-clean-up-and-lock-a
-template: f23283f5ef6c
-intent: 07130635 07190257 20251001 acceptance active adapt added advice after agent agentic alongside analysis artifacts author batch beethoven before behavior below branch broad bugfix build build_fix canary canonical category cause change changes changing check checks claim class claud claude clean closure cloud coder commit committed completion concrete config configuration conflict consistent context continue contract coordination could cowork cross custody debate_compress deepseek delete dependencies deployfix diffs directive drafting environment equivalent exact excerpt excluding executor existing exists extras fable failure files final finish
-base: main

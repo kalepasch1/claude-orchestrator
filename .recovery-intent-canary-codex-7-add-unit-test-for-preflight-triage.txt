@@ -1,4 +1,0 @@
-recovery-intent: canary-codex-7-add-unit-test-for-preflight-triage
-template: 3949855a2742
-intent: 0000000 07041728 07130635 100644 20251001 53375a0cecde 68c04d4 7ce8bfb acceptance active actual adapt advice after agent agentic analysis apierror appropriate artifacts assert author available b4fa25c7 backlog barks batch beethoven before behavior below branch broad bugfix build build_fix canary category cause change changes changing cheap checks claim class claud claude coder codex commit completion concrete config conflict consolidate consolidation context continue contract coordination could covers cowork create created credits cross custody deepseek default delete denied dependencies diffs directive drafting either ensure equivalent
-base: main

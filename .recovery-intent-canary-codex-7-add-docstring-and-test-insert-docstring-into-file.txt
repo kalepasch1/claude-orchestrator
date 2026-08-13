@@ -1,4 +1,0 @@
-recovery-intent: canary-codex-7-add-docstring-and-test-insert-docstring-into-file
-template: 72a844e8b365
-intent: 07130635 07190257 20251001 53375a0cecde active adapt advice after agent agentic analysis apierror artifacts author available b4fa25c7 batch beethoven before beginning behavior below branch broad bugfix build build_fix canary category cause change changes changing cheap checks claim class claud claude coder codex commit completion concrete config conflict context continue contract coordination could cowork credits cross custody debate_compress deepseek delete denied dependencies deployfix diffs directive docstring drafting either equivalent error exactly excerpt existing exists fable failure files final finish first flash force
-base: main
