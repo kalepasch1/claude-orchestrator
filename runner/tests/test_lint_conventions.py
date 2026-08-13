@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from runner.tools.lint_conventions import ConventionChecker, lint_file
+from runner.tools.lint_conventions import (
+    RULE_HARDCODED_SECRET,
+    ConventionChecker,
+    lint_file,
+)
 
 
 class TestORCHPrefixRule:
@@ -418,8 +422,11 @@ api_key: str = "sk-1234567890abcdef"
         checker.visit(tree)
         legacy = [v for v in checker.violations if v[1] == "no-hardcoded-secrets"]
         assert len(legacy) == 1
-        v2 = [v for v in checker._v2_violations if v.rule == "NO_HARDCODED_SECRETS"]
+        # Rule id follows CONVENTION_LINT.md (HARDCODED_SECRET); assert against the
+        # exported constant so the two can never drift apart again.
+        v2 = [v for v in checker._v2_violations if v.rule == RULE_HARDCODED_SECRET]
         assert len(v2) == 1
+        assert RULE_HARDCODED_SECRET == "HARDCODED_SECRET"
 
     def test_annotated_non_secret_passes(self):
         """Annotated assignment without a secret-looking name/value passes."""
