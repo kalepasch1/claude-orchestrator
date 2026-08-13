@@ -226,10 +226,54 @@ def evaluate(rules=None, metrics=None):
                     "body": json.dumps(event, indent=2, default=str)[:3000],
                     "created_at": now,
                 })
-            except Exception:
-                pass
+            except Exception as e:
+                # Was `pass`. An alert that cannot be persisted is exactly when someone
+                # needs to hear about it; swallowing the error silently loses both the
+                # alert and the fact that alerting is broken.
+                print(f"[alert_rules_engine] could not persist alert {event['rule_id']}: "
+                      f"{type(e).__name__}: {e}", file=sys.stderr)
+            dispatch_critical(event)
 
     return events
+
+
+def dispatch_critical(event, notifier=None):
+    """Send CRITICAL alerts to the real notification channel. Returns True if sent.
+
+    An inbox row is a record, not a notification — nothing pages on it, and the row is
+    only seen by someone already looking at the dashboard. That is the same failure the
+    fleet keeps hitting: "production stopped and NOTHING reported a failure". A rule
+    marked `critical` has to leave the database.
+
+    Deliberately CRITICAL only. Routing warnings here too is how a channel becomes noise
+    and then gets muted, which is worse than not having it — `queue_stall` and
+    `merge_throughput_collapsed` are the ones worth waking someone for.
+
+    Fail-soft, and loudly: a notifier that raises must not break the evaluation loop that
+    produced the alert, but it must not disappear either.
+    """
+    try:
+        # Normalize FIRST. A non-dict event reaching the error handler made the handler
+        # itself raise (`'str' object has no attribute 'get'`), turning a fail-soft path
+        # into the exception it existed to prevent.
+        if not isinstance(event, dict):
+            return False
+        if event.get("event") != "firing":
+            return False
+        if str(event.get("severity", "")).lower() != "critical":
+            return False
+        if notifier is None:
+            import notify as _notify
+            notifier = _notify.send
+        notifier(
+            f"[CRITICAL] {event.get('name')}: {event.get('metric')}={event.get('value')} "
+            f"(threshold {event.get('threshold')})")
+        return True
+    except Exception as e:
+        rule_id = event.get("rule_id") if isinstance(event, dict) else "<malformed>"
+        print(f"[alert_rules_engine] critical dispatch failed for "
+              f"{rule_id}: {type(e).__name__}: {e}", file=sys.stderr)
+        return False
 
 
 def firing_alerts():
