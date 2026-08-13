@@ -39,6 +39,11 @@ class LookupContractTest(unittest.TestCase):
     """lookup() exists and honors the fail-soft contract."""
 
     def test_lookup_is_exposed(self):
+        # Patch template 95fc17a356b7 (commit 76749e0c) added
+        # patch_templates.lookup(): before it, templates could be STORED but
+        # never resolved back from an id, so recovery/transplant flows had no
+        # retrieval path. This is the failing-test-first assertion for that
+        # patch — it raised AttributeError before the fix.
         self.assertTrue(callable(getattr(pt, "lookup", None)),
                         "patch_templates.lookup(template_id) must exist")
 
