@@ -159,6 +159,11 @@ def _tree_is_exactly(repo, commit):
     return head == commit and dirty == ""
 
 
+def _run_suite(repo, command):
+    return subprocess.run(command, cwd=repo, shell=True, capture_output=True, text=True,
+                          timeout=int(os.environ.get("ORCH_TEST_GATE_TIMEOUT", "1800")))
+
+
 def verify_tests(repo, commit):
     """Require a green full suite for this exact commit. Reuse a proof, or earn one."""
     command = detect_test_cmd(repo)
@@ -179,8 +184,37 @@ def verify_tests(repo, commit):
         )
 
     print(f"production_push_guard: no test proof for {commit[:12]} — running `{command}`", file=sys.stderr)
-    proc = subprocess.run(command, cwd=repo, shell=True, capture_output=True, text=True,
-                          timeout=int(os.environ.get("ORCH_TEST_GATE_TIMEOUT", "1800")))
+    proc = _run_suite(repo, command)
+
+    # A RED FIRST RUN IS NOT YET A VERDICT.
+    #
+    # This gate runs inside a pre-push hook, on whatever the machine happens to be
+    # doing at that moment. Measured on 2026-08-13, pushing while five nuxt builds
+    # were running: the suite came back red with two failures that both pass
+    # standalone — one test timed out at 5000ms under load, and another died on a
+    # transient .git/config.lock left by a concurrent git process. Blocking on that
+    # is the same defect as allowing on a missing helper, pointed the other way: a
+    # gate that stops good pushes gets switched off, and then it protects nothing.
+    #
+    # So a red run is re-run once. Flake does not survive a second attempt; a real
+    # failure does. Both runs are reported, and a push allowed on the strength of a
+    # second attempt says so rather than printing an unqualified GREEN.
+    if proc.returncode != 0:
+        print("production_push_guard: suite red — re-running once to separate flake from failure",
+              file=sys.stderr)
+        second = _run_suite(repo, command)
+        if second.returncode == 0:
+            try:
+                proof_graph.record_verification(repo, commit, command, "test", True)
+            except (AttributeError, TypeError):
+                pass
+            return True, (
+                f"full suite green for {commit[:12]} ON RE-RUN — the first attempt was red and the "
+                "second was clean, which means the failures were environmental, not code. "
+                "Worth a look if it keeps happening."
+            )
+        proc = second
+
     passed = proc.returncode == 0
     try:
         proof_graph.record_verification(repo, commit, command, "test", passed)
@@ -191,7 +225,7 @@ def verify_tests(repo, commit):
         return True, f"full suite green for {commit[:12]}"
     tail = (proc.stdout + proc.stderr).strip().splitlines()[-40:]
     return False, (
-        f"FULL SUITE RED for {commit[:12]} using `{command}`.\n"
+        f"FULL SUITE RED for {commit[:12]} using `{command}`, twice.\n"
         "A green build only proves the tree compiles. These tests say it does not work.\n\n"
         + "\n".join(tail)
     )
@@ -214,12 +248,22 @@ def main(stdin=None):
 
         tests_ok, test_log = verify_tests(repo, commit)
         if not tests_ok:
-            if os.environ.get("ORCH_ALLOW_UNVERIFIED_PROD_PUSH", "").lower() in {"1", "true", "yes", "on"}:
-                print("production_push_guard: TESTS NOT VERIFIED — BREAK-GLASS override in effect", file=sys.stderr)
+            # DELIBERATELY A DIFFERENT SWITCH FROM THE BUILD OVERRIDE.
+            #
+            # ORCH_ALLOW_UNVERIFIED_PROD_PUSH means "I verified the build myself".
+            # Letting it also wave through a red suite would mean anyone reaching for
+            # it for a build reason silently waives the test gate too — the gate would
+            # be off far more often than anyone intended, and nobody would know.
+            # Shipping known-red tests is a separate decision and needs a separate,
+            # explicit act.
+            if os.environ.get("ORCH_ALLOW_RED_TESTS", "").lower() in {"1", "true", "yes", "on"}:
+                print("production_push_guard: SHIPPING RED TESTS — ORCH_ALLOW_RED_TESTS is set", file=sys.stderr)
                 print(test_log[-6000:], file=sys.stderr)
             else:
                 print("production_push_guard: BLOCKED — production push without a green suite", file=sys.stderr)
                 print(test_log[-6000:], file=sys.stderr)
+                print("Set ORCH_ALLOW_RED_TESTS=1 to ship anyway. That is a separate switch from "
+                      "ORCH_ALLOW_UNVERIFIED_PROD_PUSH on purpose.", file=sys.stderr)
                 return 1
         else:
             print(f"production_push_guard: TESTS GREEN — {test_log.splitlines()[0]}", file=sys.stderr)

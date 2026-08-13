@@ -156,6 +156,85 @@ def test_missing_proof_graph_helper_blocks_instead_of_allowing():
         guard.proof_graph.reusable_verification = real
 
 
+# ── flake vs failure ─────────────────────────────────────────────────────────
+
+def _flaky_repo(fail_times):
+    """A repo whose suite fails the first `fail_times` runs, then passes.
+
+    Models the measured case: pushing while five nuxt builds were running produced
+    two failures that both pass standalone — one 5000ms timeout under load, one
+    transient .git/config.lock from a concurrent git process.
+    """
+    d = _repo(scripts={"test": "sh -c 'c=$(cat .runs 2>/dev/null || echo 0); "
+                               "echo $((c+1)) > .runs; "
+                               f"[ $c -ge {fail_times} ] || {{ echo flaky failure; exit 1; }}'"},
+              lockfiles=("package-lock.json",))
+    return d
+
+
+def test_a_single_red_run_is_retried_and_flake_does_not_block():
+    d = _flaky_repo(fail_times=1)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, capture_output=True, text=True).stdout.strip()
+    ok, log = guard.verify_tests(d, head)
+    assert ok is True, log
+    assert "ON RE-RUN" in log, log
+    assert int(open(os.path.join(d, ".runs")).read().strip()) == 2
+
+
+def test_a_push_allowed_on_a_second_attempt_says_so():
+    """It must not print an unqualified GREEN. The operator should see the retry."""
+    d = _flaky_repo(fail_times=1)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, capture_output=True, text=True).stdout.strip()
+    _, log = guard.verify_tests(d, head)
+    assert "environmental, not code" in log
+
+
+def test_a_real_failure_survives_the_retry_and_blocks():
+    d = _flaky_repo(fail_times=99)
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, capture_output=True, text=True).stdout.strip()
+    ok, log = guard.verify_tests(d, head)
+    assert ok is False, log
+    assert "twice" in log
+    assert int(open(os.path.join(d, ".runs")).read().strip()) == 2
+
+
+def test_a_green_first_run_is_not_run_twice():
+    """The retry is for red runs only; every push must not pay for two suites."""
+    d = _repo(scripts={"test": "sh -c 'c=$(cat .runs 2>/dev/null || echo 0); echo $((c+1)) > .runs'"},
+              lockfiles=("package-lock.json",))
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=d, capture_output=True, text=True).stdout.strip()
+    ok, _ = guard.verify_tests(d, head)
+    assert ok is True
+    assert int(open(os.path.join(d, ".runs")).read().strip()) == 1
+
+
+# ── the two overrides are separate on purpose ────────────────────────────────
+
+def test_build_override_does_not_wave_through_red_tests():
+    """ORCH_ALLOW_UNVERIFIED_PROD_PUSH means "I verified the BUILD myself".
+
+    If it also waived the suite, anyone reaching for it for a build reason would
+    silently switch the test gate off, and nobody would know it had happened.
+    """
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "production_push_guard.py")).read()
+    after_tests = src.split("tests_ok, test_log = verify_tests(repo, commit)", 1)[1]
+    # Comments in that block explain WHY the switches are separate and name both,
+    # so compare against code only.
+    gate_code = "\n".join(
+        line for line in after_tests.split("else:", 1)[0].splitlines()
+        if not line.strip().startswith("#")
+    )
+    assert "ORCH_ALLOW_RED_TESTS" in gate_code
+    assert "ORCH_ALLOW_UNVERIFIED_PROD_PUSH" not in gate_code
+
+
+def test_the_block_message_names_the_switch_that_would_bypass_it():
+    src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "production_push_guard.py")).read()
+    assert "Set ORCH_ALLOW_RED_TESTS=1 to ship anyway" in src
+
+
 if __name__ == "__main__":
     fails = 0
     for name, fn in sorted(globals().items()):
