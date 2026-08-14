@@ -22,10 +22,21 @@ import urllib.error
 RUNNER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "runner")
 sys.path.insert(0, RUNNER)
 
+#: Only effective when this file is run directly (`python3 tests/test_core_retry_rpcs.py`).
+#: Under pytest the repo-root conftest imports the `runner` package first, whose __init__
+#: pulls in git_diagnostics -> db, so db has ALREADY captured URL/KEY from a worktree with
+#: no runner/.env by the time this line executes. RetryBehaviourTests therefore sets the
+#: module constants directly rather than trusting import order — see its setUp.
 os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
 os.environ.setdefault("SUPABASE_SERVICE_KEY", "test-key-not-a-real-credential")
 
 import db  # noqa: E402
+
+#: Not a credential. `_req` raises RuntimeError("set SUPABASE_URL and SUPABASE_SERVICE_KEY")
+#: before it ever reaches the retry loop unless these are non-empty, so every retry test
+#: below silently became a test of the missing-config guard instead.
+FAKE_URL = "https://example.supabase.co"
+FAKE_KEY = "test-key-not-a-real-credential"
 
 
 class AllowlistTests(unittest.TestCase):
@@ -91,11 +102,16 @@ class RetryBehaviourTests(unittest.TestCase):
         self.slept = []
         self._real_urlopen = db.urllib.request.urlopen
         self._real_sleep = db.time.sleep
+        # db reads these MODULE constants, not os.environ, and it captured them at import
+        # time — which the repo-root conftest triggers before this file's setdefault runs.
+        self._real_url, self._real_key = db.URL, db.KEY
+        db.URL, db.KEY = FAKE_URL, FAKE_KEY
         db.time.sleep = lambda s: self.slept.append(s)
 
     def tearDown(self):
         db.urllib.request.urlopen = self._real_urlopen
         db.time.sleep = self._real_sleep
+        db.URL, db.KEY = self._real_url, self._real_key
 
     def _fail_n_then_succeed(self, failures, code=503):
         state = {"n": 0}
