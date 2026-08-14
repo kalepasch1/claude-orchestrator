@@ -9,6 +9,7 @@ agentic coder sees the task.
 import datetime
 import json
 import os
+import re
 import sys
 import subprocess
 import types
@@ -72,6 +73,56 @@ def _branch_exists_anywhere(repo, branch):
         return True
     _fetch_agent_refs(repo)
     return _branch_exists(repo, f"refs/remotes/origin/{branch}")
+
+
+# TRUNCATION FIX (2026-08-14): branch_materializer.derive_branch_name() clamps the slug to
+# 80 chars before creating agent/<slug>, but this module looked the branch up as the RAW,
+# untruncated `agent/{slug}` from the tasks row. Every task whose slug exceeds 80 characters
+# was therefore structurally unfindable: it was reported as missing_branch on EVERY sweep and
+# filed a fresh recover-missing-branch-* row each time, whose own slug is 22 chars longer and
+# so is itself unfindable -- a self-feeding loop. At the time of this fix the tasks table held
+# 3,944 recover-missing-branch-* rows (17.5% of all tasks), 1,445 of them over the 80-char
+# limit. Resolve against the SAME derivation the materializer uses, and keep the raw name as a
+# candidate so branches created before the clamp existed still resolve.
+_BRANCH_SLUG_MAX = 80
+
+
+def _derive_branch_slug(slug):
+    """Mirror branch_materializer.derive_branch_name()'s slug normalisation + 80-char clamp.
+
+    Kept as a local copy rather than an import: integration_sweeper runs in contexts where
+    branch_materializer is not importable, and a hard dependency here would turn a missing
+    module into a fleet-wide "everything is a missing branch" false positive -- the exact
+    failure mode the RESTORED block above documents.
+    """
+    s = re.sub(r"[^a-z0-9\-]", "-", (slug or "unknown").lower().strip())
+    s = re.sub(r"-+", "-", s).strip("-")
+    if len(s) > _BRANCH_SLUG_MAX:
+        s = s[:_BRANCH_SLUG_MAX].rstrip("-")
+    return s
+
+
+def _candidate_branches(slug):
+    """All branch names a task's work may legitimately live under, most-canonical first."""
+    raw = (slug or "").strip()
+    names = []
+    for candidate in (f"agent/{_derive_branch_slug(raw)}", f"agent/{raw}"):
+        if candidate not in names and candidate != "agent/":
+            names.append(candidate)
+    return names
+
+
+def _resolve_agent_branch(repo, slug):
+    """Return the candidate branch name that actually exists for this slug, else None."""
+    for b in _candidate_branches(slug):
+        if _branch_exists_anywhere(repo, b):
+            return b
+    return None
+
+
+def _agent_branch_exists(repo, slug):
+    """True if ANY candidate branch name for this slug exists locally or on origin."""
+    return _resolve_agent_branch(repo, slug) is not None
 
 
 def _integration_evidence(repo, slug):
@@ -448,7 +499,7 @@ def _queue_recovery(task, proj, recovery_index=None):
     # recovery_index is the prebuilt active-recovery index from _active_recovery_index(); sweep()
     # passes it so the duplicate check is one in-memory lookup instead of 2 DB reads per task.
     # None keeps the old per-task DB path (used by any caller that has no index).
-    if not _branch_exists_anywhere(proj.get("repo_path", ""), f"agent/{task.get('slug')}"):
+    if not _agent_branch_exists(proj.get("repo_path", ""), task.get("slug")):
         return _handle_missing_branch(task, proj, recovery_index=recovery_index)
     return False
 
@@ -480,10 +531,9 @@ def pressure(limit=1000):
         proj = projects.get(t.get("project_id")) or {}
         name = proj.get("name") or str(t.get("project_id"))
         repo = proj.get("repo_path", "")
-        branch = f"agent/{t.get('slug')}"
         bucket = out.setdefault(name, {"passed_waiting": 0, "missing_branch": 0,
                                        "oldest_wait_age_s": 0})
-        if _branch_exists_anywhere(repo, branch):
+        if _agent_branch_exists(repo, t.get("slug")):
             bucket["passed_waiting"] += 1
             bucket["oldest_wait_age_s"] = max(bucket["oldest_wait_age_s"], _age_seconds(t.get("updated_at")))
         else:
@@ -618,7 +668,11 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
         # recover-missing-branch rows for work that was already in production. Reachability
         # settles it without any commit-message heuristic: if the tip is an ancestor of an
         # upstream ref, the whole branch is upstream.
-        _merged = _merged_branch_evidence(repo, f"agent/{slug}")
+        # Resolve once against every legitimate branch-name form for this slug (see the
+        # TRUNCATION FIX block above) so an over-80-char slug is not mistaken for lost work.
+        _agent_branch = _resolve_agent_branch(repo, slug) or f"agent/{slug}"
+
+        _merged = _merged_branch_evidence(repo, _agent_branch)
         if _merged:
             _sha, _ref = _merged
             if t.get("state") != "MERGED":
@@ -627,13 +681,13 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
                     t,
                     {"state": "MERGED",
                      "artifact_commit": _sha,
-                     "note": f"integration_sweeper: agent/{slug} is an ancestor of {_ref} "
+                     "note": f"integration_sweeper: {_agent_branch} is an ancestor of {_ref} "
                              f"at {_sha[:12]}; already integrated, closed without rebuild"},
                     repo=repo)
             skipped += 1
             continue
 
-        if not _branch_exists_anywhere(repo, f"agent/{slug}"):
+        if not _agent_branch_exists(repo, slug):
             # Branch gone. If the work already landed upstream, CLOSE it (no rebuild) — this is what
             # kills the phantom missing_branch recount + endless recovery churn on merged work.
             evidence = _integration_evidence(repo, slug)
@@ -791,13 +845,18 @@ def local_branch_audit(repo, slugs=None, limit=200):
 
     local_out, remote_only_out, missing_out = [], [], []
     for slug in slugs:
-        branch = f"agent/{slug}"
-        if branch in local_set:
+        # Candidate order is canonical-first, so the reported branch is the materialized
+        # (<=80 char) name when it exists and the raw name only as a legacy fallback.
+        candidates = _candidate_branches(slug)
+        branch = next((b for b in candidates if b in local_set), None)
+        if branch:
             local_out.append({"slug": slug, "branch": branch})
-        elif branch in remote_set:
+            continue
+        branch = next((b for b in candidates if b in remote_set), None)
+        if branch:
             remote_only_out.append({"slug": slug, "branch": branch})
-        else:
-            missing_out.append({"slug": slug, "branch": branch})
+            continue
+        missing_out.append({"slug": slug, "branch": candidates[0] if candidates else f"agent/{slug}"})
 
     running_slugs = set()
     try:
