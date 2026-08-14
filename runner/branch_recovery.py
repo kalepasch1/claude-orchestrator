@@ -50,6 +50,7 @@ _stats = {
     "recover_reflog": 0,
     "recover_unrecoverable": 0,
     "recover_errors": 0,
+    "recover_repo_unreachable": 0,
     "detect_calls": 0,
     "detect_missing_found": 0,
     "batch_reviewed": 0,
@@ -106,6 +107,83 @@ def _fetch_branch(repo, branch, remote="origin"):
     rc, _, err = _git(repo, "fetch", remote,
                       f"refs/heads/{branch}:refs/heads/{branch}")
     return rc == 0, err
+
+
+# ── repository / credential preflight ──────────────────────────────
+#
+# Every remote strategy above reports "no" the same way whether the branch is
+# genuinely absent or the remote could not be read at all: _branch_on_remote()
+# collapses a non-zero ls-remote (repo deleted, PAT expired, PAT missing the
+# repo scope, network down) into False, so recover_branch() skipped straight to
+# reflog and reported "all strategies exhausted". That mislabels an access
+# problem as a lost branch and sends it to the unrecoverable pile, where a human
+# re-derives the diff nobody actually lost. Validate the repository and its
+# credentials explicitly and say which one failed.
+
+# Remediation text is keyed by reason so callers/operators get an action, not
+# just a diagnosis. Kept flat and boring on purpose — this string lands in a
+# task note that a human reads.
+_REPO_REMEDIATION = {
+    "no_path": "configure projects.repo_path for this project",
+    "missing_dir": "restore the clone (git clone <origin>) or point repo_path at an existing checkout",
+    "not_a_repo": "directory exists but is not a git checkout — re-clone it at this path",
+    "no_remote": "add the origin remote: git remote add origin <url>",
+    "unreachable": ("verify the repository still exists and that the credential in use "
+                    "(osxkeychain PAT) still grants access to it; rotate the PAT or ask "
+                    "the repo administrator to restore access"),
+}
+
+
+def validate_repository(project_path, remote="origin"):
+    """Validate that *project_path* is a usable checkout with a readable remote.
+
+    Reuses repo_access_healer.diagnose_repo() — the fleet's existing
+    repo-not-found / PAT-lacks-access probe — so the two paths cannot drift on
+    what "accessible" means. Falls back to local git checks when that module is
+    unavailable, because a preflight must never be the thing that raises.
+
+    Returns dict with keys:
+        ok:          True when the repo exists locally and *remote* is readable
+        reason:      'ok' | 'no_path' | 'missing_dir' | 'not_a_repo' |
+                     'no_remote' | 'unreachable'
+        detail:      human-readable diagnosis
+        remediation: suggested operator action ('' when ok)
+    """
+    def _result(ok, reason, detail):
+        return {"ok": ok, "reason": reason, "detail": detail,
+                "remediation": "" if ok else _REPO_REMEDIATION.get(reason, "")}
+
+    if not project_path:
+        return _result(False, "no_path", "no repo path configured")
+    # Go through _is_git_repo() rather than checking .git directly: it is the
+    # seam the rest of this module (and its tests) already use for "is this a
+    # usable checkout", and a second, subtly different answer here would be a
+    # bug generator.
+    if not _is_git_repo(project_path):
+        if not os.path.isdir(project_path):
+            return _result(False, "missing_dir", f"directory does not exist: {project_path}")
+        return _result(False, "not_a_repo", f"not a git working tree: {project_path}")
+
+    rc, url, _ = _git(project_path, "remote", "get-url", remote)
+    if rc != 0 or not url:
+        return _result(False, "no_remote", f"remote '{remote}' is not configured")
+
+    try:
+        from repo_access_healer import diagnose_repo
+    except Exception:  # module missing or import-time failure — fall back to git
+        diagnose_repo = None
+
+    if diagnose_repo is not None and remote == "origin":
+        healthy, diagnosis = diagnose_repo(project_path)
+        if healthy:
+            return _result(True, "ok", diagnosis)
+        return _result(False, "unreachable", diagnosis)
+
+    rc, _, err = _git(project_path, "ls-remote", "--heads", remote)
+    if rc != 0:
+        return _result(False, "unreachable",
+                       f"ls-remote {remote} failed: {(err or 'unknown error')[:200]}")
+    return _result(True, "ok", "repo accessible")
 
 
 ARCHIVE_NS = "refs/archive"
@@ -229,6 +307,9 @@ def recover_branch(project_path, branch_name):
     Returns dict with keys:
         status:       'recovered' | 'unrecoverable'
         action_taken: str describing what happened
+        repo_reason:  (only when the repository itself is the blocker) one of
+                      validate_repository()'s reason codes
+        remediation:  (only when repo_reason is set) suggested operator action
     """
     if not ENABLED:
         return {"status": "unrecoverable", "action_taken": "feature disabled"}
@@ -237,8 +318,12 @@ def recover_branch(project_path, branch_name):
 
     if not _is_git_repo(project_path):
         _stats["recover_errors"] += 1
+        _stats["recover_repo_unreachable"] += 1
+        check = validate_repository(project_path)
         return {"status": "unrecoverable",
-                "action_taken": f"invalid git path: {project_path}"}
+                "action_taken": f"invalid git path: {project_path} ({check['detail']})",
+                "repo_reason": check["reason"],
+                "remediation": check["remediation"]}
 
     # Already exists locally — nothing to do
     if _branch_exists_local(project_path, branch_name):
@@ -301,6 +386,27 @@ def recover_branch(project_path, branch_name):
         _stats["recover_fetched"] += 1
         return {"status": "recovered",
                 "action_taken": "recovered by concurrent process"}
+
+    # Before declaring the work lost, establish that we could actually *see* the
+    # remote. Every remote strategy above fails closed, so an expired PAT or a
+    # deleted repository is indistinguishable from a missing branch until asked
+    # directly. Say which one it is: "restore the PAT" and "the branch is gone"
+    # are different jobs for whoever picks this up.
+    #
+    # Only 'unreachable' reclassifies. A repo with no origin configured is a
+    # local-only checkout, which is a normal state for the fleet and genuinely
+    # does exhaust the strategies; hijacking that message would trade one wrong
+    # label for another.
+    check = validate_repository(project_path)
+    if check["reason"] == "unreachable":
+        _stats["recover_repo_unreachable"] += 1
+        _log.warning("repository preflight failed for %s (%s): %s",
+                     project_path, check["reason"], check["detail"])
+        return {"status": "unrecoverable",
+                "action_taken": (f"repository inaccessible ({check['reason']}): "
+                                 f"{check['detail']} — {check['remediation']}"),
+                "repo_reason": check["reason"],
+                "remediation": check["remediation"]}
 
     return {"status": "unrecoverable",
             "action_taken": f"all strategies exhausted: {detail}"}
