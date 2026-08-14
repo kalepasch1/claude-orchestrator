@@ -1373,13 +1373,3 @@ if __name__ == "__main__":
             sys.exit(_EX_WEDGED)
         sys.exit(_EX_SKIPPED)
     sys.exit(_EX_OK)
-
-def run_pipelineselftest():
-    """§2: alert on a silent machine, and self-test the pipeline's own signals hourly.
-
-    Mac 2 was down half a day unnoticed and train-stale was a false alarm for days — both
-    because nothing checked that the monitors themselves were telling the truth.
-    """
-    import pipeline_selftest
-    result = pipeline_selftest.run()
-    print(pipeline_selftest.render(result), flush=True)
