@@ -24,6 +24,12 @@ import db
 _write_lock = threading.Lock()
 _stats = {"writes": 0, "errors": 0, "skipped": 0}
 
+# Minimum relative movement (fraction, not percent) before an outcome is called
+# positive/negative instead of neutral. Fleet-tunable via fleet_control.py.
+_OUTCOME_THRESHOLD = float(os.environ.get("ORCH_CAUSAL_OUTCOME_THRESHOLD", "0.05"))
+# Absorbs binary-rounding error so a boundary-exact move classifies deterministically.
+_EPS = 1e-9
+
 CONFIDENCE_FLOOR = float(os.environ.get("ORCH_CAUSAL_CONFIDENCE_FLOOR", "0.8"))
 NONBLOCKING_WRITE = os.environ.get("ORCH_CAUSAL_NONBLOCKING", "true").lower() == "true"
 
@@ -87,8 +93,17 @@ def write(bottleneck_key, remediation_slug, signal_before, signal_after, outcome
 def _compute_delta_pct(before, after):
     """Compute percentage change: ((before - after) / before) * 100.
     For 'lower is better' metrics: positive delta = improvement.
-    Returns None if before is 0 or negative."""
-    if before is None or after is None or before <= 0:
+    Returns None if either side is missing or non-numeric, or if before <= 0."""
+    if before is None or after is None:
+        return None
+    # Coerce before comparing: `before <= 0` raised TypeError on a non-numeric
+    # baseline (e.g. a stringified metric), escaping this fail-soft helper.
+    try:
+        before = float(before)
+        after = float(after)
+    except (TypeError, ValueError):
+        return None
+    if before <= 0:
         return None
     try:
         return round(((before - after) / before) * 100.0, 2)
@@ -102,14 +117,22 @@ def _classify_outcome(signal_before, signal_after):
     if signal_before is None or signal_after is None:
         return "pending"
     try:
-        if signal_after < signal_before * 0.95:
-            return "positive"
-        elif signal_after > signal_before * 1.05:
-            return "negative"
-        else:
-            return "neutral"
+        before = float(signal_before)
+        after = float(signal_after)
     except (TypeError, ValueError):
         return "pending"
+    if before == 0:
+        # No baseline to measure movement against; never guess a label.
+        return "pending"
+    # Compare the relative change against the threshold directly rather than
+    # against `before * 0.95`: an exactly-5% move is a real move and must classify,
+    # but binary rounding of the scaled bound (100 * 0.95) put it on the wrong side.
+    improvement = (before - after) / before
+    if improvement >= _OUTCOME_THRESHOLD - _EPS:
+        return "positive"
+    if improvement <= -_OUTCOME_THRESHOLD + _EPS:
+        return "negative"
+    return "neutral"
 
 
 def _write_sync(row):
