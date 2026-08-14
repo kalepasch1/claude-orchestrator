@@ -45,12 +45,11 @@ ZERO_SHA = "0" * 40
 _FALLBACK_NAME = "kalepasch1"
 _FALLBACK_EMAIL = "kalepasch@gmail.com"
 
-# Authoring as any of these puts the Vercel production deploy in BLOCKED state.
-_FALLBACK_BLOCKED_EMAILS = (
-    "mandyjustinepasch@gmail.com",
-    "kale@heretomorrow.us",
-    "noreply@github.com",
-)
+# The deny-list of already-seen bad authors lives ONLY in git_identity.py (§G: the
+# drift happened because the value lived in a dozen places). No fallback copy here --
+# a second copy is a second thing to drift. Enforcement does not depend on it:
+# classify() is allow-list based and treats every non-canonical email as blocked, so
+# the guard stays fail-closed even when git_identity.py is absent.
 
 #: "enforce" (default) refuses blocked-email pushes; "warn" reports only;
 #: "off" disables the guard entirely. Break-glass without editing the hook.
@@ -96,6 +95,11 @@ def canonical_email() -> str:
 
 
 def blocked_emails() -> tuple:
+    """The named deny-list, or () when git_identity.py is unavailable.
+
+    Reporting-only. An empty result never weakens the guard -- classify() blocks on
+    anything that is not the canonical address.
+    """
     mod = _identity_module()
     try:
         listed = getattr(mod, "BLOCKED_EMAILS", None)
@@ -103,7 +107,7 @@ def blocked_emails() -> tuple:
             return tuple(str(e).lower() for e in listed)
     except Exception:
         pass
-    return _FALLBACK_BLOCKED_EMAILS
+    return ()
 
 
 def _git(repo, *args):
@@ -215,8 +219,8 @@ def check(repo, lines, stream=None):
     if all_blocked and mode == "enforce":
         print(
             "author_identity_guard: REFUSED. Fix with\n"
-            f"    git config user.name \"{canonical_name()}\"\n"
-            f"    git config user.email \"{canonical_email()}\"\n"
+            f"    git config user.name '{canonical_name()}'\n"
+            f"    git config user.email '{canonical_email()}'\n"
             "    git rebase -i --exec 'git commit --amend --no-edit --reset-author' <base>\n"
             "Break-glass: ORCH_AUTHOR_IDENTITY_GUARD=warn",
             file=stream,
