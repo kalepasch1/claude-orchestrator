@@ -179,7 +179,17 @@ def run():
     return out
 
 
+#: Interval this daemon is scheduled on; drives the max-runtime kill (interval x1.5).
+TICK_INTERVAL_S = int(os.environ.get("ORCH_FOULKON_SYNC_INTERVAL_S", "1800"))
+
 if __name__ == "__main__":
+    # SINGLE-INSTANCE LOCK (fleet immune system, P0 bullet 2) — see expert_corps.py for the
+    # incident. `verify` is read-only, so it stays ungated and remains usable while a sync
+    # tick is in flight; that is the one command an operator needs during an incident.
+    if not (len(sys.argv) > 1 and sys.argv[1] == "verify"):
+        import lane_guard
+        _deadline = lane_guard.guard_or_exit("foulkon_sync", interval_s=TICK_INTERVAL_S)
+
     if len(sys.argv) > 1 and sys.argv[1] == "verify":
         print(json.dumps(verify(), indent=2))
     else:
