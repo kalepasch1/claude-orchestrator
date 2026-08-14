@@ -7,6 +7,10 @@ queue_janitor, blocker_quarantine, and runner.
 
 in_session_prompt(): build the repair prompt string for callers that inject it
 directly into a live in-session task dict (runner._agentic_repair_continue).
+
+is_operator_decision(): escalation / human-decision rows are questions for a
+person, not work items. repair_patch() refuses to repair them, so no call site
+can rewrite the text a human is meant to read.
 """
 import os
 
@@ -209,6 +213,47 @@ def _terminal_patch(task, category, rc, blind, signal=""):
 
 NEVER_RAN_NOTE = "requeue: never attempted — nothing to repair"
 
+# --- Operator-decision records ----------------------------------------------------------
+# Slug prefixes the playbooks use when they STOP a loop and ask a human to decide. These rows
+# are not work items: their content is a question, their state is the question's status, and
+# their audience is a person.
+#
+# Measured 2026-08-11: escalate-p1-queue-clearance-no-improvement-20260810-nk73 — the standing
+# Guardrail-8 escalation, QUEUED, awaiting an operator — was pulled into this very pipeline.
+# attempt went to 4 and note became 'agentic-repair:rework', because a QUEUED row with no
+# completed run looks exactly like a failed build to every sweep that selects on state. Repairing
+# it would have rewritten the question with "Continue the same implementation to completion.
+# Preserve any useful prior work, inspect the existing branch/worktree" — destroying the text a
+# human was supposed to read, and burning coder attempts on a row no coder can resolve. The
+# escalation cannot be answered by code; only by a person.
+OPERATOR_DECISION_PREFIXES = ("escalate-", "human-decision-")
+
+AWAITING_OPERATOR_NOTE = "awaiting-operator: escalation record — not repairable by an agent"
+
+
+def is_operator_decision(task):
+    """True when *task* is an escalation / human-decision record rather than work.
+
+    Matched on the slug because that is what every playbook actually sets and it is present in
+    even the narrowest column selection a sweep job uses.
+    """
+    return str((task or {}).get("slug") or "").startswith(OPERATOR_DECISION_PREFIXES)
+
+
+def _awaiting_operator_patch(task):
+    """Leave an escalation record intact and visible; release any stale claim on it.
+
+    Deliberately minimal: no attempt bump, no remediation_count bump, no coder reassignment and
+    above all no prompt rewrite. The only mutation is dropping a dead account so the row is not
+    held by a crashed session, plus a note saying why automation declined to touch it.
+    """
+    return {
+        "state": "QUEUED",
+        "account": None,
+        "updated_at": "now()",
+        "note": AWAITING_OPERATOR_NOTE,
+    }
+
 
 def _never_ran_patch(task):
     """A task with attempt=0 and no evidence has not failed; it has never been tried.
@@ -263,6 +308,12 @@ def repair_patch(task, signal, category="rework", directive=None, prefer_non_cla
 
     Values are never logged; pass the result directly to db.update.
     """
+    # Checked before every ceiling and before any prompt work: an escalation is not a failed
+    # build, and the cheapest way to guarantee no repair path can consume one is to answer here,
+    # at the chokepoint they all share.
+    if is_operator_decision(task):
+        return _awaiting_operator_patch(task)
+
     rc = int(task.get("remediation_count") or 0)
     blind = not has_evidence(task, signal)
     # The GLOBAL ceiling is checked first, even for a task that never ran: a row that has been
