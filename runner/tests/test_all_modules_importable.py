@@ -55,6 +55,12 @@ def test_module_imports_or_fails_only_on_an_optional_dependency(name):
         raise
     except SyntaxError as e:
         pytest.fail(f"{name} has a syntax error and can never load: {e}")
+    except NameError as e:
+        # A module-scope NameError is never a missing env var — it is an undefined symbol
+        # baked into the source. periodic.py crash-looped 134 times on
+        # `NameError: name 'run_editorial' is not defined` in its JOBS table while this
+        # guard skipped it as "needs runtime env", so every scheduled job stayed dead.
+        pytest.fail(f"{name} references an undefined name at import time: {e}")
     except Exception as e:  # optional deps / env-dependent side effects are acceptable
         if type(e).__name__ not in _OPTIONAL_DEPS:
             pytest.skip(f"{name} needs runtime env ({type(e).__name__}) — not an import defect")
