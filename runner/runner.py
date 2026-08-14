@@ -2083,8 +2083,23 @@ def run_task(t):
                     "The agent still produced no committable changes. Make the smallest concrete implementation now; create or edit files and commit the diff.",
                 ):
                     continue
-                set_state(t["id"], state="BLOCKED", note="agent produced no committable changes after retries")
-                regression.record(name, slug, kind, t["prompt"][:500], "no file changes", "agent investigated but changed nothing; re-scope task")
+                # EXHAUSTION PATH — the guard has to run HERE too. It was only reachable
+                # inside `if _nochange_count < 2` above, so a session that kept replying
+                # with a greeting past two nudges fell through to the generic note below
+                # and the GUARD_DEFAULT_RESPONSE diagnosis was thrown away at exactly the
+                # moment it mattered most. That is why the shelf only ever recorded
+                # "no file changes" for the prompt-delivery bug this guard exists to name.
+                _final_guard = guard_check(out, diff_files=[])
+                _blocked_note = "agent produced no committable changes after retries"
+                _regr_signal, _regr_advice = "no file changes", (
+                    "agent investigated but changed nothing; re-scope task")
+                if not _final_guard["ok"]:
+                    _blocked_note = (f"{_blocked_note}; {_final_guard['reason']} "
+                                     f"({_final_guard['detail']})")
+                    _regr_signal = _final_guard["reason"]
+                    _regr_advice = _final_guard["detail"]
+                set_state(t["id"], state="BLOCKED", note=_blocked_note[:400])
+                regression.record(name, slug, kind, t["prompt"][:500], _regr_signal, _regr_advice)
                 record(t, name, slug, kind, visible_model, acct, attempt, True, False, out, t0, cost=run_cost); return
             # SESSION PROOF (positive path): verify the diff is real work echoing the task
             if not _integrating_existing:
