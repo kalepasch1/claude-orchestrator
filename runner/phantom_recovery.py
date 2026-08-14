@@ -89,8 +89,36 @@ def _ensure_card(row, reason):
         return False
 
 
+def _close_row(row, match, patch):
+    """Apply a closing state change, converting a database gate refusal into an outcome.
+
+    Closures to DONE/MERGED pass BEFORE UPDATE triggers that refuse a row asserting delivered
+    work it cannot prove. The relevant one here is enforce_evidence_on_closure, which rejects an
+    artifact_commit already cited by another closed task -- precisely the slice-1-certifies-
+    slice-2..N pattern the phantom-merge audit existed to undo. Sliced dropbox-* rows share one
+    commit by construction, so recovery meets that refusal as a matter of course.
+
+    The refusal is correct and must stand. What was wrong is that it arrived as an unhandled
+    HTTPError from db.update and killed the whole run: one contested row aborted the loop before
+    any later row was examined, 9 times, recovering nothing. Returning an outcome instead lets
+    the run continue and leaves the contested row exactly as it was found.
+
+    Deliberately NOT done here: writing 'NO-ARTIFACT-JUSTIFIED:' into the note to satisfy the
+    gate. That escape hatch exists for a human who has confirmed a shared commit is legitimate.
+    Spending it automatically would let this job re-manufacture the phantom merges it is meant
+    to reverse, and would do so under an operator's name.
+    """
+    try:
+        return db.update("tasks", match, patch), None
+    except db.RequestRejectedError as exc:
+        if exc.code in ("23514", "check_violation") or "cannot close" in str(exc) \
+                or "already cited by" in str(exc):
+            return None, str(exc)
+        raise
+
+
 def _reconcile_artifact(row, now):
-    """Return restored/recarded/absent/infra/concurrent for one exact artifact."""
+    """Return restored/recarded/absent/infra/concurrent/contested for one exact artifact."""
     sha = str(row.get("artifact_commit") or "").strip()
     if not sha:
         return "absent"
@@ -116,9 +144,13 @@ def _reconcile_artifact(row, now):
         }, repo=repo, prod_branch=target, fetch=False)
         if not patch or patch.get("state") != "MERGED":
             return "infra"
-        result = db.update("tasks", {
+        result, refused = _close_row(row, {
             "id": row["id"], "state": prior_state,
         }, patch)
+        if refused:
+            print(f"phantom_recovery: {row.get('slug')} not restored to MERGED, "
+                  f"closure gate refused: {refused}")
+            return "contested"
         return "restored" if result is not None else "concurrent"
 
     # verify_merge_reachable only returns PHANTOM here. A "not an ancestor" reason means
@@ -130,9 +162,14 @@ def _reconcile_artifact(row, now):
             f"{target}; restored DONE and re-carded for canonical integration without "
             f"regeneration. Prior note: {prior_note}"
         )[:4000]
-        result = db.update("tasks", {
+        result, refused = _close_row(row, {
             "id": row["id"], "state": prior_state,
         }, {"state": "DONE", "note": note})
+        if refused:
+            # This is the exact call that produced the 9 unhandled HTTP 400s.
+            print(f"phantom_recovery: {row.get('slug')} artifact {sha[:12]} left in "
+                  f"{prior_state}, closure gate refused DONE: {refused}")
+            return "contested"
         if result is None:
             return "concurrent"
         if _ensure_card(row, reason):
@@ -155,6 +192,7 @@ def recover(limit=100):
     restored = []
     recarded = []
     infrastructure_holds = []
+    contested = []
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     # First repair work already moved by the old loop. Dedupe by task id because a DONE row
@@ -173,11 +211,18 @@ def recover(limit=100):
             recarded.append(row.get("slug"))
         elif outcome == "infra":
             infrastructure_holds.append(row.get("slug"))
+        elif outcome == "contested":
+            contested.append(row.get("slug"))
 
     for row in rows:
         if row.get("state") != "PHANTOM_UNVERIFIED":
             continue
-        if artifact_outcomes.get(row.get("id")) in ("restored", "recarded", "infra"):
+        # "contested" belongs in this skip set. The row holds a real artifact commit that the
+        # closure gate would not let it claim; requeueing it would send existing code back to be
+        # regenerated, which is the MERGED -> PHANTOM -> QUEUED -> regenerate loop this module
+        # was written to stop. Leave it where it is for a human to adjudicate.
+        if artifact_outcomes.get(row.get("id")) in (
+                "restored", "recarded", "infra", "contested"):
             continue
         prompt = str(row.get("prompt") or "")
         if RECOVERY_MARK not in prompt:
@@ -244,11 +289,19 @@ def recover(limit=100):
     print(f"phantom_recovery: restored {len(restored)} staged artifact(s), re-carded "
           f"{len(recarded)} existing artifact(s), recovered {len(recovered)}/{len(rows)} "
           f"evidence-free operator task(s), consolidated {len(consolidated)} duplicate(s), "
-          f"held {len(infrastructure_holds)} on infrastructure uncertainty")
+          f"held {len(infrastructure_holds)} on infrastructure uncertainty, "
+          f"left {len(contested)} contested by the closure gate")
+    if contested:
+        # Needs a person: each of these holds a commit another closed task already claims.
+        # Either the commit really does certify both (justify it) or one of them is mis-attributed.
+        print("phantom_recovery: contested rows need adjudication (shared artifact_commit): "
+              + ", ".join(str(s) for s in contested[:20]))
     return {"scanned": len(rows), "recovered": len(recovered),
             "consolidated": len(consolidated), "restored": len(restored),
             "recarded": len(recarded), "infrastructure_holds": len(infrastructure_holds),
-            "slugs": recovered, "restored_slugs": restored, "recarded_slugs": recarded}
+            "contested": len(contested), "slugs": recovered,
+            "restored_slugs": restored, "recarded_slugs": recarded,
+            "contested_slugs": contested}
 
 
 def main():
