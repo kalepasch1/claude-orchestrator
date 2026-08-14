@@ -48,7 +48,9 @@ class TestDeployCanary:
 
     def test_timestamp_format_iso_8601_utc(self):
         """Test timestamp follows ISO 8601 UTC format (YYYY-MM-DDTHH:MM:SSZ)."""
-        timestamp = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        # timespec='seconds': the canary contract is seconds-resolution, and the
+        # pattern below (correctly) rejects microseconds.
+        timestamp = datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
 
         assert re.match(self.TIMESTAMP_PATTERN, timestamp), \
             f"Timestamp {timestamp} does not match ISO 8601 UTC format"
@@ -70,7 +72,7 @@ class TestDeployCanary:
 
     def test_timestamp_has_required_components(self):
         """Test that timestamp contains year, month, day, hour, minute, second."""
-        timestamp = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        timestamp = datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
 
         # Must match YYYY-MM-DDTHH:MM:SS pattern
         match = re.match(r'(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z', timestamp)
@@ -220,7 +222,7 @@ class TestDeployCanary:
 
     def test_canary_contains_no_hardcoded_values(self, canary_path):
         """Test that canary uses only timestamp and comment."""
-        timestamp = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        timestamp = datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
         content = f"{timestamp} # deployment canary heartbeat"
 
         canary_path.write_text(content)
@@ -277,7 +279,7 @@ class TestDeployCanary:
     def test_canary_creation_workflow_end_to_end(self, canary_path):
         """Test complete workflow: create file, set timestamp, commit ready."""
         # Create canary
-        timestamp = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        timestamp = datetime.now(timezone.utc).isoformat(timespec='seconds').replace('+00:00', 'Z')
         content = f"{timestamp} # deployment canary heartbeat"
         canary_path.write_text(content)
 
