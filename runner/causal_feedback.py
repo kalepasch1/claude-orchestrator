@@ -35,7 +35,8 @@ def write(bottleneck_key, remediation_slug, signal_before, signal_after, outcome
     Args:
         bottleneck_key (str): Bottleneck identifier (e.g., "cycle_time_hours")
         remediation_slug (str): Task slug of remediation attempt (e.g., "improve-cycle-time")
-        signal_before (float): Metric value before remediation
+        signal_before (float): Metric value before remediation. Must be > 0 — it is the
+            denominator for delta_pct and the outcome ratio.
         signal_after (float): Metric value after remediation
         outcome_metric (str, optional): Human name of metric (e.g., "Median cycle time")
         task_id (str, optional): Reference to tasks.id
@@ -58,7 +59,21 @@ def write(bottleneck_key, remediation_slug, signal_before, signal_after, outcome
     if signal_before is None or signal_after is None:
         return False
 
-    confidence = float(confidence or 0.5)
+    # signal_before is the denominator of every delta/ratio downstream; a zero or
+    # negative baseline yields an undefined or sign-flipped improvement, so reject
+    # it here rather than persisting an uninterpretable row.
+    if signal_before <= 0:
+        return False
+
+    # `confidence or 0.5` silently rewrote a legitimate 0.0 (no confidence) to the
+    # 0.5 default, and float() raised on non-numeric input; both are handled here.
+    if confidence is None:
+        confidence = 0.5
+    else:
+        try:
+            confidence = float(confidence)
+        except (TypeError, ValueError):
+            confidence = 0.5
     if confidence < 0.0 or confidence > 1.0:
         confidence = 0.5
 
