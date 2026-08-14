@@ -49,6 +49,7 @@ class BranchLeaseTest(unittest.TestCase):
         with mock.patch.object(branch_lease.db, "rpc",
                                side_effect=RuntimeError("RPC unavailable")):
             self.assertTrue(branch_lease.heartbeat(self.task["id"]))
+        self.assertIsNotNone(branch_lease.active(self.task["id"]))
 
     @mock.patch.object(branch_lease, "_sha", return_value="abc")
     def test_heartbeat_genuine_lease_loss_reports_dead(self, _sha):
