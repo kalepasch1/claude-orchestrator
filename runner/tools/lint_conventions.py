@@ -157,6 +157,30 @@ class ConventionChecker(ast.NodeVisitor):
         self.current_function_name = None
         self.in_module_level = True
 
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        """Check class definitions.
+
+        Functions were already held to snake_case here, but classes were not checked at
+        all, so a `class taskRunner:` sailed through the linter and was only ever caught
+        by a human at review — exactly the "works but wrong-style" reject this module
+        exists to eliminate. Severity is "warning" to match NAMING_CONVENTION: style
+        naming must not newly hard-block the unattended merge train.
+        """
+        if not (node.name.startswith("_") or self._is_pascal_case(node.name)):
+            msg = f"Class '{node.name}' should use PascalCase naming convention"
+            self._v2_violations.append(ConventionViolation(
+                filepath=self.filepath,
+                lineno=node.lineno,
+                rule="CLASS_NAMING",
+                severity="warning",
+                message=msg
+            ))
+
+        prev_module_level = self.in_module_level
+        self.in_module_level = False
+        self.generic_visit(node)
+        self.in_module_level = prev_module_level
+
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         """Check function definitions."""
         prev_func = self.current_function_name
@@ -539,6 +563,19 @@ class ConventionChecker(ast.NodeVisitor):
         if name.islower() and all(c.islower() or c == "_" or c.isdigit() for c in name):
             return True
         return False
+
+    @staticmethod
+    def _is_pascal_case(name: str) -> bool:
+        """Check if identifier is in PascalCase.
+
+        Deliberately permissive so the rule reports real style breaks and not merely
+        unfamiliar shapes: acronym runs (`HTTPClient`), digits (`Rule2Compiler`) and
+        single-word names (`Runner`) all pass. What fails is a leading lowercase letter
+        (`taskRunner`) or an underscore inside the name (`Task_Runner`).
+        """
+        if not name or not name[0].isupper():
+            return False
+        return "_" not in name and name.isidentifier()
 
     @staticmethod
     def _is_valid_identifier(name: str) -> bool:
