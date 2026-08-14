@@ -562,7 +562,18 @@ def stats():
             "verticals": sorted({e.get("vertical") for e in pool if e.get("vertical")})}
 
 
+#: Interval this daemon is scheduled on. single_instance.guard uses it to derive a
+#: max-runtime kill (interval x1.5) so an overrunning tick cannot outlive its own schedule.
+TICK_INTERVAL_S = int(os.environ.get("ORCH_EXPERT_CORPS_INTERVAL_S", "3600"))
+
 if __name__ == "__main__":
+    # SINGLE-INSTANCE LOCK (fleet immune system, P0 bullet 2). legal_docket leaked 14
+    # concurrent copies — 8-10h old on a 30-minute interval — and those copies pinned the RAM
+    # that closed the runner's mem-gate, which is what stalled the whole fleet. Every
+    # interval-scheduled script needs this, not just the one that happened to be caught.
+    import lane_guard
+    _deadline = lane_guard.guard_or_exit("expert_corps", interval_s=TICK_INTERVAL_S)
+
     cmd = sys.argv[1] if len(sys.argv) > 1 else "tick"
     if cmd == "stats":
         print(json.dumps(stats(), indent=2))
