@@ -147,6 +147,22 @@ def is_test_file(filepath: str) -> bool:
             or "/tests/" in p or p.startswith("tests/"))
 
 
+#: PascalCase, with one optional leading underscore for a private type. Each remaining
+#: word starts with a capital; digits are allowed after the first character; a run of
+#: capitals is allowed so acronym-led names (HTTPClient, DBPool) pass unchanged. An
+#: underscore anywhere after the first character makes it snake_case, which fails.
+_PASCAL_CASE_RE = re.compile(r'^_?[A-Z][A-Za-z0-9]*$')
+
+
+def _is_pascal_case(name: str) -> bool:
+    """True when `name` is a valid PascalCase class name. Never raises on bad input."""
+    # SCREAMING_CASE is rejected by the underscore clause of the pattern. An all-caps
+    # name with no underscore (HTTP, API) is deliberately ACCEPTED: those are real class
+    # spellings here, and a naming rule that fires on correct code is the thing that
+    # teaches people to run --no-verify.
+    return bool(_PASCAL_CASE_RE.match(str(name or '')))
+
+
 class ConventionChecker(ast.NodeVisitor):
     """AST visitor that checks Python files for convention violations."""
 
@@ -170,9 +186,36 @@ class ConventionChecker(ast.NodeVisitor):
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         """Track class context to distinguish methods from module functions."""
+        self._check_class_naming(node)
         self.class_depth += 1
         self.generic_visit(node)
         self.class_depth -= 1
+
+    def _check_class_naming(self, node: ast.ClassDef) -> None:
+        """Flag class names that are not PascalCase.
+
+        CLAUDE.md states the convention plainly: "PascalCase for types/classes/components".
+        A linter that enforces error handling and secret hygiene but not the one naming
+        rule the repo actually writes down leaves the most-read convention unenforced.
+
+        Deliberately narrow, because a naming rule that fires on correct code is worse
+        than no rule at all:
+          * a single leading underscore is allowed (`_PrivateCache` is a documented
+            private-type spelling here);
+          * consecutive capitals are allowed, so acronym-led names (`HTTPClient`,
+            `DBPool`) are not "fixed" into a spelling nobody uses;
+          * digits are allowed after the first character (`Sha256Digest`).
+        Only the shapes the convention actually forbids are reported: snake_case,
+        lowercase-initial, and SCREAMING_CASE class names. Reported as a warning, not an
+        error, because a name is a readability defect and should not block a commit.
+        """
+        if not _is_pascal_case(node.name):
+            self._record(ConventionViolation(
+                self.filepath, node.lineno, 'CLASS_NAMING',
+                f"Class '{node.name}' is not PascalCase "
+                f"(CLAUDE.md: PascalCase for types/classes/components)",
+                severity='warning',
+            ))
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         """Check function definitions for error handling violations."""
