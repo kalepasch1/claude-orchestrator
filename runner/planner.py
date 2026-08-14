@@ -375,7 +375,145 @@ def plan(master: str, repo: str = None, project: str = None) -> list:
     except Exception as e:
         sys.stderr.write(f"[planner] disposition memory failed ({e}); planning unchanged\n")
 
+    # GOLDEN PATHS + STRATEGY-AWARE GENERATION (Wave C, Part 4, compounding half).
+    tasks = _apply_golden_path(tasks, project=project, repo=repo)
+
     return tasks
+
+
+#: Sentinel that makes golden-path injection idempotent across re-plans. A task that is
+#: re-planned (remediation, requeue) must not accumulate one context block per attempt —
+#: that is how a 6k prompt becomes a 40k prompt and the shard compaction-spirals.
+GOLDEN_PATH_MARKER = "<!-- wave-c/golden-path -->"
+
+
+def _apply_golden_path(tasks, project=None, repo=None):
+    """Append the vertical's golden-path template + approved-structure requirements to
+    every shard prompt (Wave C, Part 4, clauses 3 and 4).
+
+    `golden_path.py` shipped complete and tested in slice 4 and was then imported by
+    NOTHING — Part 7 suppression got wired into plan(), Part 4 generation did not. So the
+    fleet kept starting shards from the most SIMILAR prior diff rather than the best-OUTCOME
+    one, and kept discovering missing AMOE flows and state gates at the compliance gate
+    instead of generating them. This is the wiring.
+
+    Fail-soft: any failure leaves `tasks` exactly as it was received.
+    """
+    try:
+        import golden_path
+    except Exception as e:
+        sys.stderr.write(f"[planner] golden_path unavailable ({e}); generation unchanged\n")
+        return tasks
+
+    try:
+        vertical = project or None
+        template = golden_path.template_for(_merged_shards(project), vertical) if vertical else None
+        strategy = _approved_strategy(project, repo)
+        context = golden_path.strategy_context(strategy, template)
+
+        if not context.get("ok"):
+            # LOUD REFUSAL. An unapproved structure is the expensive case: the shard would be
+            # built correctly against the wrong thing. Say so; do not inject a half-context.
+            if str((strategy or {}).get("structure") or "").strip():
+                sys.stderr.write(f"[planner] GOLDEN PATH REFUSED: {context.get('reason')}\n")
+            if not template:
+                return tasks
+            block = (f"GOLDEN PATH: start from {template.get('slug')} — the best-outcome merged "
+                     f"shard in {vertical}, not merely the most similar one "
+                     f"(outcome_score={template.get('outcome_score')}).")
+        else:
+            block = context["prompt"]
+
+        injected = 0
+        for t in tasks:
+            prompt = t.get("prompt") or ""
+            if GOLDEN_PATH_MARKER in prompt:
+                continue                      # already carries this context; re-plan is a no-op
+            t["prompt"] = f"{prompt}\n\n{GOLDEN_PATH_MARKER}\n{block}\n"
+            if context.get("structure"):
+                t["structure"] = context["structure"]
+            if template:
+                t["golden_template"] = template.get("slug")
+            injected += 1
+
+        if injected:
+            sys.stderr.write(
+                f"[planner] golden path: {injected} shard(s) carry "
+                f"structure={context.get('structure') or '-'} "
+                f"template={ (template or {}).get('slug') or '-' }\n")
+        return tasks
+    except Exception as e:
+        sys.stderr.write(f"[planner] golden path failed ({e}); generation unchanged\n")
+        return tasks
+
+
+def _merged_shards(project=None, limit=500):
+    """Past shards of this project as golden_path outcome records. Fail-soft -> []."""
+    try:
+        import db
+        params = {"select": "slug,state,note,attempt,remediation_count,build_fail_count,"
+                            "created_at,updated_at",
+                  "limit": str(int(limit)),
+                  "state": "in.(MERGED,DONE)",
+                  "order": "updated_at.desc"}
+        shards = []
+        for row in db.select("tasks", params) or []:
+            note = str(row.get("note") or "").lower()
+            shards.append({
+                "slug": row.get("slug"),
+                "vertical": project,
+                "merged": True,
+                "reverted": "revert" in note,
+                "attempts": int(row.get("attempt") or 0) + 1,
+                "review_cycles": int(row.get("remediation_count") or 0),
+                "test_pass": not int(row.get("build_fail_count") or 0),
+                "days_to_merge": _days_between(row.get("created_at"), row.get("updated_at")),
+            })
+        return shards
+    except Exception:
+        return []
+
+
+def _days_between(start, end):
+    """Whole-ish days between two ISO timestamps. 0.0 when either is unusable."""
+    try:
+        from datetime import datetime
+        def _parse(value):
+            text = str(value or "").replace("Z", "+00:00")
+            return datetime.fromisoformat(text)
+        return max(0.0, (_parse(end) - _parse(start)).total_seconds() / 86400.0)
+    except Exception:
+        return 0.0
+
+
+def _approved_strategy(project=None, repo=None):
+    """The tribunal-approved structure for this project, or {}.
+
+    There is no strategies table yet, so the approval lives where a human can see and edit
+    it: `<repo>/.orchestrator/strategy.json`, overridable per-run by ORCH_APPROVED_STRUCTURE
+    (+ ORCH_STRUCTURE_APPROVED_BY, ORCH_STRUCTURE_JURISDICTIONS). Absent approval, this
+    returns {} and strategy_context() refuses — which is the correct default: silently
+    generating against an unapproved structure is the failure this clause exists to prevent.
+    """
+    structure = os.environ.get("ORCH_APPROVED_STRUCTURE", "").strip()
+    if structure:
+        approver = os.environ.get("ORCH_STRUCTURE_APPROVED_BY", "").strip()
+        juris = [j.strip() for j in os.environ.get("ORCH_STRUCTURE_JURISDICTIONS", "").split(",")
+                 if j.strip()]
+        return {"structure": structure, "approved": bool(approver),
+                "approved_by": approver, "jurisdictions": juris, "project": project}
+    if not repo:
+        return {}
+    try:
+        path = os.path.join(repo, ".orchestrator", "strategy.json")
+        if not os.path.isfile(path):
+            return {}
+        with open(path) as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception as e:
+        sys.stderr.write(f"[planner] strategy.json unreadable ({e}); no approved structure\n")
+        return {}
 
 
 def _disposition_signal(project=None, limit=500):
