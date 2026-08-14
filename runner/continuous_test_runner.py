@@ -13,12 +13,15 @@ Two modes:
 Test results are persisted to the `test_runs` concept in the tasks table notes
 so the fleet can learn which tests flake and which are reliable signals.
 """
+import contextlib
 import datetime
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -49,6 +52,48 @@ def _result_hash(output):
     return hashlib.sha256(cleaned.encode(errors="replace")).hexdigest()[:16]
 
 
+# ── branch isolation ─────────────────────────────────────────────────────────
+
+@contextlib.contextmanager
+def _test_tree(repo, branch):
+    """Yield (path, note) — a tree to run tests in.
+
+    When `branch` is set, materialise it in a throwaway git worktree so tests
+    run against the code actually being gated rather than whatever happens to
+    be checked out in `repo`. Yields the plain repo path when `branch` is None
+    or when the worktree cannot be created (fail-soft: a degraded signal beats
+    no signal), with `note` describing the fallback.
+    """
+    if not branch:
+        yield repo, ""
+        return
+
+    tmp = tempfile.mkdtemp(prefix="ctr-")
+    wt = os.path.join(tmp, "tree")
+    created = False
+    try:
+        for ref in (f"origin/{branch}", branch):
+            proc = subprocess.run(
+                ["git", "worktree", "add", "--detach", "--force", wt, ref],
+                cwd=repo, capture_output=True, text=True, timeout=120,
+            )
+            if proc.returncode == 0:
+                created = True
+                break
+        if created:
+            yield wt, ""
+        else:
+            yield repo, f"\n[warn: could not check out {branch}; tested {repo} as-is]"
+    except Exception as e:
+        yield repo, f"\n[warn: worktree setup failed ({e}); tested {repo} as-is]"
+    finally:
+        if created:
+            with contextlib.suppress(Exception):
+                subprocess.run(["git", "worktree", "remove", "--force", wt],
+                               cwd=repo, capture_output=True, timeout=60)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ── core test execution ──────────────────────────────────────────────────────
 
 def run_tests(repo, branch=None, task=None, mode="merge-gate"):
@@ -56,7 +101,10 @@ def run_tests(repo, branch=None, task=None, mode="merge-gate"):
 
     Args:
         repo: path to the git repo (or worktree)
-        branch: if set, checkout this branch in a temp worktree first
+        branch: if set, tests run against this ref in a temp worktree rather
+            than against whatever is checked out in `repo`. Resolves
+            origin/<branch> first, then <branch>; falls back to `repo` with a
+            note in `output` if neither resolves.
         task: optional task dict for context/reporting
         mode: "merge-gate" (blocking) or "push-trigger" (async reporting)
 
@@ -83,37 +131,43 @@ def run_tests(repo, branch=None, task=None, mode="merge-gate"):
     }
 
     start = time.monotonic()
-    try:
-        proc = subprocess.run(
-            test_cmd, shell=True, cwd=repo,
-            capture_output=True, text=True, timeout=timeout,
-        )
-        result["exit_code"] = proc.returncode
-        result["output"] = (proc.stdout + proc.stderr)[-4000:]  # tail
-        result["passed"] = proc.returncode == 0
-    except subprocess.TimeoutExpired:
-        result["output"] = f"test timed out after {timeout}s"
-        result["exit_code"] = 124
-    except Exception as e:
-        result["output"] = str(e)[:1000]
-        result["exit_code"] = -1
-    result["duration_s"] = round(time.monotonic() - start, 2)
-    result["output_hash"] = _result_hash(result["output"])
+    # `branch`, when given, is materialised in a throwaway worktree; every run
+    # below (including flake retries) executes against that same tree.
+    with _test_tree(repo, branch) as (tree, tree_note):
+        try:
+            proc = subprocess.run(
+                test_cmd, shell=True, cwd=tree,
+                capture_output=True, text=True, timeout=timeout,
+            )
+            result["exit_code"] = proc.returncode
+            result["output"] = (proc.stdout + proc.stderr)[-4000:]  # tail
+            result["passed"] = proc.returncode == 0
+        except subprocess.TimeoutExpired:
+            result["output"] = f"test timed out after {timeout}s"
+            result["exit_code"] = 124
+        except Exception as e:
+            result["output"] = str(e)[:1000]
+            result["exit_code"] = -1
+        result["duration_s"] = round(time.monotonic() - start, 2)
+        # Hash the raw test output only: the fallback note is tree-provenance,
+        # not test signal, and must not perturb flake comparison.
+        result["output_hash"] = _result_hash(result["output"])
+        result["output"] += tree_note
 
-    # Flake detection: if failed, retry up to N times; if hash changes, it's a flake
-    if not result["passed"] and mode == "merge-gate":
-        first_hash = result["output_hash"]
-        for retry in range(_max_flake_retries()):
-            time.sleep(2 ** retry)  # exponential backoff
-            retry_result = _run_once(repo, test_cmd, timeout)
-            if retry_result["passed"]:
-                result["passed"] = True
-                result["flake"] = True
-                result["output"] += f"\n[flake: passed on retry {retry + 1}]"
-                break
-            if retry_result["output_hash"] != first_hash:
-                result["flake"] = True
-                result["output"] += f"\n[flake: different output on retry {retry + 1}]"
+        # Flake detection: if failed, retry up to N times; if hash changes, it's a flake
+        if not result["passed"] and mode == "merge-gate":
+            first_hash = result["output_hash"]
+            for retry in range(_max_flake_retries()):
+                time.sleep(2 ** retry)  # exponential backoff
+                retry_result = _run_once(tree, test_cmd, timeout)
+                if retry_result["passed"]:
+                    result["passed"] = True
+                    result["flake"] = True
+                    result["output"] += f"\n[flake: passed on retry {retry + 1}]"
+                    break
+                if retry_result["output_hash"] != first_hash:
+                    result["flake"] = True
+                    result["output"] += f"\n[flake: different output on retry {retry + 1}]"
 
     # Persist result
     _record_test_run(result)

@@ -29,8 +29,17 @@ _OPTIONAL_DEPS = ("ModuleNotFoundError", "ImportError")
 
 def _module_names():
     for f in sorted(os.listdir(RUNNER_DIR)):
-        if f.endswith(".py") and not f.startswith("_") and f != "conftest.py":
+        # Pytest owns test-module imports. Importing root-level test_*.py files here under a
+        # second top-level name lets their sys.modules substitutions leak into later tests;
+        # decorators then patch a different `db` object from the one under test and the
+        # release canary reports false failures. Runtime modules remain exhaustively covered.
+        if (f.endswith(".py") and not f.startswith(("_", "test_"))
+                and f != "conftest.py"):
             yield f[:-3]
+
+
+def test_runtime_scan_excludes_pytest_modules():
+    assert "test_db_query_optimization" not in set(_module_names())
 
 
 @pytest.mark.parametrize("name", list(_module_names()))

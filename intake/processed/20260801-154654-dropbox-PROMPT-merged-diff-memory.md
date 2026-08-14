@@ -1,8 +1,8 @@
 # PROMPT: Merged-Diff Memory System (Task Spec)
 
-**Date:** 2026-08-01  
-**Task Slug:** `merged-diff-memory`  
-**Scope:** Feature; integrates with auto-memory and fleet coordination  
+**Date:** 2026-08-01
+**Task Slug:** `merged-diff-memory`
+**Scope:** Feature; integrates with auto-memory and fleet coordination
 **Status:** SPEC READY FOR INTAKE
 
 ---
@@ -139,16 +139,16 @@ The default is `claude-orchestrator`. May be parameterized via environment varia
   metadata:
     type: reference
   ---
-  
+
   ## Merge Summary
-  
+
   - branch: agent/prompt-evolver-ucb1
   - date: 2026-08-01T14:23:45Z
   - files_changed: [runner/prompt_evolver.py, runner/tests/test_prompt_evolver.py]
   - insertions: 450
   - deletions: 20
   - conflict_resolutions: 0
-  
+
   This merge introduced UCB1 multi-armed bandit for prompt template selection per message kind...
   ```
 

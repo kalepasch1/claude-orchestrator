@@ -38,15 +38,42 @@ class ControllerTestBase(unittest.TestCase):
         for p in self._patches:
             self.addCleanup(p.stop)
 
-    def run_with_depths(self, depths, **overrides):
-        """Run the controller once per depth sample; return list of decisions."""
+    @staticmethod
+    def _count_stub(depth, pinned=0):
+        """Answer db.count per QUERY, not with one blanket value.
+
+        run() issues TWO counts against `tasks`: the total queued depth, and the pinned
+        (express-lane) subset that _pinned_depth() subtracts before integrating. A single
+        `return_value=d` answers both with d, so effective_depth is max(0, d - d) == 0 for
+        every sample, effective_velocity is 0, and the integral never leaves 0 — which
+        made all four shelving/clamp assertions fail against a controller that was
+        behaving correctly. Discriminate on the `pinned` filter so the fixture means what
+        it says: `depth` queued tasks, none of them pinned unless a test asks for some.
+        """
+        def _count(table, params=None):
+            params = params or {}
+            if str(params.get("pinned", "")).startswith("is.true"):
+                # Pinned queued tasks are a SUBSET of queued tasks, so clamp. A fixture
+                # that reports more pinned rows than queued rows describes a queue that
+                # cannot exist, and effective_depth would floor at 0 for the wrong reason.
+                return min(pinned, depth)
+            return depth
+        return _count
+
+    def run_with_depths(self, depths, pinned=0, **overrides):
+        """Run the controller once per depth sample; return list of decisions.
+
+        `depths` are TOTAL queued depth. `pinned` is how many of those are express-lane
+        work, which the integral deliberately excludes; it defaults to 0 so the samples
+        drive the controller exactly as the test names describe.
+        """
         results = []
         ctx = [patch.object(qv, k, v) for k, v in overrides.items()]
         for c in ctx:
             c.start()
         try:
             for d in depths:
-                with patch.object(qv.db, "count", return_value=d):
+                with patch.object(qv.db, "count", side_effect=self._count_stub(d, pinned)):
                     results.append(qv.run())
         finally:
             for c in ctx:
@@ -339,6 +366,66 @@ class EnvTunableTest(unittest.TestCase):
         self.assertEqual(mod.SHELVE_CONSECUTIVE_REQUIRED, 2)
         self.assertEqual(mod.INTEGRAL_MAX, 15000)
         self.assertTrue(mod.RECOVERY_ENABLED)
+
+
+# ---------------------------------------------------------------------------
+# 5. Pinned (express-lane) work is excluded from the integral
+#
+# Regression cover for the defect that produced
+# "shelved by queue-velocity PID (low EV, integral too high)". The controller
+# already integrates on effective depth; these tests pin that behaviour AND the
+# fixture's ability to express it, so a stub that answers every db.count with one
+# blanket value cannot silently zero the integral again.
+# ---------------------------------------------------------------------------
+
+class PinnedExcludedFromIntegralTest(ControllerTestBase):
+    def test_growth_made_entirely_of_pinned_work_does_not_build_the_integral(self):
+        results = self.run_with_depths(
+            [100, 200], pinned=200,
+            INTEGRAL_SHELVE_THRESHOLD=10, SHELVE_MIN_DEPTH=0,
+            SHELVE_CONSECUTIVE_REQUIRED=2)
+        self.assertEqual(results[-1]["integral"], 0)
+        self.assertEqual(results[-1]["shelve_pressure"], 0)
+
+    def test_growth_in_ordinary_work_does_build_the_integral(self):
+        results = self.run_with_depths(
+            [100, 200], pinned=0,
+            INTEGRAL_SHELVE_THRESHOLD=10, SHELVE_MIN_DEPTH=0,
+            SHELVE_CONSECUTIVE_REQUIRED=99)
+        self.assertEqual(results[-1]["integral"], 100)
+
+    def test_a_pinned_burst_never_triggers_the_i_action(self):
+        """The I-action specifically. The D-action still fires on raw acceleration —
+        that is intended: a genuinely accelerating queue is compacted whatever the work
+        is. Only the cumulative-surplus term is express-excluded."""
+        with patch.object(qv, "_shelve_lowest_ev", return_value=0):
+            results = self.run_with_depths(
+                [100, 400, 900], pinned=900,
+                INTEGRAL_SHELVE_THRESHOLD=10, SHELVE_MIN_DEPTH=0,
+                SHELVE_CONSECUTIVE_REQUIRED=2)
+        self.assertFalse(results[-1]["i_action"])
+        self.assertEqual(results[-1]["integral"], 0)
+        self.assertEqual(results[-1]["shelve_pressure"], 0)
+
+    def test_raw_depth_is_still_what_the_p_action_and_logs_report(self):
+        """Only the integral is express-excluded; velocity/depth stay raw by design."""
+        results = self.run_with_depths([100, 200], pinned=200,
+                                       SHELVE_CONSECUTIVE_REQUIRED=99)
+        self.assertEqual(results[-1]["depth"], 200)
+        self.assertEqual(results[-1]["velocity"], 100)
+
+    def test_unavailable_pinned_count_degrades_to_the_old_behaviour(self):
+        """_pinned_depth is fail-soft: a broken count must not suppress the I-action."""
+        def _count(table, params=None):
+            params = params or {}
+            if str(params.get("pinned", "")).startswith("is.true"):
+                raise RuntimeError("pinned column missing")
+            return 200
+        with patch.object(qv.db, "count", side_effect=_count):
+            qv.run()  # seed history
+        with patch.object(qv.db, "count", side_effect=_count):
+            result = qv.run()
+        self.assertEqual(result["depth"], 200)
 
 
 if __name__ == "__main__":

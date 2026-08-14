@@ -33,6 +33,24 @@ class ConventionViolation:
         return f"{self.filepath}:{self.lineno}: {self.rule}: {self.message}"
 
 
+# Canonical rule id for the hardcoded-secret check.
+#
+# CONVENTION_LINT.md documents this rule as HARDCODED_SECRET everywhere — the JSON
+# output schema, the CLI sample output, the fixture list, and the two documented
+# suppressions (`# noqa: HARDCODED_SECRET`). tools/convention_linter.py, which backs
+# the pre-commit hook, already emits that id. This module was the lone producer
+# spelling it NO_HARDCODED_SECRETS, so the repo's two linters filed the same finding
+# under two different ids: anything aggregating both (dashboards, --fail-on gating,
+# rule-scoped noqa) silently split one rule into two buckets, and a developer
+# following the documented suppression would find it did not match.
+RULE_HARDCODED_SECRET = "HARDCODED_SECRET"
+
+# Accepted spellings for consumers still keyed to the pre-alignment id.
+RULE_ALIASES = {
+    RULE_HARDCODED_SECRET: ("NO_HARDCODED_SECRETS",),
+}
+
+
 # Safe config keys that don't require ORCH_ prefix
 _SAFE_CONFIG_KEYS = {
     "MAX_PARALLEL",
@@ -46,6 +64,86 @@ _SAFE_CONFIG_KEYS = {
 
 # Secret patterns to detect hardcoded secrets
 _SECRET_PATTERNS = {"secret", "key", "token", "password", "api_key", "pat"}
+
+# Vendor-issued credential prefixes. A literal starting with one of these is a secret
+# no matter what it is assigned to.
+_SECRET_VALUE_PREFIXES = ("sk-", "sk_", "api-", "pk_", "secret_", "token_", "ghp_", "xoxb-")
+
+
+def _is_indirected_secret_value(value: str) -> bool:
+    """True when a string literal is env indirection / a placeholder, not a real secret.
+
+    `api_token = "${API_TOKEN}"` and `password = ""` are the documented compliant
+    shapes; they must never be flagged. Anything else assigned to a secret-named
+    target is a literal credential.
+    """
+    stripped = value.strip()
+    if not stripped:
+        return True
+    # ${VAR}, $VAR, {{ VAR }}, <your-token-here>, %(VAR)s
+    return (
+        stripped.startswith("$")
+        or (stripped.startswith("{{") and stripped.endswith("}}"))
+        or (stripped.startswith("<") and stripped.endswith(">"))
+        or (stripped.startswith("%(") and stripped.endswith(")s"))
+    )
+
+
+def _secret_target_name(target: ast.expr) -> Optional[str]:
+    """Return the assigned name for a Name or constant-string Subscript target."""
+    if isinstance(target, ast.Name):
+        return target.id
+    if (
+        isinstance(target, ast.Subscript)
+        and isinstance(target.slice, ast.Constant)
+        and isinstance(target.slice.value, str)
+    ):
+        return target.slice.value
+    return None
+
+
+# Name tokens that actually denote a credential.
+#
+# Deliberately NOT `_SECRET_PATTERNS`, which carries the bare tokens "key" and "pat".
+# Those are fine for the config-key rule but useless as a name test here: "key" matches
+# every KV-namespace constant in the runner (`_ALERT_KEY`, `PRESSURE_KEY`, `STATE_KEY`…)
+# and "pat" matches `REL_PATH`, `GENERATED_TASKS_PATH` and anything with "pattern" in it.
+# Scanning runner/ with the loose set produced 169 findings, effectively all noise —
+# which is presumably why the value-prefix gate was bolted on in the first place. The
+# fix for a noisy name test is a precise name test, not disabling the rule.
+_SECRET_NAME_TOKENS = (
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "credential",
+    "api_key",
+    "apikey",
+    "private_key",
+    "secret_key",
+    "access_key",
+    "signing_key",
+    "encryption_key",
+    "client_secret",
+)
+
+# Names that contain a secret token but denote configuration, not a credential.
+_SECRET_NAME_EXEMPT_SUFFIXES = ("_env", "_var", "_name", "_key_name", "_path", "_file", "_url")
+
+# Reason-code / sentinel constants, e.g. fleet_control's
+# `IGNORE_CREDENTIAL = "credential-marker"` — the word "credential" is the thing being
+# classified, not a value being leaked.
+_SECRET_NAME_EXEMPT_PREFIXES = ("ignore_", "_ignore_", "reason_", "_reason_")
+
+
+def _looks_like_secret_name(name: str) -> bool:
+    """True when an identifier names a credential rather than merely mentioning one."""
+    lowered = name.lower()
+    if lowered.startswith(_SECRET_NAME_EXEMPT_PREFIXES):
+        return False
+    if lowered.endswith(_SECRET_NAME_EXEMPT_SUFFIXES):
+        return False
+    return any(token in lowered for token in _SECRET_NAME_TOKENS)
 
 
 class ConventionChecker(ast.NodeVisitor):
@@ -166,8 +264,89 @@ class ConventionChecker(ast.NodeVisitor):
                         severity="error",
                         message=msg
                     ))
+            elif all(isinstance(stmt, ast.Pass) for stmt in handler.body):
+                # Specific exception silently swallowed with only `pass`:
+                # the error vanishes with no handling and no default.
+                exc_name = self._get_exception_name(handler.type)
+                msg = (
+                    f"Exception handler for '{exc_name}' swallows the error with a bare "
+                    "'pass'; handle it or return a sensible default"
+                )
+                self.violations.append((handler.lineno, "fail-soft-error-handling", msg))
+                self._v2_violations.append(ConventionViolation(
+                    filepath=self.filepath,
+                    lineno=handler.lineno,
+                    rule="FAIL_SOFT_ERROR",
+                    severity="error",
+                    message=msg
+                ))
+
+            # Rule 9: fail-soft must not mean fail-SILENT.
+            #
+            # The existing rules above are about returning a sensible default, which
+            # is a correctness property. This one is a diagnosability property, and
+            # nothing checked it: a handler that neither binds the exception nor
+            # emits any diagnostic destroys the only evidence that something went
+            # wrong. fleet_control.load_config carries the lesson in a comment —
+            # "NAME WHAT IS DROPPED. Silence here is what made a pushed-but-inert
+            # knob indistinguishable from a working one." — but no check enforced
+            # it, so the pattern kept spreading.
+            if self._is_silently_discarded(handler):
+                exc_name = self._get_exception_name(handler.type) if handler.type else "bare except"
+                msg = (
+                    f"Handler for '{exc_name}' discards the error with no diagnostic: "
+                    "bind it (`except X as e`) and log/print what was dropped, or "
+                    "add a comment naming why it is safe to ignore"
+                )
+                self.violations.append((handler.lineno, "no-silent-error", msg))
+                self._v2_violations.append(ConventionViolation(
+                    filepath=self.filepath,
+                    lineno=handler.lineno,
+                    rule="SILENT_ERROR_NO_DIAGNOSTIC",
+                    severity="warning",
+                    message=msg
+                ))
 
         self.generic_visit(node)
+
+    # Calls that count as "this error was reported somewhere".
+    _DIAGNOSTIC_CALLS = {
+        "print", "warn", "warning", "error", "exception", "critical", "info",
+        "debug", "log", "write", "alert", "capture_exception", "report",
+    }
+
+    def _emits_diagnostic(self, stmts) -> bool:
+        """True if any statement in the handler reports the error somewhere."""
+        for stmt in stmts:
+            for sub in ast.walk(stmt):
+                if isinstance(sub, ast.Raise):
+                    return True  # re-raised: the caller still sees it
+                if isinstance(sub, ast.Call):
+                    func = sub.func
+                    name = ""
+                    if isinstance(func, ast.Attribute):
+                        name = func.attr
+                    elif isinstance(func, ast.Name):
+                        name = func.id
+                    if name in self._DIAGNOSTIC_CALLS:
+                        return True
+        return False
+
+    def _is_silently_discarded(self, handler: ast.ExceptHandler) -> bool:
+        """A handler that keeps no reference to the error and reports nothing.
+
+        Deliberately NOT flagged:
+          * `except X as e:` — the name is bound, so the value is recoverable even
+            if this particular handler chooses not to use it.
+          * any handler that logs, prints, writes, alerts or re-raises.
+          * a handler whose body is a single `pass` guarded by an explanatory
+            comment is still flagged, because a comment is not available at
+            runtime — but severity is `warning`, not `error`, so intentional
+            swallows can be triaged rather than blocking.
+        """
+        if handler.name is not None:
+            return False
+        return not self._emits_diagnostic(handler.body)
 
     def visit_Subscript(self, node: ast.Subscript) -> None:
         """Check for config key assignments (Rules 1 & 2)."""
@@ -182,77 +361,37 @@ class ConventionChecker(ast.NodeVisitor):
 
     def visit_Assign(self, node: ast.Assign) -> None:
         """Check assignments for hardcoded secrets and magic numbers (Rule 2, 7)."""
-        # Check if assigning a string constant that looks like a secret
+        # Rule 2 is a NAME-based rule: "config keys must not contain
+        # PASSWORD|TOKEN|SECRET without env-var indirection" (CLAUDE.md). This block
+        # used to gate the whole check on the *value* starting with a vendor prefix
+        # ("sk-", "api-", …), so the rule only ever fired on an OpenAI-style key and
+        # `db_password = "hunter2"` / `private_key = "-----BEGIN PRIVATE KEY-----"`
+        # passed clean — the exact literals the rule exists to stop. The target name
+        # now drives detection; the value only decides whether it is real or indirected.
         if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
             value_str = node.value.value
-            # Check for hardcoded credentials (sk-, api-, etc.)
-            if any(
-                value_str.lower().startswith(prefix)
-                for prefix in ["sk-", "api-", "pk_", "secret_", "token_"]
-            ):
-                # Get the assignment target
-                for target in node.targets:
-                    # Subscript targets, e.g. os.environ["ORCH_API_KEY"] = "sk-..."
-                    if (
-                        isinstance(target, ast.Subscript)
-                        and isinstance(target.slice, ast.Constant)
-                        and isinstance(target.slice.value, str)
-                    ):
-                        key_lower = target.slice.value.lower()
-                        if any(pattern in key_lower for pattern in _SECRET_PATTERNS):
-                            msg = (
-                                "Hardcoded secret detected in subscript assignment "
-                                f"to '{target.slice.value}'"
-                            )
-                            self.violations.append((node.lineno, "no-hardcoded-secrets", msg))
-                            self._v2_violations.append(ConventionViolation(
-                                filepath=self.filepath,
-                                lineno=node.lineno,
-                                rule="NO_HARDCODED_SECRETS",
-                                severity="error",
-                                message=msg
-                            ))
-                        continue
-                    if isinstance(target, ast.Name):
-                        var_name = target.id.lower()
-                        if any(
-                            pattern in var_name
-                            for pattern in _SECRET_PATTERNS
-                        ):
-                            msg = f"Hardcoded secret detected in assignment to '{target.id}'"
-                            self.violations.append((node.lineno, "no-hardcoded-secrets", msg))
-                            self._v2_violations.append(ConventionViolation(
-                                filepath=self.filepath,
-                                lineno=node.lineno,
-                                rule="NO_HARDCODED_SECRETS",
-                                severity="error",
-                                message=msg
-                            ))
-                    elif (
-                        isinstance(target, ast.Subscript)
-                        and isinstance(target.slice, ast.Constant)
-                        and isinstance(target.slice.value, str)
-                    ):
-                        # Subscript targets: os.environ["ORCH_API_KEY"] = "sk-...",
-                        # fleet_config["ORCH_TOKEN"] = "..." — previously invisible
-                        # because only ast.Name targets were inspected.
-                        key_lower = target.slice.value.lower()
-                        if any(
-                            pattern in key_lower
-                            for pattern in _SECRET_PATTERNS
-                        ):
-                            msg = (
-                                f"Hardcoded secret detected in assignment to "
-                                f"'{target.slice.value}'"
-                            )
-                            self.violations.append((node.lineno, "no-hardcoded-secrets", msg))
-                            self._v2_violations.append(ConventionViolation(
-                                filepath=self.filepath,
-                                lineno=node.lineno,
-                                rule="NO_HARDCODED_SECRETS",
-                                severity="error",
-                                message=msg
-                            ))
+            indirected = _is_indirected_secret_value(value_str)
+            vendor_literal = value_str.lower().startswith(_SECRET_VALUE_PREFIXES)
+            for target in node.targets:
+                name = _secret_target_name(target)
+                if name is None:
+                    continue
+                secret_name = _looks_like_secret_name(name)
+                # A vendor-prefixed literal is a credential whatever it is called.
+                if not (vendor_literal or (secret_name and not indirected)):
+                    continue
+                if secret_name and indirected and not vendor_literal:
+                    continue
+                kind = "subscript assignment" if isinstance(target, ast.Subscript) else "assignment"
+                msg = f"Hardcoded secret detected in {kind} to '{name}'"
+                self.violations.append((node.lineno, "no-hardcoded-secrets", msg))
+                self._v2_violations.append(ConventionViolation(
+                    filepath=self.filepath,
+                    lineno=node.lineno,
+                    rule=RULE_HARDCODED_SECRET,
+                    severity="error",
+                    message=msg
+                ))
 
         # Check for magic numbers
         if isinstance(node.value, ast.Constant) and isinstance(node.value.value, (int, float)):
@@ -298,7 +437,7 @@ class ConventionChecker(ast.NodeVisitor):
                     self._v2_violations.append(ConventionViolation(
                         filepath=self.filepath,
                         lineno=node.lineno,
-                        rule="NO_HARDCODED_SECRETS",
+                        rule=RULE_HARDCODED_SECRET,
                         severity="error",
                         message=msg
                     ))
@@ -310,6 +449,22 @@ class ConventionChecker(ast.NodeVisitor):
         # Check for raise ValueError/RuntimeError on input validation (Rule 5)
         if isinstance(node.func, ast.Name) and node.func.id == "raise":
             pass  # Handled by visit_Raise
+        elif (
+            isinstance(node.func, ast.Name)
+            and node.func.id
+            and node.func.id[0].islower()
+            and any(c.isupper() for c in node.func.id)
+        ):
+            # camelCase call site (e.g. badFunction()): the callee violates the
+            # snake_case convention even if it is defined elsewhere.
+            msg = f"Call to '{node.func.id}' violates snake_case naming convention"
+            self._v2_violations.append(ConventionViolation(
+                filepath=self.filepath,
+                lineno=node.lineno,
+                rule="NAMING_CONVENTION",
+                severity="warning",
+                message=msg
+            ))
         elif isinstance(node.func, ast.Attribute):
             # Check for os.environ assignments with hardcoded secrets
             if (

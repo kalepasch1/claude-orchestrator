@@ -40,6 +40,34 @@ CLAUDE_BIN = os.environ.get("CLAUDE_BIN", "claude")
 _REPO_ROOT = os.path.dirname(_DIR)
 
 
+def _alarm_card_failure(slug, project, branch, reason):
+    """Record an integration-card failure loudly, deduped per slug.
+
+    The old code printed the exception and returned success, so a card failure was
+    indistinguishable from a card write. Anything that cannot be seen cannot be
+    remediated — this is the visibility half of the DONE-before-card fix. Fail-soft:
+    an alarm that cannot be written must not itself strand the task, but it is printed
+    either way so it survives in the run log.
+    """
+    detail = (f"slug={slug} project={project} branch={branch} "
+              f"reason={str(reason)[:400]}")
+    print(f"[ALARM] integration_card_failed {detail}")
+    try:
+        existing = db.select("runner_alerts", {
+            "select": "id", "kind": "eq.integration_card_failed",
+            "detail": f"ilike.*slug={slug}*", "resolved": "eq.false", "limit": "1",
+        }) or []
+        if existing:
+            return
+        db.insert("runner_alerts", {
+            "kind": "integration_card_failed",
+            "detail": detail,
+            "resolved": False,
+        })
+    except Exception as e:
+        print(f"[ALARM] could not persist integration_card_failed alert: {e}")
+
+
 def _real_default_branch(repo):
     """Detect the actual default branch (master vs main) from git."""
     for candidate in ["master", "main"]:
@@ -249,22 +277,54 @@ def execute_task(task):
                         return False
                 except Exception as e:
                     print(f"[design-sources] completion gate unavailable: {e}")
+                # CARD FIRST, THEN DONE (2026-08-06). The previous order committed
+                # state=DONE and only then tried to file the integration card, swallowing
+                # any failure and discarding the return value. That produced three silent
+                # ways to end at DONE-with-no-card — a crash in the window between the two
+                # writes, a raising card write, and ensure_integration_card returning False
+                # because nothing was created. A DONE task with a pushed branch and no card
+                # is invisible to the merge train forever; 36 of 111 DONE tasks in one
+                # 12-hour sample were stranded this way.
+                #
+                # Ordering chosen over a transaction or an outbox because these are two
+                # different PostgREST tables reached over HTTP with no shared transaction
+                # available, and because the failure modes are asymmetric: a card with no
+                # DONE task is harmless and self-correcting (the train resolves the task,
+                # finds it unfinished, and skips), whereas a DONE task with no card is
+                # unrecoverable without the backfill in backfill_stranded_cards.py. Put the
+                # fragile write first and only commit the irreversible one after it lands.
+                card_state, card_err = "failed", ""
+                try:
+                    import merge_train
+                    card_state = merge_train.ensure_integration_card_result(
+                        name, slug,
+                        title=f"merge of {slug}",
+                        decided_by="canonical-train:cowork-executor",
+                    )
+                except Exception as _e:
+                    card_state, card_err = "failed", str(_e)[:200]
+
+                if card_state not in ("created", "existed"):
+                    # Not integrable. Do NOT mark DONE — that is the strand. Leave the task
+                    # retryable with the branch recorded so the retry reuses the work.
+                    _alarm_card_failure(slug, name, branch, card_err or "no card created")
+                    db.update("tasks", {"id": task["id"]},
+                              {"state": "QUEUED",
+                               "artifact_branch": branch,
+                               "note": (f"cowork-executor: work complete on {branch} but "
+                                        f"integration card could not be filed "
+                                        f"({card_err or 'ensure_integration_card created nothing'}); "
+                                        f"re-queued rather than stranded at DONE")})
+                    print(f"[REQUEUE] {slug} -> card write failed ({card_err or 'not created'}); "
+                          f"branch {branch} preserved")
+                    return False
+
                 db.update("tasks",
                           {"id": task['id']},
                           {"state": "DONE",
                            "note": f"cowork-executor completed (${cost:.4f})",
                            "artifact_branch": branch})
-                # Auto-create integrate card so the merge train picks this up
-                try:
-                    import merge_train
-                    merge_train.ensure_integration_card(
-                        name, slug,
-                        title=f"merge of {slug}",
-                        decided_by="canonical-train:cowork-executor",
-                    )
-                    print(f"[DONE] {slug} -> DONE with branch {branch} + integrate card")
-                except Exception as _e:
-                    print(f"[DONE] {slug} -> DONE with branch {branch} (card failed: {_e})")
+                print(f"[DONE] {slug} -> DONE with branch {branch} + integrate card ({card_state})")
                 return True
             else:
                 db.update("tasks",

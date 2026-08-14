@@ -9,6 +9,7 @@ Checks for 5 key conventions:
 5. Module Structure (singleton delegation pattern)
 """
 import ast
+import json
 import os
 import re
 import sys
@@ -323,15 +324,86 @@ def scan_directory(dirpath: str) -> List[ConventionViolation]:
     return violations
 
 
+#: Per-rule counts that are already in the tree. The hook fails when a count RISES.
+BASELINE_PATH = Path(__file__).resolve().parent.parent / ".convention-lint-baseline.json"
+
+
+def load_baseline(path=None):
+    """Grandfathered per-rule counts. Missing/corrupt file reads as an empty baseline.
+
+    Empty means "nothing is grandfathered", which is the strict direction — a corrupt
+    baseline must not silently disable the gate.
+    """
+    target = Path(path or BASELINE_PATH)
+    try:
+        with open(target, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    counts = data.get("counts") if isinstance(data, dict) else None
+    return {k: int(v) for k, v in (counts or {}).items() if isinstance(v, (int, float))}
+
+
+def count_by_rule(violations):
+    counts = {}
+    for violation in violations:
+        counts[violation.rule] = counts.get(violation.rule, 0) + 1
+    return counts
+
+
+def regressions(counts, baseline):
+    """Rules whose count exceeds the baseline. Sorted for a stable report."""
+    out = []
+    for rule, count in sorted(counts.items()):
+        allowed = baseline.get(rule, 0)
+        if count > allowed:
+            out.append((rule, count, allowed))
+    return out
+
+
+def write_baseline(counts, path=None):
+    target = Path(path or BASELINE_PATH)
+    payload = {
+        "_comment": (
+            "Grandfathered convention-lint counts. The hook fails only when a rule's count "
+            "RISES above these numbers, so the gate is enforceable today without a "
+            "9,780-violation cleanup patch. Lower these as violations are fixed; never "
+            "raise one to make a commit pass."
+        ),
+        "counts": {k: int(v) for k, v in sorted(counts.items())},
+        "total": int(sum(counts.values())),
+    }
+    with open(target, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2, sort_keys=False)
+        fh.write("\n")
+    return payload
+
+
 def main():
-    """Main entry point for the linter."""
-    if len(sys.argv) < 2:
-        print("Usage: python lint_conventions.py <file_or_dir> [<file_or_dir> ...]", file=sys.stderr)
+    """Main entry point for the linter.
+
+    RATCHET, not a cliff. A bare `exit(1) if any violations` gate is unusable here: the
+    tree carries ~9,780 pre-existing violations, so the pre-commit hook failed on every
+    commit and the only way to work was `--no-verify` — which disables every OTHER hook
+    too. A gate that is always red is not a gate.
+
+    So the hook now fails when a rule's count RISES above the recorded baseline. New
+    violations are blocked from the first commit; existing ones are visible, counted, and
+    can only go down. Same shape as the repo's .tsc-error-baseline ratchet.
+
+    `--update-baseline` rewrites the file (use after fixing violations, or when adding a
+    rule). `--strict` ignores the baseline entirely, for a full audit.
+    """
+    args = [a for a in sys.argv[1:] if not a.startswith("-")]
+    flags = {a for a in sys.argv[1:] if a.startswith("-")}
+    if not args:
+        print("Usage: python lint_conventions.py [--strict|--update-baseline] "
+              "<file_or_dir> [...]", file=sys.stderr)
         sys.exit(1)
 
     all_violations = []
 
-    for target in sys.argv[1:]:
+    for target in args:
         target_path = Path(target).resolve()
         if target_path.is_file():
             all_violations.extend(check_file(str(target_path)))
@@ -341,12 +413,39 @@ def main():
             print(f"Warning: {target} is not a file or directory", file=sys.stderr)
 
     all_violations.sort(key=lambda v: (v.filepath, v.lineno))
+    counts = count_by_rule(all_violations)
 
-    if all_violations:
+    if "--update-baseline" in flags:
+        payload = write_baseline(counts)
+        print(f"convention-lint: baseline written ({payload['total']} violations across "
+              f"{len(payload['counts'])} rules) -> {BASELINE_PATH.name}")
+        sys.exit(0)
+
+    if "--strict" in flags:
         for violation in all_violations:
             print(str(violation))
+        sys.exit(1 if all_violations else 0)
+
+    baseline = load_baseline()
+    over = regressions(counts, baseline)
+    if over:
+        # Print only the offending rules' violations: a 9,780-line dump buries the
+        # handful of lines the author actually needs to fix.
+        offending = {rule for rule, _c, _a in over}
+        for violation in all_violations:
+            if violation.rule in offending:
+                print(str(violation))
+        print("", file=sys.stderr)
+        for rule, count, allowed in over:
+            print(f"convention-lint: {rule} rose to {count} (baseline {allowed})",
+                  file=sys.stderr)
+        print("convention-lint: fix the new violations, or run with --update-baseline "
+              "ONLY after genuinely reducing a count.", file=sys.stderr)
         sys.exit(1)
 
+    total = sum(counts.values())
+    if total:
+        print(f"convention-lint: OK — {total} grandfathered violation(s), none new.")
     sys.exit(0)
 
 

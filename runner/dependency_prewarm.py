@@ -20,6 +20,14 @@ _HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchest
 _STAMP_DIR = os.environ.get("ORCH_DEPS_STAMP_DIR", os.path.join(_HOME, "deps"))
 _LOCKS = ("package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock")
 _DEFAULT_TIMEOUT = int(os.environ.get("ORCH_DEPS_PREWARM_TIMEOUT", "900"))
+# Per-`cp` ceiling for one package root's node_modules activation.
+_ACTIVATION_CALL_TIMEOUT_S = int(os.environ.get("ORCH_DEPS_ACTIVATION_TIMEOUT", "180"))
+# Ceiling for ALL roots in one link_shared_runtime() call. Must stay comfortably
+# below merge_train's 900s pass watchdog so activation can never consume the
+# whole pass and leave nothing merged.
+_ACTIVATION_TOTAL_BUDGET_S = int(os.environ.get("ORCH_DEPS_ACTIVATION_BUDGET", "420"))
+# Below this much remaining budget, skip cloning and symlink instead.
+_ACTIVATION_MIN_SLICE_S = int(os.environ.get("ORCH_DEPS_ACTIVATION_MIN_SLICE", "15"))
 _COMMON_PACKAGE_DIRS = tuple(
     x.strip() for x in os.environ.get(
         "ORCH_PACKAGE_ROOT_HINTS",
@@ -205,6 +213,37 @@ def _manager(repo):
     if has_yarn and shutil.which("yarn"):
         return "yarn", [yarn, "install", "--frozen-lockfile", "--prefer-offline"]
     return "npm", [npm, "install", "--prefer-offline", "--no-audit", "--fund=false"]
+
+
+def _dev_env(manager, cmd):
+    """(cmd, env) that installs devDependencies, whatever NODE_ENV the fleet runs under.
+
+    ROOT CAUSE, found 2026-08-12. This host exports NODE_ENV=production. npm reads that
+    and OMITS devDependencies — silently, exiting 0, reporting "up to date". So every
+    fleet install produced a tree with no vitest, no test runner, no dev tooling, and
+    `npx vitest` died with ERR_MODULE_NOT_FOUND. worktree_preflight then called that tree
+    a "partial install" and blocked the project, forever, because re-running the same
+    install could never change the outcome.
+
+    Measured in claude-orchestrator/web: `npm ci` added 622 packages and vitest was not
+    among them; `npm ls vitest` reported empty while package.json declared it in
+    devDependencies. Re-running with NODE_ENV=development and --include=dev added the
+    missing 200 packages and the suite ran green immediately.
+
+    The fleet installs in order to BUILD AND TEST, so dev dependencies are not optional
+    for it — production omission is a deployment concern, not a CI one. Forced explicitly
+    rather than by hoping the ambient environment is right.
+    """
+    env = dict(os.environ)
+    if str(env.get("NODE_ENV", "")).lower() == "production":
+        env["NODE_ENV"] = "development"
+    env.pop("NPM_CONFIG_PRODUCTION", None)
+    env["NPM_CONFIG_INCLUDE"] = "dev"
+    if manager == "npm" and "--include=dev" not in cmd:
+        cmd = [*cmd, "--include=dev"]
+    elif manager == "pnpm" and "--prod" not in cmd:
+        cmd = [*cmd, "--dev"] if "--dev" not in cmd else cmd
+    return cmd, env
 
 
 def _ignore_scripts_cmd(manager, cmd):
@@ -506,9 +545,12 @@ def _ensure_locked(repo, reason="prewarm", timeout=None):
             lock_file.close()
         return {"ok": False, "error": f"snapshot staging failed: {e}"}
     manager, cmd = _manager(build_root)
+    # The fleet installs in order to build AND TEST, so devDependencies are mandatory for
+    # it. See _dev_env: NODE_ENV=production on this host was silently omitting them.
+    cmd, _env = _dev_env(manager, cmd)
     try:
         r = subprocess.run(cmd, cwd=build_root, capture_output=True, text=True,
-                           timeout=timeout or _DEFAULT_TIMEOUT)
+                           env=_env, timeout=timeout or _DEFAULT_TIMEOUT)
     except subprocess.TimeoutExpired:
         shutil.rmtree(build_root, ignore_errors=True)
         if lock_file: lock_file.close()
@@ -522,7 +564,7 @@ def _ensure_locked(repo, reason="prewarm", timeout=None):
         fallback = _ignore_scripts_cmd(manager, cmd)
         if fallback:
             r2 = subprocess.run(fallback, cwd=build_root, capture_output=True, text=True,
-                                timeout=timeout or _DEFAULT_TIMEOUT)
+                                env=_env, timeout=timeout or _DEFAULT_TIMEOUT)
             if r2.returncode == 0:
                 r = r2
                 ignored_scripts = True
@@ -618,6 +660,16 @@ def link_shared_runtime(repo, worktree):
     roots = package_roots(repo) or [repo]
     linked = []
 
+    # Aggregate wall-clock budget for the clone path.
+    #
+    # activate_modules() bounds each individual `cp` at _ACTIVATION_CALL_TIMEOUT_S,
+    # but this function calls it once per package root. With 6 roots (the current
+    # beethoven layout) the worst case was 6 * 180s = 1080s, which alone exceeds the
+    # 900s merge_train watchdog -- so a single _build_gate could burn the entire pass
+    # in dependency activation and get killed before integrating anything. Bound the
+    # total here and degrade to the (near-instant) symlink path once spent.
+    deadline = time.monotonic() + _ACTIVATION_TOTAL_BUDGET_S
+
     def link_one(src, dst):
         if os.path.exists(src) and not os.path.exists(dst):
             try:
@@ -630,13 +682,19 @@ def link_shared_runtime(repo, worktree):
         if not os.path.isdir(src) or os.path.exists(dst):
             return
         mode = os.environ.get("ORCH_DEPS_ACTIVATION_MODE", "clone").lower()
-        if mode == "clone":
+        remaining = deadline - time.monotonic()
+        if mode == "clone" and remaining > _ACTIVATION_MIN_SLICE_S:
             if os.uname().sysname == "Darwin":
                 cmd = ["cp", "-cR", src, dst]
             else:
                 cmd = ["cp", "-a", "--reflink=auto", src, dst]
             try:
-                copied = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+                copied = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=min(_ACTIVATION_CALL_TIMEOUT_S, remaining),
+                )
                 if copied.returncode == 0 and os.path.isdir(dst):
                     linked.append(dst)
                     return

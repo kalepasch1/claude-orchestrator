@@ -10,42 +10,122 @@ Checks + heals:
   3. No stale RUNNING zombies (updated > 30m)      -> reclaim to QUEUED.
   4. >= 1 claimable task                           -> if 0 and queue non-empty, run dagfix/unstick.
   5. RAM ok for at least 1 task                    -> if starved, log it (owner frees RAM / gate is tuned).
-  6. Claude trust dialog pre-accepted for repo     -> set hasTrustDialogAccepted in ~/.claude/.claude.json.
+  6. Claude trust dialog pre-accepted for repo     -> set hasTrustDialogAccepted for the repo AND
+     its <repo>-wt worktree root in every provisioned profile's $CLAUDE_CONFIG_DIR/.claude.json.
+     Only that one boolean is ever written — never tokens, keys, or permissions.allow entries.
 Posts firewall/worktree/claimable/ram to runner_health with a status verdict.
 """
 import json, os, sys, socket, datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
-_CLAUDE_CFG = os.path.expanduser("~/.claude/.claude.json")
+
+def _default_claude_cfg():
+    """Path of the Claude Code config file THIS process's agents actually read.
+
+    Claude Code reads $CLAUDE_CONFIG_DIR/.claude.json, not always ~/.claude/.claude.json.
+    account_pool gives each login profile its own config_dir (e.g. ~/.claude-heretomorrow),
+    so hardcoding ~/.claude wrote trust to a file the agent never opened.
+    """
+    return os.path.join(
+        os.path.expanduser(os.environ.get("CLAUDE_CONFIG_DIR") or "~/.claude"), ".claude.json"
+    )
 
 
-def _accept_trust(repo_path=None):
-    """Pre-accept the Claude Code trust dialog for the orchestrator repo path (fail-soft).
+_CLAUDE_CFG = _default_claude_cfg()
 
-    Claude Code stalls on fresh worktree paths whose parent project hasn't been trusted.
-    We use --dangerously-skip-permissions at call time, but ensuring hasTrustDialogAccepted
-    is set for the canonical repo path avoids the dialog for interactive sessions too.
+# The ONLY key this module is ever allowed to write into a Claude config file.
+# Trust acceptance must never carry credentials, API keys, or a broad
+# permissions.allow list into config — that is what got the original task quarantined.
+_TRUST_KEY = "hasTrustDialogAccepted"
+
+
+def _account_cfg_paths():
+    """Config files of every provisioned login profile (fail-soft, never creates dirs).
+
+    Returns only files whose parent directory already exists, so an unprovisioned
+    profile is skipped instead of being half-created with a stub config.
+    """
+    paths = []
+    try:
+        import account_pool
+        for a in (account_pool._get_pool().accts or []):
+            d = a.get("config_dir")
+            if d and (a.get("type") or "login") == "login":
+                paths.append(os.path.join(os.path.expanduser(d), ".claude.json"))
+    except Exception:
+        pass
+    return paths
+
+
+def _trust_cfg_paths():
+    """Deduped list of config files to pre-accept trust in."""
+    out, seen = [], set()
+    for p in [_CLAUDE_CFG, _default_claude_cfg()] + _account_cfg_paths():
+        p = os.path.abspath(os.path.expanduser(p))
+        if p in seen:
+            continue
+        seen.add(p)
+        if os.path.isdir(os.path.dirname(p)):
+            out.append(p)
+    return out
+
+
+def _trust_repo_paths(repo_path=None):
+    """The repo root plus the sibling worktree root agent branches are checked out into.
+
+    Agent worktrees live at <repo>-wt/<slug>; Claude Code trusts per project path, so
+    trusting only the repo root left every fresh worktree untrusted — which is exactly
+    how `agent/<slug>` branches went missing after repeated rebuilds.
     """
     if repo_path is None:
         repo_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    repo_path = os.path.abspath(os.path.expanduser(repo_path))
+    return [repo_path, repo_path + "-wt"]
+
+
+def _accept_trust(repo_path=None, cfg_path=None):
+    """Pre-accept the Claude Code trust dialog for a repo path in ONE config file (fail-soft).
+
+    Writes only `hasTrustDialogAccepted` and leaves every other key untouched. Returns
+    True only if the file was actually modified.
+    """
+    if repo_path is None:
+        repo_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    target = cfg_path or _CLAUDE_CFG
     try:
         cfg = {}
         try:
-            with open(_CLAUDE_CFG) as f:
+            with open(target) as f:
                 cfg = json.load(f)
         except (FileNotFoundError, json.JSONDecodeError):
             pass
+        if not isinstance(cfg, dict):
+            cfg = {}
         projects = cfg.setdefault("projects", {})
         entry = projects.setdefault(repo_path, {})
-        if not entry.get("hasTrustDialogAccepted"):
-            entry["hasTrustDialogAccepted"] = True
-            with open(_CLAUDE_CFG, "w") as f:
-                json.dump(cfg, f, indent=2)
-            return True
+        if entry.get(_TRUST_KEY):
+            return False          # already trusted -> do not rewrite the file
+        entry[_TRUST_KEY] = True
+        with open(target, "w") as f:
+            json.dump(cfg, f, indent=2)
+        return True
     except Exception:
-        pass
-    return False
+        # Fail-soft: an unwritable/absent config dir must never stall the selfcheck.
+        return False
+
+
+def accept_trust_everywhere(repo_path=None):
+    """Accept trust for the repo AND its worktree root across every provisioned profile.
+
+    Returns the number of (config file, path) pairs actually updated.
+    """
+    changed = 0
+    for cfg in _trust_cfg_paths():
+        for path in _trust_repo_paths(repo_path):
+            if _accept_trust(path, cfg_path=cfg):
+                changed += 1
+    return changed
 
 
 def _claimable():
@@ -125,10 +205,13 @@ def run(runner_id="startup"):
     except Exception:
         pass
 
-    # 6) pre-accept trust dialog for this repo so interactive sessions don't stall
+    # 6) pre-accept trust dialog for this repo AND its worktree root, in every provisioned
+    #    login profile's CLAUDE_CONFIG_DIR — an untrusted profile makes Claude Code ignore
+    #    .claude/settings.local.json and stall before it ever creates the agent branch.
     try:
-        if _accept_trust():
-            detail.append("trust accepted for repo path")
+        n = accept_trust_everywhere()
+        if n:
+            detail.append(f"trust accepted for {n} repo/profile path(s)")
     except Exception:
         pass
 

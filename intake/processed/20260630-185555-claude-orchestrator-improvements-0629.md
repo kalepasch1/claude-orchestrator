@@ -132,7 +132,7 @@ PROJECT: claude-orchestrator
   prompt: |
     Each autonomous (or approved) merge writes a signed provenance row {commit, task_id, why, proof_result,
     approver|policy, model, cost, ts} using an Ed25519 signature (mirror Tomorrow's verifiable-proof C1
-    pattern). Provide a verify function that recomputes the digest. Add a `provenance` table + 
+    pattern). Provide a verify function that recomputes the digest. Add a `provenance` table +
     runner/tests/test_provenance.py (sign/verify + tamper rejection).
 
 - id: cross-repo-compute-allocation

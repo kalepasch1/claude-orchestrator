@@ -1,4 +1,0 @@
-recovery-intent: batch-mech-backlog-batch-beethoven-b040840-resolve-merge-conflicts-in-darwin-kernel-3
-template: 54427071c9be
-intent: acceptance achieve adjustments after appears applies apply assertions b040840 backlog based baseline batch beethoven blame branches build ccacb00 changelog changes check checkout clean cleanly clearly command commit complete configuration configured confirm conflict conflicting conflicts consistent contains conventions correctness craft create darwin directory document documentation ensuring eslint exits files final following formatters fresh fully include independent infer intent intents isolated kernel linters markers mechanical merge merged minimal modifications modified necessary needed original otherwise output package parameters patch preserves prettier previous project
-base: master

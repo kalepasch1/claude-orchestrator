@@ -201,19 +201,67 @@ def _file_auth_issue(project, vercel_project, error):
 
 
 def _age_minutes(row):
+    """Age of a release row in minutes, or None when `created_at` is unusable.
+
+    This returned 0 on any parse failure, which reads as "brand new". The only
+    consumer is the stuck-deploy check `state is None and age_min > stuck_min`, so a
+    release whose created_at was NULL or malformed could never exceed the threshold —
+    it was permanently pinned at zero minutes old and a genuinely wedged deploy was
+    never detected, silently, for as long as the row existed. Unknown is not zero:
+    None makes the caller decide, and the caller now says so out loud instead of
+    quietly treating the release as healthy.
+    """
+    raw = row.get("created_at") if hasattr(row, "get") else None
+    if raw in (None, ""):
+        return None
     try:
-        created = datetime.datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
-        return (datetime.datetime.now(datetime.timezone.utc) - created).total_seconds() / 60
+        created = datetime.datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
     except Exception:
-        return 0
+        return None
+    if created.tzinfo is None:                      # naive timestamps are UTC here
+        created = created.replace(tzinfo=datetime.timezone.utc)
+    return (datetime.datetime.now(datetime.timezone.utc) - created).total_seconds() / 60
 
 
-def _attribute_deploy_to_outcomes(project):
+def _release_journey(release, url):
+    """Run the release's declared production journey AFTER the deploy is READY.
+
+    Returns the receipt (always — a release that declares nothing gets an explicit
+    MISSING receipt so the absence is recorded, not inferred). Fail-soft on import.
+    """
+    try:
+        import production_journey
+    except Exception as e:
+        print(f"deploy_verify: production_journey unavailable ({e}); "
+              f"release {release.get('id')} has no journey receipt")
+        return None
+    sha = str(release.get("to_sha") or "")
+    base = url if not url or str(url).startswith("http") else "https://" + str(url)
+    return production_journey.verify_task(
+        {"slug": f"release-{release.get('project')}-{sha[:12]}",
+         "journey": release.get("journey")},
+        base_url=base or "", sha=sha, environment="production")
+
+
+def _attribute_deploy_to_outcomes(project, journey_receipt=None):
     """Mark integrated outcomes for this project as deployed after a confirmed prod deploy.
+
+    JOURNEY GATE: a READY deployment returning HTTP 200 is release health, not delivery.
+    Outcomes are attributed only when the release's production journey passed. A missing
+    or failed journey leaves them un-attributed rather than silently certified.
 
     Fail-soft: if the columns don't exist yet (migration pending) the update
     will raise and we silently skip — the columns being NULL is the pre-migration state.
     """
+    try:
+        import production_journey
+        ok, why = production_journey.gate(
+            journey_receipt, required=(journey_receipt or {}).get("required", True))
+    except Exception:
+        ok, why = True, "journey gate unavailable"
+    if not ok:
+        print(f"deploy_verify: NOT attributing outcomes for {project} — {why}")
+        return
     try:
         rows = db.select("outcomes", {
             "select": "slug",
@@ -259,16 +307,55 @@ def run():
         if state in TERMINAL_GOOD or ignored_build:
             note = ("provider ignored build: release contains no deployable-root changes"
                     if ignored_build else release.get("note") or "")
+            # POST-DEPLOY JOURNEY: the deployment being READY is when the journey becomes
+            # meaningful, so it runs here, against the live release SHA. A failed required
+            # journey is a bad release — it is rolled back exactly like a failed build.
+            receipt = None if ignored_build else _release_journey(release, url)
+            try:
+                import production_journey
+                roll = production_journey.should_roll_back(receipt)
+            except Exception:
+                roll = False
+            if roll:
+                repo = p.get("repo_path") or ""
+                last_good = p.get("last_good_sha") or release.get("from_sha")
+                rolled = bool(repo and last_good and os.path.isdir(repo)
+                              and _rollback(project, repo, p.get("prod_branch") or "main", last_good))
+                failed = (receipt.get("failed_assertions") or [{}])[0]
+                db.update("releases", {"id": release["id"]},
+                          {"deploy_status": "rolled_back" if rolled else "journey_failed",
+                           "vercel_url": url,
+                           "note": (f"production journey FAILED at {failed.get('step')}/"
+                                    f"{failed.get('assertion')} (receipt {receipt.get('id')}); "
+                                    f"{'rolled back' if rolled else 'rollback unavailable'}")[:500]})
+                _queue_deploy_fix(p, release, "journey_failed", vproj,
+                                  log_tail=json.dumps(receipt.get("failed_assertions") or [],
+                                                      indent=2)[:3000])
+                print(f"deploy_verify: {project} deploy READY but production journey FAILED "
+                      f"(receipt {receipt.get('id')})")
+                continue
+            journey_note = ""
+            if receipt:
+                journey_note = f" | journey={receipt.get('verdict')} receipt={receipt.get('id')}"
             db.update("releases", {"id": release["id"]},
                       {"deploy_status": "success", "vercel_url": url,
-                       "deployed_at": "now()", "note": note})
+                       "deployed_at": "now()", "note": (note + journey_note)[:500]})
             db.update("projects", {"name": project}, {"last_good_sha": release["to_sha"],
                       "vercel_project": vproj})
-            _attribute_deploy_to_outcomes(project)
-            print(f"deploy_verify: {project} deploy OK ({url})")
+            _attribute_deploy_to_outcomes(project, journey_receipt=receipt)
+            print(f"deploy_verify: {project} deploy OK ({url}){journey_note}")
             continue
 
         age_min = _age_minutes(release)
+        if state is None and age_min is None:
+            # Unknown state AND unknown age: this used to look like a 0-minute-old
+            # release and fall through as healthy forever. Surface it instead — an
+            # unreadable created_at is a data bug, not a passing deploy. No rollback:
+            # we have not confirmed a bad deploy, only that we cannot judge this one.
+            print(f"deploy_verify: {project} release {release.get('id')} has an unusable "
+                  f"created_at ({release.get('created_at')!r}); cannot age-out a stuck "
+                  f"deploy — skipping (not treating as healthy)")
+            continue
         if state in TERMINAL_BAD or (state is None and age_min > stuck_min):
             log_tail = _deployment_events((dep or {}).get("uid") or (dep or {}).get("id"))
             _queue_deploy_fix(p, release, state, vproj, log_tail=log_tail)

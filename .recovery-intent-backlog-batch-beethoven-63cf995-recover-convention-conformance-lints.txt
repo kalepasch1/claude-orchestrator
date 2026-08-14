@@ -1,4 +1,0 @@
-recovery-intent: backlog-batch-beethoven-63cf995-recover-convention-conformance-lints
-template: 2f9eeb1be8db
-intent: 07062319 07071626 63cf995 8b92d078e856 acceptance adapt agentic alter analysis artifacts backlog batch because beethoven before behavior below blocks branch branches broad bugfix build builds cache category cause changes changing check checks cleanly commit completion concrete config conflicts conformance context continue convention deliberate dependencies diffs directive drafting duplicate duplicates eliminating enforce equivalent examine exercises existing exists failure files final finish first focus fresh functionality functions green hints identify implement implementation improve incomplete inspect install instead integral intent jsdoc large library lines
-base: master

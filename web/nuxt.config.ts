@@ -1,4 +1,18 @@
+import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+
+// Analytics only matters on Vercel deploys, where a fresh `npm install` from
+// package.json guarantees the package. The merge-train build gate instead links a
+// pre-warmed node_modules snapshot into its overlay, and a snapshot built before
+// this dependency landed has no @vercel/analytics — a hard modules entry then kills
+// the whole production build over a telemetry nicety. Probe this app's own
+// node_modules (not require resolution, which walks up into unrelated trees) and
+// include the module only when the package is really installed here.
+const vercelAnalytics = existsSync(
+  fileURLToPath(new URL('./node_modules/@vercel/analytics/package.json', import.meta.url))
+)
+  ? ['@vercel/analytics/nuxt']
+  : []
 
 const kernel = (path: string) =>
   fileURLToPath(new URL(`../packages/darwin-kernel/src/${path}`, import.meta.url))
@@ -16,7 +30,7 @@ const appAlias = {
 
 // Nuxt config - hosted control plane (deploys to Vercel out of the box).
 export default defineNuxtConfig({
-  modules: ['@nuxtjs/supabase', '@nuxtjs/tailwindcss', '@vercel/analytics/nuxt'],
+  modules: ['@nuxtjs/supabase', '@nuxtjs/tailwindcss', ...vercelAnalytics],
   ssr: true,
   experimental: { appManifest: false },
   alias: appAlias,

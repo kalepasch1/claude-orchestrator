@@ -225,5 +225,80 @@ def test_default_filename_in_cwd(tmp_path, monkeypatch):
     assert load_orchestration_config().queue_name == "from-cwd"
 
 
+# --------------------------------------------- ORCH_* consumption (not just loading)
+# The suite above proves the loader PARSES correctly. It does not prove the fleet's
+# ORCH_* environment settings are actually CONSUMED — every test above would still
+# pass if the DEFAULT_* constants stopped reading os.environ entirely, because each
+# one supplies its own YAML. These tests close that gap: they pin that an operator
+# setting ORCH_MAX_PARALLEL_TASKS really does change behaviour, and that file values
+# still win over it.
+import importlib  # noqa: E402
+
+
+def _reload_with_env(monkeypatch, **env):
+    """Re-import the module so module-level ORCH_* defaults are re-read.
+
+    The DEFAULT_* constants are captured at import time, so an env var exported
+    after import is invisible. Reloading is what makes that dependency explicit
+    rather than accidental — and is why config must be set before the process
+    starts, not after.
+    """
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    return importlib.reload(config_consumer)
+
+
+def test_orch_env_vars_are_consumed_as_defaults(monkeypatch, tmp_path):
+    mod = _reload_with_env(
+        monkeypatch,
+        ORCH_MAX_PARALLEL_TASKS="11",
+        ORCH_POLL_INTERVAL_SECONDS="0.25",
+        ORCH_RETRY_LIMIT="9",
+        ORCH_QUEUE_NAME="from-env",
+        ORCH_FAIL_FAST="true",
+    )
+    try:
+        cfg = mod.load_orchestration_config(tmp_path / "absent.yaml")
+        assert cfg.max_parallel_tasks == 11
+        assert cfg.poll_interval_seconds == 0.25
+        assert cfg.retry_limit == 9
+        assert cfg.queue_name == "from-env"
+        assert cfg.fail_fast is True
+    finally:
+        importlib.reload(config_consumer)
+
+
+def test_file_values_win_over_orch_env_defaults(monkeypatch, tmp_path):
+    mod = _reload_with_env(monkeypatch, ORCH_QUEUE_NAME="from-env", ORCH_RETRY_LIMIT="9")
+    try:
+        path = write_config(tmp_path, "queue_name: from-file\n")
+        cfg = mod.load_orchestration_config(path)
+        assert cfg.queue_name == "from-file"   # file beats env
+        assert cfg.retry_limit == 9            # env still fills the key the file omits
+    finally:
+        importlib.reload(config_consumer)
+
+
+def test_garbage_orch_env_does_not_crash_the_loader(monkeypatch, tmp_path):
+    """A typo in an exported ORCH_* value must not take the fleet down."""
+    mod = _reload_with_env(monkeypatch, ORCH_MAX_PARALLEL_TASKS="not-a-number")
+    try:
+        cfg = mod.load_orchestration_config(tmp_path / "absent.yaml")
+        assert isinstance(cfg.max_parallel_tasks, int)
+    finally:
+        importlib.reload(config_consumer)
+
+
+def test_explicit_path_beats_env_config_path(monkeypatch, tmp_path):
+    """Documented precedence: explicit argument > ORCH_CONFIG_PATH > orchestration.yaml."""
+    explicit = write_config(tmp_path, "queue_name: explicit\n")
+    env_dir = tmp_path / "env"
+    env_dir.mkdir()
+    env_path = env_dir / "orchestration.yaml"
+    env_path.write_text("queue_name: env\n", encoding="utf-8")
+    monkeypatch.setenv(config_consumer.ENV_CONFIG_PATH, str(env_path))
+    assert load_orchestration_config(explicit).queue_name == "explicit"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

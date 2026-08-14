@@ -1,4 +1,0 @@
-recovery-intent: backlog-batch-beethoven-22ee5bc-convention-conformance-lints-add-new-tests-check
-template: 766c402dd214
-intent: 9d0155 aaac4e acceptance adapt adding avoid before behavior bf0ed633a9c6 build c1486760bb7d check conformance convention diffs directories drafting excerpt existing exists files first focus function helpers implementation independently instead intent library limit limiting lints locate matched matching mergeable merged module naming narrow owner patch preserve prior project proven proves rebuilding relevant requested reset resuming retry reuse runnable scope scratch should similarity slots small smaller smallest solved source specific summary template tests transplant update vigil weekly
-base: master

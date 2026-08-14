@@ -1,0 +1,10 @@
+{
+  "project": "beethoven",
+  "slug": "improve-compliance-durable-event-router",
+  "kind": "build",
+  "source": "round-8-compliance-followup",
+  "submitted_by_label": "Codex operator-directed remediation",
+  "prompt": "Implement a durable, cross-process compliance event router. Replace the current in-process subscriber-only fan-out with an idempotent persisted outbox, consumer offsets, retry/dead-letter handling, and deterministic event replay. Preserve the existing events.py and evidence_bus.py receipts. Add tests proving exactly-once handler effects across a process restart and failed handler retry.",
+  "proof": "runner/tests/test_compliance_event_router.py",
+  "note": "Follow-up identified during Round 8 audit: current local subscribers do not coordinate multiple runner processes."
+}

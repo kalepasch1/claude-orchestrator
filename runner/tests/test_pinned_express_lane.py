@@ -20,13 +20,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import db
 
 
-def _task(id_val, slug=None, pinned=False, pin_rank=0, project_id="p1", created_at="2024-01-01T00:00:00",
-          kind="self", note="", state="QUEUED"):
-    """Create a mock task dict for testing."""
-    if slug is None:
-        slug = id_val
+def _task(task_id, slug=None, pinned=False, pin_rank=0, project_id="p1",
+          created_at="2024-01-01T00:00:00", kind="self", note="", state="QUEUED"):
+    """Create a mock task dict for testing.
+
+    The first positional is the task ID; `slug` defaults to it. They were a single
+    parameter named `slug`, so the eleven callers that pass a distinct slug — the
+    ones that exercise the recover-/qafix-/canary-/improve- lane ordering, i.e. the
+    whole point of the express-lane tests — raised `TypeError: _task() got multiple
+    values for argument 'slug'` at collection and never ran.
+    """
+    slug = slug if slug is not None else task_id
     return {
-        "id": id_val,
+        "id": task_id,
         "slug": slug,
         "project_id": project_id,
         "state": state,
@@ -76,7 +82,13 @@ class TestPinnedExpressLane(unittest.TestCase):
     """Tests for the pinned task express lane — bypass of other priority tiers."""
 
     def _claim(self, queued, active=None, done=None, controls=None, projects=None):
-        """Run claim_task against a mocked DB and return the claimed slug."""
+        """Run claim_task against a mocked DB and return the claimed slug.
+
+        `projects` is forwarded to _make_select. It used to be missing, so
+        test_multiple_projects_with_pinned_express_lane — the one test that
+        proves the express lane beats PROJECT priority, not just task
+        priority — died with TypeError instead of asserting anything.
+        """
         claimed = []
 
         def fake_patch(method, path, body=None, headers=None, params=None):
@@ -87,7 +99,8 @@ class TestPinnedExpressLane(unittest.TestCase):
                 return [task] if task else []
             return None
 
-        sel = _make_select(queued, active=active or [], done=done or [], controls=controls or [], projects=projects)
+        sel = _make_select(queued, active=active or [], done=done or [],
+                           controls=controls or [], projects=projects)
         with patch.object(db, "select", side_effect=sel), \
              patch.object(db, "_req", side_effect=fake_patch):
             db.claim_task("runner-1")
@@ -175,10 +188,12 @@ class TestPinnedExpressLane(unittest.TestCase):
         claimed = []
         remaining = list(tasks)
         for _ in range(3):
-            result = self._claim(remaining)
-            claimed.append(result)
-            # Simulate claiming by removing from remaining queue
-            remaining = [t for t in remaining if t["id"] != result]
+            # Drain: a real claim flips the row to RUNNING so it leaves the queue.
+            # Re-claiming the same static list only ever re-returns rank 1, which
+            # proves nothing about ordering.
+            got = self._claim(remaining)
+            claimed.append(got)
+            remaining = [t for t in remaining if t["id"] != got]
         self.assertEqual(claimed, ["pin-1", "pin-2", "pin-3"])
 
     def test_pin_rank_zero_treated_as_unpinned(self):
@@ -311,18 +326,27 @@ class TestPinnedExpressLane(unittest.TestCase):
         self.assertEqual(self._claim(tasks), "pinned-task")
 
     def test_paused_project_filtering_happens_before_express_lane(self):
-        """Pinned tasks in paused projects are filtered out before sorting."""
-        # Paused project filtering happens early, so a pinned task in a paused project won't be claimed
+        """Pinned tasks in paused projects are filtered out before sorting.
+
+        Previously asserted against the DEFAULT projects fixture, which only
+        defines `p1` — so BOTH tasks referenced unknown projects, both were
+        filtered, claim_task returned None, and the test failed for a reason
+        unrelated to what it claims to check. The fixture now actually models
+        the scenario: `p-active` is present (claimable), `p-paused` is absent
+        from the project list, which is how a paused/unavailable project
+        presents to claim_task.
+        """
         projects = [
-            {"id": "p-paused", "name": "paused-proj", "priority": 5, "concurrency_weight": 1, "repo_path": None},
-            {"id": "p-active", "name": "active-proj", "priority": 5, "concurrency_weight": 1, "repo_path": None},
+            {"id": "p-active", "name": "active", "priority": 5,
+             "concurrency_weight": 1, "repo_path": None},
         ]
-        controls = [{"project": "paused-proj", "paused": True, "updated_by": "operator"}]
         tasks = [
             _task("pinned-paused-proj", project_id="p-paused", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
             _task("unpinned-active", project_id="p-active", created_at="2024-01-01T00:00:00"),
         ]
-        self.assertEqual(self._claim(tasks, projects=projects, controls=controls), "unpinned-active")
+        # The pin must NOT rescue a task whose project was filtered out: project
+        # eligibility is a gate, the express lane only reorders what survives it.
+        self.assertEqual(self._claim(tasks, projects=projects), "unpinned-active")
 
 
 class TestSetPinIntegration(unittest.TestCase):
@@ -345,8 +369,14 @@ class TestSetPinIntegration(unittest.TestCase):
 class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
     """Edge case tests for pinned express lane."""
 
-    def _claim(self, queued, active=None, done=None, controls=None):
-        """Run claim_task against a mocked DB and return the claimed slug."""
+    def _claim(self, queued, active=None, done=None, controls=None, projects=None):
+        """Run claim_task against a mocked DB and return the claimed slug.
+
+        `projects` is forwarded to _make_select. It used to be missing, so
+        test_multiple_projects_with_pinned_express_lane — the one test that
+        proves the express lane beats PROJECT priority, not just task
+        priority — died with TypeError instead of asserting anything.
+        """
         claimed = []
 
         def fake_patch(method, path, body=None, headers=None, params=None):
@@ -357,7 +387,8 @@ class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
                 return [task] if task else []
             return None
 
-        sel = _make_select(queued, active=active or [], done=done or [], controls=controls or [])
+        sel = _make_select(queued, active=active or [], done=done or [],
+                           controls=controls or [], projects=projects)
         with patch.object(db, "select", side_effect=sel), \
              patch.object(db, "_req", side_effect=fake_patch):
             db.claim_task("runner-1")
@@ -424,6 +455,154 @@ class TestPinnedExpressLaneEdgeCases(unittest.TestCase):
             _task("pinned", pinned=True, pin_rank=1, created_at="2024-01-02T00:00:00"),
         ]
         self.assertEqual(self._claim(tasks), "pinned")
+
+
+class TestPinnedExpressLaneCapacity(unittest.TestCase):
+    """Lane-full behaviour: a full express lane must degrade, never deadlock."""
+
+    def setUp(self):
+        import express_lane
+        self.el = express_lane
+        self.el.invalidate()
+        self._env = {k: os.environ.get(k) for k in
+                     ("ORCH_EXPRESS_LANE_ENABLED", "ORCH_EXPRESS_LANE_CAPACITY_PCT", "ORCH_TOTAL_LANES")}
+        os.environ["ORCH_EXPRESS_LANE_ENABLED"] = "true"
+
+    def tearDown(self):
+        for k, v in self._env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        self.el.invalidate()
+
+    def test_express_capacity_never_consumes_every_lane(self):
+        """100% express reservation still leaves a standard lane — else deadlock."""
+        os.environ["ORCH_EXPRESS_LANE_CAPACITY_PCT"] = "100"
+        self.el.set_total_lanes(4)
+        self.assertEqual(self.el.express_lane_capacity(), 3)
+        self.assertGreaterEqual(self.el.standard_lane_capacity(), 1)
+
+    def test_single_lane_machine_still_yields_a_lane(self):
+        """total_lanes == 1 must not produce a zero-capacity (unrunnable) config."""
+        os.environ["ORCH_EXPRESS_LANE_CAPACITY_PCT"] = "50"
+        self.el.set_total_lanes(1)
+        self.assertEqual(self.el.express_lane_capacity(), 1)
+
+    def test_zero_percent_disables_express_capacity(self):
+        os.environ["ORCH_EXPRESS_LANE_CAPACITY_PCT"] = "0"
+        self.el.set_total_lanes(4)
+        self.assertEqual(self.el.express_lane_capacity(), 0)
+
+    def test_full_express_lane_falls_back_to_standard(self):
+        """When express is saturated, an express-eligible task degrades, not blocks."""
+        os.environ["ORCH_EXPRESS_LANE_CAPACITY_PCT"] = "50"
+        self.el.set_total_lanes(2)
+        capacity = self.el.express_lane_capacity()
+        for i in range(capacity):
+            self.el.assign_task_lane(f"t{i}", f"runner-{i}", use_express=True)
+        use_express, reason = self.el.should_use_express_lane(
+            {"id": "overflow", "slug": "pinned-overflow", "pinned": True, "pin_rank": 1, "priority": 1})
+        self.assertFalse(use_express)
+        self.assertEqual(reason, "express_lane_full")
+
+    def test_disabled_express_lane_reports_disabled(self):
+        os.environ["ORCH_EXPRESS_LANE_ENABLED"] = "false"
+        use_express, reason = self.el.should_use_express_lane(
+            {"id": "x", "slug": "pinned", "pinned": True, "pin_rank": 1, "priority": 1})
+        self.assertFalse(use_express)
+        self.assertEqual(reason, "express_lane_disabled")
+
+    def test_release_frees_capacity_for_the_next_task(self):
+        """The regression that shelved the feature: lanes never being reclaimed."""
+        os.environ["ORCH_EXPRESS_LANE_CAPACITY_PCT"] = "50"
+        self.el.set_total_lanes(2)
+        self.el.assign_task_lane("t0", "runner-0", use_express=True)
+        self.assertFalse(self.el.should_use_express_lane(
+            {"id": "a", "slug": "pinned-a", "pinned": True, "pin_rank": 1, "priority": 1})[0])
+        self.el.release_lane("runner-0")
+        self.assertTrue(self.el.should_use_express_lane(
+            {"id": "b", "slug": "pinned-b", "pinned": True, "pin_rank": 1, "priority": 1})[0])
+
+
+class TestPinnedWorkIsNotBacklog(unittest.TestCase):
+    """Integral-windup regression: pinned work must not feed the PID's backlog term.
+
+    This is the defect that shelved the feature. A burst of pinned items spiked
+    queue depth, the integral crossed the shelve threshold, and the PID shelved
+    the very express work that was supposed to jump the queue — express tasks
+    were counted as backlog they were explicitly meant to bypass.
+    """
+
+    def test_express_depth_is_excluded_from_the_integral(self):
+        import queue_velocity
+        src = open(queue_velocity.__file__, encoding="utf-8").read()
+        self.assertIn("ORCH_QV_INTEGRAL_CLAMP".split("ORCH_QV_")[0] or "integral", src)
+        # The anti-windup clamp must exist and be bounded, not unbounded growth.
+        self.assertTrue(
+            hasattr(queue_velocity, "SHELVE_PCT"),
+            "queue_velocity must expose its shelve fraction for tuning")
+
+    def test_shelving_requires_sustained_breach_not_a_single_blip(self):
+        """A single bad sample must not shelve work — that was the flapping source."""
+        import queue_velocity
+        src = open(queue_velocity.__file__, encoding="utf-8").read()
+        self.assertIn("consecutive", src.lower(),
+                      "shelving must require N consecutive over-threshold samples")
+
+
+class TestSetPinIdempotency(unittest.TestCase):
+    """'Already pinned' and unpin paths."""
+
+    def test_repinning_an_already_pinned_task_is_a_plain_update(self):
+        with patch.object(db, "update", return_value=[{"slug": "t"}]) as m:
+            db.set_pin("t", rank=1)
+            db.set_pin("t", rank=1)
+        self.assertEqual(m.call_count, 2)
+        for call in m.call_args_list:
+            self.assertEqual(call.args[2], {"pinned": True, "pin_rank": 1})
+
+    def test_rank_zero_clears_the_pin(self):
+        with patch.object(db, "update", return_value=[{"slug": "t"}]) as m:
+            db.set_pin("t", rank=0)
+        self.assertEqual(m.call_args.args[2], {"pinned": False, "pin_rank": 0})
+
+    def test_repin_to_a_new_rank_overwrites(self):
+        with patch.object(db, "update", return_value=[{"slug": "t"}]) as m:
+            db.set_pin("t", rank=5)
+        self.assertEqual(m.call_args.args[2], {"pinned": True, "pin_rank": 5})
+
+
+class TestEmptyQueueEdges(unittest.TestCase):
+    """No-tasks and all-filtered cases must return cleanly, not raise."""
+
+    def _claim(self, queued, projects=None):
+        claimed = []
+
+        def fake_patch(method, path, body=None, headers=None, params=None):
+            if path == "/rest/v1/tasks" and body and body.get("state") == "RUNNING":
+                tid = (params or {}).get("id", "").replace("eq.", "")
+                claimed.append(tid)
+                t = next((x for x in queued if x["id"] == tid), None)
+                return [t] if t else []
+            return None
+
+        sel = _make_select(queued, projects=projects)
+        with patch.object(db, "select", side_effect=sel), \
+             patch.object(db, "_req", side_effect=fake_patch):
+            db.claim_task("runner-1")
+        return claimed[0] if claimed else None
+
+    def test_empty_queue_returns_none(self):
+        self.assertIsNone(self._claim([]))
+
+    def test_only_pinned_task_is_claimed(self):
+        tasks = [_task("solo-pinned", pinned=True, pin_rank=1)]
+        self.assertEqual(self._claim(tasks), "solo-pinned")
+
+    def test_all_tasks_in_unknown_projects_returns_none(self):
+        tasks = [_task("orphan", project_id="does-not-exist", pinned=True, pin_rank=1)]
+        self.assertIsNone(self._claim(tasks))
 
 
 if __name__ == "__main__":

@@ -1,4 +1,0 @@
-recovery-intent: improve-mesh-apparently-regulatory-intelligence-ma-slice-5-identify-owner-module
-template: 7d865ad68d3a
-intent: 07062319 07071626 4e0fffef1138 8b92d078e856 acceptance adapt agentic alter analysis apparently artifacts because beethoven before behavior below blocks branch broad broken bugfix build category cause change changes changing checks coder commit complete completion concrete config context continue dependencies diffs directive drafting duplicate duplicates eliminating ensure equivalent examine existing exists failure files final finish first focus fresh function functionality green identify implementation improve inspect install instead integral intelligence intent large library lines locate maintainability matched merged minimally missing module original owner parent
-base: master

@@ -19,7 +19,7 @@ os.environ["ORCH_BUILD_VALIDATION_ENABLED"] = "false"
 class TestPatchAdaptation:
     """Verify patch transplant can adapt prior diffs and preserve semantics."""
 
-    def test_patch_parse_extracts_metadata():
+    def test_patch_parse_extracts_metadata(self):
         """parse_patch() extracts file paths, line ranges, and hunks from unified diff."""
         patch_text = (
             "diff --git a/src/auth.py b/src/auth.py\n"
@@ -58,7 +58,7 @@ class TestPatchAdaptation:
         assert result["total_files"] == 1
 
 
-    def test_patch_similarity_detects_compatible_sources():
+    def test_patch_similarity_detects_compatible_sources(self):
         """similarity_score() returns 0.0-1.0 indicating patch applicability."""
         source_patch = (
             "diff --git a/app/login.py b/app/login.py\n"
@@ -110,7 +110,7 @@ class TestPatchAdaptation:
         assert 0.0 <= sim_different <= 1.0
 
 
-    def test_patch_apply_without_conflicts():
+    def test_patch_apply_without_conflicts(self):
         """apply() merges patch into source tree, returning applied dict and conflict list."""
         base_source = (
             "def process(item):\n"
@@ -142,7 +142,7 @@ class TestPatchAdaptation:
         assert result["added_lines"] > 0
 
 
-    def test_patch_apply_with_conflicts():
+    def test_patch_apply_with_conflicts(self):
         """apply() returns conflicts when patch cannot auto-merge."""
         base = "def foo():\n    x = 1\n    return x\n"
 
@@ -181,7 +181,7 @@ class TestPatchAdaptation:
 class TestConfigPreservation:
     """Verify that patch adaptation does not corrupt or lose config state."""
 
-    def test_config_isolation_before_patch():
+    def test_config_isolation_before_patch(self):
         """load_config() reads config from canonical location without side effects."""
         config = {
             "ORCH_BUILD_TIMEOUT": "300",
@@ -198,7 +198,7 @@ class TestConfigPreservation:
         assert config["ORCH_MODEL_TIER"] == "haiku"
 
 
-    def test_config_no_mutation_after_patch():
+    def test_config_no_mutation_after_patch(self):
         """apply_patch() does not modify config keys; config is immutable."""
         config_before = {
             "ORCH_BUILD_TIMEOUT": "300",
@@ -220,7 +220,7 @@ class TestConfigPreservation:
         assert patch_result["config_keys_touched"] == []
 
 
-    def test_config_validation_rejects_invalid_keys():
+    def test_config_validation_rejects_invalid_keys(self):
         """validate_config() ensures only ORCH_* keys are fleet-wide."""
         valid_keys = ["ORCH_BUILD_TIMEOUT", "ORCH_QA_MODELS", "ORCH_DEPLOY_REGION"]
         invalid_keys = ["API_KEY", "DATABASE_URL", "SECRET_TOKEN"]
@@ -235,7 +235,7 @@ class TestConfigPreservation:
 class TestBuildValidation:
     """Verify patch application doesn't break builds or existing tests."""
 
-    def test_build_runs_after_patch():
+    def test_build_runs_after_patch(self):
         """post_patch_build() executes build command and returns rc, stdout, stderr."""
         result = {
             "rc": 0,
@@ -250,7 +250,7 @@ class TestBuildValidation:
         assert result["duration_sec"] > 0
 
 
-    def test_build_fails_on_syntax_error():
+    def test_build_fails_on_syntax_error(self):
         """post_patch_build() returns rc=1 when syntax is broken."""
         result = {
             "rc": 1,
@@ -265,7 +265,7 @@ class TestBuildValidation:
         assert "SyntaxError" in result["stderr"]
 
 
-    def test_test_suite_passes_after_patch():
+    def test_test_suite_passes_after_patch(self):
         """post_patch_test() runs test suite; rc=0 means all tests pass."""
         result = {
             "rc": 0,
@@ -283,7 +283,7 @@ class TestBuildValidation:
         assert result["tests_failed"] == 0
 
 
-    def test_test_suite_fails_on_regression():
+    def test_test_suite_fails_on_regression(self):
         """post_patch_test() returns rc=1 when tests fail."""
         result = {
             "rc": 1,
@@ -304,7 +304,7 @@ class TestBuildValidation:
 class TestQARouting:
     """Verify QA workflow routes through multiple models and collects consensus."""
 
-    def test_qa_panel_models_specified():
+    def test_qa_panel_models_specified(self):
         """qa_panel config lists models to run in parallel for consensus."""
         qa_config = {
             "route_name": "independent_qa",
@@ -321,7 +321,7 @@ class TestQARouting:
         assert qa_config["strategy"] in ("quorum", "unanimous", "majority")
 
 
-    def test_qa_verdict_consensus():
+    def test_qa_verdict_consensus(self):
         """qa_panel_result consolidates votes from all models."""
         verdicts = [
             {
@@ -351,7 +351,7 @@ class TestQARouting:
         assert 0.0 <= result["confidence"] <= 1.0
 
 
-    def test_qa_verdict_disagreement():
+    def test_qa_verdict_disagreement(self):
         """qa_panel_result handles conflicting verdicts."""
         verdicts = [
             {
@@ -383,7 +383,7 @@ class TestQARouting:
 class TestMergeAndRelease:
     """Verify merged patch is released to orchestrator/dev, then production batch."""
 
-    def test_auto_merge_to_orchestrator_dev():
+    def test_auto_merge_to_orchestrator_dev(self):
         """merge_to_dev() commits adapted patch to orchestrator/dev after tests pass."""
         result = {
             "merged": True,
@@ -399,7 +399,7 @@ class TestMergeAndRelease:
         assert "relfix" in result["commit_message"]
 
 
-    def test_batch_release_to_production():
+    def test_batch_release_to_production(self):
         """batch_release() schedules merged patch for production deployment."""
         result = {
             "scheduled": True,
@@ -417,7 +417,7 @@ class TestMergeAndRelease:
 class TestBehaviorPreservation:
     """Verify patch preserves existing behavior; no breaking changes."""
 
-    def test_behavior_snapshot_before_patch():
+    def test_behavior_snapshot_before_patch(self):
         """behavior_snapshot() records API signatures, config keys, exports."""
         snapshot = {
             "exports": [
@@ -437,7 +437,7 @@ class TestBehaviorPreservation:
         assert len(snapshot["exports"]) > 0
 
 
-    def test_behavior_unchanged_after_patch():
+    def test_behavior_unchanged_after_patch(self):
         """behavior_snapshot() confirms all exports and APIs still exist."""
         before = {
             "exports": [
@@ -464,7 +464,7 @@ class TestBehaviorPreservation:
         assert before["external_apis"] == after["external_apis"]
 
 
-    def test_behavior_break_detected():
+    def test_behavior_break_detected(self):
         """behavior_snapshot() detects when exports or APIs are removed."""
         before = {
             "exports": [
@@ -489,7 +489,7 @@ class TestBehaviorPreservation:
 class TestEndToEnd:
     """Integration test: patch transplant workflow from start to finish."""
 
-    def test_relfix_task_complete():
+    def test_relfix_task_complete(self):
         """Full workflow: load patch, adapt, apply, build, test, QA, merge, release."""
         task = {
             "id": "relfix-kalepasch-com-d3c42c32d62c",

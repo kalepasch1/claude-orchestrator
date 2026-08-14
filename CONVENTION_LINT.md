@@ -183,6 +183,75 @@ This rule is in Phase 1 but detection is not fully implemented. The linter ident
 
 ---
 
+### Rule 4: `SCAN_WINDOW_NO_ORDER` (warning)
+
+Flags `select(..., {"limit": N})` where `N >= 100` and there is no `"order"` key.
+
+**Why this rule exists:** that exact shape has caused five outage-class failures on this
+fleet. PostgREST caps a response at **1,000 rows** no matter how large `limit` is, so a big
+literal limit does not widen the window — it hides the truncation. Without `order` the
+window is not even the same rows twice, making the defect silent *and* unreproducible.
+
+```python
+# ❌ VIOLATION: unordered 500-row window, silently truncates
+db.select("tasks", {"select": "*", "state": "eq.QUEUED", "limit": "500"})
+
+# ✓ COUNT — needs a real number
+db.count("tasks", {"state": "eq.QUEUED"})
+
+# ✓ LOOKUP — filter server-side, never scan-and-filter
+db.select("tasks", {"select": "*", "slug": "eq.the-one-we-want"})
+
+# ✓ SAMPLE — a bounded window is fine, but it must be deterministic
+db.select("outcomes", {"select": "*", "order": "created_at.desc", "limit": "500"})
+
+# ✓ FULL SCAN — page to exhaustion
+db.select_all("tasks", {"select": "*", "state": "eq.QUEUED"},
+              order="created_at.asc,id.asc")
+```
+
+**Do not just raise the limit.** A larger window is the same bug, later. Classify the read.
+
+**Exception — `SENTINEL_LIMITS`:** `fleet_stuck_alarm.py` reads `limit: "5001"` purely to
+answer "are there more than 5000?"; `len()` of that page *is* the answer. Values in
+`SENTINEL_LIMITS` are exempt by design.
+
+Severity is `warning` so the ~107 remaining historical sites are visible without failing
+CI. Full classification: `docs/scan-window-audit-2026-08-06.md`.
+
+---
+
+## Test files
+
+`FAIL_SOFT_ERROR` and `HARDCODED_SECRET` do not fire inside test files
+(`test_*.py`, `*_test.py`, anything under a `tests/` directory).
+
+A test that asserts a function raises has to contain a raise, and a fixture named
+`secret` is a fixture, not a credential — so those hits were the suite working as
+designed. Measured 2026-08-12: 246 violations, of which **178 (72%) were inside test
+files**. Since this linter is a pre-commit hook that exits 1, a mostly-false report did
+not make the gate strict; it made it something to route around with `--no-verify`, which
+enforces nothing. After the exemption: 66 violations, all in production code.
+
+Every other rule still applies everywhere, including in tests — a real singleton bug
+hiding in a test module is still a real bug. New rules inherit this behaviour
+automatically because all reporting goes through `ConventionChecker._record`; add a rule
+to `TEST_EXEMPT_RULES` only when a correct test genuinely must trip it.
+
+## Suppressing a violation
+
+`# noqa` on the offending line, either bare or rule-scoped:
+
+```python
+db.select("tasks", {"limit": "500"})   # noqa: SCAN_WINDOW_NO_ORDER
+password = "test-fixture"             # noqa
+```
+
+Comma-separated rule lists are supported (`# noqa: RULE_A, RULE_B`). Prefer fixing the
+finding; use `noqa` only for a deliberate, commented exception.
+
+---
+
 ## Output Format
 
 ### Text (Default)
@@ -233,11 +302,17 @@ runner/resource_governor.py:105: HARDCODED_SECRET: Variable "api_key" contains s
 
 **Test Cases:**
 - 15+ test cases covering normal paths, edge cases, exceptions
-- `tests/test_convention_lint.py`
+- `tests/test_convention_lint.py` — checker unit tests (rules, severities, edge cases)
+- `tests/test_convention_conformance.py` — conformance sweep asserting the live
+  codebase stays clean against the enforced rules (36 cases)
 
 **Running Tests:**
 ```bash
+# checker unit tests
 python -m pytest tests/test_convention_lint.py -v
+
+# full convention surface (unit + conformance sweep)
+python -m pytest tests/ -k convention -q
 ```
 
 ---

@@ -1,0 +1,11 @@
+{
+  "_comment": "Grandfathered convention-lint counts. The hook fails only when a rule's count RISES above these numbers, so the gate is enforceable today without a 9,780-violation cleanup patch. Lower these as violations are fixed; never raise one to make a commit pass.",
+  "counts": {
+    "FAIL_SOFT_ERROR": 5909,
+    "HARDCODED_SECRET": 133,
+    "MAGIC_NUMBERS": 2531,
+    "MODULE_SINGLETON": 1,
+    "NAMING_CONVENTION": 1175
+  },
+  "total": 9749
+}

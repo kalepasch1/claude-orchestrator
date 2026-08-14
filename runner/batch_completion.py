@@ -166,4 +166,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # This reporter runs as a standalone script, so it gets none of periodic.py's DB-failure
+    # handling. It had crash-looped 1,995 times — 100% of its tracebacks — on
+    # `urllib.error.URLError: <urlopen error timed out>` escaping db.select("runner_alerts")
+    # in reconcile_sla_alert(). A reporting job must never take itself down over an outage or a
+    # table that was never deployed: say so once on stdout and exit 0.
+    try:
+        main()
+    except db.MissingRelationError as exc:
+        print(json.dumps({"skipped": "missing-relation", "detail": str(exc)[:300]}))
+        sys.exit(0)
+    except db.TransientDBError as exc:
+        print(json.dumps({"skipped": "transient-db", "detail": str(exc)[:300]}))
+        sys.exit(0)

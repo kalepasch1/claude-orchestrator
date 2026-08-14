@@ -345,7 +345,76 @@ def plan(master: str, repo: str = None, project: str = None) -> list:
         except Exception as e:
             sys.stderr.write(f"[planner] static_file_scope failed ({e}); using LLM scopes\n")
 
+    # DISPOSITION MEMORY (Wave C, Part 7): "branch closures train dedupe + planner so duplicate
+    # work stops being GENERATED."
+    #
+    # This is the read side of the loop, and the only place the saving can actually be taken.
+    # Closing a duplicate is cheap and teaches nothing; the fleet has been closing the same
+    # duplicates for weeks and re-generating them the following week, because nothing consulted
+    # the closure record before decomposing. Suppression is per-INITIATIVE, because the pattern
+    # lives in the decomposition rather than in any one shard.
+    #
+    # Fail-soft and non-empty-guaranteed: if suppression would leave nothing to do we keep the
+    # plan. A planner that can silently return zero tasks is worse than one that occasionally
+    # re-does work.
+    try:
+        import platform_spine
+        signal = _disposition_signal(project)
+        if signal.get("by_initiative"):
+            kept, dropped = [], []
+            for t in tasks:
+                allowed, reason = platform_spine.should_generate(t.get("slug"), signal)
+                (kept if allowed else dropped).append(t if allowed else (t, reason))
+            if dropped and kept:
+                tasks = kept
+                for t, reason in dropped:
+                    sys.stderr.write(f"[planner] SUPPRESSED {t.get('slug')}: {reason}\n")
+            elif dropped:
+                sys.stderr.write("[planner] disposition memory would suppress every task; "
+                                 "keeping the plan rather than returning nothing\n")
+    except Exception as e:
+        sys.stderr.write(f"[planner] disposition memory failed ({e}); planning unchanged\n")
+
     return tasks
+
+
+def _disposition_signal(project=None, limit=500):
+    """Closure history for this project, as a suppression signal. Fail-soft -> {}."""
+    try:
+        import db
+        import platform_spine
+        params = {"select": "slug,state,note", "limit": str(int(limit)),
+                  "state": "in.(SUPERSEDED,QUARANTINED,BLOCKED,DONE)",
+                  "order": "updated_at.desc"}
+        rows = db.select("tasks", params) or []
+        closures = [{"slug": r.get("slug"), "disposition": _disposition_of(r)} for r in rows]
+        return platform_spine.disposition_signal(closures)
+    except Exception:
+        return {}
+
+
+def _disposition_of(row):
+    """Map a task row onto a disposition. Only WASTE is interesting here.
+
+    A DONE task whose note says it was superseded is waste that happens to be recorded as
+    success — the most common shape, and the one a naive `state == 'SUPERSEDED'` filter misses.
+    """
+    try:
+        state = str((row or {}).get("state") or "").upper()
+        note = str((row or {}).get("note") or "").lower()
+        if state == "SUPERSEDED":
+            return "superseded"
+        for marker, disposition in (("duplicate", "duplicate"),
+                                    ("superseded", "superseded"),
+                                    ("already done", "already-done"),
+                                    ("already present", "already-done"),
+                                    ("no code target", "no-op"),
+                                    ("obsolete", "obsolete")):
+            if marker in note:
+                return disposition
+        return "merged"
+    except Exception:
+        return "merged"
 
 
 def to_yaml(tasks: list) -> str:

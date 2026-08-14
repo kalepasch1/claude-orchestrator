@@ -70,28 +70,40 @@ def _default_coder():
     return os.environ.get("ORCH_REPAIR_CODER_FALLBACK", _REPAIR_CODER_FALLBACK)
 
 
-def choose_coder(task):
+def choose_coder(task, avoid=None):
     """Return the coder to use for agentic repair of this task.
 
     Priority: task force_coder > task model (non-claude) >
     ORCH_AGENTIC_REPAIR_DEFAULT_CODER > agentic_coders.pick() >
     ORCH_REPAIR_CODER_FALLBACK (default: "claude").  Never hardcodes "ollama"
     so a missing local Ollama server cannot wedge the repair queue.
+
+    `avoid`, when given, is an iterable of coder names that must not be reselected.
+    Used when a task is being repaired specifically because it didn't finish
+    (orphaned/stuck RUNNING) -- see repair_patch()'s prefer_non_claude -- so the
+    vendor that just failed to finish it doesn't just get handed the same task back.
     """
     task = task or {}
+    avoid = {str(a) for a in (avoid or []) if a}
     forced = task.get("force_coder")
-    if forced:
+    if forced and str(forced) not in avoid:
         return forced
     model = task.get("model")
-    if model and not str(model).startswith("claude"):
+    if model and not str(model).startswith("claude") and str(model) not in avoid:
         return model
     default = os.environ.get("ORCH_AGENTIC_REPAIR_DEFAULT_CODER")
-    if default:
+    if default and default not in avoid:
         return default
     fallback = os.environ.get("ORCH_REPAIR_CODER_FALLBACK", _REPAIR_CODER_FALLBACK)
     try:
         import agentic_coders  # type: ignore
-        return agentic_coders.pick(task) or fallback
+        task_for_pick = dict(task)
+        if avoid:
+            task_for_pick["_avoid_coders"] = sorted(avoid)
+        picked = agentic_coders.pick(task_for_pick)
+        if picked and str(picked) not in avoid:
+            return picked
+        return fallback
     except Exception:
         return fallback
 
@@ -269,7 +281,12 @@ def repair_patch(task, signal, category="rework", directive=None, prefer_non_cla
         return _terminal_patch(task, category, rc, blind, signal)
     if blind:
         directive = _BLIND_DIRECTIVE if not directive else (directive + "\n\n" + _BLIND_DIRECTIVE)
-    coder = choose_coder(task)
+    avoid = None
+    if prefer_non_claude:
+        # This repair exists because the task didn't finish -- diversify away from
+        # whichever coder was already assigned instead of reselecting it verbatim.
+        avoid = {str(x) for x in (task.get("force_coder"), task.get("model")) if x}
+    coder = choose_coder(task, avoid=avoid)
     patch = {
         "state": "QUEUED",
         "account": None,

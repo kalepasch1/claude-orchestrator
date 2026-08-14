@@ -363,15 +363,18 @@ def check_deploy_skip(repo, root, cfg, default_branch):
     # and is the shape that silently stops production.
     git_cfg = cfg.get("git") or {}
     enabled_cfg = git_cfg.get("deploymentEnabled")
-    if isinstance(enabled_cfg, bool) and enabled_cfg is False:
+    intentional = _declares_intentional_no_deploy(cfg)
+    if isinstance(enabled_cfg, bool) and enabled_cfg is False and not intentional:
         out.append(_violation(
             "deployment_disabled_everywhere", rel_root,
             "vercel.json git.deploymentEnabled is `false` for ALL branches, so no push to "
             "'%s' ever deploys. Advisory: for a repo that deliberately does not deploy this "
             "is correct, and deploy_silence_detector honours it. Confirm it is intended."
             % default_branch,
-            "If this project SHOULD deploy, set git.deploymentEnabled to true for '%s'."
-            % default_branch))
+            "If this project SHOULD deploy, set git.deploymentEnabled to true for '%s'. "
+            "If it deliberately does not deploy, record that with "
+            "`\"_deploymentDisabledIntentionally\": true` (or say so in `_comment`) and this "
+            "advisory will stop re-filing." % default_branch))
     elif isinstance(enabled_cfg, dict):
         # PRECEDENCE MATTERS. `{"*": false, "master": true}` is a correct, common config:
         # the exact branch key overrides the catch-all glob, so master DOES deploy. Reading
@@ -383,6 +386,8 @@ def check_deploy_skip(repo, root, cfg, default_branch):
         if matching and not any(val is True for _, val in matching):
             patterns = ", ".join("'%s'" % p for p, _ in matching)
             if not any(v is True for v in enabled_cfg.values()):
+                if intentional:
+                    return out
                 out.append(_violation(
                     "deployment_disabled_everywhere", rel_root,
                     "vercel.json git.deploymentEnabled disables %s (matching the default "
@@ -444,6 +449,48 @@ def check_config_noop(repo, root, cfg):
             "config states what is actually enforced."
             % (pattern, pattern.rstrip("*"))))
     return out
+
+
+#: Phrases in a vercel.json `_comment` that record a deliberate no-deploy decision.
+_INTENT_PHRASES = (
+    "does not deploy", "do not deploy", "never deploy", "not deployed",
+    "disables git deployments", "disable git deployments", "deliberately not",
+    "do not remove",
+)
+
+
+def _declares_intentional_no_deploy(cfg):
+    """True when this vercel.json says, in itself, that not deploying is the point.
+
+    WHY. `deployment_disabled_everywhere` is advisory precisely because it cannot tell a
+    broken config from a correct one — its own text asks a human to "confirm it is
+    intended". But nothing ever recorded the confirmation, so every sweep re-filed the
+    same advisory and each one became a backlog task. Four of the five intents collapsed
+    into THIS task are that one advisory, re-filed: two `deployment_disabled_for_default
+    _branch`, one `deploymentsilence`, one `deployment_disabled_everywhere`. The guard was
+    generating its own backlog.
+
+    This repo's root vercel.json is the canonical example. Its `_comment` reads: the only
+    Vercel project is 'web'; a duplicate project was once auto-created by importing the
+    repo ROOT; this file disables git deployments so a duplicate can never silently
+    build. "Do not remove." Acting on the advisory would delete a safety guard.
+
+    So the answer is recorded IN the config, where it travels with the thing it describes:
+    an explicit `_deploymentDisabledIntentionally: true`, or a `_comment` that says so.
+    Deliberately narrow — it suppresses only the never-deploys-anywhere advisories, never
+    the BLOCKING inconsistent case (some branches enabled, default branch not), which is
+    the shape that actually stops production by accident.
+    """
+    if not isinstance(cfg, dict):
+        return False
+    flag = cfg.get("_deploymentDisabledIntentionally")
+    if flag is True:
+        return True
+    comment = cfg.get("_comment")
+    if isinstance(comment, (list, tuple)):
+        comment = " ".join(str(c) for c in comment)
+    text = str(comment or "").lower()
+    return any(phrase in text for phrase in _INTENT_PHRASES)
 
 
 def check_root(repo, root, ref):

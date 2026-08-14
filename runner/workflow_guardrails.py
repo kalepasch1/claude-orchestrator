@@ -158,11 +158,48 @@ def check_worktree_count(repo_path):
     return {"passed": True, "count": count}
 
 # ── Guardrail 6: Remote branch GC (the missing piece) ─────────────────────
-def gc_remote_branches(repo_path):
+def terminal_slugs(project_repo_path=None):
+    """Slugs of tasks in a TERMINAL state (DONE/MERGED/QUARANTINED).
+
+    Mirrors the contract branch_gc.collect_garbage() has always required. Returns an EMPTY
+    set on any failure — and callers must treat an empty set as "delete nothing", never as
+    "nothing is protected". See gc_remote_branches().
+    """
+    try:
+        import db
+        params = {"select": "slug,state", "state": "in.(DONE,MERGED,QUARANTINED)", "limit": "20000"}
+        rows = db.select("tasks", params) or []
+        return {r.get("slug") for r in rows if r.get("slug")}
+    except Exception:
+        return set()
+
+
+def gc_remote_branches(repo_path, terminal=None):
     """Delete remote agent branches older than REMOTE_GC_DAYS.
-    branch_gc.py only handles local; this handles origin/agent/*."""
+    branch_gc.py only handles local; this handles origin/agent/*.
+
+    TASK-STATE GATE (audit addendum §A, prerequisite for ever wiring `remotegc`).
+    ---------------------------------------------------------------------------
+    This function deleted `origin/agent/*` by AGE ALONE. Unlike local `branch_gc.py` it never
+    consulted task state, so it could `git push origin --delete` the branch of a task that was
+    still QUEUED, RUNNING, or BLOCKED — an irreversible EXTERNAL deletion of live work. That is
+    why §A of the addendum lists `remotegc` as MUST-STAY-UNWIRED, and why removing that entry
+    from the do-not-touch list requires this gate to exist first.
+
+    `terminal` is a set of slugs in DONE/MERGED/QUARANTINED, exactly like
+    branch_gc.collect_garbage()'s `terminal_slugs`. Passing None makes this function fetch it
+    itself; if that lookup yields nothing, we REFUSE TO DELETE rather than assume the queue is
+    empty. Fail-safe beats fail-open when the failure mode is unrecoverable.
+    """
     if not REMOTE_GC_ENABLED:
         return {"deleted": 0, "reason": "disabled"}
+    if terminal is None:
+        terminal = terminal_slugs(repo_path)
+    if not terminal:
+        _log.warning("remote_branch_gc: no terminal task slugs available — refusing to delete "
+                     "any origin/agent/* branch (a QUEUED/RUNNING task's branch could be among "
+                     "them, and push --delete is irreversible)")
+        return {"deleted": 0, "skipped": 0, "errors": 0, "reason": "no terminal slugs — fail safe"}
     _git(repo_path, "fetch", "--prune", "origin")
     rc, out, _ = _git(repo_path, "branch", "-r", "--list", "origin/agent/*")
     if rc != 0:
@@ -170,6 +207,15 @@ def gc_remote_branches(repo_path):
     branches = [b.strip() for b in out.splitlines() if b.strip()]
     deleted, skipped, errors = [], 0, 0
     for branch in branches:
+        # TASK-STATE GATE — the branch_gc.py contract, mirrored. A slug that is not terminal
+        # belongs to work that is queued, running, or blocked; its remote branch is the only
+        # durable copy and `push --delete` cannot be undone.
+        slug = branch.replace("origin/agent/", "", 1) if branch.startswith("origin/agent/") else \
+            branch.replace("origin/", "", 1)
+        if slug not in terminal:
+            _log.info("remote_branch_gc: KEEPING %s — task '%s' is not in a terminal state "
+                      "(DONE/MERGED/QUARANTINED)", branch, slug)
+            skipped += 1; continue
         rc, log_out, _ = _git(repo_path, "log", "-1", "--format=%ct", branch)
         if rc != 0 or not log_out.strip():
             skipped += 1; continue

@@ -10,6 +10,24 @@
 # This script ONLY handles the 12 cleanly-recoverable stashes. It never pops, never drops,
 # never touches the conflicted set. Each becomes its own commit on ONE recovery branch so you
 # can review, cherry-pick, or discard wholesale.
+# ---------------------------------------------------------------------------
+# STALENESS HAZARD — read before running this again.
+#
+# The RECOVERABLE list below is POSITIONAL. `stash@{N}` indexes the stash reflog, so dropping
+# or creating ANY stash renumbers every entry after it. These twelve indices were vetted
+# against Mac 1's stash list on 2026-07-30; run this against a list that has shifted since and
+# it will recover a DIFFERENT set of stashes, silently, because the wrong ones still apply
+# cleanly. On a machine with a different stash list (this repo currently has none) it either
+# no-ops or applies arbitrary work.
+#
+# Re-derive the buckets before trusting these indices:
+#
+#     python3 runner/stash_triage.py --repo .
+#
+# That is read-only — it never pops, drops, or applies — and it reports the recoverable set by
+# COMMIT SHA, which is stable across renumbering. Replace RECOVERABLE with those SHAs (this
+# script's `git stash show` calls accept a SHA wherever they accept stash@{N}).
+# ---------------------------------------------------------------------------
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -18,6 +36,11 @@ LEDGER="recovery-ledger-$(date +%Y%m%d-%H%M%S).md"
 RECOVERABLE=(stash@{2} stash@{37} stash@{39} stash@{64} stash@{65} stash@{69} stash@{70} stash@{97} stash@{161} stash@{220} stash@{221} stash@{259})
 
 echo "==> current branch: $(git rev-parse --abbrev-ref HEAD)   HEAD: $(git rev-parse --short HEAD)"
+if [ "$(git stash list | wc -l | tr -d ' ')" -eq 0 ]; then
+  echo "!! no stashes in this repo — the vetted indices refer to Mac 1's list, not this one."
+  echo "   Run: python3 runner/stash_triage.py --repo .   (read-only) before proceeding."
+  exit 1
+fi
 if [ -n "$(git status --porcelain)" ]; then
   echo "!! working tree is dirty — commit or handle it first (this script refuses to run dirty)"; exit 1
 fi

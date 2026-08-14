@@ -108,6 +108,9 @@ class ReleasePushFastForwardTest(unittest.TestCase):
         self.gated_shas = []
         self._patch("_rerun_release_gates",
                     lambda repo, sha, tc, rt, bc: (self.gated_shas.append(sha), (True, "", ""))[1])
+        self.proved_shas = []
+        self._patch("_persist_production_build_proof",
+                    lambda repo, sha, cmd: (self.proved_shas.append(sha), (True, cmd))[1])
 
     def _patch(self, name, value):
         saved = getattr(release_train, name)
@@ -150,6 +153,7 @@ class ReleasePushFastForwardTest(unittest.TestCase):
         # The pushed tip is the integrated tip, and it contains the remote prod tip.
         remote_tip = _run(self.origin, "rev-parse", self.prod).stdout.strip()
         self.assertEqual(remote_tip, to_sha)
+        self.assertEqual([to_sha], self.proved_shas)
         self.assertEqual([], self.failed)
 
     # 2. integration conflicts -> failed release recorded, self-heal queued, NO push, no force
@@ -204,6 +208,18 @@ class ReleasePushFastForwardTest(unittest.TestCase):
         self.assertTrue(any(f["gate"] == "build" for f in self.failed))
         self.assertEqual([], [c for c in self.git_calls if c and c[0] == "push"])
         self.assertNotIn("staged work", self._origin_log())
+
+    def test_missing_exact_build_proof_blocks_the_push(self):
+        self._patch("_persist_production_build_proof",
+                    lambda repo, sha, cmd: (False, "proof graph write failed"))
+        self._stage_commit()
+
+        pushed, _to_sha, log = self._push()
+
+        self.assertFalse(pushed)
+        self.assertIn("proof graph", log)
+        self.assertTrue(any(f["gate"] == "proof" for f in self.failed))
+        self.assertEqual([], [c for c in self.git_calls if c and c[0] == "push"])
 
     # 4. push fails for a non-conflict reason -> failed release with the real stderr
     def test_non_conflict_push_failure_records_real_stderr(self):
@@ -277,6 +293,34 @@ class NonFastForwardDetectionTest(unittest.TestCase):
         self.assertFalse(release_train._is_non_fast_forward(result))
 
 
+class ProductionBuildProofTest(unittest.TestCase):
+    def test_records_the_exact_kind_and_command_consumed_by_push_guard(self):
+        import build_gate
+        import proof_graph
+        from unittest.mock import patch
+
+        with patch.object(build_gate, "detect_build_cmd", return_value="npm run build"), \
+             patch.object(proof_graph, "record_verification") as record, \
+             patch.object(proof_graph, "reusable_verification", return_value={"success": True}) as read:
+            ok, note = release_train._persist_production_build_proof(
+                "/repo", "a" * 40, "npm run build")
+
+        self.assertTrue(ok, note)
+        record.assert_called_once_with("/repo", "a" * 40, "npm run build", "build", True)
+        read.assert_called_once_with("/repo", "a" * 40, "npm run build", "build")
+
+    def test_does_not_certify_a_different_command_than_the_one_built(self):
+        import build_gate
+        from unittest.mock import patch
+
+        with patch.object(build_gate, "detect_build_cmd", return_value="npm run build"):
+            ok, note = release_train._persist_production_build_proof(
+                "/repo", "a" * 40, "npm run typecheck")
+
+        self.assertFalse(ok)
+        self.assertIn("refusing to certify", note)
+
+
 class WithdrawUnreleasedMergedTest(unittest.TestCase):
     """A failed push must not leave tasks claiming MERGED for commits nobody can see."""
 
@@ -302,8 +346,12 @@ class WithdrawUnreleasedMergedTest(unittest.TestCase):
         release_train._git = fake_git
         self.addCleanup(setattr, release_train, "_git", saved_git)
 
-        withdrawn = release_train._withdraw_unreleased_merged(
-            {"id": "proj-1"}, "demo", "/repo", "master", "push rejected")
+        import merge_train
+        from unittest.mock import patch
+        with patch.object(merge_train, "ensure_integration_card_result",
+                          return_value=merge_train.CARD_CREATED) as ensure:
+            withdrawn = release_train._withdraw_unreleased_merged(
+                {"id": "proj-1"}, "demo", "/repo", "master", "push rejected")
 
         self.assertEqual(["stranded"], withdrawn)
         self.assertEqual(1, len(db.updated))
@@ -311,6 +359,8 @@ class WithdrawUnreleasedMergedTest(unittest.TestCase):
         self.assertEqual({"id": "t2"}, match)
         self.assertEqual("DONE", values["state"])
         self.assertIn("not on origin/master", values["note"])
+        ensure.assert_called_once()
+        self.assertEqual("stranded", ensure.call_args.args[1])
 
 
 class NoForcePushToProductionTest(unittest.TestCase):

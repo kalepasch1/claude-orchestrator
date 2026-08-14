@@ -48,13 +48,50 @@ DEFAULT_RULES = [
         "threshold": 10,
         "severity": "warning",
     },
+    # ---- Integration throughput: ABSOLUTE, LEVEL-BASED triggers ----------------
+    #
+    # The 2026-08-08 outage. Merges per day: Aug 5 = 234, Aug 6 = 246, Aug 7 = 45,
+    # Aug 8 = 4. A 60x collapse from peak; the fleet shipped essentially nothing for
+    # ~36h. Two independent reasons nothing responded:
+    #
+    #   * the repair loop only fires a playbook when a KPI is >2x worse than the
+    #     PREVIOUS run. That is a derivative test and it is blind to a slow
+    #     catastrophe — the loop's own stored baseline saw merged_24h 15 -> 9, a
+    #     ratio of 1.667, under its 2x bar, while the real level was in free fall;
+    #   * the only absolute rule here, `low_merge_rate`, fired at `< 5` with severity
+    #     "info". Aug 7's 45 merges tripped nothing at all, and Aug 8's 4 merges
+    #     produced an "info" — the single most business-critical failure the fleet
+    #     has, ranked below queue depth.
+    #
+    # So: a LADDER of absolute levels, and a severity that matches the stakes. A level
+    # test cannot be outrun by a gradual decline, however smooth.
     {
-        "id": "low_merge_rate",
-        "name": "Low merge rate",
+        "id": "merge_throughput_degraded",
+        "name": "Merge throughput degraded",
         "metric": "merge_rate_24h",
         "operator": "lt",
-        "threshold": 5,
-        "severity": "info",
+        # Aug 7 (45 merges) would have fired here, ~24h before the fleet hit zero.
+        "threshold": 50,
+        "severity": "warning",
+    },
+    {
+        "id": "merge_throughput_collapsed",
+        "name": "Merge throughput collapsed — the fleet is not shipping",
+        "metric": "merge_rate_24h",
+        "operator": "lt",
+        "threshold": 10,
+        # Critical, not info: nothing merging is worse than a deep queue.
+        "severity": "critical",
+    },
+    {
+        "id": "merge_stall_1h",
+        "name": "No merges in the last hour",
+        "metric": "merge_rate_1h",
+        "operator": "lt",
+        "threshold": 1,
+        # Fast detection. A 24h window needs most of a day of zero before it reads
+        # as zero; the outage ran 7.5h before anyone looked.
+        "severity": "critical",
     },
 ]
 
@@ -105,9 +142,22 @@ def _collect_metrics():
         merged_24h = db.select("tasks", {"select": "id", "state": "eq.MERGED", "updated_at": f"gte.{cutoff_24h}"}) or []
         metrics["merge_rate_24h"] = len(merged_24h)
 
+        # Short window so a stall is visible in an hour rather than a day. A 24h
+        # counter still reads 60 the morning after everything stopped.
+        merged_1h = db.select("tasks", {"select": "id", "state": "eq.MERGED",
+                                        "updated_at": f"gte.{cutoff_1h}"}) or []
+        metrics["merge_rate_1h"] = len(merged_1h)
+
         metrics["pending_approvals"] = state_counts.get("PENDING_REVIEW", 0)
-    except Exception:
-        pass
+    except Exception as e:
+        # Was `pass`. Silence here is the worst possible failure of a monitor: with no
+        # metrics every `lt` rule evaluates against None, `_compare` returns False, and
+        # the dashboard shows a calm green board precisely when the control plane is
+        # unreachable. Say so, out loud, and still fail soft.
+        print(f"[alert_rules_engine] metric collection FAILED ({type(e).__name__}: {e}); "
+              f"alerts evaluated on partial metrics — a quiet board is NOT evidence of health",
+              file=sys.stderr)
+        metrics["_collection_error"] = f"{type(e).__name__}: {e}"
     return metrics
 
 
@@ -176,10 +226,54 @@ def evaluate(rules=None, metrics=None):
                     "body": json.dumps(event, indent=2, default=str)[:3000],
                     "created_at": now,
                 })
-            except Exception:
-                pass
+            except Exception as e:
+                # Was `pass`. An alert that cannot be persisted is exactly when someone
+                # needs to hear about it; swallowing the error silently loses both the
+                # alert and the fact that alerting is broken.
+                print(f"[alert_rules_engine] could not persist alert {event['rule_id']}: "
+                      f"{type(e).__name__}: {e}", file=sys.stderr)
+            dispatch_critical(event)
 
     return events
+
+
+def dispatch_critical(event, notifier=None):
+    """Send CRITICAL alerts to the real notification channel. Returns True if sent.
+
+    An inbox row is a record, not a notification — nothing pages on it, and the row is
+    only seen by someone already looking at the dashboard. That is the same failure the
+    fleet keeps hitting: "production stopped and NOTHING reported a failure". A rule
+    marked `critical` has to leave the database.
+
+    Deliberately CRITICAL only. Routing warnings here too is how a channel becomes noise
+    and then gets muted, which is worse than not having it — `queue_stall` and
+    `merge_throughput_collapsed` are the ones worth waking someone for.
+
+    Fail-soft, and loudly: a notifier that raises must not break the evaluation loop that
+    produced the alert, but it must not disappear either.
+    """
+    try:
+        # Normalize FIRST. A non-dict event reaching the error handler made the handler
+        # itself raise (`'str' object has no attribute 'get'`), turning a fail-soft path
+        # into the exception it existed to prevent.
+        if not isinstance(event, dict):
+            return False
+        if event.get("event") != "firing":
+            return False
+        if str(event.get("severity", "")).lower() != "critical":
+            return False
+        if notifier is None:
+            import notify as _notify
+            notifier = _notify.send
+        notifier(
+            f"[CRITICAL] {event.get('name')}: {event.get('metric')}={event.get('value')} "
+            f"(threshold {event.get('threshold')})")
+        return True
+    except Exception as e:
+        rule_id = event.get("rule_id") if isinstance(event, dict) else "<malformed>"
+        print(f"[alert_rules_engine] critical dispatch failed for "
+              f"{rule_id}: {type(e).__name__}: {e}", file=sys.stderr)
+        return False
 
 
 def firing_alerts():

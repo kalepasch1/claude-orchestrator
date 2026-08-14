@@ -24,10 +24,26 @@ DEFAULT_CONFIG_FILENAME = "orchestration.yaml"
 MAX_CONFIG_BYTES = 1 * 1024 * 1024
 
 # One env var per tunable, mirroring beethoven/app/config/settings.py.
-DEFAULT_MAX_PARALLEL_TASKS = int(os.environ.get("ORCH_MAX_PARALLEL_TASKS", "4"))
-DEFAULT_POLL_INTERVAL_SECONDS = float(os.environ.get("ORCH_POLL_INTERVAL_SECONDS", "5.0"))
-DEFAULT_RETRY_LIMIT = int(os.environ.get("ORCH_RETRY_LIMIT", "3"))
-DEFAULT_TASK_TIMEOUT_SECONDS = int(os.environ.get("ORCH_TASK_TIMEOUT_SECONDS", "3600"))
+#
+# These are read at IMPORT time, so a bare int()/float() here means one typo in an
+# exported ORCH_* value raises ValueError before the module finishes importing —
+# taking down every consumer of the config with it. That is the exact inverse of
+# this module's fail-soft contract, so a malformed value falls back to the built-in
+# default instead. The value is still wrong, but the fleet keeps running.
+def _env_number(name, default, cast):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return cast(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+DEFAULT_MAX_PARALLEL_TASKS = _env_number("ORCH_MAX_PARALLEL_TASKS", 4, int)
+DEFAULT_POLL_INTERVAL_SECONDS = _env_number("ORCH_POLL_INTERVAL_SECONDS", 5.0, float)
+DEFAULT_RETRY_LIMIT = _env_number("ORCH_RETRY_LIMIT", 3, int)
+DEFAULT_TASK_TIMEOUT_SECONDS = _env_number("ORCH_TASK_TIMEOUT_SECONDS", 3600, int)
 DEFAULT_LOG_LEVEL = os.environ.get("ORCH_LOG_LEVEL", "INFO")
 DEFAULT_QUEUE_NAME = os.environ.get("ORCH_QUEUE_NAME", "orchestrator")
 DEFAULT_FAIL_FAST = os.environ.get("ORCH_FAIL_FAST", "false").lower() in ("1", "true", "yes")

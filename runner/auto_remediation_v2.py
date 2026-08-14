@@ -14,13 +14,20 @@ class RemediationResult:
 
 
 class AutoRemediationEngineV2:
+    def propose(self, app_id: str, issue: dict[str, Any], plan: dict[str, Any]) -> RemediationResult:
+        """Record a proposed action without pretending that it was executed."""
+        evidence_bus.append(app_id, "compliance.remediation.proposed", str(issue.get("id", "unknown")), plan)
+        operation = plan.get("operation", "")
+        reason = "protected operation" if operation in PROTECTED_OPERATIONS or plan.get("requires_human_approval") else "requires an execution adapter"
+        return RemediationResult("approval_required", reason, plan)
+
     def remediate(self, app_id: str, issue: dict[str, Any], generate: Callable[[dict[str, Any]], dict[str, Any]],
                   validate: Callable[[dict[str, Any]], bool], apply: Callable[[dict[str, Any]], None]) -> RemediationResult:
         plan = generate(dict(issue))
         operation = plan.get("operation", "")
-        evidence_bus.append(app_id, "compliance.remediation.proposed", str(issue.get("id", "unknown")), plan)
         if operation in PROTECTED_OPERATIONS or plan.get("requires_human_approval"):
-            return RemediationResult("approval_required", "protected operation", plan)
+            return self.propose(app_id, issue, plan)
+        evidence_bus.append(app_id, "compliance.remediation.proposed", str(issue.get("id", "unknown")), plan)
         if not validate(plan):
             return RemediationResult("rejected", "validation failed", plan)
         apply(plan)

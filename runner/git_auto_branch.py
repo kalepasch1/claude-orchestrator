@@ -107,7 +107,16 @@ def _done_slugs():
 def cleanup_stale_worktrees(repo):
     """Prune git worktrees that reference missing directories, then remove
     worktrees for terminal-state tasks. This prevents 'already checked out'
-    errors that block branch operations.
+    errors that block branch operations, and reclaims disk from worktrees left
+    behind by crashed executor sessions.
+
+    Only `agent/*` worktrees are ever considered for removal. A second, unguarded
+    copy of this function used to be defined further down the module and silently
+    shadowed this one; it derived the slug with a bare `removeprefix(BRANCH_PREFIX)`
+    and so treated a non-agent branch (`master`, `orchestrator/dev`, …) as slug
+    `orchestrator/dev` — one slug collision away from force-removing an operator
+    worktree. The guarded implementation is the one that survives.
+
     Returns count of worktrees removed."""
     if not repo or not os.path.isdir(repo):
         return 0
@@ -125,23 +134,41 @@ def cleanup_stale_worktrees(repo):
     removed = 0
     current_path = None
     current_branch = None
+
+    def _flush():
+        """Evaluate the entry just parsed. Returns 1 if the worktree was removed."""
+        if not (current_path and current_branch):
+            return 0
+        # Guard: only agent/* worktrees are ever eligible. Without this a branch
+        # like `orchestrator/dev` would survive removeprefix() unchanged and be
+        # matched against task slugs directly.
+        if not current_branch.startswith(BRANCH_PREFIX):
+            return 0
+        slug = current_branch.removeprefix(BRANCH_PREFIX)
+        if slug in active or slug not in terminal:
+            return 0
+        _, done = _git(["worktree", "remove", "--force", current_path], repo)
+        if not done:
+            return 0
+        _log_info(f"removed stale worktree: {current_path}")
+        return 1
+
     for line in out.splitlines():
         if line.startswith("worktree "):
+            removed += _flush()  # entries are not always blank-line terminated
             current_path = line[len("worktree "):]
             current_branch = None
         elif line.startswith("branch refs/heads/"):
             current_branch = line[len("branch refs/heads/"):]
-        elif line == "" and current_path and current_branch:
-            # End of a worktree entry — evaluate for removal
-            if current_branch.startswith(BRANCH_PREFIX):
-                slug = current_branch.removeprefix(BRANCH_PREFIX)
-                if slug not in active and slug in terminal:
-                    _, ok = _git(["worktree", "remove", "--force", current_path], repo)
-                    if ok:
-                        removed += 1
-                        _log_info(f"removed stale worktree: {current_path}")
+        elif line == "":
+            removed += _flush()
             current_path = None
             current_branch = None
+
+    # Flush the final entry: `git worktree list --porcelain` normally ends with a
+    # blank line, but splitlines() drops it when the output has no trailing
+    # newline, which silently skipped the last worktree in the list.
+    removed += _flush()
 
     return removed
 
@@ -284,40 +311,7 @@ def rebase_stale_branches(repo, base="master"):
     return rebased
 
 
-def cleanup_stale_worktrees(repo):
-    """Prune orphaned worktrees and remove worktree dirs for terminal tasks.
 
-    Worktrees left behind by crashed executor sessions waste disk and can block
-    branch creation. This prunes git's internal worktree bookkeeping and removes
-    worktree directories whose slug maps to a DONE/MERGED task.
-    """
-    if not repo or not os.path.isdir(repo):
-        return 0
-    # git worktree prune removes bookkeeping for deleted directories
-    _git(["worktree", "prune"], repo)
-    # list remaining worktrees and remove those for terminal tasks
-    out, ok = _git(["worktree", "list", "--porcelain"], repo)
-    if not ok:
-        return 0
-    active = _active_slugs()
-    terminal = {**_merged_slugs(), **_done_slugs()}
-    removed = 0
-    current_path = None
-    for line in out.splitlines():
-        if line.startswith("worktree "):
-            current_path = line.split(" ", 1)[1].strip()
-        elif line.startswith("branch ") and current_path:
-            branch = line.split(" ", 1)[1].strip()
-            # refs/heads/agent/some-slug → some-slug
-            slug = branch.replace("refs/heads/", "").removeprefix(BRANCH_PREFIX)
-            if slug in terminal and slug not in active:
-                _, ok = _git(["worktree", "remove", "--force", current_path], repo)
-                if ok:
-                    removed += 1
-            current_path = None
-        elif line == "":
-            current_path = None
-    return removed
 
 
 def run():

@@ -38,8 +38,10 @@ except Exception:
     _verify_mod = None
 
 import events
+import delivery_lease
 import approval_merge   # reuse _slug_from + _free_branch (the worktree-unlock fix)
 import integration_runtime
+import paused_host_guard
 import agentic_repair
 import repo_lock        # FIX 2026-07-28: was used at the per-repo serialization site but never
                         # imported -> every train_run() crashed with NameError before integrating
@@ -195,10 +197,11 @@ def _materialize_branch(repo, branch):
 def _task_patch(task, patch, repo=None, prod_branch=None):
     """Single write point for task state in the train — so the MERGED gate cannot be bypassed.
 
-    Every MERGED written here must first be proven reachable from the project's prod_branch
-    (merge_truth). A patch that is not MERGED passes straight through. On an infrastructure
-    error the gate returns None and we write nothing, leaving the row for the next cycle
-    rather than downgrading a real merge because a fetch timed out.
+    Every MERGED written here must first be proven reachable from the project's integration
+    branch (merge_truth). Production reachability is deliberately checked later by the
+    release/deployment terminal. A patch that is not MERGED passes straight through. On an
+    infrastructure error the gate returns None and we write nothing, leaving the row for the
+    next cycle rather than downgrading a real merge because a fetch timed out.
     """
     import merge_truth
     final = merge_truth.gate_merged_patch(task, patch, repo=repo, prod_branch=prod_branch)
@@ -334,6 +337,59 @@ def _divergent_gate(repo, base, branch):
         return divergent_authorship_guard.gate(repo, base, branch)
     except Exception as exc:
         return False, f"divergent authorship guard error (fail-closed): {type(exc).__name__}: {exc}"
+
+
+def _orphan_import_gate(repo, base, branch):
+    """Refuse a candidate that adds an import no tracked file can satisfy. (ok, detail)
+
+    apparently's production build was red for five hours on
+    `Could not resolve "./kv" from "server/utils/governance.ts"`. governance.ts was committed;
+    kv.ts was not — it existed only as untracked dirt on the machine that wrote it. The build
+    gate ran in a checkout that HAD the file, so the change was green right up to shipping. The
+    defect was not in the diff; it was missing from it.
+
+    Scoped to the files the candidate touches, and only to "./" / "../" specifiers. Every repo
+    here carries pre-existing dangling imports in paths no build entry point reaches (17 in
+    apparently, 15 in tomorrow, both green), so judging the whole tree would fail every merge on
+    inherited noise. Alias forms ("~/", "@/") are excluded because resolving them means guessing
+    at srcDir and tsconfig paths — that guess produced 281 findings across four green repos.
+
+    Cheap by design: git plus a regex, no build, no network. Runs before the test and build
+    gates rather than after.
+
+    FAIL-OPEN, unlike the regression and stub gates. Those protect against destroying existing
+    code, where the cost of a false negative is unrecoverable. This one protects against
+    shipping a broken build, which the build gate downstream will also catch — so a crash here
+    must not block the queue. Opt out with ORCH_MERGE_ORPHAN_IMPORT_GATE=false.
+    """
+    if os.environ.get("ORCH_MERGE_ORPHAN_IMPORT_GATE", "true").strip().lower() in (
+            "0", "false", "no", "off"):
+        return True, "orphan-import gate disabled by ORCH_MERGE_ORPHAN_IMPORT_GATE"
+    try:
+        import orphan_imports
+        changed = _git(repo, "diff", "--name-only", f"{base}...{branch}")
+        if changed.returncode:
+            return True, "could not diff candidate (gate skipped)"
+        touched = {p.strip() for p in (changed.stdout or "").splitlines() if p.strip()}
+        if not touched:
+            return True, "no files changed"
+        found = orphan_imports.dangling_imports(repo, only_files=touched)
+        if found:
+            return False, orphan_imports.describe(found)
+        # Case-colliding paths are the same shape of defect from the other direction: additive,
+        # so no deletion- or stub-based guard sees them, and permanently fatal on a
+        # case-insensitive filesystem. An auto-resolved merge left racefeed tracking both
+        # OPPORTUNITIES.json and opportunities.json; macOS can hold one of them, so git reported
+        # the other as modified in every checkout and that integration slot was condemned from
+        # the moment the merge landed.
+        clashes = orphan_imports.case_collisions(repo, only_files=touched)
+        if clashes:
+            names = "; ".join(" vs ".join(paths) for _, paths in clashes[:4])
+            return False, (f"{len(clashes)} case-colliding path(s) — unusable on a "
+                           f"case-insensitive filesystem: {names}")
+        return True, "no dangling imports or case collisions in the changed files"
+    except Exception as exc:
+        return True, f"orphan-import gate unavailable (fail-open): {type(exc).__name__}: {exc}"
 
 
 def _stub_gate(repo, proj, base, branch):
@@ -478,6 +534,14 @@ def _try_semantic_merge(repo, branch, base):
         if not merge_base:
             return False
 
+        # Capture the branch tip BEFORE anything resets it. This is the conceptual
+        # "branch parent" of the resolution and the rollback target; after the
+        # `git reset --hard base` below, the branch ref no longer points at the work.
+        tip = _git(repo, "rev-parse", "--verify", f"{branch}^{{commit}}")
+        if tip.returncode != 0 or not tip.stdout.strip():
+            return False
+        branch_tip = tip.stdout.strip()
+
         # files changed on the branch side (merge-base..branch)
         branch_diff = _git(repo, "diff", "--name-only", merge_base, branch)
         base_diff = _git(repo, "diff", "--name-only", merge_base, base)
@@ -556,6 +620,32 @@ def _try_semantic_merge(repo, branch, base):
             commit = subprocess.run(["git", "commit", "--allow-empty", "-m", msg], cwd=wt,
                                     capture_output=True, timeout=30)
             if commit.returncode != 0:
+                return False
+
+            # SILENT-DISCARD GATE (2026-08-06). This is the second producer of
+            # "(auto-resolved)" commits, and the semantic merge can legitimately resolve a
+            # file to exactly mainline's bytes. When it does, and the branch side carried
+            # commits that exist nowhere else, that is not a resolution — it is a deletion
+            # wearing a merge's clothes, and nothing downstream can see it (the result IS
+            # the mainline blob, so every base-vs-result diff is empty).
+            #
+            # Note the parents deliberately: the worktree was reset to `base` and the
+            # merged content overlaid, so the new commit's git parent is base. The
+            # CONCEPTUAL branch parent is branch_tip, captured before the reset — passing
+            # the post-reset ref would compare the branch against itself and always pass.
+            try:
+                import automerge_discard_guard
+                ok, detail = automerge_discard_guard.gate(
+                    repo, base, branch_tip, result_ref="HEAD", branch=branch)
+            except Exception as exc:
+                ok, detail = False, (f"automerge discard guard error (fail-closed): "
+                                     f"{type(exc).__name__}: {exc}")
+            if not ok:
+                # Roll the branch back to where it was and let the caller fall through to
+                # the existing redo/manual path. The branch is the only copy of the work.
+                subprocess.run(["git", "reset", "--hard", branch_tip], cwd=wt,
+                               capture_output=True, timeout=30)
+                print(f"[train] semantic merge of {branch} REFUSED: {detail}")
                 return False
             return True
         finally:
@@ -931,7 +1021,7 @@ def _ff_base(repo, branch, base):
     return False
 
 
-def _push_base(repo, base):
+def _push_base(repo, base, project=None):
     """Step 5: push only when explicitly enabled. Returns '' or an error tail.
 
     On a non-fast-forward rejection (origin moved while we merged — e.g. the other Mac pushed),
@@ -948,6 +1038,12 @@ def _push_base(repo, base):
         task_refs._ensure_auth(repo)
     except Exception:
         pass  # best-effort; push will fail with a clear error if auth is missing
+    # FENCE CHECK (2026-08-13): this is the integration branch update that the 54
+    # PUSH-VERIFY-FAILED sha mismatches came from. integration_owner.decide() ran once,
+    # at the top of the pass, potentially many cards and minutes ago; re-verify the
+    # fence against the store here, immediately before origin moves.
+    delivery_lease.require(delivery_lease.held(project or "", delivery_lease.ROLE_INTEGRATOR),
+                           f"push integration branch {base}")
     r = _git(repo, "push", "origin", base, timeout=300)
     if r.returncode == 0:
         return ""
@@ -967,28 +1063,86 @@ def _push_base(repo, base):
     return "PUSHFAIL:" + err[-120:]
 
 
-def _verify_push(repo, base):
-    """Contract guarantee: verify origin/{base} matches local {base} after push.
+def _is_ancestor(repo, ancestor_sha, descendant_sha):
+    """True when `ancestor_sha` is reachable from `descendant_sha`.
 
-    Returns '' on success, error string if the remote ref does not match.
-    This prevents the DB/GitHub desync observed 2026-07-09 where a task was
-    marked MERGED but the push silently failed to advance origin."""
+    Fail CLOSED: any git error returns False, so an unanswerable question is treated
+    as divergence and the caller refuses. Being wrong in this direction costs a retry;
+    being wrong in the other direction certifies a push that never landed.
+    """
+    if not ancestor_sha or not descendant_sha:
+        return False
+    try:
+        r = _git(repo, "merge-base", "--is-ancestor", ancestor_sha, descendant_sha, timeout=60)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _verify_push(repo, base):
+    """Contract guarantee: our commit is really on origin/{base} after the push.
+
+    Returns '' on success, error string otherwise. This prevents the DB/GitHub desync
+    observed 2026-07-09 where a task was marked MERGED but the push silently failed to
+    advance origin.
+
+    EXACT-MATCH WAS TOO STRICT (2026-08-07). The check required local == remote, so a
+    benign interleave — our push lands, then another train or auto-sync commits on top
+    before our read-back — reported VERIFY:sha-mismatch even though our work was safely
+    on the remote. Nothing was ever overwritten (the guard did its job), but every event
+    burned a full retry cycle, and the rate was climbing with fleet concurrency:
+    64 -> 72 -> 81 mismatches over 2026-08-07 alone.
+
+    So the question is no longer "does the remote tip equal my sha" but "is my commit
+    ON the remote branch". Those differ only when someone built on top of us, which is
+    precisely the benign case. The dangerous cases still fail, because for each of them
+    our commit is NOT an ancestor of the remote tip:
+
+      * the push never landed          -> local is AHEAD of remote, not an ancestor;
+      * the ref was force-reset/rewound -> our commit is unreachable;
+      * a divergent history was pushed  -> our commit is on an abandoned line.
+    """
     try:
         local = _git(repo, "rev-parse", base)
-        remote = _git(repo, "rev-parse", f"origin/{base}")
-        if local.returncode != 0 or remote.returncode != 0:
+        if local.returncode != 0:
             return "VERIFY:rev-parse-failed"
         local_sha = (local.stdout or "").strip()
+
+        # ALWAYS refresh before judging, and refresh with an explicit FORCED refspec.
+        #
+        # Two separate traps, both found by tests/test_merge_train_push_verify.py:
+        #
+        # 1. The old code compared against `origin/<base>` FIRST and only fetched if that
+        #    disagreed. `origin/<base>` is a local cache, so when it happened to already
+        #    equal local the function returned success having never contacted the remote —
+        #    it could certify a push that never left the machine. That is the exact
+        #    DB/GitHub desync this verifier exists to prevent.
+        # 2. A bare `fetch origin <base>` leaves `origin/<base>` UNCHANGED when the remote
+        #    was rewound or force-pushed, because that update is not a fast-forward. The
+        #    stale ref still contained our commit, so verification passed for a branch our
+        #    work had just been force-pushed off.
+        #
+        # The leading `+` on the refspec is what makes the local remote-tracking ref
+        # update non-fast-forward; a `--force` flag would be redundant AND would trip the
+        # repo's no-force-push guard (tests/test_release_push_fast_forward.py), which
+        # greps for the literal. This only ever rewrites a LOCAL cache ref — it can never
+        # touch the remote.
+        _git(repo, "fetch", "origin",
+             f"+{base}:refs/remotes/origin/{base}", timeout=60)
+
+        remote = _git(repo, "rev-parse", f"origin/{base}")
+        if remote.returncode != 0:
+            return "VERIFY:rev-parse-failed"
         remote_sha = (remote.stdout or "").strip()
-        if local_sha and remote_sha and local_sha == remote_sha:
+        if not local_sha or not remote_sha:
+            return "VERIFY:rev-parse-failed"
+        if local_sha == remote_sha:
             return ""
-        # Stale fetch cache — refetch and recheck once
-        _git(repo, "fetch", "origin", base, timeout=60)
-        remote2 = _git(repo, "rev-parse", f"origin/{base}")
-        remote2_sha = (remote2.stdout or "").strip()
-        if local_sha == remote2_sha:
+        # Benign advancement: our commit IS on the remote branch, someone just built
+        # on top of it between our push and our read-back.
+        if _is_ancestor(repo, local_sha, remote_sha):
             return ""
-        return f"VERIFY:sha-mismatch local={local_sha[:10]} remote={remote2_sha[:10]}"
+        return f"VERIFY:sha-mismatch local={local_sha[:10]} remote={remote_sha[:10]}"
     except Exception as e:
         return f"VERIFY:exception:{e}"
 
@@ -1300,45 +1454,115 @@ def _select_batch(group):
     return annotated
 
 
-def ensure_integration_card(project, slug, *, kind="integrate", title=None, why=None,
-                            detail=None, status="approved", decided_by="canonical-train"):
+CARD_CREATED = "created"
+CARD_EXISTED = "existed"
+CARD_FAILED = "failed"
+#: Outcomes that mean "this slug is now visible to the merge train". Callers MUST
+#: treat only these as success. CARD_FAILED means the work is not integrable and the
+#: producing task must NOT be marked DONE.
+CARD_OK = (CARD_CREATED, CARD_EXISTED)
+
+
+def _find_existing_card(slug):
+    """Targeted, server-side lookup for a live merge card carrying `slug`.
+
+    SCAN-WINDOW ANTI-PATTERN (removed 2026-08-06). This used to pull the newest
+    MERGE_CARD_DEDUP_SCAN (default 4,000) approval rows and filter CLIENT-SIDE against a
+    table of 238,177 rows. The in-code comment already recorded the consequence — "240 dupes
+    of one slug" — and the identical pattern had just caused a starvation outage in
+    _pick_cards(). A scan cannot be made correct by making the window bigger: any card older
+    than the window is invisible, so dedup silently fails and the caller files a duplicate.
+
+    Two bounded queries replace it. The first matches the `slug` column directly. The second
+    covers legacy rows written before the column existed, where the slug lives only in the
+    "merge of <slug>" title (see approval_merge._slug_from). Both are LIMIT-1 server-side
+    filters, so cost is independent of table size.
+    """
+    if not slug:
+        return None
+    kinds = f"in.({','.join(MERGE_KINDS)})"
+    common = {"select": "id,slug,title,kind,status,decided_by",
+              "kind": kinds, "status": "in.(pending,approved)"}
+    # SKIP_PREFIXES pushed into the query so the train's own outcome stamps
+    # ("train:MERGED", "merge-handler:...") never masquerade as a live card.
+    not_handled = ",".join(f"decided_by.not.like.{p}*" for p in SKIP_PREFIXES)
+    for params in (
+        dict(common, slug=f"eq.{slug}", limit="1", or_=f"(decided_by.is.null,{not_handled})"),
+        dict(common, title=f"ilike.*merge of {slug}*", limit="5"),
+    ):
+        # `or_` is spelled with a trailing underscore above only to keep it a valid kwarg
+        # name; PostgREST expects the bare key "or".
+        if "or_" in params:
+            params["or"] = params.pop("or_")
+        try:
+            rows = db.select("approvals", params) or []
+        except Exception:
+            rows = []
+        for c in rows:
+            if str(c.get("decided_by") or "").startswith(SKIP_PREFIXES):
+                continue
+            if approval_merge._slug_from(c) == slug:
+                return c
+    return None
+
+
+def ensure_integration_card_result(project, slug, *, kind="integrate", title=None, why=None,
+                                   detail=None, status="approved",
+                                   decided_by="canonical-train"):
     """Idempotently feed passed code into the single canonical integration train.
 
     Producers should not merge directly. They create/approve one code-merge card
     and let train_run serialize rebase, tests, fast-forward, and cleanup.
+
+    Returns one of CARD_CREATED / CARD_EXISTED / CARD_FAILED. The tri-state exists because
+    the historical bool return conflated "a card already covers this slug" (fine) with
+    "nothing was created and nothing exists" (a task that can never be integrated). Callers
+    that only check truthiness treated the second case as success and stranded the work.
     """
     if not slug:
-        return False
+        return CARD_FAILED
     title = title or f"merge of {slug}"
-    cards = db.select("approvals", {"select": "id,slug,title,kind,status,decided_by",
-                                    "kind": f"in.({','.join(MERGE_KINDS)})",
-                                    "status": "in.(pending,approved)",
-                                    "order": "created_at.desc",  # newest first — unordered scans missed dupes past the limit (240 dupes of one slug)
-                                    "limit": os.environ.get("MERGE_CARD_DEDUP_SCAN", "4000")}) or []
-    for c in cards:
-        if str(c.get("decided_by") or "").startswith(SKIP_PREFIXES):
-            continue
-        cslug = approval_merge._slug_from(c)
-        if cslug == slug:
-            patch = {}
-            if c.get("status") != status:
-                patch["status"] = status
-            if status == "approved" and not c.get("decided_by"):
-                patch["decided_by"] = decided_by
-            if patch:
-                db.update("approvals", {"id": c["id"]}, patch)
-            return False
+    try:
+        existing = _find_existing_card(slug)
+    except Exception:
+        existing = None
+    if existing:
+        patch = {}
+        if existing.get("status") != status:
+            patch["status"] = status
+        if status == "approved" and not existing.get("decided_by"):
+            patch["decided_by"] = decided_by
+        if patch:
+            try:
+                db.update("approvals", {"id": existing["id"]}, patch)
+            except Exception:
+                pass  # the card exists and is live; a failed status nudge is not a strand
+        return CARD_EXISTED
     row = {"project": project, "kind": kind, "slug": slug, "title": title,
            "status": status, "why": why or "passed tests; queued for canonical merge train",
            "detail": detail or "", "decided_by": decided_by if status == "approved" else None}
     try:
         db.insert("approvals", row)
+        return CARD_CREATED
     except Exception:
         # Some older approval tables may not have a slug column. The title fallback
         # keeps approval_merge._slug_from compatible with those rows.
         row.pop("slug", None)
-        db.insert("approvals", row)
-    return True
+        try:
+            db.insert("approvals", row)
+            return CARD_CREATED
+        except Exception:
+            # Do NOT swallow. The caller decides what to do, but it must be told.
+            return CARD_FAILED
+
+
+def ensure_integration_card(project, slug, **kwargs):
+    """Back-compatible wrapper: True only when a NEW card was created.
+
+    Preserved verbatim in meaning for the many existing callers that use the bool.
+    New code should call ensure_integration_card_result() and check `in CARD_OK`.
+    """
+    return ensure_integration_card_result(project, slug, **kwargs) == CARD_CREATED
 
 
 # ── the train ─────────────────────────────────────────────────────────────────
@@ -1510,6 +1734,17 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
 
     base = _integration_base(repo, proj, task_base)
 
+    # CROSS-HOST OWNERSHIP (2026-08-13): take the integrator lease for THIS repository
+    # before touching it. `ensure` is idempotent for this process, so a pass covering
+    # many cards in one repo acquires once and keeps it — releasing per card would drop
+    # ownership between cards and invite a takeover mid-pass. train_run releases the
+    # whole set at the end. Yielding here is not a failure: another host owns this repo
+    # and the card stays undecided for its train to pick up.
+    if delivery_lease.ensure(pname, delivery_lease.ROLE_INTEGRATOR) is None \
+            and delivery_lease.available():
+        _log(pname, slug, "SKIP", "another host holds the integrator lease")
+        return "not-integrator"
+
     if not _materialize_branch(repo, branch):
         state = task.get("state")
         if state in ("QUEUED", "RUNNING", "RETRY"):
@@ -1629,6 +1864,13 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
                                               "SILENT STUB / SHADOWED RE-EXPORT — " + stub_detail,
                                               _t0)
 
+    # (2f) ORPHAN-IMPORT GATE — the cheapest gate we have, so it runs before the expensive ones.
+    # Catches a candidate whose import resolves on the author's disk and nowhere in the repo.
+    oi_ok, oi_detail = _orphan_import_gate(repo, base, branch)
+    if not oi_ok:
+        return _quarantine_regression_failure(repo, card, slug, task, pname, branch, base,
+                                              "DANGLING IMPORT — " + oi_detail, _t0)
+
     ok, tail = _verified_or_run(repo, candidate_sha, test_cmd)  # (3) branch-exact and resumable
     if not ok and os.environ.get("ORCH_DIFFERENTIAL_QA", "true").lower() in ("1", "true", "yes", "on"):
         try:
@@ -1700,7 +1942,7 @@ def _integrate_card(card, slug, task, proj, repo_override=None):
         _log(pname, slug, "CONFLICT", "ff refused, cap exhausted")
         return "conflict"
 
-    push_err = _push_base(repo, base)                             # (5)
+    push_err = _push_base(repo, base, project=pname)              # (5)
     if push_err:
         # PUSH-VERIFICATION GATE: a merge is not MERGED until origin actually has it. A failed
         # push previously only annotated the note while the task still went MERGED — DB said
@@ -1751,8 +1993,17 @@ def _paused():
         return False
 
 
-def train_run():
-    """Entry point: run the integration train across all projects (serialized per project).
+def _train_run_unleased():
+    """Run the integration train across all projects (serialized per project).
+
+    The lease-taking public entry point is `train_run()` at the bottom of this module;
+    this is the body it delegates to. Both used to be spelled `def train_run`, with an
+    `_train_run_unleased = train_run` alias wedged between them. That worked at runtime
+    (the alias captured the first binding before the second shadowed it) but it made the
+    real implementation invisible to `inspect.getsource(merge_train.train_run)` — which
+    is how test_critical_fixes.py verifies the `repo_lock.hold(repo_path, timeout=...)`
+    call, so that guard silently went red. Naming the two functions differently keeps the
+    behaviour identical and makes the implementation reachable by name again.
 
     Returns a summary dict with keys:
         projects  (int)  — number of projects processed
@@ -1979,9 +2230,6 @@ def train_run():
     return summary
 
 
-_train_run_unleased = train_run
-
-
 def train_run():
     """Run the whole merge pass under the cross-train single-flight lease.
 
@@ -1992,6 +2240,13 @@ def train_run():
     copyfix. integration_owner elects exactly one live host to integrate (and refuses hosts
     running stale code), which is the missing cross-machine half of this lock.
     """
+    # HOST PAUSE (2026-08-06): a paused host must not START a new pass. Checked before the
+    # owner election for the same reason as release_train — winning an election is not
+    # permission to run when the operator has stopped this machine. A pass already under
+    # way is never interrupted; only starting is refused.
+    _ok, _why = paused_host_guard.refuse("merge_train")
+    if not _ok:
+        return {"skipped": _why}
     try:
         import integration_owner
         may, why = integration_owner.decide()
@@ -2004,7 +2259,13 @@ def train_run():
     with integration_runtime.global_lease("merge_train", timeout=timeout) as acquired:
         if not acquired:
             return {"skipped": "another integration or release train owns the global lease"}
-        return _train_run_unleased()
+        try:
+            return _train_run_unleased()
+        finally:
+            # Hand every repository back at the end of the pass so the next host takes
+            # over immediately instead of waiting out each TTL. Failing to release is
+            # not an error — the TTL still reclaims it.
+            delivery_lease.release_all(delivery_lease.ROLE_INTEGRATOR)
 
 
 # scheduler-compat alias: the train IS the integration path now

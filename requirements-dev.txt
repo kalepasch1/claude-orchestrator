@@ -1,0 +1,11 @@
+# Test/tooling dependencies. Runtime deps come from requirements.txt.
+#
+# The merge gate runs:
+#   python3 -m pytest runner/tests tests -q -p no:randomly --timeout=60
+# which needs pytest-timeout; it was never declared anywhere, so the gate failed
+# with "unrecognized arguments: --timeout" on any machine built from the manifest.
+
+-r requirements.txt
+
+pytest>=8.0
+pytest-timeout>=2.2

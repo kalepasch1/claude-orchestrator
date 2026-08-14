@@ -57,3 +57,91 @@ class MasteryEngine:
 
     def get_all_progress(self) -> Dict[str, Progress]:
         return dict(self._progress)
+
+    # --- H1 spaced repetition / adaptive difficulty -----------------------
+    # These operate on hisanta.contracts.family.Quest (the domain contract),
+    # which is a different type from the local execution-record Quest above.
+    # Neither is annotated here so the two can coexist without collision.
+
+    def schedule_review(self, quest, last_interval: int = 1, success: bool = True) -> int:
+        """Next review interval in days. Success expands 2.5x, failure resets to 1.
+
+        A failed recall means the item is not learned, so the interval collapses
+        rather than decaying — the whole point of spaced repetition.
+        """
+        try:
+            if not success:
+                return 1
+            return max(1, int(max(1, int(last_interval)) * 2.5))
+        except Exception:
+            return 1
+
+    def adaptive_difficulty(self, current: int, recent_scores) -> int:
+        """Nudge difficulty by one step on sustained success/struggle. Clamped 1..10.
+
+        Boundaries are strict (>0.8 up, <0.4 down) so a learner sitting exactly on
+        the threshold is left where they are instead of oscillating.
+        """
+        try:
+            level = int(current)
+            scores = [float(s) for s in (recent_scores or [])]
+            if not scores:
+                return max(1, min(10, level))
+            average = sum(scores) / len(scores)
+            if average > 0.8:
+                level += 1
+            elif average < 0.4:
+                level -= 1
+            return max(1, min(10, level))
+        except Exception:
+            try:
+                return max(1, min(10, int(current)))
+            except Exception:
+                return 1
+
+    def complete_weekly_quests(self, quests) -> Dict:
+        """Open at most ONE advent door per week, and only if every quest is done.
+
+        One door regardless of how many quests were completed: the reward is for
+        finishing the week, not for volume, so there is nothing to farm.
+        """
+        try:
+            items = list(quests or [])
+            all_done = bool(items) and all(getattr(q, "completed", False) for q in items)
+            return {"advent_door_opened": all_done, "doors_opened": 1 if all_done else 0}
+        except Exception:
+            return {"advent_door_opened": False, "doors_opened": 0}
+
+    def create_reward_schedule(self, schedule_type: str = "fixed",
+                               coupled_to_purchase: bool = False):
+        """Build a RewardSchedule, refusing variable-ratio coupled to purchase.
+
+        Variable-ratio reinforcement tied to spending is the slot-machine pattern.
+        It is refused outright (returns None) rather than merely discouraged.
+        """
+        try:
+            from hisanta.contracts.family import RewardSchedule as _RewardSchedule
+            if schedule_type == "variable_ratio" and coupled_to_purchase:
+                return None
+            return _RewardSchedule(
+                schedule_type=schedule_type,
+                variable_ratio_coupled_to_purchase=(
+                    schedule_type == "variable_ratio" and coupled_to_purchase),
+            )
+        except Exception:
+            return None
+
+    def get_efficacy_metrics(self, subject: str, scores):
+        """Mean score and attempt count for a subject."""
+        from hisanta.contracts.family import MasteryEfficacyMetric
+        try:
+            values = [float(s) for s in (scores or [])]
+            if not values:
+                return MasteryEfficacyMetric(subject=subject, score=0.0, attempts=0)
+            return MasteryEfficacyMetric(
+                subject=subject,
+                score=sum(values) / len(values),
+                attempts=len(values),
+            )
+        except Exception:
+            return MasteryEfficacyMetric(subject=subject, score=0.0, attempts=0)

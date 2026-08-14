@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { CANONICAL_NAVIGATION, NAVIGATION_CONTRACT_VERSION } from '../../config/navigation'
 
-const V2 = [
+const V1 = [
   ['Command Center', '/'], ['Sign-offs', '/sign-offs'], ['Queue', '/queue'],
   ['Orchestrators', '/orchestrators'], ['Business OS', '/business'], ['Connections', '/connectors'],
   ['Digital Twin', '/digital-twin'], ['Spend & ROI', '/spend'], ['Loops', '/loops'],

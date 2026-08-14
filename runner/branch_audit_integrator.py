@@ -181,9 +181,52 @@ def _has_conflicts(repo, branch, base="master"):
 
 
 def _is_merged(repo, branch, base="master"):
-    """Check if branch is already merged into base."""
-    merged = _git(repo, "branch", "--merged", base)
-    return branch in merged.split() if merged else False
+    """Check if branch is already merged into base. Works for LOCAL and REMOTE refs.
+
+    Was `git branch --merged <base>`, which only ever lists LOCAL branches — so every
+    remote-tracking ref read as unmerged, and once the fleet audit learned to see origin
+    (see audit_fleet) that would have mislabelled all 479 already-merged branches as work
+    still owing. `merge-base --is-ancestor` answers the same question for any ref.
+    """
+    proc = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", branch, base],
+        cwd=repo, capture_output=True, text=True, timeout=10,
+    )
+    return proc.returncode == 0
+
+
+def _remote_agent_branches(repo, remote="origin"):
+    """agent/* refs on `remote`, named as `<remote>/agent/<slug>`. Never raises.
+
+    THE STRANDED-WORK GAP. Agent work is pushed to origin and the local ref is then
+    deleted along with its worktree, so on any machine that has pruned — which is every
+    executor host — the local branch list is nearly empty while the pushed work sits on
+    origin. The measured population was 250 stranded branches against 479 already merged;
+    a local-only audit reported none of them.
+    """
+    out = _git(repo, "for-each-ref", "--format=%(refname:short)",
+               f"refs/remotes/{remote}/agent/")
+    return [line.strip() for line in (out or "").split("\n") if line.strip()]
+
+
+def _local_agent_branches(repo):
+    """agent/* local branches. Never raises."""
+    raw = _git(repo, "branch", "--list", "agent/*")
+    return [b.strip().lstrip("* +").strip() for b in (raw or "").split("\n") if b.strip()]
+
+
+def _slug_of(branch):
+    """Slug for an agent branch, whatever prefix it carries.
+
+    `origin/agent/foo` and `agent/foo` are the same work; the orphan check and the
+    de-duplication in audit_fleet both depend on them resolving to one slug.
+    """
+    name = str(branch or "")
+    if "/agent/" in name:
+        name = name.split("/agent/", 1)[1]
+    elif name.startswith("agent/"):
+        name = name[len("agent/"):]
+    return name
 
 
 # ---------------------------------------------------------------------------
@@ -209,7 +252,7 @@ def audit_branch(repo, branch, task_slugs=None, config=None, base="master"):
 
     # Orphan check: extract slug from branch name
     if task_slugs is not None:
-        slug = branch.replace("agent/", "", 1) if branch.startswith("agent/") else branch
+        slug = _slug_of(branch)
         result.has_task = slug in task_slugs
         if not result.has_task:
             result.health = BranchHealth.ORPHAN
@@ -286,15 +329,42 @@ def _compute_verdict(result, cfg):
 # Fleet-wide audit
 # ---------------------------------------------------------------------------
 
-def audit_fleet(repo, task_slugs=None, config=None, base="master"):
+def collect_agent_branches(repo, remote="origin", include_remote=True):
+    """Every agent branch worth auditing, local first, de-duplicated by slug.
+
+    Local wins when a slug exists both places: it is the same work, and the local ref is
+    what a merge would operate on. `include_remote=False` restores the old local-only
+    behaviour for a caller that genuinely wants it.
     """
-    Audit all agent/* branches in a repo.
+    branches, seen = [], set()
+    for branch in _local_agent_branches(repo):
+        slug = _slug_of(branch)
+        if slug not in seen:
+            seen.add(slug)
+            branches.append(branch)
+    if include_remote:
+        for branch in _remote_agent_branches(repo, remote):
+            slug = _slug_of(branch)
+            if slug not in seen:
+                seen.add(slug)
+                branches.append(branch)
+    return branches
+
+
+def audit_fleet(repo, task_slugs=None, config=None, base="master",
+                remote="origin", include_remote=True):
+    """
+    Audit all agent/* branches in a repo — LOCAL AND REMOTE.
     Returns (list[BranchAuditResult], FleetHealthSummary).
+
+    This used to list local branches only. On an executor host the local refs are deleted
+    with each worktree after the push, so the audit reported a nearly empty fleet while
+    the pushed-but-unmerged work accumulated on origin — the "stranded branches" finding
+    (250 stranded against 479 merged) that this audit exists to surface and could not see.
     """
     cfg = config or RiskConfig()
 
-    raw = _git(repo, "branch", "--list", "agent/*")
-    branches = [b.strip().lstrip("* ") for b in raw.split("\n") if b.strip()]
+    branches = collect_agent_branches(repo, remote=remote, include_remote=include_remote)
 
     results = []
     for branch in branches:

@@ -75,8 +75,10 @@ def is_cached_fresh(project_id, branch):
         if not entry:
             return False, None
 
+        # Respect the per-entry TTL stored by cache_result; fall back to the global interval.
+        ttl = entry.get("ttl", CHECK_INTERVAL)
         age = time.time() - entry.get("checked_at", 0)
-        if age < CHECK_INTERVAL:
+        if age < ttl:
             return True, entry.get("data")
         return False, entry.get("data")
     except Exception:

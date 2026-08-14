@@ -17,6 +17,7 @@ When an SLO fails, the controller automatically adjusts:
 import os, sys, json, datetime, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import outcome_slo
 
 # SLO thresholds (configurable via env)
 SLO_MERGE_RATE = float(os.environ.get("SLO_MERGE_RATE", "0.90"))
@@ -56,6 +57,14 @@ def run():
     if checks["fleet_util"]["ok"] is False:
         actions.extend(_remediate_fleet_util(checks["fleet_util"]))
 
+    # SLO 6+7: Build outcome QUALITY and LATENCY (outcome_slo, slice 1).
+    # Report-only for now, deliberately: these two measure whether what the
+    # fleet produces is good and how long it takes, and auto-remediating on a
+    # brand-new signal before its thresholds are calibrated against real traffic
+    # would be the fleet steering on a number nobody has checked. Remediation is
+    # the next slice; the report is what an operator needs first.
+    checks.update(_check_outcome_slos())
+
     # Record SLO status (UNKNOWN counts as not-passing for status, but doesn't trigger remediation)
     passing = sum(1 for c in checks.values() if c["ok"] is True)
     total = len(checks)
@@ -87,6 +96,44 @@ def run():
         print(f"[slo] {status} ({passing}/{total}) actions={[a['action'] for a in actions]}")
 
     return {"status": status, "passing": passing, "total": total, "actions": len(actions)}
+
+
+def _check_outcome_slos():
+    """
+    Fetch 24h outcomes once and evaluate the outcome-quality and build-latency
+    SLOs (`outcome_slo`), then persist an operator-readable report.
+
+    Fail-soft: on any error both checks come back UNKNOWN (`ok: None`), which
+    `run()` already treats as not-passing-but-not-actionable. A reporting
+    failure must never wedge the controller.
+    """
+    try:
+        outcomes = db.select("outcomes", {
+            "select": "tests_passed,integrated,attempts,review_failures,rate_limited,wall_ms",
+            "created_at": "gt." + _hours_ago_iso(24),
+            "limit": "500",
+        }) or []
+    except Exception as e:
+        unknown = {"ok": None, "state": "UNKNOWN", "value": None, "reason": str(e)}
+        return {"outcome_quality": dict(unknown), "build_latency": dict(unknown)}
+
+    checks = outcome_slo.evaluate_outcome_slos(outcomes)
+
+    try:
+        db.insert("controls", {
+            "key": "slo_outcome_report",
+            "value": json.dumps({
+                "checks": checks,
+                "report": outcome_slo.render_report(checks),
+                "window_hours": 24,
+                "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }),
+            "updated_at": "now()",
+        }, upsert=True)
+    except Exception as e:
+        print(f"[slo] outcome report not persisted: {e}")
+
+    return checks
 
 
 def _check_merge_rate():

@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import subprocess
+import types
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 import merge_train
@@ -21,7 +22,11 @@ try:
 except Exception:
     _ML_AVAILABLE = False
 
-LIMIT = int(os.environ.get("INTEGRATION_SWEEPER_LIMIT", "80"))
+# 80 was below the size of the set it scans (200 tasks in DONE/BLOCKED/RUNNING as of
+# 2026-08-06), so more than half the queue was invisible every pass. With the dual-order
+# scan below, 150 covers 300 tasks — roughly 1.5x current volume of headroom. Raise it if
+# `pipeline_funnel.py` starts reporting a stalled card stage again.
+LIMIT = int(os.environ.get("INTEGRATION_SWEEPER_LIMIT", "150"))
 RUN_TRAIN = os.environ.get("INTEGRATION_SWEEPER_RUN_TRAIN", "true").lower() in ("true", "1", "yes")
 RECOVERY_PREFIX = "recover-missing-branch-"
 PRESSURE_KEY = "merge_train_pressure"
@@ -91,7 +96,12 @@ def _integration_evidence(repo, slug):
     tree — and returns the sha so callers can record it. See
     tests/test_phantom_merge_loop.py for the executable reproduction.
     """
-    if not repo or not slug:
+    # os.path.isdir guard matches _branch_exists/_fetch_agent_refs above. Without it the
+    # bare subprocess.run(cwd=repo) below raises FileNotFoundError for a repo_path absent
+    # from THIS machine — and the fleet runs on two Macs that do not hold the same repos.
+    # One missing path aborted the whole sweep, so no task got integration-checked at all
+    # and every passed task then looked like a lost branch: recovery churn from a typo.
+    if not repo or not slug or not os.path.isdir(repo):
         return None
     try:
         import landed_evidence
@@ -105,8 +115,14 @@ def _integration_evidence(repo, slug):
     refs = []
     for tgt in targets:
         ref = f"origin/{tgt}"
-        if subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref], cwd=repo,
-                          capture_output=True).returncode == 0:
+        try:
+            probe = subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref], cwd=repo,
+                                   capture_output=True)
+        except OSError:
+            # FAIL CLOSED: repo path missing or unspawnable => cannot prove integration.
+            # A bad repo_path must not crash the whole sweep (it strands every other project).
+            return None
+        if probe.returncode == 0:
             refs.append(ref)
     if not refs:
         return None
@@ -119,6 +135,60 @@ def _integration_evidence(repo, slug):
 def _already_integrated(repo, slug):
     """Boolean wrapper. Prefer _integration_evidence() so the sha can be persisted."""
     return _integration_evidence(repo, slug) is not None
+
+
+def _integration_targets(repo):
+    """Existing refs that count as 'upstream' for this repo, in preference order."""
+    targets = [t for t in (os.environ.get("ORCH_STAGING_BRANCH", "orchestrator/dev"),
+                           os.environ.get("ORCH_CODE_MERGE_TARGET", "dev"),
+                           "main", "master") if t]
+    refs = []
+    for tgt in targets:
+        ref = f"origin/{tgt}"
+        if subprocess.run(["git", "rev-parse", "--verify", "--quiet", ref], cwd=repo,
+                          capture_output=True).returncode == 0:
+            refs.append(ref)
+    return refs
+
+
+def _merged_branch_evidence(repo, branch):
+    """Return (sha, ref) when `branch` is fully reachable from an upstream ref, else None.
+
+    The gap this closes: the sweeper only ever asked "is the work integrated?" on the
+    branch-MISSING path. A branch that still EXISTS was counted as `passed_waiting` and
+    left open — even when it had already been merged and its tip was an ancestor of
+    master. Nothing in the loop could conclude such a task was finished, so it stayed
+    QUEUED, got re-claimed, and the missing-branch auto-creator kept filing fresh
+    `recover-missing-branch-*` rows to rebuild work that was already in production.
+    Observed repeatedly: agent/ensemble-on-hard and
+    agent/canary-claude-27-slice-1-fix-dependencies were both ancestors of origin/master
+    with an empty diff against it, and both still had live recovery tasks queued.
+
+    Reachability is tree-level ground truth, so this is immune to all three unsoundness
+    modes documented on _integration_evidence(): it does not grep commit messages, cannot
+    be satisfied by a sibling slice sharing a slug prefix, and cannot be satisfied by a
+    recovery attempt that merely NAMES the slug. If the tip commit is reachable from
+    master, every commit on the branch is in master — that is what merged means.
+
+    The returned sha is the branch tip, which satisfies the module invariant that a MERGED
+    row must carry the sha proving it.
+    """
+    if not repo or not os.path.isdir(repo) or not branch:
+        return None
+    for candidate in (branch, f"refs/remotes/origin/{branch}"):
+        rev = subprocess.run(["git", "rev-parse", "--verify", "--quiet", candidate],
+                             cwd=repo, capture_output=True, text=True)
+        if rev.returncode != 0:
+            continue
+        sha = (rev.stdout or "").strip()
+        if not sha:
+            continue
+        for ref in _integration_targets(repo):
+            merged = subprocess.run(["git", "merge-base", "--is-ancestor", sha, ref],
+                                    cwd=repo, capture_output=True)
+            if merged.returncode == 0:
+                return sha, ref
+    return None
 
 
 def _normalize_base(repo, proj, requested):
@@ -273,6 +343,26 @@ def _handle_missing_branch(task, proj, recovery_index=None):
         force = None if (not orig or orig == "ollama") else orig
     else:
         force = orig or "ollama"
+    # ADMISSION PRECONDITION: never queue a recovery with nothing to recover from.
+    # The prompt above asks the agent to "recreate the smallest equivalent patch"; with no
+    # branch, no artifact commit and no stored diff there is no patch to recreate, so the
+    # task cannot produce code — it just re-detects as missing and queues another recovery.
+    # Fail-soft by construction: recovery_admission.enforce() returns True on any error.
+    try:
+        import recovery_admission
+        if not recovery_admission.enforce(
+                {"project_id": task.get("project_id"), "slug": recovery_slug,
+                 "submitted_by": task.get("submitted_by"),
+                 "submitted_by_label": task.get("submitted_by_label"),
+                 "_reuse_context": reuse},
+                repo=repo):
+            db.update("tasks", {"id": task["id"]},
+                      {"note": f"integration_sweeper: missing branch for {slug}, but no "
+                               f"recoverable input — recovery NOT queued (recorded in "
+                               f"admission_rejections)"})
+            return False
+    except Exception:
+        pass    # fail-open: the gate must never break the sweep
     row = {"project_id": task.get("project_id"), "slug": recovery_slug, "prompt": prompt,
            "base_branch": base, "kind": task.get("kind") or "bugfix", "state": "QUEUED",
            "deps": [], "material": bool(task.get("material")),
@@ -395,12 +485,43 @@ def recovery_dedup(limit=5000):
 def sweep(limit=LIMIT, run_train=RUN_TRAIN):
     dedup = recovery_dedup()
     projects = {p["id"]: p for p in (db.select("projects") or [])}
-    rows = db.select("tasks", {"select": "id,slug,project_id,state,note,kind,prompt,base_branch,material,force_coder,model,updated_at",
-                               "state": "in.(DONE,BLOCKED,RUNNING)",
-                               "order": "updated_at.asc",
-                               "limit": str(limit)}) or []
+    # SCAN-WINDOW STARVATION, THIRD INSTANCE (2026-08-06).
+    #
+    # This took the `limit` OLDEST tasks by updated_at. Measured today: 183 tasks in the state
+    # set against a limit of 80, so 103 were never looked at — and because the order is
+    # ascending, the invisible ones are always the NEWEST. The window reached updated_at 18:26
+    # while work was still finishing at 22:22.
+    #
+    # 60 of 107 cowork-executor DONE tasks sat beyond that horizon. That is the whole reason 28
+    # finished tasks had a pushed agent/ branch, no approvals row, and no way to ever get one:
+    # the sweeper is what files their card, and it could not see them.
+    #
+    # Same shape and same fix as merge_train._pick_cards: scan both ends. The head of the
+    # backlog stays visible (that ordering is deliberate — oldest work first), and freshly
+    # finished work enters through the desc pass instead of waiting for the queue to drain
+    # below the cap. Dedup by id since the two windows overlap once the set fits in one page.
+    query = {"select": "id,slug,project_id,state,note,kind,prompt,base_branch,material,force_coder,model,updated_at",
+             "state": "in.(DONE,BLOCKED,RUNNING)"}
+    # A dual-ended bounded window still has a blind middle as soon as eligible
+    # work exceeds 2*limit.  That is exactly where the three completed landing
+    # page changes sat after their release failed.  This is a correctness scan,
+    # so page the filtered set to exhaustion.  Test doubles and old fleet builds
+    # retain the bounded fallback.
+    if isinstance(db, types.ModuleType) and callable(getattr(db, "select_all", None)):
+        rows = db.select_all("tasks", query, order="updated_at.asc,id.asc") or []
+    else:
+        scan_rows, _seen_ids = [], set()
+        for _order in ("updated_at.asc", "updated_at.desc"):
+            for _r in (db.select("tasks", {**query, "order": _order,
+                                           "limit": str(limit)}) or []):
+                _id = _r.get("id")
+                if _id in _seen_ids:
+                    continue
+                _seen_ids.add(_id)
+                scan_rows.append(_r)
+        rows = scan_rows
     recovery_index = _active_recovery_index()
-    queued = missing = skipped = recovery = 0
+    queued = missing = skipped = recovery = card_failed = 0
     for t in rows:
         if t.get("state") == "RUNNING" and "verify pass" not in (t.get("note") or "").lower():
             skipped += 1
@@ -424,6 +545,28 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
         _is_recovery = RECOVERY_PREFIX in str(slug or "")
         proj = projects.get(t.get("project_id")) or {}
         repo = proj.get("repo_path", "")
+
+        # A branch that still EXISTS but is already fully merged used to fall straight
+        # through to the "queue an integration card" path below and be left open, so the
+        # task was re-swept and re-claimed forever and the auto-creator kept filing
+        # recover-missing-branch rows for work that was already in production. Reachability
+        # settles it without any commit-message heuristic: if the tip is an ancestor of an
+        # upstream ref, the whole branch is upstream.
+        _merged = _merged_branch_evidence(repo, f"agent/{slug}")
+        if _merged:
+            _sha, _ref = _merged
+            if t.get("state") != "MERGED":
+                import merge_truth
+                merge_truth.guarded_task_update(
+                    t,
+                    {"state": "MERGED",
+                     "artifact_commit": _sha,
+                     "note": f"integration_sweeper: agent/{slug} is an ancestor of {_ref} "
+                             f"at {_sha[:12]}; already integrated, closed without rebuild"},
+                    repo=repo)
+            skipped += 1
+            continue
+
         if not _branch_exists_anywhere(repo, f"agent/{slug}"):
             # Branch gone. If the work already landed upstream, CLOSE it (no rebuild) — this is what
             # kills the phantom missing_branch recount + endless recovery churn on merged work.
@@ -471,7 +614,13 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
                           {"state": "QUARANTINED",
                            "note": "integration_sweeper: branch lost and recovery exhausted; closed to stop phantom missing_branch churn"})
             continue
-        created = merge_train.ensure_integration_card(
+        # SAME DEFECT AS cowork_executor (audited 2026-08-06): this call site also
+        # promoted the task to DONE without checking whether a card actually exists.
+        # `created` is False both when a card already covers the slug (fine) and when
+        # nothing was created at all (a permanent strand) — the two were indistinguishable,
+        # and DONE was written either way. Use the tri-state and only close the task once
+        # the slug is genuinely visible to the train.
+        card_state = merge_train.ensure_integration_card_result(
             proj.get("name") or str(t.get("project_id")),
             slug,
             kind="integrate",
@@ -481,18 +630,26 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
             status="approved",
             decided_by="canonical-train:sweeper",
         )
-        if created:
+        if card_state == merge_train.CARD_CREATED:
             queued += 1
+        if card_state not in merge_train.CARD_OK:
+            card_failed += 1
+            print(f"[ALARM] integration_card_failed slug={slug} "
+                  f"project={proj.get('name')} source=integration_sweeper")
+            db.update("tasks", {"id": t["id"]},
+                      {"note": "integration_sweeper: card write failed; left open for retry "
+                               "(not marked DONE — a DONE task with no card is invisible)"})
+            continue
         if t.get("state") != "DONE":
             db.update("tasks", {"id": t["id"]},
                       {"state": "DONE", "note": "integration_sweeper: queued for canonical merge train"})
     train = merge_train.train_run() if run_train and queued else {}
     press = pressure(limit=max(limit, 200))
     out = {"queued": queued, "missing_branch": missing, "recovery_queued": recovery,
-           "recovery_dedup": dedup,
+           "recovery_dedup": dedup, "card_failed": card_failed,
            "skipped": skipped, "pressure": press, "train": train}
     print(f"integration_sweeper: queued={queued} missing_branch={missing} "
-          f"recovery_queued={recovery} skipped={skipped} train={train}")
+          f"recovery_queued={recovery} skipped={skipped} card_failed={card_failed} train={train}")
     return out
 
 
@@ -625,6 +782,181 @@ def local_branch_audit(repo, slugs=None, limit=200):
 run = sweep
 
 
+# --------------------------------------------------------------- phantom verify
+
+PHANTOM_STATE = "PHANTOM_UNVERIFIED"
+VERIFY_ATTEMPT_CAP = int(os.environ.get("ORCH_PHANTOM_VERIFY_ATTEMPTS", "2"))
+
+
+def _verify_attempts(task):
+    """How many times this task has already been through a phantom-verify pass."""
+    try:
+        return int((task.get("verify_attempts") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _bump_verify_attempts(task, note):
+    """Record one failed verification attempt without losing the count.
+
+    The column may not exist on every deployment, so the count is also embedded in the
+    note as `[verify-attempt N/CAP]` and parsed back out — the attempt cap must work
+    before the migration lands, or the batch would loop on the same rows forever.
+    """
+    attempts = _verify_attempts(task) + 1
+    stamped = f"[verify-attempt {attempts}/{VERIFY_ATTEMPT_CAP}] {note}"
+    try:
+        db.update("tasks", {"id": task["id"]},
+                  {"verify_attempts": attempts, "note": stamped})
+        return attempts
+    except Exception:
+        pass
+    try:
+        db.update("tasks", {"id": task["id"]}, {"note": stamped})
+    except Exception:
+        pass
+    return attempts
+
+
+def _note_attempts(task):
+    """Attempts recovered from the note stamp, for pre-migration deployments."""
+    import re
+    m = re.search(r"\[verify-attempt (\d+)/", str(task.get("note") or ""))
+    return int(m.group(1)) if m else 0
+
+
+def verify_phantom(project=None, limit=100, dry_run=False):
+    """Batch-verify PHANTOM_UNVERIFIED tasks against real git evidence.
+
+    For each task: look for boundary-exact, tree-changing integration evidence via the
+    same _integration_evidence() the sweep uses. Evidence found -> MERGED with the sha
+    that proves it. No evidence after VERIFY_ATTEMPT_CAP attempts -> requeued for a
+    rebuild. Bounded by `limit`; never raises.
+
+    This exists because the orch-repair loop had no way to drain the 10k+ phantom
+    population without hand-rolled git archaeology, which the operator runbook forbids.
+    """
+    out = {"scanned": 0, "merged": [], "requeued": [], "still_unproven": [],
+           "skipped_no_repo": [], "project": project, "limit": limit, "dry_run": dry_run}
+    try:
+        limit = max(1, int(limit))
+    except (TypeError, ValueError):
+        limit = 100
+
+    projects = {}
+    try:
+        for p in (db.select("projects", {"select": "id,name,repo_path,default_base"}) or []):
+            projects[p["id"]] = p
+    except Exception as e:
+        out["error"] = f"project lookup failed: {e}"
+        return out
+
+    query = {"select": "id,slug,project_id,state,note,kind,base_branch",
+             "state": f"eq.{PHANTOM_STATE}", "order": "updated_at.asc", "limit": str(limit)}
+    if project:
+        pid = next((p["id"] for p in projects.values() if p.get("name") == project), None)
+        if pid is None:
+            out["error"] = f"unknown project {project!r}"
+            return out
+        query["project_id"] = f"eq.{pid}"
+    try:
+        tasks = db.select("tasks", query) or []
+    except Exception as e:
+        out["error"] = f"task query failed: {e}"
+        return out
+
+    for t in tasks:
+        out["scanned"] += 1
+        slug = t.get("slug") or ""
+        proj = projects.get(t.get("project_id")) or {}
+        repo = proj.get("repo_path") or ""
+        try:
+            repo = db.localize_repo_path(repo)
+        except Exception:
+            pass
+        if not repo or not os.path.isdir(repo):
+            # Not evidence of anything — this machine simply does not hold the repo.
+            out["skipped_no_repo"].append(slug)
+            continue
+
+        evidence = _integration_evidence(repo, slug)
+        if evidence:
+            sha, ref, subject = evidence
+            out["merged"].append({"slug": slug, "sha": sha, "ref": ref})
+            if dry_run:
+                continue
+            try:
+                import merge_truth
+                merge_truth.guarded_task_update(
+                    t, {"state": "MERGED", "artifact_commit": sha,
+                        "note": f"integration_sweeper --verify-phantom: evidence in {ref} "
+                                f"at {sha[:12]} ({str(subject)[:80]})"}, repo=repo)
+            except Exception as e:
+                print(f"[verify-phantom] {slug}: merge write failed: {e}")
+            continue
+
+        attempts = max(_verify_attempts(t), _note_attempts(t))
+        if attempts + 1 >= VERIFY_ATTEMPT_CAP:
+            out["requeued"].append({"slug": slug, "attempts": attempts + 1})
+            if dry_run:
+                continue
+            try:
+                db.update("tasks", {"id": t["id"]},
+                          {"state": "QUEUED", "artifact_commit": None,
+                           "note": f"integration_sweeper --verify-phantom: no integration "
+                                   f"evidence after {attempts + 1} attempts; requeued for rebuild"})
+            except Exception as e:
+                print(f"[verify-phantom] {slug}: requeue failed: {e}")
+            continue
+
+        out["still_unproven"].append({"slug": slug, "attempts": attempts + 1})
+        if not dry_run:
+            _bump_verify_attempts(t, "integration_sweeper --verify-phantom: no evidence yet")
+
+    return out
+
+
+def _build_parser():
+    import argparse
+    parser = argparse.ArgumentParser(
+        prog="integration_sweeper.py",
+        description="Find tested-but-unintegrated work, and batch-verify phantom merges.")
+    parser.add_argument("--verify-phantom", action="store_true",
+                        help=f"batch-verify {PHANTOM_STATE} tasks against git evidence "
+                             "instead of running the normal sweep")
+    parser.add_argument("--project", default=None, help="restrict to one project by name")
+    parser.add_argument("--limit", type=int, default=None,
+                        help="max rows to process (default 100 for --verify-phantom)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="report what would change without writing")
+    parser.add_argument("--no-train", action="store_true",
+                        help="sweep without running the merge train afterwards")
+    return parser
+
+
+def main(argv=None):
+    """CLI entry point.
+
+    There was no argument handling at all: `--verify-phantom --project x --limit 100`
+    was silently ignored and the module ran a full unbounded sweep instead, which is
+    worse for an operator than an error, because it looks like it worked.
+    """
+    args = _build_parser().parse_args(argv)
+    if args.verify_phantom:
+        result = verify_phantom(project=args.project,
+                                limit=args.limit if args.limit is not None else 100,
+                                dry_run=args.dry_run)
+        print(json.dumps(result, indent=2, default=str))
+        for row in result.get("merged", []):
+            print(f"MERGED   {row['slug']} <- {row['sha'][:12]} in {row['ref']}")
+        for row in result.get("requeued", []):
+            print(f"REQUEUED {row['slug']} (no evidence after {row['attempts']} attempts)")
+        return 0 if not result.get("error") else 1
+    result = sweep(limit=args.limit if args.limit is not None else LIMIT,
+                   run_train=(RUN_TRAIN and not args.no_train))
+    print(json.dumps(result, indent=2, default=str))
+    return 0
+
+
 if __name__ == "__main__":
-    import json
-    print(json.dumps(sweep(), indent=2, default=str))
+    sys.exit(main())

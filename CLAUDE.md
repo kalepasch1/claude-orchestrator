@@ -148,3 +148,40 @@ Results in `_applied/` / `_failed/`; log at `_logs/bridge.log`. CLI: `chatgpt-pa
   `deploy-to-repos.sh` (re)installs it plus the workflow everywhere.
 - Direct pushes to production branches are still blocked by `production_push_guard` —
   the bridge opens PRs, it does not bypass the release train.
+
+
+## Learned from merged work (auto — lease-RPC night, 2026-07-29; recovered 2026-08-05)
+
+Recovered from `hotfix/stash-rescue-1785390774-5f879035` (the anonymous-stash sweep of the
+lease-RPC night). Re-applied **with judgment, not verbatim**: two rules in the original
+auto-distilled block contradicted governing conventions already stated in this file and
+have been corrected in place. The correction is noted inline so the distiller does not
+re-emit the same advice next pass.
+
+### Conventions the branch-lease code actually follows
+
+- Consistent module naming (e.g. `branch_lease.py`) for files and modules.
+- Comments are sparse but load-bearing — they explain *why* a fail-soft path exists,
+  not what the line does.
+- Descriptive variable names; functions stay short and single-purpose.
+
+### DO / AVOID
+
+- **DO** name magic numbers. The lease code carries bare literals (e.g. the `91`-second
+  staleness bound) inline; lift these to module constants or `ORCH_`-prefixed env vars so
+  they are fleet-pushable via `fleet_control.py`.
+- **DO** keep one coding style. Indentation is already consistent; spacing around
+  operators is not.
+- **DO** add automated tests for any new lease/heartbeat path — the sweep that lost this
+  work went unnoticed precisely because nothing asserted on it.
+- **AVOID** *unlogged* broad excepts. **Corrected:** the original block said to avoid
+  `except Exception as e` outright. That is wrong here — broad catches are the documented
+  *fail-soft error handling* convention of this repo (errors must not wedge the runner).
+  The real rule is narrower: a broad catch must write a diagnostic before it swallows, as
+  `branch_lease` already does with its `heartbeat RPC infra error (...); fail-soft ALIVE`
+  line. A silent `except Exception: pass` is the defect; a logged one is the convention.
+- **AVOID** *undocumented* module-level state. **Corrected:** the original block flagged
+  the module-level `db` handle as a global to remove. That is also the documented
+  convention — *module-level singleton pattern*, where module functions delegate to one
+  thread-safe instance. The real rule is that such a singleton must carry a docstring
+  saying what it is and how it is initialised, not that it must be eliminated.

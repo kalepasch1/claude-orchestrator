@@ -362,8 +362,10 @@ test('passport: claim expiry is checked at exact boundary', () => {
 
 test('passport: issuer field is arbitrary string', () => {
   const claims = [
-    claim('kyc_verified', 'custom_provider_xyz', 1),
-    claim('accredited', 'another-issuer-123', 1),
+    // Deliberately non-ProductId issuers: the runtime accepts arbitrary strings,
+    // which is exactly what this test pins down. Cast past the nominal type.
+    claim('kyc_verified', 'custom_provider_xyz' as unknown as Claim['issuer'], 1),
+    claim('accredited', 'another-issuer-123' as unknown as Claim['issuer'], 1),
   ];
 
   const passport = buildPassport({ subject: 'user_1', claims });

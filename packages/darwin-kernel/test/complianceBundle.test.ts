@@ -17,7 +17,7 @@ function makeAction(capability = 'trade'): AgentAction {
     capability,
     subjectId: 'user-1',
     at: new Date().toISOString(),
-  } as AgentAction;
+  } as unknown as AgentAction;
 }
 
 test('assembleBundle produces a valid, verifiable bundle', () => {

@@ -25,6 +25,15 @@ def run(repo):
     claude_cli.run(PROMPT, MODEL, cwd=repo, permission="acceptEdits", max_turns=20)
     ok = os.path.isfile(os.path.join(repo, "CLAUDE.md"))
     print(f"{'updated' if ok else 'no'} CLAUDE.md in {repo}")
+    # Prose conventions can't gate a merge; compiled ones can. Recompile the repo's DON'T rules
+    # into .convention-rules.json so the lint tracks CLAUDE.md instead of drifting from it.
+    # Fail-soft: rule generation must never fail the conventions job.
+    if ok:
+        try:
+            import convention_rule_gen
+            convention_rule_gen.regenerate_for(repo)
+        except Exception as e:
+            print(f"convention rule regen failed (fail-soft): {e}")
     return ok
 
 

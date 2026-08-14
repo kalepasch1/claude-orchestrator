@@ -9,5 +9,5 @@ PROJECT: pareto-2080
           at Test.processPendingSubtests (node:internal/test_runner/test:831:18)
           at Test.postRun (node:internal/test_runner/test:1330:19)
           at Test.run (nod
-    
+
     Diagnose the root cause (build failure, merge conflict, flaky test, or a genuine blocker needing a design decision) and fix it, or if it's a duplicate/obsolete task, close it with a reason. Do not just retry blindly — read the actual error.

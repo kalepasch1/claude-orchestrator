@@ -1,0 +1,10 @@
+{
+  "project": "vigil",
+  "slug": "relfix-v15-vigil-dcdb561c",
+  "kind": "bugfix",
+  "source": "operator-v15-recovery",
+  "submitted_by_label": "Codex operator-directed remediation",
+  "material": false,
+  "prompt": "Repair the current Vigil release copy-gate blocker at dcdb561c. The gate flags pages/workspace/connectors.vue near the connector catalog for exposing internal mechanism terms such as Evidence DAG and private app-role details. Keep the connector's user-visible capability understandable while moving or replacing proprietary mechanism language with value-level copy. Preserve connector IDs and behavior. Run the copy gate and production build, then return the commit to the release train; do not deploy directly.",
+  "proof": "Vigil's public-copy gate and production build pass, and the release train records a successful release newer than failed SHA dcdb561c."
+}

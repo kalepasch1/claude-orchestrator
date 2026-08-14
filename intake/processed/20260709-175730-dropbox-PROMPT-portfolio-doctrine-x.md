@@ -5,9 +5,9 @@ Source specs: REVIEW v1 §0/§9, v2 §8, v3 §8. Depends on queued G1–G21, H1�
 
 ## Objectives
 
-1. **P0-DOCTRINE portfolio decision budgets** — one Decision Budget spec + lint (generalize lint-decision-budgets.mjs from B5) adopted by every app; core journeys ≤3 decisions, trust-ratchet graduation toward 1. 
+1. **P0-DOCTRINE portfolio decision budgets** — one Decision Budget spec + lint (generalize lint-decision-budgets.mjs from B5) adopted by every app; core journeys ≤3 decisions, trust-ratchet graduation toward 1.
 2. **O4 Doctrine propagation as first-class intake** — proven doctrine in one repo auto-generates adoption tasks for others via prompt_factory; P0-DOCTRINE is the first test case. Proof: pytest on propagation output.
-3. **P0-PASSPORT cross-product passport wallet** — unified surface over B3/E1/F2 claims; "you're already done" first-screen moment per product. 
+3. **P0-PASSPORT cross-product passport wallet** — unified surface over B3/E1/F2 claims; "you're already done" first-screen moment per product.
 4. **P0-RECEIPTS consumer explanation surface** — one card per autonomous action: what/why/counterfactual cost/undo; shared component consumed by all apps.
 5. **X1 Autonomy Console for end users** — consumer-ized I1: per-user view of bot actions, receipts, pause button, authority slider; shared service + per-app embed.
 6. **X2 Shared Regime-Change Oracle + connector layer** [MATERIAL] — ONE kernel service: court dockets, legislative APIs, agency registers, gazette feeds → quorum determinations via multi-source validator pattern, signed contestable receipts. Consumers: Tomorrow T4v2 settlement, Apparently A1 diff-watch, Pareto P4v2, Smarter practice alerts. Plus one shared connector framework (ERP/loan-tape pipes for T7v3, GitHub/data-pipeline webhooks for A7) — build once. HIGHEST PRIORITY in this prompt: unblocks four apps. Proof: oracle determinism/quorum tests; connector contract tests.

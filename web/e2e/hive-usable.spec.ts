@@ -17,7 +17,7 @@
  *   BASE_URL           – app URL to test against (default: http://localhost:3000)
  */
 
-import { test, expect, type BrowserContext, Page } from '@playwright/test'
+import { test, expect, type BrowserContext, type Page } from '@playwright/test'
 
 // ── Auth helpers ──────────────────────────────────────────────────────────────
 

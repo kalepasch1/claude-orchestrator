@@ -91,16 +91,30 @@ class TestSelectTemplateUCB1(unittest.TestCase):
             self.assertEqual(template_id, "base")
 
     def test_ucb1_exploration_bonus_decreases_with_trials(self):
-        """Higher-trial arms have smaller exploration bonus."""
+        """A well-sampled arm wins only when its mean beats the rival's bonus edge.
+
+        The exploration bonus sqrt(2*ln(N)/n) shrinks as n grows, so a high-n arm
+        carries a smaller bonus. It therefore has to earn its win on mean reward.
+        Here base is sampled twice as often (smaller bonus) but has the better mean,
+        so it wins; the arithmetic is checked explicitly below.
+        """
         rows = [
-            {"kind": "code_gen", "template_id": "base", "total_reward": 50.0, "n_trials": 100},
-            {"kind": "code_gen", "template_id": "chain_of_thought", "total_reward": 45.0, "n_trials": 50},
+            {"kind": "code_gen", "template_id": "base", "total_reward": 90.0, "n_trials": 100},
+            {"kind": "code_gen", "template_id": "chain_of_thought", "total_reward": 25.0, "n_trials": 50},
         ]
         with patch('runner.db.select', return_value=rows):
             prompt, template_id = prompt_evolver.select_template("code_gen", "test")
-            # base: 0.5 + sqrt(2*ln(150)/100)
-            # cot: 0.9 + sqrt(2*ln(150)/50)
-            # base should win due to lower exploration bonus on higher n_trials
+            # N = 150
+            # base: 0.90 + sqrt(2*ln(150)/100) = 0.90 + 0.317 = 1.217
+            # cot : 0.50 + sqrt(2*ln(150)/50)  = 0.50 + 0.448 = 0.948
+            n = 150
+            base_score = 0.9 + math.sqrt(2 * math.log(n) / 100)
+            cot_score = 0.5 + math.sqrt(2 * math.log(n) / 50)
+            # The high-n arm carries the smaller exploration bonus...
+            self.assertLess(math.sqrt(2 * math.log(n) / 100),
+                            math.sqrt(2 * math.log(n) / 50))
+            # ...and still wins here because its mean advantage is larger.
+            self.assertGreater(base_score, cot_score)
             self.assertEqual(template_id, "base")
 
     def test_ucb1_formula_correctness(self):
@@ -258,7 +272,14 @@ class TestThreadSafety(unittest.TestCase):
         prompt_evolver.invalidate()
 
     def test_concurrent_select_calls(self):
-        """Multiple threads calling select_template concurrently."""
+        """Concurrent select_template calls are serialized without lost updates.
+
+        Cold-start advances a per-kind round-robin counter (see
+        test_cold_start_round_robin), so the ten calls must hand back ten
+        *successive* arms rather than ten copies of one arm. Asserting a fixed
+        template_id here would contradict that round-robin contract; what thread
+        safety actually guarantees is that no increment is lost to a race.
+        """
         results = []
         errors = []
 
@@ -278,7 +299,18 @@ class TestThreadSafety(unittest.TestCase):
 
         self.assertEqual(len(errors), 0)
         self.assertEqual(len(results), 10)
-        self.assertTrue(all(r[1] == "base" for r in results))
+        # Every result is a real arm, and base is returned untagged.
+        for prompt, template_id in results:
+            self.assertIn(template_id, prompt_evolver.TEMPLATE_IDS)
+            if template_id == "base":
+                self.assertEqual(prompt, "test")
+            else:
+                self.assertEqual(prompt, f"[template:{template_id}]\ntest")
+        # No lost updates: the counter advanced exactly once per call, so the
+        # ten selections cycle through TEMPLATE_IDS in order.
+        expected = [prompt_evolver.TEMPLATE_IDS[i % len(prompt_evolver.TEMPLATE_IDS)]
+                    for i in range(10)]
+        self.assertEqual(sorted(r[1] for r in results), sorted(expected))
 
     def test_concurrent_record_calls(self):
         """Multiple threads calling record_outcome concurrently."""
@@ -444,15 +476,20 @@ class TestEdgeCases(unittest.TestCase):
             self.assertEqual(call_args[0][1]["template_id"], "")
 
     def test_select_template_all_arms_zero_trials(self):
-        """Special case: N=0 (no trials yet) returns base."""
+        """N=0 across all rows: prefer an untried arm, tie-broken alphabetically."""
         rows = [
             {"kind": "code_gen", "template_id": "chain_of_thought", "total_reward": 0.0, "n_trials": 0},
             {"kind": "code_gen", "template_id": "edit_first", "total_reward": 0.0, "n_trials": 0},
         ]
         with patch('runner.db.select', return_value=rows):
             prompt, template_id = prompt_evolver.select_template("code_gen", "test")
-            # N=0 (no trials) should return base
-            self.assertEqual(template_id, "base")
+            # Both arms are untried, so both score +inf. UCB1 always prefers an
+            # untried arm over falling back to base, and ties break on
+            # template_id alphabetically -> "chain_of_thought" before
+            # "edit_first". (Returning "base" here would be wrong twice over:
+            # base is not among the rows, and it would starve the untried arms.)
+            self.assertEqual(template_id, "chain_of_thought")
+            self.assertEqual(prompt, "[template:chain_of_thought]\ntest")
 
     def test_select_template_negative_reward(self):
         """Handles negative rewards (malformed data)."""
@@ -489,3 +526,57 @@ class TestTemplateIDsConstant(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestBanditConverges(unittest.TestCase):
+    """The property the +inf seeding destroyed: recorded reward must be able to win.
+
+    Before this fix, select_template seeded every id in TEMPLATE_IDS at n_trials=0.
+    A zero-trial arm scores +inf and is never written to the database by
+    select_template (the spec is explicit that TEMPLATE_IDS are not auto-inserted),
+    so the same untried constant outranked real history on every single call. A
+    bandit that can explore but never exploit is not a bandit — it is a round-robin
+    with extra steps.
+    """
+
+    def setUp(self):
+        prompt_evolver.invalidate()
+
+    def tearDown(self):
+        prompt_evolver.invalidate()
+
+    def test_a_proven_arm_beats_an_unrecorded_constant(self):
+        rows = [{"kind": "k", "template_id": "base",
+                 "total_reward": 40.0, "n_trials": 50}]
+        with patch('runner.db.select', return_value=rows):
+            _, chosen = prompt_evolver.select_template("k", "p")
+        self.assertEqual(chosen, "base")
+
+    def test_the_better_of_two_recorded_arms_wins_once_both_are_explored(self):
+        rows = [{"kind": "k", "template_id": "base",
+                 "total_reward": 5.0, "n_trials": 100},
+                {"kind": "k", "template_id": "edit_first",
+                 "total_reward": 90.0, "n_trials": 100}]
+        with patch('runner.db.select', return_value=rows):
+            _, chosen = prompt_evolver.select_template("k", "p")
+        self.assertEqual(chosen, "edit_first")
+
+    def test_a_genuinely_untried_recorded_arm_is_still_explored_first(self):
+        # exploration is preserved for arms that actually exist in the table
+        rows = [{"kind": "k", "template_id": "base",
+                 "total_reward": 90.0, "n_trials": 100},
+                {"kind": "k", "template_id": "chain_of_thought",
+                 "total_reward": 0.0, "n_trials": 0}]
+        with patch('runner.db.select', return_value=rows):
+            _, chosen = prompt_evolver.select_template("k", "p")
+        self.assertEqual(chosen, "chain_of_thought")
+
+    def test_selection_is_stable_across_repeated_calls(self):
+        rows = [{"kind": "k", "template_id": "base",
+                 "total_reward": 40.0, "n_trials": 50}]
+        picks = set()
+        for _ in range(5):
+            prompt_evolver.invalidate()
+            with patch('runner.db.select', return_value=rows):
+                picks.add(prompt_evolver.select_template("k", "p")[1])
+        self.assertEqual(picks, {"base"})

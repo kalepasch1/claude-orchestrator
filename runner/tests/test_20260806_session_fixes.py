@@ -1,6 +1,16 @@
 """Behavioural tests for the 2026-08-06 fixes. Each asserts the BUG would be caught,
 not merely that the code runs — a test that passes on the broken version is a false positive."""
 import os, sys, subprocess
+
+# This is a live-fleet smoke script: it queries production tables, shells out to origin,
+# prints its own 59-check report, and exits with that report's status. Pytest importing it
+# used to execute all of those side effects and then raise SystemExit during collection,
+# making the self-deploy canary structurally incapable of producing a test summary. Keep the
+# direct `python test_20260806_session_fixes.py` contract, but exclude it from unit collection.
+if __name__ != "__main__":
+    import pytest
+    pytest.skip("live-fleet smoke script; run directly", allow_module_level=True)
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, "/Users/kpasch/Documents/beethoven/claude-orchestrator/runner")
 RESULTS = []
@@ -154,6 +164,154 @@ _kill = _sp.run([sys.executable, "-c",
     capture_output=True, encoding="utf-8", env={**os.environ, "MERGE_TRAIN_SCAN_LIMIT": "0"})
 _n = int((_kill.stdout or "0").strip() or 0)
 check("current code declines the legacy kill switch", _n > 0, f"{_n} cards with the switch at 0")
+
+
+# 17. integration worktree slots were condemned for life by a build cache. "Dirty" counted any
+#     untracked byte, so a slot that had once run tests was abandoned on every pass and a fresh
+#     temporary one built instead — 21 slots, 2.2GB, and a release-train log that had become the
+#     same line repeated. The reclaim must be narrow: machine output yes, real work never.
+import regenerable_artifacts as _ra
+_cache_dirt = (" D packages/curation-core/node_modules/.vite/vitest/da39/results.json\n"
+               " D server/utils/simulation/__pycache__/generateProspectPdf.cpython-310.pyc")
+_b, _r = _ra.partition_dirt(_cache_dirt)
+check("build caches are reclaimable", not _b and len(_r) == 2, f"blocking={len(_b)} regen={len(_r)}")
+_work_dirt = " D app/pages/coverage/[org].vue\n D server/api/public/coverage/verify.get.ts"
+_b2, _r2 = _ra.partition_dirt(_work_dirt)
+check("deleted source still preserves the slot", len(_b2) == 2 and not _r2, f"blocking={len(_b2)}")
+for _p in (" M lib/commerce/coppa.ts", " M package-lock.json", " M OPPORTUNITIES.json"):
+    check(f"still blocks: {_p.strip()}", bool(_ra.partition_dirt(_p)[0]), "")
+_ir = open("/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/integration_runtime.py").read()
+check("reclaim path resets only when nothing blocks",
+      "if not existing_dirty.returncode and regen and not blocking:" in _ir
+      and 'reset", "--hard' in _ir, "guarded reset present")
+check("classification failure falls back to blocking",
+      "treating all of it as blocking" in _ir, "fail-closed")
+
+
+# 18. temporary worktrees leaked because the mutation check raised from `finally` BEFORE the
+#     removal ran. Any canonical drift during a pass therefore stranded the slot: 57
+#     CanonicalCheckoutMutationError in merge-train.log, 10 abandoned -run- dirs, 1.5GB.
+import integration_runtime as _ir
+_base = {"top": "/r", "branch": "master", "head": "abc", "status": " M src/a.ts\n"}
+check("identical snapshots are not a mutation", not _ir._canonical_mutation(_base, dict(_base)), "")
+check("an untracked file appearing is not a mutation",
+      not _ir._canonical_mutation(_base, {**_base, "status": " M src/a.ts\n?? docs/ADR-x.md\n"}),
+      "this fired 57 times on ordinary fleet noise")
+check("regenerable tracked dirt is not a mutation",
+      not _ir._canonical_mutation(_base, {**_base, "status": " M src/a.ts\n M .runner_boot_commit\n"}), "")
+check("HEAD moving IS a mutation", "head:" in _ir._canonical_mutation(_base, {**_base, "head": "def"}), "")
+check("branch switch IS a mutation", "branch:" in _ir._canonical_mutation(_base, {**_base, "branch": "dev"}), "")
+check("a new tracked edit IS a mutation",
+      "src/b.ts" in _ir._canonical_mutation(_base, {**_base, "status": " M src/a.ts\n M src/b.ts\n"}), "")
+check("a tracked deletion IS a mutation",
+      bool(_ir._canonical_mutation(_base, {**_base, "status": " D src/a.ts\n"})), "")
+_irs = open("/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/integration_runtime.py").read()
+check("cleanup runs before the mutation raise",
+      _irs.index("worktree\", \"remove") < _irs.index("raise CanonicalCheckoutMutationError"),
+      "removal precedes the verdict")
+check("orphaned temporaries are swept", "sweep_orphaned_temporaries" in _irs, "")
+_left = _ir.sweep_orphaned_temporaries("/Users/kpasch/Documents/beethoven/claude-orchestrator")
+check("no orphaned -run- dirs remain", _left == 0, f"{_left} removed on this run")
+
+
+# 19. scan-window starvation, third instance. integration_sweeper took the `limit` OLDEST tasks
+#     by updated_at from a set of 200 with limit=80, so the NEWEST 120 were never looked at —
+#     and the sweeper is what files an integration card. 28 finished tasks had a pushed agent/
+#     branch, no approvals row, and no path to ever getting one.
+_sw = open("/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/integration_sweeper.py").read()
+check("sweeper scans both ends", '"updated_at.asc", "updated_at.desc"' in _sw, "dual-order present")
+check("sweeper limit exceeds the state set it scans",
+      int(_re.search(r'INTEGRATION_SWEEPER_LIMIT", "(\d+)"', _sw).group(1)) >= 150, "")
+_total = _db_count = None
+import db as _db
+_total = _db.count("tasks", {"state": "in.(DONE,BLOCKED,RUNNING)"})
+_one = _db.select("tasks", {"select": "id", "state": "in.(DONE,BLOCKED,RUNNING)",
+                            "order": "updated_at.asc", "limit": "150"}) or []
+_seen, _both = set(), 0
+for _o in ("updated_at.asc", "updated_at.desc"):
+    for _r in (_db.select("tasks", {"select": "id", "state": "in.(DONE,BLOCKED,RUNNING)",
+                                    "order": _o, "limit": "150"}) or []):
+        if _r["id"] not in _seen:
+            _seen.add(_r["id"]); _both += 1
+check("dual-order loses nothing the single window saw",
+      not ({_r["id"] for _r in _one} - _seen), f"total={_total} single={len(_one)} dual={_both}")
+check("dual-order covers the whole state set", _both >= _total, f"{_both} of {_total}")
+
+
+# 20. the same scan-window bug appeared three times today in three different files. There are
+#     262 db.select call sites passing both order and limit; auditing them by hand is a guess
+#     about which sets will grow. Detect the condition instead: a query coming back EXACTLY
+#     full is the unambiguous sign it was cut off.
+_probe = _sp.run([sys.executable, "-c",
+    "import sys; sys.path.insert(0, '/Users/kpasch/Documents/beethoven/claude-orchestrator/runner');"
+    "import db;"
+    "db.select('tasks', {'select':'id','state':'eq.DONE','order':'updated_at.asc','limit':'5'});"
+    "db.select('tasks', {'select':'id','state':'eq.DONE','order':'updated_at.asc','limit':'900000'});"
+    "db.select('tasks', {'select':'id','state':'eq.DONE','limit':'5'})"],
+    capture_output=True, encoding="utf-8", timeout=120)
+_warns = [l for l in (_probe.stderr or "").splitlines() if "TRUNCATED SCAN" in l]
+check("a truncated ordered scan warns", len(_warns) == 1, f"{len(_warns)} warning(s)")
+check("an unordered or unfilled scan does not warn",
+      all("900000" not in w for w in _warns), "only the capped-and-full query warned")
+_quiet = _sp.run([sys.executable, "-c",
+    "import sys; sys.path.insert(0, '/Users/kpasch/Documents/beethoven/claude-orchestrator/runner');"
+    "import db;"
+    "db.select('tasks', {'select':'id','state':'eq.DONE','order':'updated_at.asc','limit':'5'})"],
+    capture_output=True, encoding="utf-8", timeout=120,
+    env={**os.environ, "ORCH_SCAN_TRUNCATION_WARN": "false"})
+check("the detector can be switched off",
+      "TRUNCATED SCAN" not in (_quiet.stderr or ""), "ORCH_SCAN_TRUNCATION_WARN=false")
+check("the detector never breaks the query it observes",
+      _probe.returncode == 0 and _quiet.returncode == 0, "")
+
+
+# 21. orphan-import gate. apparently's production build was red five hours on
+#     `Could not resolve "./kv" from server/utils/governance.ts` — governance.ts was committed,
+#     kv.ts never was. The build gate ran in a checkout that HAD the file, so the defect was not
+#     in the diff, it was missing from it. Asserted against the two REAL commits rather than a
+#     fixture: worktrees at the breaking commit and at the fix.
+import orphan_imports as _oi
+_bad, _good = "/tmp/ov-bad", "/tmp/ov-good"
+if os.path.isdir(_bad) and os.path.isdir(_good):
+    _touched = {"server/utils/governance.ts"}
+    check("gate blocks the commit that took production down",
+          mt._orphan_import_gate(_bad, "4c5184b9~1", "4c5184b9")[0] is False,
+          "./kv.js unresolvable at 4c5184b9")
+    check("gate passes the commit that fixed it",
+          mt._orphan_import_gate(_good, "4c5184b9", "33f92ed2")[0] is True, "")
+    check("gate judges the diff, not the whole tree",
+          len(_oi.dangling_imports(_good)) > 0
+          and not _oi.dangling_imports(_good, only_files=_touched),
+          f"{len(_oi.dangling_imports(_good))} pre-existing, 0 in the changed file")
+else:
+    check("gate blocks the commit that took production down", False, "verification worktrees missing")
+check("gate ignores alias specifiers it would have to guess at",
+      "~/" not in _oi._IMPORT.pattern and "@/" not in _oi._IMPORT.pattern,
+      "relative-only; aliases gave 281 findings across four green repos")
+check("gate fails OPEN, unlike the overwrite guards",
+      "fail-open" in inspect.getsource(mt._orphan_import_gate),
+      "a broken build is caught downstream; destroyed code is not")
+
+
+# 22. the funnel's merge stage counted approvals with decided_by IS NULL, but
+#     ensure_integration_card stamps every card it creates with "canonical-train:sweeper" — an
+#     attribution marker, not a verdict. The stage read 0 no matter how many cards existed, so
+#     the "stranded" invariant fired permanently. It reported "183 finished, 0 cards exist" on a
+#     run where the sweeper had just put 189 cards in front of the train.
+_pf_src = open("/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/pipeline_funnel.py").read()
+check("funnel uses the train's own definition of undecided",
+      "SKIP_PREFIXES" in _pf_src and "decided_by.not.like" in _pf_src,
+      "monitor and monitored cannot drift apart")
+_snap2 = pf.snapshot()
+_merge_stage = next(s for s in _snap2["stages"] if s["stage"] == "merge")
+check("funnel now sees the cards that exist", _merge_stage["count"] > 0,
+      f"{_merge_stage['count']} undecided cards (read 0 before)")
+check("the false stranded alarm is gone", not _snap2.get("stranded"),
+      "cards exist, so the invariant must not fire")
+check("truncation detector ignores single-row lookups",
+      "if cap <= 2 or len(rows) < cap:" in open(
+          "/Users/kpasch/Documents/beethoven/claude-orchestrator/runner/db.py").read(),
+      "limit=1 fills by definition")
 
 print("=" * 68)
 ok = 0

@@ -9,6 +9,7 @@ Jobs:
   chaos   - chaos resilience drills (schedule: weekly, staging only)
   txn     - cross-repo transaction coordinator (schedule: every 5 min)
   scout   - opportunity scout: RICE-scored proposals (schedule: weekly)
+  mergedmemory - roll merged master diffs into the memory system (schedule: daily)
   deploy  - canary-gated nightly deploy window (schedule: nightly)
   roi     - update project concurrency_weight from ROI (schedule: daily)
   stuck_reaper - detect+recover RUNNING tasks stuck >2h (schedule: every 30 min)
@@ -19,7 +20,13 @@ Usage:
   python3 periodic.py spec
   python3 periodic.py txn
 """
-import os, sys, subprocess, time, json
+import os, sys, subprocess, time, json, socket, urllib.error
+import contextlib, threading
+
+try:
+    import signal
+except ImportError:  # pragma: no cover - signal is present on every supported platform
+    signal = None
 # Inherited NODE_ENV=production makes npm omit devDependencies in every child job (staging QA,
 # prewarm, merge/release trains) → "Could not load <module>" failures. Strip it (see runner.py).
 os.environ.pop("NODE_ENV", None)
@@ -89,6 +96,69 @@ _JOB_MAX_RUNTIME_S = int(os.environ.get("ORCH_PERIODIC_JOB_MAX_RUNTIME_S", "3600
 # regardless of how much of its runtime budget is left.
 _WEDGE_SKIPS = int(os.environ.get("ORCH_PERIODIC_WEDGE_SKIPS", "3"))
 _SKIP_STATE_PATH = os.path.join(_RUNTIME, "periodic-skips.json")
+
+# Hard wall-clock cap on ONE job invocation.
+#
+# The skip counter above detects a wedge after the fact; it cannot end one. A job that
+# never returns holds its singleton lock for as long as the process lives, so every later
+# invocation skips — and skips exit 0, which is why the 'governor' wedge (3 consecutive
+# skips, holder pid held 349s) was invisible downstream. Counting the skips louder does
+# not release the lock. Bounding the job does.
+#
+# The cap is deliberately generous: this exists to break a hang, not to fail slow-but-
+# healthy work. Per-job override: ORCH_PERIODIC_JOB_TIMEOUT_<JOB>.
+_JOB_TIMEOUT_S = int(os.environ.get("ORCH_PERIODIC_JOB_TIMEOUT", "900"))
+
+
+class JobTimeout(Exception):
+    """A periodic job exceeded its wall-clock budget and was interrupted."""
+
+
+def _job_timeout(job):
+    """Timeout budget for one job. Fail-soft: unparseable config falls back to the default."""
+    raw = os.environ.get(f"ORCH_PERIODIC_JOB_TIMEOUT_{str(job).upper().replace('-', '_')}")
+    for value in (raw, _JOB_TIMEOUT_S):
+        try:
+            if value is not None:
+                return int(value)
+        except (TypeError, ValueError):
+            continue
+    return 900
+
+
+@contextlib.contextmanager
+def _time_limit(seconds, job):
+    """Interrupt the body after ``seconds`` via SIGALRM.
+
+    Fail-soft by design: signals only work on the main thread of a POSIX process, so
+    anywhere that does not hold (worker thread, no SIGALRM) this degrades to running
+    WITHOUT a cap rather than refusing to run the job at all. A missing timeout is the
+    status quo; a job that will not start is a regression.
+    """
+    if not seconds or seconds <= 0 or signal is None:
+        yield
+        return
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def _fire(_signum, _frame):
+        raise JobTimeout(f"{job} exceeded its {seconds}s budget")
+
+    try:
+        previous = signal.signal(signal.SIGALRM, _fire)
+    except (ValueError, AttributeError, OSError):
+        yield
+        return
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        try:
+            signal.signal(signal.SIGALRM, previous)
+        except (ValueError, AttributeError, OSError):
+            pass
 
 # Exit codes, so a scheduler/wrapper can tell the three outcomes apart.
 _EX_OK = 0
@@ -262,13 +332,48 @@ def _terminate(job, pid):
     return not _pid_alive(pid)
 
 
+_TRANSIENT_NET_ERRORS = (
+    urllib.error.URLError,
+    socket.timeout,
+    ConnectionError,       # covers ConnectionReset/Aborted/Refused
+    TimeoutError,
+)
+
+
+def _is_transient_net_error(exc):
+    """True for errors that mean 'the network was unhappy', not 'the code is wrong'."""
+    if isinstance(exc, urllib.error.HTTPError):
+        # An HTTP status came back, so we reached the server. 5xx/429 are worth
+        # retrying; 4xx is a real client bug and must stay loud.
+        return exc.code >= 500 or exc.code == 429
+    return isinstance(exc, _TRANSIENT_NET_ERRORS)
+
+
 def _invoke_job(job):
-    """Run a job, converting a permanently-missing table into a disable rather than a crash loop."""
+    """Run a job, converting DB-level failures into a skip or a disable rather than a crash loop.
+
+    Two distinct outcomes, deliberately kept apart:
+      * MissingRelationError — structural. Running again can never help, so disable the job.
+      * TransientDBError — the network or Supabase blipped. The job is fine; skip this cycle
+        and let the next one run. Disabling here would take a healthy job offline for the
+        duration of an outage, which is the opposite of what we want.
+    """
     try:
-        return JOBS[job]()
+        with _time_limit(_job_timeout(job), job):
+            return JOBS[job]()
+    except JobTimeout as exc:
+        # Loud on purpose. The whole failure mode being fixed here is that a wedged job
+        # was SILENT: it exited 0 and nothing downstream noticed for three cycles.
+        print(f"periodic {job}: TIMEOUT — {exc}. Interrupted so the singleton lock is "
+              f"released and the next invocation can actually run. Raise the budget with "
+              f"ORCH_PERIODIC_JOB_TIMEOUT_{str(job).upper().replace('-', '_')} if this job "
+              f"is legitimately this slow.")
+        return {"timeout": True, "job": job, "detail": str(exc)}
     except db.MissingRelationError as exc:
         _disable_job(job, str(exc))
         return None
+    except db.TransientDBError as exc:
+        return {"skipped": "transient-db", "job": job, "detail": str(exc)[:300]}
 
 
 _DISABLED_JOBS_PATH = os.path.join(_RUNTIME, "disabled_jobs.json")
@@ -448,6 +553,31 @@ def run_scout():
     opportunity_scout.run()
 
 
+def run_mergedmemory():
+    """Roll recent master merges into the memory system (schedule: daily).
+
+    WIRED 2026-08-11. `merged_diff_memory.capture_to_memory()` carries a careful
+    boolean contract — True only when a memory file was actually WRITTEN, False
+    for every other outcome including "no merged commits found" — and until now
+    nothing in production called it. The daily rollup
+    (`merged_learning_YYYYMMDD.md`) was therefore never produced, and the bool
+    nobody read could not tell anyone so.
+
+    The return value is honoured here rather than discarded: a False is logged
+    with the reason, because "capture ran" and "memory is current" are not the
+    same claim, and treating them as one is what hid the gap.
+    """
+    import merged_diff_memory
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    written = merged_diff_memory.capture_to_memory(repo=repo)
+    if written:
+        print("periodic: merged-diff memory updated", flush=True)
+    else:
+        # Not an error: a day with no merged commits legitimately writes nothing.
+        print("periodic: merged-diff memory unchanged (nothing written)", flush=True)
+    return written
+
+
 def run_deploy():
     import deploy_window
     deploy_window.run()
@@ -572,6 +702,27 @@ def run_worktreeguard():
 def run_deploysilence():
     """Projects with ZERO successful production deploys in N days — absence of deploys is invisible."""
     import deploy_silence_detector; deploy_silence_detector.run()
+
+
+def run_rescuedurability():
+    """The rescue branches are the provenance record — and 34 of them were local-only.
+
+    branch_durability already archives + shares `agent/*`; nothing covered the
+    hotfix/stash-rescue-* namespace, so the only copy of twice-lost work sat on one disk.
+    """
+    import rescue_branch_durability
+    rescue_branch_durability.run()
+
+
+def run_pipelineselftest():
+    """§2: alert on a silent machine, and self-test the pipeline's own signals hourly.
+
+    Mac 2 was down half a day unnoticed and train-stale was a false alarm for days — both
+    because nothing checked that the monitors themselves were telling the truth.
+    """
+    import pipeline_selftest
+    result = pipeline_selftest.run()
+    print(pipeline_selftest.render(result), flush=True)
 
 
 def run_remotegc():
@@ -1076,6 +1227,7 @@ JOBS = {
     "chaos": run_chaos,
     "txn": run_txn,
     "scout": run_scout,
+    "mergedmemory": run_mergedmemory,
     "deploy": run_deploy,
     "roi": run_roi,
     "editorial": run_editorial,
@@ -1156,6 +1308,8 @@ JOBS = {
     "divergent": run_divergent,
     "worktreeguard": run_worktreeguard,
     "deploysilence": run_deploysilence,
+    "rescuedurability": run_rescuedurability,
+    "pipelineselftest": run_pipelineselftest,
     "remotegc": run_remotegc,
     "releasetrain": run_releasetrain,
     "deployverify": run_deployverify,
@@ -1219,3 +1373,13 @@ if __name__ == "__main__":
             sys.exit(_EX_WEDGED)
         sys.exit(_EX_SKIPPED)
     sys.exit(_EX_OK)
+
+def run_pipelineselftest():
+    """§2: alert on a silent machine, and self-test the pipeline's own signals hourly.
+
+    Mac 2 was down half a day unnoticed and train-stale was a false alarm for days — both
+    because nothing checked that the monitors themselves were telling the truth.
+    """
+    import pipeline_selftest
+    result = pipeline_selftest.run()
+    print(pipeline_selftest.render(result), flush=True)

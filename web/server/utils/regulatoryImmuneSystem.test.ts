@@ -42,7 +42,7 @@ describe('regulatory immune system', () => {
 
   it('denies evidence fields outside an explicit regulator grant', () => {
     const result = designRegulatorEvidenceStream({ grant_active: true, grant_fields: ['complaint_count'], requested_fields: ['complaint_count', 'customer_names'] })
-    expect(result.delivery_manifest.map(x => x.field)).toEqual(['complaint_count'])
+    expect(result.delivery_manifest.map((x: any) => x.field)).toEqual(['complaint_count'])
     expect(result.denied_fields).toEqual(['customer_names'])
     expect(result.status).toBe('shadow')
   })

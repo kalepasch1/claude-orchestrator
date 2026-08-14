@@ -10,13 +10,21 @@ Analyzes failure patterns across tasks to identify systemic issues:
 """
 import os, sys, re, collections
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import provider_banner
 
 # Common failure pattern classifiers
 PATTERNS = {
     "missing_dep": re.compile(r"Cannot find (module|package)|Module not found|No module named", re.I),
     "type_error": re.compile(r"TS\d{4}|TypeError|type.*not assignable|Property.*does not exist", re.I),
     "build_timeout": re.compile(r"timeout|timed out|ETIMEDOUT|deadline exceeded", re.I),
-    "rate_limit": re.compile(r"rate.limit|429|too many requests|quota exceeded|weekly limit", re.I),
+    # Was a local regex that knew "weekly limit" but none of the dozen other
+    # banner phrases runner.py already handled ("5-hour limit", "spend limit",
+    # "raise it at claude.ai"), so an exhaustion the runner classified
+    # correctly came back "unknown" from the analyzer reading the same note.
+    # `exhausted` is split out because it is a different remedy: rate limits
+    # want backoff, exhaustion wants a different account.
+    "rate_limit": provider_banner.RATE_LIMIT_RX,
+    "exhausted": provider_banner.EXHAUSTED_RX,
     "auth_failure": re.compile(r"401|403|authentication|unauthorized|PAT.*lacks|token.*expired", re.I),
     "merge_conflict": re.compile(r"conflict|CONFLICT|cannot merge|rebase.*fail", re.I),
     "disk_space": re.compile(r"no space|ENOSPC|disk full", re.I),
@@ -63,6 +71,12 @@ def analyze_batch(tasks):
     recommendations = []
     if cause_counts.get("rate_limit", 0) >= 3:
         recommendations.append("Multiple rate-limit failures — consider reducing concurrency or adding account rotation")
+    # Distinct remedy from rate_limit: lowering concurrency does not refill an
+    # exhausted account, and these used to be reported as one bucket (when they
+    # were recognised at all), so the advice was wrong half the time.
+    if cause_counts.get("exhausted", 0) >= 3:
+        recommendations.append("Provider budget exhausted, not throttled — rotate to another account "
+                               "or wait for the stated reset; reducing concurrency will not help")
     if cause_counts.get("missing_dep", 0) >= 3:
         recommendations.append("Repeated missing dependency errors — run `npm install` or check package.json")
     if cause_counts.get("auth_failure", 0) >= 2:

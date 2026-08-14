@@ -124,5 +124,131 @@ class TestPriorityOrdering(unittest.TestCase):
             self.assertEqual(ids[0], "first")
 
 
+class TestMechanicalFusionBounds(unittest.TestCase):
+    """Acceptance: N same-repo mechanical tasks fuse into
+    ceil(N/MAX_BATCH_SIZE)..ceil(N/MIN_MECHANICAL_BATCH) batches."""
+
+    def _bounds(self, n):
+        lo = -(-n // batch_fusion.MAX_BATCH_SIZE)
+        hi = -(-n // batch_fusion.MIN_MECHANICAL_BATCH)
+        return lo, hi
+
+    def test_batch_count_within_bounds(self):
+        for n in (5, 6, 9, 10, 11, 17, 25, 40, 73):
+            with self.subTest(n=n):
+                tasks = [_task(tid=f"m{i}", project="p1", kind="mechanical",
+                               prompt=f"bump version in runner/mod_{i}.py") for i in range(n)]
+                batches = batch_fusion.find_fusible(tasks)
+                lo, hi = self._bounds(n)
+                self.assertGreaterEqual(len(batches), lo, f"N={n} under-fused")
+                self.assertLessEqual(len(batches), hi, f"N={n} over-fused")
+
+    def test_every_task_appears_exactly_once(self):
+        n = 23
+        tasks = [_task(tid=f"m{i}", kind="mechanical",
+                       prompt=f"tidy runner/mod_{i}.py") for i in range(n)]
+        batches = batch_fusion.find_fusible(tasks)
+        seen = [t["id"] for b in batches for t in b]
+        self.assertEqual(len(seen), len(set(seen)), "a task was fused into two batches")
+        self.assertEqual(set(seen), {f"m{i}" for i in range(n)})
+
+    def test_no_batch_exceeds_the_cap(self):
+        tasks = [_task(tid=f"m{i}", kind="mechanical",
+                       prompt=f"tidy runner/mod_{i}.py") for i in range(37)]
+        for b in batch_fusion.find_fusible(tasks):
+            self.assertLessEqual(len(b), batch_fusion.MAX_BATCH_SIZE)
+            self.assertGreaterEqual(len(b), 2)
+
+    def test_batches_are_near_equal(self):
+        tasks = [_task(tid=f"m{i}", kind="mechanical",
+                       prompt=f"tidy runner/mod_{i}.py") for i in range(25)]
+        sizes = [len(b) for b in batch_fusion.find_fusible(tasks)]
+        self.assertLessEqual(max(sizes) - min(sizes), 1, f"lopsided batches: {sizes}")
+
+    def test_mechanical_fuses_without_file_overlap(self):
+        """Same repo is enough for mechanical work — that is the un-pause."""
+        tasks = [_task(tid=f"m{i}", kind="mechanical",
+                       prompt=f"touch runner/unrelated_{i}.py") for i in range(6)]
+        self.assertEqual(len(batch_fusion.find_fusible(tasks)), 1)
+
+    def test_short_tail_still_fuses(self):
+        tasks = [_task(tid=f"m{i}", kind="mechanical",
+                       prompt=f"tidy runner/mod_{i}.py") for i in range(3)]
+        batches = batch_fusion.find_fusible(tasks)
+        self.assertEqual(len(batches), 1)
+        self.assertEqual(len(batches[0]), 3)
+
+    def test_mechanical_still_never_crosses_projects(self):
+        tasks = ([_task(tid=f"a{i}", project="A", kind="mechanical") for i in range(8)]
+                 + [_task(tid=f"b{i}", project="B", kind="mechanical") for i in range(8)])
+        for b in batch_fusion.find_fusible(tasks):
+            self.assertEqual(len({t["project_id"] for t in b}), 1)
+
+    def test_non_mechanical_kinds_are_untouched_by_the_new_path(self):
+        """Feature tasks with no shared files must not fuse on repo alone."""
+        tasks = [_task(tid=f"f{i}", kind="feature",
+                       prompt=f"build runner/unrelated_{i}.py") for i in range(8)]
+        self.assertEqual(batch_fusion.find_fusible(tasks), [],
+                         "feature tasks must still prove shared context")
+
+    def test_feature_tasks_sharing_files_still_fuse(self):
+        tasks = [_task(tid=f"f{i}", kind="feature",
+                       prompt="extend runner/shared.py") for i in range(4)]
+        self.assertTrue(batch_fusion.find_fusible(tasks))
+
+    def test_prompt_cap_forces_more_batches_not_an_overstuffed_one(self):
+        big = "y" * (batch_fusion.MAX_FUSED_PROMPT_LEN // 2)
+        tasks = [_task(tid=f"m{i}", kind="mechanical", prompt=big) for i in range(6)]
+        batches = batch_fusion.find_fusible(tasks)
+        self.assertGreater(len(batches), 1)
+        for b in batches:
+            total = sum(len(t["prompt"]) for t in b)
+            self.assertLessEqual(total, batch_fusion.MAX_FUSED_PROMPT_LEN * 1.5)
+
+
+class TestSessionRouting(unittest.TestCase):
+    def test_one_session_per_batch(self):
+        tasks = [_task(tid=f"m{i}", kind="mechanical",
+                       prompt=f"tidy runner/mod_{i}.py") for i in range(14)]
+        batches = batch_fusion.find_fusible(tasks)
+        sessions = batch_fusion.plan_sessions(tasks)
+        self.assertEqual(len(sessions), len(batches))
+        self.assertTrue(all(s["prompt"] for s in sessions))
+
+    def test_session_key_is_stable_for_the_same_tasks(self):
+        tasks = [_task(tid=f"m{i}", kind="mechanical") for i in range(6)]
+        a = batch_fusion.plan_sessions(tasks)
+        b = batch_fusion.plan_sessions(tasks)
+        self.assertEqual([s["session_key"] for s in a], [s["session_key"] for s in b])
+
+    def test_session_carries_every_task_id(self):
+        tasks = [_task(tid=f"m{i}", kind="mechanical") for i in range(7)]
+        ids = {i for s in batch_fusion.plan_sessions(tasks) for i in s["task_ids"]}
+        self.assertEqual(ids, {f"m{i}" for i in range(7)})
+
+    def test_plan_sessions_is_fail_soft_on_garbage(self):
+        self.assertEqual(batch_fusion.plan_sessions([]), [])
+        self.assertEqual(batch_fusion.plan_sessions([{"id": "x"}]), [])
+
+    def test_batch_session_of_empty_batch_is_none(self):
+        self.assertIsNone(batch_fusion.batch_session([]))
+
+
+class TestDrainSemanticsUntouched(unittest.TestCase):
+    """batch_fusion must not change how speculative generators are drained."""
+
+    def test_drain_policy_still_allows_batch_fusion(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        import drain_policy
+        self.assertIn("batch_fusion.py", drain_policy.DEFAULT_ALLOW_JOBS)
+        self.assertFalse(drain_policy.should_skip("batch_fusion.py", queue_depth=10_000))
+
+    def test_speculative_generators_are_still_skipped_when_draining(self):
+        import drain_policy
+        for job in ("scout", "spec", "roadmap"):
+            self.assertIn(job, drain_policy.DEFAULT_SKIP_JOBS)
+            self.assertTrue(drain_policy.should_skip(job, queue_depth=10_000))
+
+
 if __name__ == "__main__":
     unittest.main()

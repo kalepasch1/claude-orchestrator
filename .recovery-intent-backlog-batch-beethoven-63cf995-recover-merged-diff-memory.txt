@@ -1,4 +1,0 @@
-recovery-intent: backlog-batch-beethoven-63cf995-recover-merged-diff-memory
-template: bf54771d8936
-intent: 07062319 07071626 63cf995 8b92d078e856 acceptance adapt agentic algorithm alter analysis artifacts backlog batch because beethoven before behavior below blocked blocker blocks branch branches broad bugfix build builds cache category cause change changes changing checks commit completion concrete config context continue correct dependencies diffs directive drafting duplicate duplicates during eliminating equivalent examine existing exists failure files final finish first focus fresh functional functionality green hints identify implement implementation improve improvement inputs inspect install instead integral intended intent large library lines local
-base: master

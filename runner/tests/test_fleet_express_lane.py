@@ -96,25 +96,45 @@ class TestLaneCapacity:
 class TestExpressRouting:
     """Test routing decision logic."""
 
+    # NOTE: these used task = {"priority": "express"} — a STRING — but tasks.priority is an
+    # INTEGER column, so the old predicate answered "not_express_priority" for every possible
+    # input and should_use_express_lane() could never return True. The tests passed anyway
+    # because a MagicMock-free string compare is happy to be false. Urgency in this schema is
+    # a low integer rank (db.claim_task defaults a missing priority to 1000) or an operator
+    # pin, so that is what these now exercise.
+
     def test_route_express_priority_task(self, monkeypatch):
-        """Task with priority='express' routes to express lane when space available."""
+        """An urgent numeric priority routes to the express lane when space is available."""
         monkeypatch.setenv("ORCH_EXPRESS_LANE_ENABLED", "true")
         monkeypatch.setenv("ORCH_EXPRESS_LANE_CAPACITY_PCT", "25")
         express_lane.invalidate()
         express_lane.set_total_lanes(40)
 
-        task = {"id": "task-1", "priority": "express"}
+        task = {"id": "task-1", "priority": 5}
         use_express, reason = express_lane.should_use_express_lane(task)
 
         assert use_express is True
         assert reason == "express_priority"
 
+    def test_route_pinned_task_to_express(self, monkeypatch):
+        """An operator pin is the other express signal the schema provides."""
+        monkeypatch.setenv("ORCH_EXPRESS_LANE_ENABLED", "true")
+        monkeypatch.setenv("ORCH_EXPRESS_LANE_CAPACITY_PCT", "25")
+        express_lane.invalidate()
+        express_lane.set_total_lanes(40)
+
+        task = {"id": "task-1", "priority": 1000, "pinned": True, "pin_rank": 1}
+        use_express, reason = express_lane.should_use_express_lane(task)
+
+        assert use_express is True
+        assert reason == "pinned"
+
     def test_route_non_express_task_to_standard(self, monkeypatch):
-        """Non-express task routes to standard lane."""
+        """A default-priority task routes to the standard lane."""
         monkeypatch.setenv("ORCH_EXPRESS_LANE_ENABLED", "true")
         express_lane.invalidate()
 
-        task = {"id": "task-1", "priority": "normal"}
+        task = {"id": "task-1", "priority": 1000}
         use_express, reason = express_lane.should_use_express_lane(task)
 
         assert use_express is False
@@ -125,7 +145,7 @@ class TestExpressRouting:
         monkeypatch.setenv("ORCH_EXPRESS_LANE_ENABLED", "false")
         express_lane.invalidate()
 
-        task = {"id": "task-1", "priority": "express"}
+        task = {"id": "task-1", "priority": 5}
         use_express, reason = express_lane.should_use_express_lane(task)
 
         assert use_express is False
@@ -161,7 +181,7 @@ class TestLaneUtilization:
             express_lane.assign_task_lane(f"task-{i}", f"runner-{i}", use_express=True)
 
         # Next express task should go to standard (fallback)
-        task = {"id": "task-overflow", "priority": "express"}
+        task = {"id": "task-overflow", "priority": 5}
         use_express, reason = express_lane.should_use_express_lane(task)
 
         assert use_express is False
@@ -289,21 +309,27 @@ class TestThreadSafety:
         express_lane.invalidate()
         express_lane.set_total_lanes(100)
 
-        def assign_lanes():
+        # Uniqueness comes from the thread's INDEX, not threading.current_thread().ident.
+        # CPython recycles idents once a thread exits, and this body is fast enough that an
+        # early thread can finish before a later one starts — so the ids collided, lanes
+        # overwrote each other, and the count came in under 50 non-deterministically (20 on
+        # the first run that ever reached this test). This test had never executed before:
+        # stats() deadlocked earlier in the file and stalled the suite here.
+        def assign_lanes(thread_index):
             for i in range(10):
                 express_lane.assign_task_lane(
-                    f"task-{threading.current_thread().ident}-{i}",
-                    f"runner-{threading.current_thread().ident}-{i}",
+                    f"task-{thread_index}-{i}",
+                    f"runner-{thread_index}-{i}",
                     use_express=(i % 2 == 0)
                 )
 
-        threads = [threading.Thread(target=assign_lanes) for _ in range(5)]
+        threads = [threading.Thread(target=assign_lanes, args=(n,)) for n in range(5)]
         for t in threads:
             t.start()
         for t in threads:
             t.join()
 
-        # Total of 50 lanes assigned
+        # 5 threads x 10 distinct runner ids = 50 lanes
         total = express_lane.active_express_lanes() + express_lane.active_standard_lanes()
         assert total == 50
 
@@ -326,9 +352,13 @@ class TestThreadSafety:
         for t in threads:
             t.join()
 
-        # 10 lanes remain
+        # Both threads release the SAME five ids (runner-10..14), so five lanes go, not ten:
+        # 20 - 5 = 15. The old `assert total == 10` double-counted the duplicate releases and
+        # would only have held if release_lane were NOT idempotent. 15 is the property worth
+        # pinning — two threads releasing the same lane must remove it exactly once. This
+        # test had never executed before; the stats() deadlock stalled the suite ahead of it.
         total = express_lane.active_express_lanes() + express_lane.active_standard_lanes()
-        assert total == 10
+        assert total == 15
 
 
 class TestCapacityOverflow:
@@ -349,7 +379,7 @@ class TestCapacityOverflow:
         # Attempt to route more express tasks
         fallback_count = 0
         for i in range(capacity, capacity + 5):
-            task = {"id": f"task-{i}", "priority": "express"}
+            task = {"id": f"task-{i}", "priority": 5}
             use_express, _ = express_lane.should_use_express_lane(task)
             if not use_express:
                 fallback_count += 1
@@ -368,7 +398,7 @@ class TestCapacityOverflow:
 
         # Simulate workload
         for i in range(50):
-            task = {"id": f"task-{i}", "priority": "express" if i < 25 else "normal"}
+            task = {"id": f"task-{i}", "priority": 5 if i < 25 else 1000}
             use_express, _ = express_lane.should_use_express_lane(task)
             # Only up to express_capacity should use express lane
             assert i < express_capacity or not use_express
@@ -416,18 +446,22 @@ class TestEdgeCases:
         use_express, reason = express_lane.should_use_express_lane(task)
 
         assert use_express is False
-        assert reason == "not_express_priority"
+        # More specific than the old blanket "not_express_priority": the field is absent,
+        # which is a different diagnosis from "present but not urgent enough".
+        assert reason == "no_priority"
 
     def test_invalid_priority_value(self, monkeypatch):
         """Invalid priority values route to standard."""
         monkeypatch.setenv("ORCH_EXPRESS_LANE_ENABLED", "true")
         express_lane.invalidate()
 
-        task = {"id": "task-1", "priority": "urgent"}  # Not 'express'
+        # tasks.priority is an INTEGER column, so any non-numeric value is malformed data
+        # rather than a lower priority band — say which.
+        task = {"id": "task-1", "priority": "urgent"}
         use_express, reason = express_lane.should_use_express_lane(task)
 
         assert use_express is False
-        assert reason == "not_express_priority"
+        assert reason == "priority_not_numeric"
 
 
 if __name__ == "__main__":

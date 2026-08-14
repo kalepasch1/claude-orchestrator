@@ -23,12 +23,12 @@ Current state:
 
 ✓ Module `economic_scheduler.py` implements:
   - `predict_revenue(task, ctx)` — estimates $/merge impact for a task (returns float USD)
-    - Base: look up kind's historical avg_delta from revenue_attribution.kind_roi() 
+    - Base: look up kind's historical avg_delta from revenue_attribution.kind_roi()
     - Adjust: if project is "high-growth" or "in-flight initiative" (via approvals table radar_tag), boost 2x
     - Adjust: if task mentions "pricing" / "payment" / "stripe" / "marketplace" keywords, boost 1.5x
     - Adjust: if error_rate spike detected for this project, boost bugfix-kind tasks 1.5x
     - Cap at $0 if no revenue signal; return confidence interval [low, high] as well as point estimate
-  
+
   - `cost_benefit(task, ctx)` — returns {"predicted_revenue": USD, "estimated_cost": USD, "roi": ratio, "worthwhile": bool}
     - worthwhile = predicted_revenue > (1.5 × estimated_cost) — only pursue if 1.5x ROI threshold
     - Feed into park/deprioritize logic

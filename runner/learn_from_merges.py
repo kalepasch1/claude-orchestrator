@@ -24,6 +24,7 @@ instead of being silently dropped or silently written.
 import os, sys, re, json, time, subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
+import provider_banner
 
 LOOKBACK = int(os.environ.get("MERGE_LEARN_LOOKBACK", "40"))
 
@@ -32,13 +33,13 @@ REJECTED_LOG = os.path.join(HOME, "knowledge", "rejected.jsonl")
 
 # Content matching any of these is never a reusable engineering learning — it's an error banner,
 # a refusal/apology, or empty noise that leaked through as if it were real model output.
-_FAILURE_PATTERNS = [
-    re.compile(r"\b(weekly|daily|monthly|usage)\s+limit\b", re.I),
-    re.compile(r"\brate[\s-]?limit(ed)?\b", re.I),
-    re.compile(r"\bquota\s+(exceeded|reached)\b", re.I),
-    re.compile(r"\bHTTP\s+(Error\s+)?[45]\d\d\b", re.I),
-    re.compile(r"\b(Internal Server Error|Not Found|Bad Gateway|Service Unavailable|Too Many Requests)\b", re.I),
-    re.compile(r"\bresets?\s+\w+\s+\d", re.I),                 # "resets Jul 8 at 6am" style banners
+#
+# The provider-banner half moved to provider_banner, which is also what
+# runner.py and root_cause.py consult: this list had drifted to a narrower
+# vocabulary than the runner's, so text the runner recognised as exhaustion
+# could still pass this gate. The refusal/apology patterns below stay local —
+# they are about what a MODEL says, not what a PROVIDER says.
+_FAILURE_PATTERNS = list(provider_banner.PATTERNS) + [
     re.compile(r"^\s*as an ai\b", re.I),
     re.compile(r"\bas a language model\b", re.I),
     re.compile(r"\bi(?:'m| am) (?:sorry|unable to|not able to)\b", re.I),

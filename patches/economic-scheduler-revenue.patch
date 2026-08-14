@@ -1,0 +1,18 @@
+diff --git a/runner/economic_scheduler.py b/runner/economic_scheduler.py
+index 287f6be7..95c8ed3e 100644
+--- a/runner/economic_scheduler.py
++++ b/runner/economic_scheduler.py
+@@ -23,7 +23,12 @@ import revenue_attribution
+ ENABLED = os.environ.get("ORCH_ECONOMIC_SCHEDULER_ENABLED", "false").lower() in ("true", "1", "yes")
+ ROI_THRESHOLD = float(os.environ.get("ORCH_ROI_THRESHOLD", "1.5"))  # only pursue if 1.5x ROI
+ REVENUE_CRITICAL_LANE_SIZE = int(os.environ.get("ORCH_REVENUE_CRITICAL_LANE_SIZE", "20"))
+-REVENUE_KEYWORDS = ("pricing", "payment", "stripe", "marketplace", "billing", "revenue", "monetize")
++# Intent phrases, not bare nouns: "fix stripe payment crash" is a stability
++# task that merely mentions payments, while "payment integration"/"payment
++# processing" work is revenue-moving. Bare "payment"/"pricing"/"stripe"
++# over-triggered the 1.5x boost on incidental mentions.
++REVENUE_KEYWORDS = ("payment integration", "payment processing", "marketplace",
++                    "billing", "revenue", "monetize")
+ 
+ 
+ def load_ctx():

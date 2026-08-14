@@ -24,7 +24,10 @@ RELEASE_FLOW_FILE = os.path.join(RUNTIME_DIR, "release_flow.json")
 sys.path.insert(0, RUNNER_DIR)
 import db
 import commit_overlay
+import delivery_lease
 import integration_runtime
+import paused_host_guard
+import release_manifest
 
 # BATCH-DEV defaults: ship agent work to the unified staging branch quickly, but promote
 # prod in QA'd batches. This avoids improvement-by-improvement Vercel churn while keeping
@@ -413,11 +416,45 @@ def _recent_failed_gate(project, staging_sha, gate):
     return False
 
 
+def _insert_release(row):
+    """Insert a releases row stamped with the host that produced it.
+
+    `releases` recorded no host, so when a paused, stale machine started writing
+    deploy_status='failed' rows the only evidence of WHO wrote them was an npm log
+    path that happened to leak into the note ("/Users/mandypa..."). A failure that
+    flips a project RED fleet-wide should not be attributable only by accident.
+
+    Retries without `host` if the column is not present yet: code and migrations
+    deploy independently, and a lagging DB must not take releases down entirely.
+    """
+    # FENCE CHECK (2026-08-13): a releases row is the fleet's record of what shipped —
+    # deploy_verify, back-pressure and the RED/GREEN project state all read it. A host
+    # that has lost the releaser lease must not write one, or a superseded pass
+    # overwrites the incumbent's account of production. Anonymous (unfenced) release
+    # writes are permitted only while delivery_lease.available() is False; see the
+    # compatibility window note there.
+    delivery_lease.require(
+        delivery_lease.held(str(row.get("project") or ""), delivery_lease.ROLE_RELEASER),
+        f"record releases row for {row.get('project')}")
+    try:
+        return db.insert("releases", dict(row, host=paused_host_guard.HOST))
+    except Exception:
+        return db.insert("releases", row)
+
+
 def _insert_failed_release(project, gate, ahead, from_sha, to_sha, note):
     """Insert one failed gate row per gate/SHA/cooldown window."""
     if _recent_failed_gate(project, to_sha, gate):
         return None
-    return db.insert("releases", {"project": project, "from_sha": from_sha or "",
+    # A gate is a new unit of work, so a paused host must not record its verdict —
+    # this is the row that flips a project RED and trips fleet-wide back-pressure.
+    ok, why = paused_host_guard.may_start(f"gate:{gate}", project=project)
+    if not ok:
+        paused_host_guard.record_rejection(
+            f"gate:{gate}", f"{why}; refused releases row deploy_status=failed "
+                            f"to_sha={(to_sha or '')[:8]}", project=project)
+        return None
+    return _insert_release({"project": project, "from_sha": from_sha or "",
                     "to_sha": to_sha or "", "n_changes": int(ahead or 0),
                     "deploy_status": "failed", "note": f"[gate:{gate}] {note}"})
 
@@ -720,6 +757,26 @@ def _rerun_release_gates(repo, sha, test_cmd, require_tests, build_cmd):
 
     Returns (ok, gate_name, log).
     """
+    # RESOLVED-FILE GATE (2026-08-12), first because it is the cheapest and because a
+    # marker in the tree makes every later gate's verdict meaningless — a .gitignore with
+    # conflict markers silently stops ignoring, and the build still goes green. Runs over
+    # the WHOLE tree at `sha`, not a change list, since the marker that reaches production
+    # is characteristically in a file this batch never touched.
+    try:
+        import resolved_file_gate
+        marker_findings = resolved_file_gate.scan_repo(repo, ref=sha)
+        if marker_findings:
+            files = sorted({f.get("file") for f in marker_findings if f.get("file")})
+            return False, "conflict-markers", (
+                "release refused: %d unresolved conflict-marker finding(s) at %s in %s. "
+                "Nothing was force-pushed and neither side of any conflict was discarded — "
+                "resolve the files and re-run."
+                % (len(marker_findings), (sha or "")[:12], ", ".join(files[:10]) or "the tree"))
+    except Exception as exc:
+        # Fail-closed, like every other gate in this function.
+        return False, "conflict-markers", (
+            "resolved-file gate error (fail-closed): %s: %s" % (type(exc).__name__, exc))
+
     if test_cmd and require_tests:
         try:
             with commit_overlay.checkout(repo, sha, prefix="release-regate-overlay-") as overlay:
@@ -746,6 +803,34 @@ def _rerun_release_gates(repo, sha, test_cmd, require_tests, build_cmd):
     if not bok:
         return False, "build", blog or "post-integration build red"
     return True, "", ""
+
+
+def _persist_production_build_proof(repo, commit, build_cmd):
+    """Persist the exact proof required by the production pre-push hook.
+
+    The release train built the candidate successfully but recorded only a QA
+    proof.  The production hook deliberately accepts only ``kind=build`` (or
+    ``vercel-build``), so every otherwise-green promotion was rejected as
+    unverified.  Record and immediately read back the exact commit/command proof
+    before attempting the push; proof persistence is part of the release gate,
+    not best-effort telemetry.
+    """
+    try:
+        import build_gate
+        import proof_graph
+        guard_cmd = str(build_gate.detect_build_cmd(repo) or "").strip()
+        ran_cmd = str(build_cmd or "").strip()
+        if not guard_cmd:
+            return False, "production push guard could not detect a build command"
+        if ran_cmd != guard_cmd:
+            return False, (f"release built `{ran_cmd}` but production guard requires "
+                           f"`{guard_cmd}`; refusing to certify a command that did not run")
+        proof_graph.record_verification(repo, commit, guard_cmd, "build", True)
+        if not proof_graph.reusable_verification(repo, commit, guard_cmd, "build"):
+            return False, "exact production build proof was not durably readable after write"
+        return True, guard_cmd
+    except Exception as exc:
+        return False, f"production build proof persistence failed: {type(exc).__name__}: {exc}"
 
 
 def _withdraw_unreleased_merged(p, project, repo, prod, note):
@@ -778,6 +863,21 @@ def _withdraw_unreleased_merged(p, project, repo, prod, note):
                       {"state": "DONE",
                        "note": (f"MERGED withdrawn: {sha[:12]} is not on {remote} after a failed "
                                 f"release push — {(note or '')[-160:]}")})
+            # The old integration card is stamped train:MERGED and therefore terminal.
+            # Merely returning the task to DONE leaves it invisible until a bounded sweeper
+            # happens to see it; in practice the middle of that window never did.  File a
+            # fresh canonical card now.  If the write fails, the full-scan sweeper remains
+            # the retry path and the task stays honestly open in DONE.
+            try:
+                import merge_train
+                merge_train.ensure_integration_card_result(
+                    project, t.get("slug"), kind="integrate",
+                    title=f"release retry: merge of {t.get('slug')}",
+                    why=f"prior integration commit {sha[:12]} never reached {remote}",
+                    detail=(note or "failed production push")[-2000:],
+                    status="approved", decided_by="canonical-train:release-retry")
+            except Exception as exc:
+                print(f"release_train: could not re-card {t.get('slug')}: {exc}", flush=True)
             withdrawn.append(t.get("slug"))
     except Exception:
         pass
@@ -797,6 +897,19 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
     production branch would discard whatever advanced it; if a push cannot
     fast-forward, the answer is to integrate, not to override.
     """
+    # release_manifest is used below to record the post-integration gate, but it was
+    # only ever imported inside run() further down this file — so the call at the
+    # `if manifest:` branch resolved against nothing. It sits inside `except
+    # Exception: pass`, so the NameError was swallowed and the gate was silently
+    # never recorded; static_sanity caught the undefined name and, being CRITICAL,
+    # aborted merge_train at startup on every invocation (4670 tracebacks). Import
+    # it here, in the scope that uses it, fail-soft so a missing module degrades to
+    # "no manifest recording" rather than taking the release path down.
+    try:
+        import release_manifest
+    except Exception:
+        release_manifest = None
+
     if attempts is None:
         attempts = max(1, int(os.environ.get("ORCH_RELEASE_PUSH_ATTEMPTS", "2") or 2))
     to_sha = _git(repo, "rev-parse", STAGING).stdout.strip()
@@ -823,14 +936,31 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
                                        f"post-integration {gate} red — self-heal queued: "
                                        f"{(glog or '')[-160:]}")
                 return False, integrated_sha, (glog or f"post-integration {gate} red")
-            if manifest:
+            if manifest and release_manifest is not None:
                 try:
+                    # Local import: this helper runs outside the caller's scope, where
+                    # release_manifest was imported. Without it the call raised NameError
+                    # into the bare except below, so post-integration gates were silently
+                    # never recorded on any release.
+                    import release_manifest
                     release_manifest.record_gate(
                         manifest["id"], "post-integration", True,
                         detail=f"QA+build re-verified on integrated tip {integrated_sha[:12]}")
                 except Exception:
                     pass
         to_sha = integrated_sha
+        proof_ok, proof_note = _persist_production_build_proof(repo, to_sha, build_cmd)
+        if not proof_ok:
+            _insert_failed_release(project, "proof", ahead, release_base_sha, to_sha,
+                                   proof_note[-500:])
+            return False, to_sha, proof_note
+        # FENCE CHECK (2026-08-13): the last possible moment before production moves.
+        # Everything above — integrate, re-gate, test, build proof — takes minutes, and
+        # the lease can lapse or be taken over inside that window. Verifying here rather
+        # than at the top of the pass is the entire point: a timed-out predecessor must
+        # be unable to promote. LeaseLost propagates to _run_for_with_repo, which yields.
+        delivery_lease.require(delivery_lease.held(project, delivery_lease.ROLE_RELEASER),
+                               f"promote {STAGING} -> {prod} for {project}")
         pr = _git(repo, "push", "origin", f"{STAGING}:{prod}", timeout=300)
         if pr.returncode == 0:
             # Keep local prod fresh when possible, but do not fail a good remote release
@@ -1090,6 +1220,14 @@ def _run_for_unlocked(project, repo_override=None):
     except Exception:
         bcmd = ""
     manifest = None
+    # FENCE CHECK (2026-08-13): the manifest is the binding record of which tasks a
+    # release claims to carry. Two hosts writing manifests for the same repo produce two
+    # contradictory accounts of one production tip, so it is written only under a
+    # verified lease. Deliberately OUTSIDE the try below: that block swallows every
+    # exception into `manifest = None`, which would turn a lost lease into a silently
+    # manifest-less release rather than a stopped one.
+    delivery_lease.require(delivery_lease.held(project, delivery_lease.ROLE_RELEASER),
+                           f"create release manifest for {project}")
     try:
         import release_manifest
         manifest_tasks = release_manifest.discover_tasks(
@@ -1262,6 +1400,11 @@ def _run_for_unlocked(project, repo_override=None):
         _insert_failed_release(project, "build", ahead, release_base_sha, staging_sha,
                                f"staging BUILD red — self-heal queued: {(blog or '')[-120:]}")
         return {"project": project, "build": "RED", "note": "staging build not green; build-fix task queued"}
+    proof_ok, proof_note = _persist_production_build_proof(repo, staging_sha, bcmd)
+    if not proof_ok:
+        _insert_failed_release(project, "proof", ahead, release_base_sha, staging_sha,
+                               proof_note[-500:])
+        return {"project": project, "proof": "RED", "note": proof_note}
     if manifest:
         try:
             release_manifest.record_gate(manifest["id"], "build", True, command=bcmd)
@@ -1330,7 +1473,7 @@ def _run_for_unlocked(project, repo_override=None):
             test_cmd, require_tests, bcmd, manifest=manifest)
     ver = _next_version()
     changelog = _git(repo, "log", "--oneline", f"{last_good}..{to_sha}").stdout[:2000]
-    rel = db.insert("releases", {"project": project, "version": ver, "from_sha": last_good,
+    rel = _insert_release({"project": project, "version": ver, "from_sha": last_good,
                     "to_sha": to_sha, "n_changes": int(ahead), "changelog": changelog,
                     "deploy_status": ("building" if pushed else "failed") if push_on else "pending",
                     "note": "" if (pushed or not push_on) else (push_log or "push failed")[-160:]})
@@ -1356,6 +1499,11 @@ def run_for(project):
     before either writes its failure row. Sharing the merge-train repo lock
     makes the check/build/push sequence single-flight across processes.
     """
+    # run_for() is also called directly (scheduler, ad-hoc, dependency-aware orchestration),
+    # so the pause check cannot live only in run().
+    ok, why = paused_host_guard.refuse("release_train", project=project)
+    if not ok:
+        return {"project": project, "skipped": why}
     p = (db.select("projects", {"select": "repo_path", "name": f"eq.{project}"}) or [{}])[0]
     repo = p.get("repo_path", "")
     if not repo or not os.path.isdir(repo):
@@ -1364,16 +1512,36 @@ def run_for(project):
 
 
 def _run_for_with_repo(project, repo):
+    """Run one project's release pass under the repo lock AND the releaser lease.
+
+    repo_lock is an flock under this machine's .runtime/ — it serialises processes on
+    one Mac and is blind to the others. The delivery lease is the cross-machine half:
+    it is held for the whole pass and its fence is re-verified immediately before each
+    shared-ref write, so a pass that loses ownership mid-flight (expiry, takeover,
+    restart) cannot complete its push. See delivery_lease for why the single
+    integration_owner.decide() check at the top of run() was not sufficient.
+    """
     import repo_lock
     timeout = float(os.environ.get("ORCH_RELEASE_LOCK_TIMEOUT_S", "1") or 1)
     with repo_lock.hold(repo, timeout=timeout) as acquired:
         if not acquired:
             return {"project": project, "note": "release busy; existing train owns repo"}
+        lease = delivery_lease.acquire(project, delivery_lease.ROLE_RELEASER)
+        if lease is None and delivery_lease.available():
+            return {"project": project,
+                    "note": "another host holds the releaser lease for this repository"}
         try:
             with integration_runtime.isolated_repo(repo, "release_train") as integration_repo:
                 return _run_for_unlocked(project, repo_override=integration_repo)
+        except delivery_lease.LeaseLost as exc:
+            # Not an error to retry here: another host owns this repository now and is
+            # entitled to the work. Surfacing it as a note keeps the pass out of the
+            # failed-release table, which would otherwise flip the project RED.
+            return {"project": project, "note": f"release yielded: {exc}"}
         except integration_runtime.IntegrationRuntimeError as exc:
             return {"project": project, "note": f"release isolation blocked: {exc}"}
+        finally:
+            delivery_lease.release(lease)
 
 
 def _next_version():
@@ -1406,6 +1574,15 @@ def run():
     # CROSS-HOST GUARD (2026-08-06): releases push to production branches, so exactly one live
     # host may run this — and never a host on stale code. Same election as merge_train; see
     # integration_owner for why this is a pure function of heartbeats rather than a lock.
+    # HOST PAUSE (2026-08-06): checked BEFORE the owner election, because a paused host
+    # must not run gates even if it would otherwise win the election. The claim guard
+    # covered tasks.account only, so a paused, 40-commits-stale host went on writing
+    # deploy_status='failed' rows that flipped projects RED and tripped release
+    # back-pressure fleet-wide. Refused at the START of a pass only — a pass already in
+    # flight is never interrupted.
+    _ok, _why = paused_host_guard.refuse("release_train")
+    if not _ok:
+        return {"skipped": _why}
     try:
         import integration_owner
         may, why = integration_owner.decide()

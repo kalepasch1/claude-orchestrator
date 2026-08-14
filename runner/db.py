@@ -44,12 +44,68 @@ class MissingRelationError(Exception):
 
 
 class TransientDBError(Exception):
-    """Raised when a Supabase/PostgREST request fails with a retryable HTTP status (e.g. 409 Conflict).
+    """Raised when a Supabase/PostgREST request fails for a retryable reason.
 
-    Callers can catch this to distinguish transient DB collisions from permanent errors.
-    The original urllib.error.HTTPError is chained via __cause__.
+    Two cases raise this:
+      * a retryable HTTP status (e.g. 409 Conflict) — chains urllib.error.HTTPError;
+      * every configured endpoint being unreachable after the retry budget is spent —
+        chains the last urllib.error.URLError / TimeoutError / socket.timeout.
+
+    Callers can catch this to distinguish a transient outage from a permanent error. It is
+    deliberately the counterpart of MissingRelationError: transient means "skip this cycle and
+    try again next time", structural means "this job can never succeed, disable it".
+    The original exception is chained via __cause__.
     """
     pass
+
+# Billing firewall helpers. The rule "which keys are dangerous" and the rule "is API billing
+# allowed right now" both belong to other modules; db.py's job is only to obey them. Every
+# lookup here is fail-soft in the safe direction — an unavailable authority means DO NOT inject.
+_FALLBACK_BLOCKED_API_ENV_PREFIXES = ("ANTHROPIC_API_KEY",)
+
+
+def _blocked_api_env_prefixes():
+    """Key prefixes that must never reach the environment while billing is blocked.
+
+    Sourced from the shared fleet contracts when present so the list is defined once
+    fleet-wide; the local fallback exists only so a host mid-migration still blocks the key
+    that caused the 2026-07-08 outage rather than blocking nothing.
+    """
+    try:
+        import fleet_contracts
+        prefixes = getattr(fleet_contracts, "BLOCKED_API_ENV_PREFIXES", None)
+        if prefixes:
+            return tuple(prefixes)
+    except Exception:
+        pass
+    return _FALLBACK_BLOCKED_API_ENV_PREFIXES
+
+
+def _is_blocked_api_key(name, prefixes):
+    """True for an exact prefix match or a suffixed variant (ANTHROPIC_API_KEY_2)."""
+    return any(name == p or name.startswith(p + "_") for p in prefixes)
+
+
+def _api_billing_allowed():
+    """Ask subscription_guard, the single authority on Anthropic API billing.
+
+    db.py used to re-derive the policy inline as `subscription_guard is off AND billing opted
+    in`, which is strictly looser than is_api_allowed() — that also requires purchased-credit
+    intent and can be revoked live via control_flags. Two copies of a billing rule is one copy
+    too many, and the looser copy is the one that spends money.
+
+    The import is wrapped because this runs at db import time inside every periodic subprocess:
+    if the authority cannot be consulted, the answer is no.
+    """
+    try:
+        import subscription_guard
+    except Exception:
+        return False
+    try:
+        return bool(subscription_guard.is_api_allowed())
+    except Exception:
+        return False
+
 
 # Load runner/.env directly from Python so launchd agents pick up all env vars
 # (EMBED_PROVIDER, ANTHROPIC_API_KEY, etc.) even when the shell wrapper can't
@@ -90,19 +146,24 @@ def _load_env():
     for k, kept, ignored in _shadowed:
         print("db: .env defines %s twice with different values — using %r, IGNORING %r. "
               "Delete one of the definitions." % (k, kept, ignored))
-    # First pass: everything except Anthropic API keys, so an ORCH_ALLOW_API_BILLING=true set
+    # First pass: everything except blocked API keys, so an ORCH_ALLOW_API_BILLING=true set
     # only inside .env (not the shell/plist) is honored below rather than read as its old default.
-    anthropic_pairs = []
+    blocked_prefixes = _blocked_api_env_prefixes()
+    blocked_pairs = []
     for k, v in pairs:
-        if k == "ANTHROPIC_API_KEY" or k.startswith("ANTHROPIC_API_KEY_"):
-            anthropic_pairs.append((k, v))
+        if _is_blocked_api_key(k, blocked_prefixes):
+            blocked_pairs.append((k, v))
             continue
         os.environ.setdefault(k, v)
+    # Two gates, both of which must open. The local check is the conservative floor this loader
+    # has always applied; is_api_allowed() is the authority and can only make it stricter.
     sub_on = os.environ.get("ORCH_USE_SUBSCRIPTION", "true").lower() == "true"
     api_opt_in = os.environ.get("ORCH_ALLOW_API_BILLING", "false").lower() == "true"
     if sub_on and not api_opt_in:
-        return  # billing blocked: leave ANTHROPIC_API_KEY* out of the environment entirely
-    for k, v in anthropic_pairs:
+        return  # billing blocked: leave the blocked keys out of the environment entirely
+    if not _api_billing_allowed():
+        return  # subscription_guard says no (or could not be asked) — fail closed
+    for k, v in blocked_pairs:
         os.environ.setdefault(k, v)
 
 def _ensure_tool_path():
@@ -230,6 +291,39 @@ PROJECT_PRIORITY_ORDER = {
     "sustainable-barks": 12,
     "sustainablebarks": 12,
 }
+
+
+def _is_express_row(row):
+    """Is this task row express? Single definition, shared by the counter and the sort.
+
+    Delegates to express_lane.is_express_task so the claim path and the express module can
+    never disagree about what "express" means. Fail-soft: any import problem answers False,
+    which leaves ordering exactly as it was rather than breaking the claim scan.
+    """
+    try:
+        import express_lane
+        if not express_lane.is_enabled():
+            return False
+        express, _reason = express_lane.is_express_task(row)
+        return bool(express)
+    except Exception:
+        return False
+
+
+def _express_capacity():
+    """Express lanes available on this machine, or 0 when the feature is off.
+
+    Reads express_lane.express_lane_capacity(), which was dead code: it clamps to
+    `min(total - 1, total * pct / 100)` so express can never take the whole machine, and
+    nothing consulted it. Fail-soft: 0 disables the express jump rather than breaking claims.
+    """
+    try:
+        import express_lane
+        if not express_lane.is_enabled():
+            return 0
+        return max(0, int(express_lane.express_lane_capacity()))
+    except Exception:
+        return 0
 
 
 def _project_rank_name(name):
@@ -415,12 +509,28 @@ def _req(method, path, body=None, headers=None, params=None):
         probe_only = i < len(bases) - 1
         try:
             return _req_one(base, method, path, qs, data, h, probe_only=probe_only)
+        except urllib.error.HTTPError:
+            # HTTPError subclasses URLError, so without this it would be swallowed by the
+            # failover branch below and re-raised as a connectivity problem. An HTTP status
+            # means the endpoint answered — _req_one has already pinned it and applied the
+            # 409/404/retry policy. Failing over here would contradict the "never fail over on
+            # a 4xx/5xx" rule that _req_one documents, and would relabel a server-side 500 as
+            # an unreachable-network error.
+            raise
         except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
             last_exc = exc
             if _ACTIVE_BASE.get("url") == base:
                 _ACTIVE_BASE["url"] = None
             continue
-    raise last_exc
+    # Every endpoint is unreachable. Surfacing the bare URLError here is what let the
+    # periodic jobs crash-loop through a transient outage: batch_completion (1,995 identical
+    # tracebacks) and virtual_executive_worker (1,803) both died on
+    # `urllib.error.URLError: <urlopen error timed out>` escaping db.select(). Classify it the
+    # same way MissingRelationError classifies a structurally-absent table, so callers can tell
+    # "the network blipped, skip this cycle" apart from "this job is permanently broken".
+    # crash_loop_detector already treats TransientDBError as environmental, not a real defect.
+    raise TransientDBError(
+        f"all Supabase endpoints unreachable for {method} {path}: {last_exc}") from last_exc
 
 
 def _req_one(base, method, path, qs, data, h, probe_only=False):
@@ -468,9 +578,140 @@ def _req_one(base, method, path, qs, data, h, probe_only=False):
             time.sleep(min(12, 2 ** attempt) + (0.1 * attempt))
 
 
+# TRUNCATED-SCAN DETECTOR (2026-08-06)
+# ------------------------------------
+# Three separate outages today had one signature: an ordered, capped db.select over a set that
+# had outgrown the cap, so one end of the queue became structurally invisible and the work sat
+# there indefinitely. merge_train._pick_cards (90 of 569 candidates visible), the PostgREST
+# 1,000-row page ceiling behind a limit of 3,000, and integration_sweeper (80 of 200, ordered
+# oldest-first, hiding everything recent). Each looked like "the queue is slow" from outside.
+#
+# There are 262 db.select call sites passing both order and limit. Auditing them by hand is a
+# guess about which sets will grow. Instead: notice the condition that actually matters, which
+# is a query coming back EXACTLY full — the unambiguous sign it was cut off and there may be
+# more behind it. Warn once per call site so a new instance announces itself instead of being
+# discovered by an outage three months later.
+#
+# Deliberately a warning, not an error: plenty of these are honest "give me the 20 most recent"
+# reads where truncation is the point. The log line tells a human where to look; it does not
+# decide for them. ORCH_SCAN_TRUNCATION_WARN=false disables it.
+_scan_warned = set()
+_scan_warn_lock = threading.Lock()
+
+
+def _warn_if_truncated(table, params, rows):
+    try:
+        if os.environ.get("ORCH_SCAN_TRUNCATION_WARN", "true").lower() not in ("1", "true", "yes", "on"):
+            return
+        if not isinstance(rows, list) or not params:
+            return
+        order, limit = params.get("order"), params.get("limit")
+        if not order or limit is None:
+            return
+        try:
+            cap = int(str(limit).strip().strip('"'))
+        except (TypeError, ValueError):
+            return
+        # limit=1 is "give me the newest/oldest one", never a queue scan. It fills by
+        # definition, so warning on it is pure noise — pipeline_funnel's age probe tripped it
+        # on the first run. Same for 2; anything that small is a lookup, not a sweep.
+        if cap <= 2 or len(rows) < cap:
+            return
+        import traceback
+        site = "?"
+        for fr in reversed(traceback.extract_stack()[:-2]):
+            if not fr.filename.endswith("/db.py"):
+                site = f"{os.path.basename(fr.filename)}:{fr.lineno}"
+                break
+        key = (site, table)
+        with _scan_warn_lock:
+            if key in _scan_warned:
+                return
+            _scan_warned.add(key)
+        import sys as _sys
+        _sys.stderr.write(
+            f"[db] TRUNCATED SCAN {site} -> {table} returned exactly its limit ({cap}) "
+            f"ordered by {order}. Anything past the cap is invisible to this caller; if the "
+            f"caller acts on work, the far end of the queue is being starved. Scan both ends "
+            f"or filter server-side (see merge_train._pick_cards).\n")
+    except Exception:
+        pass  # a diagnostic must never break the query it is observing
+
+
 def select(table, params=None):
     """Fetch rows from *table* via PostgREST GET.  Returns a list of dicts."""
-    return _req("GET", f"/rest/v1/{table}", params=params or {"select": "*"})
+    rows = _req("GET", f"/rest/v1/{table}", params=params or {"select": "*"})
+    _warn_if_truncated(table, params, rows)
+    return rows
+
+
+#: PostgREST caps a single response at 1,000 rows no matter how large `limit` is, so a
+#: bare `"limit": "5000"` does not widen the window — it only hides the truncation. A
+#: client-side scan window has now caused four outage-class failures on this fleet
+#: (merge_train._pick_cards scanning 3,000 of 238,177 approvals; ensure_integration_card
+#: producing 240 duplicates of one slug; ev_scheduler scoring an arbitrary 500 of 1,407
+#: QUEUED tasks; config_optimizer autoscaling off a queue depth structurally incapable of
+#: exceeding 1,000). Classify every large-limit read before writing it:
+#:
+#:   COUNT      -> count() below. Never len() a truncated page.
+#:   LOOKUP     -> filter server-side on the key. Never scan-and-filter client-side.
+#:   SAMPLE     -> a bounded recent window is legitimate, but it MUST carry a
+#:                 deterministic `order` so the window is reproducible.
+#:   FULL SCAN  -> select_all() below, which pages to exhaustion.
+#:
+#: Raising a limit is the same bug, later. See docs/scan-window-audit-2026-08-06.md.
+PAGE_SIZE = 1000
+
+#: Hard stop so a FULL SCAN of a runaway table can never become its own outage inside a
+#: 900s loop. Hitting it is reported, not silently absorbed.
+SELECT_ALL_MAX_ROWS = int(os.environ.get("ORCH_SELECT_ALL_MAX_ROWS", "200000"))
+
+
+def select_all(table, params=None, page_size=PAGE_SIZE, max_rows=None, order=None):
+    """Page a filtered SELECT to exhaustion. Use when the answer needs EVERY row.
+
+    Offset paging over an unordered relation may repeat or skip rows between pages, so a
+    deterministic `order` is mandatory; callers that pass none get `id.asc`.
+
+    Returns a list of dicts. `truncated` is signalled by logging, not by a silent short
+    list: if max_rows is reached the caller is told, because "we saw all of it" being
+    wrong is exactly the failure this function exists to prevent.
+    """
+    q = dict(params or {"select": "*"})
+    q.setdefault("select", "*")
+    q["order"] = order or q.get("order") or "id.asc"
+    q.pop("limit", None)
+    q.pop("offset", None)
+
+    try:
+        cap = SELECT_ALL_MAX_ROWS if max_rows is None else int(max_rows)
+    except (TypeError, ValueError):
+        cap = SELECT_ALL_MAX_ROWS
+    if cap <= 0:
+        return []
+    try:
+        page_size = max(1, min(int(page_size), PAGE_SIZE))
+    except (TypeError, ValueError):
+        page_size = PAGE_SIZE
+    rows, offset = [], 0
+    while True:
+        # Never ask for rows we are contractually going to throw away. The page size used
+        # to be fixed, so a select_all(max_rows=10) against a large table still pulled a
+        # full 1000-row page over the wire and then sliced 990 of them off in the return.
+        # Clamping to the remaining budget makes the last request exact.
+        want = min(page_size, cap - len(rows))
+        # Goes through select() rather than _req() on purpose: one HTTP path, and any test
+        # double or instrumentation installed on select() automatically covers paging too.
+        page = select(table, dict(q, limit=str(want), offset=str(offset))) or []
+        rows.extend(page)
+        if len(page) < want:
+            break
+        offset += want
+        if len(rows) >= cap:
+            print(f"[db] select_all({table}) hit max_rows={cap} — result is TRUNCATED; "
+                  f"narrow the filter or raise ORCH_SELECT_ALL_MAX_ROWS", flush=True)
+            break
+    return rows[:cap]
 
 
 def count(table, params=None):
@@ -709,6 +950,70 @@ def _project_name_cached(project_id):
     return name
 
 
+_PROJECT_BASE_CACHE = {}
+# "main" and "master" are what a generator writes when it does not know the answer —
+# roughly thirty of them carry a literal `or "main"` fallback. Anything else
+# (medicalOnly, orchestrator/dev, fix/ci-baseline, merge-train-tmp) is a deliberate
+# choice by a caller that DID know, and is never touched by the guard below.
+_GENERIC_BASES = {"main", "master"}
+
+
+def _project_default_base_cached(project_id):
+    """project_id -> projects.default_base, memoised like _project_name_cached."""
+    if not project_id:
+        return ""
+    if project_id in _PROJECT_BASE_CACHE:
+        return _PROJECT_BASE_CACHE[project_id]
+    base = ""
+    try:
+        rows = select("projects", {"select": "default_base", "id": f"eq.{project_id}"}) or []
+        base = (rows[0].get("default_base") or "") if rows else ""
+    except Exception:
+        base = ""
+    _PROJECT_BASE_CACHE[project_id] = base
+    return base
+
+
+def _guard_task_base_branch(row):
+    """Correct a hardcoded base_branch to the project's configured default.
+
+    ~30 task generators end their base-branch expression with `or "main"`
+    (agent_market, backlog_compactor, batch_mechanical, blocker_quarantine,
+    committees, continuation_compactor, auto_remediate, ...). For every project
+    whose default_base is `master`, that fallback names a branch which does not
+    exist, so `git worktree add -B agent/<slug> origin/main` fails and each
+    executor silently falls through to whatever its own fallback happens to be.
+
+    The damage is already on disk: of tasks created in the last 30 days,
+    beethoven has 5,208 rows pointing at `main` against a `master` default (and
+    2,901 correct ones — the same queue disagreeing with itself), plus 682 in
+    apparently, 151 in illuminati, 111 in racefeed and 80 in santas-secret-workshop.
+
+    Fixing thirty generators leaves the thirty-first to be written wrong, so the
+    correction goes where the deps normalizer and the prompt gate already live:
+    the one door every task insert passes through.
+
+    Only a GENERIC base is corrected. A caller that asked for `medicalOnly` or
+    `orchestrator/dev` said something specific and is left alone. Fail-soft: any
+    error leaves the row exactly as submitted.
+    """
+    try:
+        base = (row.get("base_branch") or "").strip()
+        if base and base not in _GENERIC_BASES:
+            return                      # deliberate, non-default branch — not ours to touch
+        default_base = _project_default_base_cached(row.get("project_id"))
+        if not default_base or default_base == base:
+            return
+        row["base_branch"] = default_base
+        import logging
+        logging.getLogger("db").warning(
+            "base-branch-guard: task %s asked for base %r; project default is %r — corrected. "
+            "The caller has a hardcoded fallback.",
+            row.get("slug", "?"), base or "<unset>", default_base)
+    except Exception:
+        pass                            # never let the guard block a legitimate insert
+
+
 def _projects_cached():
     """Efficient bulk project load for claim_task() and other bulk operations.
 
@@ -748,6 +1053,24 @@ def _refresh_projects_cache():
             pass  # Return stale cache on error
 
 
+def invalidate_projects_cache():
+    """Drop the cached projects list so the next claim re-reads the table.
+
+    claim_task derives host affinity from this cache: `local_repo_pids` is the
+    set of project ids whose repo exists on this machine, and any task whose
+    project_id is missing from that set is filtered out of the claim. While the
+    cache is warm — five minutes — a project added or repointed in that window
+    is not merely stale, it is INVISIBLE: its tasks are silently dropped from
+    every claim cycle and the runner reports "no locally-runnable tasks".
+
+    Call after adding a project, changing a repo_path, or cloning a repo that
+    was previously absent. Mirrors invalidate_done_cache().
+    """
+    global _cached_projects_list
+    _cached_projects_list = []
+    _PROJECT_CACHE_TIME["at"] = 0.0
+
+
 def insert(table, row, upsert=False):
     """Insert a single row into *table* via PostgREST POST.  Returns the created row or None on 409 dedup."""
     _guard_fleet_config(table, row)
@@ -758,11 +1081,36 @@ def insert(table, row, upsert=False):
         import execution_assurance
         row = dict(row)
         row["deps"] = execution_assurance.normalize_deps(row.get("deps"))
+        # Same reasoning as normalize_deps directly above: a value the caller got
+        # wrong is corrected once, here, rather than in every caller.
+        _guard_task_base_branch(row)
         blocked = _queue_depth_block(row)
         if blocked:
             _record_refusal(row, "queue_depth",
                             f"QUEUED depth >= ceiling {_max_queue_depth()}")
             return None
+        # RECOVERY RECURSION CAP. A recovery of a recovery of a recovery is never the right
+        # answer; 2,450 of the 9,918 code-less tasks were recover-*, generated by exactly
+        # that loop. Applied here so it holds for EVERY caller, including upserts, which
+        # skip the prompt gate below. Depth is derived from the slug alone — no git, no
+        # network, no extra DB read on the hot insert path. The full input precondition
+        # (branch / artifact commit / stored diff) lives in recovery_admission and runs at
+        # the sweeper, where a repo path is in hand.
+        try:
+            import recovery_admission
+            if not _is_operator_origin(row):
+                _depth = recovery_admission.recovery_depth(row.get("slug"))
+                if _depth > recovery_admission.max_depth():
+                    _reason = (f"recovery depth {_depth} exceeds ORCH_RECOVERY_MAX_DEPTH="
+                               f"{recovery_admission.max_depth()} (root: "
+                               f"{recovery_admission.recovery_root(row.get('slug'))}) — "
+                               f"escalate to operator")
+                    print(f"[recovery_admission] refused {row.get('slug')}: {_reason}",
+                          flush=True)
+                    _record_refusal(row, recovery_admission.GATE, _reason)
+                    return None
+        except Exception:
+            pass    # fail-soft: an over-eager gate is worse than the gap
         # RELEASE BACK-PRESSURE: a project whose last release failed stops accepting new work
         # until a release goes green. Healing work (deployfix-/relfix-/recover-missing-branch-)
         # is exempt so the project can converge. 2,714 release failures previously produced no
@@ -1046,11 +1394,21 @@ def _done_slugs():
         # double-check after acquiring lock
         if now - _done_cache["ts"] < _done_cache["ttl"]:
             return _done_cache["slugs"]
-        rows = select("tasks", {
+        # FULL SCAN class, and the most consequential window found in the 2026-08-06 audit.
+        # This set answers "is this task's dependency finished?" for every claim decision
+        # (see the _done_slugs() call in the claim path below), so a slug missing from it
+        # is a task whose deps ARE satisfied being held as blocked.
+        #
+        # `limit: "10000"` looked generous but PostgREST caps a response at 1,000 rows, so
+        # the cache never held more than 1,000 slugs. Measured on prod 2026-08-06: 3,908
+        # DONE/MERGED tasks against 1,379 QUEUED of which 462 carry deps — roughly 74% of
+        # all completions were invisible to dependency resolution. Tasks queued 2026-08-02
+        # sat untouched for four days. Paging to exhaustion is the fix; raising the limit
+        # would not have moved the ceiling at all.
+        rows = select_all("tasks", {
             "select": "slug,project_id",
             "state": "in.(DONE,MERGED)",
-            "limit": "10000",
-        }) or []
+        }, order="id.asc") or []
         slugs = set()
         # Build project_id -> name map for cross-project qualified entries
         _proj_names = {}
@@ -1093,6 +1451,99 @@ def set_pin(slug, rank=1):
         return update("tasks", {"slug": slug}, {"pinned": False, "pin_rank": 0})
     else:
         return update("tasks", {"slug": slug}, {"pinned": True, "pin_rank": rank})
+
+
+TRIGGER_STATE = (os.environ.get("ORCH_ENQUEUE_TRIGGER_STATE") or "TESTING").strip().upper()
+
+
+def _looks_like_bad_enum(exc):
+    """True when a write failed because the value is not in the target enum.
+
+    Diagnostic only. Deliberately not used to gate the write: the enum cannot be
+    introspected through PostgREST, and a sampled state list is incomplete by
+    construction, so pre-checking against it would refuse legal states that
+    simply had no row yet. Attempt the write, then explain the refusal.
+    """
+    text = str(exc).lower()
+    return ("invalid input value for enum" in text
+            or ("22p02" in text and "enum" in text))
+
+
+def task_state_values():
+    """States observed on tasks, for diagnostics only — NOT the enum definition.
+
+    PostgREST exposes no enum-introspection endpoint, so this samples the states
+    actually present and caches the result for the process. It is a lower bound
+    on the enum: a legal state with no rows will be absent. Never treat a missing
+    value as proof that the state is illegal.
+    """
+    cached = getattr(task_state_values, "_cache", None)
+    if cached is not None:
+        return cached
+    try:
+        rows = _req("GET", "/rest/v1/tasks",
+                    params={"select": "state", "limit": "1000"}) or []
+        values = tuple(sorted({str(r.get("state")) for r in rows if r.get("state")}))
+    except Exception:
+        values = ()
+    task_state_values._cache = values
+    return values
+
+
+def test_trigger(task_id):
+    """Atomically move a newly queued task to the trigger state. Fail-soft.
+
+    Returns the patched row, or None. On None the task stays QUEUED and the
+    ordinary claim path still processes it — that part always worked.
+
+    REGRESSION (measured 2026-08-12): the target was the hardcoded literal
+    "TESTING", which is not a member of task_state on this database (QUEUED,
+    WAITING, RUNNING, RETRY, DONE, BLOCKED, CONFLICT, TESTFAIL, MERGED, SHELVED,
+    MERGING, DECOMPOSED, QUARANTINED, SUPERSEDED, CLOSED, DEPLOYED_AND_VERIFIED,
+    PHANTOM_UNVERIFIED). Every PATCH was rejected and swallowed by a bare
+    `except: return None`, so the QUEUED->trigger transition had never fired
+    anywhere and nothing said so. The silence was the defect: an enqueue that
+    never triggers is indistinguishable from one that does.
+
+    Now the state comes from ORCH_ENQUEUE_TRIGGER_STATE (fleet-pushable, still
+    defaulting to TESTING so behaviour is unchanged the moment the enum migration
+    lands), and every refusal is recorded on `test_trigger.last_error` for the
+    caller to print. The write is still attempted first and the error read
+    afterwards — pre-checking against a sampled state list would refuse legal
+    states that merely have no rows yet. Still never raises.
+    """
+    test_trigger.last_error = ""
+    if not task_id:
+        test_trigger.last_error = "no task id"
+        return None
+    try:
+        rows = _req(
+            "PATCH",
+            "/rest/v1/tasks",
+            body={"state": TRIGGER_STATE, "updated_at": "now()"},
+            headers={"Prefer": "return=representation"},
+            params={"id": f"eq.{task_id}", "state": "eq.QUEUED"},
+        )
+        if rows:
+            return rows[0]
+        test_trigger.last_error = "task was not QUEUED at trigger time (already claimed?)"
+        return None
+    except Exception as exc:
+        detail = "{0}: {1}".format(type(exc).__name__, exc)
+        if _looks_like_bad_enum(exc):
+            known = task_state_values()
+            detail = (
+                "trigger state {0!r} is not a member of task_state on this database"
+                "{1}; task left QUEUED and claimable. Set ORCH_ENQUEUE_TRIGGER_STATE "
+                "to a legal state, or land the enum migration. (raw: {2})".format(
+                    TRIGGER_STATE,
+                    " (states seen: {0})".format(", ".join(known)) if known else "",
+                    detail))
+        test_trigger.last_error = detail
+        return None
+
+
+test_trigger.last_error = ""
 
 
 def claim_task(runner_id):
@@ -1142,15 +1593,42 @@ def claim_task(runner_id):
     except Exception:
         _increment_db_failure_count()
         pass
-    claim_fields = "id,slug,project_id,deps,confidence,created_at,updated_at,kind,note,priority,prompt,batch_id,parent_task_id,operator_approved_at,operator_approved_by,counsel_approved_at,counsel_approved_by,pinned,pin_rank"
+    claim_fields = "id,slug,project_id,deps,confidence,created_at,updated_at,kind,note,priority,prompt,batch_id,parent_task_id,operator_approved_at,operator_approved_by,counsel_approved_at,counsel_approved_by,pinned,pin_rank,state"
     try:
-        queued = select("tasks", {"select": claim_fields,
-                                  "state": "eq.QUEUED",
-                                  "order": "created_at.asc",
-                                  "limit": str(CLAIM_SCAN_LIMIT)}) or []
+        try:
+            queued = select("tasks", {"select": claim_fields,
+                                      "state": "in.(QUEUED,TESTING)",
+                                      "order": "created_at.asc",
+                                      "limit": str(CLAIM_SCAN_LIMIT)}) or []
+        except Exception:
+            # Rolling-upgrade fallback: keep claiming ordinary work until the
+            # TESTING enum migration reaches the database.
+            queued = select("tasks", {"select": claim_fields,
+                                      "state": "eq.QUEUED",
+                                      "order": "created_at.asc",
+                                      "limit": str(CLAIM_SCAN_LIMIT)}) or []
         # Sync to local mirror on successful fetch
         try:
-            running = select("tasks", {"select": claim_fields, "state": "eq.RUNNING", "limit": "2000"}) or []
+            # FULL SCAN class — and YES, truncation here can corrupt claims. The audit
+            # question (docs/scan-window-audit-2026-08-06.md item 3) resolves as follows.
+            #
+            # This read does not decide claims directly; the remote claim is atomic. It
+            # feeds the local mirror, which is the OFFLINE fallback used when the DB is
+            # down. But local_queue labels each row by the query that produced it, and
+            # _reconcile_mirror() only evicts rows on TTL — so a RUNNING task missing from
+            # a truncated page keeps whatever mirror state it last had. If that task was
+            # ever seen in a QUEUED page, its stale QUEUED mirror row survives for up to
+            # MIRROR_TTL_HOURS, and the offline path can hand out a task that is already
+            # RUNNING on another machine: duplicate work on one branch, which is exactly
+            # the double-claim this mirror exists to prevent.
+            #
+            # It was also already broken in practice, not just in theory: PostgREST caps a
+            # response at 1,000 rows, so `limit: "2000"` never returned more than 1,000
+            # regardless. On 2026-08-02 the fleet held 64 zombie RUNNING lanes across
+            # machines; RUNNING in the four figures is reachable, and the cap was silent.
+            # Paging to exhaustion removes the window entirely.
+            running = select_all("tasks", {"select": claim_fields, "state": "eq.RUNNING"},
+                                 order="created_at.asc,id.asc")
             import local_queue
             local_queue.sync_from_remote(queued, running)
             _reset_db_failure_count()  # DB is healthy, reset failure counter
@@ -1186,6 +1664,7 @@ def claim_task(runner_id):
         for task in extra:
             if task.get("id") not in seen_ids:
                 queued.append(task); seen_ids.add(task.get("id"))
+
     queued = [t for t in queued if t.get("project_id") not in paused_pids]  # skip paused projects
     # Counsel-gated design specs are queue-visible but cannot enter an execution
     # lane until both approvals are explicitly stored on the task. Fail closed.
@@ -1236,8 +1715,13 @@ def claim_task(runner_id):
     active_release_by_project = {}
     active_recovery_by_project = {}
     active_evidence = 0
+    active_express = 0
     try:
-        for r in (select("tasks", {"select": "project_id,slug,kind,note", "state": "in.(RUNNING,RETRY)"}) or []):
+        # pinned/pin_rank/priority are selected so express occupancy can be counted here
+        # rather than in a second scan: express_lane.is_express_task() reads exactly those
+        # three fields, and the claim path already pays for this one query.
+        for r in (select("tasks", {"select": "project_id,slug,kind,note,pinned,pin_rank,priority",
+                                   "state": "in.(RUNNING,RETRY)"}) or []):
             pid = r.get("project_id")
             if pid:
                 active_by_project[pid] = active_by_project.get(pid, 0) + 1
@@ -1247,8 +1731,21 @@ def claim_task(runner_id):
                     active_recovery_by_project[pid] = active_recovery_by_project.get(pid, 0) + 1
             if _is_evidence_task(r):
                 active_evidence += 1
+            if _is_express_row(r):
+                active_express += 1
     except Exception:
         pass
+
+    # BOUNDED EXPRESS JUMP QUEUE. _express_rank sorted every express task ahead of all
+    # standard work with no ceiling, so a pinned batch claims the entire machine until it
+    # drains — the same starvation shape the rework- tier was given a bounded lane to fix,
+    # and the same distortion queue_velocity has to compensate for by excluding pinned
+    # depth from its integral. express_lane.py already declares the right ceiling
+    # (express_lane_capacity(), 15% of MAX_PARALLEL, never the whole machine) and nothing
+    # consulted it. Gate the jump on it, in the reserved-lane style used by evidence and
+    # recovery above: express work still goes first, but only up to its own reservation.
+    express_capacity = _express_capacity()
+    express_lane_open = express_capacity > 0 and active_express < express_capacity
     # FAIR ROUND-ROBIN across projects: prefer the project that has gone LONGEST without activity, so
     # every app gets worked (not just the biggest/highest-priority queue). Within that, honor priority,
     # ROI weight, then FIFO. This is what lets a single-slot runner still touch ALL projects in rotation.
@@ -1310,6 +1807,37 @@ def claim_task(runner_id):
         if rank is None or rank == 0:
             return 1  # No valid pin_rank; treat as unpinned
         return 0
+
+    def _express_rank(t):
+        """Express-priority tasks claim before standard work: 0 for express, 1 otherwise.
+
+        This is the wiring express_lane.py was missing, and it was dead twice over. The module
+        shipped with is_enabled()/capacity_percentage()/should_use_express_lane() plus a full
+        test file, but (a) nothing in the claim path ever consulted it — grep found it imported
+        only by its own tests — and (b) its predicate compared tasks.priority to the STRING
+        "express" while that column is an INTEGER, so it could not have fired even if wired.
+        express_lane.is_express_task() now reads the real schema (pinned, or a numeric priority
+        at/below the express band) and is the single definition both sides share.
+
+        Deliberately ORDERING ONLY. The module also offers lane-reservation accounting
+        (assign_task_lane / release_lane / active_express_lanes), and wiring that into the
+        dispatch loop would mean tracking a release for every claim in the fleet's hot path.
+        A missed release there leaks a lane, which is precisely the failure that filled the
+        fleet with 64 zombie lanes on 2026-08-02. Ordering delivers the feature's actual
+        promise — express work goes first — with no lane accounting to leak.
+
+        BOUNDED by express_lane.express_lane_capacity(): once that many express tasks are
+        already RUNNING, express work sorts as standard. Without the bound a pinned batch
+        holds every lane until it drains, which starves the rest of the portfolio and is
+        the same distortion queue_velocity has to subtract from its integral.
+
+        Respects express_lane.is_enabled() so ORCH_EXPRESS_LANE_ENABLED=false restores the
+        prior ordering exactly. Fail-soft: any import/attribute problem leaves ordering
+        unchanged rather than breaking the claim scan.
+        """
+        if not express_lane_open:
+            return 1
+        return 0 if _is_express_row(t) else 1
 
     def _pin_rank_order(t):
         # Among pinned tasks, lower pin_rank claims first (1 = highest priority).
@@ -1508,6 +2036,7 @@ def claim_task(runner_id):
 
     queued.sort(key=lambda t: (_pinned_rank(t),                                 # pinned tasks claim first
                                _pin_rank_order(t),                               # among pinned, lower rank wins
+                               _express_rank(t),                                 # then priority='express' (express_lane)
                                _operator_rank(t),                                # then the OWNER'S OWN asks
                                _evidence_reserve_rank(t),                        # reserve one vendor-evidence lane
                                _recovery_reserve_rank(t),                        # turn completed work into mergeable branches
@@ -1572,12 +2101,14 @@ def claim_task(runner_id):
             except Exception:
                 pass
         if _deps_all_done:
-            # optimistic claim: flip to RUNNING only if still QUEUED
+            # Optimistic claim from the exact observed state preserves the
+            # cross-runner single-claim guarantee for QUEUED and TESTING alike.
             try:
+                current_state = str(t.get("state") or "QUEUED")
                 res = _req("PATCH", "/rest/v1/tasks",
                            body={"state": "RUNNING", "account": runner_id, "updated_at": "now()"},
                            headers={"Prefer": "return=representation"},
-                           params={"id": f"eq.{t['id']}", "state": "eq.QUEUED"})
+                           params={"id": f"eq.{t['id']}", "state": f"eq.{current_state}"})
             except Exception:
                 _increment_db_failure_count()
                 res = None
@@ -1673,24 +2204,46 @@ def heartbeat(runner_id, hostname, active, model_loaded=None, memory_mb=None):
                        if k in proof})
         except Exception:
             pass
+        # STALENESS MUST BE PUBLISHED (2026-08-06). code_sha alone does not say whether a
+        # host is current — the only way to find out used to be fetching the repo and
+        # comparing SHAs by hand, which is why one host sat 40+ commits behind for two days
+        # while heartbeating normally. commits_behind makes it a one-query answer.
+        try:
+            import host_update_visibility
+            row.update(host_update_visibility.heartbeat_fields())
+        except Exception:
+            pass
         try:
             db.insert("runner_heartbeats", row, upsert=True)
             _heartbeat_fail["n"] = 0
         except Exception as hb_err:
-            # Compatibility with remotes that have not yet applied the additive migration.
-            row_compat = {k: v for k, v in row.items()
-                         if k not in ("code_sha", "contract_hash", "contract_version")}
+            # Compatibility with remotes that have not yet applied the newest additive
+            # visibility migration.  Retry without only commits_behind first: older remotes
+            # may already support the executor identity columns, and discarding those too
+            # makes a known-current runner look anonymous to integration ownership.
+            row_without_visibility = {k: v for k, v in row.items()
+                                      if k != "commits_behind"}
             try:
-                db.insert("runner_heartbeats", row_compat, upsert=True)
+                db.insert("runner_heartbeats", row_without_visibility, upsert=True)
                 _heartbeat_fail["n"] = 0
-            except Exception:
-                # Fail-soft but SELF-REPORTING: a heartbeat that can never land is
-                # an invisible outage. Log loudly (rate-limited to once/5 min).
-                _heartbeat_fail["n"] = _heartbeat_fail.get("n", 0) + 1
-                if time.time() - _heartbeat_fail.get("t", 0) > 300:
-                    _heartbeat_fail["t"] = time.time()
-                    print(f"[heartbeat] CRITICAL: publish failing "
-                          f"({_heartbeat_fail['n']} consecutive) — {hb_err}", flush=True)
+            except Exception as identity_err:
+                # Final rolling-upgrade fallback for remotes that lack both visibility and
+                # runtime-contract columns. Liveness still lands, but only after preserving
+                # every supported identity field has been attempted.
+                row_compat = {k: v for k, v in row_without_visibility.items()
+                              if k not in ("code_sha", "contract_hash", "contract_version")}
+                try:
+                    db.insert("runner_heartbeats", row_compat, upsert=True)
+                    _heartbeat_fail["n"] = 0
+                except Exception:
+                    # Fail-soft but SELF-REPORTING: a heartbeat that can never land is
+                    # an invisible outage. Log loudly (rate-limited to once/5 min).
+                    _heartbeat_fail["n"] = _heartbeat_fail.get("n", 0) + 1
+                    if time.time() - _heartbeat_fail.get("t", 0) > 300:
+                        _heartbeat_fail["t"] = time.time()
+                        print(f"[heartbeat] CRITICAL: publish failing "
+                              f"({_heartbeat_fail['n']} consecutive) — {identity_err}; "
+                              f"full-row error: {hb_err}", flush=True)
         if os.environ.get("ORCH_LOGICAL_RUNNERS", "false").lower() not in ("true", "1", "yes"):
             _prune_stale_heartbeats()
             return

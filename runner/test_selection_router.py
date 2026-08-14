@@ -35,7 +35,9 @@ TEST_STRATEGIES = {
     "mechanical": {"cmd": "npm test", "scope": "targeted", "reason": "mechanical change"},
 }
 
-# File-pattern → test-scope overrides
+# File-pattern → test-scope overrides.
+# "full" entries escalate: one match forces the whole suite.
+# "skip" entries only permit an early exit if EVERY changed file matches one.
 FILE_PATTERN_OVERRIDES = [
     (re.compile(r"\.md$"), "skip", "markdown-only"),
     (re.compile(r"\.txt$"), "skip", "text-only"),
@@ -44,29 +46,74 @@ FILE_PATTERN_OVERRIDES = [
     (re.compile(r"\.env"), "full", "env config change"),
 ]
 
+_ESCALATE = [(p, r) for p, s, r in FILE_PATTERN_OVERRIDES if s == "full"]
+_SKIPPABLE = [(p, r) for p, s, r in FILE_PATTERN_OVERRIDES if s == "skip"]
+
+
+def _escalation_reason(changed_files):
+    """First pattern that forces a full run, or None."""
+    for pattern, reason in _ESCALATE:
+        for f in changed_files:
+            if pattern.search(f):
+                return reason
+    return None
+
+
+def _all_files_are_skippable(changed_files):
+    """True only if every changed file matches a skip pattern.
+
+    The skip entries in FILE_PATTERN_OVERRIDES used to be unreachable — the
+    override loop tested `scope == "full"` and ignored everything else — so
+    "is this diff actually inert?" was never asked. It is asked here, and it
+    is asked of ALL files: one unrecognised path is enough to deny the skip.
+    """
+    return all(any(p.search(f) for p, _ in _SKIPPABLE) for f in changed_files)
+
 
 def select_test_strategy(task_kind, changed_files=None):
     """Choose the test strategy for a task based on kind and changed files.
 
     Returns dict with 'cmd', 'scope', and 'reason'.
+
+    Precedence, strongest first:
+      1. an escalating file pattern (test file, dependency, env) -> full
+      2. a kind that skips, but ONLY if every changed file is inert
+      3. the kind's own strategy
+      4. full
+
+    Rule 2 is the value-aware part. Previously a kind of docs/chore/format
+    returned scope=skip on the strength of the label alone, so a task tagged
+    "docs" that edited runner/db.py ran no tests at all. The label is now a
+    proposal that the diff has to corroborate.
     """
     if not ENABLED:
         return {"cmd": FALLBACK_CMD, "scope": "full", "reason": "router disabled"}
 
-    # Check file patterns first — they can escalate scope
-    if changed_files:
-        for pattern, scope, reason in FILE_PATTERN_OVERRIDES:
-            for f in changed_files:
-                if pattern.search(f) and scope == "full":
-                    return {"cmd": FALLBACK_CMD, "scope": "full",
-                            "reason": f"file override: {reason}"}
-
-    # Look up by task kind
+    changed_files = list(changed_files or [])
     strategy = TEST_STRATEGIES.get(task_kind)
+
+    if changed_files:
+        reason = _escalation_reason(changed_files)
+        if reason:
+            return {"cmd": FALLBACK_CMD, "scope": "full",
+                    "reason": f"file override: {reason}"}
+
+        # A skip proposed by the kind has to survive the diff.
+        if strategy and strategy["scope"] == "skip" and not _all_files_are_skippable(changed_files):
+            return {"cmd": FALLBACK_CMD, "scope": "full",
+                    "reason": f"kind '{task_kind}' proposed skip but the diff "
+                              f"touches non-inert files"}
+
+        # Conversely, an inert diff earns an early exit even from a kind that
+        # would otherwise have run the full suite.
+        if not strategy or strategy["scope"] != "skip":
+            if _all_files_are_skippable(changed_files):
+                return {"cmd": "true", "scope": "skip",
+                        "reason": "file override: all changed files are inert"}
+
     if strategy:
         return dict(strategy)
 
-    # Default: full test suite
     return {"cmd": FALLBACK_CMD, "scope": "full", "reason": f"unknown kind '{task_kind}'"}
 
 

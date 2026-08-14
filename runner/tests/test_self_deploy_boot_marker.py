@@ -73,3 +73,15 @@ def test_launcher_writes_the_marker():
     ka = open(os.path.join(here, "keepalive.sh"), encoding="utf-8", errors="replace").read()
     assert ".runner_boot_commit" in ka, "keepalive.sh no longer stamps the boot commit"
     assert "ORCH_BOOT_COMMIT" in ka
+
+
+def test_restart_request_is_consumed_only_at_supervisor_handoff():
+    """The old process may not erase the only durable evidence that it must restart."""
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    runner_src = open(os.path.join(here, "runner.py"), encoding="utf-8", errors="replace").read()
+    keepalive = open(os.path.join(here, "keepalive.sh"), encoding="utf-8", errors="replace").read()
+    restart_block = runner_src[runner_src.index("restart threshold reached"):]
+    restart_block = restart_block[:restart_block.index("sys.exit(0)") + len("sys.exit(0)")]
+    assert "os.remove" not in restart_block
+    assert 'mv -f "$RUNNER_DIR/.restart_requested"' in keepalive
+    assert "restart-handoff.last" in keepalive

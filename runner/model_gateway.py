@@ -506,10 +506,35 @@ def complete(provider, model, prompt, project=None, timeout=90, operation="compl
         except Exception as e:
             latency = int((time.time() - t0) * 1000)
             last = {"provider": prov, "model": mdl, "error": str(e)}
+            demote_reason = None
             if isinstance(e, urllib.error.HTTPError) and e.code in (401, 403):
+                demote_reason = f"auth-{e.code}"
+            else:
+                # FIXED 2026-08-12. The demote above only fired for urllib.HTTPError, so a
+                # provider reached through litellm was NEVER demoted. Observed:
+                #   litellm.APIError: XaiException - Error code: 403 -
+                #   {'code': 'permission-denied', 'error': 'Your team … has either used all
+                #    available credits or reached its monthly spending limit.'}
+                # litellm.APIError is not an HTTPError, so isinstance() was False, the
+                # provider stayed in rotation, and every later task routed to it again —
+                # paying litellm's own internal backoff (Retrying in 4.0s, 8.0s, …) each
+                # time for a condition that cannot resolve without someone buying credits.
+                # A dead provider is a terminal fact about the ACCOUNT, not a flaky call.
+                #
+                # error_taxonomy already classifies this text correctly (exhaustion /
+                # account_quota / rotate_account), so classify the message rather than the
+                # exception class — that covers every SDK the fleet routes through.
+                try:
+                    import error_taxonomy
+                    cls = error_taxonomy.classify(str(e)) or {}
+                    if cls.get("error_class") in ("exhaustion", "permission_error"):
+                        demote_reason = f"{cls.get('error_class')}-{cls.get('subclass') or 'unknown'}"
+                except Exception:
+                    pass
+            if demote_reason:
                 try:
                     import provider_failover_sla
-                    provider_failover_sla.demote(prov, f"auth-{e.code}")
+                    provider_failover_sla.demote(prov, demote_reason)
                 except Exception:
                     pass
             if record_op:
