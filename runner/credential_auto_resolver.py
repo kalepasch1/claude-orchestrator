@@ -15,8 +15,14 @@ import os, sys, subprocess, logging
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
+# stream=sys.stdout is load-bearing, not cosmetic. logging.basicConfig defaults
+# to STDERR, so every INFO line here -- including successes like "auto-resolved
+# 1/2 credential requests" -- was written to .runtime/logs/credresolver.err.
+# The crash-loop detector reads that file, so a job that exits 0 was reported as
+# "134 occurrences, 100% dead" and burned operator attention on a false alarm.
+# Informational output belongs on stdout; stderr is reserved for real failures.
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [cred-resolver] %(message)s",
-                    datefmt="%H:%M:%S")
+                    datefmt="%H:%M:%S", stream=sys.stdout)
 log = logging.getLogger(__name__)
 
 # Provider -> env vars to check (first non-empty wins)
