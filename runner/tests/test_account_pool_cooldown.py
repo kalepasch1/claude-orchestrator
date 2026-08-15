@@ -40,15 +40,19 @@ class TestCooldownFunctions:
         assert result > account_pool.COOLDOWN  # max should exceed base
 
     def test_cooldown_default_is_1200_seconds(self):
-        """COOLDOWN defaults to 20 minutes (1200 seconds) when env vars not set."""
-        # This test verifies the constant was loaded correctly
-        # Default from code: str(20 * 60) = "1200"
-        assert account_pool.COOLDOWN == 20 * 60
+        """_cooldown() falls back to 20 minutes (1200 seconds) when env vars not set."""
+        # _cooldown() reads env at call time, so clear the overrides a fleet
+        # machine may export (patch.dict restores them on exit).
+        with patch.dict(os.environ):
+            os.environ.pop("ORCH_ACCOUNT_COOLDOWN", None)
+            os.environ.pop("ACCOUNT_COOLDOWN", None)
+            assert account_pool._cooldown() == 20 * 60
 
     def test_cooldown_max_default_is_6_hours(self):
-        """COOLDOWN_MAX defaults to 6 hours (21600 seconds) when env vars not set."""
-        # Default from code: str(6 * 3600) = "21600"
-        assert account_pool.COOLDOWN_MAX == 6 * 3600
+        """_cooldown_max() falls back to 6 hours (21600 seconds) when env vars not set."""
+        with patch.dict(os.environ):
+            os.environ.pop("ORCH_ACCOUNT_COOLDOWN_MAX", None)
+            assert account_pool._cooldown_max() == 6 * 3600
 
 
 class TestMarkExhaustedBackoff:

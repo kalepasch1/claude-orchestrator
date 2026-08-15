@@ -65,6 +65,17 @@ ENABLED = os.environ.get("ORCH_CONTINUOUS_MERGER_ENABLED", "true").lower() in (
 WORKERS = int(os.environ.get("ORCH_CONTINUOUS_MERGER_WORKERS", "2"))
 MAX_RETRY = int(os.environ.get("ORCH_CONTINUOUS_MERGER_RETRY", "2"))
 GIT_TIMEOUT = int(os.environ.get("ORCH_GIT_TIMEOUT", "90"))
+# Live-runner guard: never merge agent/<slug> while another RUNNING task owns the
+# same slug (an orphan-repair resume, a duplicate claim) — it is still committing
+# to that branch from its worktree, and merging + deleting the ref mid-write is
+# the "live runner merge conflict" class. Deferring loses nothing: the task stays
+# DONE and merge_backlog()/merge_train retries once the runner finishes.
+LIVE_RUNNER_GUARD = os.environ.get(
+    "ORCH_MERGER_LIVE_RUNNER_GUARD", "true").lower() in ("true", "1", "yes", "on")
+# A RUNNING row older than this is treated as orphaned, not live, so a wedged row
+# can only delay a merge — never block it forever (the janitor demotes it anyway).
+LIVE_RUNNER_STALE_SECONDS = int(
+    os.environ.get("ORCH_MERGER_LIVE_RUNNER_STALE_SECONDS", "1800") or 1800)
 
 # Per-project locks to serialize git operations
 _project_locks: dict[str, threading.Lock] = defaultdict(threading.Lock)
@@ -77,7 +88,46 @@ _stats = {
     "conflict": 0,
     "errors": 0,
     "skipped": 0,
+    "deferred_live_runner": 0,
 }
+
+
+def _live_runner_blocking(project_id: str, slug: str, task_id: str) -> str:
+    """Return a short description of the live runner that owns agent/<slug>,
+    or "" when the branch is safe to merge.
+
+    A "live" runner is another task row on the same project+slug that is
+    RUNNING and was updated within LIVE_RUNNER_STALE_SECONDS. Fail-safe by
+    design: if the DB check itself errors we report the branch as blocked —
+    deferring to the backlog sweep loses nothing, merging past a live runner
+    loses its in-flight commits.
+    """
+    if not LIVE_RUNNER_GUARD or not db or not slug:
+        return ""
+    try:
+        rows = db.select("tasks", {
+            "select": "id,state,updated_at",
+            "project_id": f"eq.{project_id}",
+            "slug": f"eq.{slug}",
+            "state": "eq.RUNNING",
+            "limit": "10",
+        }) or []
+    except Exception as e:
+        return f"live-runner check unavailable ({e})"
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        if str(row.get("id")) == str(task_id):
+            continue
+        updated = str(row.get("updated_at") or "")
+        try:
+            age = (now - datetime.fromisoformat(
+                updated.replace("Z", "+00:00"))).total_seconds()
+        except (ValueError, TypeError):
+            age = 0.0  # unparseable/naive timestamp: assume live, defer this pass
+        if age <= LIVE_RUNNER_STALE_SECONDS:
+            return f"task {row.get('id')} RUNNING (updated {int(age)}s ago)"
+    return ""
 
 
 def _ensure_pool():
@@ -272,6 +322,14 @@ def _process_task(task: dict):
     task_id = task.get("id", "")
     slug = task.get("slug", "")
     branch = task.get("branch") or f"agent/{slug}"
+
+    live = _live_runner_blocking(project_id, slug, task_id)
+    if live:
+        _log.info("continuous_merger: %s has a live runner (%s) — deferring merge "
+                  "to the backlog sweep", branch, live)
+        with _stats_lock:
+            _stats["deferred_live_runner"] += 1
+        return
 
     project = _lookup_project(project_id)
     if not project:
