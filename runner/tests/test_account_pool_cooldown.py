@@ -114,7 +114,10 @@ class TestMarkExhaustedBackoff:
         for i in range(1, 6):
             now = time.time()
             pool.mark_exhausted(acct)
-            expected = base * (2 ** (i - 1))
+            # Mirror the production formula's COOLDOWN_MAX cap — a fleet
+            # machine may export a low ORCH_ACCOUNT_COOLDOWN_MAX that caps
+            # the progression before 5 doublings.
+            expected = min(base * (2 ** (i - 1)), account_pool.COOLDOWN_MAX)
             actual = pool.state[acct["name"]]["cooldown_until"] - now
             cooldowns.append((i, expected, actual))
             # Allow small tolerance for execution time
@@ -280,23 +283,31 @@ class TestCooldownEnvironmentVariables:
 
     def test_orch_account_cooldown_env_var_overrides(self):
         """ORCH_ACCOUNT_COOLDOWN env var overrides default."""
-        with patch.dict(os.environ, {'ORCH_ACCOUNT_COOLDOWN': '600'}):
-            # Force reload by importing fresh module
-            import importlib
-            import account_pool as ap
-            importlib.reload(ap)
-            assert ap.COOLDOWN == 600
+        import importlib
+        try:
+            with patch.dict(os.environ, {'ORCH_ACCOUNT_COOLDOWN': '600'}):
+                # Force reload by importing fresh module
+                import account_pool as ap
+                importlib.reload(ap)
+                assert ap.COOLDOWN == 600
+        finally:
+            # Re-derive module constants from the restored env, else the patched
+            # COOLDOWN leaks into every later test in this session.
+            importlib.reload(account_pool)
 
     def test_account_cooldown_fallback_env_var(self):
         """ACCOUNT_COOLDOWN env var is fallback after ORCH_ACCOUNT_COOLDOWN."""
-        with patch.dict(os.environ, {'ACCOUNT_COOLDOWN': '900'}, clear=False):
-            if 'ORCH_ACCOUNT_COOLDOWN' in os.environ:
-                del os.environ['ORCH_ACCOUNT_COOLDOWN']
-            import importlib
-            import account_pool as ap
-            importlib.reload(ap)
-            # Should use ORCH_ prefixed if set, else fallback to ACCOUNT_COOLDOWN
-            assert ap.COOLDOWN == 900 or ap.COOLDOWN == 20 * 60
+        import importlib
+        try:
+            with patch.dict(os.environ, {'ACCOUNT_COOLDOWN': '900'}, clear=False):
+                if 'ORCH_ACCOUNT_COOLDOWN' in os.environ:
+                    del os.environ['ORCH_ACCOUNT_COOLDOWN']
+                import account_pool as ap
+                importlib.reload(ap)
+                # Should use ORCH_ prefixed if set, else fallback to ACCOUNT_COOLDOWN
+                assert ap.COOLDOWN == 900 or ap.COOLDOWN == 20 * 60
+        finally:
+            importlib.reload(account_pool)
 
 
 class TestEdgeCases:

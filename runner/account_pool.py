@@ -26,9 +26,25 @@ API:
 """
 import os, json, time
 
-HOME = os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
-CFG = os.path.join(HOME, "accounts.json")       # credential definitions (read-only)
-STATE = os.path.join(HOME, "accounts_state.json")  # runtime rotation state (mutable)
+def _home():
+    """CLAUDE_ORCH_HOME resolved at call time (like _cooldown) so tests and
+    hot_reload can repoint state without re-importing the module. The import-time
+    HOME/CFG/STATE snapshot binds before test fixtures patch the env, which sent
+    test pools to the live ~/.claude-orchestrator state file."""
+    return os.environ.get("CLAUDE_ORCH_HOME", os.path.expanduser("~/.claude-orchestrator"))
+
+
+def _cfg_path():
+    return os.path.join(_home(), "accounts.json")       # credential definitions (read-only)
+
+
+def _state_path():
+    return os.path.join(_home(), "accounts_state.json")  # runtime rotation state (mutable)
+
+
+HOME = _home()
+CFG = _cfg_path()
+STATE = _state_path()
 # Re-probe interval after an account hits a limit. Most limits are SHORT (rolling 5-hour / session /
 # rate), not the weekly cap, so we re-try Claude every 20 min and use cheap models in the gap — this
 # switches back to costless Claude fast the moment a short limit clears, instead of parking it for hours.
@@ -56,7 +72,17 @@ COOLDOWN_MAX = _cooldown_max()
 # Cheap cross-module signal: written when EVERY Claude account is cooling down, self-expiring
 # at the earliest cooldown. agentic_coders.pick() reads claude_exhausted() to fail over to the
 # subscription second coder (Codex) instead of stalling. No DB call on the hot path.
-EXHAUSTED_FLAG = os.path.join(HOME, "claude_exhausted.json")
+_EXHAUSTED_FLAG_DEFAULT = os.path.join(HOME, "claude_exhausted.json")
+EXHAUSTED_FLAG = _EXHAUSTED_FLAG_DEFAULT
+
+
+def _exhausted_flag_path():
+    """A monkeypatched module-level EXHAUSTED_FLAG (tests repoint it directly)
+    wins; otherwise resolve from the current CLAUDE_ORCH_HOME so env changes
+    made after import still take effect."""
+    if EXHAUSTED_FLAG != _EXHAUSTED_FLAG_DEFAULT:
+        return EXHAUSTED_FLAG
+    return os.path.join(_home(), "claude_exhausted.json")
 
 
 # Module-level cache for claude_exhausted(); avoids re-checking flag file/DB on every call.
@@ -85,7 +111,7 @@ def claude_exhausted():
     cooldowns (cached ~15s so high-concurrency pick() calls don't hammer the DB). This makes the
     Codex fail-over engage the moment both accounts are cooling, even if the flag wasn't written."""
     try:
-        d = json.load(open(EXHAUSTED_FLAG))
+        d = json.load(open(_exhausted_flag_path()))
         if time.time() < float(d.get("until", 0)):
             return True
     except Exception:
@@ -158,20 +184,20 @@ class AccountPool:
         except Exception:
             pass
         # 2) local file fallback
-        if os.path.exists(CFG):
-            try: return json.load(open(CFG))
+        if os.path.exists(_cfg_path()):
+            try: return json.load(open(_cfg_path()))
             except Exception: pass
         # 3) default: single implicit account = whatever `claude` already uses
         return [{"name": "default", "type": "login"}]
 
     def _load_state(self):
-        if os.path.exists(STATE):
-            try: return json.load(open(STATE))
+        if os.path.exists(_state_path()):
+            try: return json.load(open(_state_path()))
             except Exception: pass
         return {}
 
     def _save(self):
-        json.dump(self.state, open(STATE, "w"))
+        json.dump(self.state, open(_state_path(), "w"))
 
     def _healthy(self, a):
         until = self.state.get(a["name"], {}).get("cooldown_until", 0)
@@ -257,9 +283,9 @@ class AccountPool:
                 # make this signal expire while subscriptions are still capped.
                 usable = self._usable_accounts()
                 soonest = min(self.state.get(a["name"], {}).get("cooldown_until", 0) for a in usable)
-                json.dump({"until": soonest}, open(EXHAUSTED_FLAG, "w"))
-            elif os.path.exists(EXHAUSTED_FLAG):
-                os.remove(EXHAUSTED_FLAG)
+                json.dump({"until": soonest}, open(_exhausted_flag_path(), "w"))
+            elif os.path.exists(_exhausted_flag_path()):
+                os.remove(_exhausted_flag_path())
         except Exception:
             pass
 
