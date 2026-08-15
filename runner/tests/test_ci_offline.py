@@ -504,5 +504,100 @@ class TestSelfMaintenanceQuota(unittest.TestCase):
         self.assertIn("never idle a lane just to enforce a ratio", src)
 
 
+
+class TestShadowModeDefersRatherThanCompletes(unittest.TestCase):
+    """The first version of this wiring had two bugs, and both are the kind that make a safety
+    feature actively dangerous rather than merely useless.
+
+    It sat below the ORCH_PUSH_ON_MERGE guard, which returns early and is false in this fleet —
+    so the check was unreachable and recorded nothing, while looking installed.
+
+    And it returned "". _push_base returns "" for SUCCESS, so a refusal would have told the
+    caller the push worked and let the task go MERGED with nothing sent to origin: a database
+    that says shipped while GitHub never moved. That is the exact desync the push-verification
+    gate exists to stop."""
+
+    def setUp(self):
+        import merge_train
+        self.mt = merge_train
+        os.environ.pop("ORCH_SHADOW_MODE", None)
+
+    def tearDown(self):
+        os.environ.pop("ORCH_SHADOW_MODE", None)
+
+    def test_a_refusal_is_never_mistaken_for_a_successful_push(self):
+        os.environ["ORCH_SHADOW_MODE"] = "true"
+        out = self.mt._push_base("/tmp", "main", project="probe")
+        self.assertTrue(out, "empty return means SUCCESS to the caller; a refusal must not")
+        self.assertIn("withheld", out)
+
+    def test_the_check_runs_before_every_other_early_return(self):
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "merge_train.py")).read()
+        body = src[src.index("def _push_base("):]
+        # Anchored on the STATEMENT, not a name that also appears in prose. This test has now
+        # caught two things: a guard placed after an early return, and its own weakness when
+        # the early return was rewritten to call _push_enabled_for_base instead.
+        self.assertLess(body.index("shadow_mode.refuse"),
+                        body.index("if not _push_enabled_for_base(base):"),
+                        "a guard placed after an early return is a guard that never runs")
+
+    def test_off_by_default_changes_nothing(self):
+        self.assertEqual(self.mt._push_base("/tmp", "main", project="probe"), "")
+
+
+
+class TestIntegrationBranchIsActuallyPushed(unittest.TestCase):
+    """_push_base gated on ORCH_PUSH_ON_MERGE — the flag for pushing a PRODUCTION base, false in
+    this fleet. The integration branch is orchestrator/dev, whose flag is ORCH_PUSH_ON_DEV_MERGE
+    and is true. _push_enabled_for_base() encodes that distinction and had ZERO call sites: it
+    was written and never wired.
+
+    Every train pass therefore merged into the LOCAL integration branch, reported success, and
+    the sha-verification below then found origin had not moved. That is the PUSH-VERIFY-FAILED
+    count, and why local orchestrator/dev ran one to four days ahead of origin in every app."""
+
+    def setUp(self):
+        import merge_train
+        self.mt = merge_train
+        self._saved = {k: os.environ.get(k) for k in
+                       ("ORCH_STAGING_BRANCH", "ORCH_PUSH_ON_DEV_MERGE", "ORCH_PUSH_ON_MERGE",
+                        "ORCH_BATCH_DEV_RELEASE", "ORCH_SHADOW_MODE")}
+        os.environ.update({"ORCH_STAGING_BRANCH": "orchestrator/dev",
+                           "ORCH_PUSH_ON_DEV_MERGE": "true",
+                           "ORCH_PUSH_ON_MERGE": "false",
+                           "ORCH_BATCH_DEV_RELEASE": "true"})
+        os.environ.pop("ORCH_SHADOW_MODE", None)
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_the_integration_branch_is_push_enabled(self):
+        self.assertTrue(self.mt._push_enabled_for_base("orchestrator/dev"))
+
+    def test_a_production_base_stays_push_disabled(self):
+        # The batch release train owns production; the merge train must not push there.
+        self.assertFalse(self.mt._push_enabled_for_base("main"))
+        self.assertFalse(self.mt._push_enabled_for_base("master"))
+
+    def test_push_base_consults_the_policy_not_the_production_flag(self):
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "merge_train.py")).read()
+        body = src[src.index("def _push_base("):]
+        body = body[:body.index("\ndef ", 10)]
+        self.assertIn("_push_enabled_for_base(base)", body,
+                      "the policy helper must actually be called")
+        self.assertNotIn('os.environ.get("ORCH_PUSH_ON_MERGE"', body,
+                         "gating the integration push on the production flag is the bug")
+
+    def test_shadow_mode_still_outranks_the_policy(self):
+        os.environ["ORCH_SHADOW_MODE"] = "true"
+        self.assertIn("withheld", self.mt._push_base("/tmp", "orchestrator/dev", project="p"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

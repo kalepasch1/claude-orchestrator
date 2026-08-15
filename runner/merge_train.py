@@ -1029,7 +1029,42 @@ def _push_base(repo, base, project=None):
     reconcile once in an ISOLATED worktree: fetch origin/base, rebase local base's extra commits
     onto it, retry the push. Still failing -> return the error; the CALLER must NOT mark the task
     MERGED (a failed push previously counted as a merge and desynced the DB from GitHub)."""
-    if os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() != "true":
+    # SHADOW MODE — checked FIRST, before any other early return.
+    #
+    # Two things went wrong on the first attempt at this and both are worth writing down.
+    #
+    # It was placed after the ORCH_PUSH_ON_MERGE guard below, which returns "" and is false in
+    # this fleet — so the shadow check was unreachable and recorded nothing at all. A safety
+    # feature that never runs is worse than none, because you believe you have it.
+    #
+    # And it returned "". _push_base returns "" for SUCCESS, so a refusal would have told the
+    # caller the push worked and let the task go MERGED with nothing sent to origin — a DB that
+    # says shipped while GitHub never moved. That is the exact desync the push-verification gate
+    # below exists to stop (observed 2026-07-09), and I nearly reintroduced it through the front
+    # door while adding a guard against it.
+    #
+    # Shadow mode DEFERS, it does not complete. A non-empty return takes the PUSH-PENDING path:
+    # the task stays unmerged, its card stays undecided, and the next pass after the window
+    # lifts retries it. Rebase, tests and fast-forward are all idempotent by then.
+    if shadow_mode.refuse("push-integration-branch", project=project or "",
+                          subject=base, detail=f"{repo} -> origin/{base}"):
+        return "shadow mode: push withheld, nothing was sent to origin"
+    # THE INTEGRATION BRANCH HAS NEVER BEEN PUSHED (found 2026-08-15).
+    #
+    # This gated on ORCH_PUSH_ON_MERGE, which is false in this fleet and is the flag for pushing
+    # a PRODUCTION base. The integration branch is orchestrator/dev, whose flag is
+    # ORCH_PUSH_ON_DEV_MERGE, and that is true. _push_enabled_for_base() encodes exactly that
+    # distinction — and had ZERO call sites. It was written and never wired.
+    #
+    # So every train pass merged into the LOCAL integration branch, returned "" here as though
+    # it had pushed, and the sha-verification twenty lines below then found origin had not
+    # moved. That is the PUSH-VERIFY-FAILED count, and it is why local orchestrator/dev was
+    # found running one to four days ahead of origin in every app repo: the work was merged, it
+    # simply never left the machine.
+    #
+    # Shipping this while shadow mode is on is deliberate — the fix is inert until the canary
+    # window, so the first real push happens under observation rather than as a surprise.
+    if not _push_enabled_for_base(base):
         return ""
     # Ensure auth before push — the PAT may not have been injected yet if
     # task_refs.publish() hasn't run for this repo in this process.
@@ -1045,12 +1080,6 @@ def _push_base(repo, base, project=None):
     # fence against the store here, immediately before origin moves.
     delivery_lease.require(delivery_lease.held(project or "", delivery_lease.ROLE_INTEGRATOR),
                            f"push integration branch {base}")
-    # SHADOW MODE: everything up to here has run for real — rebase, tests, build, every
-    # anti-loss gate — so the proposal is fully evaluated. This is the last instant before
-    # origin moves, which makes it the right place to stop and record instead.
-    if shadow_mode.refuse("push-integration-branch", project=project or "",
-                          subject=base, detail=f"{repo} -> origin/{base}"):
-        return ""
     r = _git(repo, "push", "origin", base, timeout=300)
     if r.returncode == 0:
         return ""
