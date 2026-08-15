@@ -131,6 +131,43 @@ def test_already_present_when_fully_merged(repo):
     assert ler.classify(repo, item, ctx)["classification"] == "ALREADY_PRESENT"
 
 
+def test_merged_refs_precomputed_in_context(repo):
+    """The bulk `--merged` set is what lets ALREADY_PRESENT skip a per-ref rev-list."""
+    sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "update-ref", "refs/orch-rescue/20260803T000716-x", sha)
+    _branch_with(repo, "agent/unmerged-work", "runner/new.py", "N = 1\n")
+    ctx = ler.build_context(repo)
+    assert "refs/orch-rescue/20260803T000716-x" in ctx["merged_refs"]
+    # The whole point of the fast path is that it must NOT swallow unmerged work.
+    assert "refs/heads/agent/unmerged-work" not in ctx["merged_refs"]
+
+
+def test_merged_fast_path_does_not_swallow_unmerged_work(repo):
+    """A ref carrying unique commits must never be short-circuited to ALREADY_PRESENT."""
+    _branch_with(repo, "agent/unmerged-work", "runner/new.py", "N = 1\n")
+    ctx = ler.build_context(repo)
+    record = ler.classify(repo, {"kind": "branch", "name": "agent/unmerged-work",
+                                 "ref": "refs/heads/agent/unmerged-work"}, ctx)
+    assert record["classification"] != "ALREADY_PRESENT"
+    assert record["unique_commits"] >= 1
+
+
+def test_classification_matches_with_and_without_the_precompute(repo):
+    """The precompute is an optimisation, so it must not change any verdict.
+
+    Dropping `merged_refs` forces the original `rev-list` path; both must agree.
+    """
+    sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    _git(repo, "update-ref", "refs/orch-rescue/20260803T000716-x", sha)
+    _branch_with(repo, "agent/unmerged-work", "runner/new.py", "N = 1\n")
+    ctx = ler.build_context(repo)
+    slow_ctx = dict(ctx, merged_refs=set())
+    for item in ler.enumerate_evidence(repo):
+        fast = ler.classify(repo, item, ctx)["classification"]
+        slow = ler.classify(repo, item, slow_ctx)["classification"]
+        assert fast == slow, f"{item['ref']}: fast={fast} slow={slow}"
+
+
 def test_vanished_ref_is_not_unknown(repo):
     ctx = ler.build_context(repo)
     record = ler.classify(repo, {"kind": "branch", "name": "gone",
