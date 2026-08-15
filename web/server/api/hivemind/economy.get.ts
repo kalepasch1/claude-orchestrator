@@ -1,1 +1,0 @@
-import {requireConnectorUser} from '../../utils/connectorFabric';import {hivemindEconomyContext} from '../../utils/hivemindEconomy';export default defineEventHandler(async event=>hivemindEconomyContext(await requireConnectorUser(event)))

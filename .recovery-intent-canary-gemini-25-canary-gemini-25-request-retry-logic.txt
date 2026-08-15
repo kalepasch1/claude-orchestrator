@@ -1,4 +1,0 @@
-recovery-intent: canary-gemini-25-canary-gemini-25-request-retry-logic
-template: ee29ced4a203
-intent: 07130635 07190257 20251001 53375a0cecde acceptance active adapt advice after agent agentic always analysis apierror around artifacts attempts author available b4fa25c7 backoff batch beethoven before behavior below branch broad bugfix build build_fix canary category cause change changes changing checks claim class claud claude coder codestral commit completion concrete config conflict content context continue contract coordination could credits cross custody deepseek delays delete denied dependencies deployfix diffs directive drafting either equivalent error errors eventually excerpt exhausting existing exists exits explore exponential fable
-base: main
