@@ -33,6 +33,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from regenerable_artifacts import partition_dirt, describe
 
@@ -417,6 +418,59 @@ def _discard_check(repo: str, pre_sha: str, branch: str, result_ref: str = "HEAD
         return f"automerge discard guard error (fail-closed): {type(exc).__name__}: {exc}"
 
 
+class _GateTimeout(Exception):
+    """One verification gate outran its budget."""
+
+
+def _bounded(name, check):
+    """Run one gate under a wall-clock budget. Raises _GateTimeout when it outruns it.
+
+    WHY (2026-08-15). These four gates are the fleet's overwrite protection, and they are also
+    where every train pass was dying: the merge train produced ZERO merges in 24 hours while the
+    watchdog fired 56 times at the 900s pass cap, and every dump landed inside this function.
+    One slow branch — a huge diff, a stalled subprocess, a control-plane hiccup — consumed the
+    entire pass, so the other several hundred candidates were never even looked at.
+
+    A budget here does NOT weaken the guard. A gate that times out yields a finding, so the
+    merge is refused and the branch is retried next pass; the failure direction is identical to
+    a crashing gate, which this function has always treated as fail-closed. What changes is that
+    one pathological branch now costs one branch instead of the whole cycle.
+
+    The worker is a daemon thread and is abandoned on timeout rather than killed, because Python
+    cannot interrupt a blocking read. It holds no lock the next pass needs — the shared-ref locks
+    live above this layer — so an abandoned probe finishes into the void and is collected.
+    """
+    budget = float(os.environ.get("ORCH_MERGE_GATE_TIMEOUT_S", "180") or 180)
+    if budget <= 0:
+        return check()
+    box = {}
+
+    def _run():
+        try:
+            box["ok"] = check()
+        except BaseException as exc:      # re-raised on the caller's thread below
+            box["exc"] = exc
+
+    t = threading.Thread(target=_run, name=f"verify-{name}", daemon=True)
+    t.start()
+    t.join(budget)
+    if t.is_alive():
+        raise _GateTimeout(
+            f"{name} gate exceeded {budget:.0f}s on {branch_label(locals())}; refusing the merge "
+            f"this pass so one slow branch cannot consume the whole cycle")
+    if "exc" in box:
+        raise box["exc"]
+    return box.get("ok")
+
+
+def branch_label(_scope):
+    """Best-effort branch name for the timeout message; never raises."""
+    try:
+        return str(_scope.get("name") or "candidate")
+    except Exception:
+        return "candidate"
+
+
 def _verify_merge(repo: str, pre_sha: str, base: str, branch: str,
                   result_ref: str = "HEAD") -> str:
     """Every anti-loss gate this path must pass, in order. '' when all are clean.
@@ -426,13 +480,13 @@ def _verify_merge(repo: str, pre_sha: str, base: str, branch: str,
     is NOT checked out (approval_merge's fetch/fast-forward path), otherwise the gates
     would diff the wrong tree.
     """
-    for check in (lambda: _regression_check(repo, pre_sha, branch, result_ref=result_ref),
-                  lambda: _divergent_check(repo, pre_sha or base, branch,
-                                           result_ref=result_ref),
-                  lambda: _stub_check(repo, pre_sha or base, branch),
-                  lambda: _discard_check(repo, pre_sha, branch, result_ref=result_ref)):
+    for name, check in (("regression", lambda: _regression_check(repo, pre_sha, branch, result_ref=result_ref)),
+                        ("divergent", lambda: _divergent_check(repo, pre_sha or base, branch,
+                                                               result_ref=result_ref)),
+                        ("stub", lambda: _stub_check(repo, pre_sha or base, branch)),
+                        ("discard", lambda: _discard_check(repo, pre_sha, branch, result_ref=result_ref))):
         try:
-            findings = check()
+            findings = _bounded(name, check)
         except Exception as exc:   # a crashing gate must never wave the merge through
             return f"merge verification error (fail-closed): {type(exc).__name__}: {exc}"
         if findings:

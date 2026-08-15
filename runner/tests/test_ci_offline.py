@@ -278,5 +278,80 @@ class TestRepoRootCanaryEntryPoint(unittest.TestCase):
                 self.assertTrue(compileall.compile_file(path, quiet=2, force=True))
 
 
+class TestGateBudget(unittest.TestCase):
+    """The four anti-loss gates are the fleet's overwrite protection AND were where every train
+    pass was dying: zero merges in 24h while the watchdog fired 56 times at the 900s cap, every
+    dump inside _verify_merge. One slow branch consumed the whole cycle."""
+
+    def setUp(self):
+        os.environ["ORCH_MERGE_GATE_TIMEOUT_S"] = "2"
+        import auto_conflict_resolver
+        self.acr = auto_conflict_resolver
+        self._saved = {n: getattr(auto_conflict_resolver, n) for n in
+                       ("_regression_check", "_divergent_check", "_stub_check", "_discard_check")}
+        for n in self._saved:
+            setattr(auto_conflict_resolver, n, lambda *a, **k: "")
+
+    def tearDown(self):
+        for n, fn in self._saved.items():
+            setattr(self.acr, n, fn)
+        os.environ.pop("ORCH_MERGE_GATE_TIMEOUT_S", None)
+
+    def test_a_hung_gate_refuses_rather_than_hanging(self):
+        import time
+        self.acr._regression_check = lambda *a, **k: time.sleep(60)
+        t = time.time()
+        out = self.acr._verify_merge("/tmp", "abc", "main", "agent/x")
+        self.assertLess(time.time() - t, 10)
+        self.assertTrue(out, "a timed-out gate must refuse the merge, never return clean")
+
+    def test_clean_gates_still_permit_the_merge(self):
+        # The budget must not become a merge blocker in the normal case.
+        self.assertEqual(self.acr._verify_merge("/tmp", "abc", "main", "agent/x"), "")
+
+    def test_a_real_finding_is_returned_unchanged(self):
+        self.acr._stub_check = lambda *a, **k: "SILENT STUB in foo.ts"
+        self.assertEqual(self.acr._verify_merge("/tmp", "abc", "main", "agent/x"),
+                         "SILENT STUB in foo.ts")
+
+    def test_a_crashing_gate_is_still_fail_closed(self):
+        def boom(*a, **k):
+            raise RuntimeError("kaboom")
+        self.acr._divergent_check = boom
+        out = self.acr._verify_merge("/tmp", "abc", "main", "agent/x")
+        self.assertIn("fail-closed", out)
+
+    def test_the_budget_can_be_disabled(self):
+        os.environ["ORCH_MERGE_GATE_TIMEOUT_S"] = "0"
+        self.assertEqual(self.acr._bounded("off", lambda: "ran"), "ran")
+
+
+class TestGateLivenessIsOffTheCriticalPath(unittest.TestCase):
+    """record() swallowed exceptions but never bounded TIME. Each db.insert can spend 15s per
+    attempt across retries and fallback relays, and there are 23 call sites, several inside
+    per-branch merge gates. 11 of the 56 watchdog dumps were stopped exactly here."""
+
+    def test_record_does_not_wait_for_the_control_plane(self):
+        import importlib, time
+        import db
+        saved = db.insert
+        try:
+            db.insert = lambda table, row, **kw: time.sleep(3)
+            import gate_liveness
+            importlib.reload(gate_liveness)
+            t = time.time()
+            for i in range(10):
+                self.assertIs(gate_liveness.record("probe", True, f"s{i}"), True)
+            self.assertLess(time.time() - t, 1.0,
+                            "record() must not block on a slow backend")
+        finally:
+            db.insert = saved
+
+    def test_verdict_passes_through_unchanged(self):
+        import gate_liveness
+        self.assertEqual(gate_liveness.record("probe", "green", "x"), "green")
+        self.assertIs(gate_liveness.record("probe", False, "x"), False)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

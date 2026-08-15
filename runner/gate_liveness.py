@@ -21,7 +21,9 @@ Recording is best-effort and never raises: a liveness probe must not be able to
 take down the gate it is watching.
 """
 import os
+import queue
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -42,21 +44,87 @@ ALWAYS_ON = [
 ]
 
 
+# OFF THE CRITICAL PATH (2026-08-15)
+# ----------------------------------
+# record() swallowed exceptions ("never let telemetry break the gate") but never bounded
+# TIME, and that is the half that mattered. Each db.insert can spend ORCH_SUPABASE_TIMEOUT
+# (15s) per attempt, times HTTP_RETRIES, across several fallback relay endpoints — a minute or
+# more when the control plane is slow. There are 23 record() call sites, several of them inside
+# per-branch merge gates, so a single train pass pays that toll dozens of times.
+#
+# Measured today: the merge train had produced ZERO merges in 24 hours. The watchdog had fired
+# 56 times at the 900s pass cap, and of those dumps, 11 were stopped precisely here —
+# gate_liveness.record -> db.insert -> urlopen — with another 14 in the regression gate that
+# calls it. Telemetry about whether the gates are alive was the single biggest reason the gates
+# never finished running.
+#
+# So: hand the write to a background worker and return immediately. Liveness data is worth
+# collecting and worth nothing at all if collecting it stops the pipeline it measures. On
+# overflow we drop and say so once, because a queue that grows without bound to preserve
+# telemetry would just be the same bug wearing a hat.
+_QUEUE_MAX = int(os.environ.get("ORCH_GATE_LIVENESS_QUEUE", "512") or 512)
+_queue = queue.Queue(maxsize=_QUEUE_MAX)
+_worker = None
+_worker_lock = threading.Lock()
+_dropped = [0]
+
+
+def _drain():
+    while True:
+        row = _queue.get()
+        try:
+            db.insert("orch_gate_verdicts", row)
+        except Exception as exc:
+            print(f"[gate_liveness] record failed for {row.get('gate')}: {exc}", flush=True)
+        finally:
+            _queue.task_done()
+
+
+def _ensure_worker():
+    global _worker
+    if _worker is not None and _worker.is_alive():
+        return
+    with _worker_lock:
+        if _worker is None or not _worker.is_alive():
+            _worker = threading.Thread(target=_drain, name="gate-liveness", daemon=True)
+            _worker.start()
+
+
 def record(gate, verdict, subject=None, detail=None):
-    """Persist one gate verdict. Best-effort; returns the verdict unchanged.
+    """Persist one gate verdict. Non-blocking; returns the verdict unchanged.
 
     Designed to be used inline:  return gate_liveness.record("build_gate", ok, slug)
+
+    The write happens on a background thread. The caller is never delayed by the control
+    plane, which is the whole point — see the note above this function.
     """
     try:
-        db.insert("orch_gate_verdicts", {
+        _ensure_worker()
+        _queue.put_nowait({
             "gate": str(gate)[:120],
             "verdict": _norm(verdict),
             "subject": (str(subject)[:200] if subject is not None else None),
             "detail": (str(detail)[:500] if detail is not None else None),
         })
+    except queue.Full:
+        _dropped[0] += 1
+        if _dropped[0] == 1 or _dropped[0] % 100 == 0:
+            print(f"[gate_liveness] telemetry queue full; dropped {_dropped[0]} verdict(s) "
+                  f"rather than delay the gate", flush=True)
     except Exception as exc:            # never let telemetry break the gate
         print(f"[gate_liveness] record failed for {gate}: {exc}", flush=True)
     return verdict
+
+
+def flush(timeout=10.0):
+    """Best-effort drain, for a process that is about to exit. Never raises."""
+    try:
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while not _queue.empty() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        return _queue.empty()
+    except Exception:
+        return False
 
 
 def _norm(verdict):
