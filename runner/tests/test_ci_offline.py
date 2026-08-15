@@ -504,5 +504,47 @@ class TestSelfMaintenanceQuota(unittest.TestCase):
         self.assertIn("never idle a lane just to enforce a ratio", src)
 
 
+
+class TestShadowModeDefersRatherThanCompletes(unittest.TestCase):
+    """The first version of this wiring had two bugs, and both are the kind that make a safety
+    feature actively dangerous rather than merely useless.
+
+    It sat below the ORCH_PUSH_ON_MERGE guard, which returns early and is false in this fleet —
+    so the check was unreachable and recorded nothing, while looking installed.
+
+    And it returned "". _push_base returns "" for SUCCESS, so a refusal would have told the
+    caller the push worked and let the task go MERGED with nothing sent to origin: a database
+    that says shipped while GitHub never moved. That is the exact desync the push-verification
+    gate exists to stop."""
+
+    def setUp(self):
+        import merge_train
+        self.mt = merge_train
+        os.environ.pop("ORCH_SHADOW_MODE", None)
+
+    def tearDown(self):
+        os.environ.pop("ORCH_SHADOW_MODE", None)
+
+    def test_a_refusal_is_never_mistaken_for_a_successful_push(self):
+        os.environ["ORCH_SHADOW_MODE"] = "true"
+        out = self.mt._push_base("/tmp", "main", project="probe")
+        self.assertTrue(out, "empty return means SUCCESS to the caller; a refusal must not")
+        self.assertIn("withheld", out)
+
+    def test_the_check_runs_before_every_other_early_return(self):
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "merge_train.py")).read()
+        body = src[src.index("def _push_base("):]
+        # Match the STATEMENT, not the name — the explanatory comment above the guard mentions
+        # ORCH_PUSH_ON_MERGE too, and matching that made this test pass on placement it should
+        # have rejected.
+        self.assertLess(body.index("shadow_mode.refuse"),
+                        body.index('if os.environ.get("ORCH_PUSH_ON_MERGE"'),
+                        "a guard placed after an early return is a guard that never runs")
+
+    def test_off_by_default_changes_nothing(self):
+        self.assertEqual(self.mt._push_base("/tmp", "main", project="probe"), "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
