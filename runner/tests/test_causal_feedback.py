@@ -269,10 +269,13 @@ class TestCausalFeedbackWrite(unittest.TestCase):
         with patch("runner.causal_feedback.db.insert", return_value=True):
             threads = []
             for i in range(10):
-                def _write():
+                # signal_before must be > 0 (it is the delta denominator), so start the
+                # baseline at 1.0; `n=i` binds the loop variable per-thread instead of
+                # letting every closure race on the final value of `i`.
+                def _write(n=i):
                     causal_feedback.write(
-                        f"bottleneck_{i}", f"remediation_{i}",
-                        signal_before=float(i), signal_after=float(i-1)
+                        f"bottleneck_{n}", f"remediation_{n}",
+                        signal_before=float(n + 1), signal_after=float(n)
                     )
                 t = threading.Thread(target=_write)
                 threads.append(t)
