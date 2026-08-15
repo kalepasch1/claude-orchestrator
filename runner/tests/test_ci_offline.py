@@ -599,5 +599,73 @@ class TestIntegrationBranchIsActuallyPushed(unittest.TestCase):
         self.assertIn("withheld", self.mt._push_base("/tmp", "orchestrator/dev", project="p"))
 
 
+
+class TestShadowModeCoversProduction(unittest.TestCase):
+    """Shadow mode was wired into merge_train and approval_merge but NOT release_train — the
+    only line in the fleet that moves a PRODUCTION branch, and the one Vercel builds from.
+
+    A kill switch that stops the harmless writes and permits the consequential one is not a kill
+    switch. Bear would have discovered that the first time a release fired during a window he
+    believed was observe-only."""
+
+    def test_every_origin_moving_push_consults_shadow_mode(self):
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for mod in ("merge_train.py", "approval_merge.py", "release_train.py"):
+            src = open(os.path.join(base, mod)).read()
+            self.assertIn("import shadow_mode", src, f"{mod} does not import it")
+            self.assertIn("shadow_mode.refuse", src, f"{mod} never calls it")
+
+    def test_the_production_promotion_is_guarded_before_the_push(self):
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        src = open(os.path.join(base, "release_train.py")).read()
+        guard = src.index('shadow_mode.refuse("promote-to-production"')
+        push = src.index('_git(repo, "push", "origin", f"{STAGING}:{prod}"')
+        self.assertLess(guard, push, "the guard must precede the push it guards")
+
+    def test_a_withheld_promotion_is_not_reported_as_released(self):
+        # The refusal must take the "did not promote" shape. Recording a promotion that never
+        # happened is the same DB/GitHub desync the push-verification gate exists to prevent.
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        src = open(os.path.join(base, "release_train.py")).read()
+        tail = src[src.index('shadow_mode.refuse("promote-to-production"'):][:400]
+        self.assertIn("return False", tail)
+
+
+
+class TestEveryIntegrationPathIsGuarded(unittest.TestCase):
+    """Enumerating the write paths instead of remembering them turned up two more.
+
+    runner.py integrates INLINE when a worker finishes, independently of merge_train, and pushes
+    the shared branch itself — so the merge train never pushing (fixed separately) was only half
+    the story; this path did push. improvement_verify pushes HEAD to the shared staging branch
+    as a third route. Neither consulted shadow mode.
+
+    runner.py also DISCARDED its push result and returned "MERGED" regardless, so a rejected
+    push still counted as shipped — the same DB/GitHub desync the merge train's
+    push-verification gate exists to prevent, living unnoticed in the other integrate path."""
+
+    def _src(self, name):
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return open(os.path.join(base, name)).read()
+
+    def test_all_five_shared_ref_writers_consult_shadow_mode(self):
+        for mod in ("merge_train.py", "approval_merge.py", "release_train.py",
+                    "runner.py", "improvement_verify.py"):
+            self.assertIn("shadow_mode.refuse", self._src(mod), f"{mod} never calls it")
+
+    def test_the_inline_integrate_checks_its_push_result(self):
+        src = self._src("runner.py")
+        self.assertIn('print(f"[integrate] push {base} failed; NOT marking merged', src)
+        guard = src.index("_pr = subprocess.run")
+        verdict = src.index("_pr.returncode != 0")
+        self.assertLess(guard, verdict)
+
+    def test_a_withheld_inline_push_does_not_report_merged(self):
+        src = self._src("runner.py")
+        tail = src[src.index('shadow_mode.refuse("push-integration-branch", project=str(base)'):][:600]
+        self.assertIn('return "PUSH-PENDING"', tail)
+        self.assertNotIn('return "MERGED"', tail)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

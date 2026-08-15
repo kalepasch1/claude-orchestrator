@@ -491,7 +491,25 @@ def integrate(repo, branch, base, test_cmd, slug="", verify_notes="", test_summa
         push_dev = os.environ.get("ORCH_PUSH_ON_DEV_MERGE", "true").lower() in ("1", "true", "yes", "on")
         push_prod = os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() == "true"
         if (base == staging and push_dev) or (base != staging and push_prod and (not batch_release or direct_prod_allowed)):
-            subprocess.run(["git", "push", "origin", base], cwd=repo, capture_output=True)
+            # SHADOW MODE. This is a SECOND integration path — runner.py integrates inline when
+            # a worker finishes, independently of merge_train — and it moves a shared branch, so
+            # a kill switch that misses it does not hold.
+            try:
+                import shadow_mode
+                _withheld = shadow_mode.refuse("push-integration-branch", project=str(base),
+                                               subject=branch, detail=f"{repo} -> origin/{base}")
+            except Exception:
+                _withheld = False
+            if _withheld:
+                return "PUSH-PENDING"
+            # The result was DISCARDED and "MERGED" returned regardless, so a rejected push
+            # still counted as shipped — the same DB/GitHub desync the merge train's
+            # push-verification gate was built to stop, living in the other integrate path.
+            _pr = subprocess.run(["git", "push", "origin", base], cwd=repo, capture_output=True)
+            if _pr.returncode != 0:
+                _tail = (_pr.stderr or b"").decode("utf-8", "replace")[-300:]
+                print(f"[integrate] push {base} failed; NOT marking merged: {_tail}", flush=True)
+                return "PUSH-PENDING"
         try:
             import approval_merge
             approval_merge._free_branch(repo, branch)
