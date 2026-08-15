@@ -415,5 +415,46 @@ class TestShadowMode(unittest.TestCase):
             self.assertIn(call, src, mod)
 
 
+
+class TestPreflightDoesNotDiscardRealSpecs(unittest.TestCase):
+    """preflight quarantined anything that had failed 4 times. Audited 2026-08-15: 139 tasks
+    were destroyed by that rule, every one in the cowork lane, every one carrying a real
+    specification (1,311 to 25,230 characters, median 5,985). Not one was a garbage stub.
+
+    An attempt is consumed by ANY failure, and this fleet spent months failing for reasons that
+    had nothing to do with the task — an orphaned merge-train lock, gates hanging inside their
+    own telemetry, hidden scan windows, cross-host push races."""
+
+    SPEC = "## OBJECTIVE\n" + "Detail line explaining the required behaviour.\n" * 60
+    THIN = "fix it"
+
+    def setUp(self):
+        import preflight_filter
+        self.pf = preflight_filter
+        for k in ("ORCH_PREFLIGHT_MAX_ATTEMPTS", "ORCH_PREFLIGHT_HARD_CEILING",
+                  "ORCH_PREFLIGHT_SUBSTANTIAL_CHARS"):
+            os.environ.pop(k, None)
+
+    def _check(self, prompt, attempt, note=""):
+        return self.pf.preflight_check(
+            {"slug": "t", "prompt": prompt, "attempt": attempt, "note": note})
+
+    def test_a_detailed_spec_survives_repeated_failure(self):
+        self.assertEqual(self._check(self.SPEC, 5), "")
+
+    def test_a_thin_prompt_that_keeps_failing_is_still_rejected(self):
+        self.assertIn("exhausted", self._check(self.THIN, 5))
+
+    def test_nothing_retries_forever(self):
+        self.assertIn("hard ceiling", self._check(self.SPEC, 12))
+
+    def test_garbage_stubs_are_still_caught(self):
+        self.assertIn("PATCH TEMPLATE", self._check("PATCH TEMPLATE deadbeef", 0))
+
+    def test_both_signals_are_required_not_either(self):
+        self.assertEqual(self._check(self.SPEC, 3), "")
+        self.assertEqual(self._check("x" * 600, 5), "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
