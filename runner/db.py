@@ -614,9 +614,16 @@ def _req_one(base, method, path, qs, data, h, probe_only=False):
     # first request reached PostgREST but its response was lost. External RPC calls skip retry
     # to reduce rate-limiting cascade on non-critical paths.
     retryable = method == "GET" or (method == "POST" and _is_core_rpc(path))
-    if probe_only:
-        retryable = False
-    attempts = HTTP_RETRIES + 1 if retryable else 1
+    # probe_only exists to stop the retry budget burning against an endpoint the network
+    # is DROPPING (see _req). That reasoning only covers connectivity failures. An HTTP
+    # status means the endpoint answered, and _req never fails over on one — so suppressing
+    # status retries here did not "probe faster", it silently removed the retry guarantee
+    # for core RPCs entirely whenever more than one endpoint was configured, which is the
+    # normal case (4 today). A single 503 on claim_task or acquire_branch_execution_lease
+    # then killed the claim outright, which is exactly what CORE_RETRY_RPCS exists to prevent.
+    retryable_transport = retryable and not probe_only
+    retryable_status = retryable
+    attempts = HTTP_RETRIES + 1 if (retryable_transport or retryable_status) else 1
     for attempt in range(attempts):
         try:
             _to = min(HTTP_TIMEOUT, PROBE_TIMEOUT) if probe_only else HTTP_TIMEOUT
@@ -646,11 +653,11 @@ def _req_one(base, method, path, qs, data, h, probe_only=False):
             # never reached the logs and a 400 was indistinguishable from any other 400.
             if 400 <= e.code < 500 and e.code not in HTTP_RETRY_STATUSES:
                 raise _rejected(e, method, path) from e
-            if not retryable or e.code not in HTTP_RETRY_STATUSES or attempt >= attempts - 1:
+            if not retryable_status or e.code not in HTTP_RETRY_STATUSES or attempt >= attempts - 1:
                 raise
             time.sleep(min(12, 2 ** attempt) + (0.1 * attempt))
         except (urllib.error.URLError, TimeoutError, socket.timeout):
-            if not retryable or attempt >= attempts - 1:
+            if not retryable_transport or attempt >= attempts - 1:
                 raise
             time.sleep(min(12, 2 ** attempt) + (0.1 * attempt))
 
