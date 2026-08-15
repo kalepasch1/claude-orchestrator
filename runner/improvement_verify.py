@@ -260,6 +260,15 @@ def revert_commit(repo, sha, dry_run=None):
             return {"ok": True, "revert_sha": revert_sha, "pushed": False,
                     "detail": f"revert commit {revert_sha[:12]} created on {branch} "
                               f"(push disabled; set ORCH_IMPROVE_ROLLBACK_PUSH=1)"}
+        # SHADOW MODE: PUSH_TARGET is the shared staging branch, so this is a third path that
+        # moves a ref the fleet integrates from.
+        try:
+            import shadow_mode
+            if shadow_mode.refuse("push-integration-branch", subject=PUSH_TARGET,
+                                  detail=f"{wt} HEAD -> origin/{PUSH_TARGET}"):
+                return {"ok": False, "reason": "shadow mode: push withheld"}
+        except Exception:
+            pass
         push = _git(wt, "push", "origin", f"HEAD:{PUSH_TARGET}")
         return {"ok": push.returncode == 0, "revert_sha": revert_sha,
                 "pushed": push.returncode == 0,

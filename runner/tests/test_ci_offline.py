@@ -631,5 +631,41 @@ class TestShadowModeCoversProduction(unittest.TestCase):
         self.assertIn("return False", tail)
 
 
+
+class TestEveryIntegrationPathIsGuarded(unittest.TestCase):
+    """Enumerating the write paths instead of remembering them turned up two more.
+
+    runner.py integrates INLINE when a worker finishes, independently of merge_train, and pushes
+    the shared branch itself — so the merge train never pushing (fixed separately) was only half
+    the story; this path did push. improvement_verify pushes HEAD to the shared staging branch
+    as a third route. Neither consulted shadow mode.
+
+    runner.py also DISCARDED its push result and returned "MERGED" regardless, so a rejected
+    push still counted as shipped — the same DB/GitHub desync the merge train's
+    push-verification gate exists to prevent, living unnoticed in the other integrate path."""
+
+    def _src(self, name):
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return open(os.path.join(base, name)).read()
+
+    def test_all_five_shared_ref_writers_consult_shadow_mode(self):
+        for mod in ("merge_train.py", "approval_merge.py", "release_train.py",
+                    "runner.py", "improvement_verify.py"):
+            self.assertIn("shadow_mode.refuse", self._src(mod), f"{mod} never calls it")
+
+    def test_the_inline_integrate_checks_its_push_result(self):
+        src = self._src("runner.py")
+        self.assertIn('print(f"[integrate] push {base} failed; NOT marking merged', src)
+        guard = src.index("_pr = subprocess.run")
+        verdict = src.index("_pr.returncode != 0")
+        self.assertLess(guard, verdict)
+
+    def test_a_withheld_inline_push_does_not_report_merged(self):
+        src = self._src("runner.py")
+        tail = src[src.index('shadow_mode.refuse("push-integration-branch", project=str(base)'):][:600]
+        self.assertIn('return "PUSH-PENDING"', tail)
+        self.assertNotIn('return "MERGED"', tail)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
