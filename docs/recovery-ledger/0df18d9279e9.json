@@ -1,0 +1,218 @@
+{
+  "fingerprint": "0df18d9279e9213663a6059f47ab9967c81ad447e989fa1e78d8b752b7f91c6e",
+  "kind": "worktree (3 evidence paths)",
+  "base": "origin/master",
+  "base_sha": "730ed3ff9106035ce4341937223300fe6d644e22",
+  "generated_at": "2026-08-15T13:41:38.200Z",
+  "evidence_paths": [
+    "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/never-again-lane-daemon",
+    "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/spine-types-x2",
+    "/Users/kpasch/Documents/Trojun-orchestrator-misclone-20260812"
+  ],
+  "total": 13,
+  "counts": {
+    "ALREADY_PRESENT": 4,
+    "ACTIVE_IN_ANOTHER_TASK": 0,
+    "SUPERSEDED_BY_NEWER": 0,
+    "RECOVERABLE_VALUE": 0,
+    "CONFLICTED_NEEDS_FOCUSED_TASK": 9
+  },
+  "unknown": 0,
+  "items": [
+    {
+      "source": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/never-again-lane-daemon:runner/benchmark_redlines.py",
+      "file": "runner/benchmark_redlines.py",
+      "status": "M",
+      "sha": "9a14f09438553fbd7c1884a1832a8637a134bb6d",
+      "created_at": 1786801008,
+      "subject": "dirty worktree change (M)",
+      "worktree": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/never-again-lane-daemon",
+      "classification": "CONFLICTED_NEEDS_FOCUSED_TASK",
+      "reason": "differs from origin/master; needs content adjudication before any recovery",
+      "files": [
+        "runner/benchmark_redlines.py"
+      ],
+      "file_count": 1
+    },
+    {
+      "source": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/never-again-lane-daemon:runner/claude_cli.py",
+      "file": "runner/claude_cli.py",
+      "status": "M",
+      "sha": "9a14f09438553fbd7c1884a1832a8637a134bb6d",
+      "created_at": 1786801008,
+      "subject": "dirty worktree change (M)",
+      "worktree": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/never-again-lane-daemon",
+      "classification": "CONFLICTED_NEEDS_FOCUSED_TASK",
+      "reason": "differs from origin/master; needs content adjudication before any recovery",
+      "files": [
+        "runner/claude_cli.py"
+      ],
+      "file_count": 1
+    },
+    {
+      "source": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/never-again-lane-daemon:runner/expert_corps.py",
+      "file": "runner/expert_corps.py",
+      "status": "M",
+      "sha": "9a14f09438553fbd7c1884a1832a8637a134bb6d",
+      "created_at": 1786801008,
+      "subject": "dirty worktree change (M)",
+      "worktree": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/never-again-lane-daemon",
+      "classification": "CONFLICTED_NEEDS_FOCUSED_TASK",
+      "reason": "differs from origin/master; needs content adjudication before any recovery",
+      "files": [
+        "runner/expert_corps.py"
+      ],
+      "file_count": 1
+    },
+    {
+      "source": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/never-again-lane-daemon:runner/foulkon_sync.py",
+      "file": "runner/foulkon_sync.py",
+      "status": "M",
+      "sha": "9a14f09438553fbd7c1884a1832a8637a134bb6d",
+      "created_at": 1786801008,
+      "subject": "dirty worktree change (M)",
+      "worktree": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/never-again-lane-daemon",
+      "classification": "CONFLICTED_NEEDS_FOCUSED_TASK",
+      "reason": "differs from origin/master; needs content adjudication before any recovery",
+      "files": [
+        "runner/foulkon_sync.py"
+      ],
+      "file_count": 1
+    },
+    {
+      "source": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/never-again-lane-daemon:runner/keepalive.sh",
+      "file": "runner/keepalive.sh",
+      "status": "MM",
+      "sha": "9a14f09438553fbd7c1884a1832a8637a134bb6d",
+      "created_at": 1786801008,
+      "subject": "dirty worktree change (MM)",
+      "worktree": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/never-again-lane-daemon",
+      "classification": "CONFLICTED_NEEDS_FOCUSED_TASK",
+      "reason": "differs from origin/master; needs content adjudication before any recovery",
+      "files": [
+        "runner/keepalive.sh"
+      ],
+      "file_count": 1
+    },
+    {
+      "source": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/never-again-lane-daemon:runner/lane_guard.py",
+      "file": "runner/lane_guard.py",
+      "status": "M",
+      "sha": "9a14f09438553fbd7c1884a1832a8637a134bb6d",
+      "created_at": 1786801008,
+      "subject": "dirty worktree change (M)",
+      "worktree": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/never-again-lane-daemon",
+      "classification": "CONFLICTED_NEEDS_FOCUSED_TASK",
+      "reason": "differs from origin/master; needs content adjudication before any recovery",
+      "files": [
+        "runner/lane_guard.py"
+      ],
+      "file_count": 1
+    },
+    {
+      "source": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/never-again-lane-daemon:runner/runner.py",
+      "file": "runner/runner.py",
+      "status": "UU",
+      "sha": "9a14f09438553fbd7c1884a1832a8637a134bb6d",
+      "created_at": 1786801008,
+      "subject": "dirty worktree change (UU)",
+      "worktree": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/never-again-lane-daemon",
+      "classification": "CONFLICTED_NEEDS_FOCUSED_TASK",
+      "reason": "differs from origin/master; needs content adjudication before any recovery",
+      "files": [
+        "runner/runner.py"
+      ],
+      "file_count": 1
+    },
+    {
+      "source": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/never-again-lane-daemon:runner/slo_controller.py",
+      "file": "runner/slo_controller.py",
+      "status": "UU",
+      "sha": "9a14f09438553fbd7c1884a1832a8637a134bb6d",
+      "created_at": 1786801008,
+      "subject": "dirty worktree change (UU)",
+      "worktree": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/never-again-lane-daemon",
+      "classification": "CONFLICTED_NEEDS_FOCUSED_TASK",
+      "reason": "differs from origin/master; needs content adjudication before any recovery",
+      "files": [
+        "runner/slo_controller.py"
+      ],
+      "file_count": 1
+    },
+    {
+      "source": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/never-again-lane-daemon:runner/tests/test_slo_controller.py",
+      "file": "runner/tests/test_slo_controller.py",
+      "status": "M",
+      "sha": "9a14f09438553fbd7c1884a1832a8637a134bb6d",
+      "created_at": 1786801008,
+      "subject": "dirty worktree change (M)",
+      "worktree": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/never-again-lane-daemon",
+      "classification": "CONFLICTED_NEEDS_FOCUSED_TASK",
+      "reason": "differs from origin/master; needs content adjudication before any recovery",
+      "files": [
+        "runner/tests/test_slo_controller.py"
+      ],
+      "file_count": 1
+    },
+    {
+      "source": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/spine-types-x2:packages/spine/package-lock.json",
+      "file": "packages/spine/package-lock.json",
+      "status": "??",
+      "sha": "987e5280e7bf2c0f7e0d598c9ddadc40daec714e",
+      "created_at": 1786801009,
+      "subject": "dirty worktree change (??)",
+      "worktree": "/Users/kpasch/Documents/beethoven/claude-orchestrator-wt/spine-types-x2",
+      "classification": "ALREADY_PRESENT",
+      "reason": "content already matches origin/master",
+      "files": [
+        "packages/spine/package-lock.json"
+      ],
+      "file_count": 1
+    },
+    {
+      "source": "/Users/kpasch/Documents/Trojun-orchestrator-misclone-20260812:cowork-backlog/backlog.json",
+      "file": "cowork-backlog/backlog.json",
+      "status": "M",
+      "sha": "8f0a56079815b8d47b87e92180da89fe0dce403b",
+      "created_at": 1786801249,
+      "subject": "dirty worktree change (M)",
+      "worktree": "/Users/kpasch/Documents/Trojun-orchestrator-misclone-20260812",
+      "classification": "ALREADY_PRESENT",
+      "reason": "content hash matches origin/master (compared across object stores)",
+      "files": [
+        "cowork-backlog/backlog.json"
+      ],
+      "file_count": 1
+    },
+    {
+      "source": "/Users/kpasch/Documents/Trojun-orchestrator-misclone-20260812:PROMPT-ILLUMINATI-ABSORPTION.md",
+      "file": "PROMPT-ILLUMINATI-ABSORPTION.md",
+      "status": "??",
+      "sha": "8f0a56079815b8d47b87e92180da89fe0dce403b",
+      "created_at": 1786801249,
+      "subject": "dirty worktree change (??)",
+      "worktree": "/Users/kpasch/Documents/Trojun-orchestrator-misclone-20260812",
+      "classification": "ALREADY_PRESENT",
+      "reason": "content hash matches origin/master (compared across object stores)",
+      "files": [
+        "PROMPT-ILLUMINATI-ABSORPTION.md"
+      ],
+      "file_count": 1
+    },
+    {
+      "source": "/Users/kpasch/Documents/Trojun-orchestrator-misclone-20260812:PROMPT-SMARTER-CAPABILITY-BRIDGE.md",
+      "file": "PROMPT-SMARTER-CAPABILITY-BRIDGE.md",
+      "status": "??",
+      "sha": "8f0a56079815b8d47b87e92180da89fe0dce403b",
+      "created_at": 1786801249,
+      "subject": "dirty worktree change (??)",
+      "worktree": "/Users/kpasch/Documents/Trojun-orchestrator-misclone-20260812",
+      "classification": "ALREADY_PRESENT",
+      "reason": "content hash matches origin/master (compared across object stores)",
+      "files": [
+        "PROMPT-SMARTER-CAPABILITY-BRIDGE.md"
+      ],
+      "file_count": 1
+    }
+  ]
+}
