@@ -287,6 +287,24 @@ def main(argv=None):
         print(json.dumps(status))
         return 1 if status["expired"] else 0
 
+    # SETUP: actually start the metrics endpoint.
+    #
+    # `start_metrics_server()` has been implemented, idempotent, fail-soft and covered by
+    # 12 tests for some time — and called from nowhere. `grep -rn start_metrics_server`
+    # across runner/ and scripts/ returns only its own definition. So the gauge below was
+    # faithfully updated on every run and no scraper could ever read it: the module
+    # docstring advertises a /metrics endpoint that never bound a port.
+    #
+    # Opt-in, because binding a port is not free: this CLI also runs inside CI and inside
+    # the deploy window, where a stray listener (or a port collision with a parallel
+    # canary) would be a new failure mode for a tool whose entire job is to not be one.
+    # Off by default preserves today's behaviour exactly.
+    if os.environ.get("CANARY_METRICS_ENABLED", "false").strip().lower() == "true":
+        # Before evaluate(), so a long metrics fetch is still scrapeable while it runs;
+        # start_metrics_server returns immediately (daemon thread) and returns None
+        # rather than raising if the port is taken.
+        start_metrics_server()
+
     result = evaluate(argv[0] if argv else None)
     if result.get("verdict") == "promote":
         record_success()
