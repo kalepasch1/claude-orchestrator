@@ -58,6 +58,32 @@ class TransientDBError(Exception):
     """
     pass
 
+
+class RequestRejectedError(Exception):
+    """Raised when PostgREST answers a write with a permanent 4xx and an explanatory body.
+
+    urllib raises HTTPError with the response body *unread*, so `raise` alone throws away the
+    only part of a 400 that says what went wrong. That is how phantom_recovery crash-looped 9
+    times printing nothing but `HTTP Error 400: Bad Request`: the real cause was a BEFORE UPDATE
+    trigger raising `check_violation` with a message, detail and hint that were discarded before
+    anyone could read them.
+
+    A PL/pgSQL `RAISE EXCEPTION` surfaces through PostgREST as HTTP 400, so a 400 on a write is
+    usually a database gate stating a rule — the most diagnostic error the system produces.
+    Retrying cannot help; the body has to reach the log.
+
+    Attributes:
+        status:  the HTTP status code.
+        payload: the decoded PostgREST error body (dict when it parses as JSON, else raw text).
+        code:    PostgREST/Postgres SQLSTATE, e.g. '23514' for check_violation, when present.
+    """
+
+    def __init__(self, message, status=None, payload=None, code=None):
+        super().__init__(message)
+        self.status = status
+        self.payload = payload
+        self.code = code
+
 # Billing firewall helpers. The rule "which keys are dangerous" and the rule "is API billing
 # allowed right now" both belong to other modules; db.py's job is only to obey them. Every
 # lookup here is fail-soft in the safe direction — an unavailable authority means DO NOT inject.
@@ -533,6 +559,39 @@ def _req(method, path, body=None, headers=None, params=None):
         f"all Supabase endpoints unreachable for {method} {path}: {last_exc}") from last_exc
 
 
+def _rejected(exc, method, path):
+    """Build a RequestRejectedError carrying PostgREST's explanation of a permanent 4xx.
+
+    The body is readable exactly once, off the HTTPError's file object, and only before it is
+    closed. PostgREST returns {"message","details","hint","code"}; a PL/pgSQL RAISE EXCEPTION
+    puts the trigger's own MESSAGE/DETAIL/HINT in those fields. Reading is best-effort: a
+    diagnostic must never itself raise and mask the error it is describing.
+    """
+    payload, code = None, None
+    try:
+        raw = exc.read().decode("utf-8", "replace").strip()
+    except Exception:
+        raw = ""
+    if raw:
+        try:
+            payload = json.loads(raw)
+        except (ValueError, TypeError):
+            payload = raw
+    parts = []
+    if isinstance(payload, dict):
+        code = payload.get("code")
+        for field in ("message", "details", "detail", "hint"):
+            val = payload.get(field)
+            if val:
+                parts.append(f"{field}={val}")
+    elif payload:
+        parts.append(str(payload)[:2000])
+    detail = "; ".join(parts) if parts else "no response body"
+    return RequestRejectedError(
+        f"HTTP {exc.code} on {method} {path}: {detail}",
+        status=exc.code, payload=payload, code=code)
+
+
 def _req_one(base, method, path, qs, data, h, probe_only=False):
     req = urllib.request.Request(base + path + qs, data=data, method=method, headers=h)
     # Reads are idempotent, so they can safely ride out transient resolver and
@@ -569,6 +628,11 @@ def _req_one(base, method, path, qs, data, h, probe_only=False):
                 _relation = path[len("/rest/v1/"):].split("?")[0].strip("/")
                 raise MissingRelationError(
                     f"relation '{_relation}' does not exist (HTTP 404 on {method} {path})") from e
+            # A permanent 4xx carries PostgREST's explanation in the response body. urllib
+            # discards it unless it is read here, which is why a trigger's message/detail/hint
+            # never reached the logs and a 400 was indistinguishable from any other 400.
+            if 400 <= e.code < 500 and e.code not in HTTP_RETRY_STATUSES:
+                raise _rejected(e, method, path) from e
             if not retryable or e.code not in HTTP_RETRY_STATUSES or attempt >= attempts - 1:
                 raise
             time.sleep(min(12, 2 ** attempt) + (0.1 * attempt))
