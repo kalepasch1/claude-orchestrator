@@ -1,0 +1,4 @@
+recovery-intent: focused-adjudicate-prompt-md-local-edits-73b0c02a3342
+template: 73cb6280193a
+intent: 20260812 73b0c02a3342 absorption against anything applied apply beethoven branch bridge capability checkout claude coherent content deliberately determine differ divergence divergent documents edits exactly exist explicit files finds focused follow holds illuminati intentional interrupted isolated kpasch leave leftover local master matches minimum misclone monitors orchestrator origin paths prompt proof rather reconciliation record recorded recovery reset revision scratch sentinel smarter snapshot stale stash their there tracked treat trojun unchanged uncommitted users verdict where whether worktree
+base: master
