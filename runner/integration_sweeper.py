@@ -431,6 +431,43 @@ def _has_live_recovery(project_id, slug):
     return False
 
 
+_PAUSE_CACHE = {"at": 0.0, "ids": frozenset()}
+
+
+def _paused_project_ids(projects, ttl=20.0):
+    """
+    Project ids the operator has paused.
+
+    integration_sweeper had NO pause check of any kind. merge_train has had one
+    since 2026-08-06, added after a paused project kept being merged and
+    deployed — its comment says "'Paused' has to mean no writes of any kind,
+    not just no new work." That lesson was never carried across to here, so
+    pausing a project stopped the merges and left this process still minting
+    recovery tasks against it, which is how a paused repo kept moving.
+
+    Fail-open on error: a sweeper that dies because the controls table is
+    unreachable is worse than one that does an extra sweep.
+    """
+    import time
+    now = time.time()
+    if now - _PAUSE_CACHE["at"] < ttl:
+        return _PAUSE_CACHE["ids"]
+    try:
+        names = {
+            (r.get("project") or "").strip()
+            for r in (db.select("controls", {"select": "project,paused,scope",
+                                             "scope": "eq.project", "paused": "is.true"}) or [])
+            if (r.get("project") or "").strip()
+        }
+        ids = frozenset(pid for pid, pr in projects.items() if pr.get("name") in names) if names else frozenset()
+        # Cached for a few seconds: this is called per task, and a sweep walks
+        # thousands. One query per sweep, not one per row.
+        _PAUSE_CACHE.update(at=now, ids=ids)
+        return ids
+    except Exception:
+        return _PAUSE_CACHE["ids"]
+
+
 # Added function to handle missing agent branches
 def _handle_missing_branch(task, proj, recovery_index=None):
     slug = task.get("slug")
@@ -528,6 +565,8 @@ def pressure(limit=1000):
     for t in rows:
         if not _looks_passed(t):
             continue
+        if t.get("project_id") in _paused_project_ids(projects):
+            continue  # operator paused this project — no writes of any kind
         proj = projects.get(t.get("project_id")) or {}
         name = proj.get("name") or str(t.get("project_id"))
         repo = proj.get("repo_path", "")
@@ -659,6 +698,8 @@ def sweep(limit=LIMIT, run_train=RUN_TRAIN):
         # recovery work stranded this way, the oldest waiting 13 days, while the train sat idle
         # with zero undecided cards. The guard belongs on the recovery-FILING path only.
         _is_recovery = RECOVERY_PREFIX in str(slug or "")
+        if t.get("project_id") in _paused_project_ids(projects):
+            continue  # operator paused this project — no writes of any kind
         proj = projects.get(t.get("project_id")) or {}
         repo = proj.get("repo_path", "")
 
@@ -992,6 +1033,8 @@ def verify_phantom(project=None, limit=100, dry_run=False):
     for t in tasks:
         out["scanned"] += 1
         slug = t.get("slug") or ""
+        if t.get("project_id") in _paused_project_ids(projects):
+            continue  # operator paused this project — no writes of any kind
         proj = projects.get(t.get("project_id")) or {}
         repo = proj.get("repo_path") or ""
         try:
