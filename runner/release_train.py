@@ -25,6 +25,7 @@ sys.path.insert(0, RUNNER_DIR)
 import db
 import commit_overlay
 import delivery_lease
+import shadow_mode
 import integration_runtime
 import paused_host_guard
 import release_manifest
@@ -961,6 +962,20 @@ def _integrate_regate_and_push(p, project, repo, prod, ahead, release_base_sha, 
         # be unable to promote. LeaseLost propagates to _run_for_with_repo, which yields.
         delivery_lease.require(delivery_lease.held(project, delivery_lease.ROLE_RELEASER),
                                f"promote {STAGING} -> {prod} for {project}")
+        # SHADOW MODE — the gap that mattered most.
+        #
+        # Shadow mode was wired into merge_train and approval_merge, but NOT here, and this is
+        # the only line in the fleet that moves a PRODUCTION branch. Everything else writes to
+        # an integration branch that nothing deploys from; this one is what Vercel builds. A
+        # kill switch that stops the harmless writes and permits the consequential one is not a
+        # kill switch, and Bear would have found that out the first time a release fired during
+        # a window he believed was observe-only.
+        #
+        # Returns the "did not promote" shape, so the caller records a failed release and
+        # retries after the window rather than recording a promotion that never happened.
+        if shadow_mode.refuse("promote-to-production", project=project,
+                              subject=prod, detail=f"{STAGING} -> origin/{prod} ({to_sha[:12]})"):
+            return False, to_sha, "shadow mode: promotion withheld, production was not moved"
         pr = _git(repo, "push", "origin", f"{STAGING}:{prod}", timeout=300)
         if pr.returncode == 0:
             # Keep local prod fresh when possible, but do not fail a good remote release

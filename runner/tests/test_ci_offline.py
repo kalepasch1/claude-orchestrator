@@ -599,5 +599,37 @@ class TestIntegrationBranchIsActuallyPushed(unittest.TestCase):
         self.assertIn("withheld", self.mt._push_base("/tmp", "orchestrator/dev", project="p"))
 
 
+
+class TestShadowModeCoversProduction(unittest.TestCase):
+    """Shadow mode was wired into merge_train and approval_merge but NOT release_train — the
+    only line in the fleet that moves a PRODUCTION branch, and the one Vercel builds from.
+
+    A kill switch that stops the harmless writes and permits the consequential one is not a kill
+    switch. Bear would have discovered that the first time a release fired during a window he
+    believed was observe-only."""
+
+    def test_every_origin_moving_push_consults_shadow_mode(self):
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for mod in ("merge_train.py", "approval_merge.py", "release_train.py"):
+            src = open(os.path.join(base, mod)).read()
+            self.assertIn("import shadow_mode", src, f"{mod} does not import it")
+            self.assertIn("shadow_mode.refuse", src, f"{mod} never calls it")
+
+    def test_the_production_promotion_is_guarded_before_the_push(self):
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        src = open(os.path.join(base, "release_train.py")).read()
+        guard = src.index('shadow_mode.refuse("promote-to-production"')
+        push = src.index('_git(repo, "push", "origin", f"{STAGING}:{prod}"')
+        self.assertLess(guard, push, "the guard must precede the push it guards")
+
+    def test_a_withheld_promotion_is_not_reported_as_released(self):
+        # The refusal must take the "did not promote" shape. Recording a promotion that never
+        # happened is the same DB/GitHub desync the push-verification gate exists to prevent.
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        src = open(os.path.join(base, "release_train.py")).read()
+        tail = src[src.index('shadow_mode.refuse("promote-to-production"'):][:400]
+        self.assertIn("return False", tail)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
