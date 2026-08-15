@@ -1049,7 +1049,22 @@ def _push_base(repo, base, project=None):
     if shadow_mode.refuse("push-integration-branch", project=project or "",
                           subject=base, detail=f"{repo} -> origin/{base}"):
         return "shadow mode: push withheld, nothing was sent to origin"
-    if os.environ.get("ORCH_PUSH_ON_MERGE", "false").lower() != "true":
+    # THE INTEGRATION BRANCH HAS NEVER BEEN PUSHED (found 2026-08-15).
+    #
+    # This gated on ORCH_PUSH_ON_MERGE, which is false in this fleet and is the flag for pushing
+    # a PRODUCTION base. The integration branch is orchestrator/dev, whose flag is
+    # ORCH_PUSH_ON_DEV_MERGE, and that is true. _push_enabled_for_base() encodes exactly that
+    # distinction — and had ZERO call sites. It was written and never wired.
+    #
+    # So every train pass merged into the LOCAL integration branch, returned "" here as though
+    # it had pushed, and the sha-verification twenty lines below then found origin had not
+    # moved. That is the PUSH-VERIFY-FAILED count, and it is why local orchestrator/dev was
+    # found running one to four days ahead of origin in every app repo: the work was merged, it
+    # simply never left the machine.
+    #
+    # Shipping this while shadow mode is on is deliberate — the fix is inert until the canary
+    # window, so the first real push happens under observation rather than as a surprise.
+    if not _push_enabled_for_base(base):
         return ""
     # Ensure auth before push — the PAT may not have been injected yet if
     # task_refs.publish() hasn't run for this repo in this process.
