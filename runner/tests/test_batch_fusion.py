@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for batch_fusion.py — task fusion for same-repo mechanical work."""
 import os, sys, unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import batch_fusion
@@ -237,8 +238,25 @@ class TestSessionRouting(unittest.TestCase):
 class TestDrainSemanticsUntouched(unittest.TestCase):
     """batch_fusion must not change how speculative generators are drained."""
 
-    def test_drain_policy_still_allows_batch_fusion(self):
+    #: These assertions describe behavior *while draining*, so they pin the drain
+    #: env instead of inheriting it. Importing db loads runner/.env, which sets
+    #: ORCH_DRAIN_MODE=false; enabled() then short-circuits and should_skip()
+    #: returns False for every job, so the generator-throttling assertion failed
+    #: for an ambient-config reason rather than a real code regression.
+    DRAIN_ENV = {"ORCH_DRAIN_MODE": "auto", "ORCH_DRAIN_QUEUE_FLOOR": "800"}
+
+    def setUp(self):
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+        patcher = mock.patch.dict(os.environ, self.DRAIN_ENV)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        # patch.dict restores the whole environ on stop, so dropping the
+        # deployment's job-list overrides here is safe, and keeps these
+        # assertions measuring DEFAULT_SKIP_JOBS/DEFAULT_ALLOW_JOBS as named.
+        for var in ("ORCH_DRAIN_SKIP_JOBS", "ORCH_DRAIN_ALLOW_JOBS"):
+            os.environ.pop(var, None)
+
+    def test_drain_policy_still_allows_batch_fusion(self):
         import drain_policy
         self.assertIn("batch_fusion.py", drain_policy.DEFAULT_ALLOW_JOBS)
         self.assertFalse(drain_policy.should_skip("batch_fusion.py", queue_depth=10_000))
