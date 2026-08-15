@@ -477,5 +477,91 @@ def note(existing: str = "", source: str = "unknown") -> str:
     return f"{base}; {suffix}" if base else suffix
 
 
+# ── contract-first verification ─────────────────────────────────────────────────────────────
+#
+# "the verify gate IS the spec" (Wave C, Part 4, clause 2). A code task that is generated with a
+# sibling `-write-tests` task but does NOT depend on it runs concurrently with its own acceptance
+# test, so the test can land after the code and prove nothing. That ordering bug is invisible in
+# the DAG unless something checks it — this is that check.
+#
+# Both helpers below were referenced by runner/tests/test_contract_first.py and by
+# planner._apply_tdd_gating, and existed in neither module: 10 tests failed on master with
+# AttributeError, and the planner silently fell through to its except branch on every gated task.
+
+#: A proof that names a runnable command is already specific; do not overwrite the author's.
+_SPECIFIC_PROOF_RX = re.compile(
+    r"(pytest|unittest|npm |yarn |pnpm |go test|cargo |python3? -m|make |exits? [0-9]|\-k )", re.I)
+
+
+def rewrite_proof_for_contract_first(proof: str, test_slug: str) -> str:
+    """Point a vague proof at the acceptance test that must pass. Specific proofs pass through.
+
+    "tests pass" is not a proof — every task claims it and nothing checks which tests. Naming
+    the sibling test task makes the claim falsifiable.
+    """
+    text = (proof or "").strip()
+    if text and _SPECIFIC_PROOF_RX.search(text):
+        return proof
+    return f"acceptance test from '{test_slug}' passes + suite green"
+
+
+def _acceptance_test_file(repo_path: str, slug: str) -> Optional[str]:
+    """The conventional acceptance-test path for a slug, if it exists on disk."""
+    stem = f"test_{str(slug or '').replace('-', '_')}.py"
+    for parts in (("runner", "tests", stem), ("tests", stem)):
+        candidate = os.path.join(repo_path, *parts)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def verify_contract_first(tasks: List[Dict[str, Any]],
+                          repo_path: Optional[str] = None) -> Dict[str, Any]:
+    """Check that every code task is ordered behind its acceptance test.
+
+    Returns {"ok": bool, "errors": [str], "verified": [str]}.
+
+    Absence of a test task is NOT an error — TDD gating is opt-in per kind, and failing tasks
+    that were never gated would make this check unusable. What IS an error is a test task that
+    exists and is not depended upon: that is the silent-ordering bug this exists to catch.
+    """
+    errors: List[str] = []
+    verified: List[str] = []
+    try:
+        by_slug = {t.get("slug"): t for t in (tasks or []) if isinstance(t, dict)}
+        for task in tasks or []:
+            if not isinstance(task, dict):
+                continue
+            slug = task.get("slug") or ""
+            if not slug or slug == "contracts":
+                continue
+
+            test_slug = f"{slug}-write-tests"
+            deps = list(task.get("deps") or [])
+            if test_slug in by_slug:
+                if test_slug in deps:
+                    verified.append(slug)
+                else:
+                    errors.append(
+                        f"{slug}: acceptance test task '{test_slug}' exists but is not in its "
+                        f"deps {deps} — the two run concurrently, so the test proves nothing")
+                continue
+
+            if repo_path:
+                path = _acceptance_test_file(repo_path, slug)
+                if path:
+                    try:
+                        with open(path) as fh:
+                            body = fh.read()
+                    except Exception:
+                        body = ""
+                    state = "xfail" if "xfail" in body else "active"
+                    verified.append(f"{slug}: acceptance test file {state} ({path})")
+        return {"ok": not errors, "errors": errors, "verified": verified}
+    except Exception as e:
+        # Fail-soft per this module's contract: a broken verifier must not block the pipeline.
+        return {"ok": True, "errors": [], "verified": [], "warning": f"verify unavailable: {e}"}
+
+
 if __name__ == "__main__":
     print(wrap_prompt("Improve the dashboard queue flow.", project="beethoven", source="manual"))

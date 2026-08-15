@@ -31,14 +31,23 @@ import db
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-_TDD_CACHE = {"enabled": None, "kinds": None, "cached_at": 0.0}
+# One cache slot per config key. `kinds` used to be SHARED between get_required_kinds()
+# (fleet_config ORCH_TDD_REQUIRED_KINDS, empty = off) and get_task_kinds() (ORCH_TDD_TASK_KINDS,
+# defaults to feature/new-module) — two different questions with two different answers. Whichever
+# ran first won for 30s, so a call to get_required_kinds() on an unconfigured fleet cached an
+# empty set that get_task_kinds() then returned INSTEAD of its documented default, silently
+# disabling the gate for the next half-minute. Kept as a key for backward compatibility.
+_TDD_CACHE = {"enabled": None, "kinds": None, "cached_at": 0.0,
+              "required_kinds": None, "required_kinds_at": 0.0,
+              "task_kinds": None, "task_kinds_at": 0.0,
+              "enabled_at": 0.0}
 
 
 def get_required_kinds():
     """Return explicitly configured TDD kinds; missing/unavailable config is off."""
     now = time.time()
-    if _TDD_CACHE["kinds"] is not None and now - _TDD_CACHE["cached_at"] < 30:
-        return _TDD_CACHE["kinds"]
+    if _TDD_CACHE["required_kinds"] is not None and now - _TDD_CACHE["required_kinds_at"] < 30:
+        return _TDD_CACHE["required_kinds"]
     kinds = set()
     try:
         rows = db.select("fleet_config", {"select": "key,value", "key": "eq.ORCH_TDD_REQUIRED_KINDS"}) or []
@@ -47,8 +56,8 @@ def get_required_kinds():
             kinds = {item.strip().lower() for item in str(value).split(",") if item.strip()}
     except Exception:
         kinds = set()
-    _TDD_CACHE["kinds"] = kinds
-    _TDD_CACHE["cached_at"] = now
+    _TDD_CACHE["required_kinds"] = kinds
+    _TDD_CACHE["required_kinds_at"] = now
     return kinds
 
 
@@ -57,7 +66,7 @@ def is_tdd_enabled():
     import time
     now = time.time()
 
-    if _TDD_CACHE["enabled"] is not None and (now - _TDD_CACHE["cached_at"]) < 30:
+    if _TDD_CACHE["enabled"] is not None and (now - _TDD_CACHE["enabled_at"]) < 30:
         return _TDD_CACHE["enabled"]
 
     enabled = False
@@ -74,7 +83,7 @@ def is_tdd_enabled():
         enabled = os.environ.get("ORCH_TDD_ENABLED", "false").lower() in ("true", "1", "yes")
 
     _TDD_CACHE["enabled"] = enabled
-    _TDD_CACHE["cached_at"] = now
+    _TDD_CACHE["enabled_at"] = now
     return enabled
 
 
@@ -87,8 +96,8 @@ def get_task_kinds():
     import time
     now = time.time()
 
-    if _TDD_CACHE["kinds"] is not None and (now - _TDD_CACHE["cached_at"]) < 30:
-        return _TDD_CACHE["kinds"]
+    if _TDD_CACHE["task_kinds"] is not None and (now - _TDD_CACHE["task_kinds_at"]) < 30:
+        return _TDD_CACHE["task_kinds"]
 
     kinds_set = set()
     default_kinds = {"feature", "new-module"}
@@ -110,8 +119,8 @@ def get_task_kinds():
     if not kinds_set:
         kinds_set = default_kinds
 
-    _TDD_CACHE["kinds"] = kinds_set
-    _TDD_CACHE["cached_at"] = now
+    _TDD_CACHE["task_kinds"] = kinds_set
+    _TDD_CACHE["task_kinds_at"] = now
     return kinds_set
 
 
@@ -295,3 +304,8 @@ def invalidate_cache():
     _TDD_CACHE["enabled"] = None
     _TDD_CACHE["kinds"] = None
     _TDD_CACHE["cached_at"] = 0.0
+    _TDD_CACHE["required_kinds"] = None
+    _TDD_CACHE["required_kinds_at"] = 0.0
+    _TDD_CACHE["task_kinds"] = None
+    _TDD_CACHE["task_kinds_at"] = 0.0
+    _TDD_CACHE["enabled_at"] = 0.0

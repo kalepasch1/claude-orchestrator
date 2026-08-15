@@ -9,6 +9,7 @@ import kill_switch as _real_kill_switch
 import log as _real_log
 import subscription_guard as _real_subscription_guard
 import provider_terms as _real_provider_terms
+import tdd_gate as _real_tdd_gate
 
 _PROVIDER_DEFAULTS = {
     name: dict(metadata) for name, metadata in _real_provider_terms.DEFAULTS.items()
@@ -56,6 +57,21 @@ def _reset_projects_cache():
     yield
     _real_db._cached_projects_list = []
     _real_db._PROJECT_CACHE_TIME["at"] = 0
+
+
+@pytest.fixture(autouse=True)
+def _reset_tdd_gate_cache():
+    """tdd_gate memoizes its fleet_config reads for 30s on module globals.
+
+    Same shape as the projects memo above: the FIRST test to call get_required_kinds()
+    populates the memo, and every later test in the session gets that value back instead
+    of its own patched db.select. test_tdd_gate's test_caches_result_for_30s asserts a
+    DB call count, so it passes alone and fails in-suite depending purely on which file
+    ran first — one more permanently-red test in the merge gate with a misleading symptom.
+    """
+    _real_tdd_gate.invalidate_cache()
+    yield
+    _real_tdd_gate.invalidate_cache()
 
 
 # Every control-plane module any test replaces via sys.modules[...] = ModuleType(...)
