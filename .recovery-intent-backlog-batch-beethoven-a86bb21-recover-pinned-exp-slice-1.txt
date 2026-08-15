@@ -1,4 +1,0 @@
-recovery-intent: backlog-batch-beethoven-a86bb21-recover-pinned-exp-slice-1
-template: 152aac101d01
-intent: 0263e9f75048 056af630dd5f 07062319 07071626 07190257 08c555ef32c3f7b6e04b6ac596540427ae250a95 148d45efebad 1565ms 170834ms 20251001 39465ac 6096aa2b 6f940a79484e 7f21d02 _task _total_lanes a86bb21 acceptance access active actual adapt adaptive_probe addresses advice affinity after against agent agentic aider allowlist altering analysis artifact_commit artifacts audited backlog batch beethoven before behavior below branch broad bugfix build called cannot canonical capacity carrying category cause change changes changing cheap check checks claim claimed cloud collection commit completion computed concrete config conflated conflict constant context continue contract corrected could cowork custody deepseek
-base: master

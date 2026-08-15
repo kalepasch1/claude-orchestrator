@@ -1,4 +1,0 @@
-recovery-intent: canary-gemini-25-canary-gemini-25-metrics-create-gauge-define-canary-last-succes
-template: a1cf0b42db64
-intent: 07130635 07190257 20251001 53375a0cecde acceptance accessible active adapt advice after agent agentic analysis apierror artifacts author available b4fa25c7 batch beethoven before behavior below branch broad bugfix build build_fix canary canary_last_success category cause change changes changing cheap checks claim class claud claude client coder commit completion concrete config conflict context continue contract coordination could create credits cross custody deepseek define delete denied dependencies deployfix description diffs directive drafting either ensure equivalent error excerpt existing exists fable failure files final finish first
-base: main
