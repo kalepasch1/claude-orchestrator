@@ -659,6 +659,33 @@ def _req_one(base, method, path, qs, data, h, probe_only=False):
 # Deliberately a warning, not an error: plenty of these are honest "give me the 20 most recent"
 # reads where truncation is the point. The log line tells a human where to look; it does not
 # decide for them. ORCH_SCAN_TRUNCATION_WARN=false disables it.
+# TRIAGED CALL SITES (2026-08-15)
+# ------------------------------
+# The detector is a warning, not a rule, because a filled page is only a BUG when the caller
+# acts on work and the far end of the queue therefore never gets looked at. Plenty of these are
+# honest "give me the most recent N" analytical reads where truncation is the entire point.
+#
+# Every site below was read and judged intentional. Recording the verdict here means the next
+# person does not re-litigate it, and — more importantly — that a genuinely new finding stands
+# out instead of arriving in a crowd of twelve known-fine ones. A signal nobody can scan is the
+# same as no signal. Remove an entry to put it back under review.
+_SCAN_REVIEWED = {
+    # Cache warmer that deliberately mirrors claim_task's ordering: warming the next N in claim
+    # order is the correct behaviour, not a blind spot.
+    ("queue_preopt.py:289", "tasks"),
+    # Analytical / sampling reads — newest-first by design, nothing downstream acts on the tail.
+    ("precedent.py:60", "tasks"),
+    ("patch_recovery.py:199", "tasks"),
+    ("diff_compiler.py:114", "tasks"),
+    ("regression.py:47", "failures"),
+    ("waste.py:26", "outcomes"),
+    ("prompt_assembler.py:91", "outcomes"),
+    ("router_stats.py:64", "releases"),
+    ("router_stats.py:78", "releases"),
+    ("route_value_optimizer.py:117", "releases"),
+    ("qpd_bandit.py:22", "app_operations"),
+    ("model_catalog.py:119", "app_operations"),
+}
 _scan_warned = set()
 _scan_warn_lock = threading.Lock()
 
@@ -688,6 +715,8 @@ def _warn_if_truncated(table, params, rows):
                 site = f"{os.path.basename(fr.filename)}:{fr.lineno}"
                 break
         key = (site, table)
+        if key in _SCAN_REVIEWED:
+            return
         with _scan_warn_lock:
             if key in _scan_warned:
                 return
