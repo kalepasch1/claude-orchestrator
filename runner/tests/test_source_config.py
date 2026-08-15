@@ -72,7 +72,9 @@ class TestTestingPipelineSetup(unittest.TestCase):
         """unittest loader should discover tests in this directory."""
         loader = unittest.TestLoader()
         test_dir = os.path.dirname(__file__)
-        suite = loader.discover(test_dir, pattern="test_*.py")
+        # top_level_dir=runner qualifies module names as tests.<mod>; without it,
+        # bare names collide with same-named test files that live in runner/ itself.
+        suite = loader.discover(test_dir, pattern="test_*.py", top_level_dir=RUNNER_DIR)
         count = suite.countTestCases()
         self.assertGreater(count, 0, "Test discovery found no tests")
 

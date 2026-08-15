@@ -16,6 +16,15 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import db
 
+# Setup-install-dependencies knobs (fleet-wide via ORCH_ prefix).
+STALE_PATH_REPORT_CAP = 5
+OLLAMA_PULL_TIMEOUT = int(os.environ.get("ORCH_OLLAMA_PULL_TIMEOUT", "900"))
+NPM_INSTALL_TIMEOUT = int(os.environ.get("ORCH_NPM_INSTALL_TIMEOUT", "600"))
+
+
+def _env_truthy(name, default="false"):
+    return os.environ.get(name, default).lower() in ("1", "true", "yes", "on")
+
 
 def _run(cmd, cwd=None, timeout=30):
     """Run a command, return (stdout, stderr, returncode)."""
@@ -70,6 +79,44 @@ def check_worktree_health(repo):
     return issues
 
 
+def check_stale_tracked_paths(repo):
+    """Tracked files deleted from disk but not from git (breaks agent repo-maps)."""
+    out, _, rc = _run(["git", "ls-files", "--deleted"], cwd=repo)
+    if rc != 0 or not out:
+        return []
+    return [p for p in out.splitlines() if p.strip()]
+
+
+def check_node_dependencies(repo):
+    """package.json present but node_modules missing → deps were never installed."""
+    has_pkg = os.path.isfile(os.path.join(repo, "package.json"))
+    has_modules = os.path.isdir(os.path.join(repo, "node_modules"))
+    return has_pkg and not has_modules
+
+
+def required_ollama_models():
+    """Models local agents need (preflight/QA lanes). Empty when host has no ollama."""
+    if not check_tool("ollama"):
+        return []
+    raw = os.environ.get("ORCH_REQUIRED_OLLAMA_MODELS", "llama3.2:3b")
+    return [m.strip() for m in raw.split(",") if m.strip()]
+
+
+def check_ollama_models(required=None):
+    """Return required models not present locally (exact or base-name match)."""
+    required = required if required is not None else required_ollama_models()
+    if not required:
+        return []
+    try:
+        import ollama_catalog
+        installed = set(ollama_catalog.models())
+    except Exception:
+        return []
+    installed_base = {m.split(":")[0] for m in installed}
+    return [m for m in required
+            if m not in installed and m.split(":")[0] not in installed_base]
+
+
 def repair_git_config(repo):
     """Set missing git config with safe defaults."""
     repaired = []
@@ -103,6 +150,42 @@ def repair_orphaned_worktrees(repo):
     return rc == 0
 
 
+def repair_stale_tracked_paths(repo):
+    """Restore tracked files deleted from disk (deletion not staged, so non-destructive)."""
+    stale = check_stale_tracked_paths(repo)
+    if not stale:
+        return []
+    restored = []
+    for i in range(0, len(stale), 100):
+        batch = stale[i:i + 100]
+        _, _, rc = _run(["git", "checkout", "--"] + batch, cwd=repo, timeout=120)
+        if rc == 0:
+            restored.extend(batch)
+    return restored
+
+
+def repair_node_dependencies(repo):
+    """Install node deps when package.json exists but node_modules is missing."""
+    if not check_node_dependencies(repo) or not check_tool("npm"):
+        return False
+    cmd = ["npm", "ci"] if os.path.isfile(os.path.join(repo, "package-lock.json")) else ["npm", "install"]
+    _, _, rc = _run(cmd + ["--no-audit", "--no-fund"], cwd=repo, timeout=NPM_INSTALL_TIMEOUT)
+    return rc == 0
+
+
+def repair_ollama_models(required=None):
+    """Pull missing required models. Opt-in (ORCH_REPAIR_OLLAMA_PULL) — pulls are multi-GB."""
+    missing = check_ollama_models(required)
+    if not missing or not _env_truthy("ORCH_REPAIR_OLLAMA_PULL"):
+        return []
+    pulled = []
+    for model in missing:
+        _, _, rc = _run(["ollama", "pull", model], timeout=OLLAMA_PULL_TIMEOUT)
+        if rc == 0:
+            pulled.append(model)
+    return pulled
+
+
 def diagnose(repo):
     """Run all checks on a repo and return a diagnostic report."""
     if not repo or not os.path.isdir(repo):
@@ -121,6 +204,16 @@ def diagnose(repo):
     wt_issues = check_worktree_health(repo)
     if wt_issues:
         report["issues"].append(f"worktree issues: {', '.join(wt_issues)}")
+    stale = check_stale_tracked_paths(repo)
+    if stale:
+        sample = ", ".join(stale[:STALE_PATH_REPORT_CAP])
+        report["issues"].append(
+            f"stale tracked paths ({len(stale)} deleted from disk but not from git): {sample}")
+    if check_node_dependencies(repo):
+        report["issues"].append("missing node_modules (package.json present, deps not installed)")
+    missing_models = check_ollama_models()
+    if missing_models:
+        report["issues"].append(f"missing ollama models: {', '.join(missing_models)}")
     return report
 
 
@@ -136,6 +229,14 @@ def repair(repo):
         report["repairs"].append("removed stale index.lock")
     if repair_orphaned_worktrees(repo):
         report["repairs"].append("pruned orphaned worktrees")
+    restored = repair_stale_tracked_paths(repo)
+    if restored:
+        report["repairs"].append(f"restored {len(restored)} stale tracked paths")
+    if repair_node_dependencies(repo):
+        report["repairs"].append("installed node dependencies")
+    pulled = repair_ollama_models()
+    if pulled:
+        report["repairs"].append(f"pulled ollama models: {', '.join(pulled)}")
     post = diagnose(repo)
     report["post_repair_issues"] = post.get("issues", [])
     report["healthy"] = len(post.get("issues", [])) == 0
