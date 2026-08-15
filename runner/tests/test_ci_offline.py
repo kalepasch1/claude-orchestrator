@@ -751,5 +751,50 @@ class TestFunnelIgnoresSentinelTimestamps(unittest.TestCase):
         self.assertIn("Every row in the window was a sentinel", block)
 
 
+
+class TestPriorityAppFloor(unittest.TestCase):
+    """The self-maintenance cap stops the fleet working on its own plumbing. It does not decide
+    WHICH product gets the freed capacity, and the shadow log shows that gap plainly — 112
+    withheld writes over 6.5 hours:
+
+        sustainable-barks 26   santas-secret-workshop 16   beethoven 17   pareto-2080 15
+        tomorrow 9            apparently 8                apparently-law 0   PMI 0
+
+    Two projects the owner has never named take 37% of the machine; his four priorities take 15%
+    between them, two of them zero. Same failure that produced 586/344/38/5 lifetime merges."""
+
+    def _src(self):
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return open(os.path.join(base, "db.py")).read()
+
+    def test_the_floor_exists_and_is_configurable(self):
+        src = self._src()
+        self.assertIn("ORCH_PRIORITY_APP_FLOOR", src)
+        self.assertIn("ORCH_PRIORITY_APPS", src)
+
+    def test_all_four_named_apps_are_in_the_default_set(self):
+        default = "apparently,apparently-law,tomorrow,prediction-markets-institute,pmi,pma"
+        self.assertIn(default, self._src())
+        for app in ("apparently", "apparently-law", "tomorrow", "prediction-markets-institute"):
+            self.assertIn(app, default)
+
+    def test_it_is_not_derived_from_a_rank_threshold(self):
+        # PROJECT_PRIORITY_ORDER has no entry for prediction-markets-institute, so a rank<=3
+        # rule silently drops the app with 5 lifetime merges — the one least able to afford it.
+        import db
+        self.assertNotIn("prediction-markets-institute", db.PROJECT_PRIORITY_ORDER)
+
+    def test_a_lane_is_never_idled_to_hold_the_ratio(self):
+        src = self._src()
+        floor = src[src.index("# PRIORITY-APP FLOOR"):src.index("# SELF-MAINTENANCE QUOTA")]
+        self.assertIn("never idle a lane", floor)
+        self.assertIn("if _prio_ready:", floor)
+
+    def test_the_floor_runs_before_the_sort(self):
+        src = self._src()
+        self.assertLess(src.index("ORCH_PRIORITY_APP_FLOOR"),
+                        src.index("queued.sort(key=lambda t: (_pinned_rank(t),"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

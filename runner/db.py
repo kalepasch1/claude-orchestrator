@@ -2172,6 +2172,51 @@ def claim_task(runner_id):
         except Exception:
             return False
 
+    # PRIORITY-APP FLOOR (owner directive, 2026-08-15 — the second half of "cap self-work AND
+    # weight the apps").
+    # -----------------------------------------------------------------------------------------
+    # The self-maintenance quota below stops the fleet working on its own plumbing. It does not
+    # decide WHICH product gets the freed capacity, and the shadow-mode log shows that gap
+    # plainly. 112 withheld writes over 6.5 hours:
+    #
+    #     sustainable-barks 26   santas-secret-workshop 16   beethoven 17   pareto-2080 15
+    #     tomorrow 9            apparently 8                apparently-law 0   PMI 0
+    #
+    # Two projects the owner has never named take 37% of the machine; the four he calls
+    # priorities take 15% between them, two of them zero. That is the same allocation failure
+    # that produced 586/344/38/5 lifetime merges across those four apps, still running after the
+    # self-work cap, because the cap was never about project choice.
+    #
+    # _portfolio_project_rank already encodes the owner's order — it is just the ELEVENTH sort
+    # key, below several self-generated delivery classes. Rather than reorder 24 keys whose
+    # relative positions each have a reason, apply a floor: while priority projects hold less
+    # than their share of the running lanes AND have work ready, the next claim goes to them.
+    #
+    # ORCH_PRIORITY_APP_FLOOR=0 disables it. Never idles a lane — if no priority work is ready,
+    # everything else competes exactly as before.
+    try:
+        _floor = float(os.environ.get("ORCH_PRIORITY_APP_FLOOR", "0.6") or 0.6)
+    except (TypeError, ValueError):
+        _floor = 0.6
+    if 0 < _floor <= 1.0 and queued:
+        # Named explicitly rather than derived from a rank threshold. PROJECT_PRIORITY_ORDER
+        # has no entry for prediction-markets-institute at all, so it defaults to 13 and a
+        # rank<=3 rule would have silently excluded one of the four apps the owner names —
+        # the one with 5 lifetime merges, which is exactly the one that cannot afford to be
+        # missed by an off-by-one in a priority list.
+        _prio_names = {n.strip().lower() for n in os.environ.get(
+            "ORCH_PRIORITY_APPS",
+            "apparently,apparently-law,tomorrow,prediction-markets-institute,pmi,pma"
+        ).split(",") if n.strip()}
+        def _is_priority(t):
+            return str(project_names.get(t.get("project_id")) or "").strip().lower() in _prio_names
+        _running_prio = sum(1 for t in (running or []) if _is_priority(t))
+        _running_all = max(1, len(running or []))
+        if (_running_prio / _running_all) < _floor:
+            _prio_ready = [t for t in queued if _is_priority(t)]
+            if _prio_ready:                 # never idle a lane to hold a ratio
+                queued = _prio_ready
+
     # SELF-MAINTENANCE QUOTA (owner directive, 2026-08-15)
     # -----------------------------------------------------
     # Lifetime audit: 57.2% of every merge this system has ever made was self-maintenance —
