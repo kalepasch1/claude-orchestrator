@@ -667,5 +667,50 @@ class TestEveryIntegrationPathIsGuarded(unittest.TestCase):
         self.assertNotIn('return "MERGED"', tail)
 
 
+
+class TestNoWorkIsLeftOnlyInAStash(unittest.TestCase):
+    """sentinel pushed a stash on every drift event and never popped it. Audited 2026-08-15:
+    41 stashes in tomorrow, 31 in apparently, 11 in pareto — 83 in total, none of them on any
+    remote.
+
+    They are not machine noise. The messages read like commits: "whitelist better-sqlite3
+    (+prisma/esbuild) build scripts for pnpm v10 — native bindings now compile on Vercel"
+    (six separate times), "Stripe webhook middleware exemptions (payments launch fix)",
+    "revoke anon EXECUTE on SECURITY DEFINER functions". The repeats are the tell — the same
+    fix made, stashed, lost, and made again.
+
+    A stash lives in a reflog: `git stash clear`, a reset or a fresh clone destroys it with no
+    trace and no warning. It is the most fragile place git offers."""
+
+    def _src(self):
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return open(os.path.join(base, "sentinel.py")).read()
+
+    def test_a_drift_stash_is_mirrored_to_origin(self):
+        src = self._src()
+        stash_at = src.index('git("stash", "push", "-m", _label)')
+        tail = src[stash_at:stash_at + 2000]
+        self.assertIn("refs/archive/sentinel-drift/", tail)
+        self.assertIn('git("push", "origin"', tail)
+
+    def test_the_archive_happens_before_the_branch_switch(self):
+        # Checking out BASE_BRANCH is the point of no return for the working tree.
+        src = self._src()
+        tail = src[src.index('git("stash", "push", "-m", _label)'):]
+        self.assertLess(tail.index("refs/archive/sentinel-drift/"),
+                        tail.index('git("checkout", BASE_BRANCH)'))
+
+    def test_a_failed_archive_says_so_instead_of_going_quiet(self):
+        # "local-only" has to be visible; a silent failure recreates the original bug.
+        self.assertIn("LOCAL-ONLY", self._src())
+
+    def test_preservation_never_breaks_the_recovery_it_runs_inside(self):
+        src = self._src()
+        tail = src[src.index('git("stash", "push", "-m", _label)'):]
+        block = tail[:tail.index('git("checkout", BASE_BRANCH)')]
+        self.assertIn("try:", block)
+        self.assertIn("except Exception", block)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
