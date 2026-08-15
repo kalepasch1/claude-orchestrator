@@ -152,10 +152,17 @@ class RetryBehaviourTests(unittest.TestCase):
         self.assertEqual(len(self.opened), db.HTTP_RETRIES + 1)
 
     def test_non_transient_status_is_raised_immediately(self):
+        # A permanent 4xx is surfaced as RequestRejectedError, not a bare HTTPError:
+        # db._rejected reads PostgREST's message/detail/hint out of the response body,
+        # which urllib otherwise discards — that is how a trigger's explanation reaches
+        # the logs instead of an anonymous 400. The invariant under test is that it is
+        # raised on the FIRST attempt rather than retried.
         self._fail_n_then_succeed(99, code=401)
-        with self.assertRaises(urllib.error.HTTPError):
+        with self.assertRaises(db.RequestRejectedError) as caught:
             db.rpc("complete_task", {})
+        self.assertEqual(caught.exception.status, 401)
         self.assertEqual(len(self.opened), 1)
+        self.assertEqual(self.slept, [], "a permanent status must not back off")
 
     def test_network_level_failures_are_also_retried_for_core_rpcs(self):
         state = {"n": 0}
@@ -170,6 +177,30 @@ class RetryBehaviourTests(unittest.TestCase):
         db.urllib.request.urlopen = urlopen
         db.rpc("heartbeat_branch_execution_lease", {})
         self.assertEqual(len(self.opened), 2)
+
+    def test_core_rpc_still_retries_with_multiple_endpoints_configured(self):
+        """Regression: probe_only must not disable STATUS retries.
+
+        With >1 endpoint configured (4 in production), every endpoint but the last is
+        probed once. probe_only used to clear `retryable` outright, so a core RPC that
+        hit a 503 on the first endpoint got zero retries and _req re-raised the HTTPError
+        immediately rather than failing over — silently voiding CORE_RETRY_RPCS in the
+        exact configuration the fleet actually runs.
+        """
+        self.addCleanup(db._ACTIVE_BASE.pop, "url", None)
+        db._ACTIVE_BASE["url"] = None
+        original = db._endpoints
+        db._endpoints = lambda: [FAKE_URL, "https://fallback-a.invalid", "https://fallback-b.invalid"]
+        self.addCleanup(setattr, db, "_endpoints", original)
+
+        self._fail_n_then_succeed(2)
+        result = db.rpc("claim_task", {})
+
+        self.assertEqual(result, [])
+        self.assertEqual(len(self.opened), 3, "must retry on the probed endpoint, not give up")
+        # All three attempts stay on the first endpoint: an HTTP status means it answered,
+        # so failing over would contradict the never-fail-over-on-4xx/5xx rule.
+        self.assertTrue(all(u.startswith(FAKE_URL) for u in self.opened), self.opened)
 
     def test_reads_are_retryable_too(self):
         self._fail_n_then_succeed(1)
