@@ -247,3 +247,80 @@ def test_integration_oracle_outage_degrades_the_whole_stack_softly():
     assert ok is False
     assert updater.notification_queue == []
     assert evaluation.escalate is False, "no usage observed means no escalation"
+
+
+# ---------------------------------------------------------------------------
+# SubscriptionTierMonitor: remediation threshold + licensed-partner escalation
+# ---------------------------------------------------------------------------
+
+BREACH_EVENT = {"regime": "CA", "kind": "breach", "rule_id": "CA-1", "description": "late filing"}
+
+
+def test_acceptance_free_escalates_paid_does_not():
+    """The whole point of the tier: paid gets in-house, free goes to partners.
+
+    Escalating a paid user sells them something they already bought; NOT
+    escalating a free user quietly performs unlicensed work on their behalf.
+    The second is the serious error, so both directions are pinned here.
+    """
+    free_queue, paid_queue = [], []
+
+    free = st.SubscriptionTierMonitor(partner_queue=free_queue)
+    paid = st.SubscriptionTierMonitor(partner_queue=paid_queue)
+
+    assert free.check_remediation_threshold("free", BREACH_EVENT) is True
+    assert paid.check_remediation_threshold("premium", BREACH_EVENT) is False
+
+    assert free.handle_regime_event("user-free", "free", BREACH_EVENT) is True
+    assert paid.handle_regime_event("user-paid", "premium", BREACH_EVENT) is False
+
+    assert [r["user_id"] for r in free_queue] == ["user-free"]
+    assert paid_queue == []
+
+
+def test_every_in_house_tier_is_kept_in_house():
+    monitor = st.SubscriptionTierMonitor()
+    for tier in st.IN_HOUSE_TIERS:
+        assert monitor.check_remediation_threshold(tier, BREACH_EVENT) is False
+
+
+def test_unknown_tier_reads_as_free_and_escalates():
+    # normalize_tier fails DOWNWARD, so a typo must not buy in-house treatment.
+    monitor = st.SubscriptionTierMonitor()
+    assert monitor.check_remediation_threshold("premiuim", BREACH_EVENT) is True
+    assert monitor.check_remediation_threshold(None, BREACH_EVENT) is True
+
+
+def test_non_breach_event_never_escalates():
+    monitor = st.SubscriptionTierMonitor()
+    routine = dict(BREACH_EVENT, kind="advisory")
+    assert monitor.check_remediation_threshold("free", routine) is False
+
+
+def test_malformed_event_returns_false_rather_than_raising():
+    monitor = st.SubscriptionTierMonitor()
+    for bad in (None, {}, {"kind": "breach"}, "not-an-event", 42, object()):
+        assert monitor.check_remediation_threshold("free", bad) is False
+
+
+def test_every_breach_kind_is_recognised():
+    monitor = st.SubscriptionTierMonitor()
+    for kind in st.BREACH_KINDS:
+        assert monitor.check_remediation_threshold("free", dict(BREACH_EVENT, kind=kind)) is True
+
+
+def test_raising_partner_queue_does_not_break_the_loop():
+    # Losing one escalation record is bad; wedging every other household is worse.
+    def boom(_record):
+        raise RuntimeError("partner queue down")
+
+    monitor = st.SubscriptionTierMonitor(partner_queue=boom)
+    monitor.escalate_to_licensed_partners("user-free", "summary")
+    assert [r["user_id"] for r in monitor.escalations] == ["user-free"]
+
+
+def test_case_summary_defaults_to_the_normalized_event():
+    monitor = st.SubscriptionTierMonitor()
+    monitor.handle_regime_event("user-free", "free", BREACH_EVENT)
+    assert "CA" in monitor.escalations[0]["case_summary"]
+    assert "late filing" in monitor.escalations[0]["case_summary"]
