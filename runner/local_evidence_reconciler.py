@@ -166,11 +166,20 @@ def build_context(repo: str, *, base: str = "", live_task_slugs=None) -> dict:
     for line in _lines(_git(["git", "for-each-ref", "--format=%(refname)",
                              "refs/remotes/origin/"], repo)):
         remote_branches.add(line[len("refs/remotes/origin/"):])
+
+    # Every ref already contained in base, resolved in ONE traversal instead of a
+    # `rev-list base..ref` per item. On this repo that is 5.2k refs answered by a
+    # single 1.3s call, replacing ~290 rev-lists at ~260ms each.
+    merged_refs = set(_lines(_git(
+        ["git", "for-each-ref", "--merged", remote_base, "--format=%(refname)",
+         "refs/heads/", *EVIDENCE_REF_PREFIXES], repo)))
+
     return {
         "base": base,
         "base_ref": remote_base,
         "base_sha": _git(["git", "rev-parse", remote_base], repo).stdout.strip(),
         "remote_branches": remote_branches,
+        "merged_refs": merged_refs,
         "live_task_slugs": set(live_task_slugs or ()),
     }
 
@@ -206,6 +215,15 @@ def _superseded(repo: str, ref: str, base_ref: str, paths: list) -> bool:
     "All", not "any", on purpose: a ref that touches ten files of which base moved one is
     still carrying nine files of recoverable value, and calling that superseded is how
     work gets quietly dropped.
+
+    The per-path loop looks like an obvious batching candidate — replace N path-filtered
+    `git log -1` probes with one `git log --name-only` over the same commit range. It was
+    measured and it is 1.35x SLOWER, so it is deliberately not done here: the "all" rule
+    means this returns on the first path base did not move, so the average ref pays for
+    ~1.6 probes rather than N, and each probe is path-filtered and stops at the first
+    match. The bulk traversal has to enumerate every path of every commit since the tip
+    before it can answer, and tip timestamps are too scattered (3.7k distinct across 5.3k
+    refs) for memoisation to amortise it.
     """
     if not paths:
         return False
@@ -269,10 +287,18 @@ def classify(repo: str, item: dict, ctx: dict) -> dict:
         return record
     record["commit"] = sha
 
+    # 1. Fully merged already. The bulk `--merged` set answers this for every ref in one
+    #    traversal, so only refs it does not cover pay for a `rev-list`.
+    if ref in ctx.get("merged_refs", ()):
+        record["unique_commits"] = 0
+        record["classification"] = "ALREADY_PRESENT"
+        record["disposition"] = (f"every commit is an ancestor of {ctx['base']}; "
+                                 f"evidence left in place as residue")
+        return record
+
     unique = _unique_commits(repo, ref, base_ref)
     record["unique_commits"] = len(unique)
 
-    # 1. Fully merged already.
     if not unique:
         record["classification"] = "ALREADY_PRESENT"
         record["disposition"] = (f"every commit is an ancestor of {ctx['base']}; "
