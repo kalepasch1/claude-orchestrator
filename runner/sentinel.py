@@ -295,7 +295,38 @@ def checkout_guard(st=None):
                     f"review and merge (git log {hb})")
                 r = git("checkout", BASE_BRANCH)
             else:
-                git("stash", "push", "-m", f"sentinel-drift-{branch}-{int(time.time())}")
+                _label = f"sentinel-drift-{branch}-{int(time.time())}"
+                git("stash", "push", "-m", _label)
+                # A STASH IS NOT A SAFE PLACE TO LEAVE WORK (2026-08-15).
+                #
+                # This pushed a stash and never popped it, so every drift event left one behind.
+                # Audited today: 41 stashes in tomorrow, 31 in apparently, 11 in pareto — and
+                # they are not machine noise. Their messages read like commits: "whitelist
+                # better-sqlite3 (+prisma/esbuild) build scripts for pnpm v10 — native bindings
+                # now compile on Vercel" (six times over), "Stripe webhook middleware exemptions
+                # (payments launch fix)", "revoke anon EXECUTE on SECURITY DEFINER functions".
+                # The repeats are the tell: the same fix made, stashed, lost, and made again.
+                #
+                # A stash lives in a reflog. `git stash clear`, a reset, or a fresh clone
+                # destroys it with no trace and no warning — it is the most fragile place git
+                # offers, and the fleet was using it as the default drawer for work it did not
+                # know what to do with.
+                #
+                # Mirror it to origin immediately. Best-effort and silent on failure: this runs
+                # on the recovery path, and a preservation attempt must never be the reason the
+                # recovery itself fails.
+                try:
+                    _sha = (git("rev-parse", "stash@{0}").stdout or "").strip()
+                    if _sha:
+                        _ref = f"refs/archive/sentinel-drift/{int(time.time())}"
+                        git("update-ref", _ref, _sha)
+                        _pr = git("push", "origin", f"{_ref}:{_ref}")
+                        log("drift-stash-archived",
+                            f"{_label} mirrored to {_ref} on origin"
+                            if _pr.returncode == 0 else
+                            f"{_label} is LOCAL-ONLY — archive push failed")
+                except Exception as _exc:
+                    log("drift-stash-archived", f"{_label} is LOCAL-ONLY ({_exc})")
                 r = git("checkout", BASE_BRANCH)
 
     if r.returncode != 0:
