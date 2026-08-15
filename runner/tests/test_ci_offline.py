@@ -712,5 +712,44 @@ class TestNoWorkIsLeftOnlyInAStash(unittest.TestCase):
         self.assertIn("except Exception", block)
 
 
+
+class TestFunnelIgnoresSentinelTimestamps(unittest.TestCase):
+    """The ingest stage reported an oldest item of 58,054.7 hours — 6.6 years, predating the
+    project. One row did it: prompt-evolution-bandit, created_at 2020-01-01T00:00:04. 46 tasks
+    carry a pre-2026 date like that, and they are not corrupt: every claim scan orders by
+    created_at ASC, so an impossible past date pins a task to the front of the queue forever.
+
+    The cost lands on the monitor. One sentinel made the stage permanently STALLED and buried
+    the real figure of 47 days — still bad, but bad in a way somebody could act on. A monitor
+    reporting 6.6 years is one nobody reads."""
+
+    def _src(self):
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return open(os.path.join(base, "pipeline_funnel.py")).read()
+
+    def test_the_sane_age_bound_exists_and_is_configurable(self):
+        src = self._src()
+        self.assertIn("ORCH_FUNNEL_MAX_SANE_AGE_H", src)
+
+    def test_it_looks_past_a_sentinel_instead_of_reporting_it(self):
+        # A limit of 1 cannot skip anything; the window has to be wide enough to walk.
+        src = self._src()
+        block = src[src.index("def _oldest("):src.index("def snapshot(")]
+        self.assertIn('"limit": "25"', block)
+        self.assertIn("age > sane", block)
+
+    def test_skipped_rows_are_counted_not_silently_dropped(self):
+        # Dropping rows quietly is how a monitor starts lying in the other direction.
+        src = self._src()
+        self.assertIn("_SENTINELS", src)
+        self.assertIn("impossible created_at walked past", src)
+
+    def test_an_all_sentinel_window_still_reports_something(self):
+        # Reporting "empty" for a stage that has rows would be a worse lie than a big number.
+        src = self._src()
+        block = src[src.index("def _oldest("):src.index("def snapshot(")]
+        self.assertIn("Every row in the window was a sentinel", block)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

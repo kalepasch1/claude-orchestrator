@@ -98,6 +98,9 @@ def _count(table, params):
         return -1
 
 
+_SENTINELS = {}   # table -> how many impossible-age rows were walked past
+
+
 def _oldest(table, params, ts_col):
     """Age in hours of the oldest item, None if the stage is genuinely empty.
 
@@ -107,11 +110,44 @@ def _oldest(table, params, ts_col):
     this module exists to catch. A failed probe now returns the sentinel below and is treated
     as unhealthy.
     """
+    # SENTINEL TIMESTAMPS POISON THIS METRIC (2026-08-15).
+    #
+    # The ingest stage was reporting an oldest item of 58,054.7 hours — 6.6 years, predating the
+    # project. One row was responsible: prompt-evolution-bandit, created_at 2020-01-01T00:00:04.
+    # 46 tasks carry a pre-2026 date like that, and they are not corrupt — it is a deliberate
+    # hack, because every claim scan orders by created_at ASC, so an impossible past date pins a
+    # task to the front of the queue forever.
+    #
+    # The cost lands here. One sentinel makes the stage permanently STALLED and buries the real
+    # figure, which was 47 days: still bad, but bad in a way somebody could act on. A monitor
+    # reporting 6.6 years is one nobody reads.
+    #
+    # So walk past sentinels rather than reporting them as the answer. They are counted and named
+    # in the note, because silently dropping rows is how a monitor starts lying in the other
+    # direction — and because the pinning trick itself is worth someone deciding about on
+    # purpose rather than inheriting.
+    sane = float(os.environ.get("ORCH_FUNNEL_MAX_SANE_AGE_H", "17520") or 17520)   # 2 years
     for attempt in range(3):                 # the shared relay rate-limits under fleet load
         try:
             rows = db.select(table, {**params, "select": ts_col, "order": f"{ts_col}.asc",
-                                     "limit": "1"}) or []
-            return _age_h(rows[0].get(ts_col)) if rows else None
+                                     "limit": "25"}) or []
+            if not rows:
+                return None
+            skipped = 0
+            for row in rows:
+                age = _age_h(row.get(ts_col))
+                if age is UNMEASURABLE or age is None:
+                    continue
+                if age > sane:
+                    skipped += 1
+                    continue
+                if skipped:
+                    _SENTINELS[table] = skipped
+                return age
+            # Every row in the window was a sentinel; report the newest of them rather than
+            # claiming the stage is empty.
+            _SENTINELS[table] = len(rows)
+            return _age_h(rows[-1].get(ts_col))
         except Exception:
             if attempt == 2:
                 return UNMEASURABLE
@@ -125,6 +161,7 @@ def snapshot():
     def add(name, table, params, ts_col, note=""):
         stages.append({
             "stage": name,
+            "table": table,
             "count": _count(table, params),
             "oldest_h": _oldest(table, params, ts_col),
             "threshold_h": THRESHOLD_H.get(name),
@@ -171,6 +208,11 @@ def snapshot():
     })
 
     for s in stages:
+        n_sent = _SENTINELS.get(s.get("table") or "", 0)
+        if n_sent:
+            s["note"] = ((s.get("note") or "") +
+                         f"  [{n_sent} row(s) with an impossible created_at walked past — "
+                         f"pinned-to-front sentinels, not real age]").strip()
         thr, age = s.get("threshold_h"), s.get("oldest_h")
         if age == UNMEASURABLE:
             s["healthy"] = False
