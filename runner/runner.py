@@ -237,14 +237,64 @@ def _project_repo(project_id):
         return None
 
 
+def _is_closure_refusal(exc) -> bool:
+    """True when *exc* is the database refusing a closure that cannot prove delivered work.
+
+    Matched structurally where possible: db.RequestRejectedError exposes the SQLSTATE, and
+    enforce_evidence_on_closure raises check_violation (23514). That class only exists once the
+    companion db.py change lands, so this is resolved with getattr and falls back to matching the
+    trigger's own wording -- the branch must be mergeable in either order.
+
+    Narrow on purpose. A transient outage, an auth failure or a schema error must still raise;
+    silently downgrading those to BLOCKED would hide real breakage behind a tidy task state.
+    """
+    rejected = getattr(db, "RequestRejectedError", None)
+    if rejected is not None and isinstance(exc, rejected):
+        if getattr(exc, "code", None) in ("23514", "check_violation"):
+            return True
+    text = str(exc)
+    if "400" not in text and "check_violation" not in text:
+        return False
+    return ("cannot close as" in text
+            or "is already cited by" in text
+            or "evidence_gate" in text)
+
+
 def set_state(task_id: str, **kw) -> None:
     """Update a task row in Supabase, auto-setting updated_at to now().
 
     Accepts arbitrary keyword args that map to columns on the tasks table
     (e.g. state='DONE', note='...', cost=0.12).
+
+    A closure the database refuses does NOT propagate. enforce_evidence_on_closure rejects a
+    DONE/MERGED row that cannot prove delivered work (no artifact_commit, or one another closed
+    task already cites); PostgREST returns that PL/pgSQL raise as HTTP 400. Letting it escape
+    here aborted run_task at its terminal write, which is worse than the refusal in three ways:
+    the lease and file reservations below were never released, the row stayed RUNNING until the
+    20-minute janitor cap, and the requeue re-ran the whole task only to be refused again. That
+    is the loop behind this task's own 4 attempts.
+
+    The refusal itself stands -- the row must not claim delivery it cannot prove. It is instead
+    downgraded to BLOCKED carrying the gate's explanation, so the work is visible and the
+    cleanup below always runs.
     """
     kw["updated_at"] = "now()"
-    db.update("tasks", {"id": task_id}, kw)
+    try:
+        db.update("tasks", {"id": task_id}, kw)
+    except Exception as exc:
+        if not _is_closure_refusal(exc):
+            raise
+        _log.warning("set_state: closure refused for %s (%s); recording BLOCKED: %s",
+                     task_id, kw.get("state"), exc)
+        blocked_note = (f"closure gate refused {kw.get('state')}: {exc}. "
+                        f"Prior note: {kw.get('note') or ''}")[:4000]
+        try:
+            db.update("tasks", {"id": task_id},
+                      {"state": "BLOCKED", "note": blocked_note, "updated_at": "now()"})
+        except Exception as inner:
+            # Never let bookkeeping strand the lease released below.
+            _log.error("set_state: could not record BLOCKED for %s: %s", task_id, inner)
+        kw = dict(kw, state="BLOCKED")
     # Every non-running transition ends this executor's right to mutate the
     # branch. A crashed worker is covered by the server-side lease TTL.
     if kw.get("state") in {"QUEUED", "DONE", "MERGED", "BLOCKED", "QUARANTINED"}:
