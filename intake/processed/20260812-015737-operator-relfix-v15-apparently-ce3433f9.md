@@ -1,0 +1,11 @@
+PROJECT: apparently
+
+- id: relfix-v15-apparently-ce3433f9
+  title: relfix-v15-apparently-ce3433f9
+  material: no
+  model: 
+  submitted-by: Codex operator-directed remediation
+  depends: []
+  proof: Apparently's public-copy gate and production build pass, and the release train records a successful release newer than failed SHA ce3433f9.
+  prompt: |
+    Repair the current Apparently release copy-gate blocker at ce3433f9. The gate flags app/components/one-apparently/BenchReviewedSeal.vue around line 5 because internal-engine language ('CADE') appears in public copy. Rewrite the affected public-facing text to accurate value-level language while preserving the seal's meaning, accessibility, and behavior. Run the public-copy gate and production build, then return the commit to the release train; do not deploy directly or suppress the gate.

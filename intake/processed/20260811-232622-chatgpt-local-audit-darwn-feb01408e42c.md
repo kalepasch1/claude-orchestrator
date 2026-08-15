@@ -1,0 +1,371 @@
+PROJECT: darwn
+
+- id: chatgpt-local-reconcile-darwn-feb01408e42c
+  title: Reconcile local ChatGPT/Codex build evidence for darwn
+  material: yes
+  depends: []
+  proof: every evidence item is classified and all still-useful absent code is durably queued or integrated
+  prompt: |
+    Reconcile the local ChatGPT/Codex build evidence below without destroying or overwriting it.
+
+    This is a recovery-and-consideration task, not permission to prefer legacy code over current code.
+    Treat every source path, stash, rescue ref, and worktree as read-only. Compare each item against
+    the current default branch, remote branches, merged history, and live orchestrator tasks. Classify
+    each item as ALREADY_PRESENT, SUPERSEDED_BY_NEWER, ACTIVE_IN_ANOTHER_TASK, RECOVERABLE_VALUE, or
+    CONFLICTED_NEEDS_FOCUSED_TASK. The newest/most complete implementation wins.
+
+    For RECOVERABLE_VALUE, work only in a newly allocated isolated worktree, apply the minimum coherent
+    diff, run relevant tests, and deliver through the normal agent branch + merge train. For conflicts,
+    queue a focused follow-up rather than forcing an overwrite. Do not delete, reset, clean, pop, or move
+    the evidence source. Do not duplicate work already represented by a live task or remote branch.
+
+    Write one `coordination_tasks` recovery-ledger record per evidence item using audit fingerprint
+    `feb01408e42c9b6eb3c81003cef7b9ae6ff7150ebe3b4bf9e8e5feb7d891e406`, including source, classification, disposition, and resulting task/branch/commit. Completion
+    requires zero UNKNOWN items and durable queue/branch provenance for every item with remaining value.
+
+    Evidence snapshot (large ref/file collections are represented by a complete digest plus a
+    sample; enumerate the live source during reconciliation so every item is classified):
+    [
+      {
+        "branch": "main",
+        "change_count": 2,
+        "changes": [
+          "package-lock.json",
+          "package.json"
+        ],
+        "changes_digest": "8eb04b752d06e240df3b079938a3146c7955a13a45e5f3aede8ee17505b85c23",
+        "head": "1643c0afbca3b16bb8427fbbf9886de0767f9775",
+        "kind": "dirty_worktree",
+        "newest_change_mtime": 1784930411,
+        "path": "/Users/kpasch/Documents/darwinLife"
+      },
+      {
+        "branches": [
+          {
+            "committed_at": 1786074672,
+            "ref": "agent/backlog-batch-darwn-5b34a9d-slice-2-cade-firm-opponent-models-transplant-selecte",
+            "sha": "16caf9aac69ed5c2b365a03bf680116f297d97ad",
+            "subject": "regen-from-cache(template): backlog-batch-darwn-5b34a9d-slice-2-cade-firm-opponent-models-transplant-selecte"
+          },
+          {
+            "committed_at": 1786119296,
+            "ref": "agent/backlog-batch-darwn-611fabe-remediate-cont-2249c9-5ca240-test-and-co",
+            "sha": "96470b3adf5be1a0de132ac8c7def26a4de9dfc6",
+            "subject": "regen-from-cache(template): backlog-batch-darwn-611fabe-remediate-cont-2249c9-5ca240-test-and-co"
+          },
+          {
+            "committed_at": 1786137061,
+            "ref": "agent/backlog-batch-darwn-d2c0780-darwn-batch-processor",
+            "sha": "4d621983c6c62264a87044d5974c103f590540b6",
+            "subject": "recovery-intent-stub: backlog-batch-darwn-d2c0780-darwn-batch-processor"
+          },
+          {
+            "committed_at": 1786136363,
+            "ref": "agent/canary-darwn-20260713-slice-1-adapt-existing-diff-templates",
+            "sha": "fda769d43114e41518dd5a49a247ccac9f339dab",
+            "subject": "recovery-intent-stub: canary-darwn-20260713-slice-1-adapt-existing-diff-templates"
+          },
+          {
+            "committed_at": 1786136130,
+            "ref": "agent/canary-darwn-20260713-slice-1-implement-duplicate-removal-mechanism",
+            "sha": "c5b2f3a8edb2d549ffa44a0bc064581dc0dd2618",
+            "subject": "recovery-intent-stub: canary-darwn-20260713-slice-1-implement-duplicate-removal-mechanism"
+          },
+          {
+            "committed_at": 1786141607,
+            "ref": "agent/canary-darwn-20260713-slice-4-implement-behavior",
+            "sha": "698609892cefa346d22becebd26da548daaf3351",
+            "subject": "recovery-intent-stub: canary-darwn-20260713-slice-4-implement-behavior"
+          },
+          {
+            "committed_at": 1786141411,
+            "ref": "agent/canary-darwn-20260713-slice-4-locate-existing-owner-module",
+            "sha": "99d96075ef9c7fd5d0f246de3882ebec18a269d5",
+            "subject": "recovery-intent-stub: canary-darwn-20260713-slice-4-locate-existing-owner-module"
+          },
+          {
+            "committed_at": 1785868283,
+            "ref": "agent/canary-darwn-20260725",
+            "sha": "d16c4fc6186a0ccac22cb5896cd649e18abd9c69",
+            "subject": "fix: canary-darwn-20260725 \u2014 fail-soft infra handling in rating validation"
+          },
+          {
+            "committed_at": 1786152567,
+            "ref": "agent/canary-darwn-20260726-implement-canary-heartbeat-touch",
+            "sha": "125cf9b020a119ebc224c074bb85b4191d0cd249",
+            "subject": "recovery-intent-stub: canary-darwn-20260726-implement-canary-heartbeat-touch"
+          },
+          {
+            "committed_at": 1785848773,
+            "ref": "agent/qafix-darwn-07251340",
+            "sha": "4200e42e95ed45a95ccef0cfb3ebd564e9af4f57",
+            "subject": "recovery-intent-stub: qafix-darwn-07251340"
+          },
+          {
+            "committed_at": 1786028483,
+            "ref": "agent/recover-missing-branch-backlog-batch-darwn-5b34a9d-slice-3",
+            "sha": "f4515a70c0eca68467c29ea66ea1f4962d1bd6bc",
+            "subject": "recovery-intent-stub: recover-missing-branch-backlog-batch-darwn-5b34a9d-slice-3"
+          },
+          {
+            "committed_at": 1786187110,
+            "ref": "agent/remediate-diligence-page",
+            "sha": "7eb541f9e8b479346f574524646587ac64715b9a",
+            "subject": "recovery-intent-stub: remediate-diligence-page"
+          }
+        ],
+        "count": 12,
+        "kind": "local_only_branch_tips",
+        "repo": "/Users/kpasch/Documents/darwn/darwn"
+      },
+      {
+        "count": 212,
+        "items_digest": "54e333d81b4c465370b74d6c3b34de807f4699c041d531ad6ae3f3c525b8689e",
+        "items_sample": [
+          {
+            "created_at": 1785715614,
+            "ref": "refs/orch-rescue/20260803T000654-cade-mirror-negotiation",
+            "sha": "dc03cd48d6657aaed8cf31c4c329a6e38da96a06",
+            "subject": "On agent/cade-mirror-negotiation: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715614,
+            "ref": "refs/orch-rescue/20260803T000654-cc-legacy-margin-removal",
+            "sha": "dda6bd2333efdb7c90618d97e99ecea2073bd23e",
+            "subject": "On agent/cc-legacy-margin-removal: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715614,
+            "ref": "refs/orch-rescue/20260803T000654-cc-mutual-default-fund",
+            "sha": "e58e3c55632ee6a44493f61c5bbd1f949df2ea98",
+            "subject": "On agent/cc-mutual-default-fund: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715614,
+            "ref": "refs/orch-rescue/20260803T000654-convention-conformance-lints",
+            "sha": "a76377013d07921816a9f4207131a51683542232",
+            "subject": "On agent/convention-conformance-lints: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715614,
+            "ref": "refs/orch-rescue/20260803T000654-darwn",
+            "sha": "4f4bf432151adfa61c47ef2381dc100ea6a53500",
+            "subject": "On main: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715614,
+            "ref": "refs/orch-rescue/20260803T000654-economic-scheduler-revenue",
+            "sha": "f87ad7be0a8c1571f61de0cf82405ca174ff1265",
+            "subject": "On agent/economic-scheduler-revenue: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715615,
+            "ref": "refs/orch-rescue/20260803T000655-ensemble-on-hard",
+            "sha": "a772f1b4b152fbc921b70d3a342de42a2c57fd1e",
+            "subject": "On agent/ensemble-on-hard: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715615,
+            "ref": "refs/orch-rescue/20260803T000655-hive-support-entity-relationship-source",
+            "sha": "d175583f4784ddfb01b546a8ce373f081c10b8db",
+            "subject": "On agent/hive-support-entity-relationship-source: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715615,
+            "ref": "refs/orch-rescue/20260803T000655-merged-diff-memory",
+            "sha": "6e0e8bda523e079575fc9c2fc840a5780cfa2ef2",
+            "subject": "On agent/merged-diff-memory: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715615,
+            "ref": "refs/orch-rescue/20260803T000655-orch-config-consumption",
+            "sha": "33e2de24748decb60aeb2aee52c3d836eed998a8",
+            "subject": "On agent/orch-config-consumption: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715615,
+            "ref": "refs/orch-rescue/20260803T000655-pinned-express-lane",
+            "sha": "dfbdf2633f148c8b4cb91839e28ea3fc66c08ac3",
+            "subject": "On agent/pinned-express-lane: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715616,
+            "ref": "refs/orch-rescue/20260803T000656-ploeh-s2s-bridge-tomorrow",
+            "sha": "358d09a39ed706d8ce6b3e9de93cc957c1e37d06",
+            "subject": "On agent/ploeh-s2s-bridge-tomorrow: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715616,
+            "ref": "refs/orch-rescue/20260803T000656-smarter-5-95",
+            "sha": "95bb63aee5866e74eebc259cee3bf838825c7473",
+            "subject": "On agent/smarter-5-95: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715663,
+            "ref": "refs/orch-rescue/20260803T000743-cade-mirror-negotiation",
+            "sha": "c8d555444f7183fb4541e7a40957cf7a7b8f4de3",
+            "subject": "On agent/cade-mirror-negotiation: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715663,
+            "ref": "refs/orch-rescue/20260803T000743-cc-legacy-margin-removal",
+            "sha": "7a06e2edb4380fe9ad55a4b44f5a0f4df12bbbbf",
+            "subject": "On agent/cc-legacy-margin-removal: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715663,
+            "ref": "refs/orch-rescue/20260803T000743-cc-mutual-default-fund",
+            "sha": "cf32b14b9ce6b74d25211c85653f9cba7288255c",
+            "subject": "On agent/cc-mutual-default-fund: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715663,
+            "ref": "refs/orch-rescue/20260803T000743-darwn",
+            "sha": "667450c75d86ba848d3f0954b6c49a508156662e",
+            "subject": "On main: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715664,
+            "ref": "refs/orch-rescue/20260803T000744-convention-conformance-lints",
+            "sha": "064167ca49f64845e2a19dc8892a8ab36a2f813f",
+            "subject": "On agent/convention-conformance-lints: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715664,
+            "ref": "refs/orch-rescue/20260803T000744-economic-scheduler-revenue",
+            "sha": "76fddd6eb6f48f8aead04ce3ed2e6abe5779dbbb",
+            "subject": "On agent/economic-scheduler-revenue: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715664,
+            "ref": "refs/orch-rescue/20260803T000744-ensemble-on-hard",
+            "sha": "8f4fc8edac0f240282e82816fe16961b3fbaee42",
+            "subject": "On agent/ensemble-on-hard: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715664,
+            "ref": "refs/orch-rescue/20260803T000744-hive-support-entity-relationship-source",
+            "sha": "67111dbc5cdc5ec15e4a856b7750aa2688e49952",
+            "subject": "On agent/hive-support-entity-relationship-source: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715664,
+            "ref": "refs/orch-rescue/20260803T000744-merged-diff-memory",
+            "sha": "8a3d59413c201603db5079d7de43883c03bc355f",
+            "subject": "On agent/merged-diff-memory: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715664,
+            "ref": "refs/orch-rescue/20260803T000744-orch-config-consumption",
+            "sha": "32e4f493ae404c49f80d71c81873afba5566d5de",
+            "subject": "On agent/orch-config-consumption: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715664,
+            "ref": "refs/orch-rescue/20260803T000744-pinned-express-lane",
+            "sha": "dd0b16cc150ec51cab1707ad662e50440f911508",
+            "subject": "On agent/pinned-express-lane: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715664,
+            "ref": "refs/orch-rescue/20260803T000744-ploeh-s2s-bridge-tomorrow",
+            "sha": "ef3ce168d25e377dc1b5ce3b283d3ce3f9d7f7db",
+            "subject": "On agent/ploeh-s2s-bridge-tomorrow: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785715664,
+            "ref": "refs/orch-rescue/20260803T000744-smarter-5-95",
+            "sha": "dd81097e4d45414c79897c796e1df64041513d6b",
+            "subject": "On agent/smarter-5-95: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785716110,
+            "ref": "refs/orch-rescue/20260803T001510-cade-mirror-negotiation-fafdabac",
+            "sha": "fafdabac39de6b3c5d9ff1dc51ff0f68bef76270",
+            "subject": "On agent/cade-mirror-negotiation: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785716110,
+            "ref": "refs/orch-rescue/20260803T001510-cc-legacy-margin-removal-a7f2fac2",
+            "sha": "a7f2fac2ead525786f14040b1dd71a7a7882806d",
+            "subject": "On agent/cc-legacy-margin-removal: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785716110,
+            "ref": "refs/orch-rescue/20260803T001510-cc-mutual-default-fund-b65ba7ca",
+            "sha": "b65ba7cab728f57d8cd734927c0804794ce3c251",
+            "subject": "On agent/cc-mutual-default-fund: orch-rescue: periodic sweep"
+          },
+          {
+            "created_at": 1785716110,
+            "ref": "refs/orch-rescue/20260803T001510-convention-conformance-lints-bed40d69",
+            "sha": "bed40d691d82c3ef49525e3d5c3a43ee8810b65f",
+            "subject": "On agent/convention-conformance-lints: orch-rescue: periodic sweep"
+          }
+        ],
+        "items_total": 212,
+        "kind": "orchestrator_rescue_refs",
+        "repo": "/Users/kpasch/Documents/darwn/darwn"
+      },
+      {
+        "count": 8,
+        "items": [
+          {
+            "created_at": 1785439584,
+            "ref": "stash@{0}",
+            "sha": "964d888c9fb246d38d82ef74c90838450d152a49",
+            "subject": "WIP on agent/backlog-batch-darwn-5b34a9d-slice-4: 6d0fc45 fix: resolve tilde alias in vitest configuration"
+          },
+          {
+            "created_at": 1784926316,
+            "ref": "stash@{1}",
+            "sha": "e8b5bc7c64f66b23098b8e7c2c99e6767fdc1fae",
+            "subject": "WIP on main: 6d0fc45 fix: resolve tilde alias in vitest configuration"
+          },
+          {
+            "created_at": 1784757675,
+            "ref": "stash@{2}",
+            "sha": "149e9b81987ce696dcefddceeade3d0802d60dbf",
+            "subject": "autostash"
+          },
+          {
+            "created_at": 1784686648,
+            "ref": "stash@{3}",
+            "sha": "9a147daa95c6aee5cb75ac607d08de75b085153f",
+            "subject": "WIP on agent/cade-roster-seed-fin: 8e551fc agent/bx2: canary-darwn-20260709 heartbeat"
+          },
+          {
+            "created_at": 1784229220,
+            "ref": "stash@{4}",
+            "sha": "5df14d7917f03dcdc67e45aa5cac36228ec9bd46",
+            "subject": "WIP on recovery/concurrent-primary-20260715-darwn: 785682b recovery: preserve late dormant-source transition"
+          },
+          {
+            "created_at": 1783831777,
+            "ref": "stash@{5}",
+            "sha": "d8c40ccbb593526244f37aeefa9cbb904e66c6d4",
+            "subject": "On agent/reroute-model-keys-mock: wip-before-task-branches"
+          },
+          {
+            "created_at": 1783310605,
+            "ref": "stash@{6}",
+            "sha": "06c9d22287de0b4ef2198a284b9427c16d6c58c2",
+            "subject": "On medicalOnly: recover_and_ship: pre-merge dirt 1783310605"
+          },
+          {
+            "created_at": 1774451483,
+            "ref": "stash@{7}",
+            "sha": "e63e085bdc8677a8705cbbdaa4818a02706e3fd1",
+            "subject": "WIP on main: fc2cd9d adding user home page (working)"
+          }
+        ],
+        "kind": "stashes",
+        "repo": "/Users/kpasch/Documents/darwn/darwn"
+      },
+      {
+        "kind": "unregistered_local_repo",
+        "note": "repo is not present in runner/deployment_bindings.json; verify canonical ownership",
+        "path": "/Users/kpasch/Documents/darwinLife",
+        "routing": "darwn"
+      }
+    ]

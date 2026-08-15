@@ -1,0 +1,209 @@
+PROJECT: beethoven
+
+- id: chatgpt-local-reconcile-beethoven-6c8911116873
+  title: Reconcile local ChatGPT/Codex build evidence for beethoven
+  material: yes
+  depends: []
+  proof: every evidence item is classified and all still-useful absent code is durably queued or integrated
+  prompt: |
+    Reconcile the local ChatGPT/Codex build evidence below without destroying or overwriting it.
+
+    This is a recovery-and-consideration task, not permission to prefer legacy code over current code.
+    Treat every source path, stash, rescue ref, and worktree as read-only. Compare each item against
+    the current default branch, remote branches, merged history, and live orchestrator tasks. Classify
+    each item as ALREADY_PRESENT, SUPERSEDED_BY_NEWER, ACTIVE_IN_ANOTHER_TASK, RECOVERABLE_VALUE, or
+    CONFLICTED_NEEDS_FOCUSED_TASK. The newest/most complete implementation wins.
+
+    For RECOVERABLE_VALUE, work only in a newly allocated isolated worktree, apply the minimum coherent
+    diff, run relevant tests, and deliver through the normal agent branch + merge train. For conflicts,
+    queue a focused follow-up rather than forcing an overwrite. Do not delete, reset, clean, pop, or move
+    the evidence source. Do not duplicate work already represented by a live task or remote branch.
+
+    Write one `coordination_tasks` recovery-ledger record per evidence item using audit fingerprint
+    `6c8911116873878c82a862a05e9412b770e354c83e9c0779d761418a5352bbc5`, including source, classification, disposition, and resulting task/branch/commit. Completion
+    requires zero UNKNOWN items and durable queue/branch provenance for every item with remaining value.
+
+    Evidence snapshot (large ref/file collections are represented by a complete digest plus a
+    sample; enumerate the live source during reconciliation so every item is classified):
+    [
+      {
+        "branch": "master",
+        "change_count": 30,
+        "changes": [
+          "docs/recovery/APPARENTLY_MANUAL_RESTART_CONTINUATION.md",
+          "intake/processed/20260807-184025-factory-unblock-cade-adversary-tournaments.md",
+          "intake/processed/20260808-183407-factory-unblock-perpetual-compliance-hedge-instrument-fix-ts-errors-.md",
+          "intake/processed/20260808-202341-factory-unblock-dropbox-tomorrow-apparently-ploeh-tranche-gating-s-s.md",
+          "intake/processed/20260811-173759-0000-v15-trojun-rollout-coordinator-20260811.md",
+          "intake/processed/20260811-174428-000-v15-trojun-fleet-rollout-20260811.md",
+          "intake/processed/20260811-183744-factory-unblock-recover-missing-branch-perpetual-compliance-hedge-in.md",
+          "intake/processed/20260811-193230-orchestrator-development-session-fabric-20260811.md",
+          "intake/processed/20260812-001922-operator-improve-compliance-api-auth-tenancy.md",
+          "intake/processed/20260812-005435-operator-orchestrator-development-session-fabric-app-embeds-20260812.md",
+          "intake/processed/20260812-010435-operator-orchestrator-development-session-fabric-trojun-reroute-20260812.md",
+          "intake/processed/20260812-012043-operator-improve-compliance-calibrated-optimization.md",
+          "intake/processed/20260812-012309-operator-improve-compliance-durable-event-router.md",
+          "intake/processed/20260812-012529-operator-improve-compliance-evidence-vault.md",
+          "intake/processed/20260812-012741-operator-improve-compliance-regulatory-ingestion.md",
+          "intake/processed/20260812-012936-operator-improve-compliance-scheduling-observability.md",
+          "intake/processed/20260812-013137-operator-improve-queue-dirty-checkout-auto-recovery.md",
+          "intake/processed/20260812-013309-operator-improve-queue-prevent-darwin-passport-conflicts.md",
+          "intake/processed/20260812-013527-operator-improve-queue-prevent-live-runner-merge-conflicts.md",
+          "intake/processed/20260812-013735-operator-improve-release-deploy-ui-evidence-closure.md",
+          "intake/processed/20260812-013904-operator-improve-runner-credential-capacity-failover.md",
+          "intake/processed/20260812-015737-operator-improve-runner-supervisor-single-owner.md",
+          "intake/processed/20260812-015737-operator-relfix-v15-apparently-ce3433f9.md",
+          "intake/processed/20260812-015737-operator-relfix-v15-pareto-1266ffa3.md",
+          "intake/processed/20260812-015737-operator-relfix-v15-predictions-766973c7.md",
+          "intake/processed/20260812-015737-operator-relfix-v15-racefeed-f0a41d3a.md",
+          "intake/processed/20260812-015737-operator-relfix-v15-smarter-c7599db3.md",
+          "intake/processed/20260812-015737-operator-relfix-v15-tomorrow-43b1039e.md",
+          "intake/processed/20260812-015904-operator-relfix-v15-trojun-1893305f.md",
+          "intake/processed/20260812-020039-operator-relfix-v15-vigil-dcdb561c.md"
+        ],
+        "changes_digest": "7e991556779e0ee41eea19e41fab3b2dffc7f373c6eb7186b5b471b14a2a1719",
+        "head": "af6b89dc3ff3d22c57befdc959980095ab61c370",
+        "kind": "dirty_worktree",
+        "newest_change_mtime": 1786496580,
+        "path": "/Users/kpasch/Documents/beethoven/claude-orchestrator"
+      },
+      {
+        "branches": [
+          {
+            "committed_at": 1786029792,
+            "ref": "_rb",
+            "sha": "fcef8e0665f9b7d79cc9f4e72734dc169e24badd",
+            "subject": "agent: dropbox-wave-c-compounding-codegen-platform-spine--slice-2 \u2014 unblock train: passport digest order-independence + fail-closed expiry"
+          },
+          {
+            "committed_at": 1785686280,
+            "ref": "agent/canary-codex-55",
+            "sha": "61e6fc5fe255e3edeb3a7301673f1dd0a8c6e679",
+            "subject": "agent: canary-codex-55"
+          },
+          {
+            "committed_at": 1786140994,
+            "ref": "agent/copyfix-beethoven-07180848-slice-3-public-landing-founder-navigation-copy-clean-140991",
+            "sha": "37a6932a8bf6b9182517d8e8405f8521fc8e5fc7",
+            "subject": "self-heal: clean files from agent/copyfix-beethoven-07180848-slice-3-public-landing-founder-navigation-copy (31 files)"
+          },
+          {
+            "committed_at": 1786048997,
+            "ref": "agent/dropbox-beethoven-fleet-immune-system-throughput-accelerators-operat-1-never-again-lane-daemon-immune-system-p0-recovered",
+            "sha": "ac8d2768478a7f99d80790e7be86e6d46a9e62fa",
+            "subject": "agent: fleet immune system section 1 - lane + daemon hard timeouts, locks, telemetry"
+          },
+          {
+            "committed_at": 1786025909,
+            "ref": "agent/dropbox-beethoven-fleet-immune-system-throughput-accelerators-operat-3-speed-triage-routing-accelerators-p0",
+            "sha": "0a175f15699b96e2d4cf27d3499dc74b83c97ec8",
+            "subject": "agent: dropbox-beethoven-fleet-immune-system-throughput-accelerators-operat-3-speed-triage-routing-accelerators-p0"
+          },
+          {
+            "committed_at": 1786025919,
+            "ref": "agent/dropbox-beethoven-fleet-immune-system-throughput-accelerators-operat-proofs",
+            "sha": "6364cc384a61b1bf478e4da70cd71df8043129b2",
+            "subject": "agent: dropbox-beethoven-fleet-immune-system-throughput-accelerators-operat-proofs"
+          },
+          {
+            "committed_at": 1786044150,
+            "ref": "agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-1",
+            "sha": "3b9e58287bfc983898b18476c5d1345ce4fccb7b",
+            "subject": "agent: dropbox-hisanta-mastery-engine-grandma-rail-family-slice-1"
+          },
+          {
+            "committed_at": 1786052506,
+            "ref": "agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-2",
+            "sha": "7065f5caf9639c96f2a1de82a366080aebcd1a78",
+            "subject": "agent: dropbox-hisanta-mastery-engine-grandma-rail-family-slice-2 \u2014 family contracts live once; mastery engine methods the contracts promised"
+          },
+          {
+            "committed_at": 1786129454,
+            "ref": "agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-2-clean-129448",
+            "sha": "358297faa18ff03172ac9f7240ce981e825e13bb",
+            "subject": "self-heal: clean files from agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-2 (18 files)"
+          },
+          {
+            "committed_at": 1786052527,
+            "ref": "agent/dropbox-hisanta-mastery-engine-grandma-rail-family-slice-3",
+            "sha": "d8497ed3adea65e4a7ac43610129737ed20e3dac",
+            "subject": "agent: dropbox-hisanta-mastery-engine-grandma-rail-family-slice-3"
+          },
+          {
+            "committed_at": 1786087016,
+            "ref": "agent/dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-batch-fusion-unpause",
+            "sha": "886220ad6754ba34bb06d3c67c0fe5594ea5ce7f",
+            "subject": "agent: dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-batch-fusion-unpause"
+          },
+          {
+            "committed_at": 1786035070,
+            "ref": "agent/dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-billing-guard-scope",
+            "sha": "a6e901f9dc32ead9aaa0d9810be154c461e8b9e2",
+            "subject": "agent: dropbox-mission-complete-merge-and-deploy-the-full-backlog-to-vercel-billing-guard-scope"
+          },
+          {
+            "committed_at": 1786058165,
+            "ref": "agent/dropbox-operator-gate-amendment-auto-ship-authoriz-slice-2",
+            "sha": "60d1a6c325b3f7ae94bbd7c778b12baf56406ae0",
+            "subject": "agent: dropbox-operator-gate-amendment-auto-ship-authoriz-slice-2"
+          },
+          {
+            "committed_at": 1786057194,
+            "ref": "agent/dropbox-pareto-life-goal-autonomy-stack-p4-household-legal-doc-updater-notificat",
+            "sha": "e894c5d775c177b99fdc43ef72a3f36ddb849e53",
+            "subject": "agent: dropbox-pareto-life-goal-autonomy-stack-p4-household-legal-doc-updater-notificat"
+          },
+          {
+            "committed_at": 1785388122,
+            "ref": "agent/dropbox-prediction-markets-institute-think-tank-launch-brand-exam-ap-contracts",
+            "sha": "952bdd1b1838b886887137c0ccfcdcc52f24e148",
+            "subject": "refactor(pricing-grid): extract capacity and consumption helpers to eliminate duplication"
+          },
+          {
+            "committed_at": 1786152447,
+            "ref": "agent/improve-missing-branch-auto-creator-slice-3-locate-decomposition-event-handler-a-clean-152441",
+            "sha": "dc65c5428c7ca2d3de8d2cf017ced6fa513e438c",
+            "subject": "self-heal: clean files from agent/improve-missing-branch-auto-creator-slice-3-locate-decomposition-event-handler-a (30 files)"
+          },
+          {
+            "committed_at": 1786151471,
+            "ref": "agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests-clean-151469",
+            "sha": "a9e98fc3c705ebcb705617f1111c1396230ef915",
+            "subject": "self-heal: clean files from agent/improve-value-aware-test-routing-early-exit-r-slice-3-fix-broken-tests (3 files)"
+          },
+          {
+            "committed_at": 1785643667,
+            "ref": "agent/oc-autoclear-policy",
+            "sha": "300e7e1bdeb55328579b081842c8bb206309fc3b",
+            "subject": "autoclear: add fallback YAML rules and fix migration syntax"
+          },
+          {
+            "committed_at": 1785383571,
+            "ref": "backlog-batch-illuminati-1d1b027",
+            "sha": "0abf5b6d4c52bfc741172e9aae160743cc5bc2e3",
+            "subject": "fix(backlog-batch-illuminati): timestamp in empty batch result + floating point precision in tests"
+          },
+          {
+            "committed_at": 1786103948,
+            "ref": "fix-release-train-manifest-import-20260807",
+            "sha": "6d77311f95e2fe2172425395372f54eaecfbf932",
+            "subject": "fix: add missing release_manifest import in release_train.py"
+          },
+          {
+            "committed_at": 1786043518,
+            "ref": "verify/cowork-batch1",
+            "sha": "609c9b2afa584795f60c624f163f042a4116ce1b",
+            "subject": "Merge branch 'agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-4-recovered' into verify/cowork-batch1"
+          },
+          {
+            "committed_at": 1786043392,
+            "ref": "verify/solo3",
+            "sha": "f1aeea3f2bde8e845520d5d9ad48b89611d63868",
+            "subject": "Merge remote-tracking branch 'origin/agent/dropbox-beethoven-audit-addendum-two-session-recon-slice-4-recovered' into verify/solo3"
+          }
+        ],
+        "count": 22,
+        "kind": "local_only_branch_tips",
+        "repo": "/Users/kpasch/Documents/beethoven/claude-orchestrator"
+      }
+    ]
